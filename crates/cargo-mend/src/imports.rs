@@ -218,6 +218,9 @@ fn analyze_use_tree(current_module_path: &[String], tree: &UseTree) -> Option<Im
 
     let current_len = current_module_path.len();
     let common = common_prefix_len(current_module_path, target_segments);
+    if common == 0 {
+        return None;
+    }
     let up_count = current_len.saturating_sub(common);
     if up_count > 1 {
         return None;

@@ -12,6 +12,7 @@ pub(super) struct Selection {
     pub(super) manifest_path:          PathBuf,
     pub(super) manifest_dir:           PathBuf,
     pub(super) workspace_root:         PathBuf,
+    pub(super) target_directory:       PathBuf,
     pub(super) analysis_root:          PathBuf,
     pub(super) is_workspace_selection: bool,
     pub(super) package_roots:          Vec<PathBuf>,
@@ -27,6 +28,7 @@ pub(super) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
 
     let metadata = cargo_metadata_for(&manifest_path)?;
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
+    let target_directory = metadata.target_directory.clone().into_std_path_buf();
     let manifest_dir = manifest_path
         .parent()
         .context("manifest path had no parent directory")?
@@ -78,6 +80,7 @@ pub(super) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
         manifest_path,
         manifest_dir,
         workspace_root,
+        target_directory,
         analysis_root,
         is_workspace_selection,
         package_roots,

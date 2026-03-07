@@ -5,6 +5,25 @@ visibility style across a crate or workspace.
 
 The tool is meant for codebases that want visibility to describe real module boundaries.
 
+## Guiding Principle
+
+The goal is that you should be able to read a Rust file in place and understand what each item's
+visibility is trying to say.
+
+In practice, that means:
+
+- if you see `pub` in a leaf module, it should suggest that the item is part of that module's
+  intended API surface
+- if an item is only meant for its parent module or peer modules under the same parent,
+  `pub(super)` should say that directly
+- if an item is only local implementation detail, it should stay private
+
+The more the code says this directly, the less a reader has to reconstruct the real boundary by
+mentally walking the whole module tree.
+
+That is the design pressure behind this tool. It tries to catch places where the written
+visibility is broader, vaguer, or more global than the code relationship really is.
+
 In practice, that usually means:
 
 - if an item is only meant for its parent module, use `pub(super)`
@@ -109,6 +128,11 @@ Prefer:
 - `pub(super)` when the parent module owns the boundary
 - moving the item to a better common parent when `pub(super)` is too narrow
 
+In this example, there is a parent module named `feature`, and `helpers.rs` exists only to support
+that parent module.
+
+The question is whether the helper should be available to the whole crate, or just to `feature`.
+
 Example:
 
 ```rust
@@ -142,6 +166,12 @@ This tool treats it as a design-review signal, not a normal visibility tool.
 Prefer:
 - `pub(super)` when the current module shape is already correct
 - moving the item to the nearest common parent as its own file
+
+In this example, a helper lives under `src/feature/deep/`, but the desired sharing boundary is
+somewhere higher up than that file.
+
+The example is showing what it looks like when the visibility path has to reach outward to describe
+the real boundary.
 
 Example:
 
@@ -180,6 +210,11 @@ Keep it only when:
 - the module path itself is intentionally part of the API
 - macro or code-generation constraints make it a deliberate exception
 
+In this example, the code is at the crate root.
+
+The important thing to notice is that `pub mod` does not just declare a child module. It also
+publishes that module path as part of the crate API.
+
 Example:
 
 ```rust
@@ -205,6 +240,12 @@ This warning is about a Rust visibility trap:
 - but still fail to be part of the crate's real public API
 
 That happens when one of its parent modules is private.
+
+In this example, there is a private parent module named `support`, and `helpers.rs` lives under
+that private boundary.
+
+The code in `helpers.rs` marks `Helper` as `pub`, but the example is specifically showing a case
+where that still does not make `Helper` part of the crate's public API.
 
 Example:
 
@@ -255,6 +296,13 @@ outside world.
 This warning is about import paths that are technically correct, but more global than the code
 relationship actually is.
 
+In this example, there are two peer modules under the same private parent module:
+
+- `cargo_detector.rs`
+- `process.rs`
+
+The code in `process.rs` wants to import `TargetType` from its peer module `cargo_detector.rs`.
+
 Example:
 
 ```rust
@@ -262,7 +310,8 @@ Example:
 use crate::app_tools::support::cargo_detector::TargetType;
 ```
 
-If you are reading `process.rs`, that path makes `TargetType` look global.
+If you are reading `process.rs`, that import path makes `TargetType` look more global than it
+really is.
 
 But the real relationship is local:
 

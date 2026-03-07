@@ -1,6 +1,8 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -26,8 +28,6 @@ use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
 use serde::Deserialize;
 use serde::Serialize;
-use tempfile::TempDir;
-
 use super::config::LoadedConfig;
 use super::config::VisibilityConfig;
 use super::diagnostics::Finding;
@@ -39,6 +39,12 @@ const DRIVER_ENV: &str = "VISCHECK_DRIVER";
 const CONFIG_ROOT_ENV: &str = "VISCHECK_CONFIG_ROOT";
 const CONFIG_JSON_ENV: &str = "VISCHECK_CONFIG_JSON";
 const FINDINGS_DIR_ENV: &str = "VISCHECK_FINDINGS_DIR";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredReport {
+    package_root: String,
+    findings:     Vec<StoredFinding>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredFinding {
@@ -118,9 +124,16 @@ impl Callbacks for AnalysisCallbacks {
 }
 
 pub(super) fn run_selection(selection: &Selection, loaded_config: &LoadedConfig) -> Result<Report> {
-    let findings_dir = TempDir::new().context("failed to create temporary findings directory")?;
-    let status = run_cargo_check(selection, loaded_config, findings_dir.path())?;
-    let report = load_report(findings_dir.path(), selection.analysis_root.as_path())?;
+    let findings_dir = selection.target_directory.join("vischeck-findings");
+    fs::create_dir_all(&findings_dir).with_context(|| {
+        format!(
+            "failed to create persistent findings directory {}",
+            findings_dir.display()
+        )
+    })?;
+
+    let status = run_cargo_check(selection, loaded_config, &findings_dir)?;
+    let report = load_report(&findings_dir, selection)?;
 
     if !status.success() {
         anyhow::bail!("cargo check failed during vischeck analysis");
@@ -204,8 +217,13 @@ fn run_cargo_check(
         .context("failed to run cargo check for vischeck")
 }
 
-fn load_report(findings_dir: &Path, analysis_root: &Path) -> Result<Report> {
+fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
     let mut findings = Vec::new();
+    let selected_roots: Vec<String> = selection
+        .package_roots
+        .iter()
+        .map(|root| root.to_string_lossy().into_owned())
+        .collect();
     for entry in fs::read_dir(findings_dir).with_context(|| {
         format!(
             "failed to read findings directory {}",
@@ -219,13 +237,16 @@ fn load_report(findings_dir: &Path, analysis_root: &Path) -> Result<Report> {
 
         let text = fs::read_to_string(entry.path())
             .with_context(|| format!("failed to read findings file {}", entry.path().display()))?;
-        let stored: Vec<StoredFinding> = serde_json::from_str(&text)
+        let stored: StoredReport = serde_json::from_str(&text)
             .with_context(|| format!("failed to parse findings file {}", entry.path().display()))?;
-        for finding in stored {
+        if !selected_roots.iter().any(|root| root == &stored.package_root) {
+            continue;
+        }
+        for finding in stored.findings {
             findings.push(Finding {
                 severity:      finding.severity,
                 code:          finding.code,
-                path:          relativize_path(&finding.path, analysis_root),
+                path:          relativize_path(&finding.path, selection.analysis_root.as_path()),
                 line:          finding.line,
                 column:        finding.column,
                 highlight_len: finding.highlight_len,
@@ -256,7 +277,7 @@ fn load_report(findings_dir: &Path, analysis_root: &Path) -> Result<Report> {
     });
 
     Ok(Report {
-        root: selection_root_string(analysis_root),
+        root: selection_root_string(selection.analysis_root.as_path()),
         findings,
     })
 }
@@ -343,12 +364,25 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
             && a.item == b.item
     });
 
+    let package_root = src_root
+        .parent()
+        .context("src root had no package root parent")?;
     let output_path = settings
         .findings_dir
-        .join(format!("{}.json", std::process::id()));
-    fs::write(&output_path, serde_json::to_vec_pretty(&findings)?)
+        .join(cache_filename_for(package_root));
+    let report = StoredReport {
+        package_root: package_root.to_string_lossy().into_owned(),
+        findings,
+    };
+    fs::write(&output_path, serde_json::to_vec_pretty(&report)?)
         .with_context(|| format!("failed to write findings file {}", output_path.display()))?;
     Ok(true)
+}
+
+fn cache_filename_for(package_root: &Path) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    package_root.hash(&mut hasher);
+    format!("{:016x}.json", hasher.finish())
 }
 
 fn analyze_item(
