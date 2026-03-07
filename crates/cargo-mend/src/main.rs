@@ -447,9 +447,38 @@ fn scan_file(
         .map(|p| p.to_string_lossy().replace('\\', "/"));
 
     let mut depth = 0usize;
+    let mut pending_cfg_test = false;
+    let mut skip_until_depth: Option<usize> = None;
     for (idx, line) in text.lines().enumerate() {
         let line_no = idx + 1;
         let sanitized = sanitize_for_visibility_checks(line);
+        let sanitized_trimmed = sanitized.trim_start();
+
+        if let Some(skip_depth) = skip_until_depth {
+            depth = update_brace_depth(depth, line);
+            if depth < skip_depth {
+                skip_until_depth = None;
+            }
+            continue;
+        }
+
+        if sanitized_trimmed.starts_with("#[cfg(test)]") {
+            pending_cfg_test = true;
+            depth = update_brace_depth(depth, line);
+            continue;
+        }
+
+        if pending_cfg_test && sanitized_trimmed.starts_with("mod ") {
+            let module_depth = depth;
+            depth = update_brace_depth(depth, line);
+            skip_until_depth = Some(module_depth + 1);
+            pending_cfg_test = false;
+            continue;
+        }
+
+        if pending_cfg_test && !sanitized_trimmed.is_empty() && !sanitized_trimmed.starts_with("#[") {
+            pending_cfg_test = false;
+        }
 
         if let Some(matched) = RE_PUB_CRATE.find(&sanitized) {
             let (column, highlight_len) =
@@ -512,7 +541,6 @@ fn scan_file(
             }
         }
 
-        let sanitized_trimmed = sanitized.trim_start();
         if depth == 0
             && sanitized_trimmed.starts_with("pub ")
             && !sanitized_trimmed.starts_with("pub mod")
