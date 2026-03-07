@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -86,6 +87,48 @@ enum Severity {
     Warning,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DiagnosticSpec {
+    code:        &'static str,
+    headline:    &'static str,
+    inline_help: Option<&'static str>,
+    help_anchor: &'static str,
+}
+
+const DIAGNOSTICS: &[DiagnosticSpec] = &[
+    DiagnosticSpec {
+        code:        "forbidden_pub_crate",
+        headline:    "use of `pub(crate)` is forbidden by policy",
+        inline_help: None,
+        help_anchor: "forbidden-pub-crate",
+    },
+    DiagnosticSpec {
+        code:        "forbidden_pub_in_crate",
+        headline:    "use of `pub(in crate::...)` is forbidden by policy",
+        inline_help: None,
+        help_anchor: "forbidden-pub-in-crate",
+    },
+    DiagnosticSpec {
+        code:        "review_pub_mod",
+        headline:    "`pub mod` requires explicit review or allowlisting",
+        inline_help: None,
+        help_anchor: "review-pub-mod",
+    },
+    DiagnosticSpec {
+        code:        "suspicious_bare_pub",
+        headline:    "bare `pub` is not publicly re-exported by its parent module",
+        inline_help: Some("consider using: `pub(super)`"),
+        help_anchor: "suspicious-bare-pub",
+    },
+];
+
+fn diagnostic_spec(code: &str) -> &'static DiagnosticSpec {
+    DIAGNOSTICS
+        .iter()
+        .find(|spec| spec.code == code)
+        .unwrap_or_else(|| panic!("unknown diagnostic code: {code}"))
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct Finding {
     severity: Severity,
@@ -134,7 +177,7 @@ fn run() -> Result<ExitCode> {
     if cli.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        print_human_report(&report);
+        print!("{}", render_human_report(&report, std::io::stdout().is_terminal()));
     }
 
     if report.has_errors() {
@@ -699,15 +742,14 @@ fn parent_declares_public_module(parent_text: &str, child_module_name: &str) -> 
     parent_text.lines().any(|line| line.contains(&exact))
 }
 
-fn print_human_report(report: &Report) {
+fn render_human_report(report: &Report, color: bool) -> String {
     if report.findings.is_empty() {
-        println!("No findings.");
-        return;
+        return "No findings.\n".to_string();
     }
 
-    let color = std::io::stdout().is_terminal();
+    let mut output = String::new();
     for finding in &report.findings {
-        print_finding(finding, color);
+        render_finding(&mut output, finding, color);
     }
 
     let error_count = report
@@ -720,33 +762,72 @@ fn print_human_report(report: &Report) {
         .iter()
         .filter(|f| f.severity == Severity::Warning)
         .count();
-    println!("{}", summary_line(error_count, warn_count, color));
+    let _ = writeln!(output, "{}", summary_line(error_count, warn_count, color));
+    output
 }
 
-fn print_finding(finding: &Finding, color: bool) {
+fn render_finding(output: &mut String, finding: &Finding, color: bool) {
     let severity = severity_label(finding.severity, color);
     let headline = finding_headline(finding);
-    println!("{severity} {headline}");
-    println!("  {} {}:{}:{}", dim("-->", color), finding.path, finding.line, finding.column);
-    println!("  {}", dim("|", color));
-    println!("{} {} {}", dim(&format!("{:>2}", finding.line), color), dim("|", color), finding.source_line);
-    println!(
-        "  {} {}",
-        dim("|", color),
+    let line_label = finding.line.to_string();
+    let gutter_width = line_label.len();
+    let gutter_pad = " ".repeat(gutter_width + 1);
+    let arrow_pad = " ".repeat(gutter_width);
+    let _ = writeln!(output, "{severity} {headline}");
+    let _ = writeln!(
+        output,
+        "{}{} {}:{}:{}",
+        arrow_pad,
+        blue_bold("-->", color),
+        finding.path,
+        finding.line,
+        finding.column
+    );
+    let _ = writeln!(output, "{}{}", gutter_pad, blue_bold("|", color));
+    let _ = writeln!(
+        output,
+        "{:>width$} {} {}",
+        blue_bold(&line_label, color),
+        blue_bold("|", color),
+        finding.source_line,
+        width = gutter_width
+    );
+    let _ = writeln!(
+        output,
+        "{}{} {}",
+        gutter_pad,
+        blue_bold("|", color),
         severity_marker(finding.severity, finding.column, finding.highlight_len, color)
     );
+    if let Some(inline_help) = inline_help_text(finding) {
+        let _ = writeln!(output, "{}{}", gutter_pad, blue_bold("|", color));
+        let _ = writeln!(
+            output,
+            "{}{} {}",
+            gutter_pad,
+            blue_bold("|", color),
+            blue_bold(&format!("help: {inline_help}"), color)
+        );
+    }
 
     let reasons = detail_reasons(finding);
+    if inline_help_text(finding).is_some() || !reasons.is_empty() {
+        let _ = writeln!(output, "{}{}", gutter_pad, blue_bold("|", color));
+    }
     if !reasons.is_empty() {
-        println!("  {}", dim("|", color));
         for reason in reasons {
-            println!("  {} {}", dim("= note:", color), reason);
+            let _ = writeln!(output, "{}{} {}", gutter_pad, diagnostic_label("note", color), reason);
         }
     }
     if let Some(help_url) = finding_help_url(finding) {
-        println!("  {} for further information visit {help_url}", dim("= help:", color));
+        let _ = writeln!(
+            output,
+            "{}{} for further information visit {help_url}",
+            gutter_pad,
+            diagnostic_label("help", color)
+        );
     }
-    println!();
+    let _ = writeln!(output);
 }
 
 fn split_message(message: &str) -> Vec<String> {
@@ -761,10 +842,7 @@ fn split_message(message: &str) -> Vec<String> {
 }
 
 fn finding_headline(finding: &Finding) -> String {
-    match finding.code.as_str() {
-        "suspicious_bare_pub" => "bare `pub` is not publicly re-exported by its parent module".to_string(),
-        _ => finding.message.clone(),
-    }
+    diagnostic_spec(&finding.code).headline.to_string()
 }
 
 fn detail_reasons(finding: &Finding) -> Vec<String> {
@@ -772,7 +850,7 @@ fn detail_reasons(finding: &Finding) -> Vec<String> {
         "suspicious_bare_pub" => {
             let reasons = split_message(&finding.message);
             if reasons.iter().any(|reason| reason == "appears unused outside its defining file") {
-                vec!["it also appears unused outside its defining file".to_string()]
+                vec!["it appears unused outside its defining file".to_string()]
             } else {
                 Vec::new()
             }
@@ -781,22 +859,15 @@ fn detail_reasons(finding: &Finding) -> Vec<String> {
     }
 }
 
-fn finding_help_url(finding: &Finding) -> Option<&'static str> {
-    match finding.code.as_str() {
-        "forbidden_pub_crate" => Some(
-            "https://github.com/natepiano/cargo-vischeck#forbidden-pub-crate",
-        ),
-        "forbidden_pub_in_crate" => Some(
-            "https://github.com/natepiano/cargo-vischeck#forbidden-pub-in-crate",
-        ),
-        "review_pub_mod" => Some(
-            "https://github.com/natepiano/cargo-vischeck#review-pub-mod",
-        ),
-        "suspicious_bare_pub" => Some(
-            "https://github.com/natepiano/cargo-vischeck#suspicious-bare-pub",
-        ),
-        _ => None,
-    }
+fn inline_help_text(finding: &Finding) -> Option<&'static str> {
+    diagnostic_spec(&finding.code).inline_help
+}
+
+fn finding_help_url(finding: &Finding) -> Option<String> {
+    Some(format!(
+        "https://github.com/natepiano/cargo-vischeck#{}",
+        diagnostic_spec(&finding.code).help_anchor
+    ))
 }
 
 fn summary_line(error_count: usize, warn_count: usize, color: bool) -> String {
@@ -812,6 +883,8 @@ fn severity_label(severity: Severity, color: bool) -> String {
 
 fn dim(text: &str, color: bool) -> String { paint(text, "2", color) }
 
+fn blue_bold(text: &str, color: bool) -> String { paint(text, "1;34", color) }
+
 fn severity_marker(severity: Severity, column: usize, highlight_len: usize, color: bool) -> String {
     let indent = " ".repeat(column.saturating_sub(1));
     let carets = "^".repeat(highlight_len.max(1));
@@ -822,10 +895,123 @@ fn severity_marker(severity: Severity, column: usize, highlight_len: usize, colo
     format!("{indent}{}", paint(&carets, code, color))
 }
 
+fn diagnostic_label(kind: &str, color: bool) -> String {
+    let prefix = blue_bold("=", color);
+    let label = match kind {
+        "help" => paint("help", "1", color),
+        "note" => paint("note", "1", color),
+        other => other.to_string(),
+    };
+    format!("{prefix} {label}:")
+}
+
 fn paint(text: &str, code: &str, color: bool) -> String {
     if color {
         format!("\x1b[{code}m{text}\x1b[0m")
     } else {
         text.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    #[test]
+    fn every_diagnostic_has_a_unique_readme_anchor() {
+        let readme = include_str!("../README.md");
+        let mut seen_codes = BTreeSet::new();
+        let mut seen_anchors = BTreeSet::new();
+
+        for spec in DIAGNOSTICS {
+            assert!(seen_codes.insert(spec.code), "duplicate diagnostic code: {}", spec.code);
+            assert!(
+                seen_anchors.insert(spec.help_anchor),
+                "duplicate README anchor: {}",
+                spec.help_anchor
+            );
+            let anchor = format!(r#"<a id="{}"></a>"#, spec.help_anchor);
+            assert!(
+                readme.contains(&anchor),
+                "README is missing anchor for {}: {}",
+                spec.code,
+                spec.help_anchor
+            );
+        }
+    }
+
+    #[test]
+    fn fixture_renders_every_current_diagnostic() -> Result<()> {
+        let temp = tempdir()?;
+        fs::create_dir_all(temp.path().join("src/private_parent"))?;
+
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            r#"[package]
+name = "fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+        )?;
+        fs::write(
+            temp.path().join("src/main.rs"),
+            r#"pub(crate) fn crate_only() {}
+pub(in crate::private_parent) fn subtree_only() {}
+pub mod review_mod;
+mod private_parent;
+
+fn main() {}
+"#,
+        )?;
+        fs::write(temp.path().join("src/review_mod.rs"), "\n")?;
+        fs::write(temp.path().join("src/private_parent.rs"), "mod child;\n")?;
+        fs::write(
+            temp.path().join("src/private_parent/child.rs"),
+            "pub struct Suspicious;\n",
+        )?;
+
+        let manifest_path = temp.path().join("Cargo.toml");
+        let selection = resolve_cargo_selection(Some(&manifest_path))?;
+        let loaded_config = load_config(
+            selection.manifest_dir.as_path(),
+            selection.workspace_root.as_path(),
+            None,
+        )?;
+        let report = scan_selection(&selection, &loaded_config)?;
+
+        let rendered = render_human_report(&report, false);
+        let codes: BTreeSet<_> = report.findings.iter().map(|finding| finding.code.as_str()).collect();
+        let expected_codes: BTreeSet<_> = DIAGNOSTICS.iter().map(|spec| spec.code).collect();
+
+        assert_eq!(codes, expected_codes, "fixture should trigger every diagnostic exactly once");
+        assert_eq!(
+            report.findings.len(),
+            DIAGNOSTICS.len(),
+            "fixture should trigger one finding per diagnostic"
+        );
+
+        for spec in DIAGNOSTICS {
+            assert!(
+                rendered.contains(spec.headline),
+                "rendered output is missing headline for {}",
+                spec.code
+            );
+            let help_url = format!(
+                "https://github.com/natepiano/cargo-vischeck#{}",
+                spec.help_anchor
+            );
+            assert!(
+                rendered.contains(&help_url),
+                "rendered output is missing help URL for {}",
+                spec.code
+            );
+        }
+
+        assert!(rendered.contains("help: consider using: `pub(super)`"));
+        Ok(())
     }
 }
