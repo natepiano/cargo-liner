@@ -17,6 +17,9 @@ pub(super) struct Cli {
 
     #[arg(long)]
     pub(super) fail_on_warn: bool,
+
+    #[arg(long)]
+    pub(super) fix: bool,
 }
 
 pub(super) fn parse() -> Cli { Cli::parse_from(normalized_args()) }

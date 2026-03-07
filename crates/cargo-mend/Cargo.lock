@@ -100,6 +100,7 @@ dependencies = [
  "cargo_metadata",
  "clap",
  "once_cell",
+ "proc-macro2",
  "regex",
  "serde",
  "serde_json",

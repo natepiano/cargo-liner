@@ -67,7 +67,9 @@ fn render_finding(output: &mut String, finding: &Finding, color: bool) {
             color
         )
     );
-    if let Some(inline_help) = diagnostics::inline_help_text(finding) {
+    if let Some(inline_help) = diagnostics::custom_inline_help_text(finding)
+        .or_else(|| diagnostics::inline_help_text(finding))
+    {
         let _ = writeln!(output, "{}{}", gutter_pad, blue_bold("|", color));
         let _ = writeln!(
             output,
@@ -79,7 +81,10 @@ fn render_finding(output: &mut String, finding: &Finding, color: bool) {
     }
 
     let reasons = diagnostics::detail_reasons(finding);
-    if diagnostics::inline_help_text(finding).is_some() || !reasons.is_empty() {
+    if diagnostics::custom_inline_help_text(finding).is_some()
+        || diagnostics::inline_help_text(finding).is_some()
+        || !reasons.is_empty()
+    {
         let _ = writeln!(output, "{}{}", gutter_pad, blue_bold("|", color));
     }
     if !reasons.is_empty() {

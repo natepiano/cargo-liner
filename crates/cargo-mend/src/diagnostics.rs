@@ -1,6 +1,7 @@
+use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Severity {
     Error,
@@ -35,8 +36,14 @@ pub(super) const DIAGNOSTICS: &[DiagnosticSpec] = &[
         help_anchor: "review-pub-mod",
     },
     DiagnosticSpec {
+        code:        "shorten_local_crate_import",
+        headline:    "crate-relative import can be shortened to a local-relative import",
+        inline_help: None,
+        help_anchor: "shorten-local-crate-import",
+    },
+    DiagnosticSpec {
         code:        "suspicious_bare_pub",
-        headline:    "bare `pub` is not publicly re-exported by its parent module",
+        headline:    "bare `pub` is broader than this item's effective public API",
         inline_help: Some("consider using: `pub(super)`"),
         help_anchor: "suspicious-bare-pub",
     },
@@ -49,7 +56,7 @@ pub(super) fn diagnostic_spec(code: &str) -> &'static DiagnosticSpec {
         .unwrap_or_else(|| panic!("unknown diagnostic code: {code}"))
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct Finding {
     pub(super) severity:      Severity,
     pub(super) code:          String,
@@ -60,9 +67,10 @@ pub(super) struct Finding {
     pub(super) source_line:   String,
     pub(super) item:          Option<String>,
     pub(super) message:       String,
+    pub(super) suggestion:    Option<String>,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub(super) struct Report {
     pub(super) root:     String,
     pub(super) findings: Vec<Finding>,
@@ -87,14 +95,17 @@ pub(super) fn finding_headline(finding: &Finding) -> String {
 pub(super) fn detail_reasons(finding: &Finding) -> Vec<String> {
     match finding.code.as_str() {
         "suspicious_bare_pub" => {
-            let reasons = split_message(&finding.message);
-            if reasons
-                .iter()
-                .any(|reason| reason == "appears unused outside its defining file")
-            {
-                vec!["it appears unused outside its defining file".to_string()]
-            } else {
+            if finding.message.is_empty() {
                 Vec::new()
+            } else {
+                vec![finding.message.clone()]
+            }
+        },
+        "shorten_local_crate_import" => {
+            if finding.message.is_empty() {
+                Vec::new()
+            } else {
+                vec![finding.message.clone()]
             }
         },
         _ => Vec::new(),
@@ -105,20 +116,13 @@ pub(super) fn inline_help_text(finding: &Finding) -> Option<&'static str> {
     diagnostic_spec(&finding.code).inline_help
 }
 
+pub(super) fn custom_inline_help_text(finding: &Finding) -> Option<&str> {
+    finding.suggestion.as_deref()
+}
+
 pub(super) fn finding_help_url(finding: &Finding) -> String {
     format!(
         "https://github.com/natepiano/cargo-vischeck#{}",
         diagnostic_spec(&finding.code).help_anchor
     )
-}
-
-fn split_message(message: &str) -> Vec<String> {
-    message
-        .split(", and ")
-        .flat_map(|part| part.split("; "))
-        .flat_map(|part| part.split(", "))
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
 }

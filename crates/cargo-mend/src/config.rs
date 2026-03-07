@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use anyhow::Result;
 use serde::Deserialize;
+use serde::Serialize;
 
 #[derive(Debug, Default, Deserialize)]
 struct ConfigFile {
@@ -12,7 +13,7 @@ struct ConfigFile {
     visibility: VisibilityConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub(super) struct VisibilityConfig {
     #[serde(default)]
     pub(super) allow_pub_mod:   Vec<String>,
@@ -46,8 +47,6 @@ pub(super) fn load_config(
         let mut result = Vec::new();
         for root in [manifest_dir, workspace_root] {
             result.push(root.join("vischeck.toml"));
-            result.push(root.join("visibility_audit.toml"));
-            result.push(root.join(".visibility-audit.toml"));
         }
         result
     };
