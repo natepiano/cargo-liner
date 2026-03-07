@@ -115,10 +115,22 @@ fn main() {}
 "#,
         )?;
         fs::write(temp.path().join("src/review_mod.rs"), "\n")?;
-        fs::write(temp.path().join("src/private_parent.rs"), "mod child;\n")?;
+        fs::write(
+            temp.path().join("src/private_parent.rs"),
+            "mod child;\npub use child::PublicContainer;\n",
+        )?;
         fs::write(
             temp.path().join("src/private_parent/child.rs"),
-            "pub struct Suspicious;\n",
+            r#"pub enum LegitDependency {
+    Unit,
+}
+
+pub struct PublicContainer {
+    pub dependency: LegitDependency,
+}
+
+pub struct Suspicious;
+"#,
         )?;
 
         let manifest_path = temp.path().join("Cargo.toml");

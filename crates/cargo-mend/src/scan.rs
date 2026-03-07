@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -6,6 +7,15 @@ use anyhow::Context;
 use anyhow::Result;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use syn::Fields;
+use syn::GenericParam;
+use syn::ImplItem;
+use syn::Item;
+use syn::PatType;
+use syn::PathArguments;
+use syn::ReturnType;
+use syn::TraitItem;
+use syn::Type;
 use walkdir::WalkDir;
 
 use super::config::LoadedConfig;
@@ -141,6 +151,7 @@ fn scan_file(
 
     let mut findings = Vec::new();
     let module_context = ModuleContext::for_file(crate_root, src_root, root_module, file);
+    let same_file_public_api_dependencies = same_file_public_api_dependencies(text);
     let config_rel_path = path_relative_to(file, config_root)
         .ok()
         .map(|p| p.to_string_lossy().replace('\\', "/"));
@@ -254,9 +265,13 @@ fn scan_file(
                     .as_ref()
                     .is_some_and(|key| config.allow_pub_items.iter().any(|allowed| allowed == key));
                 if !allowlisted {
-                    if let Some(reason) =
-                        suspicious_pub_reason(&module_context, &name, file, source_files)?
-                    {
+                    if let Some(reason) = suspicious_pub_reason(
+                        &module_context,
+                        &name,
+                        file,
+                        source_files,
+                        &same_file_public_api_dependencies,
+                    )? {
                         let start = sanitized.find("pub").unwrap_or(0);
                         let end = sanitized
                             .find(&name)
@@ -290,8 +305,13 @@ fn suspicious_pub_reason(
     item_name: &str,
     file: &Path,
     source_files: &[SourceFile],
+    same_file_public_api_dependencies: &BTreeSet<String>,
 ) -> Result<Option<String>> {
     if module_context.is_root_or_boundary_file {
+        return Ok(None);
+    }
+
+    if same_file_public_api_dependencies.contains(item_name) {
         return Ok(None);
     }
 
@@ -307,6 +327,318 @@ fn suspicious_pub_reason(
     }
 
     Ok(None)
+}
+
+fn same_file_public_api_dependencies(text: &str) -> BTreeSet<String> {
+    let Ok(file) = syn::parse_file(text) else {
+        return BTreeSet::new();
+    };
+
+    let public_item_names = collect_public_item_names(&file.items);
+    let mut names = BTreeSet::new();
+    for item in &file.items {
+        collect_public_item_dependencies(item, &public_item_names, &mut names);
+    }
+    names
+}
+
+fn collect_public_item_names(items: &[Item]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for item in items {
+        match item {
+            Item::Const(item) if visibility_is_public(&item.vis) => {
+                names.insert(item.ident.to_string());
+            },
+            Item::Enum(item) if visibility_is_public(&item.vis) => {
+                names.insert(item.ident.to_string());
+            },
+            Item::Fn(item) if visibility_is_public(&item.vis) => {
+                names.insert(item.sig.ident.to_string());
+            },
+            Item::Static(item) if visibility_is_public(&item.vis) => {
+                names.insert(item.ident.to_string());
+            },
+            Item::Struct(item) if visibility_is_public(&item.vis) => {
+                names.insert(item.ident.to_string());
+            },
+            Item::Trait(item) if visibility_is_public(&item.vis) => {
+                names.insert(item.ident.to_string());
+            },
+            Item::Type(item) if visibility_is_public(&item.vis) => {
+                names.insert(item.ident.to_string());
+            },
+            _ => {},
+        }
+    }
+    names
+}
+
+fn collect_public_item_dependencies(
+    item: &Item,
+    public_item_names: &BTreeSet<String>,
+    names: &mut BTreeSet<String>,
+) {
+    match item {
+        Item::Const(item) if visibility_is_public(&item.vis) => collect_type_names(&item.ty, names),
+        Item::Enum(item) if visibility_is_public(&item.vis) => {
+            for variant in &item.variants {
+                collect_fields_type_names(&variant.fields, names);
+            }
+        },
+        Item::Fn(item) if visibility_is_public(&item.vis) => {
+            collect_signature_type_names(&item.sig, names);
+        },
+        Item::Static(item) if visibility_is_public(&item.vis) => {
+            collect_type_names(&item.ty, names)
+        },
+        Item::Struct(item) if visibility_is_public(&item.vis) => {
+            collect_public_struct_fields(&item.fields, names);
+        },
+        Item::Trait(item) if visibility_is_public(&item.vis) => {
+            collect_trait_type_names(item, names);
+        },
+        Item::Type(item) if visibility_is_public(&item.vis) => {
+            collect_type_names(&item.ty, names);
+        },
+        Item::Impl(item) => {
+            if let Some((_, path, _)) = &item.trait_ {
+                collect_path_segment_names(path, names);
+            }
+            collect_type_names(&item.self_ty, names);
+            if impl_exposes_public_api(item, public_item_names) {
+                for impl_item in &item.items {
+                    match impl_item {
+                        ImplItem::Const(item) => collect_type_names(&item.ty, names),
+                        ImplItem::Fn(item) => collect_signature_type_names(&item.sig, names),
+                        ImplItem::Type(item) => collect_type_names(&item.ty, names),
+                        _ => {},
+                    }
+                }
+            }
+            for impl_item in &item.items {
+                if let ImplItem::Fn(method) = impl_item
+                    && visibility_is_public(&method.vis)
+                {
+                    collect_signature_type_names(&method.sig, names);
+                }
+            }
+        },
+        _ => {},
+    }
+}
+
+fn impl_exposes_public_api(item: &syn::ItemImpl, public_item_names: &BTreeSet<String>) -> bool {
+    if item.trait_.is_none() {
+        return false;
+    }
+
+    let Some(self_ty_name) = type_terminal_ident(&item.self_ty) else {
+        return false;
+    };
+
+    public_item_names.contains(&self_ty_name)
+}
+
+fn type_terminal_ident(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Group(ty) => type_terminal_ident(&ty.elem),
+        Type::Paren(ty) => type_terminal_ident(&ty.elem),
+        Type::Path(ty) => ty
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string()),
+        Type::Reference(ty) => type_terminal_ident(&ty.elem),
+        _ => None,
+    }
+}
+
+fn collect_public_struct_fields(fields: &Fields, names: &mut BTreeSet<String>) {
+    match fields {
+        Fields::Named(fields) => {
+            for field in &fields.named {
+                if visibility_is_public(&field.vis) {
+                    collect_type_names(&field.ty, names);
+                }
+            }
+        },
+        Fields::Unnamed(fields) => {
+            for field in &fields.unnamed {
+                if visibility_is_public(&field.vis) {
+                    collect_type_names(&field.ty, names);
+                }
+            }
+        },
+        Fields::Unit => {},
+    }
+}
+
+fn collect_fields_type_names(fields: &Fields, names: &mut BTreeSet<String>) {
+    match fields {
+        Fields::Named(fields) => {
+            for field in &fields.named {
+                collect_type_names(&field.ty, names);
+            }
+        },
+        Fields::Unnamed(fields) => {
+            for field in &fields.unnamed {
+                collect_type_names(&field.ty, names);
+            }
+        },
+        Fields::Unit => {},
+    }
+}
+
+fn collect_signature_type_names(signature: &syn::Signature, names: &mut BTreeSet<String>) {
+    for generic in &signature.generics.params {
+        match generic {
+            GenericParam::Type(generic) => {
+                for bound in &generic.bounds {
+                    if let syn::TypeParamBound::Trait(bound) = bound {
+                        collect_path_segment_names(&bound.path, names);
+                    }
+                }
+            },
+            GenericParam::Const(generic) => collect_type_names(&generic.ty, names),
+            GenericParam::Lifetime(_) => {},
+        }
+    }
+
+    for input in &signature.inputs {
+        match input {
+            syn::FnArg::Receiver(_) => {},
+            syn::FnArg::Typed(PatType { ty, .. }) => collect_type_names(ty, names),
+        }
+    }
+
+    if let ReturnType::Type(_, ty) = &signature.output {
+        collect_type_names(ty, names);
+    }
+}
+
+fn collect_trait_type_names(item: &syn::ItemTrait, names: &mut BTreeSet<String>) {
+    for bound in &item.supertraits {
+        if let syn::TypeParamBound::Trait(bound) = bound {
+            collect_path_segment_names(&bound.path, names);
+        }
+    }
+
+    for trait_item in &item.items {
+        match trait_item {
+            TraitItem::Const(item) => collect_type_names(&item.ty, names),
+            TraitItem::Fn(item) => collect_signature_type_names(&item.sig, names),
+            TraitItem::Type(item) => {
+                for bound in &item.bounds {
+                    if let syn::TypeParamBound::Trait(bound) = bound {
+                        collect_path_segment_names(&bound.path, names);
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+}
+
+fn collect_type_names(ty: &Type, names: &mut BTreeSet<String>) {
+    match ty {
+        Type::Array(ty) => collect_type_names(&ty.elem, names),
+        Type::BareFn(ty) => {
+            for input in &ty.inputs {
+                collect_type_names(&input.ty, names);
+            }
+            if let ReturnType::Type(_, ty) = &ty.output {
+                collect_type_names(ty, names);
+            }
+        },
+        Type::Group(ty) => collect_type_names(&ty.elem, names),
+        Type::ImplTrait(ty) => {
+            for bound in &ty.bounds {
+                if let syn::TypeParamBound::Trait(bound) = bound {
+                    collect_path_segment_names(&bound.path, names);
+                }
+            }
+        },
+        Type::Macro(_) => {},
+        Type::Paren(ty) => collect_type_names(&ty.elem, names),
+        Type::Path(ty) => collect_type_path_names(&ty.path, names),
+        Type::Ptr(ty) => collect_type_names(&ty.elem, names),
+        Type::Reference(ty) => collect_type_names(&ty.elem, names),
+        Type::Slice(ty) => collect_type_names(&ty.elem, names),
+        Type::TraitObject(ty) => {
+            for bound in &ty.bounds {
+                if let syn::TypeParamBound::Trait(bound) = bound {
+                    collect_path_segment_names(&bound.path, names);
+                }
+            }
+        },
+        Type::Tuple(ty) => {
+            for elem in &ty.elems {
+                collect_type_names(elem, names);
+            }
+        },
+        _ => {},
+    }
+}
+
+fn collect_type_path_names(path: &syn::Path, names: &mut BTreeSet<String>) {
+    collect_path_segment_names(path, names);
+
+    for segment in &path.segments {
+        if let PathArguments::AngleBracketed(arguments) = &segment.arguments {
+            for arg in &arguments.args {
+                match arg {
+                    syn::GenericArgument::Type(ty) => collect_type_names(ty, names),
+                    syn::GenericArgument::AssocType(binding) => {
+                        collect_type_names(&binding.ty, names);
+                    },
+                    syn::GenericArgument::Constraint(constraint) => {
+                        for bound in &constraint.bounds {
+                            if let syn::TypeParamBound::Trait(bound) = bound {
+                                collect_path_segment_names(&bound.path, names);
+                            }
+                        }
+                    },
+                    _ => {},
+                }
+            }
+        }
+    }
+}
+
+fn collect_path_segment_names(path: &syn::Path, names: &mut BTreeSet<String>) {
+    for segment in &path.segments {
+        names.insert(segment.ident.to_string());
+    }
+}
+
+fn visibility_is_public(visibility: &syn::Visibility) -> bool {
+    matches!(visibility, syn::Visibility::Public(_))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_file_public_api_dependencies;
+
+    #[test]
+    fn tracks_associated_types_used_by_public_trait_impls() {
+        let deps = same_file_public_api_dependencies(
+            r#"
+pub trait ToolLike {
+    type Output;
+}
+
+pub struct PublicTool;
+
+pub struct AssociatedOutput;
+
+impl ToolLike for PublicTool {
+    type Output = AssociatedOutput;
+}
+"#,
+        );
+
+        assert!(deps.contains("AssociatedOutput"));
+    }
 }
 
 fn item_name_used_elsewhere(
