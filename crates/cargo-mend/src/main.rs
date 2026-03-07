@@ -2,11 +2,16 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{Context, Result, bail};
-use cargo_metadata::{Metadata, MetadataCommand, Package};
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::bail;
+use cargo_metadata::Metadata;
+use cargo_metadata::MetadataCommand;
+use cargo_metadata::Package;
 use clap::Parser;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -14,15 +19,13 @@ use serde::Deserialize;
 use serde::Serialize;
 use walkdir::WalkDir;
 
-static RE_PUB_CRATE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\bpub\s*\(\s*crate\s*\)").unwrap());
+static RE_PUB_CRATE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bpub\s*\(\s*crate\s*\)").unwrap());
 static RE_PUB_IN_CRATE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\bpub\s*\(\s*in\s+crate::").unwrap());
 static RE_PUB_MOD: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\s*pub\s+mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|\{)").unwrap());
-static RE_PUBLIC_USE_CHILD_ITEM: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^\s*pub(?:\s*\([^)]*\))?\s+use\s+(.+)$").unwrap()
-});
+static RE_PUBLIC_USE_CHILD_ITEM: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\s*pub(?:\s*\([^)]*\))?\s+use\s+(.+)$").unwrap());
 
 static RE_PUB_FN: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\s*pub\s+(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap());
@@ -36,9 +39,8 @@ static RE_PUB_TYPE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\s*pub\s+type\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap());
 static RE_PUB_CONST: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\s*pub\s+const\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap());
-static RE_PUB_STATIC: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^\s*pub\s+static(?:\s+mut)?\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap()
-});
+static RE_PUB_STATIC: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\s*pub\s+static(?:\s+mut)?\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap());
 
 #[derive(Parser, Debug)]
 #[command(name = "vischeck")]
@@ -66,7 +68,7 @@ struct ConfigFile {
 #[derive(Debug, Clone, Deserialize)]
 struct VisibilityConfig {
     #[serde(default)]
-    allow_pub_mod: Vec<String>,
+    allow_pub_mod:   Vec<String>,
     #[serde(default)]
     allow_pub_items: Vec<String>,
 }
@@ -74,7 +76,7 @@ struct VisibilityConfig {
 impl Default for VisibilityConfig {
     fn default() -> Self {
         Self {
-            allow_pub_mod: Vec::new(),
+            allow_pub_mod:   Vec::new(),
             allow_pub_items: Vec::new(),
         }
     }
@@ -131,27 +133,31 @@ fn diagnostic_spec(code: &str) -> &'static DiagnosticSpec {
 
 #[derive(Debug, Clone, Serialize)]
 struct Finding {
-    severity: Severity,
-    code: String,
-    path: String,
-    line: usize,
-    column: usize,
+    severity:      Severity,
+    code:          String,
+    path:          String,
+    line:          usize,
+    column:        usize,
     highlight_len: usize,
-    source_line: String,
-    item: Option<String>,
-    message: String,
+    source_line:   String,
+    item:          Option<String>,
+    message:       String,
 }
 
 #[derive(Debug, Default, Serialize)]
 struct Report {
-    root: String,
+    root:     String,
     findings: Vec<Finding>,
 }
 
 impl Report {
     fn has_errors(&self) -> bool { self.findings.iter().any(|f| f.severity == Severity::Error) }
 
-    fn has_warnings(&self) -> bool { self.findings.iter().any(|f| f.severity == Severity::Warning) }
+    fn has_warnings(&self) -> bool {
+        self.findings
+            .iter()
+            .any(|f| f.severity == Severity::Warning)
+    }
 }
 
 fn main() -> ExitCode {
@@ -177,7 +183,10 @@ fn run() -> Result<ExitCode> {
     if cli.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        print!("{}", render_human_report(&report, std::io::stdout().is_terminal()));
+        print!(
+            "{}",
+            render_human_report(&report, std::io::stdout().is_terminal())
+        );
     }
 
     if report.has_errors() {
@@ -202,10 +211,14 @@ fn normalized_args() -> Vec<std::ffi::OsString> {
 #[derive(Debug)]
 struct LoadedConfig {
     config: VisibilityConfig,
-    root: PathBuf,
+    root:   PathBuf,
 }
 
-fn load_config(manifest_dir: &Path, workspace_root: &Path, explicit: Option<&Path>) -> Result<LoadedConfig> {
+fn load_config(
+    manifest_dir: &Path,
+    workspace_root: &Path,
+    explicit: Option<&Path>,
+) -> Result<LoadedConfig> {
     let candidates = if let Some(path) = explicit {
         vec![path.to_path_buf()]
     } else {
@@ -237,16 +250,16 @@ fn load_config(manifest_dir: &Path, workspace_root: &Path, explicit: Option<&Pat
 
     Ok(LoadedConfig {
         config: VisibilityConfig::default(),
-        root: manifest_dir.to_path_buf(),
+        root:   manifest_dir.to_path_buf(),
     })
 }
 
 #[derive(Debug)]
 struct Selection {
-    manifest_dir: PathBuf,
+    manifest_dir:   PathBuf,
     workspace_root: PathBuf,
-    analysis_root: PathBuf,
-    packages: Vec<Package>,
+    analysis_root:  PathBuf,
+    packages:       Vec<Package>,
 }
 
 fn scan_selection(selection: &Selection, loaded_config: &LoadedConfig) -> Result<Report> {
@@ -276,7 +289,9 @@ fn scan_selection(selection: &Selection, loaded_config: &LoadedConfig) -> Result
 
 fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<Selection> {
     let manifest_path = match explicit_manifest_path {
-        Some(path) => path.canonicalize().with_context(|| format!("failed to canonicalize {}", path.display()))?,
+        Some(path) => path
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize {}", path.display()))?,
         None => find_nearest_manifest(&std::env::current_dir()?)?,
     };
 
@@ -296,7 +311,12 @@ fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<Sele
             .iter()
             .find(|pkg| pkg.manifest_path.as_std_path() == manifest_path)
             .cloned()
-            .with_context(|| format!("manifest {} not found in cargo metadata", manifest_path.display()))?;
+            .with_context(|| {
+                format!(
+                    "manifest {} not found in cargo metadata",
+                    manifest_path.display()
+                )
+            })?;
         vec![package]
     };
 
@@ -370,7 +390,9 @@ fn scan_crate(
 
     for entry in walker {
         let entry = entry?;
-        if !entry.file_type().is_file() || entry.path().extension().and_then(|e| e.to_str()) != Some("rs") {
+        if !entry.file_type().is_file()
+            || entry.path().extension().and_then(|e| e.to_str()) != Some("rs")
+        {
             continue;
         }
         let text = fs::read_to_string(entry.path())
@@ -462,9 +484,12 @@ fn scan_file(
         }
 
         if let Some(captures) = RE_PUB_MOD.captures(&sanitized) {
-            let allowlisted = config_rel_path
-                .as_ref()
-                .is_some_and(|config_rel| config.allow_pub_mod.iter().any(|allowed| allowed == config_rel));
+            let allowlisted = config_rel_path.as_ref().is_some_and(|config_rel| {
+                config
+                    .allow_pub_mod
+                    .iter()
+                    .any(|allowed| allowed == config_rel)
+            });
             if !allowlisted {
                 let module_name = captures.get(1).map(|m| m.as_str()).unwrap_or_default();
                 let start = sanitized.find("pub mod").unwrap_or(0);
@@ -494,17 +519,16 @@ fn scan_file(
             && !sanitized_trimmed.starts_with("pub use")
         {
             if let Some((kind, name)) = bare_pub_item(sanitized_trimmed) {
-                let item_key = config_rel_path.as_ref().map(|path| format!("{path}::{name}"));
+                let item_key = config_rel_path
+                    .as_ref()
+                    .map(|path| format!("{path}::{name}"));
                 let allowlisted = item_key
                     .as_ref()
                     .is_some_and(|key| config.allow_pub_items.iter().any(|allowed| allowed == key));
                 if !allowlisted {
-                    if let Some(reason) = suspicious_pub_reason(
-                        &module_context,
-                        &name,
-                        file,
-                        source_files,
-                    )? {
+                    if let Some(reason) =
+                        suspicious_pub_reason(&module_context, &name, file, source_files)?
+                    {
                         let start = sanitized.find("pub").unwrap_or(0);
                         let end = sanitized
                             .find(&name)
@@ -557,7 +581,11 @@ fn suspicious_pub_reason(
     Ok(None)
 }
 
-fn item_name_used_elsewhere(item_name: &str, file: &Path, source_files: &[SourceFile]) -> Result<bool> {
+fn item_name_used_elsewhere(
+    item_name: &str,
+    file: &Path,
+    source_files: &[SourceFile],
+) -> Result<bool> {
     let pattern = Regex::new(&format!(r"\b{}\b", regex::escape(item_name)))?;
     Ok(source_files
         .iter()
@@ -649,15 +677,20 @@ fn update_brace_depth(mut depth: usize, line: &str) -> usize {
 }
 
 fn path_relative_to<'a>(path: &'a Path, root: &Path) -> Result<&'a Path> {
-    path.strip_prefix(root)
-        .with_context(|| format!("failed to make {} relative to {}", path.display(), root.display()))
+    path.strip_prefix(root).with_context(|| {
+        format!(
+            "failed to make {} relative to {}",
+            path.display(),
+            root.display()
+        )
+    })
 }
 
 #[derive(Debug, Clone)]
 struct ModuleContext {
-    parent_file: Option<PathBuf>,
-    child_module_name: Option<String>,
-    parent_module_is_public: bool,
+    parent_file:              Option<PathBuf>,
+    child_module_name:        Option<String>,
+    parent_module_is_public:  bool,
     is_root_or_boundary_file: bool,
 }
 
@@ -670,14 +703,18 @@ impl ModuleContext {
 
         if is_root_file || is_mod_rs || is_top_level_file {
             return Self {
-                parent_file: None,
-                child_module_name: None,
-                parent_module_is_public: false,
+                parent_file:              None,
+                child_module_name:        None,
+                parent_module_is_public:  false,
                 is_root_or_boundary_file: true,
             };
         }
 
-        let child_module_name = file.file_stem().and_then(|s| s.to_str()).unwrap().to_string();
+        let child_module_name = file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap()
+            .to_string();
         let parent_dir = file.parent().unwrap();
         let parent_file = if parent_dir == src_root {
             root_module.to_path_buf()
@@ -687,12 +724,15 @@ impl ModuleContext {
                 mod_rs
             } else {
                 let parent_module_name = parent_dir.file_name().and_then(|s| s.to_str()).unwrap();
-                crate_root.join("src").join(format!("{parent_module_name}.rs"))
+                crate_root
+                    .join("src")
+                    .join(format!("{parent_module_name}.rs"))
             }
         };
 
         let parent_text = fs::read_to_string(&parent_file).unwrap_or_default();
-        let parent_module_is_public = parent_declares_public_module(&parent_text, &child_module_name);
+        let parent_module_is_public =
+            parent_declares_public_module(&parent_text, &child_module_name);
 
         Self {
             parent_file: Some(parent_file),
@@ -703,7 +743,9 @@ impl ModuleContext {
     }
 
     fn parent_publicly_reexports(&self, item_name: &str) -> Result<bool> {
-        let (Some(parent_file), Some(child_module_name)) = (&self.parent_file, &self.child_module_name) else {
+        let (Some(parent_file), Some(child_module_name)) =
+            (&self.parent_file, &self.child_module_name)
+        else {
             return Ok(false);
         };
 
@@ -797,7 +839,12 @@ fn render_finding(output: &mut String, finding: &Finding, color: bool) {
         "{}{} {}",
         gutter_pad,
         blue_bold("|", color),
-        severity_marker(finding.severity, finding.column, finding.highlight_len, color)
+        severity_marker(
+            finding.severity,
+            finding.column,
+            finding.highlight_len,
+            color
+        )
     );
     if let Some(inline_help) = inline_help_text(finding) {
         let _ = writeln!(output, "{}{}", gutter_pad, blue_bold("|", color));
@@ -816,7 +863,13 @@ fn render_finding(output: &mut String, finding: &Finding, color: bool) {
     }
     if !reasons.is_empty() {
         for reason in reasons {
-            let _ = writeln!(output, "{}{} {}", gutter_pad, diagnostic_label("note", color), reason);
+            let _ = writeln!(
+                output,
+                "{}{} {}",
+                gutter_pad,
+                diagnostic_label("note", color),
+                reason
+            );
         }
     }
     if let Some(help_url) = finding_help_url(finding) {
@@ -849,7 +902,10 @@ fn detail_reasons(finding: &Finding) -> Vec<String> {
     match finding.code.as_str() {
         "suspicious_bare_pub" => {
             let reasons = split_message(&finding.message);
-            if reasons.iter().any(|reason| reason == "appears unused outside its defining file") {
+            if reasons
+                .iter()
+                .any(|reason| reason == "appears unused outside its defining file")
+            {
                 vec!["it appears unused outside its defining file".to_string()]
             } else {
                 Vec::new()
@@ -871,7 +927,12 @@ fn finding_help_url(finding: &Finding) -> Option<String> {
 }
 
 fn summary_line(error_count: usize, warn_count: usize, color: bool) -> String {
-    format!("{} {} error(s), {} warning(s)", dim("summary:", color), error_count, warn_count)
+    format!(
+        "{} {} error(s), {} warning(s)",
+        dim("summary:", color),
+        error_count,
+        warn_count
+    )
 }
 
 fn severity_label(severity: Severity, color: bool) -> String {
@@ -915,11 +976,12 @@ fn paint(text: &str, code: &str, color: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::BTreeSet;
     use std::fs;
 
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn every_diagnostic_has_a_unique_readme_anchor() {
@@ -928,7 +990,11 @@ mod tests {
         let mut seen_anchors = BTreeSet::new();
 
         for spec in DIAGNOSTICS {
-            assert!(seen_codes.insert(spec.code), "duplicate diagnostic code: {}", spec.code);
+            assert!(
+                seen_codes.insert(spec.code),
+                "duplicate diagnostic code: {}",
+                spec.code
+            );
             assert!(
                 seen_anchors.insert(spec.help_anchor),
                 "duplicate README anchor: {}",
@@ -984,10 +1050,17 @@ fn main() {}
         let report = scan_selection(&selection, &loaded_config)?;
 
         let rendered = render_human_report(&report, false);
-        let codes: BTreeSet<_> = report.findings.iter().map(|finding| finding.code.as_str()).collect();
+        let codes: BTreeSet<_> = report
+            .findings
+            .iter()
+            .map(|finding| finding.code.as_str())
+            .collect();
         let expected_codes: BTreeSet<_> = DIAGNOSTICS.iter().map(|spec| spec.code).collect();
 
-        assert_eq!(codes, expected_codes, "fixture should trigger every diagnostic exactly once");
+        assert_eq!(
+            codes, expected_codes,
+            "fixture should trigger every diagnostic exactly once"
+        );
         assert_eq!(
             report.findings.len(),
             DIAGNOSTICS.len(),
