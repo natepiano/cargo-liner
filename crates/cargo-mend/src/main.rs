@@ -743,6 +743,9 @@ fn print_finding(finding: &Finding, color: bool) {
             println!("  {} {}", dim("= note:", color), reason);
         }
     }
+    if let Some(help_url) = finding_help_url(finding) {
+        println!("  {} for further information visit {help_url}", dim("= help:", color));
+    }
     println!();
 }
 
@@ -775,6 +778,24 @@ fn detail_reasons(finding: &Finding) -> Vec<String> {
             }
         },
         _ => Vec::new(),
+    }
+}
+
+fn finding_help_url(finding: &Finding) -> Option<&'static str> {
+    match finding.code.as_str() {
+        "forbidden_pub_crate" => Some(
+            "https://github.com/natepiano/cargo-vischeck#forbidden-pub-crate",
+        ),
+        "forbidden_pub_in_crate" => Some(
+            "https://github.com/natepiano/cargo-vischeck#forbidden-pub-in-crate",
+        ),
+        "review_pub_mod" => Some(
+            "https://github.com/natepiano/cargo-vischeck#review-pub-mod",
+        ),
+        "suspicious_bare_pub" => Some(
+            "https://github.com/natepiano/cargo-vischeck#suspicious-bare-pub",
+        ),
+        _ => None,
     }
 }
 
