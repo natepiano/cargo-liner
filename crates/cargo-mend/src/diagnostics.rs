@@ -95,13 +95,9 @@ pub(super) struct ReportSummary {
 }
 
 impl Report {
-    pub(super) fn has_errors(&self) -> bool {
-        self.summary.error_count > 0
-    }
+    pub(super) fn has_errors(&self) -> bool { self.summary.error_count > 0 }
 
-    pub(super) fn has_warnings(&self) -> bool {
-        self.summary.warning_count > 0
-    }
+    pub(super) fn has_warnings(&self) -> bool { self.summary.warning_count > 0 }
 
     pub(super) fn refresh_summary(&mut self) {
         self.summary = ReportSummary {

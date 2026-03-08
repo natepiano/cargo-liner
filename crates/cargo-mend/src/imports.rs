@@ -187,8 +187,8 @@ impl Visit<'_> for UseVisitor<'_> {
             let start_offset = offset(self.offsets, start);
             let end_offset = offset(self.offsets, end);
             let original_item = &self.text[start_offset..end_offset];
-            let replacement = original_item
-                .replacen(&candidate.original, &candidate.replacement, 1);
+            let replacement =
+                original_item.replacen(&candidate.original, &candidate.replacement, 1);
             let source_line = self
                 .text
                 .lines()
@@ -216,9 +216,9 @@ impl Visit<'_> for UseVisitor<'_> {
                     related: None,
                 },
                 fix:     UseFix {
-                    path:        self.path.to_path_buf(),
-                    start:       start_offset,
-                    end:         end_offset,
+                    path: self.path.to_path_buf(),
+                    start: start_offset,
+                    end: end_offset,
                     replacement,
                 },
             });

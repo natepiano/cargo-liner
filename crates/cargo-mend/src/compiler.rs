@@ -22,7 +22,6 @@ use rustc_hir::ItemKind;
 use rustc_middle::middle::privacy::Level;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::FileName;
-use rustc_span::RealFileName;
 use rustc_span::Span;
 use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
@@ -30,6 +29,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use syn::ItemUse;
 use syn::UseTree;
+
 use super::config::LoadedConfig;
 use super::config::VisibilityConfig;
 use super::diagnostics::Finding;
@@ -312,9 +312,12 @@ fn run_cargo_rustc_for_package(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
-    command
-        .status()
-        .with_context(|| format!("failed to run cargo rustc refresh for package {}", package.name))
+    command.status().with_context(|| {
+        format!(
+            "failed to run cargo rustc refresh for package {}",
+            package.name
+        )
+    })
 }
 
 fn refresh_rustc_args() -> Vec<String> {
@@ -362,7 +365,9 @@ fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
         if stored.version != FINDINGS_SCHEMA_VERSION {
             continue;
         }
-        let matches_selected_root = selected_roots.iter().any(|root| root == &stored.package_root)
+        let matches_selected_root = selected_roots
+            .iter()
+            .any(|root| root == &stored.package_root)
             || (stored.package_root.is_empty() && selected_roots.len() == 1);
         if !matches_selected_root {
             continue;
@@ -664,7 +669,8 @@ fn record_visibility_findings(
         .is_public();
     let parent_is_crate_root = parent_module.to_local_def_id() == CRATE_DEF_ID;
     let grandparent_is_crate_root = !parent_is_crate_root
-        && tcx.parent_module_from_def_id(parent_module.to_local_def_id())
+        && tcx
+            .parent_module_from_def_id(parent_module.to_local_def_id())
             .to_local_def_id()
             == CRATE_DEF_ID;
     let module_location = module_location(parent_is_crate_root, grandparent_is_crate_root);
@@ -742,8 +748,9 @@ fn record_visibility_findings(
             .map(|name| parent_facade_export_status(src_root, file_path, name))
             .transpose()?
             .flatten();
-        let parent_facade_export_used_outside_parent =
-            parent_facade_export.as_ref().is_some_and(|status| status.used_outside_parent);
+        let parent_facade_export_used_outside_parent = parent_facade_export
+            .as_ref()
+            .is_some_and(|status| status.used_outside_parent);
 
         if !allowlisted
             && !parent_is_public
@@ -852,10 +859,7 @@ fn build_finding(
     })
 }
 
-fn module_location(
-    parent_is_crate_root: bool,
-    grandparent_is_crate_root: bool,
-) -> ModuleLocation {
+fn module_location(parent_is_crate_root: bool, grandparent_is_crate_root: bool) -> ModuleLocation {
     if parent_is_crate_root {
         ModuleLocation::CrateRoot
     } else if grandparent_is_crate_root {
@@ -884,8 +888,12 @@ fn parent_facade_export_status(
         .filter(|stem| *stem != "mod")
         .context("child file for facade check must not be mod.rs")?;
 
-    let parent_source = fs::read_to_string(&parent_mod_rs)
-        .with_context(|| format!("failed to read parent module file {}", parent_mod_rs.display()))?;
+    let parent_source = fs::read_to_string(&parent_mod_rs).with_context(|| {
+        format!(
+            "failed to read parent module file {}",
+            parent_mod_rs.display()
+        )
+    })?;
     let exported_names =
         exported_names_from_parent_mod(&parent_source, child_module_name, item_name)?;
     if exported_names.is_empty() {
@@ -959,9 +967,7 @@ fn collect_matching_pub_use_exports(
         } else {
             &path[..]
         };
-        if normalized.len() >= 2
-            && normalized[0] == child_module_name
-            && normalized[1] == item_name
+        if normalized.len() >= 2 && normalized[0] == child_module_name && normalized[1] == item_name
         {
             exported.push(
                 normalized
@@ -1016,7 +1022,9 @@ fn unnecessary_parent_pub_use_statuses(
             (
                 &normalized[module_path.len()],
                 &normalized[module_path.len() + 1],
-                normalized.last().expect("flattened use path always has a tail"),
+                normalized
+                    .last()
+                    .expect("flattened use path always has a tail"),
             )
         } else {
             continue;
@@ -1026,15 +1034,29 @@ fn unnecessary_parent_pub_use_statuses(
         if !child_file.is_file() {
             continue;
         }
-        let child_source = fs::read_to_string(&child_file)
-            .with_context(|| format!("failed to read child source file {}", child_file.display()))?;
-        let Some(child_line) = first_line_matching(&child_source, &format!("pub struct {child_item_name}"))
-            .or_else(|| first_line_matching(&child_source, &format!("pub enum {child_item_name}")))
-            .or_else(|| first_line_matching(&child_source, &format!("pub fn {child_item_name}")))
-            .or_else(|| first_line_matching(&child_source, &format!("pub const {child_item_name}")))
-            .or_else(|| first_line_matching(&child_source, &format!("pub static {child_item_name}")))
-            .or_else(|| first_line_matching(&child_source, &format!("pub type {child_item_name}")))
-            .or_else(|| first_line_matching(&child_source, &format!("pub trait {child_item_name}")))
+        let child_source = fs::read_to_string(&child_file).with_context(|| {
+            format!("failed to read child source file {}", child_file.display())
+        })?;
+        let Some(child_line) =
+            first_line_matching(&child_source, &format!("pub struct {child_item_name}"))
+                .or_else(|| {
+                    first_line_matching(&child_source, &format!("pub enum {child_item_name}"))
+                })
+                .or_else(|| {
+                    first_line_matching(&child_source, &format!("pub fn {child_item_name}"))
+                })
+                .or_else(|| {
+                    first_line_matching(&child_source, &format!("pub const {child_item_name}"))
+                })
+                .or_else(|| {
+                    first_line_matching(&child_source, &format!("pub static {child_item_name}"))
+                })
+                .or_else(|| {
+                    first_line_matching(&child_source, &format!("pub type {child_item_name}"))
+                })
+                .or_else(|| {
+                    first_line_matching(&child_source, &format!("pub trait {child_item_name}"))
+                })
         else {
             continue;
         };
@@ -1078,24 +1100,24 @@ fn flatten_use_tree(prefix: Vec<String>, tree: &UseTree, out: &mut Vec<Vec<Strin
             let mut next = prefix;
             next.push(path.ident.to_string());
             flatten_use_tree(next, &path.tree, out);
-        }
+        },
         UseTree::Name(name) => {
             let mut next = prefix;
             next.push(name.ident.to_string());
             out.push(next);
-        }
+        },
         UseTree::Rename(rename) => {
             let mut next = prefix;
             next.push(rename.ident.to_string());
             next.push(rename.rename.to_string());
             out.push(next);
-        }
+        },
         UseTree::Group(group) => {
             for item in &group.items {
                 flatten_use_tree(prefix.clone(), item, out);
             }
-        }
-        UseTree::Glob(_) => {}
+        },
+        UseTree::Glob(_) => {},
     }
 }
 
@@ -1159,7 +1181,9 @@ fn use_tree_references_parent_export(
                 continue;
             }
             if normalized[..module_path.len()] == *module_path
-                && exported_names.iter().any(|name| name == &normalized[module_path.len()])
+                && exported_names
+                    .iter()
+                    .any(|name| name == &normalized[module_path.len()])
             {
                 return true;
             }
@@ -1267,7 +1291,7 @@ fn real_file_path(tcx: TyCtxt<'_>, span: Span) -> Option<PathBuf> {
 
 fn real_file_path_from_name(name: FileName) -> Option<PathBuf> {
     match name {
-        FileName::Real(RealFileName::LocalPath(path)) => Some(path),
+        FileName::Real(real) => real.local_path().map(Path::to_path_buf),
         _ => None,
     }
 }
@@ -1326,20 +1350,21 @@ fn is_boundary_file(src_root: &Path, root_module: &Path, file: &Path) -> bool {
 mod tests {
     use std::fs;
     use std::path::Path;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
 
     use super::CrateKind;
     use super::FINDINGS_SCHEMA_VERSION;
     use super::ModuleLocation;
+    use super::Severity;
+    use super::StoredFinding;
+    use super::StoredReport;
     use super::allow_pub_crate_by_policy;
     use super::cache_filename_for;
     use super::cache_is_current_for;
     use super::forbidden_pub_crate_help;
     use super::module_location;
     use super::refresh_rustc_args;
-    use super::Severity;
-    use super::StoredFinding;
-    use super::StoredReport;
 
     #[test]
     fn allow_pub_crate_allows_library_crate_root_items() {
@@ -1436,20 +1461,20 @@ mod tests {
         let package_root = Path::new("/tmp/example-crate");
         let cache_path = temp_dir.join(cache_filename_for(package_root));
         let stale = StoredReport {
-            version: FINDINGS_SCHEMA_VERSION - 1,
+            version:      FINDINGS_SCHEMA_VERSION - 1,
             package_root: package_root.to_string_lossy().into_owned(),
-            findings: vec![StoredFinding {
-                severity: Severity::Warning,
-                code: "suspicious_pub".to_string(),
-                path: "src/lib.rs".to_string(),
-                line: 1,
-                column: 1,
+            findings:     vec![StoredFinding {
+                severity:      Severity::Warning,
+                code:          "suspicious_pub".to_string(),
+                path:          "src/lib.rs".to_string(),
+                line:          1,
+                column:        1,
                 highlight_len: 3,
-                source_line: "pub fn x() {}".to_string(),
-                item: None,
-                message: String::new(),
-                suggestion: None,
-                related: None,
+                source_line:   "pub fn x() {}".to_string(),
+                item:          None,
+                message:       String::new(),
+                suggestion:    None,
+                related:       None,
             }],
         };
         fs::write(&cache_path, serde_json::to_vec(&stale).unwrap()).unwrap();

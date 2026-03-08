@@ -107,7 +107,12 @@ fn render_finding(output: &mut String, finding: &Finding, color: bool) {
     let _ = writeln!(output);
 }
 
-fn summary_line(error_count: usize, warn_count: usize, fixable_count: usize, color: bool) -> String {
+fn summary_line(
+    error_count: usize,
+    warn_count: usize,
+    fixable_count: usize,
+    color: bool,
+) -> String {
     if fixable_count == 0 {
         format!(
             "{} {} error(s), {} warning(s)",

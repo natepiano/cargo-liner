@@ -92,7 +92,10 @@ pub(super) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
             })?;
         vec![selected_package_from_metadata(package)?]
     };
-    let package_roots = packages.iter().map(|package| package.root.clone()).collect();
+    let package_roots = packages
+        .iter()
+        .map(|package| package.root.clone())
+        .collect();
 
     let analysis_root = if is_workspace_selection {
         workspace_root.clone()
@@ -119,10 +122,10 @@ fn selected_package_from_metadata(package: &Package) -> Result<SelectedPackage> 
         .context("package manifest path had no parent directory")?
         .to_path_buf();
     Ok(SelectedPackage {
-        name:          package.name.to_string(),
+        name: package.name.to_string(),
         manifest_path,
         root,
-        target:        select_primary_target(package.targets.as_slice()),
+        target: select_primary_target(package.targets.as_slice()),
     })
 }
 
@@ -138,15 +141,12 @@ fn select_primary_target(targets: &[Target]) -> TargetSelector {
             .map(|target| ctor(target.name.clone()))
     };
 
-    if targets
-        .iter()
-        .any(|target| {
-            target
-                .kind
-                .iter()
-                .any(|kind| *kind == TargetKind::Lib || *kind == TargetKind::ProcMacro)
-        })
-    {
+    if targets.iter().any(|target| {
+        target
+            .kind
+            .iter()
+            .any(|kind| *kind == TargetKind::Lib || *kind == TargetKind::ProcMacro)
+    }) {
         return TargetSelector::Lib;
     }
 

@@ -20,7 +20,10 @@ fn vischeck_bin() -> PathBuf {
             .env_remove("CARGO_BUILD_RUSTC_WRAPPER")
             .status()
             .expect("build cargo-vischeck binary for integration tests");
-        assert!(status.success(), "failed to build cargo-vischeck test binary");
+        assert!(
+            status.success(),
+            "failed to build cargo-vischeck test binary"
+        );
     });
     let current = std::env::current_exe().expect("current exe path");
     current
@@ -38,13 +41,13 @@ struct Finding {
 
 #[derive(Debug, Deserialize)]
 struct Report {
-    summary: Summary,
+    summary:  Summary,
     findings: Vec<Finding>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Summary {
-    error_count: usize,
+    error_count:   usize,
     warning_count: usize,
     fixable_count: usize,
 }
@@ -96,7 +99,8 @@ fn every_diagnostic_has_a_unique_readme_anchor() {
 fn fixture_renders_every_current_diagnostic() {
     let temp = tempdir().expect("create temp fixture dir");
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
-    fs::create_dir_all(temp.path().join("src/stale_parent")).expect("create stale nested fixture dir");
+    fs::create_dir_all(temp.path().join("src/stale_parent"))
+        .expect("create stale nested fixture dir");
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -143,8 +147,11 @@ pub struct Suspicious;
 "#,
     )
     .expect("write suspicious child");
-    fs::write(temp.path().join("src/stale_parent/mod.rs"), "mod child;\npub use child::StaleExport;\n")
-        .expect("write stale parent");
+    fs::write(
+        temp.path().join("src/stale_parent/mod.rs"),
+        "mod child;\npub use child::StaleExport;\n",
+    )
+    .expect("write stale parent");
     fs::write(
         temp.path().join("src/stale_parent/child.rs"),
         "pub struct StaleExport;\n",
@@ -216,11 +223,7 @@ pub struct Suspicious;
         );
     }
 
-    assert!(
-        rendered.contains(
-            "help: consider using just `pub` or removing `pub(crate)` entirely"
-        )
-    );
+    assert!(rendered.contains("help: consider using just `pub` or removing `pub(crate)` entirely"));
     assert!(rendered.contains("help: consider using: `pub(super)`"));
     assert!(
         rendered.contains("help: consider using: `use super::PublicContainer as ParentContainer;`")
@@ -393,11 +396,7 @@ edition = "2024"
     )
     .expect("write fixture manifest");
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create src/private_parent");
-    fs::write(
-        temp.path().join("src/lib.rs"),
-        "mod private_parent;\n",
-    )
-    .expect("write fixture lib");
+    fs::write(temp.path().join("src/lib.rs"), "mod private_parent;\n").expect("write fixture lib");
     fs::write(
         temp.path().join("src/private_parent/mod.rs"),
         "mod child;\npub(crate) use crate::private_parent::child::PublicContainer;\n",
@@ -478,7 +477,8 @@ pub struct Thing;
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let inner = fs::read_to_string(temp.path().join("src/inner.rs")).expect("read rolled back file");
+    let inner =
+        fs::read_to_string(temp.path().join("src/inner.rs")).expect("read rolled back file");
     assert!(inner.contains("use crate::inner::Thing as LocalThing;"));
     assert!(!inner.contains("use Thing as LocalThing;"));
 }
@@ -581,8 +581,11 @@ edition = "2024"
         "mod child;\nmod sibling;\n",
     )
     .expect("write outer mod");
-    fs::write(temp.path().join("src/outer/child.rs"), "pub struct Thing;\n")
-        .expect("write child");
+    fs::write(
+        temp.path().join("src/outer/child.rs"),
+        "pub struct Thing;\n",
+    )
+    .expect("write child");
     fs::write(
         temp.path().join("src/outer/sibling.rs"),
         "use super::child::Thing;\n\nfn use_it(_thing: Thing) {}\n",
