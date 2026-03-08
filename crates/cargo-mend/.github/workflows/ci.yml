@@ -75,6 +75,30 @@ jobs:
       - name: Build release
         run: cargo build --release
 
+  install-check:
+    name: Install Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rust-src, rustc-dev, llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-vischeck
+        run: cargo install --path . --root /tmp/cargo-vischeck-install
+
+      - name: Check installed binary
+        run: /tmp/cargo-vischeck-install/bin/cargo-vischeck --help
+
+      - name: Check cargo subcommand wiring
+        run: PATH="/tmp/cargo-vischeck-install/bin:$PATH" cargo vischeck --help
+
   test:
     name: Test Suite
     runs-on: ubuntu-latest
