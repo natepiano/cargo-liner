@@ -580,9 +580,11 @@ fn record_visibility_findings(
         let parent_is_public = tcx
             .local_visibility(parent_module.to_local_def_id())
             .is_public();
+        let grandparent_module = tcx.parent_module_from_def_id(parent_module.to_local_def_id());
+        let parent_is_top_level_module = grandparent_module.to_local_def_id() == CRATE_DEF_ID;
         let reachable = effective_visibilities.is_public_at_level(def_id, Level::Reachable);
 
-        if !allowlisted && !parent_is_public && !reachable {
+        if !allowlisted && !parent_is_public && !parent_is_top_level_module && !reachable {
             findings.push(build_finding(
                 tcx,
                 file_path,

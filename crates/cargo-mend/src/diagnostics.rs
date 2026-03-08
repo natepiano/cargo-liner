@@ -43,7 +43,7 @@ pub(super) const DIAGNOSTICS: &[DiagnosticSpec] = &[
     },
     DiagnosticSpec {
         code:        "suspicious_bare_pub",
-        headline:    "bare `pub` is broader than this item's effective public API",
+        headline:    "bare `pub` is broader than this nested module boundary",
         inline_help: Some("consider using: `pub(super)`"),
         help_anchor: "suspicious-bare-pub",
     },

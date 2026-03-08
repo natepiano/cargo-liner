@@ -16,6 +16,8 @@ In practice, that means:
   intended API surface
 - if an item is only meant for its parent module or peer modules under the same parent,
   `pub(super)` should say that directly
+- if you are in a top-level private module, plain `pub` can still be the right way to mark that
+  module's crate-internal boundary API
 - if an item is only local implementation detail, it should stay private
 
 The more the code says this directly, the less a reader has to reconstruct the real boundary by
@@ -26,7 +28,9 @@ visibility is broader, vaguer, or more global than the code relationship really 
 
 In practice, that usually means:
 
-- if an item is only meant for its parent module, use `pub(super)`
+- if an item is only meant for its parent module in a nested private subtree, use `pub(super)`
+- if an item lives in a top-level private module and is part of that module's crate-internal API,
+  plain `pub` may be correct
 - if an item is only local implementation detail, keep it private
 - if an item seems to need a deeply nested visibility like `pub(in crate::feature::subtree)`,
   the module tree may be wrong
@@ -43,8 +47,8 @@ Hard errors:
 
 Warnings:
 
-- bare `pub` in a nested child file where compiler analysis shows the item's effective public API
-  is narrower than `pub`
+- bare `pub` in a nested child file where compiler analysis shows the item should probably be
+  narrower than `pub`
 
 If you are new to Rust visibility, the important idea is this:
 
@@ -109,9 +113,11 @@ Use this as a migration aid and CI guard:
 The usual review flow is:
 
 1. ask whether the item is truly part of the module's API
-2. if not, try private or `pub(super)`
-3. if `pub(super)` is too narrow, move the item to a better common parent
-4. only keep broader visibility when the module structure genuinely requires it
+2. if not, try private or `pub(super)` in a nested module
+3. if the item lives in a top-level private module, plain `pub` may already be the correct
+   crate-internal boundary
+4. if `pub(super)` is too narrow, move the item to a better common parent
+5. only keep broader visibility when the module structure genuinely requires it
 
 ## Diagnostic Reference
 
@@ -234,12 +240,13 @@ This tool asks you to review that choice explicitly instead of letting it slip i
 <a id="suspicious-bare-pub"></a>
 ### Suspicious bare `pub`
 
-This warning is about a Rust visibility trap:
+This warning is about a Rust visibility trap in nested private modules:
 
 - an item can be written as `pub`
-- but still fail to be part of the crate's real public API
+- but still be broader than the boundary that file actually lives under
 
-That happens when one of its parent modules is private.
+That happens when one of its parent modules is private and the file is not itself sitting at the
+top-level private boundary.
 
 In this example, there is a private parent module named `support`, and `helpers.rs` lives under
 that private boundary.
@@ -272,8 +279,8 @@ In this example:
 - but `support` is private
 - so `Helper` is not reachable from outside the crate
 
-That is why this tool warns here. The declared visibility (`pub`) is broader than the item's real
-reachable API.
+That is why this tool warns here. In a nested private module like `support/helpers.rs`, the
+declared visibility (`pub`) is broader than the boundary that file is actually participating in.
 
 Possible resolutions:
 - make the item private
@@ -289,6 +296,9 @@ pub(super) struct Helper;
 
 Now the code says what it actually means: `Helper` is shared with its parent module, not with the
 outside world.
+
+This warning does not apply the same way to a top-level private module. At the top level, plain
+`pub` can still be the right way to say "this belongs to this module's crate-internal API."
 
 <a id="shorten-local-crate-import"></a>
 ### Shorten local crate import
