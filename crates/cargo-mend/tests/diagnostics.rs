@@ -96,6 +96,7 @@ fn every_diagnostic_has_a_unique_readme_anchor() {
 fn fixture_renders_every_current_diagnostic() {
     let temp = tempdir().expect("create temp fixture dir");
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
+    fs::create_dir_all(temp.path().join("src/stale_parent")).expect("create stale nested fixture dir");
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -110,6 +111,7 @@ edition = "2024"
         temp.path().join("src/main.rs"),
         r#"pub(crate) fn crate_only() {}
 mod private_parent;
+mod stale_parent;
 pub mod review_mod;
 pub use private_parent::PublicContainer;
 
@@ -141,6 +143,13 @@ pub struct Suspicious;
 "#,
     )
     .expect("write suspicious child");
+    fs::write(temp.path().join("src/stale_parent/mod.rs"), "mod child;\npub use child::StaleExport;\n")
+        .expect("write stale parent");
+    fs::write(
+        temp.path().join("src/stale_parent/child.rs"),
+        "pub struct StaleExport;\n",
+    )
+    .expect("write stale child");
 
     let output = Command::new(vischeck_bin())
         .arg("--manifest-path")
@@ -170,11 +179,11 @@ pub struct Suspicious;
     );
     assert_eq!(
         report.findings.len(),
-        diagnostic_specs().len(),
-        "fixture should trigger one finding per diagnostic"
+        diagnostic_specs().len() + 1,
+        "fixture should trigger every diagnostic, with one extra paired warning for stale parent facade exports"
     );
     assert_eq!(report.summary.error_count, 3);
-    assert_eq!(report.summary.warning_count, 2);
+    assert_eq!(report.summary.warning_count, 4);
     assert_eq!(report.summary.fixable_count, 1);
 
     let rendered_output = Command::new(vischeck_bin())
@@ -216,7 +225,10 @@ pub struct Suspicious;
     assert!(
         rendered.contains("help: consider using: `use super::PublicContainer as ParentContainer;`")
     );
-    assert!(rendered.contains("summary: 3 error(s), 2 warning(s), 1 fixable with `--fix`"));
+    assert!(rendered.contains("note: this warning is auto-fixable with `cargo vischeck --fix`"));
+    assert!(rendered.contains("summary: 3 error(s), 4 warning(s), 1 fixable with `--fix`"));
+    assert!(rendered.contains("paired with parent re-export at stale_parent/mod.rs"));
+    assert!(rendered.contains("paired with child item at stale_parent/child.rs"));
 }
 
 #[test]
@@ -660,6 +672,96 @@ edition = "2024"
             .findings
             .iter()
             .any(|finding| finding.code == "shorten_local_crate_import")
+    );
+}
+
+#[test]
+fn suspicious_pub_is_suppressed_for_parent_facade_used_outside_parent() {
+    let temp = tempdir().expect("create temp fixture dir");
+    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "facade_positive_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod private_parent;
+
+use crate::private_parent::PublicContainer;
+
+fn main() {
+    let _ = std::mem::size_of::<PublicContainer>();
+}
+"#,
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/private_parent/mod.rs"),
+        "mod child;\npub use child::PublicContainer;\n",
+    )
+    .expect("write private parent");
+    fs::write(
+        temp.path().join("src/private_parent/child.rs"),
+        "pub struct PublicContainer;\n",
+    )
+    .expect("write child");
+
+    let report = run_vischeck_json(&temp.path().join("Cargo.toml"));
+    assert_eq!(report.summary.error_count, 0);
+    assert_eq!(report.summary.warning_count, 0);
+    assert_eq!(report.summary.fixable_count, 0);
+    assert!(report.findings.is_empty());
+}
+
+#[test]
+fn suspicious_pub_still_warns_for_parent_facade_unused_outside_parent() {
+    let temp = tempdir().expect("create temp fixture dir");
+    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "facade_negative_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod private_parent;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/private_parent/mod.rs"),
+        "mod child;\npub use child::PublicContainer;\n",
+    )
+    .expect("write private parent");
+    fs::write(
+        temp.path().join("src/private_parent/child.rs"),
+        "pub struct PublicContainer;\n",
+    )
+    .expect("write child");
+
+    let report = run_vischeck_json(&temp.path().join("Cargo.toml"));
+    assert_eq!(report.summary.error_count, 0);
+    assert_eq!(report.summary.warning_count, 2);
+    assert_eq!(report.summary.fixable_count, 0);
+    assert_eq!(report.findings.len(), 2);
+    let codes = report
+        .findings
+        .iter()
+        .map(|finding| finding.code.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        codes,
+        BTreeSet::from(["suspicious_pub", "unnecessary_parent_pub_use"])
     );
 }
 

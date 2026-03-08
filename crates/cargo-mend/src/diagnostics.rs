@@ -47,6 +47,14 @@ pub(super) const DIAGNOSTICS: &[DiagnosticSpec] = &[
         inline_help: Some("consider using: `pub(super)`"),
         help_anchor: "suspicious-pub",
     },
+    DiagnosticSpec {
+        code:        "unnecessary_parent_pub_use",
+        headline:    "parent `pub use` is not used outside its module subtree",
+        inline_help: Some(
+            "consider removing this `pub use` and narrowing the child item with `pub(super)`",
+        ),
+        help_anchor: "unnecessary-parent-pub-use",
+    },
 ];
 
 pub(super) fn diagnostic_spec(code: &str) -> &'static DiagnosticSpec {
@@ -68,6 +76,8 @@ pub(super) struct Finding {
     pub(super) item:          Option<String>,
     pub(super) message:       String,
     pub(super) suggestion:    Option<String>,
+    #[serde(default)]
+    pub(super) related:       Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -121,17 +131,33 @@ pub(super) fn finding_headline(finding: &Finding) -> String {
 pub(super) fn detail_reasons(finding: &Finding) -> Vec<String> {
     match finding.code.as_str() {
         "suspicious_pub" => {
-            if finding.message.is_empty() {
-                Vec::new()
-            } else {
-                vec![finding.message.clone()]
+            let mut reasons = Vec::new();
+            if !finding.message.is_empty() {
+                reasons.push(finding.message.clone());
             }
+            if let Some(related) = &finding.related {
+                reasons.push(related.clone());
+            }
+            reasons
+        },
+        "unnecessary_parent_pub_use" => {
+            let mut reasons = Vec::new();
+            if !finding.message.is_empty() {
+                reasons.push(finding.message.clone());
+            }
+            if let Some(related) = &finding.related {
+                reasons.push(related.clone());
+            }
+            reasons
         },
         "shorten_local_crate_import" => {
             if finding.message.is_empty() {
-                Vec::new()
+                vec!["this warning is auto-fixable with `cargo vischeck --fix`".to_string()]
             } else {
-                vec![finding.message.clone()]
+                vec![
+                    finding.message.clone(),
+                    "this warning is auto-fixable with `cargo vischeck --fix`".to_string(),
+                ]
             }
         },
         _ => Vec::new(),

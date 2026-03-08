@@ -28,6 +28,8 @@ use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
 use serde::Deserialize;
 use serde::Serialize;
+use syn::ItemUse;
+use syn::UseTree;
 use super::config::LoadedConfig;
 use super::config::VisibilityConfig;
 use super::diagnostics::Finding;
@@ -40,7 +42,7 @@ const CONFIG_ROOT_ENV: &str = "VISCHECK_CONFIG_ROOT";
 const CONFIG_JSON_ENV: &str = "VISCHECK_CONFIG_JSON";
 const FINDINGS_DIR_ENV: &str = "VISCHECK_FINDINGS_DIR";
 const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
-const FINDINGS_SCHEMA_VERSION: u32 = 2;
+const FINDINGS_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredReport {
@@ -61,6 +63,8 @@ struct StoredFinding {
     item:          Option<String>,
     message:       String,
     suggestion:    Option<String>,
+    #[serde(default)]
+    related:       Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -375,6 +379,7 @@ fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
                 item:          finding.item,
                 message:       finding.message,
                 suggestion:    finding.suggestion,
+                related:       finding.related,
             });
         }
     }
@@ -524,6 +529,18 @@ fn analyze_item(
         return Ok(());
     };
 
+    if let ItemKind::Use(..) = item.kind {
+        record_parent_pub_use_findings(
+            tcx,
+            src_root,
+            &file_path,
+            item,
+            highlight_span(item.vis_span, Some(item.span)),
+            &vis_text,
+            findings,
+        )?;
+    }
+
     record_visibility_findings(
         tcx,
         settings,
@@ -663,6 +680,7 @@ fn record_visibility_findings(
                 None,
                 "use of `pub(crate)` is forbidden by policy".to_string(),
                 Some(forbidden_pub_crate_help(module_location).to_string()),
+                None,
             )?);
         }
     }
@@ -676,6 +694,7 @@ fn record_visibility_findings(
             "forbidden_pub_in_crate",
             None,
             "use of `pub(in crate::...)` is forbidden by policy".to_string(),
+            None,
             None,
         )?);
     }
@@ -698,6 +717,7 @@ fn record_visibility_findings(
                 item_name.clone(),
                 "`pub mod` requires explicit review or allowlisting".to_string(),
                 None,
+                None,
             )?);
         }
     }
@@ -717,12 +737,28 @@ fn record_visibility_findings(
                 .any(|allowed| allowed == key)
         });
         let reachable = effective_visibilities.is_public_at_level(def_id, Level::Reachable);
+        let parent_facade_export = item_name
+            .as_ref()
+            .map(|name| parent_facade_export_status(src_root, file_path, name))
+            .transpose()?
+            .flatten();
+        let parent_facade_export_used_outside_parent =
+            parent_facade_export.as_ref().is_some_and(|status| status.used_outside_parent);
 
         if !allowlisted
             && !parent_is_public
             && !matches!(module_location, ModuleLocation::TopLevelPrivateModule)
             && !reachable
+            && !parent_facade_export_used_outside_parent
         {
+            let related = parent_facade_export.as_ref().and_then(|status| {
+                (!status.used_outside_parent).then(|| {
+                    format!(
+                        "paired with parent re-export at {}:{}",
+                        status.parent_rel_path, status.parent_line
+                    )
+                })
+            });
             findings.push(build_finding(
                 tcx,
                 file_path,
@@ -734,9 +770,58 @@ fn record_visibility_findings(
                     .map(|name| format!("{kind_label} {name}")),
                 "it is not reachable from the crate's public API after analysis".to_string(),
                 None,
+                related,
             )?);
         }
     }
+    Ok(())
+}
+
+fn record_parent_pub_use_findings(
+    tcx: TyCtxt<'_>,
+    src_root: &Path,
+    file_path: &Path,
+    item: &Item<'_>,
+    highlight_span: Span,
+    vis_text: &str,
+    findings: &mut Vec<StoredFinding>,
+) -> Result<()> {
+    if vis_text != "pub" {
+        return Ok(());
+    }
+    if file_path.file_name().and_then(|name| name.to_str()) != Some("mod.rs") {
+        return Ok(());
+    }
+
+    let snippet = tcx
+        .sess
+        .source_map()
+        .span_to_snippet(item.span)
+        .map_err(|err| anyhow::anyhow!("failed to extract use item snippet: {err:?}"))?;
+    let Ok(item_use) = syn::parse_str::<ItemUse>(&snippet) else {
+        return Ok(());
+    };
+
+    for status in unnecessary_parent_pub_use_statuses(src_root, file_path, &item_use)? {
+        if status.used_outside_parent {
+            continue;
+        }
+        findings.push(build_finding(
+            tcx,
+            file_path,
+            highlight_span,
+            Severity::Warning,
+            "unnecessary_parent_pub_use",
+            Some(format!("pub use {}", status.exported_name)),
+            "this parent facade export is not used outside its module subtree".to_string(),
+            None,
+            Some(format!(
+                "paired with child item at {}:{}",
+                status.child_rel_path, status.child_line
+            )),
+        )?);
+    }
+
     Ok(())
 }
 
@@ -749,6 +834,7 @@ fn build_finding(
     item: Option<String>,
     message: String,
     suggestion: Option<String>,
+    related: Option<String>,
 ) -> Result<StoredFinding> {
     let display = line_display(tcx, file_path, highlight_span)?;
     Ok(StoredFinding {
@@ -762,6 +848,7 @@ fn build_finding(
         item,
         message,
         suggestion,
+        related,
     })
 }
 
@@ -776,6 +863,309 @@ fn module_location(
     } else {
         ModuleLocation::NestedModule
     }
+}
+
+fn parent_facade_export_status(
+    src_root: &Path,
+    child_file: &Path,
+    item_name: &str,
+) -> Result<Option<ParentFacadeExportStatus>> {
+    let Some(parent_dir) = child_file.parent() else {
+        return Ok(None);
+    };
+    let parent_mod_rs = parent_dir.join("mod.rs");
+    if !parent_mod_rs.is_file() {
+        return Ok(None);
+    }
+
+    let child_module_name = child_file
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| *stem != "mod")
+        .context("child file for facade check must not be mod.rs")?;
+
+    let parent_source = fs::read_to_string(&parent_mod_rs)
+        .with_context(|| format!("failed to read parent module file {}", parent_mod_rs.display()))?;
+    let exported_names =
+        exported_names_from_parent_mod(&parent_source, child_module_name, item_name)?;
+    if exported_names.is_empty() {
+        return Ok(None);
+    }
+
+    let Some(module_path) = module_path_from_dir(src_root, parent_dir) else {
+        return Ok(None);
+    };
+    let parent_rel_path = parent_mod_rs
+        .strip_prefix(src_root)
+        .unwrap_or(&parent_mod_rs)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let parent_line = first_line_matching(&parent_source, item_name).unwrap_or(1);
+
+    for file in rust_source_files(src_root)? {
+        if file.starts_with(parent_dir) {
+            continue;
+        }
+        let source = fs::read_to_string(&file)
+            .with_context(|| format!("failed to read source file {}", file.display()))?;
+        if use_tree_references_parent_export(&source, &module_path, &exported_names) {
+            return Ok(Some(ParentFacadeExportStatus {
+                used_outside_parent: true,
+                parent_rel_path,
+                parent_line,
+            }));
+        }
+    }
+
+    Ok(Some(ParentFacadeExportStatus {
+        used_outside_parent: false,
+        parent_rel_path,
+        parent_line,
+    }))
+}
+
+fn exported_names_from_parent_mod(
+    parent_source: &str,
+    child_module_name: &str,
+    item_name: &str,
+) -> Result<Vec<String>> {
+    let file = syn::parse_file(parent_source).context("failed to parse parent mod.rs")?;
+    let mut exported = Vec::new();
+    for item in file.items {
+        let syn::Item::Use(item_use) = item else {
+            continue;
+        };
+        if !matches!(item_use.vis, syn::Visibility::Public(_)) {
+            continue;
+        }
+        collect_matching_pub_use_exports(&item_use, child_module_name, item_name, &mut exported);
+    }
+    exported.sort();
+    exported.dedup();
+    Ok(exported)
+}
+
+fn collect_matching_pub_use_exports(
+    item_use: &ItemUse,
+    child_module_name: &str,
+    item_name: &str,
+    exported: &mut Vec<String>,
+) {
+    let mut paths = Vec::new();
+    flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
+    for path in paths {
+        let normalized = if path.first().is_some_and(|segment| segment == "self") {
+            &path[1..]
+        } else {
+            &path[..]
+        };
+        if normalized.len() >= 2
+            && normalized[0] == child_module_name
+            && normalized[1] == item_name
+        {
+            exported.push(
+                normalized
+                    .last()
+                    .expect("flattened use path always has a tail")
+                    .to_string(),
+            );
+        } else if normalized.len() >= 3
+            && normalized[0] == child_module_name
+            && normalized[1] == item_name
+        {
+            exported.push(
+                normalized
+                    .last()
+                    .expect("flattened use path always has a tail")
+                    .to_string(),
+            );
+        }
+    }
+}
+
+fn unnecessary_parent_pub_use_statuses(
+    src_root: &Path,
+    parent_mod_rs: &Path,
+    item_use: &ItemUse,
+) -> Result<Vec<ParentPubUseStatus>> {
+    let Some(parent_dir) = parent_mod_rs.parent() else {
+        return Ok(Vec::new());
+    };
+    let Some(module_path) = module_path_from_dir(src_root, parent_dir) else {
+        return Ok(Vec::new());
+    };
+
+    let mut paths = Vec::new();
+    flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
+    let mut statuses = Vec::new();
+
+    for path in paths {
+        let normalized = match path.first().map(String::as_str) {
+            Some("self" | "crate") => &path[1..],
+            _ => &path[..],
+        };
+        if normalized.len() < 2 {
+            continue;
+        }
+
+        let (child_module_name, child_item_name, exported_name) = if normalized.len() == 2 {
+            (&normalized[0], &normalized[1], &normalized[1])
+        } else if normalized.len() >= module_path.len() + 2
+            && normalized[..module_path.len()] == *module_path
+        {
+            (
+                &normalized[module_path.len()],
+                &normalized[module_path.len() + 1],
+                normalized.last().expect("flattened use path always has a tail"),
+            )
+        } else {
+            continue;
+        };
+
+        let child_file = parent_dir.join(format!("{child_module_name}.rs"));
+        if !child_file.is_file() {
+            continue;
+        }
+        let child_source = fs::read_to_string(&child_file)
+            .with_context(|| format!("failed to read child source file {}", child_file.display()))?;
+        let Some(child_line) = first_line_matching(&child_source, &format!("pub struct {child_item_name}"))
+            .or_else(|| first_line_matching(&child_source, &format!("pub enum {child_item_name}")))
+            .or_else(|| first_line_matching(&child_source, &format!("pub fn {child_item_name}")))
+            .or_else(|| first_line_matching(&child_source, &format!("pub const {child_item_name}")))
+            .or_else(|| first_line_matching(&child_source, &format!("pub static {child_item_name}")))
+            .or_else(|| first_line_matching(&child_source, &format!("pub type {child_item_name}")))
+            .or_else(|| first_line_matching(&child_source, &format!("pub trait {child_item_name}")))
+        else {
+            continue;
+        };
+        let child_rel_path = child_file
+            .strip_prefix(src_root)
+            .unwrap_or(&child_file)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        let mut used_outside_parent = false;
+        for file in rust_source_files(src_root)? {
+            if file.starts_with(parent_dir) {
+                continue;
+            }
+            let source = fs::read_to_string(&file)
+                .with_context(|| format!("failed to read source file {}", file.display()))?;
+            if use_tree_references_parent_export(
+                &source,
+                &module_path,
+                &[exported_name.to_string()],
+            ) {
+                used_outside_parent = true;
+                break;
+            }
+        }
+
+        statuses.push(ParentPubUseStatus {
+            exported_name: exported_name.to_string(),
+            used_outside_parent,
+            child_rel_path,
+            child_line,
+        });
+    }
+
+    Ok(statuses)
+}
+
+fn flatten_use_tree(prefix: Vec<String>, tree: &UseTree, out: &mut Vec<Vec<String>>) {
+    match tree {
+        UseTree::Path(path) => {
+            let mut next = prefix;
+            next.push(path.ident.to_string());
+            flatten_use_tree(next, &path.tree, out);
+        }
+        UseTree::Name(name) => {
+            let mut next = prefix;
+            next.push(name.ident.to_string());
+            out.push(next);
+        }
+        UseTree::Rename(rename) => {
+            let mut next = prefix;
+            next.push(rename.ident.to_string());
+            next.push(rename.rename.to_string());
+            out.push(next);
+        }
+        UseTree::Group(group) => {
+            for item in &group.items {
+                flatten_use_tree(prefix.clone(), item, out);
+            }
+        }
+        UseTree::Glob(_) => {}
+    }
+}
+
+fn first_line_matching(source: &str, needle: &str) -> Option<usize> {
+    source
+        .lines()
+        .position(|line| line.contains(needle))
+        .map(|index| index + 1)
+}
+
+fn module_path_from_dir(src_root: &Path, module_dir: &Path) -> Option<Vec<String>> {
+    let relative = module_dir.strip_prefix(src_root).ok()?;
+    let components = relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    (!components.is_empty()).then_some(components)
+}
+
+fn rust_source_files(src_root: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    collect_rust_source_files(src_root, &mut files)?;
+    Ok(files)
+}
+
+fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(dir)
+        .with_context(|| format!("failed to read source directory {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rust_source_files(&path, files)?;
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn use_tree_references_parent_export(
+    source: &str,
+    module_path: &[String],
+    exported_names: &[String],
+) -> bool {
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+    for item in file.items {
+        let syn::Item::Use(item_use) = item else {
+            continue;
+        };
+        let mut paths = Vec::new();
+        flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
+        for path in paths {
+            let normalized = match path.first().map(String::as_str) {
+                Some("crate" | "self" | "super") => &path[1..],
+                _ => &path[..],
+            };
+            if normalized.len() != module_path.len() + 1 {
+                continue;
+            }
+            if normalized[..module_path.len()] == *module_path
+                && exported_names.iter().any(|name| name == &normalized[module_path.len()])
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn allow_pub_crate_by_policy(
@@ -807,6 +1197,21 @@ struct LineDisplay {
     column:        usize,
     highlight_len: usize,
     source_line:   String,
+}
+
+#[derive(Debug, Clone)]
+struct ParentFacadeExportStatus {
+    used_outside_parent: bool,
+    parent_rel_path:     String,
+    parent_line:         usize,
+}
+
+#[derive(Debug, Clone)]
+struct ParentPubUseStatus {
+    exported_name:       String,
+    used_outside_parent: bool,
+    child_rel_path:      String,
+    child_line:          usize,
 }
 
 fn line_display(tcx: TyCtxt<'_>, file_path: &Path, span: Span) -> Result<LineDisplay> {
@@ -1044,6 +1449,7 @@ mod tests {
                 item: None,
                 message: String::new(),
                 suggestion: None,
+                related: None,
             }],
         };
         fs::write(&cache_path, serde_json::to_vec(&stale).unwrap()).unwrap();

@@ -331,6 +331,23 @@ Possible resolutions:
 - change it to `pub(super)`
 - move it to a better common parent if it is truly shared
 
+There is one important allowed case.
+
+If the parent `mod.rs` is intentionally acting as a facade, it may re-export the child item:
+
+```rust
+// src/private_parent/mod.rs
+mod child;
+pub use child::Helper;
+```
+
+If code outside `private_parent` actually uses `private_parent::Helper`, then keeping `Helper`
+as `pub` in `child.rs` is intentional and this warning should not fire.
+
+If the parent `mod.rs` re-exports `Helper` but nothing outside the parent subtree ever uses that
+re-export, then the child `pub` is still broader than the boundary the code is actually using.
+In that case this warning should still appear.
+
 For example:
 
 ```rust
@@ -343,6 +360,34 @@ outside world.
 
 This warning does not apply the same way to a top-level private module. At the top level, plain
 `pub` can still be the right way to say "this belongs to this module's crate-internal API."
+
+<a id="unnecessary-parent-pub-use"></a>
+### Unnecessary parent `pub use`
+
+This warning is about a stale parent facade export.
+
+In this example, `mod.rs` claims that `Helper` is part of the parent module's exported surface:
+
+```rust
+// src/private_parent/mod.rs
+mod child;
+pub use child::Helper;
+```
+
+But if nothing outside `private_parent` ever uses `private_parent::Helper`, then that `pub use`
+is not doing real facade work.
+
+That matters because the stale `pub use` often hides a second issue:
+
+- the child item may also still be written as `pub`
+- even though the parent is the only code that ever needed to see it
+
+In that situation, there are usually two cleanup steps:
+
+- remove the unnecessary parent `pub use`
+- then narrow the child item, often to `pub(super)`
+
+This warning points at the parent `pub use` line so you can clean up the stale facade directly.
 
 <a id="shorten-local-crate-import"></a>
 ### Shorten local crate import

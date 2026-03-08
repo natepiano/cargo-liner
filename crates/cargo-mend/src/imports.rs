@@ -213,6 +213,7 @@ impl Visit<'_> for UseVisitor<'_> {
                     item: None,
                     message: "it stays within the same local module boundary".to_string(),
                     suggestion: Some(format!("consider using: `{replacement}`")),
+                    related: None,
                 },
                 fix:     UseFix {
                     path:        self.path.to_path_buf(),
