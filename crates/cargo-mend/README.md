@@ -41,18 +41,22 @@ In practice, that usually means:
 
 Hard errors:
 
-- `pub(crate)` is forbidden
+- `pub(crate)` is forbidden in binaries and in nested modules
+- library crates may use `pub(crate)` at the crate root when the intent is to keep an item
+  crate-internal rather than part of the external library API
+- top-level private modules in library crates may also use `pub(crate)` when the intent is to keep
+  an item crate-internal and prevent accidental exposure through the public library boundary
 - `pub(in crate::...)` is forbidden
 - `pub mod` requires an explicit allowlist entry
 
 Warnings:
 
-- bare `pub` in a nested child file where compiler analysis shows the item should probably be
+- `pub` in a nested child file where compiler analysis shows the item should probably be
   narrower than `pub`
 
 If you are new to Rust visibility, the important idea is this:
 
-- a bare `pub` does not automatically make an item part of the crate's real public API
+- `pub` does not automatically make an item part of the crate's real public API
 - every parent module on the path also has to be visible
 - if a parent module is private, a child item can be written as `pub` and still not actually be
   reachable from outside the crate
@@ -106,7 +110,7 @@ Behavior:
 Use this as a migration aid and CI guard:
 
 1. fail immediately on forbidden visibility forms
-2. review suspicious bare `pub`
+2. review suspicious `pub`
 3. let `cargo vischeck --fix` rewrite straightforward local-import paths
 4. keep repo-specific exceptions small and explicit
 
@@ -127,7 +131,16 @@ The usual review flow is:
 `pub(crate)` is broad enough to be easy to reach for, but in many codebases it weakens module
 boundaries more than intended.
 
-This tool treats it as forbidden by default.
+This tool treats it as forbidden in binaries and in nested modules.
+
+There is one narrow exception:
+
+- at the crate root of a library crate, when the item should stay crate-internal and not become
+  part of the external library API
+- in a library crate
+- inside a top-level private module
+- when the point is to keep something crate-internal and prevent accidental leakage through the
+  public library boundary
 
 Prefer:
 - private items when they are local implementation details
@@ -161,6 +174,33 @@ pub(super) fn helper() {}
 ```
 
 Now `helper` is available to `feature`, but not to unrelated parts of the crate.
+
+One exception is the crate root of a library crate, for example:
+
+```rust
+// src/lib.rs
+pub(crate) type InternalDrawPhase = ();
+```
+
+That can be acceptable when the intent is:
+
+- usable anywhere inside the crate
+- but not part of the external library API
+
+Another exception is a library crate with a top-level private module, for example:
+
+```rust
+// src/lib.rs
+mod internals;
+
+// src/internals.rs
+pub(crate) fn helper() {}
+```
+
+That can be acceptable when the intent is:
+
+- usable anywhere inside the crate
+- but never part of the external library API
 
 <a id="forbidden-pub-in-crate"></a>
 ### Forbidden `pub(in crate::...)`
@@ -237,8 +277,8 @@ That is sometimes exactly what you want. It is also easy to do by accident.
 
 This tool asks you to review that choice explicitly instead of letting it slip in unnoticed.
 
-<a id="suspicious-bare-pub"></a>
-### Suspicious bare `pub`
+<a id="suspicious-pub"></a>
+### Suspicious `pub`
 
 This warning is about a Rust visibility trap in nested private modules:
 

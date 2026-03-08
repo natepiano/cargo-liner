@@ -42,10 +42,10 @@ pub(super) const DIAGNOSTICS: &[DiagnosticSpec] = &[
         help_anchor: "shorten-local-crate-import",
     },
     DiagnosticSpec {
-        code:        "suspicious_bare_pub",
-        headline:    "bare `pub` is broader than this nested module boundary",
+        code:        "suspicious_pub",
+        headline:    "`pub` is broader than this nested module boundary",
         inline_help: Some("consider using: `pub(super)`"),
-        help_anchor: "suspicious-bare-pub",
+        help_anchor: "suspicious-pub",
     },
 ];
 
@@ -94,7 +94,7 @@ pub(super) fn finding_headline(finding: &Finding) -> String {
 
 pub(super) fn detail_reasons(finding: &Finding) -> Vec<String> {
     match finding.code.as_str() {
-        "suspicious_bare_pub" => {
+        "suspicious_pub" => {
             if finding.message.is_empty() {
                 Vec::new()
             } else {

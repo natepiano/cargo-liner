@@ -43,11 +43,18 @@ fn run() -> Result<ExitCode> {
     )?;
     let report = if cli.fix {
         let import_scan = imports::scan_selection(&selection)?;
+        let snapshots = imports::snapshot_files(&import_scan.fixes)?;
         let applied = imports::apply_fixes(&import_scan.fixes)?;
         if applied > 0 {
             eprintln!("vischeck: applied {applied} import fix(es)");
         }
-        build_report(&selection, &config)?
+        match build_report(&selection, &config) {
+            Ok(report) => report,
+            Err(err) => {
+                imports::restore_files(&snapshots)?;
+                anyhow::bail!("rolled back import fixes after failed cargo check\n\n{err:#}");
+            },
+        }
     } else {
         build_report(&selection, &config)?
     };

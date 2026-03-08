@@ -6,6 +6,9 @@ use anyhow::Result;
 use anyhow::bail;
 use cargo_metadata::Metadata;
 use cargo_metadata::MetadataCommand;
+use cargo_metadata::Package;
+use cargo_metadata::Target;
+use cargo_metadata::TargetKind;
 
 #[derive(Debug)]
 pub(super) struct Selection {
@@ -16,6 +19,38 @@ pub(super) struct Selection {
     pub(super) analysis_root:          PathBuf,
     pub(super) is_workspace_selection: bool,
     pub(super) package_roots:          Vec<PathBuf>,
+    pub(super) packages:               Vec<SelectedPackage>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct SelectedPackage {
+    pub(super) name:          String,
+    pub(super) manifest_path: PathBuf,
+    pub(super) root:          PathBuf,
+    pub(super) target:        TargetSelector,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum TargetSelector {
+    Implicit,
+    Lib,
+    Bin(String),
+    Example(String),
+    Test(String),
+    Bench(String),
+}
+
+impl TargetSelector {
+    pub(super) fn cargo_args(&self) -> Vec<String> {
+        match self {
+            Self::Implicit => Vec::new(),
+            Self::Lib => vec!["--lib".to_string()],
+            Self::Bin(name) => vec!["--bin".to_string(), name.clone()],
+            Self::Example(name) => vec!["--example".to_string(), name.clone()],
+            Self::Test(name) => vec!["--test".to_string(), name.clone()],
+            Self::Bench(name) => vec!["--bench".to_string(), name.clone()],
+        }
+    }
 }
 
 pub(super) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<Selection> {
@@ -37,18 +72,13 @@ pub(super) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
     let is_workspace_selection =
         manifest_path == workspace_manifest && metadata.workspace_members.len() > 1;
 
-    let package_roots = if is_workspace_selection {
+    let packages: Vec<SelectedPackage> = if is_workspace_selection {
         metadata
             .workspace_members
             .iter()
             .filter_map(|id| metadata.packages.iter().find(|pkg| &pkg.id == id))
-            .filter_map(|pkg| {
-                pkg.manifest_path
-                    .as_std_path()
-                    .parent()
-                    .map(Path::to_path_buf)
-            })
-            .collect()
+            .map(selected_package_from_metadata)
+            .collect::<Result<Vec<_>>>()?
     } else {
         let package = metadata
             .packages
@@ -60,15 +90,9 @@ pub(super) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
                     manifest_path.display()
                 )
             })?;
-        vec![
-            package
-                .manifest_path
-                .as_std_path()
-                .parent()
-                .context("package manifest path had no parent directory")?
-                .to_path_buf(),
-        ]
+        vec![selected_package_from_metadata(package)?]
     };
+    let package_roots = packages.iter().map(|package| package.root.clone()).collect();
 
     let analysis_root = if is_workspace_selection {
         workspace_root.clone()
@@ -84,7 +108,53 @@ pub(super) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
         analysis_root,
         is_workspace_selection,
         package_roots,
+        packages,
     })
+}
+
+fn selected_package_from_metadata(package: &Package) -> Result<SelectedPackage> {
+    let manifest_path = package.manifest_path.as_std_path().to_path_buf();
+    let root = manifest_path
+        .parent()
+        .context("package manifest path had no parent directory")?
+        .to_path_buf();
+    Ok(SelectedPackage {
+        name:          package.name.to_string(),
+        manifest_path,
+        root,
+        target:        select_primary_target(package.targets.as_slice()),
+    })
+}
+
+fn select_primary_target(targets: &[Target]) -> TargetSelector {
+    if targets.len() == 1 {
+        return TargetSelector::Implicit;
+    }
+
+    let select_named = |kind: TargetKind, ctor: fn(String) -> TargetSelector| {
+        targets
+            .iter()
+            .find(|target| target.kind.iter().any(|item| *item == kind))
+            .map(|target| ctor(target.name.clone()))
+    };
+
+    if targets
+        .iter()
+        .any(|target| {
+            target
+                .kind
+                .iter()
+                .any(|kind| *kind == TargetKind::Lib || *kind == TargetKind::ProcMacro)
+        })
+    {
+        return TargetSelector::Lib;
+    }
+
+    select_named(TargetKind::Bin, TargetSelector::Bin)
+        .or_else(|| select_named(TargetKind::Example, TargetSelector::Example))
+        .or_else(|| select_named(TargetKind::Test, TargetSelector::Test))
+        .or_else(|| select_named(TargetKind::Bench, TargetSelector::Bench))
+        .unwrap_or(TargetSelector::Implicit)
 }
 
 fn cargo_metadata_for(manifest_path: &Path) -> Result<Metadata> {
@@ -105,4 +175,27 @@ fn find_nearest_manifest(start: &Path) -> Result<PathBuf> {
     }
 
     bail!("could not find Cargo.toml in current directory or any parent")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TargetSelector;
+
+    #[test]
+    fn target_selector_cargo_args_for_lib() {
+        assert_eq!(TargetSelector::Lib.cargo_args(), vec!["--lib"]);
+    }
+
+    #[test]
+    fn target_selector_cargo_args_for_bin() {
+        assert_eq!(
+            TargetSelector::Bin("demo".to_string()).cargo_args(),
+            vec!["--bin", "demo"]
+        );
+    }
+
+    #[test]
+    fn target_selector_cargo_args_for_implicit_target() {
+        assert!(TargetSelector::Implicit.cargo_args().is_empty());
+    }
 }

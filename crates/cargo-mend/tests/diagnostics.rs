@@ -180,6 +180,11 @@ pub struct Suspicious;
         );
     }
 
+    assert!(
+        rendered.contains(
+            "help: consider using just `pub` or removing `pub(crate)` entirely"
+        )
+    );
     assert!(rendered.contains("help: consider using: `pub(super)`"));
     assert!(
         rendered.contains("help: consider using: `use super::PublicContainer as ParentContainer;`")
@@ -233,6 +238,110 @@ pub struct Thing;
     let inner = fs::read_to_string(temp.path().join("src/inner.rs")).expect("read fixed file");
     assert!(inner.contains("use self::Thing as LocalThing;"));
     assert!(!inner.contains("use crate::inner::Thing as LocalThing;"));
+}
+
+#[test]
+fn fix_preserves_pub_use_visibility() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create src/private_parent");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod private_parent;\npub use private_parent::PublicContainer;\n",
+    )
+    .expect("write fixture lib");
+    fs::write(
+        temp.path().join("src/private_parent/mod.rs"),
+        "mod child;\npub use crate::private_parent::child::PublicContainer;\n",
+    )
+    .expect("write fixture mod");
+    fs::write(
+        temp.path().join("src/private_parent/child.rs"),
+        "pub struct PublicContainer;\n",
+    )
+    .expect("write fixture child");
+
+    let output = Command::new(vischeck_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-vischeck --fix");
+    assert!(
+        output.status.success(),
+        "cargo-vischeck --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mod_rs =
+        fs::read_to_string(temp.path().join("src/private_parent/mod.rs")).expect("read fixed mod");
+    assert!(mod_rs.contains("pub use self::child::PublicContainer;"));
+    assert!(!mod_rs.contains("pub use crate::private_parent::child::PublicContainer;"));
+}
+
+#[test]
+fn fix_rolls_back_on_failed_cargo_check() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_rollback_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod inner;
+mod broken;
+
+fn main() {}
+"#,
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/inner.rs"),
+        r#"use crate::inner::Thing as LocalThing;
+
+pub struct Thing;
+"#,
+    )
+    .expect("write fixture inner");
+    fs::write(
+        temp.path().join("src/broken.rs"),
+        "pub fn broken() -> MissingType { todo!() }\n",
+    )
+    .expect("write fixture broken");
+
+    let output = Command::new(vischeck_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-vischeck --fix");
+    assert!(
+        !output.status.success(),
+        "cargo-vischeck --fix unexpectedly succeeded: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let inner = fs::read_to_string(temp.path().join("src/inner.rs")).expect("read rolled back file");
+    assert!(inner.contains("use crate::inner::Thing as LocalThing;"));
+    assert!(!inner.contains("use self::Thing as LocalThing;"));
 }
 
 mod cargo_vischeck_tests_support {

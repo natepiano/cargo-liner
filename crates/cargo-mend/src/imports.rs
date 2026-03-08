@@ -73,6 +73,28 @@ pub(super) fn apply_fixes(fixes: &[UseFix]) -> Result<usize> {
     Ok(applied)
 }
 
+pub(super) fn snapshot_files(fixes: &[UseFix]) -> Result<Vec<(PathBuf, String)>> {
+    let mut files = BTreeMap::new();
+    for fix in fixes {
+        files.entry(fix.path.clone()).or_insert_with(|| ());
+    }
+
+    let mut snapshots = Vec::new();
+    for path in files.into_keys() {
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        snapshots.push((path, text));
+    }
+    Ok(snapshots)
+}
+
+pub(super) fn restore_files(snapshots: &[(PathBuf, String)]) -> Result<()> {
+    for (path, text) in snapshots {
+        fs::write(path, text).with_context(|| format!("failed to restore {}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>> {
     let mut findings = Vec::new();
     for package_root in &selection.package_roots {
@@ -164,6 +186,9 @@ impl Visit<'_> for UseVisitor<'_> {
             let end = span.end();
             let start_offset = offset(self.offsets, start);
             let end_offset = offset(self.offsets, end);
+            let original_item = &self.text[start_offset..end_offset];
+            let replacement = original_item
+                .replacen(&candidate.original, &candidate.replacement, 1);
             let source_line = self
                 .text
                 .lines()
@@ -187,13 +212,13 @@ impl Visit<'_> for UseVisitor<'_> {
                     source_line,
                     item: None,
                     message: "it stays within the same local module boundary".to_string(),
-                    suggestion: Some(format!("consider using: `use {};`", candidate.replacement)),
+                    suggestion: Some(format!("consider using: `{replacement}`")),
                 },
                 fix:     UseFix {
                     path:        self.path.to_path_buf(),
                     start:       start_offset,
                     end:         end_offset,
-                    replacement: format!("use {};", candidate.replacement),
+                    replacement,
                 },
             });
         }

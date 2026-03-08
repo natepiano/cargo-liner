@@ -39,9 +39,12 @@ const DRIVER_ENV: &str = "VISCHECK_DRIVER";
 const CONFIG_ROOT_ENV: &str = "VISCHECK_CONFIG_ROOT";
 const CONFIG_JSON_ENV: &str = "VISCHECK_CONFIG_JSON";
 const FINDINGS_DIR_ENV: &str = "VISCHECK_FINDINGS_DIR";
+const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
+const FINDINGS_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredReport {
+    version:      u32,
     package_root: String,
     findings:     Vec<StoredFinding>,
 }
@@ -60,11 +63,25 @@ struct StoredFinding {
     suggestion:    Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CrateKind {
+    Binary,
+    Library,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModuleLocation {
+    CrateRoot,
+    TopLevelPrivateModule,
+    NestedModule,
+}
+
 #[derive(Debug, Clone)]
 struct DriverSettings {
     config_root:  PathBuf,
     config:       VisibilityConfig,
     findings_dir: PathBuf,
+    package_root: PathBuf,
 }
 
 impl DriverSettings {
@@ -82,11 +99,16 @@ impl DriverSettings {
             env::var_os(FINDINGS_DIR_ENV)
                 .context("missing VISCHECK_FINDINGS_DIR for compiler driver")?,
         );
+        let package_root = PathBuf::from(
+            env::var_os(PACKAGE_ROOT_ENV)
+                .context("missing CARGO_MANIFEST_DIR for compiler driver")?,
+        );
 
         Ok(Self {
             config_root,
             config,
             findings_dir,
+            package_root,
         })
     }
 }
@@ -133,11 +155,30 @@ pub(super) fn run_selection(selection: &Selection, loaded_config: &LoadedConfig)
     })?;
 
     let status = run_cargo_check(selection, loaded_config, &findings_dir)?;
-    let report = load_report(&findings_dir, selection)?;
 
     if !status.success() {
         anyhow::bail!("cargo check failed during vischeck analysis");
     }
+
+    let missing_packages = selection
+        .packages
+        .iter()
+        .filter(|package| !cache_is_current_for(&findings_dir, &package.root))
+        .collect::<Vec<_>>();
+
+    if !missing_packages.is_empty() {
+        for package in missing_packages {
+            let status = run_cargo_rustc_for_package(package, loaded_config, &findings_dir)?;
+            if !status.success() {
+                anyhow::bail!(
+                    "cargo rustc refresh failed during vischeck analysis for package {}",
+                    package.name
+                );
+            }
+        }
+    }
+
+    let report = load_report(&findings_dir, selection)?;
 
     Ok(report)
 }
@@ -153,11 +194,14 @@ pub(super) fn driver_main() -> ExitCode {
 }
 
 fn driver_main_impl() -> Result<ExitCode> {
-    let settings = DriverSettings::from_env()?;
     let wrapper_args: Vec<OsString> = env::args_os().collect();
     if wrapper_args.len() < 2 {
         anyhow::bail!("compiler driver expected rustc wrapper arguments");
     }
+    let settings = match DriverSettings::from_env() {
+        Ok(settings) => settings,
+        Err(_) => return passthrough_to_rustc(&wrapper_args),
+    };
 
     let rustc_args: Vec<String> = std::iter::once("rustc".to_string())
         .chain(
@@ -179,6 +223,20 @@ fn driver_main_impl() -> Result<ExitCode> {
     }
 
     Ok(ExitCode::from(exit_code as u8))
+}
+
+fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
+    let rustc = wrapper_args
+        .get(1)
+        .context("compiler driver expected rustc path in wrapper arguments")?;
+    let status = Command::new(rustc)
+        .args(wrapper_args.iter().skip(2))
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .context("failed to invoke rustc passthrough from vischeck wrapper")?;
+    Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
 }
 
 fn run_cargo_check(
@@ -217,6 +275,63 @@ fn run_cargo_check(
         .context("failed to run cargo check for vischeck")
 }
 
+fn run_cargo_rustc_for_package(
+    package: &super::selection::SelectedPackage,
+    loaded_config: &LoadedConfig,
+    findings_dir: &Path,
+) -> Result<std::process::ExitStatus> {
+    let current_exe = env::current_exe().context("failed to determine current executable path")?;
+    let mut command = Command::new("cargo");
+    command.arg("rustc");
+    command
+        .arg("--manifest-path")
+        .arg(package.manifest_path.as_os_str());
+
+    for arg in package.target.cargo_args() {
+        command.arg(arg);
+    }
+    for arg in refresh_rustc_args() {
+        command.arg(arg);
+    }
+
+    command
+        .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
+        .env(DRIVER_ENV, "1")
+        .env(CONFIG_ROOT_ENV, &loaded_config.root)
+        .env(
+            CONFIG_JSON_ENV,
+            serde_json::to_string(&loaded_config.config)
+                .context("failed to serialize vischeck config for compiler driver")?,
+        )
+        .env(FINDINGS_DIR_ENV, findings_dir)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    command
+        .status()
+        .with_context(|| format!("failed to run cargo rustc refresh for package {}", package.name))
+}
+
+fn refresh_rustc_args() -> Vec<String> {
+    vec![
+        "--".to_string(),
+        format!("--cfg=vischeck_refresh_{}", std::process::id()),
+    ]
+}
+
+fn cache_is_current_for(findings_dir: &Path, package_root: &Path) -> bool {
+    let cache_path = findings_dir.join(cache_filename_for(package_root));
+    let Ok(text) = fs::read_to_string(&cache_path) else {
+        return false;
+    };
+    let Ok(stored) = serde_json::from_str::<StoredReport>(&text) else {
+        return false;
+    };
+    stored.version == FINDINGS_SCHEMA_VERSION
+        && stored.package_root == package_root.to_string_lossy()
+}
+
 fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
     let mut findings = Vec::new();
     let selected_roots: Vec<String> = selection
@@ -237,9 +352,15 @@ fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
 
         let text = fs::read_to_string(entry.path())
             .with_context(|| format!("failed to read findings file {}", entry.path().display()))?;
-        let stored: StoredReport = serde_json::from_str(&text)
-            .with_context(|| format!("failed to parse findings file {}", entry.path().display()))?;
-        if !selected_roots.iter().any(|root| root == &stored.package_root) {
+        let Ok(stored) = serde_json::from_str::<StoredReport>(&text) else {
+            continue;
+        };
+        if stored.version != FINDINGS_SCHEMA_VERSION {
+            continue;
+        }
+        let matches_selected_root = selected_roots.iter().any(|root| root == &stored.package_root)
+            || (stored.package_root.is_empty() && selected_roots.len() == 1);
+        if !matches_selected_root {
             continue;
         }
         for finding in stored.findings {
@@ -364,14 +485,12 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
             && a.item == b.item
     });
 
-    let package_root = src_root
-        .parent()
-        .context("src root had no package root parent")?;
     let output_path = settings
         .findings_dir
-        .join(cache_filename_for(package_root));
+        .join(cache_filename_for(&settings.package_root));
     let report = StoredReport {
-        package_root: package_root.to_string_lossy().into_owned(),
+        version: FINDINGS_SCHEMA_VERSION,
+        package_root: settings.package_root.to_string_lossy().into_owned(),
         findings,
     };
     fs::write(&output_path, serde_json::to_vec_pretty(&report)?)
@@ -512,21 +631,39 @@ fn record_visibility_findings(
     is_module_item: bool,
     findings: &mut Vec<StoredFinding>,
 ) -> Result<()> {
+    let crate_kind = if root_module.file_name().and_then(|name| name.to_str()) == Some("lib.rs") {
+        CrateKind::Library
+    } else {
+        CrateKind::Binary
+    };
     let config_rel_path = file_path
         .strip_prefix(&settings.config_root)
         .ok()
         .map(|path| path.to_string_lossy().replace('\\', "/"));
+    let parent_module = tcx.parent_module_from_def_id(def_id);
+    let parent_is_public = tcx
+        .local_visibility(parent_module.to_local_def_id())
+        .is_public();
+    let parent_is_crate_root = parent_module.to_local_def_id() == CRATE_DEF_ID;
+    let grandparent_is_crate_root = !parent_is_crate_root
+        && tcx.parent_module_from_def_id(parent_module.to_local_def_id())
+            .to_local_def_id()
+            == CRATE_DEF_ID;
+    let module_location = module_location(parent_is_crate_root, grandparent_is_crate_root);
 
     if matches!(vis_text, "pub(crate)") {
-        findings.push(build_finding(
-            tcx,
-            file_path,
-            highlight_span,
-            Severity::Error,
-            "forbidden_pub_crate",
-            None,
-            "use of `pub(crate)` is forbidden by policy".to_string(),
-        )?);
+        if !allow_pub_crate_by_policy(crate_kind, module_location, parent_is_public) {
+            findings.push(build_finding(
+                tcx,
+                file_path,
+                highlight_span,
+                Severity::Error,
+                "forbidden_pub_crate",
+                None,
+                "use of `pub(crate)` is forbidden by policy".to_string(),
+                Some(forbidden_pub_crate_help(module_location).to_string()),
+            )?);
+        }
     }
 
     if vis_text.starts_with("pub(in crate::") {
@@ -538,6 +675,7 @@ fn record_visibility_findings(
             "forbidden_pub_in_crate",
             None,
             "use of `pub(in crate::...)` is forbidden by policy".to_string(),
+            None,
         )?);
     }
 
@@ -558,6 +696,7 @@ fn record_visibility_findings(
                 "review_pub_mod",
                 item_name.clone(),
                 "`pub mod` requires explicit review or allowlisting".to_string(),
+                None,
             )?);
         }
     }
@@ -576,25 +715,24 @@ fn record_visibility_findings(
                 .iter()
                 .any(|allowed| allowed == key)
         });
-        let parent_module = tcx.parent_module_from_def_id(def_id);
-        let parent_is_public = tcx
-            .local_visibility(parent_module.to_local_def_id())
-            .is_public();
-        let grandparent_module = tcx.parent_module_from_def_id(parent_module.to_local_def_id());
-        let parent_is_top_level_module = grandparent_module.to_local_def_id() == CRATE_DEF_ID;
         let reachable = effective_visibilities.is_public_at_level(def_id, Level::Reachable);
 
-        if !allowlisted && !parent_is_public && !parent_is_top_level_module && !reachable {
+        if !allowlisted
+            && !parent_is_public
+            && !matches!(module_location, ModuleLocation::TopLevelPrivateModule)
+            && !reachable
+        {
             findings.push(build_finding(
                 tcx,
                 file_path,
                 highlight_span,
                 Severity::Warning,
-                "suspicious_bare_pub",
+                "suspicious_pub",
                 item_name
                     .as_ref()
                     .map(|name| format!("{kind_label} {name}")),
                 "it is not reachable from the crate's public API after analysis".to_string(),
+                None,
             )?);
         }
     }
@@ -609,6 +747,7 @@ fn build_finding(
     code: &str,
     item: Option<String>,
     message: String,
+    suggestion: Option<String>,
 ) -> Result<StoredFinding> {
     let display = line_display(tcx, file_path, highlight_span)?;
     Ok(StoredFinding {
@@ -621,8 +760,44 @@ fn build_finding(
         source_line: display.source_line,
         item,
         message,
-        suggestion: None,
+        suggestion,
     })
+}
+
+fn module_location(
+    parent_is_crate_root: bool,
+    grandparent_is_crate_root: bool,
+) -> ModuleLocation {
+    if parent_is_crate_root {
+        ModuleLocation::CrateRoot
+    } else if grandparent_is_crate_root {
+        ModuleLocation::TopLevelPrivateModule
+    } else {
+        ModuleLocation::NestedModule
+    }
+}
+
+fn allow_pub_crate_by_policy(
+    crate_kind: CrateKind,
+    module_location: ModuleLocation,
+    parent_is_public: bool,
+) -> bool {
+    match (crate_kind, module_location) {
+        (CrateKind::Library, ModuleLocation::CrateRoot) => true,
+        (CrateKind::Library, ModuleLocation::TopLevelPrivateModule) => !parent_is_public,
+        _ => false,
+    }
+}
+
+fn forbidden_pub_crate_help(module_location: ModuleLocation) -> &'static str {
+    if matches!(
+        module_location,
+        ModuleLocation::CrateRoot | ModuleLocation::TopLevelPrivateModule
+    ) {
+        "consider using just `pub` or removing `pub(crate)` entirely"
+    } else {
+        "consider using `pub(super)` or removing `pub(crate)` entirely"
+    }
 }
 
 #[derive(Debug)]
@@ -739,4 +914,141 @@ fn is_boundary_file(src_root: &Path, root_module: &Path, file: &Path) -> bool {
         .ok()
         .is_some_and(|path| path.components().count() == 1);
     is_root_file || is_mod_rs || is_top_level_file
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::CrateKind;
+    use super::FINDINGS_SCHEMA_VERSION;
+    use super::ModuleLocation;
+    use super::allow_pub_crate_by_policy;
+    use super::cache_filename_for;
+    use super::cache_is_current_for;
+    use super::forbidden_pub_crate_help;
+    use super::module_location;
+    use super::refresh_rustc_args;
+    use super::Severity;
+    use super::StoredFinding;
+    use super::StoredReport;
+
+    #[test]
+    fn allow_pub_crate_allows_library_crate_root_items() {
+        assert!(allow_pub_crate_by_policy(
+            CrateKind::Library,
+            ModuleLocation::CrateRoot,
+            true
+        ));
+    }
+
+    #[test]
+    fn allow_pub_crate_allows_top_level_private_library_modules() {
+        assert!(allow_pub_crate_by_policy(
+            CrateKind::Library,
+            ModuleLocation::TopLevelPrivateModule,
+            false
+        ));
+    }
+
+    #[test]
+    fn allow_pub_crate_rejects_nested_modules() {
+        assert!(!allow_pub_crate_by_policy(
+            CrateKind::Library,
+            ModuleLocation::NestedModule,
+            false
+        ));
+    }
+
+    #[test]
+    fn allow_pub_crate_rejects_binary_crate_root_items() {
+        assert!(!allow_pub_crate_by_policy(
+            CrateKind::Binary,
+            ModuleLocation::CrateRoot,
+            true
+        ));
+    }
+
+    #[test]
+    fn module_location_handles_crate_root() {
+        assert_eq!(module_location(true, false), ModuleLocation::CrateRoot);
+    }
+
+    #[test]
+    fn module_location_handles_top_level_private_module() {
+        assert_eq!(
+            module_location(false, true),
+            ModuleLocation::TopLevelPrivateModule
+        );
+    }
+
+    #[test]
+    fn forbidden_pub_crate_help_handles_crate_root_items() {
+        assert_eq!(
+            forbidden_pub_crate_help(ModuleLocation::CrateRoot),
+            "consider using just `pub` or removing `pub(crate)` entirely"
+        );
+    }
+
+    #[test]
+    fn forbidden_pub_crate_help_handles_top_level_private_modules() {
+        assert_eq!(
+            forbidden_pub_crate_help(ModuleLocation::TopLevelPrivateModule),
+            "consider using just `pub` or removing `pub(crate)` entirely"
+        );
+    }
+
+    #[test]
+    fn forbidden_pub_crate_help_handles_nested_private_modules() {
+        assert_eq!(
+            forbidden_pub_crate_help(ModuleLocation::NestedModule),
+            "consider using `pub(super)` or removing `pub(crate)` entirely"
+        );
+    }
+
+    #[test]
+    fn refresh_rustc_args_adds_vischeck_cfg() {
+        let args = refresh_rustc_args();
+        assert_eq!(args.first().map(String::as_str), Some("--"));
+        assert!(
+            args.get(1)
+                .is_some_and(|arg| arg.starts_with("--cfg=vischeck_refresh_"))
+        );
+    }
+
+    #[test]
+    fn cache_is_current_requires_matching_schema_version() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("vischeck-cache-test-{unique}"));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let package_root = Path::new("/tmp/example-crate");
+        let cache_path = temp_dir.join(cache_filename_for(package_root));
+        let stale = StoredReport {
+            version: FINDINGS_SCHEMA_VERSION - 1,
+            package_root: package_root.to_string_lossy().into_owned(),
+            findings: vec![StoredFinding {
+                severity: Severity::Warning,
+                code: "suspicious_pub".to_string(),
+                path: "src/lib.rs".to_string(),
+                line: 1,
+                column: 1,
+                highlight_len: 3,
+                source_line: "pub fn x() {}".to_string(),
+                item: None,
+                message: String::new(),
+                suggestion: None,
+            }],
+        };
+        fs::write(&cache_path, serde_json::to_vec(&stale).unwrap()).unwrap();
+
+        assert!(!cache_is_current_for(&temp_dir, package_root));
+
+        fs::remove_dir_all(&temp_dir).unwrap();
+    }
 }
