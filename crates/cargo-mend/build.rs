@@ -1,15 +1,15 @@
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::PathBuf;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::Command;
 
 fn main() {
-    #[cfg(target_os = "macos")]
-    configure_macos_rpath();
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    configure_unix_rpath();
 }
 
-#[cfg(target_os = "macos")]
-fn configure_macos_rpath() {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn configure_unix_rpath() {
     let sysroot = sysroot_path();
     let host = host_triple();
     let rustc_lib_dir = sysroot.join("lib");
@@ -25,7 +25,7 @@ fn configure_macos_rpath() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn sysroot_path() -> PathBuf {
     let output = Command::new("rustc")
         .args(["--print", "sysroot"])
@@ -43,7 +43,7 @@ fn sysroot_path() -> PathBuf {
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn host_triple() -> String {
     let output = Command::new("rustc")
         .arg("-vV")
