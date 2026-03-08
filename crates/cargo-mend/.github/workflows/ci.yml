@@ -116,7 +116,7 @@ jobs:
 
       - name: Install cargo-vischeck
         shell: pwsh
-        run: cargo install --path . --root "$env:RUNNER_TEMP\\cargo-vischeck-install"
+        run: cargo install --path . --debug --root "$env:RUNNER_TEMP\\cargo-vischeck-install"
 
       - name: Check installed binary
         shell: pwsh
