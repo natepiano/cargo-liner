@@ -93,6 +93,10 @@ Behavior:
 - run it at a workspace root to audit all workspace members
 - run it in a member crate directory to audit just that package
 - pass `--manifest-path` to choose an explicit crate or workspace root
+- `--fix` only rewrites the import-shortening cases that `cargo-vischeck` can prove are safe
+- if a `--fix` run would leave the crate failing `cargo check`, `cargo-vischeck` restores the
+  original files automatically
+- if there is nothing fixable, `cargo-vischeck` says so after the report summary
 
 ## Toolchain Compatibility
 
@@ -111,7 +115,7 @@ Use this as a migration aid and CI guard:
 
 1. fail immediately on forbidden visibility forms
 2. review suspicious `pub`
-3. let `cargo vischeck --fix` rewrite straightforward local-import paths
+3. let `cargo vischeck --fix` rewrite the straightforward local-import paths it knows how to fix
 4. keep repo-specific exceptions small and explicit
 
 The usual review flow is:
@@ -376,3 +380,9 @@ use super::cargo_detector::TargetType;
 ```
 
 `cargo vischeck --fix` can rewrite these straightforward cases automatically.
+
+Today, that auto-fix mode is intentionally narrow:
+
+- it only rewrites local import-shortening cases
+- it preserves the original import visibility (`use`, `pub use`, `pub(crate) use`, and so on)
+- it rolls the edits back automatically if the follow-up `cargo check` fails

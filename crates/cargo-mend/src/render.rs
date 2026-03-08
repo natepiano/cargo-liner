@@ -15,17 +15,16 @@ pub(super) fn render_human_report(report: &Report, color: bool) -> String {
         render_finding(&mut output, finding, color);
     }
 
-    let error_count = report
-        .findings
-        .iter()
-        .filter(|f| f.severity == Severity::Error)
-        .count();
-    let warn_count = report
-        .findings
-        .iter()
-        .filter(|f| f.severity == Severity::Warning)
-        .count();
-    let _ = writeln!(output, "{}", summary_line(error_count, warn_count, color));
+    let _ = writeln!(
+        output,
+        "{}",
+        summary_line(
+            report.summary.error_count,
+            report.summary.warning_count,
+            report.summary.fixable_count,
+            color
+        )
+    );
     output
 }
 
@@ -108,13 +107,23 @@ fn render_finding(output: &mut String, finding: &Finding, color: bool) {
     let _ = writeln!(output);
 }
 
-fn summary_line(error_count: usize, warn_count: usize, color: bool) -> String {
-    format!(
-        "{} {} error(s), {} warning(s)",
-        dim("summary:", color),
-        error_count,
-        warn_count
-    )
+fn summary_line(error_count: usize, warn_count: usize, fixable_count: usize, color: bool) -> String {
+    if fixable_count == 0 {
+        format!(
+            "{} {} error(s), {} warning(s)",
+            dim("summary:", color),
+            error_count,
+            warn_count
+        )
+    } else {
+        format!(
+            "{} {} error(s), {} warning(s), {} fixable with `--fix`",
+            dim("summary:", color),
+            error_count,
+            warn_count,
+            fixable_count
+        )
+    }
 }
 
 fn severity_label(severity: Severity, color: bool) -> String {

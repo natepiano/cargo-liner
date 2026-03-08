@@ -252,10 +252,9 @@ fn analyze_use_tree(current_module_path: &[String], tree: &UseTree) -> Option<Im
     }
 
     let relative = build_relative_path(current_module_path, target_segments, &import)?;
-    if !matches!(
-        relative.as_str(),
-        path if path.starts_with("self::") || path.starts_with("super::")
-    ) {
+    if relative == import.original
+        || !(relative.starts_with("super::") || target_segments.starts_with(current_module_path))
+    {
         return None;
     }
 
@@ -309,7 +308,7 @@ fn build_relative_path(
     let up_count = current_module_path.len().saturating_sub(common);
     let mut relative_segments = Vec::new();
     match up_count {
-        0 => relative_segments.push("self".to_string()),
+        0 => {},
         1 => relative_segments.push("super".to_string()),
         _ => return None,
     }

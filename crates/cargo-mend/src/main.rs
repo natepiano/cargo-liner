@@ -41,19 +41,25 @@ fn run() -> Result<ExitCode> {
         selection.workspace_root.as_path(),
         cli.config.as_deref(),
     )?;
+    let mut post_run_notice = None;
     let report = if cli.fix {
         let import_scan = imports::scan_selection(&selection)?;
-        let snapshots = imports::snapshot_files(&import_scan.fixes)?;
-        let applied = imports::apply_fixes(&import_scan.fixes)?;
-        if applied > 0 {
-            eprintln!("vischeck: applied {applied} import fix(es)");
-        }
-        match build_report(&selection, &config) {
-            Ok(report) => report,
-            Err(err) => {
-                imports::restore_files(&snapshots)?;
-                anyhow::bail!("rolled back import fixes after failed cargo check\n\n{err:#}");
-            },
+        if import_scan.fixes.is_empty() {
+            post_run_notice = Some("vischeck: no import fixes available");
+            build_report(&selection, &config)?
+        } else {
+            let snapshots = imports::snapshot_files(&import_scan.fixes)?;
+            let applied = imports::apply_fixes(&import_scan.fixes)?;
+            if applied > 0 {
+                eprintln!("vischeck: applied {applied} import fix(es)");
+            }
+            match build_report(&selection, &config) {
+                Ok(report) => report,
+                Err(err) => {
+                    imports::restore_files(&snapshots)?;
+                    anyhow::bail!("rolled back import fixes after failed cargo check\n\n{err:#}");
+                },
+            }
         }
     } else {
         build_report(&selection, &config)?
@@ -66,6 +72,9 @@ fn run() -> Result<ExitCode> {
             "{}",
             render::render_human_report(&report, std::io::stdout().is_terminal())
         );
+    }
+    if let Some(notice) = post_run_notice {
+        eprintln!("{notice}");
     }
 
     if report.has_errors() {
@@ -118,5 +127,6 @@ fn build_report(
             && a.item == b.item
             && a.suggestion == b.suggestion
     });
+    report.refresh_summary();
     Ok(report)
 }

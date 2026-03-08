@@ -73,18 +73,44 @@ pub(super) struct Finding {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(super) struct Report {
     pub(super) root:     String,
+    pub(super) summary:  ReportSummary,
     pub(super) findings: Vec<Finding>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(super) struct ReportSummary {
+    pub(super) error_count:   usize,
+    pub(super) warning_count: usize,
+    pub(super) fixable_count: usize,
 }
 
 impl Report {
     pub(super) fn has_errors(&self) -> bool {
-        self.findings.iter().any(|f| f.severity == Severity::Error)
+        self.summary.error_count > 0
     }
 
     pub(super) fn has_warnings(&self) -> bool {
-        self.findings
-            .iter()
-            .any(|f| f.severity == Severity::Warning)
+        self.summary.warning_count > 0
+    }
+
+    pub(super) fn refresh_summary(&mut self) {
+        self.summary = ReportSummary {
+            error_count:   self
+                .findings
+                .iter()
+                .filter(|f| f.severity == Severity::Error)
+                .count(),
+            warning_count: self
+                .findings
+                .iter()
+                .filter(|f| f.severity == Severity::Warning)
+                .count(),
+            fixable_count: self
+                .findings
+                .iter()
+                .filter(|f| f.code == "shorten_local_crate_import")
+                .count(),
+        };
     }
 }
 

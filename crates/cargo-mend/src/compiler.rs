@@ -399,6 +399,7 @@ fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
 
     Ok(Report {
         root: selection_root_string(selection.analysis_root.as_path()),
+        summary: Default::default(),
         findings,
     })
 }
