@@ -121,11 +121,23 @@ jobs:
       - name: Check installed binary
         shell: pwsh
         run: |
+          $sysroot = rustc --print sysroot
+          $host = (rustc -vV | Select-String '^host: ').ToString().Split(' ')[1]
+          $toolchainBin = Join-Path $sysroot 'bin'
+          $rustlibBin = Join-Path $sysroot "lib\rustlib\$host\bin"
+          $rustlibLib = Join-Path $sysroot "lib\rustlib\$host\lib"
+          $env:PATH = "$toolchainBin;$rustlibBin;$rustlibLib;$env:PATH"
           & "$env:RUNNER_TEMP\cargo-vischeck-install\bin\cargo-vischeck.exe" --help
 
       - name: Check cargo subcommand wiring
         shell: pwsh
         run: |
+          $sysroot = rustc --print sysroot
+          $host = (rustc -vV | Select-String '^host: ').ToString().Split(' ')[1]
+          $toolchainBin = Join-Path $sysroot 'bin'
+          $rustlibBin = Join-Path $sysroot "lib\rustlib\$host\bin"
+          $rustlibLib = Join-Path $sysroot "lib\rustlib\$host\lib"
+          $env:PATH = "$toolchainBin;$rustlibBin;$rustlibLib;$env:PATH"
           $env:PATH = "$env:RUNNER_TEMP\cargo-vischeck-install\bin;$env:PATH"
           cargo vischeck --help
 
