@@ -99,6 +99,36 @@ jobs:
       - name: Check cargo subcommand wiring
         run: PATH="/tmp/cargo-vischeck-install/bin:$PATH" cargo vischeck --help
 
+  windows-install-check:
+    name: Windows Install Check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rust-src, rustc-dev, llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-vischeck
+        shell: pwsh
+        run: cargo install --path . --root "$env:RUNNER_TEMP\\cargo-vischeck-install"
+
+      - name: Check installed binary
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP\cargo-vischeck-install\bin\cargo-vischeck.exe" --help
+
+      - name: Check cargo subcommand wiring
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:RUNNER_TEMP\cargo-vischeck-install\bin;$env:PATH"
+          cargo vischeck --help
+
   test:
     name: Test Suite
     runs-on: ubuntu-latest
