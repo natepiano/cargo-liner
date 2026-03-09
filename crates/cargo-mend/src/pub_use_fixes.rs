@@ -16,9 +16,9 @@ use super::diagnostics::Report;
 use super::imports::UseFix;
 use super::selection::Selection;
 
-pub(super) struct PubUseFixScan {
-    pub(super) fixes:         Vec<UseFix>,
-    pub(super) applied_count: usize,
+pub struct PubUseFixScan {
+    pub fixes:         Vec<UseFix>,
+    pub applied_count: usize,
 }
 
 struct Candidate {
@@ -36,7 +36,7 @@ enum CandidateScreening {
     Skip,
 }
 
-pub(super) fn scan_selection(selection: &Selection, report: &Report) -> Result<PubUseFixScan> {
+pub fn scan_selection(selection: &Selection, report: &Report) -> Result<PubUseFixScan> {
     let mut fixes = Vec::new();
     let mut applied_pairs = 0usize;
 
@@ -58,41 +58,52 @@ pub(super) fn scan_selection(selection: &Selection, report: &Report) -> Result<P
 fn collect_candidates(selection: &Selection, report: &Report) -> Result<Vec<Candidate>> {
     let mut candidates = Vec::new();
     for finding in &report.findings {
-        if finding.code != "unnecessary_parent_pub_use" {
+        if finding.code != "suspicious_pub" {
+            continue;
+        }
+        if finding.fix_kind != Some(super::diagnostics::FixKind::ParentPubUse) {
             continue;
         }
 
-        let parent_rel = normalize_rel_path(&finding.path);
-        let parent_mod = selection.analysis_root.join(&parent_rel);
-        let parent_source = fs::read_to_string(&parent_mod)
-            .with_context(|| format!("failed to read {}", parent_mod.display()))?;
-        let exported_name = item_name_from_parent_pub_use(&parent_source, finding.line)
-            .with_context(|| {
-                format!(
-                    "failed to resolve exported item from {}:{}",
-                    parent_rel, finding.line
-                )
-            })?;
-
-        let child_ref = finding
-            .related
-            .as_deref()
-            .and_then(|text| text.strip_prefix("paired with child item at "))
-            .context("missing child pairing note for parent pub use finding")?;
-        let (child_rel, child_line) = split_rel_path_and_line(child_ref)?;
-        let src_root =
-            find_src_root(&parent_mod).context("failed to determine src root for parent module")?;
-        let child_file = src_root.join(&child_rel);
+        let child_rel = normalize_rel_path(&finding.path);
+        let child_file = selection.analysis_root.join(&child_rel);
+        let child_line = finding.line;
         let child_source = fs::read_to_string(&child_file)
             .with_context(|| format!("failed to read {}", child_file.display()))?;
         let child_item =
             item_name_from_child_pub(&child_source, child_line).with_context(|| {
+                format!("failed to resolve child item from {child_rel}:{child_line}")
+            })?;
+
+        let parent_note = finding
+            .related
+            .as_deref()
+            .and_then(|text| {
+                text.strip_prefix(
+                    "parent module also has an `unused import` warning for this `pub use` at ",
+                )
+            })
+            .context("missing parent `unused import` pairing note for suspicious pub finding")?;
+        let (parent_rel_path, parent_line) = split_rel_path_and_line(parent_note)?;
+        let parent_mod = resolve_reported_path(selection, &parent_rel_path).with_context(|| {
+            format!(
+                "failed to resolve parent module path {}",
+                parent_rel_path.display()
+            )
+        })?;
+        let parent_source = fs::read_to_string(&parent_mod)
+            .with_context(|| format!("failed to read {}", parent_mod.display()))?;
+        let exported_name = item_name_from_parent_pub_use(&parent_source, parent_line)
+            .with_context(|| {
                 format!(
-                    "failed to resolve child item from {}:{}",
-                    child_rel.display(),
-                    child_line
+                    "failed to resolve exported item from {}:{}",
+                    parent_rel_path.display(),
+                    parent_line
                 )
             })?;
+
+        let src_root =
+            find_src_root(&parent_mod).context("failed to determine src root for parent module")?;
 
         let child_module = child_file
             .file_stem()
@@ -111,7 +122,7 @@ fn collect_candidates(selection: &Selection, report: &Report) -> Result<Vec<Cand
 
         let candidate = Candidate {
             parent_mod,
-            parent_line: finding.line,
+            parent_line,
             child_file,
             child_line,
             exported_name,
@@ -505,11 +516,10 @@ fn item_name_from_parent_pub_use(source: &str, line: usize) -> Result<String> {
         if import.rename.is_some() {
             anyhow::bail!("parent pub use fix does not support renamed pub uses yet");
         }
-        return Ok(import
-            .segments
-            .last()
-            .expect("flattened import always has a tail")
-            .to_string());
+        let Some(last_segment) = import.segments.last() else {
+            anyhow::bail!("flattened import unexpectedly had no tail segment");
+        };
+        return Ok(last_segment.clone());
     }
     anyhow::bail!("matching pub use item not found on line {line}")
 }
@@ -563,6 +573,24 @@ fn split_rel_path_and_line(text: &str) -> Result<(PathBuf, usize)> {
 
 fn normalize_rel_path(path: impl AsRef<Path>) -> String {
     path.as_ref().to_string_lossy().replace('\\', "/")
+}
+
+fn resolve_reported_path(selection: &Selection, rel_path: &Path) -> Result<PathBuf> {
+    let direct = selection.analysis_root.join(rel_path);
+    if direct.is_file() {
+        return Ok(direct);
+    }
+
+    let src_prefixed = selection.analysis_root.join("src").join(rel_path);
+    if src_prefixed.is_file() {
+        return Ok(src_prefixed);
+    }
+
+    anyhow::bail!(
+        "reported path {} did not resolve under {}",
+        rel_path.display(),
+        selection.analysis_root.display()
+    );
 }
 
 fn module_path_from_dir(src_root: &Path, module_dir: &Path) -> Option<Vec<String>> {

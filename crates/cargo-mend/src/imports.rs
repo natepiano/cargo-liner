@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -18,17 +19,17 @@ use super::diagnostics::Finding;
 use super::diagnostics::Severity;
 use super::selection::Selection;
 
-pub(super) struct ImportScan {
-    pub(super) findings: Vec<Finding>,
-    pub(super) fixes:    Vec<UseFix>,
+pub struct ImportScan {
+    pub findings: Vec<Finding>,
+    pub fixes:    Vec<UseFix>,
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct UseFix {
-    pub(super) path:        PathBuf,
-    pub(super) start:       usize,
-    pub(super) end:         usize,
-    pub(super) replacement: String,
+pub struct UseFix {
+    pub path:        PathBuf,
+    pub start:       usize,
+    pub end:         usize,
+    pub replacement: String,
 }
 
 #[derive(Debug)]
@@ -37,7 +38,7 @@ struct ImportFinding {
     fix:     UseFix,
 }
 
-pub(super) fn scan_selection(selection: &Selection) -> Result<ImportScan> {
+pub fn scan_selection(selection: &Selection) -> Result<ImportScan> {
     let findings_with_fixes = scan_selection_with_fixes(selection)?;
     Ok(ImportScan {
         findings: findings_with_fixes
@@ -51,7 +52,7 @@ pub(super) fn scan_selection(selection: &Selection) -> Result<ImportScan> {
     })
 }
 
-pub(super) fn apply_fixes(fixes: &[UseFix]) -> Result<usize> {
+pub fn apply_fixes(fixes: &[UseFix]) -> Result<usize> {
     let mut by_file: BTreeMap<&Path, Vec<&UseFix>> = BTreeMap::new();
     for fix in fixes {
         by_file.entry(fix.path.as_path()).or_default().push(fix);
@@ -73,14 +74,14 @@ pub(super) fn apply_fixes(fixes: &[UseFix]) -> Result<usize> {
     Ok(applied)
 }
 
-pub(super) fn snapshot_files(fixes: &[UseFix]) -> Result<Vec<(PathBuf, String)>> {
-    let mut files = BTreeMap::new();
+pub fn snapshot_files(fixes: &[UseFix]) -> Result<Vec<(PathBuf, String)>> {
+    let mut unique_paths = BTreeSet::new();
     for fix in fixes {
-        files.entry(fix.path.clone()).or_insert_with(|| ());
+        unique_paths.insert(fix.path.clone());
     }
 
     let mut snapshots = Vec::new();
-    for path in files.into_keys() {
+    for path in unique_paths {
         let text = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         snapshots.push((path, text));
@@ -88,7 +89,7 @@ pub(super) fn snapshot_files(fixes: &[UseFix]) -> Result<Vec<(PathBuf, String)>>
     Ok(snapshots)
 }
 
-pub(super) fn restore_files(snapshots: &[(PathBuf, String)]) -> Result<()> {
+pub fn restore_files(snapshots: &[(PathBuf, String)]) -> Result<()> {
     for (path, text) in snapshots {
         fs::write(path, text).with_context(|| format!("failed to restore {}", path.display()))?;
     }
@@ -213,6 +214,7 @@ impl Visit<'_> for UseVisitor<'_> {
                     item: None,
                     message: "it stays within the same local module boundary".to_string(),
                     suggestion: Some(format!("consider using: `{replacement}`")),
+                    fix_kind: None,
                     related: None,
                 },
                 fix:     UseFix {

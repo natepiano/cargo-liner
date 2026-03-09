@@ -35,7 +35,9 @@ use syn::UseTree;
 use super::config::LoadedConfig;
 use super::config::VisibilityConfig;
 use super::diagnostics::Finding;
+use super::diagnostics::FixKind;
 use super::diagnostics::Report;
+use super::diagnostics::ReportSummary;
 use super::diagnostics::Severity;
 use super::selection::Selection;
 
@@ -47,7 +49,7 @@ const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
 const FINDINGS_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum BuildOutputMode {
+pub enum BuildOutputMode {
     Full,
     SuppressUnusedImportWarnings,
 }
@@ -77,6 +79,8 @@ struct StoredFinding {
     item:          Option<String>,
     message:       String,
     suggestion:    Option<String>,
+    #[serde(default)]
+    fix_kind:      Option<FixKind>,
     #[serde(default)]
     related:       Option<String>,
 }
@@ -136,7 +140,7 @@ struct AnalysisCallbacks {
 }
 
 impl AnalysisCallbacks {
-    fn new(settings: DriverSettings) -> Self {
+    const fn new(settings: DriverSettings) -> Self {
         Self {
             settings,
             error: None,
@@ -145,14 +149,13 @@ impl AnalysisCallbacks {
 }
 
 impl Callbacks for AnalysisCallbacks {
-    fn after_analysis<'tcx>(
+    fn after_analysis(
         &mut self,
         _compiler: &rustc_interface::interface::Compiler,
-        tcx: TyCtxt<'tcx>,
+        tcx: TyCtxt<'_>,
     ) -> Compilation {
         match collect_and_store_findings(tcx, &self.settings) {
-            Ok(true) => Compilation::Continue,
-            Ok(false) => Compilation::Continue,
+            Ok(true | false) => Compilation::Continue,
             Err(err) => {
                 self.error = Some(err);
                 Compilation::Stop
@@ -161,7 +164,7 @@ impl Callbacks for AnalysisCallbacks {
     }
 }
 
-pub(super) fn run_selection(
+pub fn run_selection(
     selection: &Selection,
     loaded_config: &LoadedConfig,
     output_mode: BuildOutputMode,
@@ -204,7 +207,7 @@ pub(super) fn run_selection(
     Ok(report)
 }
 
-pub(super) fn driver_main() -> ExitCode {
+pub fn driver_main() -> ExitCode {
     match driver_main_impl() {
         Ok(code) => code,
         Err(err) => {
@@ -219,9 +222,8 @@ fn driver_main_impl() -> Result<ExitCode> {
     if wrapper_args.len() < 2 {
         anyhow::bail!("compiler driver expected rustc wrapper arguments");
     }
-    let settings = match DriverSettings::from_env() {
-        Ok(settings) => settings,
-        Err(_) => return passthrough_to_rustc(&wrapper_args),
+    let Ok(settings) = DriverSettings::from_env() else {
+        return passthrough_to_rustc(&wrapper_args);
     };
 
     let rustc_args: Vec<String> = std::iter::once("rustc".to_string())
@@ -234,16 +236,16 @@ fn driver_main_impl() -> Result<ExitCode> {
         .collect();
 
     let mut callbacks = AnalysisCallbacks::new(settings);
-    let mut exit_code = rustc_driver::catch_with_exit_code(|| {
+    let compiler_exit_code = rustc_driver::catch_with_exit_code(|| {
         rustc_driver::run_compiler(&rustc_args, &mut callbacks);
     });
 
-    if let Some(err) = callbacks.error {
+    let exit_code = callbacks.error.map_or(compiler_exit_code, |err| {
         eprintln!("mend: {err:#}");
-        exit_code = 1;
-    }
+        1
+    });
 
-    Ok(ExitCode::from(exit_code as u8))
+    Ok(exit_code_from_i32(exit_code))
 }
 
 fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
@@ -257,7 +259,7 @@ fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
         .stderr(Stdio::inherit())
         .status()
         .context("failed to invoke rustc passthrough from mend wrapper")?;
-    Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
+    Ok(exit_code_from_i32(status.code().unwrap_or(1)))
 }
 
 fn run_cargo_check(
@@ -270,7 +272,7 @@ fn run_cargo_check(
     let mut command = Command::new("cargo");
     command.arg("check");
 
-    if selection.is_workspace_selection {
+    if selection.workspace_selected {
         command.arg("--workspace");
     } else {
         command
@@ -397,22 +399,19 @@ fn classify_diagnostic_block(
     printed_suppression_notice: bool,
 ) -> DiagnosticBlockKind {
     let first_non_empty = block.iter().find(|line| !line.trim().is_empty());
-    match first_non_empty {
-        Some(line) => {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("warning: unused import:")
-                || (printed_suppression_notice
-                    && trimmed.starts_with("warning: `")
-                    && (trimmed.contains(" generated 1 warning ")
-                        || trimmed.contains("to apply 1 suggestion")))
-            {
-                DiagnosticBlockKind::SuppressedUnusedImport
-            } else {
-                DiagnosticBlockKind::ForwardedDiagnostic
-            }
-        },
-        None => DiagnosticBlockKind::ForwardedDiagnostic,
-    }
+    first_non_empty.map_or(DiagnosticBlockKind::ForwardedDiagnostic, |line| {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("warning: unused import:")
+            || (printed_suppression_notice
+                && trimmed.starts_with("warning: `")
+                && (trimmed.contains(" generated 1 warning ")
+                    || trimmed.contains("to apply 1 suggestion")))
+        {
+            DiagnosticBlockKind::SuppressedUnusedImport
+        } else {
+            DiagnosticBlockKind::ForwardedDiagnostic
+        }
+    })
 }
 
 fn flush_diagnostic_block(block: &mut Vec<String>, printed_suppression_notice: &mut bool) {
@@ -547,6 +546,7 @@ fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
                 item:          finding.item,
                 message:       finding.message,
                 suggestion:    finding.suggestion,
+                fix_kind:      finding.fix_kind,
                 related:       finding.related,
             });
         }
@@ -572,7 +572,7 @@ fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
 
     Ok(Report {
         root: selection_root_string(selection.analysis_root.as_path()),
-        summary: Default::default(),
+        summary: ReportSummary::default(),
         findings,
     })
 }
@@ -581,11 +581,15 @@ fn selection_root_string(root: &Path) -> String { root.display().to_string() }
 
 fn relativize_path(path: &str, analysis_root: &Path) -> String {
     let absolute = Path::new(path);
-    if let Ok(relative) = absolute.strip_prefix(analysis_root) {
-        relative.to_string_lossy().replace('\\', "/")
-    } else {
-        path.to_string()
-    }
+    absolute.strip_prefix(analysis_root).map_or_else(
+        |_| path.to_string(),
+        |relative| relative.to_string_lossy().replace('\\', "/"),
+    )
+}
+
+fn exit_code_from_i32(code: i32) -> ExitCode {
+    let normalized_code = u8::try_from(code).unwrap_or(1);
+    ExitCode::from(normalized_code)
 }
 
 fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Result<bool> {
@@ -695,17 +699,7 @@ fn analyze_item(
         return Ok(());
     };
 
-    if let ItemKind::Use(..) = item.kind {
-        record_parent_pub_use_findings(
-            tcx,
-            src_root,
-            &file_path,
-            item,
-            highlight_span(item.vis_span, Some(item.span)),
-            &vis_text,
-            findings,
-        )?;
-    }
+    let item_name = item.kind.ident().map(|ident| ident.to_string());
 
     record_visibility_findings(
         tcx,
@@ -717,7 +711,7 @@ fn analyze_item(
         &file_path,
         &vis_text,
         item_kind_label(item.kind),
-        item.kind.ident().map(|ident| ident.to_string()),
+        item_name.as_deref(),
         highlight_span(item.vis_span, item.kind.ident().map(|ident| ident.span)),
         matches!(item.kind, ItemKind::Mod(..)),
         findings,
@@ -746,6 +740,8 @@ fn analyze_impl_item(
         return Ok(());
     };
 
+    let item_name = item.ident.to_string();
+
     record_visibility_findings(
         tcx,
         settings,
@@ -755,8 +751,8 @@ fn analyze_impl_item(
         item.owner_id.def_id,
         &file_path,
         &vis_text,
-        impl_item_kind_label(item.kind),
-        Some(item.ident.to_string()),
+        Some(impl_item_kind_label(item.kind)),
+        Some(item_name.as_str()),
         highlight_span(vis_span, Some(item.ident.span)),
         false,
         findings,
@@ -782,6 +778,8 @@ fn analyze_foreign_item(
         return Ok(());
     };
 
+    let item_name = item.ident.to_string();
+
     record_visibility_findings(
         tcx,
         settings,
@@ -791,8 +789,8 @@ fn analyze_foreign_item(
         item.owner_id.def_id,
         &file_path,
         &vis_text,
-        foreign_item_kind_label(item.kind),
-        Some(item.ident.to_string()),
+        Some(foreign_item_kind_label(item.kind)),
+        Some(item_name.as_str()),
         highlight_span(item.vis_span, Some(item.ident.span)),
         false,
         findings,
@@ -810,7 +808,7 @@ fn record_visibility_findings(
     file_path: &Path,
     vis_text: &str,
     kind_label: Option<&'static str>,
-    item_name: Option<String>,
+    item_name: Option<&str>,
     highlight_span: Span,
     is_module_item: bool,
     findings: &mut Vec<StoredFinding>,
@@ -849,6 +847,7 @@ fn record_visibility_findings(
                 item:       None,
                 message:    "use of `pub(crate)` is forbidden by policy".to_string(),
                 suggestion: Some(forbidden_pub_crate_help(module_location).to_string()),
+                fix_kind:   None,
                 related:    None,
             },
         )?);
@@ -865,6 +864,7 @@ fn record_visibility_findings(
                 item:       None,
                 message:    "use of `pub(in crate::...)` is forbidden by policy".to_string(),
                 suggestion: None,
+                fix_kind:   None,
                 related:    None,
             },
         )?);
@@ -886,121 +886,107 @@ fn record_visibility_findings(
                 FindingParams {
                     severity:   Severity::Error,
                     code:       "review_pub_mod",
-                    item:       item_name.clone(),
+                    item:       item_name.map(str::to_owned),
                     message:    "`pub mod` requires explicit review or allowlisting".to_string(),
                     suggestion: None,
+                    fix_kind:   None,
                     related:    None,
                 },
             )?);
         }
     }
 
-    if vis_text == "pub"
-        && let Some(kind_label) = kind_label
-        && !is_boundary_file(src_root, root_module, file_path)
-    {
-        let item_key = config_rel_path
-            .as_ref()
-            .and_then(|path| item_name.as_ref().map(|name| format!("{path}::{name}")));
-        let allowlisted = item_key.as_ref().is_some_and(|key| {
-            settings
-                .config
-                .allow_pub_items
-                .iter()
-                .any(|allowed| allowed == key)
-        });
-        let reachable = effective_visibilities.is_public_at_level(def_id, Level::Reachable);
-        let parent_facade_export = item_name
-            .as_ref()
-            .map(|name| parent_facade_export_status(src_root, file_path, name))
-            .transpose()?
-            .flatten();
-        let parent_facade_export_used_outside_parent = parent_facade_export
-            .as_ref()
-            .is_some_and(|status| status.used_outside_parent);
-
-        if !allowlisted
-            && !parent_is_public
-            && !matches!(module_location, ModuleLocation::TopLevelPrivateModule)
-            && !reachable
-            && !parent_facade_export_used_outside_parent
-        {
-            let related = parent_facade_export.as_ref().and_then(|status| {
-                (!status.used_outside_parent).then(|| {
-                    format!(
-                        "paired with parent re-export at {}:{}",
-                        status.parent_rel_path, status.parent_line
-                    )
-                })
-            });
-            findings.push(build_finding(
-                tcx,
-                file_path,
-                highlight_span,
-                FindingParams {
-                    severity: Severity::Warning,
-                    code: "suspicious_pub",
-                    item: item_name
-                        .as_ref()
-                        .map(|name| format!("{kind_label} {name}")),
-                    message: suspicious_pub_note(crate_kind, kind_label),
-                    suggestion: None,
-                    related,
-                },
-            )?);
-        }
+    if vis_text == "pub" && !is_boundary_file(src_root, root_module, file_path) {
+        maybe_record_suspicious_pub(
+            tcx,
+            settings,
+            src_root,
+            effective_visibilities,
+            def_id,
+            file_path,
+            config_rel_path.as_deref(),
+            parent_is_public,
+            module_location,
+            kind_label,
+            item_name,
+            highlight_span,
+            findings,
+            crate_kind,
+        )?;
     }
     Ok(())
 }
 
-fn record_parent_pub_use_findings(
+#[allow(clippy::too_many_arguments)]
+fn maybe_record_suspicious_pub(
     tcx: TyCtxt<'_>,
+    settings: &DriverSettings,
     src_root: &Path,
+    effective_visibilities: &rustc_middle::middle::privacy::EffectiveVisibilities,
+    def_id: LocalDefId,
     file_path: &Path,
-    item: &Item<'_>,
+    config_rel_path: Option<&str>,
+    parent_is_public: bool,
+    module_location: ModuleLocation,
+    kind_label: Option<&'static str>,
+    item_name: Option<&str>,
     highlight_span: Span,
-    vis_text: &str,
     findings: &mut Vec<StoredFinding>,
+    crate_kind: CrateKind,
 ) -> Result<()> {
-    if vis_text != "pub" {
-        return Ok(());
-    }
-    if file_path.file_name().and_then(|name| name.to_str()) != Some("mod.rs") {
-        return Ok(());
-    }
-
-    let snippet = tcx
-        .sess
-        .source_map()
-        .span_to_snippet(item.span)
-        .map_err(|err| anyhow::anyhow!("failed to extract use item snippet: {err:?}"))?;
-    let Ok(item_use) = syn::parse_str::<ItemUse>(&snippet) else {
+    let Some(kind_label) = kind_label else {
         return Ok(());
     };
 
-    for status in unnecessary_parent_pub_use_statuses(src_root, file_path, &item_use)? {
-        if status.used_outside_parent {
-            continue;
-        }
-        findings.push(build_finding(
-            tcx,
-            file_path,
-            highlight_span,
-            FindingParams {
-                severity:   Severity::Warning,
-                code:       "unnecessary_parent_pub_use",
-                item:       Some(format!("pub use {}", status.exported_name)),
-                message:    "this parent facade export is not used outside its module subtree"
-                    .to_string(),
-                suggestion: None,
-                related:    Some(format!(
-                    "paired with child item at {}:{}",
-                    status.child_rel_path, status.child_line
-                )),
-            },
-        )?);
+    let item_key = config_rel_path.and_then(|path| item_name.map(|name| format!("{path}::{name}")));
+    let allowlisted = item_key.as_ref().is_some_and(|key| {
+        settings
+            .config
+            .allow_pub_items
+            .iter()
+            .any(|allowed| allowed == key)
+    });
+    let reachable = effective_visibilities.is_public_at_level(def_id, Level::Reachable);
+    let parent_facade_export = item_name
+        .map(|name| parent_facade_export_status(src_root, file_path, name))
+        .transpose()?
+        .flatten();
+    let parent_facade_export_used_outside_parent = parent_facade_export
+        .as_ref()
+        .is_some_and(|status| status.used_outside_parent);
+
+    if allowlisted
+        || parent_is_public
+        || matches!(module_location, ModuleLocation::TopLevelPrivateModule)
+        || reachable
+        || parent_facade_export_used_outside_parent
+    {
+        return Ok(());
     }
 
+    let stale_parent_pub_use = parent_facade_export
+        .as_ref()
+        .filter(|status| !status.used_outside_parent);
+    let related = stale_parent_pub_use.map(|status| {
+        format!(
+            "parent module also has an `unused import` warning for this `pub use` at {}:{}",
+            status.parent_rel_path, status.parent_line
+        )
+    });
+    findings.push(build_finding(
+        tcx,
+        file_path,
+        highlight_span,
+        FindingParams {
+            severity: Severity::Warning,
+            code: "suspicious_pub",
+            item: item_name.map(|name| format!("{kind_label} {name}")),
+            message: suspicious_pub_note(crate_kind, kind_label),
+            suggestion: None,
+            fix_kind: stale_parent_pub_use.map(|_| FixKind::ParentPubUse),
+            related,
+        },
+    )?);
     Ok(())
 }
 
@@ -1010,6 +996,7 @@ struct FindingParams {
     item:       Option<String>,
     message:    String,
     suggestion: Option<String>,
+    fix_kind:   Option<FixKind>,
     related:    Option<String>,
 }
 
@@ -1031,11 +1018,15 @@ fn build_finding(
         item:          params.item,
         message:       params.message,
         suggestion:    params.suggestion,
+        fix_kind:      params.fix_kind,
         related:       params.related,
     })
 }
 
-fn module_location(parent_is_crate_root: bool, grandparent_is_crate_root: bool) -> ModuleLocation {
+const fn module_location(
+    parent_is_crate_root: bool,
+    grandparent_is_crate_root: bool,
+) -> ModuleLocation {
     if parent_is_crate_root {
         ModuleLocation::CrateRoot
     } else if grandparent_is_crate_root {
@@ -1143,121 +1134,14 @@ fn collect_matching_pub_use_exports(
         } else {
             &path[..]
         };
-        if normalized.len() >= 2 && normalized[0] == child_module_name && normalized[1] == item_name
+        if normalized.len() >= 2
+            && normalized[0] == child_module_name
+            && normalized[1] == item_name
+            && let Some(export_name) = normalized.last()
         {
-            exported.push(
-                normalized
-                    .last()
-                    .expect("flattened use path always has a tail")
-                    .to_string(),
-            );
+            exported.push(export_name.clone());
         }
     }
-}
-
-fn unnecessary_parent_pub_use_statuses(
-    src_root: &Path,
-    parent_mod_rs: &Path,
-    item_use: &ItemUse,
-) -> Result<Vec<ParentPubUseStatus>> {
-    let Some(parent_dir) = parent_mod_rs.parent() else {
-        return Ok(Vec::new());
-    };
-    let Some(module_path) = module_path_from_dir(src_root, parent_dir) else {
-        return Ok(Vec::new());
-    };
-
-    let mut paths = Vec::new();
-    flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
-    let mut statuses = Vec::new();
-
-    for path in paths {
-        let normalized = match path.first().map(String::as_str) {
-            Some("self" | "crate") => &path[1..],
-            _ => &path[..],
-        };
-        if normalized.len() < 2 {
-            continue;
-        }
-
-        let (child_module_name, child_item_name, exported_name) = if normalized.len() == 2 {
-            (&normalized[0], &normalized[1], &normalized[1])
-        } else if normalized.len() >= module_path.len() + 2
-            && normalized[..module_path.len()] == *module_path
-        {
-            (
-                &normalized[module_path.len()],
-                &normalized[module_path.len() + 1],
-                normalized
-                    .last()
-                    .expect("flattened use path always has a tail"),
-            )
-        } else {
-            continue;
-        };
-
-        let child_file = parent_dir.join(format!("{child_module_name}.rs"));
-        if !child_file.is_file() {
-            continue;
-        }
-        let child_source = fs::read_to_string(&child_file).with_context(|| {
-            format!("failed to read child source file {}", child_file.display())
-        })?;
-        let Some(child_line) =
-            first_line_matching(&child_source, &format!("pub struct {child_item_name}"))
-                .or_else(|| {
-                    first_line_matching(&child_source, &format!("pub enum {child_item_name}"))
-                })
-                .or_else(|| {
-                    first_line_matching(&child_source, &format!("pub fn {child_item_name}"))
-                })
-                .or_else(|| {
-                    first_line_matching(&child_source, &format!("pub const {child_item_name}"))
-                })
-                .or_else(|| {
-                    first_line_matching(&child_source, &format!("pub static {child_item_name}"))
-                })
-                .or_else(|| {
-                    first_line_matching(&child_source, &format!("pub type {child_item_name}"))
-                })
-                .or_else(|| {
-                    first_line_matching(&child_source, &format!("pub trait {child_item_name}"))
-                })
-        else {
-            continue;
-        };
-        let child_rel_path = child_file
-            .strip_prefix(src_root)
-            .unwrap_or(&child_file)
-            .to_string_lossy()
-            .replace('\\', "/");
-
-        let mut used_outside_parent = false;
-        for file in rust_source_files(src_root)? {
-            if file.starts_with(parent_dir) {
-                continue;
-            }
-            let source = fs::read_to_string(&file)
-                .with_context(|| format!("failed to read source file {}", file.display()))?;
-            if use_tree_references_parent_export(
-                &source,
-                &module_path,
-                &[exported_name.to_string()],
-            ) {
-                used_outside_parent = true;
-                break;
-            }
-        }
-
-        statuses.push(ParentPubUseStatus {
-            exported_name: exported_name.to_string(),
-            used_outside_parent,
-            child_rel_path,
-            child_line,
-        });
-    }
-
-    Ok(statuses)
 }
 
 fn flatten_use_tree(prefix: Vec<String>, tree: &UseTree, out: &mut Vec<Vec<String>>) {
@@ -1358,7 +1242,7 @@ fn use_tree_references_parent_export(
     false
 }
 
-fn allow_pub_crate_by_policy(
+const fn allow_pub_crate_by_policy(
     crate_kind: CrateKind,
     module_location: ModuleLocation,
     parent_is_public: bool,
@@ -1370,7 +1254,7 @@ fn allow_pub_crate_by_policy(
     }
 }
 
-fn forbidden_pub_crate_help(module_location: ModuleLocation) -> &'static str {
+const fn forbidden_pub_crate_help(module_location: ModuleLocation) -> &'static str {
     if matches!(
         module_location,
         ModuleLocation::CrateRoot | ModuleLocation::TopLevelPrivateModule
@@ -1405,14 +1289,6 @@ struct ParentFacadeExportStatus {
     used_outside_parent: bool,
     parent_rel_path:     String,
     parent_line:         usize,
-}
-
-#[derive(Debug, Clone)]
-struct ParentPubUseStatus {
-    exported_name:       String,
-    used_outside_parent: bool,
-    child_rel_path:      String,
-    child_line:          usize,
 }
 
 fn line_display(tcx: TyCtxt<'_>, file_path: &Path, span: Span) -> Result<LineDisplay> {
@@ -1477,7 +1353,7 @@ fn highlight_span(vis_span: Span, ident_span: Option<Span>) -> Span {
     ident_span.map_or(vis_span, |ident_span| vis_span.to(ident_span))
 }
 
-fn item_kind_label(kind: ItemKind<'_>) -> Option<&'static str> {
+const fn item_kind_label(kind: ItemKind<'_>) -> Option<&'static str> {
     match kind {
         ItemKind::Const(..) => Some("const"),
         ItemKind::Enum(..) => Some("enum"),
@@ -1488,8 +1364,8 @@ fn item_kind_label(kind: ItemKind<'_>) -> Option<&'static str> {
         ItemKind::TyAlias(..) => Some("type"),
         ItemKind::Union(..) => Some("union"),
         ItemKind::Mod(..) => Some("mod"),
-        ItemKind::Use(..) => None,
-        ItemKind::ExternCrate(..)
+        ItemKind::Use(..)
+        | ItemKind::ExternCrate(..)
         | ItemKind::ForeignMod { .. }
         | ItemKind::GlobalAsm { .. }
         | ItemKind::Impl(..)
@@ -1497,19 +1373,19 @@ fn item_kind_label(kind: ItemKind<'_>) -> Option<&'static str> {
     }
 }
 
-fn impl_item_kind_label(kind: ImplItemKind<'_>) -> Option<&'static str> {
+const fn impl_item_kind_label(kind: ImplItemKind<'_>) -> &'static str {
     match kind {
-        ImplItemKind::Const(..) => Some("const"),
-        ImplItemKind::Fn(..) => Some("fn"),
-        ImplItemKind::Type(..) => Some("type"),
+        ImplItemKind::Const(..) => "const",
+        ImplItemKind::Fn(..) => "fn",
+        ImplItemKind::Type(..) => "type",
     }
 }
 
-fn foreign_item_kind_label(kind: ForeignItemKind<'_>) -> Option<&'static str> {
+const fn foreign_item_kind_label(kind: ForeignItemKind<'_>) -> &'static str {
     match kind {
-        ForeignItemKind::Fn(..) => Some("fn"),
-        ForeignItemKind::Static(..) => Some("static"),
-        ForeignItemKind::Type => Some("type"),
+        ForeignItemKind::Fn(..) => "fn",
+        ForeignItemKind::Static(..) => "static",
+        ForeignItemKind::Type => "type",
     }
 }
 
@@ -1644,13 +1520,10 @@ mod tests {
     }
 
     #[test]
-    fn cache_is_current_requires_matching_schema_version() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+    fn cache_is_current_requires_matching_schema_version() -> anyhow::Result<()> {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("mend-cache-test-{unique}"));
-        fs::create_dir_all(&temp_dir).unwrap();
+        fs::create_dir_all(&temp_dir)?;
 
         let package_root = Path::new("/tmp/example-crate");
         let cache_path = temp_dir.join(cache_filename_for(package_root));
@@ -1668,42 +1541,40 @@ mod tests {
                 item:          None,
                 message:       String::new(),
                 suggestion:    None,
+                fix_kind:      None,
                 related:       None,
             }],
         };
-        fs::write(&cache_path, serde_json::to_vec(&stale).unwrap()).unwrap();
+        fs::write(&cache_path, serde_json::to_vec(&stale)?)?;
 
         assert!(!cache_is_current_for(&temp_dir, package_root));
 
-        fs::remove_dir_all(&temp_dir).unwrap();
+        fs::remove_dir_all(&temp_dir)?;
+        Ok(())
     }
 
     #[test]
-    fn cache_is_current_rejects_stale_cache_when_sources_changed() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+    fn cache_is_current_rejects_stale_cache_when_sources_changed() -> anyhow::Result<()> {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("mend-cache-source-test-{unique}"));
         let package_root = temp_dir.join("crate");
         let src_dir = package_root.join("src");
-        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&src_dir)?;
         fs::write(
             package_root.join("Cargo.toml"),
             "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )
-        .unwrap();
-        fs::write(src_dir.join("lib.rs"), "pub fn demo() {}\n").unwrap();
+        )?;
+        fs::write(src_dir.join("lib.rs"), "pub fn demo() {}\n")?;
 
         let findings_dir = temp_dir.join("findings");
-        fs::create_dir_all(&findings_dir).unwrap();
+        fs::create_dir_all(&findings_dir)?;
         let cache_path = findings_dir.join(cache_filename_for(&package_root));
         let report = StoredReport {
             version:      FINDINGS_SCHEMA_VERSION,
             package_root: package_root.to_string_lossy().into_owned(),
             findings:     Vec::new(),
         };
-        fs::write(&cache_path, serde_json::to_vec(&report).unwrap()).unwrap();
+        fs::write(&cache_path, serde_json::to_vec(&report)?)?;
 
         assert!(cache_is_current_for(&findings_dir, &package_root));
 
@@ -1711,11 +1582,11 @@ mod tests {
         fs::write(
             src_dir.join("lib.rs"),
             "pub fn demo() {}\npub fn newer() {}\n",
-        )
-        .unwrap();
+        )?;
 
         assert!(!cache_is_current_for(&findings_dir, &package_root));
 
-        fs::remove_dir_all(&temp_dir).unwrap();
+        fs::remove_dir_all(&temp_dir)?;
+        Ok(())
     }
 }

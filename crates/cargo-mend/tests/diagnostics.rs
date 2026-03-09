@@ -1,3 +1,8 @@
+#![allow(clippy::expect_used)]
+#![allow(clippy::needless_raw_string_hashes)]
+#![allow(clippy::struct_field_names)]
+#![allow(clippy::too_many_lines)]
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
@@ -57,7 +62,7 @@ fn run_mend_json(manifest_path: &std::path::Path) -> Report {
         .output()
         .expect("run cargo-mend --json");
     assert!(
-        matches!(output.status.code(), Some(0) | Some(1) | Some(2)),
+        matches!(output.status.code(), Some(0..=2)),
         "cargo-mend returned unexpected status {:?}: {}",
         output.status.code(),
         String::from_utf8_lossy(&output.stderr)
@@ -162,7 +167,7 @@ pub struct Suspicious;
         .output()
         .expect("run cargo-mend against fixture");
     assert!(
-        matches!(output.status.code(), Some(1) | Some(2)),
+        matches!(output.status.code(), Some(1 | 2)),
         "cargo-mend returned unexpected status {:?}: {}",
         output.status.code(),
         String::from_utf8_lossy(&output.stderr)
@@ -178,15 +183,11 @@ pub struct Suspicious;
 
     assert_eq!(
         codes, expected_codes,
-        "fixture should trigger every diagnostic exactly once"
+        "fixture should trigger every diagnostic at least once"
     );
-    assert_eq!(
-        report.findings.len(),
-        diagnostic_specs().len() + 1,
-        "fixture should trigger every diagnostic, with one extra paired warning for stale parent facade exports"
-    );
+    assert_eq!(report.findings.len(), 6);
     assert_eq!(report.summary.error_count, 3);
-    assert_eq!(report.summary.warning_count, 4);
+    assert_eq!(report.summary.warning_count, 3);
     assert_eq!(report.summary.fixable_count, 2);
 
     let rendered_output = Command::new(mend_bin())
@@ -195,7 +196,7 @@ pub struct Suspicious;
         .output()
         .expect("run cargo-mend human output");
     assert!(
-        matches!(rendered_output.status.code(), Some(1) | Some(2)),
+        matches!(rendered_output.status.code(), Some(1 | 2)),
         "cargo-mend returned unexpected status {:?}: {}",
         rendered_output.status.code(),
         String::from_utf8_lossy(&rendered_output.stderr)
@@ -228,9 +229,10 @@ pub struct Suspicious;
     assert!(
         rendered.contains("note: this warning is auto-fixable with `cargo mend --fix-pub-use`")
     );
-    assert!(rendered.contains("summary: 3 error(s), 4 warning(s), 2 fixable with `--fix`"));
-    assert!(rendered.contains("paired with parent re-export at stale_parent/mod.rs"));
-    assert!(rendered.contains("paired with child item at stale_parent/child.rs"));
+    assert!(rendered.contains("summary: 3 error(s), 3 warning(s), 2 fixable with `--fix`"));
+    assert!(rendered.contains(
+        "parent module also has an `unused import` warning for this `pub use` at stale_parent/mod.rs"
+    ));
 }
 
 #[test]
@@ -1281,23 +1283,20 @@ edition = "2024"
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.error_count, 0);
-    assert_eq!(report.summary.warning_count, 2);
+    assert_eq!(report.summary.warning_count, 1);
     assert_eq!(report.summary.fixable_count, 1);
-    assert_eq!(report.findings.len(), 2);
+    assert_eq!(report.findings.len(), 1);
     let codes = report
         .findings
         .iter()
         .map(|finding| finding.code.as_str())
         .collect::<BTreeSet<_>>();
-    assert_eq!(
-        codes,
-        BTreeSet::from(["suspicious_pub", "unnecessary_parent_pub_use"])
-    );
+    assert_eq!(codes, BTreeSet::from(["suspicious_pub"]));
 }
 
 mod cargo_mend_tests_support {
     #![allow(dead_code)]
     include!("../src/diagnostics.rs");
 
-    pub fn diagnostic_specs() -> &'static [DiagnosticSpec] { DIAGNOSTICS }
+    pub const fn diagnostic_specs() -> &'static [DiagnosticSpec] { DIAGNOSTICS }
 }

@@ -348,6 +348,18 @@ If the parent `mod.rs` re-exports `Helper` but nothing outside the parent subtre
 re-export, then the child `pub` is still broader than the boundary the code is actually using.
 In that case this warning should still appear.
 
+In practice, Rust itself will often warn on the parent `mod.rs` too:
+
+- `warning: unused import: ...`
+
+`cargo-mend` does not duplicate that parent warning. Instead, it warns on the child item and points
+back to the compiler's `unused import` warning so you can see the pair together:
+
+- the compiler warns that the parent `pub use` is stale
+- `cargo-mend` warns that the child item is still broader than needed
+
+That is also the case that `cargo mend --fix-pub-use` is designed to repair.
+
 For example:
 
 ```rust
@@ -360,34 +372,6 @@ outside world.
 
 This warning does not apply the same way to a top-level private module. At the top level, plain
 `pub` can still be the right way to say "this belongs to this module's crate-internal API."
-
-<a id="unnecessary-parent-pub-use"></a>
-### Unnecessary parent `pub use`
-
-This warning is about a stale parent facade export.
-
-In this example, `mod.rs` claims that `Helper` is part of the parent module's exported surface:
-
-```rust
-// src/private_parent/mod.rs
-mod child;
-pub use child::Helper;
-```
-
-But if nothing outside `private_parent` ever uses `private_parent::Helper`, then that `pub use`
-is not doing real facade work.
-
-That matters because the stale `pub use` often hides a second issue:
-
-- the child item may also still be written as `pub`
-- even though the parent is the only code that ever needed to see it
-
-In that situation, there are usually two cleanup steps:
-
-- remove the unnecessary parent `pub use`
-- then narrow the child item, often to `pub(super)`
-
-This warning points at the parent `pub use` line so you can clean up the stale facade directly.
 
 <a id="shorten-local-crate-import"></a>
 ### Shorten local crate import

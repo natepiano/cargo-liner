@@ -3,20 +3,20 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum Severity {
+pub enum Severity {
     Error,
     Warning,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) enum FixKind {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FixKind {
     None,
     ImportRewrite,
     ParentPubUse,
 }
 
 impl FixKind {
-    pub(super) const fn note(self) -> Option<&'static str> {
+    pub const fn note(self) -> Option<&'static str> {
         match self {
             Self::None => None,
             Self::ImportRewrite => Some("this warning is auto-fixable with `cargo mend --fix`"),
@@ -30,21 +30,20 @@ impl FixKind {
 #[derive(Debug, Clone, Copy)]
 enum DetailMode {
     None,
-    MessageAndRelated,
     MessageRelatedAndFix(FixKind),
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct DiagnosticSpec {
-    pub(super) code:        &'static str,
-    pub(super) headline:    &'static str,
-    pub(super) inline_help: Option<&'static str>,
-    pub(super) help_anchor: &'static str,
-    detail_mode:            DetailMode,
-    pub(super) fix_kind:    FixKind,
+pub struct DiagnosticSpec {
+    pub code:        &'static str,
+    pub headline:    &'static str,
+    pub inline_help: Option<&'static str>,
+    pub help_anchor: &'static str,
+    detail_mode:     DetailMode,
+    pub fix_kind:    FixKind,
 }
 
-pub(super) const DIAGNOSTICS: &[DiagnosticSpec] = &[
+pub const DIAGNOSTICS: &[DiagnosticSpec] = &[
     DiagnosticSpec {
         code:        "forbidden_pub_crate",
         headline:    "use of `pub(crate)` is forbidden by policy",
@@ -82,92 +81,93 @@ pub(super) const DIAGNOSTICS: &[DiagnosticSpec] = &[
         headline:    "`pub` is broader than this nested module boundary",
         inline_help: Some("consider using: `pub(super)`"),
         help_anchor: "suspicious-pub",
-        detail_mode: DetailMode::MessageAndRelated,
+        detail_mode: DetailMode::MessageRelatedAndFix(FixKind::None),
         fix_kind:    FixKind::None,
-    },
-    DiagnosticSpec {
-        code:        "unnecessary_parent_pub_use",
-        headline:    "parent `pub use` is not used outside its module subtree",
-        inline_help: Some(
-            "consider removing this `pub use` and narrowing the child item with `pub(super)`",
-        ),
-        help_anchor: "unnecessary-parent-pub-use",
-        detail_mode: DetailMode::MessageRelatedAndFix(FixKind::ParentPubUse),
-        fix_kind:    FixKind::ParentPubUse,
     },
 ];
 
-pub(super) fn diagnostic_spec(code: &str) -> &'static DiagnosticSpec {
-    DIAGNOSTICS
-        .iter()
-        .find(|spec| spec.code == code)
-        .unwrap_or_else(|| panic!("unknown diagnostic code: {code}"))
+pub fn diagnostic_spec(code: &str) -> &'static DiagnosticSpec {
+    let Some(spec) = DIAGNOSTICS.iter().find(|candidate| candidate.code == code) else {
+        unreachable!("unknown diagnostic code: {code}");
+    };
+    spec
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct Finding {
-    pub(super) severity:      Severity,
-    pub(super) code:          String,
-    pub(super) path:          String,
-    pub(super) line:          usize,
-    pub(super) column:        usize,
-    pub(super) highlight_len: usize,
-    pub(super) source_line:   String,
-    pub(super) item:          Option<String>,
-    pub(super) message:       String,
-    pub(super) suggestion:    Option<String>,
+pub struct Finding {
+    pub severity:      Severity,
+    pub code:          String,
+    pub path:          String,
+    pub line:          usize,
+    pub column:        usize,
+    pub highlight_len: usize,
+    pub source_line:   String,
+    pub item:          Option<String>,
+    pub message:       String,
+    pub suggestion:    Option<String>,
     #[serde(default)]
-    pub(super) related:       Option<String>,
+    pub fix_kind:      Option<FixKind>,
+    #[serde(default)]
+    pub related:       Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub(super) struct Report {
-    pub(super) root:     String,
-    pub(super) summary:  ReportSummary,
-    pub(super) findings: Vec<Finding>,
+pub struct Report {
+    pub root:     String,
+    pub summary:  ReportSummary,
+    pub findings: Vec<Finding>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub(super) struct ReportSummary {
-    pub(super) error_count:   usize,
-    pub(super) warning_count: usize,
-    pub(super) fixable_count: usize,
+pub struct ReportSummary {
+    #[serde(rename = "error_count")]
+    pub errors:   usize,
+    #[serde(rename = "warning_count")]
+    pub warnings: usize,
+    #[serde(rename = "fixable_count")]
+    pub fixable:  usize,
 }
 
 impl Report {
-    pub(super) fn has_errors(&self) -> bool { self.summary.error_count > 0 }
+    pub const fn has_errors(&self) -> bool { self.summary.errors > 0 }
 
-    pub(super) fn has_warnings(&self) -> bool { self.summary.warning_count > 0 }
+    pub const fn has_warnings(&self) -> bool { self.summary.warnings > 0 }
 
     pub(super) fn refresh_summary(&mut self) {
         self.summary = ReportSummary {
-            error_count:   self
+            errors:   self
                 .findings
                 .iter()
                 .filter(|f| f.severity == Severity::Error)
                 .count(),
-            warning_count: self
+            warnings: self
                 .findings
                 .iter()
                 .filter(|f| f.severity == Severity::Warning)
                 .count(),
-            fixable_count: self
+            fixable:  self
                 .findings
                 .iter()
-                .filter(|f| diagnostic_spec(&f.code).fix_kind.note().is_some())
+                .filter(|f| effective_fix_kind(f).note().is_some())
                 .count(),
         };
     }
 }
 
-pub(super) fn finding_headline(finding: &Finding) -> String {
+fn effective_fix_kind(finding: &Finding) -> FixKind {
+    finding
+        .fix_kind
+        .unwrap_or_else(|| diagnostic_spec(&finding.code).fix_kind)
+}
+
+pub fn finding_headline(finding: &Finding) -> String {
     diagnostic_spec(&finding.code).headline.to_string()
 }
 
-pub(super) fn detail_reasons(finding: &Finding) -> Vec<String> {
+pub fn detail_reasons(finding: &Finding) -> Vec<String> {
     match diagnostic_spec(&finding.code).detail_mode {
         DetailMode::None => Vec::new(),
-        DetailMode::MessageAndRelated => {
+        DetailMode::MessageRelatedAndFix(default_fix_kind) => {
             let mut reasons = Vec::new();
             if !finding.message.is_empty() {
                 reasons.push(finding.message.clone());
@@ -175,17 +175,10 @@ pub(super) fn detail_reasons(finding: &Finding) -> Vec<String> {
             if let Some(related) = &finding.related {
                 reasons.push(related.clone());
             }
-            reasons
-        },
-        DetailMode::MessageRelatedAndFix(fix_kind) => {
-            let mut reasons = Vec::new();
-            if !finding.message.is_empty() {
-                reasons.push(finding.message.clone());
-            }
-            if let Some(related) = &finding.related {
-                reasons.push(related.clone());
-            }
-            if let Some(note) = fix_kind.note() {
+            if let Some(note) = effective_fix_kind(finding)
+                .note()
+                .or_else(|| default_fix_kind.note())
+            {
                 reasons.push(note.to_string());
             }
             reasons
@@ -193,15 +186,13 @@ pub(super) fn detail_reasons(finding: &Finding) -> Vec<String> {
     }
 }
 
-pub(super) fn inline_help_text(finding: &Finding) -> Option<&'static str> {
+pub fn inline_help_text(finding: &Finding) -> Option<&'static str> {
     diagnostic_spec(&finding.code).inline_help
 }
 
-pub(super) fn custom_inline_help_text(finding: &Finding) -> Option<&str> {
-    finding.suggestion.as_deref()
-}
+pub fn custom_inline_help_text(finding: &Finding) -> Option<&str> { finding.suggestion.as_deref() }
 
-pub(super) fn finding_help_url(finding: &Finding) -> String {
+pub fn finding_help_url(finding: &Finding) -> String {
     format!(
         "https://github.com/natepiano/cargo-mend#{}",
         diagnostic_spec(&finding.code).help_anchor

@@ -5,7 +5,7 @@ use super::diagnostics::Finding;
 use super::diagnostics::Report;
 use super::diagnostics::Severity;
 
-pub(super) fn render_human_report(report: &Report, color: bool) -> String {
+pub fn render_human_report(report: &Report, color: bool) -> String {
     if report.findings.is_empty() {
         return "No findings.\n".to_string();
     }
@@ -19,9 +19,9 @@ pub(super) fn render_human_report(report: &Report, color: bool) -> String {
         output,
         "{}",
         summary_line(
-            report.summary.error_count,
-            report.summary.warning_count,
-            report.summary.fixable_count,
+            report.summary.errors,
+            report.summary.warnings,
+            report.summary.fixable,
             color
         )
     );

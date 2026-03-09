@@ -14,33 +14,34 @@ struct ConfigFile {
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
-pub(super) struct VisibilityConfig {
+pub struct VisibilityConfig {
     #[serde(default)]
-    pub(super) allow_pub_mod:   Vec<String>,
+    pub allow_pub_mod:   Vec<String>,
     #[serde(default)]
-    pub(super) allow_pub_items: Vec<String>,
+    pub allow_pub_items: Vec<String>,
 }
 
 #[derive(Debug)]
-pub(super) struct LoadedConfig {
-    pub(super) config: VisibilityConfig,
-    pub(super) root:   PathBuf,
+pub struct LoadedConfig {
+    pub config: VisibilityConfig,
+    pub root:   PathBuf,
 }
 
-pub(super) fn load_config(
+pub fn load_config(
     manifest_dir: &Path,
     workspace_root: &Path,
     explicit: Option<&Path>,
 ) -> Result<LoadedConfig> {
-    let candidates = if let Some(path) = explicit {
-        vec![path.to_path_buf()]
-    } else {
-        let mut result = Vec::new();
-        for root in [manifest_dir, workspace_root] {
-            result.push(root.join("mend.toml"));
-        }
-        result
-    };
+    let candidates = explicit.map_or_else(
+        || {
+            let mut result = Vec::new();
+            for root in [manifest_dir, workspace_root] {
+                result.push(root.join("mend.toml"));
+            }
+            result
+        },
+        |path| vec![path.to_path_buf()],
+    );
 
     for path in candidates {
         if path.exists() {
@@ -50,8 +51,7 @@ pub(super) fn load_config(
                 .with_context(|| format!("failed to parse config {}", path.display()))?;
             let root = path
                 .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| manifest_dir.to_path_buf());
+                .map_or_else(|| manifest_dir.to_path_buf(), Path::to_path_buf);
             return Ok(LoadedConfig {
                 config: file.visibility,
                 root,

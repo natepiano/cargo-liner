@@ -1,34 +1,41 @@
 use std::path::PathBuf;
 
+use clap::Args;
 use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(name = "mend")]
 #[command(about = "Audit Rust visibility patterns against a stricter house style")]
-pub(super) struct Cli {
+pub struct Cli {
     #[arg(long)]
-    pub(super) manifest_path: Option<PathBuf>,
+    pub manifest_path: Option<PathBuf>,
 
     #[arg(long)]
-    pub(super) config: Option<PathBuf>,
+    pub config: Option<PathBuf>,
 
     #[arg(long)]
-    pub(super) json: bool,
+    pub json: bool,
 
     #[arg(long)]
-    pub(super) fail_on_warn: bool,
+    pub fail_on_warn: bool,
 
-    #[arg(long)]
-    pub(super) fix: bool,
-
-    #[arg(long)]
-    pub(super) fix_pub_use: bool,
-
-    #[arg(long)]
-    pub(super) dry_run: bool,
+    #[command(flatten)]
+    pub fix: FixCli,
 }
 
-pub(super) fn parse() -> Cli { Cli::parse_from(normalized_args()) }
+pub fn parse() -> Cli { Cli::parse_from(normalized_args()) }
+
+#[derive(Args, Debug)]
+pub struct FixCli {
+    #[arg(long)]
+    pub fix: bool,
+
+    #[arg(long)]
+    pub fix_pub_use: bool,
+
+    #[arg(long)]
+    pub dry_run: bool,
+}
 
 fn normalized_args() -> Vec<std::ffi::OsString> {
     let mut args: Vec<_> = std::env::args_os().collect();

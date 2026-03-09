@@ -1,17 +1,22 @@
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::io;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::PathBuf;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::Command;
 
 fn main() {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    configure_unix_rpath();
+    if let Err(error) = configure_unix_rpath() {
+        eprintln!("cargo-mend build script failed: {error}");
+        std::process::exit(1);
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn configure_unix_rpath() {
-    let sysroot = sysroot_path();
-    let host = host_triple();
+fn configure_unix_rpath() -> Result<(), String> {
+    let sysroot = sysroot_path()?;
+    let host = host_triple()?;
     let rustc_lib_dir = sysroot.join("lib");
     let target_lib_dir = sysroot.join("lib").join("rustlib").join(host).join("lib");
 
@@ -23,40 +28,46 @@ fn configure_unix_rpath() {
         "cargo:rustc-link-arg=-Wl,-rpath,{}",
         target_lib_dir.display()
     );
+    Ok(())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn sysroot_path() -> PathBuf {
+fn sysroot_path() -> Result<PathBuf, String> {
     let output = Command::new("rustc")
         .args(["--print", "sysroot"])
         .output()
-        .expect("failed to run `rustc --print sysroot`");
-    assert!(
-        output.status.success(),
-        "`rustc --print sysroot` failed with status {}",
-        output.status
-    );
-    PathBuf::from(
-        String::from_utf8(output.stdout)
-            .expect("sysroot output was not UTF-8")
-            .trim(),
-    )
+        .map_err(command_error("failed to run `rustc --print sysroot`"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`rustc --print sysroot` failed with status {}",
+            output.status
+        ));
+    }
+
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|error| format!("sysroot output was not UTF-8: {error}"))?;
+    Ok(PathBuf::from(stdout.trim()))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn host_triple() -> String {
+fn host_triple() -> Result<String, String> {
     let output = Command::new("rustc")
         .arg("-vV")
         .output()
-        .expect("failed to run `rustc -vV`");
-    assert!(
-        output.status.success(),
-        "`rustc -vV` failed with status {}",
-        output.status
-    );
-    String::from_utf8(output.stdout)
-        .expect("rustc -vV output was not UTF-8")
+        .map_err(command_error("failed to run `rustc -vV`"))?;
+    if !output.status.success() {
+        return Err(format!("`rustc -vV` failed with status {}", output.status));
+    }
+
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|error| format!("rustc -vV output was not UTF-8: {error}"))?;
+    stdout
         .lines()
         .find_map(|line| line.strip_prefix("host: ").map(str::to_string))
-        .expect("rustc -vV did not report a host triple")
+        .ok_or_else(|| "`rustc -vV` did not report a host triple".to_string())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn command_error(context: &'static str) -> impl FnOnce(io::Error) -> String {
+    move |error| format!("{context}: {error}")
 }

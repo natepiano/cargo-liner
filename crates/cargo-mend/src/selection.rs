@@ -11,27 +11,27 @@ use cargo_metadata::Target;
 use cargo_metadata::TargetKind;
 
 #[derive(Debug)]
-pub(super) struct Selection {
-    pub(super) manifest_path:          PathBuf,
-    pub(super) manifest_dir:           PathBuf,
-    pub(super) workspace_root:         PathBuf,
-    pub(super) target_directory:       PathBuf,
-    pub(super) analysis_root:          PathBuf,
-    pub(super) is_workspace_selection: bool,
-    pub(super) package_roots:          Vec<PathBuf>,
-    pub(super) packages:               Vec<SelectedPackage>,
+pub struct Selection {
+    pub manifest_path:      PathBuf,
+    pub manifest_dir:       PathBuf,
+    pub workspace_root:     PathBuf,
+    pub target_directory:   PathBuf,
+    pub analysis_root:      PathBuf,
+    pub workspace_selected: bool,
+    pub package_roots:      Vec<PathBuf>,
+    pub packages:           Vec<SelectedPackage>,
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct SelectedPackage {
-    pub(super) name:          String,
-    pub(super) manifest_path: PathBuf,
-    pub(super) root:          PathBuf,
-    pub(super) target:        TargetSelector,
+pub struct SelectedPackage {
+    pub name:          String,
+    pub manifest_path: PathBuf,
+    pub root:          PathBuf,
+    pub target:        TargetSelector,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum TargetSelector {
+pub enum TargetSelector {
     Implicit,
     Lib,
     Bin(String),
@@ -41,7 +41,7 @@ pub(super) enum TargetSelector {
 }
 
 impl TargetSelector {
-    pub(super) fn cargo_args(&self) -> Vec<String> {
+    pub fn cargo_args(&self) -> Vec<String> {
         match self {
             Self::Implicit => Vec::new(),
             Self::Lib => vec!["--lib".to_string()],
@@ -53,7 +53,7 @@ impl TargetSelector {
     }
 }
 
-pub(super) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<Selection> {
+pub fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<Selection> {
     let manifest_path = match explicit_manifest_path {
         Some(path) => path
             .canonicalize()
@@ -69,10 +69,10 @@ pub(super) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
         .context("manifest path had no parent directory")?
         .to_path_buf();
     let workspace_manifest = workspace_root.join("Cargo.toml");
-    let is_workspace_selection =
+    let workspace_selected =
         manifest_path == workspace_manifest && metadata.workspace_members.len() > 1;
 
-    let packages: Vec<SelectedPackage> = if is_workspace_selection {
+    let packages: Vec<SelectedPackage> = if workspace_selected {
         metadata
             .workspace_members
             .iter()
@@ -97,7 +97,7 @@ pub(super) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
         .map(|package| package.root.clone())
         .collect();
 
-    let analysis_root = if is_workspace_selection {
+    let analysis_root = if workspace_selected {
         workspace_root.clone()
     } else {
         manifest_dir.clone()
@@ -109,7 +109,7 @@ pub(super) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
         workspace_root,
         target_directory,
         analysis_root,
-        is_workspace_selection,
+        workspace_selected,
         package_roots,
         packages,
     })

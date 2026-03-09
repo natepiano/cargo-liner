@@ -20,6 +20,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 
+#[derive(Clone, Copy)]
 enum FixMode {
     None,
     Imports { dry_run: bool },
@@ -61,7 +62,7 @@ fn run() -> Result<ExitCode> {
         selection.workspace_root.as_path(),
         cli.config.as_deref(),
     )?;
-    let fix_mode = fix_mode_from_cli(&cli)?;
+    let fix_mode = fix_mode_from_cli(&cli.fix)?;
     let planned = plan_run(&selection, &config, fix_mode)?;
     let (report, post_run_notice) = execute_plan(&selection, &config, planned)?;
 
@@ -88,8 +89,8 @@ fn run() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn fix_mode_from_cli(cli: &cli::Cli) -> Result<FixMode> {
-    match (cli.fix, cli.fix_pub_use, cli.dry_run) {
+fn fix_mode_from_cli(fix_cli: &cli::FixCli) -> Result<FixMode> {
+    match (fix_cli.fix, fix_cli.fix_pub_use, fix_cli.dry_run) {
         (false, false, false) => Ok(FixMode::None),
         (false, false, true) => anyhow::bail!("`--dry-run` requires `--fix` or `--fix-pub-use`"),
         (true, false, dry_run) => Ok(FixMode::Imports { dry_run }),
