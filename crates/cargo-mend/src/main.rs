@@ -11,6 +11,7 @@ mod compiler;
 mod config;
 mod diagnostics;
 mod imports;
+mod pub_use_fixes;
 mod render;
 mod selection;
 
@@ -18,6 +19,25 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use anyhow::Result;
+
+enum FixMode {
+    None,
+    Imports { dry_run: bool },
+    PubUse { dry_run: bool },
+}
+
+enum PlannedRun {
+    Report {
+        report:          diagnostics::Report,
+        post_run_notice: Option<String>,
+    },
+    ApplyImports {
+        fixes: Vec<imports::UseFix>,
+    },
+    ApplyPubUse {
+        scan: pub_use_fixes::PubUseFixScan,
+    },
+}
 
 fn main() -> ExitCode {
     if std::env::var_os("VISCHECK_DRIVER").is_some() {
@@ -41,29 +61,9 @@ fn run() -> Result<ExitCode> {
         selection.workspace_root.as_path(),
         cli.config.as_deref(),
     )?;
-    let mut post_run_notice = None;
-    let report = if cli.fix {
-        let import_scan = imports::scan_selection(&selection)?;
-        if import_scan.fixes.is_empty() {
-            post_run_notice = Some("vischeck: no import fixes available");
-            build_report(&selection, &config)?
-        } else {
-            let snapshots = imports::snapshot_files(&import_scan.fixes)?;
-            let applied = imports::apply_fixes(&import_scan.fixes)?;
-            if applied > 0 {
-                eprintln!("vischeck: applied {applied} import fix(es)");
-            }
-            match build_report(&selection, &config) {
-                Ok(report) => report,
-                Err(err) => {
-                    imports::restore_files(&snapshots)?;
-                    anyhow::bail!("rolled back import fixes after failed cargo check\n\n{err:#}");
-                },
-            }
-        }
-    } else {
-        build_report(&selection, &config)?
-    };
+    let fix_mode = fix_mode_from_cli(&cli)?;
+    let planned = plan_run(&selection, &config, fix_mode)?;
+    let (report, post_run_notice) = execute_plan(&selection, &config, planned)?;
 
     if cli.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -88,11 +88,133 @@ fn run() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn fix_mode_from_cli(cli: &cli::Cli) -> Result<FixMode> {
+    match (cli.fix, cli.fix_pub_use, cli.dry_run) {
+        (false, false, false) => Ok(FixMode::None),
+        (false, false, true) => anyhow::bail!("`--dry-run` requires `--fix` or `--fix-pub-use`"),
+        (true, false, dry_run) => Ok(FixMode::Imports { dry_run }),
+        (false, true, dry_run) => Ok(FixMode::PubUse { dry_run }),
+        (true, true, _) => anyhow::bail!("`--fix` and `--fix-pub-use` cannot be combined"),
+    }
+}
+
+fn plan_run(
+    selection: &selection::Selection,
+    config: &config::LoadedConfig,
+    fix_mode: FixMode,
+) -> Result<PlannedRun> {
+    match fix_mode {
+        FixMode::None => Ok(PlannedRun::Report {
+            report:          build_report(selection, config, compiler::BuildOutputMode::Full)?,
+            post_run_notice: None,
+        }),
+        FixMode::Imports { dry_run } => {
+            let import_scan = imports::scan_selection(selection)?;
+            if import_scan.fixes.is_empty() {
+                Ok(PlannedRun::Report {
+                    report:          build_report(
+                        selection,
+                        config,
+                        compiler::BuildOutputMode::Full,
+                    )?,
+                    post_run_notice: Some("vischeck: no import fixes available".to_string()),
+                })
+            } else if dry_run {
+                Ok(PlannedRun::Report {
+                    report:          build_report(
+                        selection,
+                        config,
+                        compiler::BuildOutputMode::Full,
+                    )?,
+                    post_run_notice: Some(format!(
+                        "vischeck: would apply {} import fix(es) in dry run",
+                        import_scan.fixes.len()
+                    )),
+                })
+            } else {
+                Ok(PlannedRun::ApplyImports {
+                    fixes: import_scan.fixes,
+                })
+            }
+        },
+        FixMode::PubUse { dry_run } => {
+            let initial_report = build_report(
+                selection,
+                config,
+                compiler::BuildOutputMode::SuppressUnusedImportWarnings,
+            )?;
+            let scan = pub_use_fixes::scan_selection(selection, &initial_report)?;
+            if scan.fixes.is_empty() {
+                Ok(PlannedRun::Report {
+                    report:          initial_report,
+                    post_run_notice: Some("vischeck: no `pub use` fixes available".to_string()),
+                })
+            } else if dry_run {
+                Ok(PlannedRun::Report {
+                    report:          initial_report,
+                    post_run_notice: Some(format!(
+                        "vischeck: would apply {} `pub use` fix(es) in dry run",
+                        scan.applied_count
+                    )),
+                })
+            } else {
+                Ok(PlannedRun::ApplyPubUse { scan })
+            }
+        },
+    }
+}
+
+fn execute_plan(
+    selection: &selection::Selection,
+    config: &config::LoadedConfig,
+    planned: PlannedRun,
+) -> Result<(diagnostics::Report, Option<String>)> {
+    match planned {
+        PlannedRun::Report {
+            report,
+            post_run_notice,
+        } => Ok((report, post_run_notice)),
+        PlannedRun::ApplyImports { fixes } => {
+            let snapshots = imports::snapshot_files(&fixes)?;
+            let applied = imports::apply_fixes(&fixes)?;
+            match build_report(selection, config, compiler::BuildOutputMode::Full) {
+                Ok(report) => Ok((
+                    report,
+                    (applied > 0).then(|| format!("vischeck: applied {applied} import fix(es)")),
+                )),
+                Err(err) => {
+                    imports::restore_files(&snapshots)?;
+                    anyhow::bail!("rolled back import fixes after failed cargo check\n\n{err:#}");
+                },
+            }
+        },
+        PlannedRun::ApplyPubUse { scan } => {
+            let snapshots = imports::snapshot_files(&scan.fixes)?;
+            let _applied = imports::apply_fixes(&scan.fixes)?;
+            match build_report(selection, config, compiler::BuildOutputMode::Full) {
+                Ok(report) => Ok((
+                    report,
+                    (scan.applied_count > 0).then(|| {
+                        format!("vischeck: applied {} `pub use` fix(es)", scan.applied_count)
+                    }),
+                )),
+                Err(err) => {
+                    imports::restore_files(&snapshots)?;
+                    anyhow::bail!(
+                        "rolled back `pub use` fixes after failed cargo check\n\n{err:#}"
+                    );
+                },
+            }
+        },
+    }
+}
+
 fn build_report(
     selection: &selection::Selection,
     config: &config::LoadedConfig,
+    output_mode: compiler::BuildOutputMode,
 ) -> Result<diagnostics::Report> {
-    let mut report = compiler::run_selection(selection, config)?;
+    let mut report = compiler::run_selection(selection, config, output_mode)?;
     let import_scan = imports::scan_selection(selection)?;
     report.findings.extend(import_scan.findings);
     report.findings.sort_by(|a, b| {

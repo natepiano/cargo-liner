@@ -34,8 +34,8 @@ In practice, that usually means:
 - if an item is only local implementation detail, keep it private
 - if an item seems to need a deeply nested visibility like `pub(in crate::feature::subtree)`,
   the module tree may be wrong
-- if an item is marked `pub` but cannot actually be reached from the crate's public API, that is
-  probably a design smell
+- if an item is marked `pub` but is not actually used outside its intended module boundary, that
+  is probably a design smell
 
 ## V1 policy
 
@@ -56,7 +56,7 @@ Warnings:
 
 If you are new to Rust visibility, the important idea is this:
 
-- `pub` does not automatically make an item part of the crate's real public API
+- `pub` does not automatically make an item part of the crate's real outward API
 - every parent module on the path also has to be visible
 - if a parent module is private, a child item can be written as `pub` and still not actually be
   reachable from outside the crate

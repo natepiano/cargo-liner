@@ -191,7 +191,7 @@ pub struct Suspicious;
     );
     assert_eq!(report.summary.error_count, 3);
     assert_eq!(report.summary.warning_count, 4);
-    assert_eq!(report.summary.fixable_count, 1);
+    assert_eq!(report.summary.fixable_count, 2);
 
     let rendered_output = Command::new(vischeck_bin())
         .arg("--manifest-path")
@@ -229,7 +229,10 @@ pub struct Suspicious;
         rendered.contains("help: consider using: `use super::PublicContainer as ParentContainer;`")
     );
     assert!(rendered.contains("note: this warning is auto-fixable with `cargo vischeck --fix`"));
-    assert!(rendered.contains("summary: 3 error(s), 4 warning(s), 1 fixable with `--fix`"));
+    assert!(
+        rendered.contains("note: this warning is auto-fixable with `cargo vischeck --fix-pub-use`")
+    );
+    assert!(rendered.contains("summary: 3 error(s), 4 warning(s), 2 fixable with `--fix`"));
     assert!(rendered.contains("paired with parent re-export at stale_parent/mod.rs"));
     assert!(rendered.contains("paired with child item at stale_parent/child.rs"));
 }
@@ -562,6 +565,534 @@ edition = "2024"
 }
 
 #[test]
+fn fix_reports_applied_notice_after_summary() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_applied_notice_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod child;\nmod consumer;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/child.rs"),
+        "pub struct Thing;\n",
+    )
+    .expect("write child");
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        "use crate::parent::child::Thing;\n\nfn use_it(_thing: Thing) {}\n",
+    )
+    .expect("write consumer");
+
+    let output = Command::new(vischeck_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-vischeck --fix");
+    assert!(
+        output.status.success(),
+        "cargo-vischeck --fix failed unexpectedly: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("decode stdout");
+    let stderr = String::from_utf8(output.stderr).expect("decode stderr");
+
+    assert!(stdout.contains("summary:"));
+    assert!(stderr.contains("vischeck: applied 1 import fix(es)"));
+}
+
+#[test]
+fn dry_run_reports_import_fixes_without_editing_files() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "dry_run_import_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(temp.path().join("src/parent.rs"), "mod child;\n").expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/child.rs"),
+        "pub struct Thing;\n",
+    )
+    .expect("write child");
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        "use crate::parent::child::Thing;\n\nfn use_it(_thing: Thing) {}\n",
+    )
+    .expect("write consumer");
+
+    let output = Command::new(vischeck_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .arg("--dry-run")
+        .output()
+        .expect("run cargo-vischeck --fix --dry-run");
+    assert!(
+        output.status.success(),
+        "cargo-vischeck --fix --dry-run failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("vischeck: would apply 1 import fix(es) in dry run"));
+
+    let consumer = fs::read_to_string(temp.path().join("src/parent/consumer.rs"))
+        .expect("read consumer after dry-run");
+    assert!(consumer.contains("use crate::parent::child::Thing;"));
+}
+
+#[test]
+fn fix_pub_use_rewrites_sibling_imports_and_narrows_child() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_sibling_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/actor")).expect("create src/actor");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod actor;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/actor/mod.rs"),
+        "mod child;\nmod sibling;\npub use child::SpawnStats;\n",
+    )
+    .expect("write actor mod");
+    fs::write(
+        temp.path().join("src/actor/child.rs"),
+        "pub struct SpawnStats;\n",
+    )
+    .expect("write child");
+    fs::write(
+        temp.path().join("src/actor/sibling.rs"),
+        "use super::SpawnStats;\n\nfn use_it(_stats: SpawnStats) {}\n",
+    )
+    .expect("write sibling");
+
+    let output = Command::new(vischeck_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("run cargo-vischeck --fix-pub-use");
+    assert!(
+        output.status.success(),
+        "cargo-vischeck --fix-pub-use failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mod_rs =
+        fs::read_to_string(temp.path().join("src/actor/mod.rs")).expect("read fixed actor mod");
+    let child =
+        fs::read_to_string(temp.path().join("src/actor/child.rs")).expect("read fixed child");
+    let sibling =
+        fs::read_to_string(temp.path().join("src/actor/sibling.rs")).expect("read fixed sibling");
+
+    assert!(!mod_rs.contains("pub use child::SpawnStats;"));
+    assert!(child.contains("pub(super) struct SpawnStats;"));
+    assert!(sibling.contains("use super::child::SpawnStats;"));
+    assert!(!sibling.contains("use super::SpawnStats;"));
+
+    let follow_up = Command::new(vischeck_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .output()
+        .expect("rerun cargo-vischeck after fix-pub-use");
+    assert!(
+        follow_up.status.success(),
+        "follow-up cargo-vischeck failed: {}\n{}",
+        String::from_utf8_lossy(&follow_up.stdout),
+        String::from_utf8_lossy(&follow_up.stderr)
+    );
+    assert!(String::from_utf8_lossy(&follow_up.stdout).contains("No findings."));
+
+    let repeat_fix = Command::new(vischeck_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("rerun cargo-vischeck --fix-pub-use after fix");
+    assert!(
+        repeat_fix.status.success(),
+        "repeat cargo-vischeck --fix-pub-use failed: {}\n{}",
+        String::from_utf8_lossy(&repeat_fix.stdout),
+        String::from_utf8_lossy(&repeat_fix.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&repeat_fix.stderr)
+            .contains("vischeck: no `pub use` fixes available")
+    );
+}
+
+#[test]
+fn fix_pub_use_suppresses_targeted_unused_import_warning_during_discovery() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_suppression_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/actor")).expect("create src/actor");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod actor;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/actor/mod.rs"),
+        "mod child;\npub use child::SpawnStats;\n",
+    )
+    .expect("write actor mod");
+    fs::write(
+        temp.path().join("src/actor/child.rs"),
+        "pub struct SpawnStats;\n",
+    )
+    .expect("write child");
+
+    let output = Command::new(vischeck_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("run cargo-vischeck --fix-pub-use");
+    assert!(
+        output.status.success(),
+        "cargo-vischeck --fix-pub-use failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("vischeck: suppressing `unused import` warning during `--fix-pub-use` discovery"),
+        "expected suppression notice in stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("warning: unused import: `child::SpawnStats`"),
+        "unexpected forwarded unused-import warning in stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("to apply 1 suggestion"),
+        "unexpected forwarded cargo-fix suggestion summary in stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn dry_run_reports_pub_use_fixes_without_editing_files() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "dry_run_pub_use_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/actor")).expect("create src/actor");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod actor;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/actor/mod.rs"),
+        "mod child;\nmod sibling;\npub use child::SpawnStats;\n",
+    )
+    .expect("write actor mod");
+    fs::write(
+        temp.path().join("src/actor/child.rs"),
+        "pub struct SpawnStats;\n",
+    )
+    .expect("write child");
+    fs::write(
+        temp.path().join("src/actor/sibling.rs"),
+        "use super::SpawnStats;\n\nfn use_it(_stats: SpawnStats) {}\n",
+    )
+    .expect("write sibling");
+
+    let output = Command::new(vischeck_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .arg("--dry-run")
+        .output()
+        .expect("run cargo-vischeck --fix-pub-use --dry-run");
+    assert!(
+        output.status.success(),
+        "cargo-vischeck --fix-pub-use --dry-run failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("vischeck: would apply 1 `pub use` fix(es) in dry run"));
+
+    let mod_rs = fs::read_to_string(temp.path().join("src/actor/mod.rs")).expect("read actor mod");
+    let child = fs::read_to_string(temp.path().join("src/actor/child.rs")).expect("read child");
+    let sibling =
+        fs::read_to_string(temp.path().join("src/actor/sibling.rs")).expect("read sibling");
+
+    assert!(mod_rs.contains("pub use child::SpawnStats;"));
+    assert!(child.contains("pub struct SpawnStats;"));
+    assert!(sibling.contains("use super::SpawnStats;"));
+}
+
+#[test]
+fn fix_pub_use_rewrites_nested_descendant_imports() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_nested_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/actor/nested")).expect("create src/actor/nested");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod actor;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/actor/mod.rs"),
+        "mod child;\nmod nested;\npub use child::SpawnStats;\n",
+    )
+    .expect("write actor mod");
+    fs::write(
+        temp.path().join("src/actor/child.rs"),
+        "pub struct SpawnStats;\n",
+    )
+    .expect("write child");
+    fs::write(temp.path().join("src/actor/nested/mod.rs"), "mod deeper;\n")
+        .expect("write nested mod");
+    fs::write(
+        temp.path().join("src/actor/nested/deeper.rs"),
+        "use super::super::SpawnStats;\n\nfn use_it(_stats: SpawnStats) {}\n",
+    )
+    .expect("write deeper");
+
+    let output = Command::new(vischeck_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("run cargo-vischeck --fix-pub-use");
+    assert!(
+        output.status.success(),
+        "cargo-vischeck --fix-pub-use failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let deeper = fs::read_to_string(temp.path().join("src/actor/nested/deeper.rs"))
+        .expect("read fixed deeper");
+    assert!(deeper.contains("use super::super::child::SpawnStats;"));
+    assert!(!deeper.contains("use super::super::SpawnStats;"));
+}
+
+#[test]
+fn fix_pub_use_handles_child_items_with_attributes() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_attribute_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/actor")).expect("create src/actor");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod actor;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/actor/mod.rs"),
+        "mod child;\nmod sibling;\npub use child::SpawnStats;\n",
+    )
+    .expect("write actor mod");
+    fs::write(
+        temp.path().join("src/actor/child.rs"),
+        "#[derive(Debug)]\npub struct SpawnStats;\n",
+    )
+    .expect("write child");
+    fs::write(
+        temp.path().join("src/actor/sibling.rs"),
+        "use super::SpawnStats;\n\nfn use_it(_stats: SpawnStats) {}\n",
+    )
+    .expect("write sibling");
+
+    let output = Command::new(vischeck_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("run cargo-vischeck --fix-pub-use");
+    assert!(
+        output.status.success(),
+        "cargo-vischeck --fix-pub-use failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let child =
+        fs::read_to_string(temp.path().join("src/actor/child.rs")).expect("read fixed child");
+    let sibling =
+        fs::read_to_string(temp.path().join("src/actor/sibling.rs")).expect("read fixed sibling");
+
+    assert!(child.contains("#[derive(Debug)]\npub(super) struct SpawnStats;"));
+    assert!(sibling.contains("use super::child::SpawnStats;"));
+}
+
+#[test]
+fn fix_pub_use_rolls_back_on_failed_cargo_check() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_rollback_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/actor")).expect("create src/actor");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod actor;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/actor/mod.rs"),
+        "mod child;\npub use child::SpawnStats;\n\nfn keep(_stats: SpawnStats) {}\n",
+    )
+    .expect("write actor mod");
+    fs::write(
+        temp.path().join("src/actor/child.rs"),
+        "pub struct SpawnStats;\n",
+    )
+    .expect("write child");
+
+    let output = Command::new(vischeck_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("run cargo-vischeck --fix-pub-use");
+    assert!(
+        !output.status.success(),
+        "cargo-vischeck --fix-pub-use unexpectedly succeeded: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mod_rs =
+        fs::read_to_string(temp.path().join("src/actor/mod.rs")).expect("read rolled back mod");
+    let child =
+        fs::read_to_string(temp.path().join("src/actor/child.rs")).expect("read rolled back child");
+    assert!(mod_rs.contains("pub use child::SpawnStats;"));
+    assert!(child.contains("pub struct SpawnStats;"));
+}
+
+#[test]
+fn fix_pub_use_reports_when_nothing_is_fixable() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_noop_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create src/private_parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod private_parent;\nuse private_parent::PublicContainer;\n\nfn main() { let _ = std::mem::size_of::<PublicContainer>(); }\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/private_parent.rs"),
+        "mod child;\npub use child::PublicContainer;\n",
+    )
+    .expect("write private_parent");
+    fs::write(
+        temp.path().join("src/private_parent/child.rs"),
+        "pub struct PublicContainer;\n",
+    )
+    .expect("write child");
+
+    let output = Command::new(vischeck_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("run cargo-vischeck --fix-pub-use");
+    assert!(
+        output.status.success(),
+        "cargo-vischeck --fix-pub-use failed unexpectedly: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8(output.stderr).expect("decode stderr");
+    assert!(stderr.contains("vischeck: no `pub use` fixes available"));
+}
+
+#[test]
 fn already_local_imports_are_not_reported() {
     let temp = tempdir().expect("create temp fixture dir");
 
@@ -755,7 +1286,7 @@ edition = "2024"
     let report = run_vischeck_json(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.error_count, 0);
     assert_eq!(report.summary.warning_count, 2);
-    assert_eq!(report.summary.fixable_count, 0);
+    assert_eq!(report.summary.fixable_count, 1);
     assert_eq!(report.findings.len(), 2);
     let codes = report
         .findings

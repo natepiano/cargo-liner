@@ -20,6 +20,12 @@ pub(super) struct Cli {
 
     #[arg(long)]
     pub(super) fix: bool,
+
+    #[arg(long)]
+    pub(super) fix_pub_use: bool,
+
+    #[arg(long)]
+    pub(super) dry_run: bool,
 }
 
 pub(super) fn parse() -> Cli { Cli::parse_from(normalized_args()) }

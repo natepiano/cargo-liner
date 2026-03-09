@@ -9,11 +9,39 @@ pub(super) enum Severity {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(super) enum FixKind {
+    None,
+    ImportRewrite,
+    ParentPubUse,
+}
+
+impl FixKind {
+    pub(super) const fn note(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::ImportRewrite => Some("this warning is auto-fixable with `cargo vischeck --fix`"),
+            Self::ParentPubUse => {
+                Some("this warning is auto-fixable with `cargo vischeck --fix-pub-use`")
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DetailMode {
+    None,
+    MessageAndRelated,
+    MessageRelatedAndFix(FixKind),
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(super) struct DiagnosticSpec {
     pub(super) code:        &'static str,
     pub(super) headline:    &'static str,
     pub(super) inline_help: Option<&'static str>,
     pub(super) help_anchor: &'static str,
+    detail_mode:            DetailMode,
+    pub(super) fix_kind:    FixKind,
 }
 
 pub(super) const DIAGNOSTICS: &[DiagnosticSpec] = &[
@@ -22,30 +50,40 @@ pub(super) const DIAGNOSTICS: &[DiagnosticSpec] = &[
         headline:    "use of `pub(crate)` is forbidden by policy",
         inline_help: None,
         help_anchor: "forbidden-pub-crate",
+        detail_mode: DetailMode::None,
+        fix_kind:    FixKind::None,
     },
     DiagnosticSpec {
         code:        "forbidden_pub_in_crate",
         headline:    "use of `pub(in crate::...)` is forbidden by policy",
         inline_help: None,
         help_anchor: "forbidden-pub-in-crate",
+        detail_mode: DetailMode::None,
+        fix_kind:    FixKind::None,
     },
     DiagnosticSpec {
         code:        "review_pub_mod",
         headline:    "`pub mod` requires explicit review or allowlisting",
         inline_help: None,
         help_anchor: "review-pub-mod",
+        detail_mode: DetailMode::None,
+        fix_kind:    FixKind::None,
     },
     DiagnosticSpec {
         code:        "shorten_local_crate_import",
         headline:    "crate-relative import can be shortened to a local-relative import",
         inline_help: None,
         help_anchor: "shorten-local-crate-import",
+        detail_mode: DetailMode::MessageRelatedAndFix(FixKind::ImportRewrite),
+        fix_kind:    FixKind::ImportRewrite,
     },
     DiagnosticSpec {
         code:        "suspicious_pub",
         headline:    "`pub` is broader than this nested module boundary",
         inline_help: Some("consider using: `pub(super)`"),
         help_anchor: "suspicious-pub",
+        detail_mode: DetailMode::MessageAndRelated,
+        fix_kind:    FixKind::None,
     },
     DiagnosticSpec {
         code:        "unnecessary_parent_pub_use",
@@ -54,6 +92,8 @@ pub(super) const DIAGNOSTICS: &[DiagnosticSpec] = &[
             "consider removing this `pub use` and narrowing the child item with `pub(super)`",
         ),
         help_anchor: "unnecessary-parent-pub-use",
+        detail_mode: DetailMode::MessageRelatedAndFix(FixKind::ParentPubUse),
+        fix_kind:    FixKind::ParentPubUse,
     },
 ];
 
@@ -114,7 +154,7 @@ impl Report {
             fixable_count: self
                 .findings
                 .iter()
-                .filter(|f| f.code == "shorten_local_crate_import")
+                .filter(|f| diagnostic_spec(&f.code).fix_kind.note().is_some())
                 .count(),
         };
     }
@@ -125,8 +165,9 @@ pub(super) fn finding_headline(finding: &Finding) -> String {
 }
 
 pub(super) fn detail_reasons(finding: &Finding) -> Vec<String> {
-    match finding.code.as_str() {
-        "suspicious_pub" => {
+    match diagnostic_spec(&finding.code).detail_mode {
+        DetailMode::None => Vec::new(),
+        DetailMode::MessageAndRelated => {
             let mut reasons = Vec::new();
             if !finding.message.is_empty() {
                 reasons.push(finding.message.clone());
@@ -136,7 +177,7 @@ pub(super) fn detail_reasons(finding: &Finding) -> Vec<String> {
             }
             reasons
         },
-        "unnecessary_parent_pub_use" => {
+        DetailMode::MessageRelatedAndFix(fix_kind) => {
             let mut reasons = Vec::new();
             if !finding.message.is_empty() {
                 reasons.push(finding.message.clone());
@@ -144,19 +185,11 @@ pub(super) fn detail_reasons(finding: &Finding) -> Vec<String> {
             if let Some(related) = &finding.related {
                 reasons.push(related.clone());
             }
+            if let Some(note) = fix_kind.note() {
+                reasons.push(note.to_string());
+            }
             reasons
         },
-        "shorten_local_crate_import" => {
-            if finding.message.is_empty() {
-                vec!["this warning is auto-fixable with `cargo vischeck --fix`".to_string()]
-            } else {
-                vec![
-                    finding.message.clone(),
-                    "this warning is auto-fixable with `cargo vischeck --fix`".to_string(),
-                ]
-            }
-        },
-        _ => Vec::new(),
     }
 }
 

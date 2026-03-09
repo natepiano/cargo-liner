@@ -3,6 +3,8 @@ use std::ffi::OsString;
 use std::fs;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::io::BufRead;
+use std::io::BufReader;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -42,7 +44,19 @@ const CONFIG_ROOT_ENV: &str = "VISCHECK_CONFIG_ROOT";
 const CONFIG_JSON_ENV: &str = "VISCHECK_CONFIG_JSON";
 const FINDINGS_DIR_ENV: &str = "VISCHECK_FINDINGS_DIR";
 const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
-const FINDINGS_SCHEMA_VERSION: u32 = 4;
+const FINDINGS_SCHEMA_VERSION: u32 = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BuildOutputMode {
+    Full,
+    SuppressUnusedImportWarnings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiagnosticBlockKind {
+    SuppressedUnusedImport,
+    ForwardedDiagnostic,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredReport {
@@ -149,7 +163,11 @@ impl Callbacks for AnalysisCallbacks {
     }
 }
 
-pub(super) fn run_selection(selection: &Selection, loaded_config: &LoadedConfig) -> Result<Report> {
+pub(super) fn run_selection(
+    selection: &Selection,
+    loaded_config: &LoadedConfig,
+    output_mode: BuildOutputMode,
+) -> Result<Report> {
     let findings_dir = selection.target_directory.join("vischeck-findings");
     fs::create_dir_all(&findings_dir).with_context(|| {
         format!(
@@ -158,7 +176,7 @@ pub(super) fn run_selection(selection: &Selection, loaded_config: &LoadedConfig)
         )
     })?;
 
-    let status = run_cargo_check(selection, loaded_config, &findings_dir)?;
+    let status = run_cargo_check(selection, loaded_config, &findings_dir, output_mode)?;
 
     if !status.success() {
         anyhow::bail!("cargo check failed during vischeck analysis");
@@ -172,7 +190,8 @@ pub(super) fn run_selection(selection: &Selection, loaded_config: &LoadedConfig)
 
     if !missing_packages.is_empty() {
         for package in missing_packages {
-            let status = run_cargo_rustc_for_package(package, loaded_config, &findings_dir)?;
+            let status =
+                run_cargo_rustc_for_package(package, loaded_config, &findings_dir, output_mode)?;
             if !status.success() {
                 anyhow::bail!(
                     "cargo rustc refresh failed during vischeck analysis for package {}",
@@ -247,6 +266,7 @@ fn run_cargo_check(
     selection: &Selection,
     loaded_config: &LoadedConfig,
     findings_dir: &Path,
+    output_mode: BuildOutputMode,
 ) -> Result<std::process::ExitStatus> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
     let mut command = Command::new("cargo");
@@ -270,19 +290,16 @@ fn run_cargo_check(
                 .context("failed to serialize vischeck config for compiler driver")?,
         )
         .env(FINDINGS_DIR_ENV, findings_dir)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdin(Stdio::inherit());
 
-    command
-        .status()
-        .context("failed to run cargo check for vischeck")
+    run_cargo_command(&mut command, output_mode).context("failed to run cargo check for vischeck")
 }
 
 fn run_cargo_rustc_for_package(
     package: &super::selection::SelectedPackage,
     loaded_config: &LoadedConfig,
     findings_dir: &Path,
+    output_mode: BuildOutputMode,
 ) -> Result<std::process::ExitStatus> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
     let mut command = Command::new("cargo");
@@ -308,16 +325,120 @@ fn run_cargo_rustc_for_package(
                 .context("failed to serialize vischeck config for compiler driver")?,
         )
         .env(FINDINGS_DIR_ENV, findings_dir)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdin(Stdio::inherit());
 
-    command.status().with_context(|| {
+    run_cargo_command(&mut command, output_mode).with_context(|| {
         format!(
             "failed to run cargo rustc refresh for package {}",
             package.name
         )
     })
+}
+
+fn run_cargo_command(
+    command: &mut Command,
+    output_mode: BuildOutputMode,
+) -> Result<std::process::ExitStatus> {
+    command.stdin(Stdio::inherit());
+    match output_mode {
+        BuildOutputMode::Full => {
+            command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+            command.status().context("failed to run cargo command")
+        },
+        BuildOutputMode::SuppressUnusedImportWarnings => {
+            command.stdout(Stdio::null()).stderr(Stdio::piped());
+            let mut child = command.spawn().context("failed to spawn cargo command")?;
+            let stderr = child
+                .stderr
+                .take()
+                .context("failed to capture cargo stderr")?;
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+            let mut block = Vec::new();
+            let mut printed_suppression_notice = false;
+
+            loop {
+                line.clear();
+                let bytes = reader.read_line(&mut line)?;
+                if bytes == 0 {
+                    flush_diagnostic_block(&mut block, &mut printed_suppression_notice);
+                    break;
+                }
+
+                let current = line.clone();
+                if is_progress_line(&current) {
+                    flush_diagnostic_block(&mut block, &mut printed_suppression_notice);
+                    eprint!("{current}");
+                    continue;
+                }
+
+                if current.trim().is_empty() {
+                    block.push(current);
+                    flush_diagnostic_block(&mut block, &mut printed_suppression_notice);
+                } else {
+                    block.push(current);
+                }
+            }
+
+            child.wait().context("failed to wait for cargo command")
+        },
+    }
+}
+
+fn is_progress_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("Blocking waiting for file lock")
+        || trimmed.starts_with("Checking ")
+        || trimmed.starts_with("Compiling ")
+        || trimmed.starts_with("Finished ")
+        || trimmed.starts_with("Fresh ")
+}
+
+fn classify_diagnostic_block(
+    block: &[String],
+    printed_suppression_notice: bool,
+) -> DiagnosticBlockKind {
+    let first_non_empty = block.iter().find(|line| !line.trim().is_empty());
+    match first_non_empty {
+        Some(line) => {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("warning: unused import:")
+                || (printed_suppression_notice
+                    && trimmed.starts_with("warning: `")
+                    && (trimmed.contains(" generated 1 warning ")
+                        || trimmed.contains("to apply 1 suggestion")))
+            {
+                DiagnosticBlockKind::SuppressedUnusedImport
+            } else {
+                DiagnosticBlockKind::ForwardedDiagnostic
+            }
+        },
+        None => DiagnosticBlockKind::ForwardedDiagnostic,
+    }
+}
+
+fn flush_diagnostic_block(block: &mut Vec<String>, printed_suppression_notice: &mut bool) {
+    if block.is_empty() {
+        return;
+    }
+
+    match classify_diagnostic_block(block, *printed_suppression_notice) {
+        DiagnosticBlockKind::SuppressedUnusedImport => {
+            if !*printed_suppression_notice {
+                eprintln!(
+                    "vischeck: suppressing `unused import` warning during `--fix-pub-use` discovery"
+                );
+                *printed_suppression_notice = true;
+            }
+        },
+        DiagnosticBlockKind::ForwardedDiagnostic => {
+            for line in block.iter() {
+                eprint!("{line}");
+            }
+        },
+    }
+
+    block.clear();
 }
 
 fn refresh_rustc_args() -> Vec<String> {
@@ -332,11 +453,55 @@ fn cache_is_current_for(findings_dir: &Path, package_root: &Path) -> bool {
     let Ok(text) = fs::read_to_string(&cache_path) else {
         return false;
     };
+    let Ok(cache_metadata) = fs::metadata(&cache_path) else {
+        return false;
+    };
+    let Ok(cache_modified) = cache_metadata.modified() else {
+        return false;
+    };
     let Ok(stored) = serde_json::from_str::<StoredReport>(&text) else {
         return false;
     };
     stored.version == FINDINGS_SCHEMA_VERSION
         && stored.package_root == package_root.to_string_lossy()
+        && !package_sources_newer_than(package_root, cache_modified)
+}
+
+fn package_sources_newer_than(package_root: &Path, reference: std::time::SystemTime) -> bool {
+    let manifest = package_root.join("Cargo.toml");
+    if file_is_newer_than(&manifest, reference) {
+        return true;
+    }
+
+    let src = package_root.join("src");
+    rust_sources_newer_than(&src, reference)
+}
+
+fn file_is_newer_than(path: &Path, reference: std::time::SystemTime) -> bool {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .is_ok_and(|modified| modified > reference)
+}
+
+fn rust_sources_newer_than(dir: &Path, reference: std::time::SystemTime) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if rust_sources_newer_than(&path, reference) {
+                return true;
+            }
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs")
+            && file_is_newer_than(&path, reference)
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
@@ -479,26 +644,24 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
         )?;
     }
 
-    if findings.is_empty() {
-        return Ok(true);
-    }
-
-    findings.sort_by(|a, b| {
-        (&a.path, a.line, a.column, &a.code, &a.item, &a.message)
-            .cmp(&(&b.path, b.line, b.column, &b.code, &b.item, &b.message))
-    });
-    findings.dedup_by(|a, b| {
-        a.code == b.code
-            && a.path == b.path
-            && a.line == b.line
-            && a.column == b.column
-            && a.message == b.message
-            && a.item == b.item
-    });
-
     let output_path = settings
         .findings_dir
         .join(cache_filename_for(&settings.package_root));
+    if !findings.is_empty() {
+        findings.sort_by(|a, b| {
+            (&a.path, a.line, a.column, &a.code, &a.item, &a.message)
+                .cmp(&(&b.path, b.line, b.column, &b.code, &b.item, &b.message))
+        });
+        findings.dedup_by(|a, b| {
+            a.code == b.code
+                && a.path == b.path
+                && a.line == b.line
+                && a.column == b.column
+                && a.message == b.message
+                && a.item == b.item
+        });
+    }
+
     let report = StoredReport {
         version: FINDINGS_SCHEMA_VERSION,
         package_root: settings.package_root.to_string_lossy().into_owned(),
@@ -775,7 +938,7 @@ fn record_visibility_findings(
                 item_name
                     .as_ref()
                     .map(|name| format!("{kind_label} {name}")),
-                "it is not reachable from the crate's public API after analysis".to_string(),
+                suspicious_pub_note(crate_kind, kind_label),
                 None,
                 related,
             )?);
@@ -1215,6 +1378,17 @@ fn forbidden_pub_crate_help(module_location: ModuleLocation) -> &'static str {
     }
 }
 
+fn suspicious_pub_note(crate_kind: CrateKind, kind_label: &str) -> String {
+    match crate_kind {
+        CrateKind::Library => {
+            format!("{kind_label} is not reachable from the crate's public API")
+        },
+        CrateKind::Binary => {
+            format!("{kind_label} is not used outside its parent module subtree")
+        },
+    }
+}
+
 #[derive(Debug)]
 struct LineDisplay {
     line:          usize,
@@ -1365,6 +1539,7 @@ mod tests {
     use super::forbidden_pub_crate_help;
     use super::module_location;
     use super::refresh_rustc_args;
+    use super::suspicious_pub_note;
 
     #[test]
     fn allow_pub_crate_allows_library_crate_root_items() {
@@ -1440,6 +1615,22 @@ mod tests {
     }
 
     #[test]
+    fn suspicious_pub_note_uses_public_api_wording_for_libraries() {
+        assert_eq!(
+            suspicious_pub_note(CrateKind::Library, "struct"),
+            "struct is not reachable from the crate's public API"
+        );
+    }
+
+    #[test]
+    fn suspicious_pub_note_uses_subtree_wording_for_binaries() {
+        assert_eq!(
+            suspicious_pub_note(CrateKind::Binary, "function"),
+            "function is not used outside its parent module subtree"
+        );
+    }
+
+    #[test]
     fn refresh_rustc_args_adds_vischeck_cfg() {
         let args = refresh_rustc_args();
         assert_eq!(args.first().map(String::as_str), Some("--"));
@@ -1480,6 +1671,47 @@ mod tests {
         fs::write(&cache_path, serde_json::to_vec(&stale).unwrap()).unwrap();
 
         assert!(!cache_is_current_for(&temp_dir, package_root));
+
+        fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn cache_is_current_rejects_stale_cache_when_sources_changed() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("vischeck-cache-source-test-{unique}"));
+        let package_root = temp_dir.join("crate");
+        let src_dir = package_root.join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(
+            package_root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        fs::write(src_dir.join("lib.rs"), "pub fn demo() {}\n").unwrap();
+
+        let findings_dir = temp_dir.join("findings");
+        fs::create_dir_all(&findings_dir).unwrap();
+        let cache_path = findings_dir.join(cache_filename_for(&package_root));
+        let report = StoredReport {
+            version:      FINDINGS_SCHEMA_VERSION,
+            package_root: package_root.to_string_lossy().into_owned(),
+            findings:     Vec::new(),
+        };
+        fs::write(&cache_path, serde_json::to_vec(&report).unwrap()).unwrap();
+
+        assert!(cache_is_current_for(&findings_dir, &package_root));
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        fs::write(
+            src_dir.join("lib.rs"),
+            "pub fn demo() {}\npub fn newer() {}\n",
+        )
+        .unwrap();
+
+        assert!(!cache_is_current_for(&findings_dir, &package_root));
 
         fs::remove_dir_all(&temp_dir).unwrap();
     }
