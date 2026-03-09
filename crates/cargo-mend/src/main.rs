@@ -194,9 +194,8 @@ fn execute_plan(
             match build_report(selection, config, compiler::BuildOutputMode::Full) {
                 Ok(report) => Ok((
                     report,
-                    (scan.applied_count > 0).then(|| {
-                        format!("mend: applied {} `pub use` fix(es)", scan.applied_count)
-                    }),
+                    (scan.applied_count > 0)
+                        .then(|| format!("mend: applied {} `pub use` fix(es)", scan.applied_count)),
                 )),
                 Err(err) => {
                     imports::restore_files(&snapshots)?;

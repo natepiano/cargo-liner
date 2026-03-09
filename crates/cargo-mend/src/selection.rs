@@ -137,7 +137,7 @@ fn select_primary_target(targets: &[Target]) -> TargetSelector {
     let select_named = |kind: TargetKind, ctor: fn(String) -> TargetSelector| {
         targets
             .iter()
-            .find(|target| target.kind.iter().any(|item| *item == kind))
+            .find(|target| target.kind.contains(&kind))
             .map(|target| ctor(target.name.clone()))
     };
 

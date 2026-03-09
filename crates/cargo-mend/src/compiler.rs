@@ -105,12 +105,10 @@ struct DriverSettings {
 impl DriverSettings {
     fn from_env() -> Result<Self> {
         let config_root = PathBuf::from(
-            env::var_os(CONFIG_ROOT_ENV)
-                .context("missing MEND_CONFIG_ROOT for compiler driver")?,
+            env::var_os(CONFIG_ROOT_ENV).context("missing MEND_CONFIG_ROOT for compiler driver")?,
         );
         let config = serde_json::from_str(
-            &env::var(CONFIG_JSON_ENV)
-                .context("missing MEND_CONFIG_JSON for compiler driver")?,
+            &env::var(CONFIG_JSON_ENV).context("missing MEND_CONFIG_JSON for compiler driver")?,
         )
         .context("failed to parse MEND_CONFIG_JSON")?;
         let findings_dir = PathBuf::from(
@@ -153,11 +151,11 @@ impl Callbacks for AnalysisCallbacks {
         tcx: TyCtxt<'tcx>,
     ) -> Compilation {
         match collect_and_store_findings(tcx, &self.settings) {
-            Ok(true) => return Compilation::Continue,
-            Ok(false) => return Compilation::Continue,
+            Ok(true) => Compilation::Continue,
+            Ok(false) => Compilation::Continue,
             Err(err) => {
                 self.error = Some(err);
-                return Compilation::Stop;
+                Compilation::Stop
             },
         }
     }
@@ -838,20 +836,22 @@ fn record_visibility_findings(
             == CRATE_DEF_ID;
     let module_location = module_location(parent_is_crate_root, grandparent_is_crate_root);
 
-    if matches!(vis_text, "pub(crate)") {
-        if !allow_pub_crate_by_policy(crate_kind, module_location, parent_is_public) {
-            findings.push(build_finding(
-                tcx,
-                file_path,
-                highlight_span,
-                Severity::Error,
-                "forbidden_pub_crate",
-                None,
-                "use of `pub(crate)` is forbidden by policy".to_string(),
-                Some(forbidden_pub_crate_help(module_location).to_string()),
-                None,
-            )?);
-        }
+    if matches!(vis_text, "pub(crate)")
+        && !allow_pub_crate_by_policy(crate_kind, module_location, parent_is_public)
+    {
+        findings.push(build_finding(
+            tcx,
+            file_path,
+            highlight_span,
+            FindingParams {
+                severity:   Severity::Error,
+                code:       "forbidden_pub_crate",
+                item:       None,
+                message:    "use of `pub(crate)` is forbidden by policy".to_string(),
+                suggestion: Some(forbidden_pub_crate_help(module_location).to_string()),
+                related:    None,
+            },
+        )?);
     }
 
     if vis_text.starts_with("pub(in crate::") {
@@ -859,12 +859,14 @@ fn record_visibility_findings(
             tcx,
             file_path,
             highlight_span,
-            Severity::Error,
-            "forbidden_pub_in_crate",
-            None,
-            "use of `pub(in crate::...)` is forbidden by policy".to_string(),
-            None,
-            None,
+            FindingParams {
+                severity:   Severity::Error,
+                code:       "forbidden_pub_in_crate",
+                item:       None,
+                message:    "use of `pub(in crate::...)` is forbidden by policy".to_string(),
+                suggestion: None,
+                related:    None,
+            },
         )?);
     }
 
@@ -881,12 +883,14 @@ fn record_visibility_findings(
                 tcx,
                 file_path,
                 highlight_span,
-                Severity::Error,
-                "review_pub_mod",
-                item_name.clone(),
-                "`pub mod` requires explicit review or allowlisting".to_string(),
-                None,
-                None,
+                FindingParams {
+                    severity:   Severity::Error,
+                    code:       "review_pub_mod",
+                    item:       item_name.clone(),
+                    message:    "`pub mod` requires explicit review or allowlisting".to_string(),
+                    suggestion: None,
+                    related:    None,
+                },
             )?);
         }
     }
@@ -933,14 +937,16 @@ fn record_visibility_findings(
                 tcx,
                 file_path,
                 highlight_span,
-                Severity::Warning,
-                "suspicious_pub",
-                item_name
-                    .as_ref()
-                    .map(|name| format!("{kind_label} {name}")),
-                suspicious_pub_note(crate_kind, kind_label),
-                None,
-                related,
+                FindingParams {
+                    severity: Severity::Warning,
+                    code: "suspicious_pub",
+                    item: item_name
+                        .as_ref()
+                        .map(|name| format!("{kind_label} {name}")),
+                    message: suspicious_pub_note(crate_kind, kind_label),
+                    suggestion: None,
+                    related,
+                },
             )?);
         }
     }
@@ -980,45 +986,52 @@ fn record_parent_pub_use_findings(
             tcx,
             file_path,
             highlight_span,
-            Severity::Warning,
-            "unnecessary_parent_pub_use",
-            Some(format!("pub use {}", status.exported_name)),
-            "this parent facade export is not used outside its module subtree".to_string(),
-            None,
-            Some(format!(
-                "paired with child item at {}:{}",
-                status.child_rel_path, status.child_line
-            )),
+            FindingParams {
+                severity:   Severity::Warning,
+                code:       "unnecessary_parent_pub_use",
+                item:       Some(format!("pub use {}", status.exported_name)),
+                message:    "this parent facade export is not used outside its module subtree"
+                    .to_string(),
+                suggestion: None,
+                related:    Some(format!(
+                    "paired with child item at {}:{}",
+                    status.child_rel_path, status.child_line
+                )),
+            },
         )?);
     }
 
     Ok(())
 }
 
+struct FindingParams {
+    severity:   Severity,
+    code:       &'static str,
+    item:       Option<String>,
+    message:    String,
+    suggestion: Option<String>,
+    related:    Option<String>,
+}
+
 fn build_finding(
     tcx: TyCtxt<'_>,
     file_path: &Path,
     highlight_span: Span,
-    severity: Severity,
-    code: &str,
-    item: Option<String>,
-    message: String,
-    suggestion: Option<String>,
-    related: Option<String>,
+    params: FindingParams,
 ) -> Result<StoredFinding> {
     let display = line_display(tcx, file_path, highlight_span)?;
     Ok(StoredFinding {
-        severity,
-        code: code.to_string(),
-        path: file_path.to_string_lossy().into_owned(),
-        line: display.line,
-        column: display.column,
+        severity:      params.severity,
+        code:          params.code.to_string(),
+        path:          file_path.to_string_lossy().into_owned(),
+        line:          display.line,
+        column:        display.column,
         highlight_len: display.highlight_len,
-        source_line: display.source_line,
-        item,
-        message,
-        suggestion,
-        related,
+        source_line:   display.source_line,
+        item:          params.item,
+        message:       params.message,
+        suggestion:    params.suggestion,
+        related:       params.related,
     })
 }
 
@@ -1131,16 +1144,6 @@ fn collect_matching_pub_use_exports(
             &path[..]
         };
         if normalized.len() >= 2 && normalized[0] == child_module_name && normalized[1] == item_name
-        {
-            exported.push(
-                normalized
-                    .last()
-                    .expect("flattened use path always has a tail")
-                    .to_string(),
-            );
-        } else if normalized.len() >= 3
-            && normalized[0] == child_module_name
-            && normalized[1] == item_name
         {
             exported.push(
                 normalized

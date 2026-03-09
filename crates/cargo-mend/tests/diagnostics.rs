@@ -20,10 +20,7 @@ fn mend_bin() -> PathBuf {
             .env_remove("CARGO_BUILD_RUSTC_WRAPPER")
             .status()
             .expect("build cargo-mend binary for integration tests");
-        assert!(
-            status.success(),
-            "failed to build cargo-mend test binary"
-        );
+        assert!(status.success(), "failed to build cargo-mend test binary");
     });
     let current = std::env::current_exe().expect("current exe path");
     current
@@ -171,8 +168,7 @@ pub struct Suspicious;
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let report: Report =
-        serde_json::from_slice(&output.stdout).expect("parse mend json report");
+    let report: Report = serde_json::from_slice(&output.stdout).expect("parse mend json report");
     let codes: BTreeSet<_> = report
         .findings
         .iter()
@@ -757,8 +753,7 @@ edition = "2024"
         String::from_utf8_lossy(&repeat_fix.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&repeat_fix.stderr)
-            .contains("mend: no `pub use` fixes available")
+        String::from_utf8_lossy(&repeat_fix.stderr).contains("mend: no `pub use` fixes available")
     );
 }
 
@@ -807,7 +802,8 @@ edition = "2024"
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("mend: suppressing `unused import` warning during `--fix-pub-use` discovery"),
+        stderr
+            .contains("mend: suppressing `unused import` warning during `--fix-pub-use` discovery"),
         "expected suppression notice in stderr:\n{stderr}"
     );
     assert!(

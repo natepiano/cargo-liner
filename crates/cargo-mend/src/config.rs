@@ -13,21 +13,12 @@ struct ConfigFile {
     visibility: VisibilityConfig,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub(super) struct VisibilityConfig {
     #[serde(default)]
     pub(super) allow_pub_mod:   Vec<String>,
     #[serde(default)]
     pub(super) allow_pub_items: Vec<String>,
-}
-
-impl Default for VisibilityConfig {
-    fn default() -> Self {
-        Self {
-            allow_pub_mod:   Vec::new(),
-            allow_pub_items: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug)]
