@@ -39,10 +39,10 @@ use super::diagnostics::Report;
 use super::diagnostics::Severity;
 use super::selection::Selection;
 
-const DRIVER_ENV: &str = "VISCHECK_DRIVER";
-const CONFIG_ROOT_ENV: &str = "VISCHECK_CONFIG_ROOT";
-const CONFIG_JSON_ENV: &str = "VISCHECK_CONFIG_JSON";
-const FINDINGS_DIR_ENV: &str = "VISCHECK_FINDINGS_DIR";
+const DRIVER_ENV: &str = "MEND_DRIVER";
+const CONFIG_ROOT_ENV: &str = "MEND_CONFIG_ROOT";
+const CONFIG_JSON_ENV: &str = "MEND_CONFIG_JSON";
+const FINDINGS_DIR_ENV: &str = "MEND_FINDINGS_DIR";
 const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
 const FINDINGS_SCHEMA_VERSION: u32 = 6;
 
@@ -106,16 +106,16 @@ impl DriverSettings {
     fn from_env() -> Result<Self> {
         let config_root = PathBuf::from(
             env::var_os(CONFIG_ROOT_ENV)
-                .context("missing VISCHECK_CONFIG_ROOT for compiler driver")?,
+                .context("missing MEND_CONFIG_ROOT for compiler driver")?,
         );
         let config = serde_json::from_str(
             &env::var(CONFIG_JSON_ENV)
-                .context("missing VISCHECK_CONFIG_JSON for compiler driver")?,
+                .context("missing MEND_CONFIG_JSON for compiler driver")?,
         )
-        .context("failed to parse VISCHECK_CONFIG_JSON")?;
+        .context("failed to parse MEND_CONFIG_JSON")?;
         let findings_dir = PathBuf::from(
             env::var_os(FINDINGS_DIR_ENV)
-                .context("missing VISCHECK_FINDINGS_DIR for compiler driver")?,
+                .context("missing MEND_FINDINGS_DIR for compiler driver")?,
         );
         let package_root = PathBuf::from(
             env::var_os(PACKAGE_ROOT_ENV)
@@ -168,7 +168,7 @@ pub(super) fn run_selection(
     loaded_config: &LoadedConfig,
     output_mode: BuildOutputMode,
 ) -> Result<Report> {
-    let findings_dir = selection.target_directory.join("vischeck-findings");
+    let findings_dir = selection.target_directory.join("mend-findings");
     fs::create_dir_all(&findings_dir).with_context(|| {
         format!(
             "failed to create persistent findings directory {}",
@@ -179,7 +179,7 @@ pub(super) fn run_selection(
     let status = run_cargo_check(selection, loaded_config, &findings_dir, output_mode)?;
 
     if !status.success() {
-        anyhow::bail!("cargo check failed during vischeck analysis");
+        anyhow::bail!("cargo check failed during mend analysis");
     }
 
     let missing_packages = selection
@@ -194,7 +194,7 @@ pub(super) fn run_selection(
                 run_cargo_rustc_for_package(package, loaded_config, &findings_dir, output_mode)?;
             if !status.success() {
                 anyhow::bail!(
-                    "cargo rustc refresh failed during vischeck analysis for package {}",
+                    "cargo rustc refresh failed during mend analysis for package {}",
                     package.name
                 );
             }
@@ -210,7 +210,7 @@ pub(super) fn driver_main() -> ExitCode {
     match driver_main_impl() {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("vischeck: {err:#}");
+            eprintln!("mend: {err:#}");
             ExitCode::from(1)
         },
     }
@@ -241,7 +241,7 @@ fn driver_main_impl() -> Result<ExitCode> {
     });
 
     if let Some(err) = callbacks.error {
-        eprintln!("vischeck: {err:#}");
+        eprintln!("mend: {err:#}");
         exit_code = 1;
     }
 
@@ -258,7 +258,7 @@ fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
-        .context("failed to invoke rustc passthrough from vischeck wrapper")?;
+        .context("failed to invoke rustc passthrough from mend wrapper")?;
     Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
 }
 
@@ -287,12 +287,12 @@ fn run_cargo_check(
         .env(
             CONFIG_JSON_ENV,
             serde_json::to_string(&loaded_config.config)
-                .context("failed to serialize vischeck config for compiler driver")?,
+                .context("failed to serialize mend config for compiler driver")?,
         )
         .env(FINDINGS_DIR_ENV, findings_dir)
         .stdin(Stdio::inherit());
 
-    run_cargo_command(&mut command, output_mode).context("failed to run cargo check for vischeck")
+    run_cargo_command(&mut command, output_mode).context("failed to run cargo check for mend")
 }
 
 fn run_cargo_rustc_for_package(
@@ -322,7 +322,7 @@ fn run_cargo_rustc_for_package(
         .env(
             CONFIG_JSON_ENV,
             serde_json::to_string(&loaded_config.config)
-                .context("failed to serialize vischeck config for compiler driver")?,
+                .context("failed to serialize mend config for compiler driver")?,
         )
         .env(FINDINGS_DIR_ENV, findings_dir)
         .stdin(Stdio::inherit());
@@ -426,7 +426,7 @@ fn flush_diagnostic_block(block: &mut Vec<String>, printed_suppression_notice: &
         DiagnosticBlockKind::SuppressedUnusedImport => {
             if !*printed_suppression_notice {
                 eprintln!(
-                    "vischeck: suppressing `unused import` warning during `--fix-pub-use` discovery"
+                    "mend: suppressing `unused import` warning during `--fix-pub-use` discovery"
                 );
                 *printed_suppression_notice = true;
             }
@@ -444,7 +444,7 @@ fn flush_diagnostic_block(block: &mut Vec<String>, printed_suppression_notice: &
 fn refresh_rustc_args() -> Vec<String> {
     vec![
         "--".to_string(),
-        format!("--cfg=vischeck_refresh_{}", std::process::id()),
+        format!("--cfg=mend_refresh_{}", std::process::id()),
     ]
 }
 
@@ -1631,12 +1631,12 @@ mod tests {
     }
 
     #[test]
-    fn refresh_rustc_args_adds_vischeck_cfg() {
+    fn refresh_rustc_args_adds_mend_cfg() {
         let args = refresh_rustc_args();
         assert_eq!(args.first().map(String::as_str), Some("--"));
         assert!(
             args.get(1)
-                .is_some_and(|arg| arg.starts_with("--cfg=vischeck_refresh_"))
+                .is_some_and(|arg| arg.starts_with("--cfg=mend_refresh_"))
         );
     }
 
@@ -1646,7 +1646,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("vischeck-cache-test-{unique}"));
+        let temp_dir = std::env::temp_dir().join(format!("mend-cache-test-{unique}"));
         fs::create_dir_all(&temp_dir).unwrap();
 
         let package_root = Path::new("/tmp/example-crate");
@@ -1681,7 +1681,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("vischeck-cache-source-test-{unique}"));
+        let temp_dir = std::env::temp_dir().join(format!("mend-cache-source-test-{unique}"));
         let package_root = temp_dir.join("crate");
         let src_dir = package_root.join("src");
         fs::create_dir_all(&src_dir).unwrap();

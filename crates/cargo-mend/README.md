@@ -1,6 +1,6 @@
-# cargo-vischeck
+# cargo-mend
 
-`cargo-vischeck` provides the `cargo vischeck` subcommand for enforcing a stricter Rust
+`cargo-mend` provides the `cargo mend` subcommand for enforcing a stricter Rust
 visibility style across a crate or workspace.
 
 The tool is meant for codebases that want visibility to describe real module boundaries.
@@ -63,7 +63,7 @@ If you are new to Rust visibility, the important idea is this:
 
 ## Config
 
-The tool looks for `vischeck.toml` at the target root.
+The tool looks for `mend.toml` at the target root.
 
 ```toml
 [visibility]
@@ -81,11 +81,11 @@ the policy is wrong.
 ## Usage
 
 ```bash
-cargo vischeck
-cargo vischeck --fail-on-warn
-cargo vischeck --fix
-cargo vischeck --json
-cargo vischeck --manifest-path path/to/Cargo.toml
+cargo mend
+cargo mend --fail-on-warn
+cargo mend --fix
+cargo mend --json
+cargo mend --manifest-path path/to/Cargo.toml
 ```
 
 Behavior:
@@ -93,20 +93,20 @@ Behavior:
 - run it at a workspace root to audit all workspace members
 - run it in a member crate directory to audit just that package
 - pass `--manifest-path` to choose an explicit crate or workspace root
-- `--fix` only rewrites the import-shortening cases that `cargo-vischeck` can prove are safe
-- if a `--fix` run would leave the crate failing `cargo check`, `cargo-vischeck` restores the
+- `--fix` only rewrites the import-shortening cases that `cargo-mend` can prove are safe
+- if a `--fix` run would leave the crate failing `cargo check`, `cargo-mend` restores the
   original files automatically
-- if there is nothing fixable, `cargo-vischeck` says so after the report summary
+- if there is nothing fixable, `cargo-mend` says so after the report summary
 
 ## Toolchain Compatibility
 
-| rustc  | cargo-vischeck |
+| rustc  | cargo-mend |
 |--------|----------------|
 | 1.93.1 | 0.1.0          |
 
-- `cargo vischeck` runs through a rustc workspace wrapper
+- `cargo mend` runs through a rustc workspace wrapper
 - visibility checks use compiler data after macro expansion and analysis
-- after a Rust toolchain update, rerun `cargo vischeck` on a known repo and check this section
+- after a Rust toolchain update, rerun `cargo mend` on a known repo and check this section
   first if results regress
 
 ## Intended workflow
@@ -115,7 +115,7 @@ Use this as a migration aid and CI guard:
 
 1. fail immediately on forbidden visibility forms
 2. review suspicious `pub`
-3. let `cargo vischeck --fix` rewrite the straightforward local-import paths it knows how to fix
+3. let `cargo mend --fix` rewrite the straightforward local-import paths it knows how to fix
 4. keep repo-specific exceptions small and explicit
 
 The usual review flow is:
@@ -424,7 +424,7 @@ A better import is:
 use super::cargo_detector::TargetType;
 ```
 
-`cargo vischeck --fix` can rewrite these straightforward cases automatically.
+`cargo mend --fix` can rewrite these straightforward cases automatically.
 
 Today, that auto-fix mode is intentionally narrow:
 

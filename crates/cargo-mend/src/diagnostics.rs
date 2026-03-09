@@ -19,9 +19,9 @@ impl FixKind {
     pub(super) const fn note(self) -> Option<&'static str> {
         match self {
             Self::None => None,
-            Self::ImportRewrite => Some("this warning is auto-fixable with `cargo vischeck --fix`"),
+            Self::ImportRewrite => Some("this warning is auto-fixable with `cargo mend --fix`"),
             Self::ParentPubUse => {
-                Some("this warning is auto-fixable with `cargo vischeck --fix-pub-use`")
+                Some("this warning is auto-fixable with `cargo mend --fix-pub-use`")
             },
         }
     }
@@ -203,7 +203,7 @@ pub(super) fn custom_inline_help_text(finding: &Finding) -> Option<&str> {
 
 pub(super) fn finding_help_url(finding: &Finding) -> String {
     format!(
-        "https://github.com/natepiano/cargo-vischeck#{}",
+        "https://github.com/natepiano/cargo-mend#{}",
         diagnostic_spec(&finding.code).help_anchor
     )
 }

@@ -40,14 +40,14 @@ enum PlannedRun {
 }
 
 fn main() -> ExitCode {
-    if std::env::var_os("VISCHECK_DRIVER").is_some() {
+    if std::env::var_os("MEND_DRIVER").is_some() {
         return compiler::driver_main();
     }
 
     match run() {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("vischeck: {err:#}");
+            eprintln!("mend: {err:#}");
             ExitCode::from(2)
         },
     }
@@ -117,7 +117,7 @@ fn plan_run(
                         config,
                         compiler::BuildOutputMode::Full,
                     )?,
-                    post_run_notice: Some("vischeck: no import fixes available".to_string()),
+                    post_run_notice: Some("mend: no import fixes available".to_string()),
                 })
             } else if dry_run {
                 Ok(PlannedRun::Report {
@@ -127,7 +127,7 @@ fn plan_run(
                         compiler::BuildOutputMode::Full,
                     )?,
                     post_run_notice: Some(format!(
-                        "vischeck: would apply {} import fix(es) in dry run",
+                        "mend: would apply {} import fix(es) in dry run",
                         import_scan.fixes.len()
                     )),
                 })
@@ -147,13 +147,13 @@ fn plan_run(
             if scan.fixes.is_empty() {
                 Ok(PlannedRun::Report {
                     report:          initial_report,
-                    post_run_notice: Some("vischeck: no `pub use` fixes available".to_string()),
+                    post_run_notice: Some("mend: no `pub use` fixes available".to_string()),
                 })
             } else if dry_run {
                 Ok(PlannedRun::Report {
                     report:          initial_report,
                     post_run_notice: Some(format!(
-                        "vischeck: would apply {} `pub use` fix(es) in dry run",
+                        "mend: would apply {} `pub use` fix(es) in dry run",
                         scan.applied_count
                     )),
                 })
@@ -180,7 +180,7 @@ fn execute_plan(
             match build_report(selection, config, compiler::BuildOutputMode::Full) {
                 Ok(report) => Ok((
                     report,
-                    (applied > 0).then(|| format!("vischeck: applied {applied} import fix(es)")),
+                    (applied > 0).then(|| format!("mend: applied {applied} import fix(es)")),
                 )),
                 Err(err) => {
                     imports::restore_files(&snapshots)?;
@@ -195,7 +195,7 @@ fn execute_plan(
                 Ok(report) => Ok((
                     report,
                     (scan.applied_count > 0).then(|| {
-                        format!("vischeck: applied {} `pub use` fix(es)", scan.applied_count)
+                        format!("mend: applied {} `pub use` fix(es)", scan.applied_count)
                     }),
                 )),
                 Err(err) => {

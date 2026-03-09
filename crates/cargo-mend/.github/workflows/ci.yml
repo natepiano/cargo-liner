@@ -90,14 +90,14 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Install cargo-vischeck
-        run: cargo install --path . --root /tmp/cargo-vischeck-install
+      - name: Install cargo-mend
+        run: cargo install --path . --root /tmp/cargo-mend-install
 
       - name: Check installed binary
-        run: /tmp/cargo-vischeck-install/bin/cargo-vischeck --help
+        run: /tmp/cargo-mend-install/bin/cargo-mend --help
 
       - name: Check cargo subcommand wiring
-        run: PATH="/tmp/cargo-vischeck-install/bin:$PATH" cargo vischeck --help
+        run: PATH="/tmp/cargo-mend-install/bin:$PATH" cargo mend --help
 
   windows-install-check:
     name: Windows Install Check
@@ -114,9 +114,9 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Install cargo-vischeck
+      - name: Install cargo-mend
         shell: pwsh
-        run: cargo install --path . --debug --root "$env:RUNNER_TEMP\\cargo-vischeck-install"
+        run: cargo install --path . --debug --root "$env:RUNNER_TEMP\\cargo-mend-install"
 
       - name: Check installed binary
         shell: pwsh
@@ -127,7 +127,7 @@ jobs:
           $rustlibBin = Join-Path $sysroot "lib\rustlib\$rustHostTriple\bin"
           $rustlibLib = Join-Path $sysroot "lib\rustlib\$rustHostTriple\lib"
           $env:PATH = "$toolchainBin;$rustlibBin;$rustlibLib;$env:PATH"
-          & "$env:RUNNER_TEMP\cargo-vischeck-install\bin\cargo-vischeck.exe" --help
+          & "$env:RUNNER_TEMP\cargo-mend-install\bin\cargo-mend.exe" --help
 
       - name: Check cargo subcommand wiring
         shell: pwsh
@@ -138,8 +138,8 @@ jobs:
           $rustlibBin = Join-Path $sysroot "lib\rustlib\$rustHostTriple\bin"
           $rustlibLib = Join-Path $sysroot "lib\rustlib\$rustHostTriple\lib"
           $env:PATH = "$toolchainBin;$rustlibBin;$rustlibLib;$env:PATH"
-          $env:PATH = "$env:RUNNER_TEMP\cargo-vischeck-install\bin;$env:PATH"
-          cargo vischeck --help
+          $env:PATH = "$env:RUNNER_TEMP\cargo-mend-install\bin;$env:PATH"
+          cargo mend --help
 
   test:
     name: Test Suite

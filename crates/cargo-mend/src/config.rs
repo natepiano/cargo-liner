@@ -46,7 +46,7 @@ pub(super) fn load_config(
     } else {
         let mut result = Vec::new();
         for root in [manifest_dir, workspace_root] {
-            result.push(root.join("vischeck.toml"));
+            result.push(root.join("mend.toml"));
         }
         result
     };

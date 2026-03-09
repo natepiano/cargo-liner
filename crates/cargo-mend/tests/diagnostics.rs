@@ -4,25 +4,25 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
 
-use cargo_vischeck_tests_support::diagnostic_specs;
+use cargo_mend_tests_support::diagnostic_specs;
 use serde::Deserialize;
 use tempfile::tempdir;
 
-fn vischeck_bin() -> PathBuf {
+fn mend_bin() -> PathBuf {
     static BUILD_ONCE: OnceLock<()> = OnceLock::new();
     BUILD_ONCE.get_or_init(|| {
         let status = Command::new("cargo")
             .arg("build")
             .arg("--bin")
-            .arg("cargo-vischeck")
+            .arg("cargo-mend")
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .env("RUSTC_WRAPPER", "")
             .env_remove("CARGO_BUILD_RUSTC_WRAPPER")
             .status()
-            .expect("build cargo-vischeck binary for integration tests");
+            .expect("build cargo-mend binary for integration tests");
         assert!(
             status.success(),
-            "failed to build cargo-vischeck test binary"
+            "failed to build cargo-mend test binary"
         );
     });
     let current = std::env::current_exe().expect("current exe path");
@@ -31,7 +31,7 @@ fn vischeck_bin() -> PathBuf {
         .expect("deps dir")
         .parent()
         .expect("debug dir")
-        .join("cargo-vischeck")
+        .join("cargo-mend")
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,20 +52,20 @@ struct Summary {
     fixable_count: usize,
 }
 
-fn run_vischeck_json(manifest_path: &std::path::Path) -> Report {
-    let output = Command::new(vischeck_bin())
+fn run_mend_json(manifest_path: &std::path::Path) -> Report {
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(manifest_path)
         .arg("--json")
         .output()
-        .expect("run cargo-vischeck --json");
+        .expect("run cargo-mend --json");
     assert!(
         matches!(output.status.code(), Some(0) | Some(1) | Some(2)),
-        "cargo-vischeck returned unexpected status {:?}: {}",
+        "cargo-mend returned unexpected status {:?}: {}",
         output.status.code(),
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).expect("parse vischeck json report")
+    serde_json::from_slice(&output.stdout).expect("parse mend json report")
 }
 
 #[test]
@@ -158,21 +158,21 @@ pub struct Suspicious;
     )
     .expect("write stale child");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--json")
         .output()
-        .expect("run cargo-vischeck against fixture");
+        .expect("run cargo-mend against fixture");
     assert!(
         matches!(output.status.code(), Some(1) | Some(2)),
-        "cargo-vischeck returned unexpected status {:?}: {}",
+        "cargo-mend returned unexpected status {:?}: {}",
         output.status.code(),
         String::from_utf8_lossy(&output.stderr)
     );
 
     let report: Report =
-        serde_json::from_slice(&output.stdout).expect("parse vischeck json report");
+        serde_json::from_slice(&output.stdout).expect("parse mend json report");
     let codes: BTreeSet<_> = report
         .findings
         .iter()
@@ -193,14 +193,14 @@ pub struct Suspicious;
     assert_eq!(report.summary.warning_count, 4);
     assert_eq!(report.summary.fixable_count, 2);
 
-    let rendered_output = Command::new(vischeck_bin())
+    let rendered_output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .output()
-        .expect("run cargo-vischeck human output");
+        .expect("run cargo-mend human output");
     assert!(
         matches!(rendered_output.status.code(), Some(1) | Some(2)),
-        "cargo-vischeck returned unexpected status {:?}: {}",
+        "cargo-mend returned unexpected status {:?}: {}",
         rendered_output.status.code(),
         String::from_utf8_lossy(&rendered_output.stderr)
     );
@@ -213,7 +213,7 @@ pub struct Suspicious;
             spec.code
         );
         let help_url = format!(
-            "https://github.com/natepiano/cargo-vischeck#{}",
+            "https://github.com/natepiano/cargo-mend#{}",
             spec.help_anchor
         );
         assert!(
@@ -228,9 +228,9 @@ pub struct Suspicious;
     assert!(
         rendered.contains("help: consider using: `use super::PublicContainer as ParentContainer;`")
     );
-    assert!(rendered.contains("note: this warning is auto-fixable with `cargo vischeck --fix`"));
+    assert!(rendered.contains("note: this warning is auto-fixable with `cargo mend --fix`"));
     assert!(
-        rendered.contains("note: this warning is auto-fixable with `cargo vischeck --fix-pub-use`")
+        rendered.contains("note: this warning is auto-fixable with `cargo mend --fix-pub-use`")
     );
     assert!(rendered.contains("summary: 3 error(s), 4 warning(s), 2 fixable with `--fix`"));
     assert!(rendered.contains("paired with parent re-export at stale_parent/mod.rs"));
@@ -268,15 +268,15 @@ pub struct Thing;
     )
     .expect("write fixture inner");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
-        .expect("run cargo-vischeck --fix");
+        .expect("run cargo-mend --fix");
     assert!(
         output.status.success(),
-        "cargo-vischeck --fix failed: {}\n{}",
+        "cargo-mend --fix failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -317,15 +317,15 @@ edition = "2024"
     )
     .expect("write fixture child");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
-        .expect("run cargo-vischeck --fix");
+        .expect("run cargo-mend --fix");
     assert!(
         output.status.success(),
-        "cargo-vischeck --fix failed: {}\n{}",
+        "cargo-mend --fix failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -366,15 +366,15 @@ edition = "2024"
     )
     .expect("write fixture child");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
-        .expect("run cargo-vischeck --fix");
+        .expect("run cargo-mend --fix");
     assert!(
         output.status.success(),
-        "cargo-vischeck --fix failed: {}\n{}",
+        "cargo-mend --fix failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -411,15 +411,15 @@ edition = "2024"
     )
     .expect("write fixture child");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
-        .expect("run cargo-vischeck --fix");
+        .expect("run cargo-mend --fix");
     assert!(
         output.status.success(),
-        "cargo-vischeck --fix failed: {}\n{}",
+        "cargo-mend --fix failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -467,15 +467,15 @@ pub struct Thing;
     )
     .expect("write fixture broken");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
-        .expect("run cargo-vischeck --fix");
+        .expect("run cargo-mend --fix");
     assert!(
         !output.status.success(),
-        "cargo-vischeck --fix unexpectedly succeeded: {}\n{}",
+        "cargo-mend --fix unexpectedly succeeded: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -507,21 +507,21 @@ edition = "2024"
     )
     .expect("write fixture main");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
-        .expect("run cargo-vischeck --fix");
+        .expect("run cargo-mend --fix");
     assert!(
         output.status.success(),
-        "cargo-vischeck --fix failed unexpectedly: {}\n{}",
+        "cargo-mend --fix failed unexpectedly: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
     let stderr = String::from_utf8(output.stderr).expect("decode stderr");
-    assert!(stderr.contains("vischeck: no import fixes available"));
+    assert!(stderr.contains("mend: no import fixes available"));
 }
 
 #[test]
@@ -545,15 +545,15 @@ edition = "2024"
     )
     .expect("write fixture main");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
-        .expect("run cargo-vischeck --fix");
+        .expect("run cargo-mend --fix");
     assert!(
         output.status.success(),
-        "cargo-vischeck --fix failed unexpectedly: {}\n{}",
+        "cargo-mend --fix failed unexpectedly: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -561,7 +561,7 @@ edition = "2024"
     let stdout = String::from_utf8(output.stdout).expect("decode stdout");
     let stderr = String::from_utf8(output.stderr).expect("decode stderr");
     assert!(stdout.contains("No findings."));
-    assert!(stderr.contains("vischeck: no import fixes available"));
+    assert!(stderr.contains("mend: no import fixes available"));
 }
 
 #[test]
@@ -599,15 +599,15 @@ edition = "2024"
     )
     .expect("write consumer");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
-        .expect("run cargo-vischeck --fix");
+        .expect("run cargo-mend --fix");
     assert!(
         output.status.success(),
-        "cargo-vischeck --fix failed unexpectedly: {}\n{}",
+        "cargo-mend --fix failed unexpectedly: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -616,7 +616,7 @@ edition = "2024"
     let stderr = String::from_utf8(output.stderr).expect("decode stderr");
 
     assert!(stdout.contains("summary:"));
-    assert!(stderr.contains("vischeck: applied 1 import fix(es)"));
+    assert!(stderr.contains("mend: applied 1 import fix(es)"));
 }
 
 #[test]
@@ -650,22 +650,22 @@ edition = "2024"
     )
     .expect("write consumer");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix")
         .arg("--dry-run")
         .output()
-        .expect("run cargo-vischeck --fix --dry-run");
+        .expect("run cargo-mend --fix --dry-run");
     assert!(
         output.status.success(),
-        "cargo-vischeck --fix --dry-run failed: {}\n{}",
+        "cargo-mend --fix --dry-run failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("vischeck: would apply 1 import fix(es) in dry run"));
+    assert!(stderr.contains("mend: would apply 1 import fix(es) in dry run"));
 
     let consumer = fs::read_to_string(temp.path().join("src/parent/consumer.rs"))
         .expect("read consumer after dry-run");
@@ -707,15 +707,15 @@ edition = "2024"
     )
     .expect("write sibling");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
-        .expect("run cargo-vischeck --fix-pub-use");
+        .expect("run cargo-mend --fix-pub-use");
     assert!(
         output.status.success(),
-        "cargo-vischeck --fix-pub-use failed: {}\n{}",
+        "cargo-mend --fix-pub-use failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -731,34 +731,34 @@ edition = "2024"
     assert!(sibling.contains("use super::child::SpawnStats;"));
     assert!(!sibling.contains("use super::SpawnStats;"));
 
-    let follow_up = Command::new(vischeck_bin())
+    let follow_up = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .output()
-        .expect("rerun cargo-vischeck after fix-pub-use");
+        .expect("rerun cargo-mend after fix-pub-use");
     assert!(
         follow_up.status.success(),
-        "follow-up cargo-vischeck failed: {}\n{}",
+        "follow-up cargo-mend failed: {}\n{}",
         String::from_utf8_lossy(&follow_up.stdout),
         String::from_utf8_lossy(&follow_up.stderr)
     );
     assert!(String::from_utf8_lossy(&follow_up.stdout).contains("No findings."));
 
-    let repeat_fix = Command::new(vischeck_bin())
+    let repeat_fix = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
-        .expect("rerun cargo-vischeck --fix-pub-use after fix");
+        .expect("rerun cargo-mend --fix-pub-use after fix");
     assert!(
         repeat_fix.status.success(),
-        "repeat cargo-vischeck --fix-pub-use failed: {}\n{}",
+        "repeat cargo-mend --fix-pub-use failed: {}\n{}",
         String::from_utf8_lossy(&repeat_fix.stdout),
         String::from_utf8_lossy(&repeat_fix.stderr)
     );
     assert!(
         String::from_utf8_lossy(&repeat_fix.stderr)
-            .contains("vischeck: no `pub use` fixes available")
+            .contains("mend: no `pub use` fixes available")
     );
 }
 
@@ -792,22 +792,22 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
-        .expect("run cargo-vischeck --fix-pub-use");
+        .expect("run cargo-mend --fix-pub-use");
     assert!(
         output.status.success(),
-        "cargo-vischeck --fix-pub-use failed: {}\n{}",
+        "cargo-mend --fix-pub-use failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("vischeck: suppressing `unused import` warning during `--fix-pub-use` discovery"),
+        stderr.contains("mend: suppressing `unused import` warning during `--fix-pub-use` discovery"),
         "expected suppression notice in stderr:\n{stderr}"
     );
     assert!(
@@ -855,22 +855,22 @@ edition = "2024"
     )
     .expect("write sibling");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .arg("--dry-run")
         .output()
-        .expect("run cargo-vischeck --fix-pub-use --dry-run");
+        .expect("run cargo-mend --fix-pub-use --dry-run");
     assert!(
         output.status.success(),
-        "cargo-vischeck --fix-pub-use --dry-run failed: {}\n{}",
+        "cargo-mend --fix-pub-use --dry-run failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("vischeck: would apply 1 `pub use` fix(es) in dry run"));
+    assert!(stderr.contains("mend: would apply 1 `pub use` fix(es) in dry run"));
 
     let mod_rs = fs::read_to_string(temp.path().join("src/actor/mod.rs")).expect("read actor mod");
     let child = fs::read_to_string(temp.path().join("src/actor/child.rs")).expect("read child");
@@ -919,15 +919,15 @@ edition = "2024"
     )
     .expect("write deeper");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
-        .expect("run cargo-vischeck --fix-pub-use");
+        .expect("run cargo-mend --fix-pub-use");
     assert!(
         output.status.success(),
-        "cargo-vischeck --fix-pub-use failed: {}\n{}",
+        "cargo-mend --fix-pub-use failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -972,15 +972,15 @@ edition = "2024"
     )
     .expect("write sibling");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
-        .expect("run cargo-vischeck --fix-pub-use");
+        .expect("run cargo-mend --fix-pub-use");
     assert!(
         output.status.success(),
-        "cargo-vischeck --fix-pub-use failed: {}\n{}",
+        "cargo-mend --fix-pub-use failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1024,15 +1024,15 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
-        .expect("run cargo-vischeck --fix-pub-use");
+        .expect("run cargo-mend --fix-pub-use");
     assert!(
         !output.status.success(),
-        "cargo-vischeck --fix-pub-use unexpectedly succeeded: {}\n{}",
+        "cargo-mend --fix-pub-use unexpectedly succeeded: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1075,21 +1075,21 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = Command::new(vischeck_bin())
+    let output = Command::new(mend_bin())
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
-        .expect("run cargo-vischeck --fix-pub-use");
+        .expect("run cargo-mend --fix-pub-use");
     assert!(
         output.status.success(),
-        "cargo-vischeck --fix-pub-use failed unexpectedly: {}\n{}",
+        "cargo-mend --fix-pub-use failed unexpectedly: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
     let stderr = String::from_utf8(output.stderr).expect("decode stderr");
-    assert!(stderr.contains("vischeck: no `pub use` fixes available"));
+    assert!(stderr.contains("mend: no `pub use` fixes available"));
 }
 
 #[test]
@@ -1123,7 +1123,7 @@ edition = "2024"
     )
     .expect("write sibling");
 
-    let report = run_vischeck_json(&temp.path().join("Cargo.toml"));
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.fixable_count, 0);
     assert!(
         !report
@@ -1163,7 +1163,7 @@ edition = "2024"
     )
     .expect("write window_event");
 
-    let report = run_vischeck_json(&temp.path().join("Cargo.toml"));
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.fixable_count, 0);
     assert!(
         !report
@@ -1199,7 +1199,7 @@ edition = "2024"
     )
     .expect("write child");
 
-    let report = run_vischeck_json(&temp.path().join("Cargo.toml"));
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.fixable_count, 0);
     assert!(
         !report
@@ -1246,7 +1246,7 @@ fn main() {
     )
     .expect("write child");
 
-    let report = run_vischeck_json(&temp.path().join("Cargo.toml"));
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.error_count, 0);
     assert_eq!(report.summary.warning_count, 0);
     assert_eq!(report.summary.fixable_count, 0);
@@ -1283,7 +1283,7 @@ edition = "2024"
     )
     .expect("write child");
 
-    let report = run_vischeck_json(&temp.path().join("Cargo.toml"));
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.error_count, 0);
     assert_eq!(report.summary.warning_count, 2);
     assert_eq!(report.summary.fixable_count, 1);
@@ -1299,7 +1299,7 @@ edition = "2024"
     );
 }
 
-mod cargo_vischeck_tests_support {
+mod cargo_mend_tests_support {
     #![allow(dead_code)]
     include!("../src/diagnostics.rs");
 
