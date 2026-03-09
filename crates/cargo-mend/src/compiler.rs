@@ -31,14 +31,19 @@ use serde::Deserialize;
 use serde::Serialize;
 use syn::ItemUse;
 use syn::UseTree;
+use syn::visit::Visit;
 
 use super::config::LoadedConfig;
 use super::config::VisibilityConfig;
 use super::diagnostics::Finding;
+use super::diagnostics::PubUseFixFact;
 use super::diagnostics::Report;
+use super::diagnostics::ReportFacts;
 use super::diagnostics::ReportSummary;
 use super::diagnostics::Severity;
 use super::fix_support::FixSupport;
+use super::outcome::AnalysisFailure;
+use super::outcome::MendFailure;
 use super::selection::Selection;
 
 const DRIVER_ENV: &str = "MEND_DRIVER";
@@ -46,7 +51,7 @@ const CONFIG_ROOT_ENV: &str = "MEND_CONFIG_ROOT";
 const CONFIG_JSON_ENV: &str = "MEND_CONFIG_JSON";
 const FINDINGS_DIR_ENV: &str = "MEND_FINDINGS_DIR";
 const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
-const FINDINGS_SCHEMA_VERSION: u32 = 8;
+const FINDINGS_SCHEMA_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildOutputMode {
@@ -60,11 +65,21 @@ enum DiagnosticBlockKind {
     ForwardedDiagnostic,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CommandOutcome {
+    status:                    std::process::ExitStatus,
+    saw_unused_import_warning: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredReport {
-    version:      u32,
-    package_root: String,
-    findings:     Vec<StoredFinding>,
+    version:                    u32,
+    package_root:               String,
+    findings:                   Vec<StoredFinding>,
+    #[serde(default)]
+    pub_use_fix_facts:          Vec<StoredPubUseFixFact>,
+    #[serde(default)]
+    saw_unused_import_warnings: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -83,6 +98,16 @@ struct StoredFinding {
     fix_support:   FixSupport,
     #[serde(default)]
     related:       Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredPubUseFixFact {
+    child_path:      String,
+    child_line:      usize,
+    child_item_name: String,
+    parent_path:     String,
+    parent_line:     usize,
+    child_module:    String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +193,7 @@ pub fn run_selection(
     selection: &Selection,
     loaded_config: &LoadedConfig,
     output_mode: BuildOutputMode,
-) -> Result<Report> {
+) -> Result<Report, MendFailure> {
     let findings_dir = selection.target_directory.join("mend-findings");
     fs::create_dir_all(&findings_dir).with_context(|| {
         format!(
@@ -177,10 +202,11 @@ pub fn run_selection(
         )
     })?;
 
-    let status = run_cargo_check(selection, loaded_config, &findings_dir, output_mode)?;
+    let mut command_outcome = run_cargo_check(selection, loaded_config, &findings_dir, output_mode)
+        .map_err(|err| MendFailure::Analysis(AnalysisFailure::DriverSetup(err)))?;
 
-    if !status.success() {
-        anyhow::bail!("cargo check failed during mend analysis");
+    if !command_outcome.status.success() {
+        return Err(MendFailure::Analysis(AnalysisFailure::CargoCheck));
     }
 
     let missing_packages = selection
@@ -192,18 +218,22 @@ pub fn run_selection(
     if !missing_packages.is_empty() {
         for package in missing_packages {
             let status =
-                run_cargo_rustc_for_package(package, loaded_config, &findings_dir, output_mode)?;
-            if !status.success() {
-                anyhow::bail!(
-                    "cargo rustc refresh failed during mend analysis for package {}",
-                    package.name
-                );
+                run_cargo_rustc_for_package(package, loaded_config, &findings_dir, output_mode)
+                    .map_err(|err| MendFailure::Analysis(AnalysisFailure::DriverSetup(err)))?;
+            command_outcome.saw_unused_import_warning |= status.saw_unused_import_warning;
+            if !status.status.success() {
+                return Err(MendFailure::Analysis(AnalysisFailure::CargoRustcRefresh {
+                    package: package.name.clone(),
+                }));
             }
         }
     }
 
-    let report = load_report(&findings_dir, selection)?;
+    let report = load_report(&findings_dir, selection)
+        .map_err(|err| MendFailure::Analysis(AnalysisFailure::DriverExecution(err)))?;
 
+    let mut report = report;
+    report.facts.saw_unused_import_warnings = command_outcome.saw_unused_import_warning;
     Ok(report)
 }
 
@@ -267,7 +297,7 @@ fn run_cargo_check(
     loaded_config: &LoadedConfig,
     findings_dir: &Path,
     output_mode: BuildOutputMode,
-) -> Result<std::process::ExitStatus> {
+) -> Result<CommandOutcome> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
     let mut command = Command::new("cargo");
     command.arg("check");
@@ -300,7 +330,7 @@ fn run_cargo_rustc_for_package(
     loaded_config: &LoadedConfig,
     findings_dir: &Path,
     output_mode: BuildOutputMode,
-) -> Result<std::process::ExitStatus> {
+) -> Result<CommandOutcome> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
     let mut command = Command::new("cargo");
     command.arg("rustc");
@@ -338,51 +368,95 @@ fn run_cargo_rustc_for_package(
 fn run_cargo_command(
     command: &mut Command,
     output_mode: BuildOutputMode,
-) -> Result<std::process::ExitStatus> {
+) -> Result<CommandOutcome> {
     command.stdin(Stdio::inherit());
     match output_mode {
-        BuildOutputMode::Full => {
-            command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
-            command.status().context("failed to run cargo command")
-        },
+        BuildOutputMode::Full => run_cargo_command_with_unused_import_mode(command, false),
         BuildOutputMode::SuppressUnusedImportWarnings => {
-            command.stdout(Stdio::null()).stderr(Stdio::piped());
-            let mut child = command.spawn().context("failed to spawn cargo command")?;
-            let stderr = child
-                .stderr
-                .take()
-                .context("failed to capture cargo stderr")?;
-            let mut reader = BufReader::new(stderr);
-            let mut line = String::new();
-            let mut block = Vec::new();
-            let mut printed_suppression_notice = false;
-
-            loop {
-                line.clear();
-                let bytes = reader.read_line(&mut line)?;
-                if bytes == 0 {
-                    flush_diagnostic_block(&mut block, &mut printed_suppression_notice);
-                    break;
-                }
-
-                let current = line.clone();
-                if is_progress_line(&current) {
-                    flush_diagnostic_block(&mut block, &mut printed_suppression_notice);
-                    eprint!("{current}");
-                    continue;
-                }
-
-                if current.trim().is_empty() {
-                    block.push(current);
-                    flush_diagnostic_block(&mut block, &mut printed_suppression_notice);
-                } else {
-                    block.push(current);
-                }
-            }
-
-            child.wait().context("failed to wait for cargo command")
+            run_cargo_command_with_unused_import_mode(command, true)
         },
     }
+}
+
+fn run_cargo_command_with_unused_import_mode(
+    command: &mut Command,
+    suppress_unused_imports: bool,
+) -> Result<CommandOutcome> {
+    command.stderr(Stdio::piped());
+    if suppress_unused_imports {
+        command.stdout(Stdio::null());
+    } else {
+        command.stdout(Stdio::inherit());
+    }
+    let mut child = command.spawn().context("failed to spawn cargo command")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("failed to capture cargo stderr")?;
+    let stderr_outcome = stream_cargo_stderr(stderr, suppress_unused_imports)?;
+    let status = child.wait().context("failed to wait for cargo command")?;
+    Ok(CommandOutcome {
+        status,
+        saw_unused_import_warning: stderr_outcome.saw_unused_import_warning,
+    })
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct StderrObservation {
+    saw_unused_import_warning: bool,
+}
+
+fn stream_cargo_stderr(
+    stderr: std::process::ChildStderr,
+    suppress_unused_imports: bool,
+) -> Result<StderrObservation> {
+    let mut reader = BufReader::new(stderr);
+    let mut line = String::new();
+    let mut block = Vec::new();
+    let mut printed_suppression_notice = false;
+    let mut saw_unused_import_warning = false;
+
+    loop {
+        line.clear();
+        let bytes = reader.read_line(&mut line)?;
+        if bytes == 0 {
+            flush_diagnostic_block(
+                &mut block,
+                &mut printed_suppression_notice,
+                &mut saw_unused_import_warning,
+                suppress_unused_imports,
+            );
+            break;
+        }
+
+        let current = line.clone();
+        if is_progress_line(&current) {
+            flush_diagnostic_block(
+                &mut block,
+                &mut printed_suppression_notice,
+                &mut saw_unused_import_warning,
+                suppress_unused_imports,
+            );
+            eprint!("{current}");
+            continue;
+        }
+
+        if current.trim().is_empty() {
+            block.push(current);
+            flush_diagnostic_block(
+                &mut block,
+                &mut printed_suppression_notice,
+                &mut saw_unused_import_warning,
+                suppress_unused_imports,
+            );
+        } else {
+            block.push(current);
+        }
+    }
+
+    Ok(StderrObservation {
+        saw_unused_import_warning,
+    })
 }
 
 fn is_progress_line(line: &str) -> bool {
@@ -417,18 +491,28 @@ fn classify_diagnostic_block(
     })
 }
 
-fn flush_diagnostic_block(block: &mut Vec<String>, printed_suppression_notice: &mut bool) {
+fn flush_diagnostic_block(
+    block: &mut Vec<String>,
+    printed_suppression_notice: &mut bool,
+    saw_unused_import_warning: &mut bool,
+    suppress_unused_imports: bool,
+) {
     if block.is_empty() {
         return;
     }
 
     match classify_diagnostic_block(block, *printed_suppression_notice) {
         DiagnosticBlockKind::SuppressedUnusedImport => {
-            if !*printed_suppression_notice {
+            *saw_unused_import_warning = true;
+            if suppress_unused_imports && !*printed_suppression_notice {
                 eprintln!(
                     "mend: suppressing `unused import` warning during `--fix-pub-use` discovery"
                 );
                 *printed_suppression_notice = true;
+            } else if !suppress_unused_imports {
+                for line in block.iter() {
+                    eprint!("{line}");
+                }
             }
         },
         DiagnosticBlockKind::ForwardedDiagnostic => {
@@ -506,6 +590,7 @@ fn rust_sources_newer_than(dir: &Path, reference: std::time::SystemTime) -> bool
 
 fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
     let mut findings = Vec::new();
+    let mut pub_use_fix_facts = Vec::new();
     let selected_roots: Vec<String> = selection
         .package_roots
         .iter()
@@ -553,6 +638,22 @@ fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
                 related:       finding.related,
             });
         }
+        for fact in stored.pub_use_fix_facts {
+            pub_use_fix_facts.push(PubUseFixFact {
+                child_path:      relativize_path(
+                    &fact.child_path,
+                    selection.analysis_root.as_path(),
+                ),
+                child_line:      fact.child_line,
+                child_item_name: fact.child_item_name,
+                parent_path:     relativize_path(
+                    &fact.parent_path,
+                    selection.analysis_root.as_path(),
+                ),
+                parent_line:     fact.parent_line,
+                child_module:    fact.child_module,
+            });
+        }
     }
 
     findings.sort_by(|a, b| {
@@ -577,6 +678,10 @@ fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
         root: selection_root_string(selection.analysis_root.as_path()),
         summary: ReportSummary::default(),
         findings,
+        facts: ReportFacts {
+            pub_use_fix_facts,
+            saw_unused_import_warnings: false,
+        },
     })
 }
 
@@ -606,7 +711,7 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
     };
     let src_root = src_root.to_path_buf();
 
-    let mut findings = Vec::new();
+    let mut sink = FindingsSink::default();
     let crate_items = tcx.hir_crate_items(());
     let effective_visibilities = tcx.effective_visibilities(());
 
@@ -619,7 +724,7 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
             &crate_root_file,
             effective_visibilities,
             item,
-            &mut findings,
+            &mut sink,
         )?;
     }
 
@@ -632,7 +737,7 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
             &crate_root_file,
             effective_visibilities,
             item,
-            &mut findings,
+            &mut sink,
         )?;
     }
 
@@ -645,19 +750,19 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
             &crate_root_file,
             effective_visibilities,
             item,
-            &mut findings,
+            &mut sink,
         )?;
     }
 
     let output_path = settings
         .findings_dir
         .join(cache_filename_for(&settings.package_root));
-    if !findings.is_empty() {
-        findings.sort_by(|a, b| {
+    if !sink.findings.is_empty() {
+        sink.findings.sort_by(|a, b| {
             (&a.path, a.line, a.column, &a.code, &a.item, &a.message)
                 .cmp(&(&b.path, b.line, b.column, &b.code, &b.item, &b.message))
         });
-        findings.dedup_by(|a, b| {
+        sink.findings.dedup_by(|a, b| {
             a.code == b.code
                 && a.path == b.path
                 && a.line == b.line
@@ -668,13 +773,21 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
     }
 
     let report = StoredReport {
-        version: FINDINGS_SCHEMA_VERSION,
-        package_root: settings.package_root.to_string_lossy().into_owned(),
-        findings,
+        version:                    FINDINGS_SCHEMA_VERSION,
+        package_root:               settings.package_root.to_string_lossy().into_owned(),
+        findings:                   sink.findings,
+        pub_use_fix_facts:          sink.pub_use_fix_facts,
+        saw_unused_import_warnings: false,
     };
     fs::write(&output_path, serde_json::to_vec_pretty(&report)?)
         .with_context(|| format!("failed to write findings file {}", output_path.display()))?;
     Ok(true)
+}
+
+#[derive(Default)]
+struct FindingsSink {
+    findings:          Vec<StoredFinding>,
+    pub_use_fix_facts: Vec<StoredPubUseFixFact>,
 }
 
 fn cache_filename_for(package_root: &Path) -> String {
@@ -690,7 +803,7 @@ fn analyze_item(
     root_module: &Path,
     effective_visibilities: &rustc_middle::middle::privacy::EffectiveVisibilities,
     item: &Item<'_>,
-    findings: &mut Vec<StoredFinding>,
+    sink: &mut FindingsSink,
 ) -> Result<()> {
     if item.span.from_expansion() || item.vis_span.from_expansion() {
         return Ok(());
@@ -709,7 +822,7 @@ fn analyze_item(
         && matches!(item.kind, ItemKind::Use(..))
         && use_item_contains_glob(tcx, item.span)?
     {
-        findings.push(build_finding(
+        sink.findings.push(build_finding(
             tcx,
             &file_path,
             item.span,
@@ -738,7 +851,7 @@ fn analyze_item(
         item_name.as_deref(),
         highlight_span(item.vis_span, item.kind.ident().map(|ident| ident.span)),
         matches!(item.kind, ItemKind::Mod(..)),
-        findings,
+        sink,
     )
 }
 
@@ -749,7 +862,7 @@ fn analyze_impl_item(
     root_module: &Path,
     effective_visibilities: &rustc_middle::middle::privacy::EffectiveVisibilities,
     item: &ImplItem<'_>,
-    findings: &mut Vec<StoredFinding>,
+    sink: &mut FindingsSink,
 ) -> Result<()> {
     let Some(vis_span) = item.vis_span() else {
         return Ok(());
@@ -779,7 +892,7 @@ fn analyze_impl_item(
         Some(item_name.as_str()),
         highlight_span(vis_span, Some(item.ident.span)),
         false,
-        findings,
+        sink,
     )
 }
 
@@ -790,7 +903,7 @@ fn analyze_foreign_item(
     root_module: &Path,
     effective_visibilities: &rustc_middle::middle::privacy::EffectiveVisibilities,
     item: &ForeignItem<'_>,
-    findings: &mut Vec<StoredFinding>,
+    sink: &mut FindingsSink,
 ) -> Result<()> {
     if item.span.from_expansion() || item.vis_span.from_expansion() {
         return Ok(());
@@ -817,7 +930,7 @@ fn analyze_foreign_item(
         Some(item_name.as_str()),
         highlight_span(item.vis_span, Some(item.ident.span)),
         false,
-        findings,
+        sink,
     )
 }
 
@@ -835,7 +948,7 @@ fn record_visibility_findings(
     item_name: Option<&str>,
     highlight_span: Span,
     is_module_item: bool,
-    findings: &mut Vec<StoredFinding>,
+    sink: &mut FindingsSink,
 ) -> Result<()> {
     let crate_kind = if root_module.file_name().and_then(|name| name.to_str()) == Some("lib.rs") {
         CrateKind::Library
@@ -861,7 +974,7 @@ fn record_visibility_findings(
     if matches!(vis_text, "pub(crate)")
         && !allow_pub_crate_by_policy(crate_kind, module_location, parent_is_public)
     {
-        findings.push(build_finding(
+        sink.findings.push(build_finding(
             tcx,
             file_path,
             highlight_span,
@@ -878,7 +991,7 @@ fn record_visibility_findings(
     }
 
     if vis_text.starts_with("pub(in crate::") {
-        findings.push(build_finding(
+        sink.findings.push(build_finding(
             tcx,
             file_path,
             highlight_span,
@@ -903,7 +1016,7 @@ fn record_visibility_findings(
                 .any(|allowed| allowed == path)
         });
         if !allowlisted {
-            findings.push(build_finding(
+            sink.findings.push(build_finding(
                 tcx,
                 file_path,
                 highlight_span,
@@ -934,7 +1047,7 @@ fn record_visibility_findings(
             kind_label,
             item_name,
             highlight_span,
-            findings,
+            sink,
             crate_kind,
         )?;
     }
@@ -955,13 +1068,82 @@ fn maybe_record_suspicious_pub(
     kind_label: Option<&'static str>,
     item_name: Option<&str>,
     highlight_span: Span,
-    findings: &mut Vec<StoredFinding>,
+    sink: &mut FindingsSink,
     crate_kind: CrateKind,
 ) -> Result<()> {
     let Some(kind_label) = kind_label else {
         return Ok(());
     };
 
+    match classify_suspicious_pub(
+        settings,
+        src_root,
+        effective_visibilities,
+        def_id,
+        file_path,
+        config_rel_path,
+        parent_is_public,
+        module_location,
+        item_name,
+    )? {
+        SuspiciousPubAssessment::Allowed(_) => {},
+        SuspiciousPubAssessment::Warn {
+            fix_support,
+            related,
+            stale_parent_pub_use,
+        } => {
+            sink.findings.push(build_finding(
+                tcx,
+                file_path,
+                highlight_span,
+                FindingParams {
+                    severity: Severity::Warning,
+                    code: "suspicious_pub",
+                    item: item_name.map(|name| format!("{kind_label} {name}")),
+                    message: suspicious_pub_note(crate_kind, kind_label),
+                    suggestion: None,
+                    fix_support,
+                    related,
+                },
+            )?);
+            if let (Some(status), Some(item_name)) = (stale_parent_pub_use, item_name)
+                && fix_support == FixSupport::FixPubUse
+            {
+                let display = line_display(tcx, file_path, highlight_span)?;
+                let Some(child_module) = file_path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .filter(|stem| *stem != "mod")
+                    .map(str::to_string)
+                else {
+                    return Ok(());
+                };
+                sink.pub_use_fix_facts.push(StoredPubUseFixFact {
+                    child_path: file_path.to_string_lossy().into_owned(),
+                    child_line: display.line,
+                    child_item_name: item_name.to_string(),
+                    parent_path: status.parent_path.to_string_lossy().into_owned(),
+                    parent_line: status.parent_line,
+                    child_module,
+                });
+            }
+        },
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn classify_suspicious_pub(
+    settings: &DriverSettings,
+    src_root: &Path,
+    effective_visibilities: &rustc_middle::middle::privacy::EffectiveVisibilities,
+    def_id: LocalDefId,
+    file_path: &Path,
+    config_rel_path: Option<&str>,
+    parent_is_public: bool,
+    module_location: ModuleLocation,
+    item_name: Option<&str>,
+) -> Result<SuspiciousPubAssessment> {
     let item_key = config_rel_path.and_then(|path| item_name.map(|name| format!("{path}::{name}")));
     let allowlisted = item_key.as_ref().is_some_and(|key| {
         settings
@@ -970,22 +1152,66 @@ fn maybe_record_suspicious_pub(
             .iter()
             .any(|allowed| allowed == key)
     });
-    let reachable = effective_visibilities.is_public_at_level(def_id, Level::Reachable);
+    if allowlisted {
+        return Ok(SuspiciousPubAssessment::Allowed(AllowanceReason::Allowlist));
+    }
+
+    if parent_is_public {
+        return Ok(SuspiciousPubAssessment::Allowed(
+            AllowanceReason::ParentIsPublic,
+        ));
+    }
+
+    if matches!(module_location, ModuleLocation::TopLevelPrivateModule) {
+        return Ok(SuspiciousPubAssessment::Allowed(
+            AllowanceReason::TopLevelPrivateModulePolicy,
+        ));
+    }
+
+    if effective_visibilities.is_public_at_level(def_id, Level::Reachable) {
+        return Ok(SuspiciousPubAssessment::Allowed(
+            AllowanceReason::ReachablePublicApi,
+        ));
+    }
+
     let parent_facade_export = item_name
         .map(|name| parent_facade_export_status(src_root, file_path, name))
         .transpose()?
         .flatten();
-    let parent_facade_export_used_outside_parent = parent_facade_export
-        .as_ref()
-        .is_some_and(|status| status.used_outside_parent);
 
-    if allowlisted
-        || parent_is_public
-        || matches!(module_location, ModuleLocation::TopLevelPrivateModule)
-        || reachable
-        || parent_facade_export_used_outside_parent
+    if parent_facade_export
+        .as_ref()
+        .is_some_and(|status| status.used_outside_parent)
     {
-        return Ok(());
+        return Ok(SuspiciousPubAssessment::Allowed(
+            AllowanceReason::ParentFacadeUsedOutsideParent,
+        ));
+    }
+
+    if let Some(item_name) = item_name
+        && child_item_is_exposed_by_other_crate_visible_signature(src_root, file_path, item_name)?
+    {
+        return Ok(SuspiciousPubAssessment::Allowed(
+            AllowanceReason::ExposedByOtherCrateVisibleSignature,
+        ));
+    }
+
+    if let Some(item_name) = item_name
+        && impl_item_is_exposed_by_exported_self_type(src_root, file_path, item_name)?
+    {
+        return Ok(SuspiciousPubAssessment::Allowed(
+            AllowanceReason::ExposedByOtherCrateVisibleSignature,
+        ));
+    }
+
+    if let Some(item_name) = item_name
+        && parent_boundary_public_signature_exposes_child_used_outside_parent(
+            src_root, file_path, item_name,
+        )?
+    {
+        return Ok(SuspiciousPubAssessment::Allowed(
+            AllowanceReason::ExposedByOtherCrateVisibleSignature,
+        ));
     }
 
     let stale_parent_pub_use = parent_facade_export
@@ -997,27 +1223,18 @@ fn maybe_record_suspicious_pub(
             status.parent_rel_path, status.parent_line
         )
     });
-    findings.push(build_finding(
-        tcx,
-        file_path,
-        highlight_span,
-        FindingParams {
-            severity: Severity::Warning,
-            code: "suspicious_pub",
-            item: item_name.map(|name| format!("{kind_label} {name}")),
-            message: suspicious_pub_note(crate_kind, kind_label),
-            suggestion: None,
-            fix_support: stale_parent_pub_use.map_or(FixSupport::None, |status| {
-                if status.fix_supported {
-                    FixSupport::FixPubUse
-                } else {
-                    FixSupport::NeedsManualPubUseCleanup
-                }
-            }),
-            related,
-        },
-    )?);
-    Ok(())
+    let fix_support = stale_parent_pub_use.map_or(FixSupport::None, |status| {
+        if status.fix_supported {
+            FixSupport::FixPubUse
+        } else {
+            FixSupport::NeedsManualPubUseCleanup
+        }
+    });
+    Ok(SuspiciousPubAssessment::Warn {
+        fix_support,
+        related,
+        stale_parent_pub_use: stale_parent_pub_use.cloned(),
+    })
 }
 
 struct FindingParams {
@@ -1108,7 +1325,7 @@ fn parent_facade_export_status(
         }
         let source = fs::read_to_string(&file)
             .with_context(|| format!("failed to read source file {}", file.display()))?;
-        if use_tree_references_parent_export(
+        if source_references_parent_export(
             &source,
             &parent_boundary.module_path,
             &exported_names.explicit,
@@ -1116,6 +1333,7 @@ fn parent_facade_export_status(
             return Ok(Some(ParentFacadeExportStatus {
                 used_outside_parent: true,
                 fix_supported: exported_names.fix_supported,
+                parent_path: parent_boundary.boundary_file,
                 parent_rel_path,
                 parent_line,
             }));
@@ -1125,6 +1343,7 @@ fn parent_facade_export_status(
     Ok(Some(ParentFacadeExportStatus {
         used_outside_parent: false,
         fix_supported: exported_names.fix_supported,
+        parent_path: parent_boundary.boundary_file,
         parent_rel_path,
         parent_line,
     }))
@@ -1171,14 +1390,14 @@ fn exported_names_from_parent_boundary(
 ) -> Result<ParentFacadeExports> {
     let file = syn::parse_file(parent_source).context("failed to parse parent boundary file")?;
     let mut exported = ParentFacadeExports::default();
-    for item in file.items {
+    for item in &file.items {
         let syn::Item::Use(item_use) = item else {
             continue;
         };
         if !matches!(item_use.vis, syn::Visibility::Public(_)) {
             continue;
         }
-        collect_matching_pub_use_exports(&item_use, child_module_name, item_name, &mut exported);
+        collect_matching_pub_use_exports(item_use, child_module_name, item_name, &mut exported);
     }
     exported.explicit.sort();
     exported.explicit.dedup();
@@ -1191,7 +1410,7 @@ fn collect_matching_pub_use_exports(
     item_name: &str,
     exported: &mut ParentFacadeExports,
 ) {
-    if pub_use_is_simple_fix_supported(&item_use.tree, child_module_name, item_name) {
+    if pub_use_is_fix_supported(&item_use.tree, child_module_name, item_name) {
         exported.fix_supported = true;
     }
     let mut paths = Vec::new();
@@ -1212,33 +1431,35 @@ fn collect_matching_pub_use_exports(
     }
 }
 
-fn pub_use_is_simple_fix_supported(
+fn pub_use_is_fix_supported(tree: &UseTree, child_module_name: &str, item_name: &str) -> bool {
+    pub_use_is_fix_supported_with_prefix(Vec::new(), tree, child_module_name, item_name)
+}
+
+fn pub_use_is_fix_supported_with_prefix(
+    prefix: Vec<String>,
     tree: &UseTree,
     child_module_name: &str,
     item_name: &str,
 ) -> bool {
-    let mut segments = Vec::new();
-    let mut cursor = tree;
-    loop {
-        match cursor {
-            UseTree::Path(path) => {
-                segments.push(path.ident.to_string());
-                cursor = &path.tree;
-            },
-            UseTree::Name(name) => {
-                segments.push(name.ident.to_string());
-                break;
-            },
-            UseTree::Rename(_) | UseTree::Group(_) | UseTree::Glob(_) => return false,
-        }
+    match tree {
+        UseTree::Path(path) => {
+            let mut next = prefix;
+            next.push(path.ident.to_string());
+            pub_use_is_fix_supported_with_prefix(next, &path.tree, child_module_name, item_name)
+        },
+        UseTree::Name(name) => {
+            let normalized = if prefix.first().is_some_and(|segment| segment == "self") {
+                &prefix[1..]
+            } else {
+                &prefix[..]
+            };
+            normalized.len() == 1 && normalized[0] == child_module_name && name.ident == item_name
+        },
+        UseTree::Group(group) => group.items.iter().any(|item| {
+            pub_use_is_fix_supported_with_prefix(prefix.clone(), item, child_module_name, item_name)
+        }),
+        UseTree::Rename(_) | UseTree::Glob(_) => false,
     }
-
-    let normalized = if segments.first().is_some_and(|segment| segment == "self") {
-        &segments[1..]
-    } else {
-        &segments[..]
-    };
-    normalized.len() == 2 && normalized[0] == child_module_name && normalized[1] == item_name
 }
 
 fn flatten_use_tree(prefix: Vec<String>, tree: &UseTree, out: &mut Vec<Vec<String>>) {
@@ -1316,7 +1537,7 @@ fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()>
     Ok(())
 }
 
-fn use_tree_references_parent_export(
+fn source_references_parent_export(
     source: &str,
     module_path: &[String],
     exported_names: &[String],
@@ -1324,7 +1545,8 @@ fn use_tree_references_parent_export(
     let Ok(file) = syn::parse_file(source) else {
         return false;
     };
-    for item in file.items {
+
+    for item in &file.items {
         let syn::Item::Use(item_use) = item else {
             continue;
         };
@@ -1347,7 +1569,386 @@ fn use_tree_references_parent_export(
             }
         }
     }
-    false
+
+    let mut visitor = ParentExportPathVisitor::new(module_path, exported_names);
+    visitor.visit_file(&file);
+    visitor.found
+}
+
+fn child_item_is_exposed_by_other_crate_visible_signature(
+    src_root: &Path,
+    child_file: &Path,
+    item_name: &str,
+) -> Result<bool> {
+    let child_source = fs::read_to_string(child_file)
+        .with_context(|| format!("failed to read child file {}", child_file.display()))?;
+    let file = syn::parse_file(&child_source)
+        .with_context(|| format!("failed to parse child file {}", child_file.display()))?;
+
+    for item in &file.items {
+        let Some(exposing_item_name) = public_item_name(item) else {
+            continue;
+        };
+        if exposing_item_name == item_name {
+            continue;
+        }
+        if !public_item_surface_mentions_name(item, item_name) {
+            continue;
+        }
+        if parent_facade_export_status(src_root, child_file, &exposing_item_name)?
+            .is_some_and(|status| status.used_outside_parent)
+            || parent_boundary_public_signature_exposes_child_used_outside_parent(
+                src_root,
+                child_file,
+                &exposing_item_name,
+            )?
+        {
+            return Ok(true);
+        }
+    }
+
+    for item in &file.items {
+        let syn::Item::Impl(item_impl) = item else {
+            continue;
+        };
+        let Some(self_type_name) = impl_self_type_name(item_impl) else {
+            continue;
+        };
+        if self_type_name == item_name {
+            continue;
+        }
+        if !public_impl_surface_mentions_name(item_impl, item_name) {
+            continue;
+        }
+        if parent_facade_export_status(src_root, child_file, &self_type_name)?
+            .is_some_and(|status| status.used_outside_parent)
+        {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn impl_item_is_exposed_by_exported_self_type(
+    src_root: &Path,
+    child_file: &Path,
+    item_name: &str,
+) -> Result<bool> {
+    let child_source = fs::read_to_string(child_file)
+        .with_context(|| format!("failed to read child file {}", child_file.display()))?;
+    let file = syn::parse_file(&child_source)
+        .with_context(|| format!("failed to parse child file {}", child_file.display()))?;
+
+    for item in &file.items {
+        let syn::Item::Impl(item_impl) = item else {
+            continue;
+        };
+        let Some(self_type_name) = impl_self_type_name(item_impl) else {
+            continue;
+        };
+        for impl_item in &item_impl.items {
+            let is_target = match impl_item {
+                syn::ImplItem::Fn(item)
+                    if matches!(item.vis, syn::Visibility::Public(_))
+                        && item.sig.ident == item_name =>
+                {
+                    true
+                },
+                syn::ImplItem::Const(item)
+                    if matches!(item.vis, syn::Visibility::Public(_))
+                        && item.ident == item_name =>
+                {
+                    true
+                },
+                syn::ImplItem::Type(item)
+                    if matches!(item.vis, syn::Visibility::Public(_))
+                        && item.ident == item_name =>
+                {
+                    true
+                },
+                _ => false,
+            };
+
+            if is_target
+                && parent_facade_export_status(src_root, child_file, &self_type_name)?
+                    .is_some_and(|status| status.used_outside_parent)
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+fn parent_boundary_public_signature_exposes_child_used_outside_parent(
+    src_root: &Path,
+    child_file: &Path,
+    item_name: &str,
+) -> Result<bool> {
+    let Some(parent_boundary) = parent_boundary_for_child(src_root, child_file) else {
+        return Ok(false);
+    };
+
+    let parent_source = fs::read_to_string(&parent_boundary.boundary_file).with_context(|| {
+        format!(
+            "failed to read parent boundary file {}",
+            parent_boundary.boundary_file.display()
+        )
+    })?;
+    let file = syn::parse_file(&parent_source).with_context(|| {
+        format!(
+            "failed to parse parent boundary file {}",
+            parent_boundary.boundary_file.display()
+        )
+    })?;
+
+    let mut exposing_names = Vec::new();
+    for item in &file.items {
+        let Some(exposing_item_name) = public_item_name(item) else {
+            continue;
+        };
+        if public_item_surface_mentions_name(item, item_name) {
+            exposing_names.push(exposing_item_name);
+        }
+    }
+
+    if exposing_names.is_empty() {
+        return Ok(false);
+    }
+
+    for source_file in rust_source_files(src_root)? {
+        if source_file == parent_boundary.boundary_file
+            || source_file.starts_with(&parent_boundary.subtree_root)
+        {
+            continue;
+        }
+        let source = fs::read_to_string(&source_file)
+            .with_context(|| format!("failed to read source file {}", source_file.display()))?;
+        if source_references_parent_export(&source, &parent_boundary.module_path, &exposing_names) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+struct ParentExportPathVisitor<'a> {
+    module_path:    &'a [String],
+    exported_names: &'a [String],
+    found:          bool,
+}
+
+impl<'a> ParentExportPathVisitor<'a> {
+    const fn new(module_path: &'a [String], exported_names: &'a [String]) -> Self {
+        Self {
+            module_path,
+            exported_names,
+            found: false,
+        }
+    }
+
+    fn matches_path(&self, path: &syn::Path) -> bool {
+        let mut segments = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+
+        if matches!(
+            segments.first().map(String::as_str),
+            Some("crate" | "self" | "super")
+        ) {
+            segments.remove(0);
+        }
+
+        if segments.len() != self.module_path.len() + 1 {
+            return false;
+        }
+
+        segments[..self.module_path.len()] == *self.module_path
+            && self
+                .exported_names
+                .iter()
+                .any(|name| name == &segments[self.module_path.len()])
+    }
+}
+
+impl<'ast> Visit<'ast> for ParentExportPathVisitor<'_> {
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        if self.found {
+            return;
+        }
+        if self.matches_path(path) {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_path(self, path);
+    }
+}
+
+fn public_item_name(item: &syn::Item) -> Option<String> {
+    match item {
+        syn::Item::Const(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+            Some(item.ident.to_string())
+        },
+        syn::Item::Enum(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+            Some(item.ident.to_string())
+        },
+        syn::Item::Fn(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+            Some(item.sig.ident.to_string())
+        },
+        syn::Item::Static(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+            Some(item.ident.to_string())
+        },
+        syn::Item::Struct(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+            Some(item.ident.to_string())
+        },
+        syn::Item::Trait(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+            Some(item.ident.to_string())
+        },
+        syn::Item::Type(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+            Some(item.ident.to_string())
+        },
+        _ => None,
+    }
+}
+
+fn public_item_surface_mentions_name(item: &syn::Item, item_name: &str) -> bool {
+    let mut visitor = ItemSurfaceReferenceVisitor::new(item_name);
+    match item {
+        syn::Item::Const(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+            visitor.visit_type(&item.ty);
+        },
+        syn::Item::Enum(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+            for variant in &item.variants {
+                match &variant.fields {
+                    syn::Fields::Named(fields) => {
+                        for field in &fields.named {
+                            visitor.visit_type(&field.ty);
+                        }
+                    },
+                    syn::Fields::Unnamed(fields) => {
+                        for field in &fields.unnamed {
+                            visitor.visit_type(&field.ty);
+                        }
+                    },
+                    syn::Fields::Unit => {},
+                }
+            }
+        },
+        syn::Item::Fn(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+            visitor.visit_signature(&item.sig);
+        },
+        syn::Item::Static(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+            visitor.visit_type(&item.ty);
+        },
+        syn::Item::Struct(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+            match &item.fields {
+                syn::Fields::Named(fields) => {
+                    for field in &fields.named {
+                        visitor.visit_type(&field.ty);
+                    }
+                },
+                syn::Fields::Unnamed(fields) => {
+                    for field in &fields.unnamed {
+                        visitor.visit_type(&field.ty);
+                    }
+                },
+                syn::Fields::Unit => {},
+            }
+        },
+        syn::Item::Trait(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+            for trait_item in &item.items {
+                match trait_item {
+                    syn::TraitItem::Fn(item) => visitor.visit_signature(&item.sig),
+                    syn::TraitItem::Type(item) => {
+                        if let Some((_, ty)) = &item.default {
+                            visitor.visit_type(ty);
+                        }
+                    },
+                    syn::TraitItem::Const(item) => visitor.visit_type(&item.ty),
+                    _ => {},
+                }
+            }
+        },
+        syn::Item::Type(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+            visitor.visit_type(&item.ty);
+        },
+        _ => {},
+    }
+    visitor.found
+}
+
+fn impl_self_type_name(item_impl: &syn::ItemImpl) -> Option<String> {
+    let syn::Type::Path(type_path) = item_impl.self_ty.as_ref() else {
+        return None;
+    };
+    if type_path.qself.is_some() {
+        return None;
+    }
+    type_path
+        .path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+}
+
+fn public_impl_surface_mentions_name(item_impl: &syn::ItemImpl, item_name: &str) -> bool {
+    let mut visitor = ItemSurfaceReferenceVisitor::new(item_name);
+    let mut found_public_surface = false;
+
+    for impl_item in &item_impl.items {
+        match impl_item {
+            syn::ImplItem::Fn(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+                visitor.visit_signature(&item.sig);
+                found_public_surface = true;
+            },
+            syn::ImplItem::Const(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+                visitor.visit_type(&item.ty);
+                found_public_surface = true;
+            },
+            syn::ImplItem::Type(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+                visitor.visit_type(&item.ty);
+                found_public_surface = true;
+            },
+            _ => {},
+        }
+    }
+
+    found_public_surface && visitor.found
+}
+
+struct ItemSurfaceReferenceVisitor<'a> {
+    item_name: &'a str,
+    found:     bool,
+}
+
+impl<'a> ItemSurfaceReferenceVisitor<'a> {
+    const fn new(item_name: &'a str) -> Self {
+        Self {
+            item_name,
+            found: false,
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for ItemSurfaceReferenceVisitor<'_> {
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        if self.found {
+            return;
+        }
+        if path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == self.item_name)
+        {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_path(self, path);
+    }
 }
 
 const fn allow_pub_crate_by_policy(
@@ -1392,12 +1993,33 @@ struct LineDisplay {
     source_line:   String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ParentFacadeExportStatus {
     used_outside_parent: bool,
     fix_supported:       bool,
+    parent_path:         PathBuf,
     parent_rel_path:     String,
     parent_line:         usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AllowanceReason {
+    Allowlist,
+    ParentIsPublic,
+    TopLevelPrivateModulePolicy,
+    ReachablePublicApi,
+    ParentFacadeUsedOutsideParent,
+    ExposedByOtherCrateVisibleSignature,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SuspiciousPubAssessment {
+    Allowed(AllowanceReason),
+    Warn {
+        fix_support:          FixSupport,
+        related:              Option<String>,
+        stale_parent_pub_use: Option<ParentFacadeExportStatus>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -1407,7 +2029,7 @@ struct ParentBoundary {
     module_path:   Vec<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct ParentFacadeExports {
     explicit:      Vec<String>,
     fix_supported: bool,
@@ -1531,12 +2153,14 @@ mod tests {
     use super::CrateKind;
     use super::FINDINGS_SCHEMA_VERSION;
     use super::ModuleLocation;
+    use super::ParentFacadeExports;
     use super::Severity;
     use super::StoredFinding;
     use super::StoredReport;
     use super::allow_pub_crate_by_policy;
     use super::cache_filename_for;
     use super::cache_is_current_for;
+    use super::exported_names_from_parent_boundary;
     use super::forbidden_pub_crate_help;
     use super::module_location;
     use super::refresh_rustc_args;
@@ -1651,9 +2275,9 @@ mod tests {
         let package_root = Path::new("/tmp/example-crate");
         let cache_path = temp_dir.join(cache_filename_for(package_root));
         let stale = StoredReport {
-            version:      FINDINGS_SCHEMA_VERSION - 1,
-            package_root: package_root.to_string_lossy().into_owned(),
-            findings:     vec![StoredFinding {
+            version:                    FINDINGS_SCHEMA_VERSION - 1,
+            package_root:               package_root.to_string_lossy().into_owned(),
+            findings:                   vec![StoredFinding {
                 severity:      Severity::Warning,
                 code:          "suspicious_pub".to_string(),
                 path:          "src/lib.rs".to_string(),
@@ -1667,6 +2291,8 @@ mod tests {
                 fix_support:   FixSupport::None,
                 related:       None,
             }],
+            pub_use_fix_facts:          Vec::new(),
+            saw_unused_import_warnings: false,
         };
         fs::write(&cache_path, serde_json::to_vec(&stale)?)?;
 
@@ -1693,9 +2319,11 @@ mod tests {
         fs::create_dir_all(&findings_dir)?;
         let cache_path = findings_dir.join(cache_filename_for(&package_root));
         let report = StoredReport {
-            version:      FINDINGS_SCHEMA_VERSION,
-            package_root: package_root.to_string_lossy().into_owned(),
-            findings:     Vec::new(),
+            version:                    FINDINGS_SCHEMA_VERSION,
+            package_root:               package_root.to_string_lossy().into_owned(),
+            findings:                   Vec::new(),
+            pub_use_fix_facts:          Vec::new(),
+            saw_unused_import_warnings: false,
         };
         fs::write(&cache_path, serde_json::to_vec(&report)?)?;
 
@@ -1710,6 +2338,55 @@ mod tests {
         assert!(!cache_is_current_for(&findings_dir, &package_root));
 
         fs::remove_dir_all(&temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn grouped_parent_pub_use_is_fix_supported() -> anyhow::Result<()> {
+        let exports = exported_names_from_parent_boundary(
+            "pub use report_writer::{ReportDefinition, ReportWriter};\n",
+            "report_writer",
+            "ReportDefinition",
+        )?;
+        assert_eq!(exports.explicit, vec!["ReportDefinition".to_string()]);
+        assert!(exports.fix_supported);
+        Ok(())
+    }
+
+    #[test]
+    fn multiline_grouped_parent_pub_use_is_fix_supported() -> anyhow::Result<()> {
+        let exports = exported_names_from_parent_boundary(
+            "pub use child::{\n    Thing,\n    Other,\n};\n",
+            "child",
+            "Thing",
+        )?;
+        assert_eq!(exports.explicit, vec!["Thing".to_string()]);
+        assert!(exports.fix_supported);
+        Ok(())
+    }
+
+    #[test]
+    fn grouped_parent_pub_use_with_rename_is_manual_only() -> anyhow::Result<()> {
+        let exports = exported_names_from_parent_boundary(
+            "pub use child::{Thing as RenamedThing, Other};\n",
+            "child",
+            "Thing",
+        )?;
+        assert_eq!(
+            exports,
+            ParentFacadeExports {
+                explicit:      vec!["RenamedThing".to_string()],
+                fix_supported: false,
+            }
+        );
+
+        let exports = exported_names_from_parent_boundary(
+            "pub use child::{Thing as RenamedThing, Other};\n",
+            "child",
+            "Other",
+        )?;
+        assert_eq!(exports.explicit, vec!["Other".to_string()]);
+        assert!(exports.fix_supported);
         Ok(())
     }
 }

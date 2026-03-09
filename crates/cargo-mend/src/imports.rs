@@ -22,7 +22,17 @@ use super::selection::Selection;
 
 pub struct ImportScan {
     pub findings: Vec<Finding>,
-    pub fixes:    Vec<UseFix>,
+    pub fixes:    ValidatedFixSet,
+}
+
+#[derive(Debug, Clone)]
+struct ShortenImportFact {
+    path:          String,
+    line:          usize,
+    column:        usize,
+    highlight_len: usize,
+    source_line:   String,
+    replacement:   String,
 }
 
 #[derive(Debug, Clone)]
@@ -33,29 +43,119 @@ pub struct UseFix {
     pub replacement: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ValidatedFixSet {
+    fixes: Vec<UseFix>,
+}
+
+impl ValidatedFixSet {
+    pub fn from_vec(mut fixes: Vec<UseFix>) -> Result<Self> {
+        fixes.sort_by(|left, right| {
+            (&left.path, left.start, left.end, &left.replacement).cmp(&(
+                &right.path,
+                right.start,
+                right.end,
+                &right.replacement,
+            ))
+        });
+        fixes.dedup_by(|left, right| {
+            left.path == right.path
+                && left.start == right.start
+                && left.end == right.end
+                && left.replacement == right.replacement
+        });
+
+        let mut by_file: BTreeMap<&Path, Vec<&UseFix>> = BTreeMap::new();
+        for fix in &fixes {
+            by_file.entry(fix.path.as_path()).or_default().push(fix);
+        }
+
+        for (path, mut file_fixes) in by_file {
+            file_fixes.sort_by_key(|fix| (fix.start, fix.end));
+            let mut previous_fix: Option<&UseFix> = None;
+            for fix in file_fixes {
+                if fix.start > fix.end {
+                    anyhow::bail!(
+                        "invalid fix range {}..{} for {}",
+                        fix.start,
+                        fix.end,
+                        path.display()
+                    );
+                }
+                if let Some(previous) = previous_fix
+                    && fix.start < previous.end
+                {
+                    anyhow::bail!(
+                        "overlapping fixes detected for {}: {}..{} ({:?}) overlaps {}..{} ({:?})",
+                        path.display(),
+                        previous.start,
+                        previous.end,
+                        previous.replacement,
+                        fix.start,
+                        fix.end,
+                        fix.replacement
+                    );
+                }
+                previous_fix = Some(fix);
+            }
+        }
+
+        Ok(Self { fixes })
+    }
+
+    pub const fn is_empty(&self) -> bool { self.fixes.is_empty() }
+
+    pub const fn len(&self) -> usize { self.fixes.len() }
+
+    pub fn iter(&self) -> impl Iterator<Item = &UseFix> { self.fixes.iter() }
+}
+
 #[derive(Debug)]
 struct ImportFinding {
-    finding: Finding,
-    fix:     UseFix,
+    fact: ShortenImportFact,
+    fix:  UseFix,
+}
+
+impl ShortenImportFact {
+    fn into_finding(self) -> Finding {
+        let replacement = self.replacement;
+        Finding {
+            severity:      Severity::Warning,
+            code:          "shorten_local_crate_import".to_string(),
+            path:          self.path,
+            line:          self.line,
+            column:        self.column,
+            highlight_len: self.highlight_len,
+            source_line:   self.source_line,
+            item:          None,
+            message:       "it stays within the same local module boundary".to_string(),
+            suggestion:    Some(format!("consider using: `{replacement}`")),
+            fix_support:   FixSupport::ShortenImport,
+            related:       None,
+        }
+    }
 }
 
 pub fn scan_selection(selection: &Selection) -> Result<ImportScan> {
     let findings_with_fixes = scan_selection_with_fixes(selection)?;
+    let fixes = ValidatedFixSet::from_vec(
+        findings_with_fixes
+            .iter()
+            .map(|finding| finding.fix.clone())
+            .collect(),
+    )?;
     Ok(ImportScan {
         findings: findings_with_fixes
             .iter()
-            .map(|finding| finding.finding.clone())
+            .map(|finding| finding.fact.clone().into_finding())
             .collect(),
-        fixes:    findings_with_fixes
-            .into_iter()
-            .map(|finding| finding.fix)
-            .collect(),
+        fixes,
     })
 }
 
-pub fn apply_fixes(fixes: &[UseFix]) -> Result<usize> {
+pub fn apply_fixes(fixes: &ValidatedFixSet) -> Result<usize> {
     let mut by_file: BTreeMap<&Path, Vec<&UseFix>> = BTreeMap::new();
-    for fix in fixes {
+    for fix in fixes.iter() {
         by_file.entry(fix.path.as_path()).or_default().push(fix);
     }
     let mut applied = 0usize;
@@ -75,9 +175,9 @@ pub fn apply_fixes(fixes: &[UseFix]) -> Result<usize> {
     Ok(applied)
 }
 
-pub fn snapshot_files(fixes: &[UseFix]) -> Result<Vec<(PathBuf, String)>> {
+pub fn snapshot_files(fixes: &ValidatedFixSet) -> Result<Vec<(PathBuf, String)>> {
     let mut unique_paths = BTreeSet::new();
-    for fix in fixes {
+    for fix in fixes.iter() {
         unique_paths.insert(fix.path.clone());
     }
 
@@ -120,23 +220,20 @@ fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>
     }
     findings.sort_by(|a, b| {
         (
-            &a.finding.path,
-            a.finding.line,
-            a.finding.column,
-            &a.finding.code,
+            &a.fact.path,
+            a.fact.line,
+            a.fact.column,
+            "shorten_local_crate_import",
         )
             .cmp(&(
-                &b.finding.path,
-                b.finding.line,
-                b.finding.column,
-                &b.finding.code,
+                &b.fact.path,
+                b.fact.line,
+                b.fact.column,
+                "shorten_local_crate_import",
             ))
     });
     findings.dedup_by(|a, b| {
-        a.finding.path == b.finding.path
-            && a.finding.line == b.finding.line
-            && a.finding.column == b.finding.column
-            && a.finding.code == b.finding.code
+        a.fact.path == b.fact.path && a.fact.line == b.fact.line && a.fact.column == b.fact.column
     });
     Ok(findings)
 }
@@ -204,21 +301,15 @@ impl Visit<'_> for UseVisitor<'_> {
                 .to_string_lossy()
                 .replace('\\', "/");
             self.findings.push(ImportFinding {
-                finding: Finding {
-                    severity: Severity::Warning,
-                    code: "shorten_local_crate_import".to_string(),
+                fact: ShortenImportFact {
                     path: display_path,
                     line: start.line,
                     column: start.column + 1,
                     highlight_len: candidate.original.len().max(1),
                     source_line,
-                    item: None,
-                    message: "it stays within the same local module boundary".to_string(),
-                    suggestion: Some(format!("consider using: `{replacement}`")),
-                    fix_support: FixSupport::ShortenImport,
-                    related: None,
+                    replacement: replacement.clone(),
                 },
-                fix:     UseFix {
+                fix:  UseFix {
                     path: self.path.to_path_buf(),
                     start: start_offset,
                     end: end_offset,

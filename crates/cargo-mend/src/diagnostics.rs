@@ -108,6 +108,8 @@ pub struct Report {
     pub root:     String,
     pub summary:  ReportSummary,
     pub findings: Vec<Finding>,
+    #[serde(default)]
+    pub facts:    ReportFacts,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -120,6 +122,24 @@ pub struct ReportSummary {
     pub fixable_with_fix:         usize,
     #[serde(rename = "fixable_with_fix_pub_use_count")]
     pub fixable_with_fix_pub_use: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReportFacts {
+    #[serde(default)]
+    pub pub_use_fix_facts:          Vec<PubUseFixFact>,
+    #[serde(default)]
+    pub saw_unused_import_warnings: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PubUseFixFact {
+    pub child_path:      String,
+    pub child_line:      usize,
+    pub child_item_name: String,
+    pub parent_path:     String,
+    pub parent_line:     usize,
+    pub child_module:    String,
 }
 
 impl Report {
