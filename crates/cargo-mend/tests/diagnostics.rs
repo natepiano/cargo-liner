@@ -103,6 +103,8 @@ fn fixture_renders_every_current_diagnostic() {
     fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
     fs::create_dir_all(temp.path().join("src/stale_parent"))
         .expect("create stale nested fixture dir");
+    fs::create_dir_all(temp.path().join("src/wild_parent"))
+        .expect("create wildcard nested fixture dir");
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -118,6 +120,7 @@ edition = "2024"
         r#"pub(crate) fn crate_only() {}
 mod private_parent;
 mod stale_parent;
+mod wild_parent;
 pub mod review_mod;
 pub use private_parent::PublicContainer;
 
@@ -159,6 +162,16 @@ pub struct Suspicious;
         "pub struct StaleExport;\n",
     )
     .expect("write stale child");
+    fs::write(
+        temp.path().join("src/wild_parent/mod.rs"),
+        "mod child;\npub use child::*;\n",
+    )
+    .expect("write wildcard parent");
+    fs::write(
+        temp.path().join("src/wild_parent/child.rs"),
+        "pub struct WildExport;\n",
+    )
+    .expect("write wildcard child");
 
     let output = Command::new(mend_bin())
         .arg("--manifest-path")
@@ -185,9 +198,9 @@ pub struct Suspicious;
         codes, expected_codes,
         "fixture should trigger every diagnostic at least once"
     );
-    assert_eq!(report.findings.len(), 6);
+    assert_eq!(report.findings.len(), 8);
     assert_eq!(report.summary.error_count, 3);
-    assert_eq!(report.summary.warning_count, 3);
+    assert_eq!(report.summary.warning_count, 5);
     assert_eq!(report.summary.fixable_count, 2);
 
     let rendered_output = Command::new(mend_bin())
@@ -229,10 +242,11 @@ pub struct Suspicious;
     assert!(
         rendered.contains("note: this warning is auto-fixable with `cargo mend --fix-pub-use`")
     );
-    assert!(rendered.contains("summary: 3 error(s), 3 warning(s), 2 fixable with `--fix`"));
+    assert!(rendered.contains("summary: 3 error(s), 5 warning(s), 2 fixable with `--fix`"));
     assert!(rendered.contains(
         "parent module also has an `unused import` warning for this `pub use` at stale_parent/mod.rs"
     ));
+    assert!(rendered.contains("help: consider re-exporting explicit items instead of `*`"));
 }
 
 #[test]
@@ -1292,6 +1306,132 @@ edition = "2024"
         .map(|finding| finding.code.as_str())
         .collect::<BTreeSet<_>>();
     assert_eq!(codes, BTreeSet::from(["suspicious_pub"]));
+}
+
+#[test]
+fn suspicious_pub_is_suppressed_for_file_parent_facade_used_outside_parent() {
+    let temp = tempdir().expect("create temp fixture dir");
+    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "file_facade_positive_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod private_parent;
+
+use crate::private_parent::PublicContainer;
+
+fn main() {
+    let _ = std::mem::size_of::<PublicContainer>();
+}
+"#,
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/private_parent.rs"),
+        "mod child;\npub use child::PublicContainer;\n",
+    )
+    .expect("write file parent");
+    fs::write(
+        temp.path().join("src/private_parent/child.rs"),
+        "pub struct PublicContainer;\n",
+    )
+    .expect("write child");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_eq!(report.summary.error_count, 0);
+    assert_eq!(report.summary.warning_count, 0);
+    assert_eq!(report.summary.fixable_count, 0);
+    assert!(report.findings.is_empty());
+}
+
+#[test]
+fn suspicious_pub_still_warns_for_file_parent_facade_unused_outside_parent() {
+    let temp = tempdir().expect("create temp fixture dir");
+    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "file_facade_negative_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod private_parent;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/private_parent.rs"),
+        "mod child;\npub use child::PublicContainer;\n",
+    )
+    .expect("write file parent");
+    fs::write(
+        temp.path().join("src/private_parent/child.rs"),
+        "pub struct PublicContainer;\n",
+    )
+    .expect("write child");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_eq!(report.summary.error_count, 0);
+    assert_eq!(report.summary.warning_count, 1);
+    assert_eq!(report.summary.fixable_count, 1);
+    assert_eq!(report.findings.len(), 1);
+    let codes = report
+        .findings
+        .iter()
+        .map(|finding| finding.code.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(codes, BTreeSet::from(["suspicious_pub"]));
+}
+
+#[test]
+fn wildcard_parent_pub_use_warns() {
+    let temp = tempdir().expect("create temp fixture dir");
+    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "wildcard_parent_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod private_parent;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/private_parent.rs"),
+        "mod child;\npub use child::*;\n",
+    )
+    .expect("write file parent");
+    fs::write(
+        temp.path().join("src/private_parent/child.rs"),
+        "pub struct PublicContainer;\n",
+    )
+    .expect("write child");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let codes = report
+        .findings
+        .iter()
+        .map(|finding| finding.code.as_str())
+        .collect::<BTreeSet<_>>();
+    assert!(codes.contains("wildcard_parent_pub_use"));
 }
 
 mod cargo_mend_tests_support {

@@ -53,6 +53,7 @@ Warnings:
 
 - `pub` in a nested child file where compiler analysis shows the item should probably be
   narrower than `pub`
+- parent module `pub use *` re-exports that should be explicit
 
 If you are new to Rust visibility, the important idea is this:
 
@@ -333,7 +334,13 @@ Possible resolutions:
 
 There is one important allowed case.
 
-If the parent `mod.rs` is intentionally acting as a facade, it may re-export the child item:
+If the parent boundary module is intentionally acting as a facade, it may re-export the child item.
+That boundary can be either:
+
+- a `mod.rs` file
+- or an ordinary file module like `markdown_file.rs`
+
+For example:
 
 ```rust
 // src/private_parent/mod.rs
@@ -344,7 +351,7 @@ pub use child::Helper;
 If code outside `private_parent` actually uses `private_parent::Helper`, then keeping `Helper`
 as `pub` in `child.rs` is intentional and this warning should not fire.
 
-If the parent `mod.rs` re-exports `Helper` but nothing outside the parent subtree ever uses that
+If the parent boundary module re-exports `Helper` but nothing outside the parent subtree ever uses that
 re-export, then the child `pub` is still broader than the boundary the code is actually using.
 In that case this warning should still appear.
 
@@ -372,6 +379,37 @@ outside world.
 
 This warning does not apply the same way to a top-level private module. At the top level, plain
 `pub` can still be the right way to say "this belongs to this module's crate-internal API."
+
+Parent facade re-exports should also be explicit.
+
+If a parent boundary module does this:
+
+```rust
+pub use child::*;
+```
+
+`cargo-mend` treats that as a separate problem. Use explicit re-exports instead so the parent
+facade states exactly which child items it is exporting.
+
+<a id="wildcard-parent-pub-use"></a>
+### Wildcard parent `pub use`
+
+This warning is about parent facade modules that re-export everything from a child with `*`.
+
+That shape makes the boundary harder to read because the parent module no longer says what it is
+actually exporting.
+
+Prefer:
+
+```rust
+pub use child::{Helper, OtherHelper};
+```
+
+instead of:
+
+```rust
+pub use child::*;
+```
 
 <a id="shorten-local-crate-import"></a>
 ### Shorten local crate import

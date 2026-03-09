@@ -46,7 +46,7 @@ const CONFIG_ROOT_ENV: &str = "MEND_CONFIG_ROOT";
 const CONFIG_JSON_ENV: &str = "MEND_CONFIG_JSON";
 const FINDINGS_DIR_ENV: &str = "MEND_FINDINGS_DIR";
 const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
-const FINDINGS_SCHEMA_VERSION: u32 = 6;
+const FINDINGS_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildOutputMode {
@@ -701,6 +701,27 @@ fn analyze_item(
 
     let item_name = item.kind.ident().map(|ident| ident.to_string());
 
+    if vis_text == "pub"
+        && is_boundary_file(src_root, root_module, &file_path)
+        && matches!(item.kind, ItemKind::Use(..))
+        && use_item_contains_glob(tcx, item.span)?
+    {
+        findings.push(build_finding(
+            tcx,
+            &file_path,
+            item.span,
+            FindingParams {
+                severity:   Severity::Warning,
+                code:       "wildcard_parent_pub_use",
+                item:       None,
+                message:    String::new(),
+                suggestion: None,
+                fix_kind:   None,
+                related:    None,
+            },
+        )?);
+    }
+
     record_visibility_findings(
         tcx,
         settings,
@@ -1041,13 +1062,9 @@ fn parent_facade_export_status(
     child_file: &Path,
     item_name: &str,
 ) -> Result<Option<ParentFacadeExportStatus>> {
-    let Some(parent_dir) = child_file.parent() else {
+    let Some(parent_boundary) = parent_boundary_for_child(src_root, child_file) else {
         return Ok(None);
     };
-    let parent_mod_rs = parent_dir.join("mod.rs");
-    if !parent_mod_rs.is_file() {
-        return Ok(None);
-    }
 
     let child_module_name = child_file
         .file_stem()
@@ -1055,35 +1072,38 @@ fn parent_facade_export_status(
         .filter(|stem| *stem != "mod")
         .context("child file for facade check must not be mod.rs")?;
 
-    let parent_source = fs::read_to_string(&parent_mod_rs).with_context(|| {
+    let parent_source = fs::read_to_string(&parent_boundary.boundary_file).with_context(|| {
         format!(
-            "failed to read parent module file {}",
-            parent_mod_rs.display()
+            "failed to read parent boundary file {}",
+            parent_boundary.boundary_file.display()
         )
     })?;
     let exported_names =
-        exported_names_from_parent_mod(&parent_source, child_module_name, item_name)?;
-    if exported_names.is_empty() {
+        exported_names_from_parent_boundary(&parent_source, child_module_name, item_name)?;
+    if exported_names.explicit.is_empty() {
         return Ok(None);
     }
 
-    let Some(module_path) = module_path_from_dir(src_root, parent_dir) else {
-        return Ok(None);
-    };
-    let parent_rel_path = parent_mod_rs
+    let parent_rel_path = parent_boundary
+        .boundary_file
         .strip_prefix(src_root)
-        .unwrap_or(&parent_mod_rs)
+        .unwrap_or(&parent_boundary.boundary_file)
         .to_string_lossy()
         .replace('\\', "/");
     let parent_line = first_line_matching(&parent_source, item_name).unwrap_or(1);
 
     for file in rust_source_files(src_root)? {
-        if file.starts_with(parent_dir) {
+        if file == parent_boundary.boundary_file || file.starts_with(&parent_boundary.subtree_root)
+        {
             continue;
         }
         let source = fs::read_to_string(&file)
             .with_context(|| format!("failed to read source file {}", file.display()))?;
-        if use_tree_references_parent_export(&source, &module_path, &exported_names) {
+        if use_tree_references_parent_export(
+            &source,
+            &parent_boundary.module_path,
+            &exported_names.explicit,
+        ) {
             return Ok(Some(ParentFacadeExportStatus {
                 used_outside_parent: true,
                 parent_rel_path,
@@ -1099,13 +1119,47 @@ fn parent_facade_export_status(
     }))
 }
 
-fn exported_names_from_parent_mod(
+fn parent_boundary_for_child(src_root: &Path, child_file: &Path) -> Option<ParentBoundary> {
+    let parent_dir = child_file.parent()?;
+    let parent_mod_rs = parent_dir.join("mod.rs");
+    if parent_mod_rs.is_file() {
+        return Some(ParentBoundary {
+            boundary_file: parent_mod_rs,
+            subtree_root:  parent_dir.to_path_buf(),
+            module_path:   module_path_from_dir(src_root, parent_dir)?,
+        });
+    }
+
+    let parent_file = parent_dir.with_extension("rs");
+    if parent_file.is_file() {
+        return Some(ParentBoundary {
+            boundary_file: parent_file.clone(),
+            subtree_root:  parent_dir.to_path_buf(),
+            module_path:   module_path_from_boundary_file(src_root, &parent_file)?,
+        });
+    }
+
+    None
+}
+
+fn module_path_from_boundary_file(src_root: &Path, boundary_file: &Path) -> Option<Vec<String>> {
+    let relative = boundary_file.strip_prefix(src_root).ok()?;
+    let mut components = relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let last = components.last_mut()?;
+    *last = last.strip_suffix(".rs")?.to_string();
+    (!components.is_empty()).then_some(components)
+}
+
+fn exported_names_from_parent_boundary(
     parent_source: &str,
     child_module_name: &str,
     item_name: &str,
-) -> Result<Vec<String>> {
-    let file = syn::parse_file(parent_source).context("failed to parse parent mod.rs")?;
-    let mut exported = Vec::new();
+) -> Result<ParentFacadeExports> {
+    let file = syn::parse_file(parent_source).context("failed to parse parent boundary file")?;
+    let mut exported = ParentFacadeExports::default();
     for item in file.items {
         let syn::Item::Use(item_use) = item else {
             continue;
@@ -1115,8 +1169,8 @@ fn exported_names_from_parent_mod(
         }
         collect_matching_pub_use_exports(&item_use, child_module_name, item_name, &mut exported);
     }
-    exported.sort();
-    exported.dedup();
+    exported.explicit.sort();
+    exported.explicit.dedup();
     Ok(exported)
 }
 
@@ -1124,7 +1178,7 @@ fn collect_matching_pub_use_exports(
     item_use: &ItemUse,
     child_module_name: &str,
     item_name: &str,
-    exported: &mut Vec<String>,
+    exported: &mut ParentFacadeExports,
 ) {
     let mut paths = Vec::new();
     flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
@@ -1139,7 +1193,7 @@ fn collect_matching_pub_use_exports(
             && normalized[1] == item_name
             && let Some(export_name) = normalized.last()
         {
-            exported.push(export_name.clone());
+            exported.explicit.push(export_name.clone());
         }
     }
 }
@@ -1167,8 +1221,19 @@ fn flatten_use_tree(prefix: Vec<String>, tree: &UseTree, out: &mut Vec<Vec<Strin
                 flatten_use_tree(prefix.clone(), item, out);
             }
         },
-        UseTree::Glob(_) => {},
+        UseTree::Glob(_) => {
+            let mut next = prefix;
+            next.push("*".to_string());
+            out.push(next);
+        },
     }
+}
+
+fn use_item_contains_glob(tcx: TyCtxt<'_>, span: Span) -> Result<bool> {
+    let snippet = tcx.sess.source_map().span_to_snippet(span).map_err(|err| {
+        anyhow::anyhow!("failed to extract use item snippet for span {span:?}: {err:?}")
+    })?;
+    Ok(snippet.contains('*'))
 }
 
 fn first_line_matching(source: &str, needle: &str) -> Option<usize> {
@@ -1289,6 +1354,18 @@ struct ParentFacadeExportStatus {
     used_outside_parent: bool,
     parent_rel_path:     String,
     parent_line:         usize,
+}
+
+#[derive(Debug, Clone)]
+struct ParentBoundary {
+    boundary_file: PathBuf,
+    subtree_root:  PathBuf,
+    module_path:   Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct ParentFacadeExports {
+    explicit: Vec<String>,
 }
 
 fn line_display(tcx: TyCtxt<'_>, file_path: &Path, span: Span) -> Result<LineDisplay> {

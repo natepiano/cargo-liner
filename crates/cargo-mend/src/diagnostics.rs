@@ -77,6 +77,14 @@ pub const DIAGNOSTICS: &[DiagnosticSpec] = &[
         fix_kind:    FixKind::ImportRewrite,
     },
     DiagnosticSpec {
+        code:        "wildcard_parent_pub_use",
+        headline:    "parent module `pub use *` should be explicit",
+        inline_help: Some("consider re-exporting explicit items instead of `*`"),
+        help_anchor: "wildcard-parent-pub-use",
+        detail_mode: DetailMode::None,
+        fix_kind:    FixKind::None,
+    },
+    DiagnosticSpec {
         code:        "suspicious_pub",
         headline:    "`pub` is broader than this nested module boundary",
         inline_help: Some("consider using: `pub(super)`"),
