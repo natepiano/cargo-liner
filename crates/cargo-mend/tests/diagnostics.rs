@@ -49,9 +49,10 @@ struct Report {
 
 #[derive(Debug, Deserialize)]
 struct Summary {
-    error_count:   usize,
-    warning_count: usize,
-    fixable_count: usize,
+    error_count:                    usize,
+    warning_count:                  usize,
+    fixable_with_fix_count:         usize,
+    fixable_with_fix_pub_use_count: usize,
 }
 
 fn run_mend_json(manifest_path: &std::path::Path) -> Report {
@@ -201,7 +202,8 @@ pub struct Suspicious;
     assert_eq!(report.findings.len(), 8);
     assert_eq!(report.summary.error_count, 3);
     assert_eq!(report.summary.warning_count, 5);
-    assert_eq!(report.summary.fixable_count, 2);
+    assert_eq!(report.summary.fixable_with_fix_count, 1);
+    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 1);
 
     let rendered_output = Command::new(mend_bin())
         .arg("--manifest-path")
@@ -242,7 +244,9 @@ pub struct Suspicious;
     assert!(
         rendered.contains("note: this warning is auto-fixable with `cargo mend --fix-pub-use`")
     );
-    assert!(rendered.contains("summary: 3 error(s), 5 warning(s), 2 fixable with `--fix`"));
+    assert!(rendered.contains(
+        "summary: 3 error(s), 5 warning(s), 1 fixable with `--fix`, 1 fixable with `--fix-pub-use`"
+    ));
     assert!(rendered.contains(
         "parent module also has an `unused import` warning for this `pub use` at stale_parent/mod.rs"
     ));
@@ -1105,6 +1109,110 @@ edition = "2024"
 }
 
 #[test]
+fn fix_pub_use_skips_unsupported_grouped_pub_use_in_dry_run() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_grouped_skip_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod child;\npub use child::{Thing, Other};\n",
+    )
+    .expect("write parent");
+    fs::write(
+        temp.path().join("src/parent/child.rs"),
+        "pub struct Thing;\npub struct Other;\n",
+    )
+    .expect("write child");
+
+    let output = Command::new(mend_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .arg("--dry-run")
+        .output()
+        .expect("run cargo-mend --fix-pub-use --dry-run");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-pub-use --dry-run failed unexpectedly: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8(output.stderr).expect("decode stderr");
+    assert!(stderr.contains("mend: no `pub use` fixes available"));
+}
+
+#[test]
+fn fix_pub_use_skips_multiline_grouped_pub_use_in_dry_run() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_multiline_grouped_skip_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod child;\npub use child::{\n    Thing,\n    Other,\n};\n",
+    )
+    .expect("write parent");
+    fs::write(
+        temp.path().join("src/parent/child.rs"),
+        "pub struct Thing;\npub struct Other;\n",
+    )
+    .expect("write child");
+
+    let output = Command::new(mend_bin())
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .arg("--dry-run")
+        .output()
+        .expect("run cargo-mend --fix-pub-use --dry-run");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-pub-use --dry-run failed unexpectedly: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8(output.stderr).expect("decode stderr");
+    assert!(
+        stderr
+            .contains("mend: suppressing `unused import` warning during `--fix-pub-use` discovery")
+    );
+    assert!(stderr.contains("mend: no `pub use` fixes available"));
+    assert!(!stderr.contains("warning: unused imports: `Thing` and `Other`"));
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+}
+
+#[test]
 fn already_local_imports_are_not_reported() {
     let temp = tempdir().expect("create temp fixture dir");
 
@@ -1136,7 +1244,8 @@ edition = "2024"
     .expect("write sibling");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.fixable_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
     assert!(
         !report
             .findings
@@ -1176,7 +1285,8 @@ edition = "2024"
     .expect("write window_event");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.fixable_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
     assert!(
         !report
             .findings
@@ -1212,7 +1322,8 @@ edition = "2024"
     .expect("write child");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.fixable_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
     assert!(
         !report
             .findings
@@ -1261,7 +1372,8 @@ fn main() {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.error_count, 0);
     assert_eq!(report.summary.warning_count, 0);
-    assert_eq!(report.summary.fixable_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
     assert!(report.findings.is_empty());
 }
 
@@ -1298,7 +1410,8 @@ edition = "2024"
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.error_count, 0);
     assert_eq!(report.summary.warning_count, 1);
-    assert_eq!(report.summary.fixable_count, 1);
+    assert_eq!(report.summary.fixable_with_fix_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 1);
     assert_eq!(report.findings.len(), 1);
     let codes = report
         .findings
@@ -1348,7 +1461,8 @@ fn main() {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.error_count, 0);
     assert_eq!(report.summary.warning_count, 0);
-    assert_eq!(report.summary.fixable_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
     assert!(report.findings.is_empty());
 }
 
@@ -1385,7 +1499,8 @@ edition = "2024"
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.error_count, 0);
     assert_eq!(report.summary.warning_count, 1);
-    assert_eq!(report.summary.fixable_count, 1);
+    assert_eq!(report.summary.fixable_with_fix_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 1);
     assert_eq!(report.findings.len(), 1);
     let codes = report
         .findings

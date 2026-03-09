@@ -148,15 +148,26 @@ fn plan_run(
             if scan.fixes.is_empty() {
                 Ok(PlannedRun::Report {
                     report:          initial_report,
-                    post_run_notice: Some("mend: no `pub use` fixes available".to_string()),
+                    post_run_notice: Some(match scan.skipped_count {
+                        0 => "mend: no `pub use` fixes available".to_string(),
+                        count => format!(
+                            "mend: no `pub use` fixes available; skipped {count} unsupported `pub use` candidate(s)"
+                        ),
+                    }),
                 })
             } else if dry_run {
                 Ok(PlannedRun::Report {
                     report:          initial_report,
-                    post_run_notice: Some(format!(
-                        "mend: would apply {} `pub use` fix(es) in dry run",
-                        scan.applied_count
-                    )),
+                    post_run_notice: Some(match scan.skipped_count {
+                        0 => format!(
+                            "mend: would apply {} `pub use` fix(es) in dry run",
+                            scan.applied_count
+                        ),
+                        count => format!(
+                            "mend: would apply {} `pub use` fix(es) in dry run; skipped {count} unsupported `pub use` candidate(s)",
+                            scan.applied_count
+                        ),
+                    }),
                 })
             } else {
                 Ok(PlannedRun::ApplyPubUse { scan })
@@ -195,8 +206,13 @@ fn execute_plan(
             match build_report(selection, config, compiler::BuildOutputMode::Full) {
                 Ok(report) => Ok((
                     report,
-                    (scan.applied_count > 0)
-                        .then(|| format!("mend: applied {} `pub use` fix(es)", scan.applied_count)),
+                    (scan.applied_count > 0).then(|| match scan.skipped_count {
+                        0 => format!("mend: applied {} `pub use` fix(es)", scan.applied_count),
+                        count => format!(
+                            "mend: applied {} `pub use` fix(es); skipped {count} unsupported `pub use` candidate(s)",
+                            scan.applied_count
+                        ),
+                    }),
                 )),
                 Err(err) => {
                     imports::restore_files(&snapshots)?;

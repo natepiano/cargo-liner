@@ -21,7 +21,8 @@ pub fn render_human_report(report: &Report, color: bool) -> String {
         summary_line(
             report.summary.errors,
             report.summary.warnings,
-            report.summary.fixable,
+            report.summary.fixable_with_fix,
+            report.summary.fixable_with_fix_pub_use,
             color
         )
     );
@@ -110,24 +111,29 @@ fn render_finding(output: &mut String, finding: &Finding, color: bool) {
 fn summary_line(
     error_count: usize,
     warn_count: usize,
-    fixable_count: usize,
+    fixable_with_fix_count: usize,
+    fixable_with_fix_pub_use_count: usize,
     color: bool,
 ) -> String {
-    if fixable_count == 0 {
-        format!(
-            "{} {} error(s), {} warning(s)",
-            dim("summary:", color),
-            error_count,
-            warn_count
-        )
+    let mut parts = vec![
+        format!("{} error(s)", error_count),
+        format!("{} warning(s)", warn_count),
+    ];
+
+    if fixable_with_fix_count > 0 {
+        parts.push(format!("{fixable_with_fix_count} fixable with `--fix`"));
+    }
+
+    if fixable_with_fix_pub_use_count > 0 {
+        parts.push(format!(
+            "{fixable_with_fix_pub_use_count} fixable with `--fix-pub-use`"
+        ));
+    }
+
+    if parts.len() == 2 {
+        format!("{} {}", dim("summary:", color), parts.join(", "))
     } else {
-        format!(
-            "{} {} error(s), {} warning(s), {} fixable with `--fix`",
-            dim("summary:", color),
-            error_count,
-            warn_count,
-            fixable_count
-        )
+        format!("{} {}", dim("summary:", color), parts.join(", "))
     }
 }
 

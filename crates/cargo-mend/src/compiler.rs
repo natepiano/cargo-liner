@@ -46,7 +46,7 @@ const CONFIG_ROOT_ENV: &str = "MEND_CONFIG_ROOT";
 const CONFIG_JSON_ENV: &str = "MEND_CONFIG_JSON";
 const FINDINGS_DIR_ENV: &str = "MEND_FINDINGS_DIR";
 const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
-const FINDINGS_SCHEMA_VERSION: u32 = 7;
+const FINDINGS_SCHEMA_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildOutputMode {
@@ -402,10 +402,13 @@ fn classify_diagnostic_block(
     first_non_empty.map_or(DiagnosticBlockKind::ForwardedDiagnostic, |line| {
         let trimmed = line.trim_start();
         if trimmed.starts_with("warning: unused import:")
+            || trimmed.starts_with("warning: unused imports:")
             || (printed_suppression_notice
                 && trimmed.starts_with("warning: `")
-                && (trimmed.contains(" generated 1 warning ")
-                    || trimmed.contains("to apply 1 suggestion")))
+                && ((trimmed.contains(" generated 1 warning ")
+                    || trimmed.contains(" generated ") && trimmed.contains(" warnings "))
+                    || trimmed.contains("to apply 1 suggestion")
+                    || trimmed.contains("to apply ") && trimmed.contains(" suggestions")))
         {
             DiagnosticBlockKind::SuppressedUnusedImport
         } else {
@@ -1004,7 +1007,9 @@ fn maybe_record_suspicious_pub(
             item: item_name.map(|name| format!("{kind_label} {name}")),
             message: suspicious_pub_note(crate_kind, kind_label),
             suggestion: None,
-            fix_kind: stale_parent_pub_use.map(|_| FixKind::ParentPubUse),
+            fix_kind: stale_parent_pub_use
+                .filter(|status| status.fix_supported)
+                .map(|_| FixKind::ParentPubUse),
             related,
         },
     )?);
@@ -1106,6 +1111,7 @@ fn parent_facade_export_status(
         ) {
             return Ok(Some(ParentFacadeExportStatus {
                 used_outside_parent: true,
+                fix_supported: exported_names.fix_supported,
                 parent_rel_path,
                 parent_line,
             }));
@@ -1114,6 +1120,7 @@ fn parent_facade_export_status(
 
     Ok(Some(ParentFacadeExportStatus {
         used_outside_parent: false,
+        fix_supported: exported_names.fix_supported,
         parent_rel_path,
         parent_line,
     }))
@@ -1180,6 +1187,9 @@ fn collect_matching_pub_use_exports(
     item_name: &str,
     exported: &mut ParentFacadeExports,
 ) {
+    if pub_use_is_simple_fix_supported(&item_use.tree, child_module_name, item_name) {
+        exported.fix_supported = true;
+    }
     let mut paths = Vec::new();
     flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
     for path in paths {
@@ -1196,6 +1206,35 @@ fn collect_matching_pub_use_exports(
             exported.explicit.push(export_name.clone());
         }
     }
+}
+
+fn pub_use_is_simple_fix_supported(
+    tree: &UseTree,
+    child_module_name: &str,
+    item_name: &str,
+) -> bool {
+    let mut segments = Vec::new();
+    let mut cursor = tree;
+    loop {
+        match cursor {
+            UseTree::Path(path) => {
+                segments.push(path.ident.to_string());
+                cursor = &path.tree;
+            },
+            UseTree::Name(name) => {
+                segments.push(name.ident.to_string());
+                break;
+            },
+            UseTree::Rename(_) | UseTree::Group(_) | UseTree::Glob(_) => return false,
+        }
+    }
+
+    let normalized = if segments.first().is_some_and(|segment| segment == "self") {
+        &segments[1..]
+    } else {
+        &segments[..]
+    };
+    normalized.len() == 2 && normalized[0] == child_module_name && normalized[1] == item_name
 }
 
 fn flatten_use_tree(prefix: Vec<String>, tree: &UseTree, out: &mut Vec<Vec<String>>) {
@@ -1352,6 +1391,7 @@ struct LineDisplay {
 #[derive(Debug, Clone)]
 struct ParentFacadeExportStatus {
     used_outside_parent: bool,
+    fix_supported:       bool,
     parent_rel_path:     String,
     parent_line:         usize,
 }
@@ -1365,7 +1405,8 @@ struct ParentBoundary {
 
 #[derive(Debug, Default)]
 struct ParentFacadeExports {
-    explicit: Vec<String>,
+    explicit:      Vec<String>,
+    fix_supported: bool,
 }
 
 fn line_display(tcx: TyCtxt<'_>, file_path: &Path, span: Span) -> Result<LineDisplay> {

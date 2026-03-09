@@ -19,6 +19,7 @@ use super::selection::Selection;
 pub struct PubUseFixScan {
     pub fixes:         Vec<UseFix>,
     pub applied_count: usize,
+    pub skipped_count: usize,
 }
 
 struct Candidate {
@@ -39,8 +40,9 @@ enum CandidateScreening {
 pub fn scan_selection(selection: &Selection, report: &Report) -> Result<PubUseFixScan> {
     let mut fixes = Vec::new();
     let mut applied_pairs = 0usize;
+    let mut skipped_pairs = 0usize;
 
-    for candidate in collect_candidates(selection, report)? {
+    for candidate in collect_candidates(selection, report, &mut skipped_pairs)? {
         let pair_fixes = fixes_for_candidate(selection, &candidate)?;
         if pair_fixes.is_empty() {
             continue;
@@ -52,10 +54,15 @@ pub fn scan_selection(selection: &Selection, report: &Report) -> Result<PubUseFi
     Ok(PubUseFixScan {
         fixes,
         applied_count: applied_pairs,
+        skipped_count: skipped_pairs,
     })
 }
 
-fn collect_candidates(selection: &Selection, report: &Report) -> Result<Vec<Candidate>> {
+fn collect_candidates(
+    selection: &Selection,
+    report: &Report,
+    skipped_pairs: &mut usize,
+) -> Result<Vec<Candidate>> {
     let mut candidates = Vec::new();
     for finding in &report.findings {
         if finding.code != "suspicious_pub" {
@@ -93,14 +100,18 @@ fn collect_candidates(selection: &Selection, report: &Report) -> Result<Vec<Cand
         })?;
         let parent_source = fs::read_to_string(&parent_mod)
             .with_context(|| format!("failed to read {}", parent_mod.display()))?;
-        let exported_name = item_name_from_parent_pub_use(&parent_source, parent_line)
+        let Some(exported_name) = item_name_from_parent_pub_use(&parent_source, parent_line)
             .with_context(|| {
                 format!(
                     "failed to resolve exported item from {}:{}",
                     parent_rel_path.display(),
                     parent_line
                 )
-            })?;
+            })?
+        else {
+            *skipped_pairs += 1;
+            continue;
+        };
 
         let src_root =
             find_src_root(&parent_mod).context("failed to determine src root for parent module")?;
@@ -495,7 +506,7 @@ fn line_span(source: &str, line: usize) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
-fn item_name_from_parent_pub_use(source: &str, line: usize) -> Result<String> {
+fn item_name_from_parent_pub_use(source: &str, line: usize) -> Result<Option<String>> {
     let file = parse_file(source).context("failed to parse parent module file")?;
     for item in file.items {
         let Item::Use(item_use) = item else {
@@ -508,20 +519,21 @@ fn item_name_from_parent_pub_use(source: &str, line: usize) -> Result<String> {
         if use_line != line {
             continue;
         }
-        let import = flatten_use_tree(&item_use.tree)
-            .context("parent pub use fix currently supports only simple pub use items")?;
+        let Some(import) = flatten_use_tree(&item_use.tree) else {
+            return Ok(None);
+        };
         if import.segments.len() < 2 {
             anyhow::bail!("parent pub use fix requires a child-module path");
         }
         if import.rename.is_some() {
-            anyhow::bail!("parent pub use fix does not support renamed pub uses yet");
+            return Ok(None);
         }
         let Some(last_segment) = import.segments.last() else {
             anyhow::bail!("flattened import unexpectedly had no tail segment");
         };
-        return Ok(last_segment.clone());
+        return Ok(Some(last_segment.to_string()));
     }
-    anyhow::bail!("matching pub use item not found on line {line}")
+    Ok(None)
 }
 
 fn item_name_from_child_pub(source: &str, line: usize) -> Result<String> {

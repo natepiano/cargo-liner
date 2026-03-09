@@ -129,11 +129,13 @@ pub struct Report {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ReportSummary {
     #[serde(rename = "error_count")]
-    pub errors:   usize,
+    pub errors:                   usize,
     #[serde(rename = "warning_count")]
-    pub warnings: usize,
-    #[serde(rename = "fixable_count")]
-    pub fixable:  usize,
+    pub warnings:                 usize,
+    #[serde(rename = "fixable_with_fix_count")]
+    pub fixable_with_fix:         usize,
+    #[serde(rename = "fixable_with_fix_pub_use_count")]
+    pub fixable_with_fix_pub_use: usize,
 }
 
 impl Report {
@@ -143,20 +145,25 @@ impl Report {
 
     pub(super) fn refresh_summary(&mut self) {
         self.summary = ReportSummary {
-            errors:   self
+            errors:                   self
                 .findings
                 .iter()
                 .filter(|f| f.severity == Severity::Error)
                 .count(),
-            warnings: self
+            warnings:                 self
                 .findings
                 .iter()
                 .filter(|f| f.severity == Severity::Warning)
                 .count(),
-            fixable:  self
+            fixable_with_fix:         self
                 .findings
                 .iter()
-                .filter(|f| effective_fix_kind(f).note().is_some())
+                .filter(|f| effective_fix_kind(f) == FixKind::ImportRewrite)
+                .count(),
+            fixable_with_fix_pub_use: self
+                .findings
+                .iter()
+                .filter(|f| effective_fix_kind(f) == FixKind::ParentPubUse)
                 .count(),
         };
     }
