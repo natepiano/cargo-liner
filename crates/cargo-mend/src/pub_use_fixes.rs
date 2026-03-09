@@ -12,7 +12,9 @@ use syn::parse_file;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
+use super::diagnostics;
 use super::diagnostics::Report;
+use super::fix_support::FixSupport;
 use super::imports::UseFix;
 use super::selection::Selection;
 
@@ -68,7 +70,7 @@ fn collect_candidates(
         if finding.code != "suspicious_pub" {
             continue;
         }
-        if finding.fix_kind != Some(super::diagnostics::FixKind::ParentPubUse) {
+        if diagnostics::effective_fix_support(finding) != FixSupport::FixPubUse {
             continue;
         }
 
@@ -531,7 +533,7 @@ fn item_name_from_parent_pub_use(source: &str, line: usize) -> Result<Option<Str
         let Some(last_segment) = import.segments.last() else {
             anyhow::bail!("flattened import unexpectedly had no tail segment");
         };
-        return Ok(Some(last_segment.to_string()));
+        return Ok(Some(last_segment.clone()));
     }
     Ok(None)
 }

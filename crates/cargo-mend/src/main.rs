@@ -10,6 +10,7 @@ mod cli;
 mod compiler;
 mod config;
 mod diagnostics;
+mod fix_support;
 mod imports;
 mod pub_use_fixes;
 mod render;

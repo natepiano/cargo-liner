@@ -35,10 +35,10 @@ use syn::UseTree;
 use super::config::LoadedConfig;
 use super::config::VisibilityConfig;
 use super::diagnostics::Finding;
-use super::diagnostics::FixKind;
 use super::diagnostics::Report;
 use super::diagnostics::ReportSummary;
 use super::diagnostics::Severity;
+use super::fix_support::FixSupport;
 use super::selection::Selection;
 
 const DRIVER_ENV: &str = "MEND_DRIVER";
@@ -80,7 +80,7 @@ struct StoredFinding {
     message:       String,
     suggestion:    Option<String>,
     #[serde(default)]
-    fix_kind:      Option<FixKind>,
+    fix_support:   FixSupport,
     #[serde(default)]
     related:       Option<String>,
 }
@@ -549,7 +549,7 @@ fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
                 item:          finding.item,
                 message:       finding.message,
                 suggestion:    finding.suggestion,
-                fix_kind:      finding.fix_kind,
+                fix_support:   finding.fix_support,
                 related:       finding.related,
             });
         }
@@ -714,13 +714,13 @@ fn analyze_item(
             &file_path,
             item.span,
             FindingParams {
-                severity:   Severity::Warning,
-                code:       "wildcard_parent_pub_use",
-                item:       None,
-                message:    String::new(),
-                suggestion: None,
-                fix_kind:   None,
-                related:    None,
+                severity:    Severity::Warning,
+                code:        "wildcard_parent_pub_use",
+                item:        None,
+                message:     String::new(),
+                suggestion:  None,
+                fix_support: FixSupport::None,
+                related:     None,
             },
         )?);
     }
@@ -866,13 +866,13 @@ fn record_visibility_findings(
             file_path,
             highlight_span,
             FindingParams {
-                severity:   Severity::Error,
-                code:       "forbidden_pub_crate",
-                item:       None,
-                message:    "use of `pub(crate)` is forbidden by policy".to_string(),
-                suggestion: Some(forbidden_pub_crate_help(module_location).to_string()),
-                fix_kind:   None,
-                related:    None,
+                severity:    Severity::Error,
+                code:        "forbidden_pub_crate",
+                item:        None,
+                message:     "use of `pub(crate)` is forbidden by policy".to_string(),
+                suggestion:  Some(forbidden_pub_crate_help(module_location).to_string()),
+                fix_support: FixSupport::None,
+                related:     None,
             },
         )?);
     }
@@ -883,13 +883,13 @@ fn record_visibility_findings(
             file_path,
             highlight_span,
             FindingParams {
-                severity:   Severity::Error,
-                code:       "forbidden_pub_in_crate",
-                item:       None,
-                message:    "use of `pub(in crate::...)` is forbidden by policy".to_string(),
-                suggestion: None,
-                fix_kind:   None,
-                related:    None,
+                severity:    Severity::Error,
+                code:        "forbidden_pub_in_crate",
+                item:        None,
+                message:     "use of `pub(in crate::...)` is forbidden by policy".to_string(),
+                suggestion:  None,
+                fix_support: FixSupport::None,
+                related:     None,
             },
         )?);
     }
@@ -908,13 +908,13 @@ fn record_visibility_findings(
                 file_path,
                 highlight_span,
                 FindingParams {
-                    severity:   Severity::Error,
-                    code:       "review_pub_mod",
-                    item:       item_name.map(str::to_owned),
-                    message:    "`pub mod` requires explicit review or allowlisting".to_string(),
-                    suggestion: None,
-                    fix_kind:   None,
-                    related:    None,
+                    severity:    Severity::Error,
+                    code:        "review_pub_mod",
+                    item:        item_name.map(str::to_owned),
+                    message:     "`pub mod` requires explicit review or allowlisting".to_string(),
+                    suggestion:  None,
+                    fix_support: FixSupport::None,
+                    related:     None,
                 },
             )?);
         }
@@ -1007,9 +1007,13 @@ fn maybe_record_suspicious_pub(
             item: item_name.map(|name| format!("{kind_label} {name}")),
             message: suspicious_pub_note(crate_kind, kind_label),
             suggestion: None,
-            fix_kind: stale_parent_pub_use
-                .filter(|status| status.fix_supported)
-                .map(|_| FixKind::ParentPubUse),
+            fix_support: stale_parent_pub_use.map_or(FixSupport::None, |status| {
+                if status.fix_supported {
+                    FixSupport::FixPubUse
+                } else {
+                    FixSupport::NeedsManualPubUseCleanup
+                }
+            }),
             related,
         },
     )?);
@@ -1017,13 +1021,13 @@ fn maybe_record_suspicious_pub(
 }
 
 struct FindingParams {
-    severity:   Severity,
-    code:       &'static str,
-    item:       Option<String>,
-    message:    String,
-    suggestion: Option<String>,
-    fix_kind:   Option<FixKind>,
-    related:    Option<String>,
+    severity:    Severity,
+    code:        &'static str,
+    item:        Option<String>,
+    message:     String,
+    suggestion:  Option<String>,
+    fix_support: FixSupport,
+    related:     Option<String>,
 }
 
 fn build_finding(
@@ -1044,7 +1048,7 @@ fn build_finding(
         item:          params.item,
         message:       params.message,
         suggestion:    params.suggestion,
-        fix_kind:      params.fix_kind,
+        fix_support:   params.fix_support,
         related:       params.related,
     })
 }
@@ -1537,6 +1541,7 @@ mod tests {
     use super::module_location;
     use super::refresh_rustc_args;
     use super::suspicious_pub_note;
+    use crate::fix_support::FixSupport;
 
     #[test]
     fn allow_pub_crate_allows_library_crate_root_items() {
@@ -1659,7 +1664,7 @@ mod tests {
                 item:          None,
                 message:       String::new(),
                 suggestion:    None,
-                fix_kind:      None,
+                fix_support:   FixSupport::None,
                 related:       None,
             }],
         };

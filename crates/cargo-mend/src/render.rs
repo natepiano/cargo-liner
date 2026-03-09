@@ -130,11 +130,7 @@ fn summary_line(
         ));
     }
 
-    if parts.len() == 2 {
-        format!("{} {}", dim("summary:", color), parts.join(", "))
-    } else {
-        format!("{} {}", dim("summary:", color), parts.join(", "))
-    }
+    format!("{} {}", dim("summary:", color), parts.join(", "))
 }
 
 fn severity_label(severity: Severity, color: bool) -> String {

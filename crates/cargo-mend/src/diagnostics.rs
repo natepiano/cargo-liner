@@ -1,6 +1,9 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::fix_support::FixSummaryBucket;
+use super::fix_support::FixSupport;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
@@ -8,29 +11,10 @@ pub enum Severity {
     Warning,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FixKind {
-    None,
-    ImportRewrite,
-    ParentPubUse,
-}
-
-impl FixKind {
-    pub const fn note(self) -> Option<&'static str> {
-        match self {
-            Self::None => None,
-            Self::ImportRewrite => Some("this warning is auto-fixable with `cargo mend --fix`"),
-            Self::ParentPubUse => {
-                Some("this warning is auto-fixable with `cargo mend --fix-pub-use`")
-            },
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 enum DetailMode {
     None,
-    MessageRelatedAndFix(FixKind),
+    MessageRelatedAndFix,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -40,7 +24,7 @@ pub struct DiagnosticSpec {
     pub inline_help: Option<&'static str>,
     pub help_anchor: &'static str,
     detail_mode:     DetailMode,
-    pub fix_kind:    FixKind,
+    pub fix_support: FixSupport,
 }
 
 pub const DIAGNOSTICS: &[DiagnosticSpec] = &[
@@ -50,7 +34,7 @@ pub const DIAGNOSTICS: &[DiagnosticSpec] = &[
         inline_help: None,
         help_anchor: "forbidden-pub-crate",
         detail_mode: DetailMode::None,
-        fix_kind:    FixKind::None,
+        fix_support: FixSupport::None,
     },
     DiagnosticSpec {
         code:        "forbidden_pub_in_crate",
@@ -58,7 +42,7 @@ pub const DIAGNOSTICS: &[DiagnosticSpec] = &[
         inline_help: None,
         help_anchor: "forbidden-pub-in-crate",
         detail_mode: DetailMode::None,
-        fix_kind:    FixKind::None,
+        fix_support: FixSupport::None,
     },
     DiagnosticSpec {
         code:        "review_pub_mod",
@@ -66,15 +50,15 @@ pub const DIAGNOSTICS: &[DiagnosticSpec] = &[
         inline_help: None,
         help_anchor: "review-pub-mod",
         detail_mode: DetailMode::None,
-        fix_kind:    FixKind::None,
+        fix_support: FixSupport::None,
     },
     DiagnosticSpec {
         code:        "shorten_local_crate_import",
         headline:    "crate-relative import can be shortened to a local-relative import",
         inline_help: None,
         help_anchor: "shorten-local-crate-import",
-        detail_mode: DetailMode::MessageRelatedAndFix(FixKind::ImportRewrite),
-        fix_kind:    FixKind::ImportRewrite,
+        detail_mode: DetailMode::MessageRelatedAndFix,
+        fix_support: FixSupport::ShortenImport,
     },
     DiagnosticSpec {
         code:        "wildcard_parent_pub_use",
@@ -82,15 +66,15 @@ pub const DIAGNOSTICS: &[DiagnosticSpec] = &[
         inline_help: Some("consider re-exporting explicit items instead of `*`"),
         help_anchor: "wildcard-parent-pub-use",
         detail_mode: DetailMode::None,
-        fix_kind:    FixKind::None,
+        fix_support: FixSupport::None,
     },
     DiagnosticSpec {
         code:        "suspicious_pub",
         headline:    "`pub` is broader than this nested module boundary",
         inline_help: Some("consider using: `pub(super)`"),
         help_anchor: "suspicious-pub",
-        detail_mode: DetailMode::MessageRelatedAndFix(FixKind::None),
-        fix_kind:    FixKind::None,
+        detail_mode: DetailMode::MessageRelatedAndFix,
+        fix_support: FixSupport::None,
     },
 ];
 
@@ -114,7 +98,7 @@ pub struct Finding {
     pub message:       String,
     pub suggestion:    Option<String>,
     #[serde(default)]
-    pub fix_kind:      Option<FixKind>,
+    pub fix_support:   FixSupport,
     #[serde(default)]
     pub related:       Option<String>,
 }
@@ -158,21 +142,27 @@ impl Report {
             fixable_with_fix:         self
                 .findings
                 .iter()
-                .filter(|f| effective_fix_kind(f) == FixKind::ImportRewrite)
+                .filter(|f| {
+                    effective_fix_support(f).summary_bucket() == Some(FixSummaryBucket::Fix)
+                })
                 .count(),
             fixable_with_fix_pub_use: self
                 .findings
                 .iter()
-                .filter(|f| effective_fix_kind(f) == FixKind::ParentPubUse)
+                .filter(|f| {
+                    effective_fix_support(f).summary_bucket() == Some(FixSummaryBucket::FixPubUse)
+                })
                 .count(),
         };
     }
 }
 
-fn effective_fix_kind(finding: &Finding) -> FixKind {
-    finding
-        .fix_kind
-        .unwrap_or_else(|| diagnostic_spec(&finding.code).fix_kind)
+pub fn effective_fix_support(finding: &Finding) -> FixSupport {
+    if matches!(finding.fix_support, FixSupport::None) {
+        diagnostic_spec(&finding.code).fix_support
+    } else {
+        finding.fix_support
+    }
 }
 
 pub fn finding_headline(finding: &Finding) -> String {
@@ -182,7 +172,7 @@ pub fn finding_headline(finding: &Finding) -> String {
 pub fn detail_reasons(finding: &Finding) -> Vec<String> {
     match diagnostic_spec(&finding.code).detail_mode {
         DetailMode::None => Vec::new(),
-        DetailMode::MessageRelatedAndFix(default_fix_kind) => {
+        DetailMode::MessageRelatedAndFix => {
             let mut reasons = Vec::new();
             if !finding.message.is_empty() {
                 reasons.push(finding.message.clone());
@@ -190,10 +180,7 @@ pub fn detail_reasons(finding: &Finding) -> Vec<String> {
             if let Some(related) = &finding.related {
                 reasons.push(related.clone());
             }
-            if let Some(note) = effective_fix_kind(finding)
-                .note()
-                .or_else(|| default_fix_kind.note())
-            {
+            if let Some(note) = effective_fix_support(finding).note() {
                 reasons.push(note.to_string());
             }
             reasons

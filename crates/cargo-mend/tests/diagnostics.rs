@@ -1551,7 +1551,15 @@ edition = "2024"
 
 mod cargo_mend_tests_support {
     #![allow(dead_code)]
-    include!("../src/diagnostics.rs");
+    mod fix_support {
+        include!("../src/fix_support.rs");
+    }
+
+    mod diagnostics_impl {
+        include!("../src/diagnostics.rs");
+    }
+
+    pub use diagnostics_impl::*;
 
     pub const fn diagnostic_specs() -> &'static [DiagnosticSpec] { DIAGNOSTICS }
 }

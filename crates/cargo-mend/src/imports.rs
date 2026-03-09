@@ -17,6 +17,7 @@ use walkdir::WalkDir;
 
 use super::diagnostics::Finding;
 use super::diagnostics::Severity;
+use super::fix_support::FixSupport;
 use super::selection::Selection;
 
 pub struct ImportScan {
@@ -214,7 +215,7 @@ impl Visit<'_> for UseVisitor<'_> {
                     item: None,
                     message: "it stays within the same local module boundary".to_string(),
                     suggestion: Some(format!("consider using: `{replacement}`")),
-                    fix_kind: None,
+                    fix_support: FixSupport::ShortenImport,
                     related: None,
                 },
                 fix:     UseFix {
