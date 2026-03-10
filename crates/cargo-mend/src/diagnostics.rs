@@ -127,9 +127,9 @@ pub struct ReportSummary {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReportFacts {
     #[serde(default)]
-    pub pub_use_fix_facts:          Vec<PubUseFixFact>,
+    pub pub_use:           PubUseFixFacts,
     #[serde(default)]
-    pub saw_unused_import_warnings: bool,
+    pub compiler_warnings: CompilerWarningFacts,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +140,32 @@ pub struct PubUseFixFact {
     pub parent_path:     String,
     pub parent_line:     usize,
     pub child_module:    String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PubUseFixFacts {
+    #[serde(default)]
+    facts: Vec<PubUseFixFact>,
+}
+
+impl PubUseFixFacts {
+    pub const fn from_vec(facts: Vec<PubUseFixFact>) -> Self { Self { facts } }
+
+    pub fn iter(&self) -> impl Iterator<Item = &PubUseFixFact> { self.facts.iter() }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompilerWarningFacts {
+    #[default]
+    None,
+    UnusedImportWarnings,
+}
+
+impl CompilerWarningFacts {
+    pub const fn saw_unused_import_warnings(self) -> bool {
+        matches!(self, Self::UnusedImportWarnings)
+    }
 }
 
 impl Report {

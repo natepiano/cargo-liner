@@ -144,6 +144,8 @@ jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: never
     steps:
       - uses: actions/checkout@v4
 

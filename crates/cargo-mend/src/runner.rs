@@ -177,7 +177,8 @@ impl<'a> MendRunner<'a> {
 
         if matches!(intent, OperationIntent::Apply)
             && pub_use_scan.is_some_and(|scan| scan.applied_count > 0)
-            && report.is_some_and(|report| report.facts.saw_unused_import_warnings)
+            && report
+                .is_some_and(|report| report.facts.compiler_warnings.saw_unused_import_warnings())
         {
             notices.push(ExecutionNotice::ImportCleanupSuggested);
         }

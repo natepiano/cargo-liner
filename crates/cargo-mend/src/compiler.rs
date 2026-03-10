@@ -35,8 +35,10 @@ use syn::visit::Visit;
 
 use super::config::LoadedConfig;
 use super::config::VisibilityConfig;
+use super::diagnostics::CompilerWarningFacts;
 use super::diagnostics::Finding;
 use super::diagnostics::PubUseFixFact;
+use super::diagnostics::PubUseFixFacts;
 use super::diagnostics::Report;
 use super::diagnostics::ReportFacts;
 use super::diagnostics::ReportSummary;
@@ -249,7 +251,11 @@ pub fn run_selection(
     })?;
 
     let mut report = report;
-    report.facts.saw_unused_import_warnings = command_outcome.saw_unused_import_warning;
+    report.facts.compiler_warnings = if command_outcome.saw_unused_import_warning {
+        CompilerWarningFacts::UnusedImportWarnings
+    } else {
+        CompilerWarningFacts::None
+    };
     Ok(report)
 }
 
@@ -476,12 +482,36 @@ fn stream_cargo_stderr(
 }
 
 fn is_progress_line(line: &str) -> bool {
-    let trimmed = line.trim_start();
+    let sanitized = sanitize_for_match(line);
+    let trimmed = sanitized.trim_start();
     trimmed.starts_with("Blocking waiting for file lock")
         || trimmed.starts_with("Checking ")
         || trimmed.starts_with("Compiling ")
         || trimmed.starts_with("Finished ")
         || trimmed.starts_with("Fresh ")
+}
+
+fn sanitize_for_match(line: &str) -> String {
+    let mut sanitized = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if chars.peek().copied() == Some('[') {
+                chars.next();
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        sanitized.push(ch);
+    }
+
+    sanitized
 }
 
 fn classify_diagnostic_block(
@@ -490,7 +520,8 @@ fn classify_diagnostic_block(
 ) -> DiagnosticBlockKind {
     let first_non_empty = block.iter().find(|line| !line.trim().is_empty());
     first_non_empty.map_or(DiagnosticBlockKind::ForwardedDiagnostic, |line| {
-        let trimmed = line.trim_start();
+        let sanitized = sanitize_for_match(line);
+        let trimmed = sanitized.trim_start();
         if trimmed.starts_with("warning: unused import:")
             || trimmed.starts_with("warning: unused imports:")
             || (printed_suppression_notice
@@ -695,8 +726,8 @@ fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
         summary: ReportSummary::default(),
         findings,
         facts: ReportFacts {
-            pub_use_fix_facts,
-            saw_unused_import_warnings: false,
+            pub_use:           PubUseFixFacts::from_vec(pub_use_fix_facts),
+            compiler_warnings: CompilerWarningFacts::None,
         },
     })
 }

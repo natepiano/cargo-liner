@@ -23,7 +23,7 @@ echo "==> cargo build --release"
 cargo build --release
 
 echo "==> cargo nextest run"
-cargo nextest run
+CARGO_TERM_COLOR=never cargo nextest run
 
 echo "==> cargo run -- --fail-on-warn"
 cargo run -- --fail-on-warn
