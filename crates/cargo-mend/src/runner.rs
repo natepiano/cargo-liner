@@ -8,7 +8,6 @@ use crate::outcome::ExecutionNotice;
 use crate::outcome::ExecutionOutcome;
 use crate::outcome::FixNotice;
 use crate::outcome::FixValidationFailure;
-use crate::outcome::FixValidationSource;
 use crate::outcome::MendFailure;
 use crate::outcome::PubUseNotice;
 use crate::outcome::RollbackStatus;
@@ -128,7 +127,13 @@ impl<'a> MendRunner<'a> {
                 };
                 Err(MendFailure::FixValidation(FixValidationFailure {
                     rollback,
-                    source: fix_validation_source(err),
+                    cause: match err {
+                        MendFailure::Analysis(analysis) => analysis.cause,
+                        MendFailure::Unexpected(error) => {
+                            crate::outcome::CompilerFailureCause::Unexpected(error)
+                        },
+                        MendFailure::FixValidation(failure) => failure.cause,
+                    },
                 }))
             },
         }
@@ -226,28 +231,5 @@ impl<'a> MendRunner<'a> {
         });
         report.refresh_summary();
         Ok(report)
-    }
-}
-
-fn fix_validation_source(err: MendFailure) -> FixValidationSource {
-    match err {
-        MendFailure::Analysis(analysis) => match analysis {
-            crate::outcome::AnalysisFailure::CargoCheck => FixValidationSource::CargoCheck,
-            crate::outcome::AnalysisFailure::CargoRustcRefresh { package } => {
-                FixValidationSource::CargoRustcRefresh { package }
-            },
-            crate::outcome::AnalysisFailure::DriverSetup(error)
-            | crate::outcome::AnalysisFailure::DriverExecution(error) => {
-                FixValidationSource::Unexpected(error)
-            },
-        },
-        MendFailure::Unexpected(error) => FixValidationSource::Unexpected(error),
-        MendFailure::FixValidation(failure) => match failure.source {
-            FixValidationSource::CargoCheck => FixValidationSource::CargoCheck,
-            FixValidationSource::CargoRustcRefresh { package } => {
-                FixValidationSource::CargoRustcRefresh { package }
-            },
-            FixValidationSource::Unexpected(error) => FixValidationSource::Unexpected(error),
-        },
     }
 }

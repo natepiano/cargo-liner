@@ -43,6 +43,7 @@ use super::diagnostics::ReportSummary;
 use super::diagnostics::Severity;
 use super::fix_support::FixSupport;
 use super::outcome::AnalysisFailure;
+use super::outcome::CompilerFailureCause;
 use super::outcome::MendFailure;
 use super::selection::Selection;
 
@@ -203,10 +204,16 @@ pub fn run_selection(
     })?;
 
     let mut command_outcome = run_cargo_check(selection, loaded_config, &findings_dir, output_mode)
-        .map_err(|err| MendFailure::Analysis(AnalysisFailure::DriverSetup(err)))?;
+        .map_err(|err| {
+            MendFailure::Analysis(AnalysisFailure {
+                cause: CompilerFailureCause::DriverSetup(err),
+            })
+        })?;
 
     if !command_outcome.status.success() {
-        return Err(MendFailure::Analysis(AnalysisFailure::CargoCheck));
+        return Err(MendFailure::Analysis(AnalysisFailure {
+            cause: CompilerFailureCause::CargoCheck,
+        }));
     }
 
     let missing_packages = selection
@@ -219,18 +226,27 @@ pub fn run_selection(
         for package in missing_packages {
             let status =
                 run_cargo_rustc_for_package(package, loaded_config, &findings_dir, output_mode)
-                    .map_err(|err| MendFailure::Analysis(AnalysisFailure::DriverSetup(err)))?;
+                    .map_err(|err| {
+                        MendFailure::Analysis(AnalysisFailure {
+                            cause: CompilerFailureCause::DriverSetup(err),
+                        })
+                    })?;
             command_outcome.saw_unused_import_warning |= status.saw_unused_import_warning;
             if !status.status.success() {
-                return Err(MendFailure::Analysis(AnalysisFailure::CargoRustcRefresh {
-                    package: package.name.clone(),
+                return Err(MendFailure::Analysis(AnalysisFailure {
+                    cause: CompilerFailureCause::CargoRustcRefresh {
+                        package: package.name.clone(),
+                    },
                 }));
             }
         }
     }
 
-    let report = load_report(&findings_dir, selection)
-        .map_err(|err| MendFailure::Analysis(AnalysisFailure::DriverExecution(err)))?;
+    let report = load_report(&findings_dir, selection).map_err(|err| {
+        MendFailure::Analysis(AnalysisFailure {
+            cause: CompilerFailureCause::DriverExecution(err),
+        })
+    })?;
 
     let mut report = report;
     report.facts.saw_unused_import_warnings = command_outcome.saw_unused_import_warning;

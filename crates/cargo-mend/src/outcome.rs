@@ -50,11 +50,17 @@ pub enum MendFailure {
 }
 
 #[derive(Debug)]
-pub enum AnalysisFailure {
+pub enum CompilerFailureCause {
     CargoCheck,
     CargoRustcRefresh { package: String },
     DriverSetup(Error),
     DriverExecution(Error),
+    Unexpected(Error),
+}
+
+#[derive(Debug)]
+pub struct AnalysisFailure {
+    pub cause: CompilerFailureCause,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,14 +72,7 @@ pub enum RollbackStatus {
 #[derive(Debug)]
 pub struct FixValidationFailure {
     pub rollback: RollbackStatus,
-    pub source:   FixValidationSource,
-}
-
-#[derive(Debug)]
-pub enum FixValidationSource {
-    CargoCheck,
-    CargoRustcRefresh { package: String },
-    Unexpected(Error),
+    pub cause:    CompilerFailureCause,
 }
 
 impl MendFailure {
@@ -92,29 +91,35 @@ impl fmt::Display for MendFailure {
 
 impl fmt::Display for AnalysisFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CargoCheck => write!(f, "compiler failed while validating this crate"),
-            Self::CargoRustcRefresh { package } => {
+        match &self.cause {
+            CompilerFailureCause::CargoCheck => {
+                write!(f, "compiler failed while validating this crate")
+            },
+            CompilerFailureCause::CargoRustcRefresh { package } => {
                 write!(
                     f,
                     "compiler refresh failed while validating package `{package}`"
                 )
             },
-            Self::DriverSetup(error) | Self::DriverExecution(error) => write!(f, "{error:#}"),
+            CompilerFailureCause::DriverSetup(error)
+            | CompilerFailureCause::DriverExecution(error)
+            | CompilerFailureCause::Unexpected(error) => write!(f, "{error:#}"),
         }
     }
 }
 
 impl fmt::Display for FixValidationFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let source = match &self.source {
-            FixValidationSource::CargoCheck => {
+        let source = match &self.cause {
+            CompilerFailureCause::CargoCheck => {
                 "compiler failed after applying mend fixes".to_string()
             },
-            FixValidationSource::CargoRustcRefresh { package } => {
+            CompilerFailureCause::CargoRustcRefresh { package } => {
                 format!("compiler refresh failed after applying mend fixes for package `{package}`")
             },
-            FixValidationSource::Unexpected(error) => format!("{error:#}"),
+            CompilerFailureCause::DriverSetup(error)
+            | CompilerFailureCause::DriverExecution(error)
+            | CompilerFailureCause::Unexpected(error) => format!("{error:#}"),
         };
         match self.rollback {
             RollbackStatus::Restored => write!(
@@ -269,17 +274,19 @@ mod tests {
     use anyhow::anyhow;
 
     use super::AnalysisFailure;
+    use super::CompilerFailureCause;
     use super::ExecutionNotice;
     use super::FixNotice;
     use super::FixValidationFailure;
-    use super::FixValidationSource;
     use super::PubUseNotice;
     use super::RollbackStatus;
     use crate::run_mode::OperationIntent;
 
     #[test]
     fn analysis_failure_message_uses_typed_collection_wording() {
-        let failure = AnalysisFailure::CargoCheck;
+        let failure = AnalysisFailure {
+            cause: CompilerFailureCause::CargoCheck,
+        };
         assert_eq!(
             failure.to_string(),
             "compiler failed while validating this crate"
@@ -290,7 +297,7 @@ mod tests {
     fn fix_validation_failure_reports_rollback_success() {
         let failure = FixValidationFailure {
             rollback: RollbackStatus::Restored,
-            source:   FixValidationSource::Unexpected(anyhow!("boom")),
+            cause:    CompilerFailureCause::Unexpected(anyhow!("boom")),
         };
         assert!(
             failure
@@ -303,7 +310,7 @@ mod tests {
     fn fix_validation_failure_reports_rollback_failure() {
         let failure = FixValidationFailure {
             rollback: RollbackStatus::RestoreFailed,
-            source:   FixValidationSource::Unexpected(anyhow!("boom")),
+            cause:    CompilerFailureCause::Unexpected(anyhow!("boom")),
         };
         assert!(
             failure
