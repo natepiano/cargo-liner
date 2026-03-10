@@ -484,6 +484,9 @@ fn stream_cargo_stderr(
 fn is_progress_line(line: &str) -> bool {
     let sanitized = sanitize_for_match(line);
     let trimmed = sanitized.trim_start();
+    if trimmed.contains("warning:") || trimmed.contains("error:") {
+        return false;
+    }
     trimmed.starts_with("Blocking waiting for file lock")
         || trimmed.starts_with("Checking ")
         || trimmed.starts_with("Compiling ")
@@ -522,15 +525,15 @@ fn classify_diagnostic_block(
     first_non_empty.map_or(DiagnosticBlockKind::ForwardedDiagnostic, |line| {
         let sanitized = sanitize_for_match(line);
         let trimmed = sanitized.trim_start();
-        if trimmed.starts_with("warning: unused import:")
-            || trimmed.starts_with("warning: unused imports:")
-            || (printed_suppression_notice
-                && trimmed.starts_with("warning: `")
-                && ((trimmed.contains(" generated 1 warning ")
-                    || trimmed.contains(" generated ") && trimmed.contains(" warnings "))
-                    || trimmed.contains("to apply 1 suggestion")
-                    || trimmed.contains("to apply ") && trimmed.contains(" suggestions")))
-        {
+        let contains_unused_import_warning = trimmed.contains("warning: unused import:")
+            || trimmed.contains("warning: unused imports:");
+        let contains_generated_warning_summary = printed_suppression_notice
+            && trimmed.contains("warning: `")
+            && ((trimmed.contains(" generated 1 warning ")
+                || trimmed.contains(" generated ") && trimmed.contains(" warnings "))
+                || trimmed.contains("to apply 1 suggestion")
+                || trimmed.contains("to apply ") && trimmed.contains(" suggestions"));
+        if contains_unused_import_warning || contains_generated_warning_summary {
             DiagnosticBlockKind::SuppressedUnusedImport
         } else {
             DiagnosticBlockKind::ForwardedDiagnostic
@@ -2198,6 +2201,7 @@ mod tests {
     use std::time::UNIX_EPOCH;
 
     use super::CrateKind;
+    use super::DiagnosticBlockKind;
     use super::FINDINGS_SCHEMA_VERSION;
     use super::ModuleLocation;
     use super::ParentFacadeExports;
@@ -2207,8 +2211,10 @@ mod tests {
     use super::allow_pub_crate_by_policy;
     use super::cache_filename_for;
     use super::cache_is_current_for;
+    use super::classify_diagnostic_block;
     use super::exported_names_from_parent_boundary;
     use super::forbidden_pub_crate_help;
+    use super::is_progress_line;
     use super::module_location;
     use super::refresh_rustc_args;
     use super::suspicious_pub_note;
@@ -2435,5 +2441,29 @@ mod tests {
         assert_eq!(exports.explicit, vec!["Other".to_string()]);
         assert!(exports.fix_supported);
         Ok(())
+    }
+
+    #[test]
+    fn progress_line_with_embedded_warning_is_not_treated_as_progress() {
+        let line = "    Building [                             ] 0/1: fixture...warning: unused import: `child::SpawnStats`\n";
+        assert!(!is_progress_line(line));
+    }
+
+    #[test]
+    fn classify_suppresses_unused_import_when_warning_follows_progress_prefix() {
+        let block = vec![
+            "    Building [                             ] 0/1: fixture...warning: unused import: `child::SpawnStats`\n"
+                .to_string(),
+            " --> src/actor/mod.rs:2:9\n".to_string(),
+            "  |\n".to_string(),
+            "2 | pub use child::SpawnStats;\n".to_string(),
+            "  |         ^^^^^^^^^^^^^^^^^\n".to_string(),
+            "\n".to_string(),
+        ];
+
+        assert!(matches!(
+            classify_diagnostic_block(&block, false),
+            DiagnosticBlockKind::SuppressedUnusedImport
+        ));
     }
 }
