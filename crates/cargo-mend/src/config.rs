@@ -1,4 +1,6 @@
 use std::fs;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -23,8 +25,9 @@ pub struct VisibilityConfig {
 
 #[derive(Debug)]
 pub struct LoadedConfig {
-    pub config: VisibilityConfig,
-    pub root:   PathBuf,
+    pub config:      VisibilityConfig,
+    pub root:        PathBuf,
+    pub fingerprint: String,
 }
 
 pub fn load_config(
@@ -51,8 +54,13 @@ pub fn load_config(
                 .with_context(|| format!("failed to parse config {}", path.display()))?;
             let root = path
                 .parent()
-                .map_or_else(|| manifest_dir.to_path_buf(), Path::to_path_buf);
+                .map_or_else(|| manifest_dir.to_path_buf(), Path::to_path_buf)
+                .canonicalize()
+                .with_context(|| {
+                    format!("failed to canonicalize config root for {}", path.display())
+                })?;
             return Ok(LoadedConfig {
+                fingerprint: fingerprint_for(&root, &file.visibility)?,
                 config: file.visibility,
                 root,
             });
@@ -60,7 +68,17 @@ pub fn load_config(
     }
 
     Ok(LoadedConfig {
-        config: VisibilityConfig::default(),
-        root:   manifest_dir.to_path_buf(),
+        fingerprint: fingerprint_for(manifest_dir, &VisibilityConfig::default())?,
+        config:      VisibilityConfig::default(),
+        root:        manifest_dir.to_path_buf(),
     })
+}
+
+fn fingerprint_for(root: &Path, config: &VisibilityConfig) -> Result<String> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    root.to_string_lossy().hash(&mut hasher);
+    serde_json::to_string(config)
+        .context("failed to serialize mend config for fingerprinting")?
+        .hash(&mut hasher);
+    Ok(format!("{:016x}", hasher.finish()))
 }

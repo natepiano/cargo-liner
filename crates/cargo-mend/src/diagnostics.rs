@@ -69,6 +69,16 @@ pub const DIAGNOSTICS: &[DiagnosticSpec] = &[
         fix_support: FixSupport::None,
     },
     DiagnosticSpec {
+        code:        "internal_parent_pub_use_facade",
+        headline:    "parent module `pub use` is acting as an internal facade",
+        inline_help: Some(
+            "consider removing this parent facade and importing the item from its defining child module",
+        ),
+        help_anchor: "internal-parent-pub-use-facade",
+        detail_mode: DetailMode::MessageRelatedAndFix,
+        fix_support: FixSupport::InternalParentFacade,
+    },
+    DiagnosticSpec {
         code:        "suspicious_pub",
         headline:    "`pub` is broader than this nested module boundary",
         inline_help: Some("consider using: `pub(super)`"),

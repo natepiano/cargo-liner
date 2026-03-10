@@ -17,6 +17,7 @@ use syn::visit::Visit;
 use super::diagnostics::Report;
 use super::imports::UseFix;
 use super::imports::ValidatedFixSet;
+use super::module_paths::file_module_path;
 use super::selection::Selection;
 
 pub struct PubUseFixScan {
@@ -679,21 +680,6 @@ fn common_prefix_len(left: &[String], right: &[String]) -> usize {
         .zip(right.iter())
         .take_while(|(l, r)| l == r)
         .count()
-}
-
-fn file_module_path(src_root: &Path, path: &Path) -> Option<Vec<String>> {
-    let relative = path.strip_prefix(src_root).ok()?;
-    let stem = path.file_stem()?.to_str()?;
-    let mut result: Vec<String> = relative
-        .parent()
-        .into_iter()
-        .flat_map(|parent| parent.iter())
-        .filter_map(|segment| segment.to_str().map(str::to_string))
-        .collect();
-    if stem != "lib" && stem != "main" && stem != "mod" {
-        result.push(stem.to_string());
-    }
-    Some(result)
 }
 
 fn line_offsets(text: &str) -> Vec<usize> {

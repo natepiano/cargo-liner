@@ -18,6 +18,7 @@ use walkdir::WalkDir;
 use super::diagnostics::Finding;
 use super::diagnostics::Severity;
 use super::fix_support::FixSupport;
+use super::module_paths::file_module_path;
 use super::selection::Selection;
 
 pub struct ImportScan {
@@ -425,21 +426,6 @@ fn format_path(segments: &[String], rename: Option<&str>) -> String {
         path.push_str(rename);
     }
     path
-}
-
-fn file_module_path(src_root: &Path, path: &Path) -> Option<Vec<String>> {
-    let relative = path.strip_prefix(src_root).ok()?;
-    let stem = path.file_stem()?.to_str()?;
-    let mut result: Vec<String> = relative
-        .parent()
-        .into_iter()
-        .flat_map(|parent| parent.iter())
-        .filter_map(|segment| segment.to_str().map(str::to_string))
-        .collect();
-    if stem != "lib" && stem != "main" && stem != "mod" {
-        result.push(stem.to_string());
-    }
-    Some(result)
 }
 
 fn line_offsets(text: &str) -> Vec<usize> {

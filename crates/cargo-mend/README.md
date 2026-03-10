@@ -391,6 +391,40 @@ pub use child::*;
 `cargo-mend` treats that as a separate problem. Use explicit re-exports instead so the parent
 facade states exactly which child items it is exporting.
 
+<a id="internal-parent-pub-use-facade"></a>
+### Internal parent `pub use` facade
+
+This warning is about a parent boundary module that is being used as an internal namespace facade
+inside its own subtree.
+
+In other words:
+
+- the parent `pub use` is not part of the outward boundary
+- but code inside the subtree is still referring to the parent path directly
+- that makes the parent boundary part of the implementation structure, not just the facade
+
+Example:
+
+```rust
+// src/private_parent/mod.rs
+mod child;
+pub use child::Helper;
+
+// src/private_parent/sibling.rs
+fn use_helper() {
+    let _ = std::mem::size_of::<super::Helper>();
+}
+```
+
+In this shape, `super::Helper` is using the parent boundary itself as an internal facade.
+
+That can be intentional, but it is worth review because it usually means one of two things:
+
+- the parent boundary is acting as an internal namespace and should stay that way intentionally
+- or the subtree should import the child module directly instead of routing through the parent
+
+`cargo-mend` does not auto-fix this case.
+
 <a id="wildcard-parent-pub-use"></a>
 ### Wildcard parent `pub use`
 

@@ -69,8 +69,13 @@ pub fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<
         .context("manifest path had no parent directory")?
         .to_path_buf();
     let workspace_manifest = workspace_root.join("Cargo.toml");
-    let workspace_selected =
-        manifest_path == workspace_manifest && metadata.workspace_members.len() > 1;
+    let manifest_is_workspace_root = manifest_path == workspace_manifest;
+    let manifest_matches_package = metadata
+        .packages
+        .iter()
+        .any(|pkg| pkg.manifest_path.as_std_path() == manifest_path);
+    let workspace_selected = manifest_is_workspace_root
+        && (!manifest_matches_package || metadata.workspace_members.len() > 1);
 
     let packages: Vec<SelectedPackage> = if workspace_selected {
         metadata
@@ -288,5 +293,37 @@ path = "src/bin/demo.rs"
             selection.packages[0].target,
             TargetSelector::Bin("demo".to_string())
         );
+    }
+
+    #[test]
+    fn resolve_virtual_workspace_root_with_single_member_selects_workspace() {
+        let temp =
+            tempfile::tempdir().unwrap_or_else(|error| panic!("create temp fixture dir: {error}"));
+        fs::create_dir_all(temp.path().join("member/src"))
+            .unwrap_or_else(|error| panic!("create member src dir: {error}"));
+        write_fixture_manifest(
+            temp.path(),
+            r#"[workspace]
+members = ["member"]
+resolver = "3"
+"#,
+        );
+        write_fixture_manifest(
+            &temp.path().join("member"),
+            r#"[package]
+name = "member_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+        );
+        fs::write(temp.path().join("member/src/main.rs"), "fn main() {}\n")
+            .unwrap_or_else(|error| panic!("write member main: {error}"));
+
+        let selection = resolve_cargo_selection(Some(&temp.path().join("Cargo.toml")))
+            .unwrap_or_else(|error| panic!("resolve workspace selection: {error}"));
+
+        assert!(selection.workspace_selected);
+        assert_eq!(selection.packages.len(), 1);
+        assert_eq!(selection.packages[0].name, "member_fixture");
     }
 }
