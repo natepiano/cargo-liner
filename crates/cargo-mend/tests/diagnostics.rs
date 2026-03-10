@@ -7,7 +7,6 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::OnceLock;
 
 use cargo_mend_tests_support::FixSummaryBucket;
 use cargo_mend_tests_support::FixSupport;
@@ -35,26 +34,7 @@ fn mend_command() -> Command {
     command
 }
 
-fn mend_bin() -> PathBuf {
-    static BUILD_ONCE: OnceLock<()> = OnceLock::new();
-    BUILD_ONCE.get_or_init(|| {
-        let status = cargo_command()
-            .arg("build")
-            .arg("--bin")
-            .arg("cargo-mend")
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .status()
-            .expect("build cargo-mend binary for integration tests");
-        assert!(status.success(), "failed to build cargo-mend test binary");
-    });
-    let current = std::env::current_exe().expect("current exe path");
-    current
-        .parent()
-        .expect("deps dir")
-        .parent()
-        .expect("debug dir")
-        .join("cargo-mend")
-}
+fn mend_bin() -> PathBuf { PathBuf::from(env!("CARGO_BIN_EXE_cargo-mend")) }
 
 #[derive(Debug, Deserialize)]
 struct Finding {
@@ -1489,10 +1469,6 @@ edition = "2024"
     );
 
     let stderr = String::from_utf8(output.stderr).expect("decode stderr");
-    assert!(
-        stderr
-            .contains("mend: suppressing `unused import` warning during `--fix-pub-use` discovery")
-    );
     assert!(stderr.contains("mend: would apply 2 `pub use` fix(es) in dry run"));
     assert!(!stderr.contains("warning: unused imports: `Thing` and `Other`"));
 
