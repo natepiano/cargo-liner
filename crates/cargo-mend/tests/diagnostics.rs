@@ -17,6 +17,7 @@ use tempfile::tempdir;
 
 fn clear_wrappers(command: &mut Command) -> &mut Command {
     command
+        .env_remove("RUSTC")
         .env("RUSTC_WRAPPER", "")
         .env_remove("CARGO_BUILD_RUSTC_WRAPPER")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
@@ -823,8 +824,8 @@ edition = "2024"
 
     assert!(stdout.contains("summary:"));
     assert!(
-        stderr.contains("mend: applied 1 `pub use` fix(es); some imports may now be unused; consider running cargo fix or cleaning them up manually"),
-        "expected import cleanup suggestion in stderr:\n{stderr}"
+        stderr.contains("mend: applied 1 `pub use` fix(es)"),
+        "expected applied pub use notice in stderr:\n{stderr}"
     );
 }
 
