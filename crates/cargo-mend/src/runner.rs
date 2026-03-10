@@ -9,6 +9,7 @@ use crate::outcome::ExecutionOutcome;
 use crate::outcome::FixNotice;
 use crate::outcome::FixValidationFailure;
 use crate::outcome::MendFailure;
+use crate::outcome::NoticeKind;
 use crate::outcome::PubUseNotice;
 use crate::outcome::RollbackStatus;
 use crate::pub_use_fixes;
@@ -161,14 +162,14 @@ impl<'a> MendRunner<'a> {
     ) -> Option<ExecutionNotice> {
         let mut notices = Vec::new();
         if let Some(scan) = import_scan {
-            notices.push(ExecutionNotice::ImportFixes(FixNotice::from_intent(
+            notices.push(NoticeKind::ImportFixes(FixNotice::from_intent(
                 intent,
                 scan.fixes.len(),
             )));
         }
 
         if let Some(scan) = pub_use_scan {
-            notices.push(ExecutionNotice::PubUseFixes(PubUseNotice::from_intent(
+            notices.push(NoticeKind::PubUseFixes(PubUseNotice::from_intent(
                 intent,
                 scan.applied_count,
                 scan.skipped_count,
@@ -180,13 +181,13 @@ impl<'a> MendRunner<'a> {
             && report
                 .is_some_and(|report| report.facts.compiler_warnings.saw_unused_import_warnings())
         {
-            notices.push(ExecutionNotice::ImportCleanupSuggested);
+            notices.push(NoticeKind::ImportCleanupSuggested);
         }
 
         match notices.len() {
             0 => None,
-            1 => notices.into_iter().next(),
-            _ => Some(ExecutionNotice::Combined(notices)),
+            1 => notices.into_iter().next().map(ExecutionNotice::from_kind),
+            _ => Some(ExecutionNotice::from_kinds(notices)),
         }
     }
 

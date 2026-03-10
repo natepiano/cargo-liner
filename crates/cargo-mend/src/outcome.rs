@@ -13,11 +13,15 @@ pub struct ExecutionOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExecutionNotice {
+pub struct ExecutionNotice {
+    kinds: Vec<NoticeKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoticeKind {
     ImportFixes(FixNotice),
     PubUseFixes(PubUseNotice),
     ImportCleanupSuggested,
-    Combined(Vec<Self>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,18 +143,21 @@ impl From<Error> for MendFailure {
 }
 
 impl ExecutionNotice {
-    pub fn render(&self) -> String {
-        match self {
-            Self::ImportFixes(notice) => format!("mend: {}", notice.render()),
-            Self::PubUseFixes(notice) => format!("mend: {}", notice.render()),
-            Self::ImportCleanupSuggested => format!("mend: {}", self.render_part()),
-            Self::Combined(notices) => {
-                let parts = notices.iter().map(Self::render_part).collect::<Vec<_>>();
-                format!("mend: {}", parts.join("; "))
-            },
-        }
-    }
+    pub fn from_kind(kind: NoticeKind) -> Self { Self { kinds: vec![kind] } }
 
+    pub const fn from_kinds(kinds: Vec<NoticeKind>) -> Self { Self { kinds } }
+
+    pub fn render(&self) -> String {
+        let parts = self
+            .kinds
+            .iter()
+            .map(NoticeKind::render_part)
+            .collect::<Vec<_>>();
+        format!("mend: {}", parts.join("; "))
+    }
+}
+
+impl NoticeKind {
     fn render_part(&self) -> String {
         match self {
             Self::ImportFixes(notice) => notice.render(),
@@ -159,11 +166,6 @@ impl ExecutionNotice {
                 "some imports may now be unused; consider running cargo fix or cleaning them up manually"
                     .to_string()
             },
-            Self::Combined(notices) => notices
-                .iter()
-                .map(Self::render_part)
-                .collect::<Vec<_>>()
-                .join("; "),
         }
     }
 }
@@ -278,6 +280,7 @@ mod tests {
     use super::ExecutionNotice;
     use super::FixNotice;
     use super::FixValidationFailure;
+    use super::NoticeKind;
     use super::PubUseNotice;
     use super::RollbackStatus;
     use crate::run_mode::OperationIntent;
@@ -327,9 +330,9 @@ mod tests {
 
     #[test]
     fn combined_notice_renders_all_parts() {
-        let notice = ExecutionNotice::Combined(vec![
-            ExecutionNotice::ImportFixes(FixNotice::Applied(2)),
-            ExecutionNotice::PubUseFixes(PubUseNotice::Applied {
+        let notice = ExecutionNotice::from_kinds(vec![
+            NoticeKind::ImportFixes(FixNotice::Applied(2)),
+            NoticeKind::PubUseFixes(PubUseNotice::Applied {
                 applied:             1,
                 skipped_unsupported: 0,
             }),
