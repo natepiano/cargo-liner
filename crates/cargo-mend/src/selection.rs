@@ -131,6 +131,27 @@ fn selected_package_from_metadata(package: &Package) -> Result<SelectedPackage> 
 
 fn select_primary_target(targets: &[Target]) -> TargetSelector {
     if targets.len() == 1 {
+        let target = &targets[0];
+        if target
+            .kind
+            .iter()
+            .any(|kind| *kind == TargetKind::Lib || *kind == TargetKind::ProcMacro)
+        {
+            return TargetSelector::Lib;
+        }
+        if target.kind.contains(&TargetKind::Bin) {
+            return TargetSelector::Bin(target.name.clone());
+        }
+        if target.kind.contains(&TargetKind::Example) {
+            return TargetSelector::Example(target.name.clone());
+        }
+        if target.kind.contains(&TargetKind::Test) {
+            return TargetSelector::Test(target.name.clone());
+        }
+        if target.kind.contains(&TargetKind::Bench) {
+            return TargetSelector::Bench(target.name.clone());
+        }
+
         return TargetSelector::Implicit;
     }
 
@@ -178,8 +199,17 @@ fn find_nearest_manifest(start: &Path) -> Result<PathBuf> {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
+    use std::fs;
+
     use super::TargetSelector;
+    use super::resolve_cargo_selection;
+
+    fn write_fixture_manifest(dir: &std::path::Path, body: &str) {
+        fs::write(dir.join("Cargo.toml"), body)
+            .unwrap_or_else(|error| panic!("write fixture manifest: {error}"));
+    }
 
     #[test]
     fn target_selector_cargo_args_for_lib() {
@@ -197,5 +227,66 @@ mod tests {
     #[test]
     fn target_selector_cargo_args_for_implicit_target() {
         assert!(TargetSelector::Implicit.cargo_args().is_empty());
+    }
+
+    #[test]
+    fn select_primary_target_uses_named_target_for_single_example() {
+        let temp =
+            tempfile::tempdir().unwrap_or_else(|error| panic!("create temp fixture dir: {error}"));
+        fs::create_dir_all(temp.path().join("examples"))
+            .unwrap_or_else(|error| panic!("create examples dir: {error}"));
+        write_fixture_manifest(
+            temp.path(),
+            r#"[package]
+name = "single_example_fixture"
+version = "0.1.0"
+edition = "2024"
+autobins = false
+autoexamples = false
+
+[[example]]
+name = "demo"
+path = "examples/demo.rs"
+"#,
+        );
+        fs::write(temp.path().join("examples/demo.rs"), "fn main() {}\n")
+            .unwrap_or_else(|error| panic!("write example: {error}"));
+        let selection = resolve_cargo_selection(Some(&temp.path().join("Cargo.toml")))
+            .unwrap_or_else(|error| panic!("resolve fixture selection: {error}"));
+
+        assert_eq!(
+            selection.packages[0].target,
+            TargetSelector::Example("demo".to_string())
+        );
+    }
+
+    #[test]
+    fn select_primary_target_uses_named_target_for_single_bin() {
+        let temp =
+            tempfile::tempdir().unwrap_or_else(|error| panic!("create temp fixture dir: {error}"));
+        fs::create_dir_all(temp.path().join("src/bin"))
+            .unwrap_or_else(|error| panic!("create bin dir: {error}"));
+        write_fixture_manifest(
+            temp.path(),
+            r#"[package]
+name = "single_bin_fixture"
+version = "0.1.0"
+edition = "2024"
+autobins = false
+
+[[bin]]
+name = "demo"
+path = "src/bin/demo.rs"
+"#,
+        );
+        fs::write(temp.path().join("src/bin/demo.rs"), "fn main() {}\n")
+            .unwrap_or_else(|error| panic!("write bin: {error}"));
+        let selection = resolve_cargo_selection(Some(&temp.path().join("Cargo.toml")))
+            .unwrap_or_else(|error| panic!("resolve fixture selection: {error}"));
+
+        assert_eq!(
+            selection.packages[0].target,
+            TargetSelector::Bin("demo".to_string())
+        );
     }
 }
