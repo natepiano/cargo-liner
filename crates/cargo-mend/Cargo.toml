@@ -9,18 +9,18 @@ version    = "0.1.0"
 
 [lints.clippy]
 # Our strict lints
-expect_used = "deny"
-panic       = "deny"
-unwrap_used = "deny"
+expect_used            = "deny"
+panic                  = "deny"
+unwrap_used            = "deny"
 
 # Enable lint groups as errors (with lower priority so allows can override)
-all      = { level = "deny", priority = -1 }
-cargo    = { level = "deny", priority = -1 }
-nursery  = { level = "deny", priority = -1 }
-pedantic = { level = "deny", priority = -1 }
+all                    = { level = "deny", priority = -1 }
+cargo                  = { level = "deny", priority = -1 }
+nursery                = { level = "deny", priority = -1 }
+pedantic               = { level = "deny", priority = -1 }
 
 # Allow specific lints that conflict with real-world patterns
-cargo_common_metadata = "allow"
+cargo_common_metadata  = "allow"
 multiple_crate_versions = "allow"
 
 [dependencies]
