@@ -459,3 +459,44 @@ fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
         .unwrap_or(0)
         + position.column
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::UseFix;
+    use super::ValidatedFixSet;
+
+    #[test]
+    fn validated_fix_set_allows_adjacent_non_overlapping_ranges() {
+        let path = PathBuf::from("src/lib.rs");
+        let fixes = vec![
+            UseFix {
+                path:        path.clone(),
+                start:       100,
+                end:         110,
+                replacement: "first".to_string(),
+            },
+            UseFix {
+                path,
+                start: 110,
+                end: 120,
+                replacement: "second".to_string(),
+            },
+        ];
+
+        let validated_result = ValidatedFixSet::from_vec(fixes);
+        assert!(
+            validated_result.is_ok(),
+            "adjacent edits should be valid: {}",
+            validated_result
+                .as_ref()
+                .err()
+                .map_or_else(String::new, |err| format!("{err:#}"))
+        );
+        let Ok(validated) = validated_result else {
+            return;
+        };
+        assert_eq!(validated.len(), 2);
+    }
+}
