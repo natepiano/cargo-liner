@@ -1,5 +1,10 @@
 # cargo-mend
 
+[![Crates.io](https://img.shields.io/crates/v/cargo-mend.svg)](https://crates.io/crates/cargo-mend)
+[![MIT/Apache 2.0](https://img.shields.io/badge/license-MIT%2FApache-blue.svg)](https://github.com/natepiano/cargo-mend#license)
+[![Crates.io](https://img.shields.io/crates/d/cargo-mend.svg)](https://crates.io/crates/cargo-mend)
+[![CI](https://github.com/natepiano/cargo-mend/workflows/CI/badge.svg)](https://github.com/natepiano/cargo-mend/actions)
+
 `cargo-mend` provides the `cargo mend` subcommand for enforcing an opinionated Rust
 visibility style across a crate or workspace.
 
@@ -101,8 +106,9 @@ Behavior:
 
 ## Toolchain Compatibility
 
-| rustc  | cargo-mend |
+| rustc  | cargo-mend     |
 |--------|----------------|
+| 1.94.0 | 0.1.0          |
 | 1.93.1 | 0.1.0          |
 
 - `cargo mend` runs through a rustc workspace wrapper
@@ -487,3 +493,12 @@ Today, that auto-fix mode is intentionally narrow:
 - it only rewrites local import-shortening cases
 - it preserves the original import visibility (`use`, `pub use`, `pub(crate) use`, and so on)
 - it rolls the edits back automatically if the follow-up `cargo check` fails
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+
+at your option.
