@@ -308,14 +308,15 @@ fn driver_main_impl() -> Result<ExitCode> {
     let mut callbacks = AnalysisCallbacks::new(settings);
     let compiler_exit_code = rustc_driver::catch_with_exit_code(|| {
         rustc_driver::run_compiler(&rustc_args, &mut callbacks);
-    });
+    })
+    .into_exit_code();
 
     let exit_code = callbacks.error.map_or(compiler_exit_code, |err| {
         eprintln!("mend: {err:#}");
-        1
+        ExitCode::FAILURE
     });
 
-    Ok(exit_code_from_i32(exit_code))
+    Ok(exit_code)
 }
 
 fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
@@ -808,6 +809,20 @@ fn config_relative_path_for_settings(
 }
 
 fn normalize_relative_path(path: &Path) -> String { path.to_string_lossy().replace('\\', "/") }
+
+/// Compatibility trait for `rustc_driver::catch_with_exit_code` which returns
+/// `i32` on stable 1.94 and `ExitCode` from 1.95+ (PR #150379).
+trait IntoExitCode {
+    fn into_exit_code(self) -> ExitCode;
+}
+
+impl IntoExitCode for i32 {
+    fn into_exit_code(self) -> ExitCode { ExitCode::from(u8::try_from(self).unwrap_or(1)) }
+}
+
+impl IntoExitCode for ExitCode {
+    fn into_exit_code(self) -> ExitCode { self }
+}
 
 fn exit_code_from_i32(code: i32) -> ExitCode {
     let normalized_code = u8::try_from(code).unwrap_or(1);

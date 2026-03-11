@@ -84,6 +84,70 @@ allow_pub_items = [
 Use the allowlists sparingly. The default assumption should be that the code shape is wrong before
 the policy is wrong.
 
+## Installation
+
+`cargo-mend` uses `#![feature(rustc_private)]` to access compiler internals for visibility
+analysis after macro expansion. This is a permanently unstable feature — it is how tools like
+clippy and miri access the compiler, but it means the compiler's internal crates have no
+stability guarantee and `cargo-mend` is sensitive to the exact rustc version used to build it.
+
+| rustc  | cargo-mend |
+|--------|------------|
+| 1.94.0 | 0.1.0      |
+| 1.93.1 | 0.1.0      |
+
+Plain `cargo install cargo-mend` on a stable toolchain will fail because the compiler rejects
+`#![feature(rustc_private)]` on stable. You need one of the following:
+
+### Option A: nightly toolchain
+
+```bash
+rustup component add rustc-dev --toolchain nightly
+cargo +nightly install cargo-mend
+```
+
+### Option B: stable toolchain with bootstrap override
+
+```bash
+RUSTC_BOOTSTRAP=1 cargo install cargo-mend
+```
+
+`RUSTC_BOOTSTRAP=1` tells the compiler to accept unstable features on a stable toolchain. This
+is the same mechanism the Rust project uses internally to build its own tools. You also need the
+`rustc-dev` component:
+
+```bash
+rustup component add rustc-dev
+```
+
+### CI installation
+
+For GitHub Actions or similar CI, install the `rustc-dev` component and use `RUSTC_BOOTSTRAP`:
+
+```yaml
+- name: Install Rust
+  uses: dtolnay/rust-toolchain@master
+  with:
+    toolchain: stable
+    components: rust-src, rustc-dev, llvm-tools-preview
+
+- name: Install cargo-mend
+  run: cargo install cargo-mend
+  env:
+    RUSTC_BOOTSTRAP: 1
+
+- name: Run cargo-mend
+  run: cargo mend --fail-on-warn
+```
+
+### After installation
+
+Once installed, `cargo mend` runs on any project regardless of that project's toolchain. The
+toolchain requirement is only for compiling `cargo-mend` itself.
+
+After a Rust toolchain update, rerun `cargo mend` on a known repo and check the table above
+if results regress.
+
 ## Usage
 
 ```bash
@@ -103,18 +167,6 @@ Behavior:
 - if a `--fix` run would leave the crate failing `cargo check`, `cargo-mend` restores the
   original files automatically
 - if there is nothing fixable, `cargo-mend` says so after the report summary
-
-## Toolchain Compatibility
-
-| rustc  | cargo-mend     |
-|--------|----------------|
-| 1.94.0 | 0.1.0          |
-| 1.93.1 | 0.1.0          |
-
-- `cargo mend` runs through a rustc workspace wrapper
-- visibility checks use compiler data after macro expansion and analysis
-- after a Rust toolchain update, rerun `cargo mend` on a known repo and check this section
-  first if results regress
 
 ## Intended workflow
 
