@@ -8,7 +8,7 @@ keywords    = ["cargo", "lints", "visibility"]
 license     = "MIT OR Apache-2.0"
 name        = "cargo-mend"
 repository  = "https://github.com/natepiano/cargo-mend"
-version     = "0.1.0"
+version     = "0.2.0-dev"
 
 [lints.clippy]
 all                     = { level = "deny", priority = -1 }
