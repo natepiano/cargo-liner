@@ -93,7 +93,7 @@ stability guarantee and `cargo-mend` is sensitive to the exact rustc version use
 
 | rustc  | cargo-mend |
 |--------|------------|
-| 1.94.0 | 0.1.0      |
+| 1.94.0 | 0.1.0+     |
 | 1.93.1 | 0.1.0      |
 
 Plain `cargo install cargo-mend` on a stable toolchain will fail because the compiler rejects
