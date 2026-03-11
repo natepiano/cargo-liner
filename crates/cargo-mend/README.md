@@ -1,6 +1,6 @@
 # cargo-mend
 
-`cargo-mend` provides the `cargo mend` subcommand for enforcing a stricter Rust
+`cargo-mend` provides the `cargo mend` subcommand for enforcing an opinionated Rust
 visibility style across a crate or workspace.
 
 The tool is meant for codebases that want visibility to describe real module boundaries.
