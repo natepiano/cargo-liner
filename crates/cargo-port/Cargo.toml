@@ -5,6 +5,39 @@ homepage   = "https://github.com/natepiano/cargo-port"
 license    = "MIT OR Apache-2.0"
 name       = "cargo-port"
 repository = "https://github.com/natepiano/cargo-port"
-version    = "0.1.0"
+version    = "0.0.1"
+
+[lints.clippy]
+# Our strict lints
+expect_used = "deny"
+panic       = "deny"
+unwrap_used = "deny"
+
+# Enable lint groups as errors (with lower priority so allows can override)
+all      = { level = "deny", priority = -1 }
+cargo    = { level = "deny", priority = -1 }
+nursery  = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+# Allow specific lints that conflict with common patterns
+multiple_crate_versions = "allow"
+needless_pass_by_value  = "allow"
+
+[lints.rust]
+missing_docs = "deny"
 
 [dependencies]
+clap       = { version = "4", features = ["derive"] }
+colored    = "3.1.1"
+comfy-table = { version = "7", features = ["custom_styling"] }
+crossterm  = "0.28"
+dirs = "6.0.0"
+nucleo-matcher = "0.3.1"
+ratatui    = "0.29"
+rayon      = "1.11.0"
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml       = "0.8"
+toml_edit  = "0.22"
+unicode-width = "0.2.0"
+walkdir    = "2"
