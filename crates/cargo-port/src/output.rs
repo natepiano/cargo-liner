@@ -18,7 +18,7 @@ pub fn render_table(projects: &[RustProject]) {
         let types = project
             .types
             .iter()
-            .map(|t| t.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
         table.add_row(vec![&project.path, name, version, &types]);
@@ -28,8 +28,10 @@ pub fn render_table(projects: &[RustProject]) {
 }
 
 pub fn render_json(projects: &[RustProject]) {
-    let json = serde_json::to_string_pretty(projects).expect("Failed to serialize projects");
-    println!("{json}");
+    match serde_json::to_string_pretty(projects) {
+        Ok(json) => println!("{json}"),
+        Err(e) => eprintln!("Failed to serialize projects: {e}"),
+    }
 }
 
 pub fn render_ci_table(runs: &[CiRun]) {
@@ -79,8 +81,14 @@ fn render_ci_multi(runs: &[CiRun]) {
     // Short run labels: just the index (1, 2, 3...) — the reference table maps them
     let run_labels: Vec<String> = (1..=runs.len()).map(|i| format!("{i}")).collect();
 
-    // Per-job tables
-    for job_name in &job_names {
+    render_per_job_tables(runs, &job_names, &run_labels);
+    render_total_time_table(runs, &run_labels);
+    render_runs_reference_table(runs, &run_labels);
+}
+
+/// Renders a table per CI job showing results across all runs.
+fn render_per_job_tables(runs: &[CiRun], job_names: &[String], run_labels: &[String]) {
+    for job_name in job_names {
         println!("{}", job_name.bold().yellow());
 
         let longest_job_idx = runs
@@ -106,37 +114,36 @@ fn render_ci_multi(runs: &[CiRun]) {
             let (date, time) = format_datetime(&ci_run.created_at);
             let is_longest = longest_job_idx == Some(i);
             let job = ci_run.jobs.iter().find(|j| j.name == *job_name);
-            match job {
-                Some(j) => {
-                    let result = format_result(&j.conclusion, is_longest);
-                    table.add_row(vec![
-                        &run_labels[i],
-                        &ci_run.branch,
-                        &date,
-                        &time,
-                        &result,
-                        &j.duration,
-                    ]);
-                },
-                None => {
-                    let result = format_result("—", is_longest);
-                    table.add_row(vec![
-                        &run_labels[i] as &str,
-                        &ci_run.branch,
-                        &date,
-                        &time,
-                        &result,
-                        "—",
-                    ]);
-                },
+            if let Some(j) = job {
+                let result = format_result(&j.conclusion, is_longest);
+                table.add_row(vec![
+                    &run_labels[i],
+                    &ci_run.branch,
+                    &date,
+                    &time,
+                    &result,
+                    &j.duration,
+                ]);
+            } else {
+                let result = format_result("—", is_longest);
+                table.add_row(vec![
+                    &run_labels[i] as &str,
+                    &ci_run.branch,
+                    &date,
+                    &time,
+                    &result,
+                    "—",
+                ]);
             }
         }
 
         println!("{table}");
         println!();
     }
+}
 
-    // Total time table
+/// Renders the total wall-clock time table across all runs.
+fn render_total_time_table(runs: &[CiRun], run_labels: &[String]) {
     println!(
         "{}",
         "Total (latest completion minus earliest start)"
@@ -176,8 +183,10 @@ fn render_ci_multi(runs: &[CiRun]) {
     println!("{total_table}");
     println!("* = longest run");
     println!();
+}
 
-    // Runs reference table
+/// Renders a reference table mapping run numbers to branches, dates, and URLs.
+fn render_runs_reference_table(runs: &[CiRun], run_labels: &[String]) {
     println!("{}", "Runs".bold().yellow());
 
     let mut ref_table = Table::new();
@@ -226,10 +235,9 @@ fn format_result(conclusion: &str, is_longest: bool) -> String {
 }
 
 fn right_align_column(table: &mut Table, col: usize) {
-    table
-        .column_mut(col)
-        .expect("column index out of bounds")
-        .set_cell_alignment(CellAlignment::Right);
+    if let Some(column) = table.column_mut(col) {
+        column.set_cell_alignment(CellAlignment::Right);
+    }
 }
 
 fn bold_headers(labels: &[&str]) -> Vec<String> {
@@ -246,6 +254,8 @@ fn format_datetime(iso: &str) -> (String, String) {
 }
 
 pub fn render_ci_json(runs: &[CiRun]) {
-    let json = serde_json::to_string_pretty(runs).expect("Failed to serialize CI runs");
-    println!("{json}");
+    match serde_json::to_string_pretty(runs) {
+        Ok(json) => println!("{json}"),
+        Err(e) => eprintln!("Failed to serialize CI runs: {e}"),
+    }
 }

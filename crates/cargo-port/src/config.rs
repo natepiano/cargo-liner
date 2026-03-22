@@ -44,9 +44,9 @@ impl Default for TuiConfig {
 
 fn default_inline_dirs() -> Vec<String> { vec!["crates".to_string()] }
 
-fn default_ci_run_count() -> u32 { 3 }
+const fn default_ci_run_count() -> u32 { 3 }
 
-fn default_exclude_dirs() -> Vec<String> { Vec::new() }
+const fn default_exclude_dirs() -> Vec<String> { Vec::new() }
 
 #[derive(Deserialize, Serialize)]
 pub struct MouseConfig {

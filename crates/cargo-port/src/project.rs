@@ -87,13 +87,13 @@ impl GitInfo {
 /// - `git@github.com:owner/repo.git`
 fn parse_remote_url(raw: &str) -> (Option<String>, Option<String>) {
     // SSH: git@github.com:owner/repo.git
-    if let Some(after_at) = raw.strip_prefix("git@") {
-        if let Some((host, path)) = after_at.split_once(':') {
-            let path = path.strip_suffix(".git").unwrap_or(path);
-            let owner = path.split('/').next().map(|s| (*s).to_string());
-            let url = format!("https://{host}/{path}");
-            return (owner, Some(url));
-        }
+    if let Some(after_at) = raw.strip_prefix("git@")
+        && let Some((host, path)) = after_at.split_once(':')
+    {
+        let path = path.strip_suffix(".git").unwrap_or(path);
+        let owner = path.split('/').next().map(|s| (*s).to_string());
+        let url = format!("https://{host}/{path}");
+        return (owner, Some(url));
     }
 
     // HTTPS: https://github.com/owner/repo.git
@@ -183,13 +183,16 @@ impl RustProject {
             .get("package")
             .and_then(|p| p.get("version"))
             .map(|v| {
-                if v.is_str() {
-                    (*v.as_str().unwrap()).to_string()
-                } else if v.get("workspace").and_then(|w| w.as_bool()) == Some(true) {
-                    "(workspace)".to_string()
-                } else {
-                    "-".to_string()
-                }
+                v.as_str().map_or_else(
+                    || {
+                        if v.get("workspace").and_then(Value::as_bool) == Some(true) {
+                            "(workspace)".to_string()
+                        } else {
+                            "-".to_string()
+                        }
+                    },
+                    |s| (*s).to_string(),
+                )
             });
 
         let description = table
@@ -232,7 +235,7 @@ fn detect_types(table: &Value, project_dir: &Path) -> Vec<ProjectType> {
     let is_proc_macro = table
         .get("lib")
         .and_then(|lib| lib.get("proc-macro"))
-        .and_then(|v| v.as_bool())
+        .and_then(Value::as_bool)
         == Some(true);
 
     if is_proc_macro {
@@ -263,8 +266,7 @@ fn count_examples(table: &Value, project_dir: &Path) -> usize {
     let declared = table
         .get("example")
         .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
+        .map_or(0, Vec::len);
 
     if declared > 0 {
         return declared;
@@ -283,8 +285,7 @@ fn count_targets(table: &Value, project_dir: &Path, toml_key: &str, dir_name: &s
     let declared = table
         .get(toml_key)
         .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
+        .map_or(0, Vec::len);
 
     if declared > 0 {
         return declared;

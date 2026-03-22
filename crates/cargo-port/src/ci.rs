@@ -76,23 +76,17 @@ pub struct CiJob {
 }
 
 pub fn run(path: PathBuf, args: CiArgs) -> ExitCode {
-    let repo_dir = match path.canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Error: cannot resolve path '{}': {e}", path.display());
-            return ExitCode::FAILURE;
-        },
+    let Ok(repo_dir) = path.canonicalize() else {
+        eprintln!("Error: cannot resolve path '{}'", path.display());
+        return ExitCode::FAILURE;
     };
 
-    let repo_url = match get_repo_url(&repo_dir) {
-        Some(url) => url,
-        None => {
-            eprintln!("Error: failed to get repo URL — is this a GitHub repo with `gh` installed?");
-            return ExitCode::FAILURE;
-        },
+    let Some(repo_url) = get_repo_url(&repo_dir) else {
+        eprintln!("Error: failed to get repo URL — is this a GitHub repo with `gh` installed?");
+        return ExitCode::FAILURE;
     };
 
-    let runs = match list_runs(&repo_dir, &args.branch, args.count) {
+    let runs = match list_runs(&repo_dir, args.branch.as_ref(), args.count) {
         Some(runs) if !runs.is_empty() => runs,
         _ => {
             match &args.branch {
@@ -106,15 +100,12 @@ pub fn run(path: PathBuf, args: CiArgs) -> ExitCode {
     let ci_runs: Vec<CiRun> = runs
         .par_iter()
         .filter_map(|gh_run| {
-            let jobs = match get_jobs(&repo_dir, gh_run.database_id) {
-                Some(jobs) => jobs,
-                None => {
-                    eprintln!(
-                        "Warning: failed to fetch jobs for run {}",
-                        gh_run.database_id
-                    );
-                    return None;
-                },
+            let Some(jobs) = get_jobs(&repo_dir, gh_run.database_id) else {
+                eprintln!(
+                    "Warning: failed to fetch jobs for run {}",
+                    gh_run.database_id
+                );
+                return None;
             };
 
             let mut earliest_start: Option<u64> = None;
@@ -137,7 +128,8 @@ pub fn run(path: PathBuf, args: CiArgs) -> ExitCode {
                             Some(latest_completion.map_or(end, |current: u64| current.max(end)));
                     }
                     let conclusion = format_conclusion(job.conclusion.as_deref());
-                    let duration_secs = compute_duration_secs(&job.started_at, &job.completed_at);
+                    let duration_secs =
+                        compute_duration_secs(job.started_at.as_ref(), job.completed_at.as_ref());
                     let duration = duration_secs.map_or_else(|| "—".to_string(), format_secs);
                     CiJob {
                         name: job.name,
@@ -177,12 +169,11 @@ pub fn run(path: PathBuf, args: CiArgs) -> ExitCode {
 
 /// Fetch CI runs for a repo directory. Used by both CLI and TUI.
 pub fn fetch_ci_runs(repo_dir: &Path, count: u32) -> Vec<CiRun> {
-    let repo_url = match get_repo_url(repo_dir) {
-        Some(url) => url,
-        None => return Vec::new(),
+    let Some(repo_url) = get_repo_url(repo_dir) else {
+        return Vec::new();
     };
 
-    let runs = match list_runs(repo_dir, &None, count) {
+    let runs = match list_runs(repo_dir, None, count) {
         Some(runs) if !runs.is_empty() => runs,
         _ => return Vec::new(),
     };
@@ -210,7 +201,8 @@ pub fn fetch_ci_runs(repo_dir: &Path, count: u32) -> Vec<CiRun> {
                             Some(latest_completion.map_or(end, |current: u64| current.max(end)));
                     }
                     let conclusion = format_conclusion(job.conclusion.as_deref());
-                    let duration_secs = compute_duration_secs(&job.started_at, &job.completed_at);
+                    let duration_secs =
+                        compute_duration_secs(job.started_at.as_ref(), job.completed_at.as_ref());
                     let duration = duration_secs.map_or_else(|| "—".to_string(), format_secs);
                     CiJob {
                         name: job.name,
@@ -282,7 +274,7 @@ fn get_repo_url(repo_dir: &Path) -> Option<String> {
     Some(repo.url)
 }
 
-fn list_runs(repo_dir: &Path, branch: &Option<String>, count: u32) -> Option<Vec<GhRun>> {
+fn list_runs(repo_dir: &Path, branch: Option<&String>, count: u32) -> Option<Vec<GhRun>> {
     let count_str = count.to_string();
     let mut args = vec![
         "run",
@@ -335,11 +327,11 @@ fn format_conclusion(conclusion: Option<&str>) -> String {
 }
 
 fn compute_duration_secs(
-    started_at: &Option<String>,
-    completed_at: &Option<String>,
+    started_at: Option<&String>,
+    completed_at: Option<&String>,
 ) -> Option<u64> {
-    let start = started_at.as_ref()?;
-    let end = completed_at.as_ref()?;
+    let start = started_at?;
+    let end = completed_at?;
     let start_ts = parse_iso8601(start).ok()?;
     let end_ts = parse_iso8601(end).ok()?;
     Some(end_ts.saturating_sub(start_ts))
@@ -349,7 +341,7 @@ pub fn format_secs(secs: u64) -> String {
     if secs >= 60 {
         format!("{:>2}m {:>2}s", secs / 60, secs % 60)
     } else {
-        format!("    {:>2}s", secs)
+        format!("    {secs:>2}s")
     }
 }
 
@@ -379,14 +371,14 @@ fn parse_iso8601(s: &str) -> Result<u64, ()> {
 
 /// Converts a civil date to days since epoch, using the algorithm from
 /// Howard Hinnant's date library.
-fn days_from_civil(year: u64, month: u64, day: u64) -> u64 {
+const fn days_from_civil(year: u64, month: u64, day: u64) -> u64 {
     let y = if month <= 2 { year - 1 } else { year };
     let era = y / 400;
     let yoe = y - era * 400;
     let m = if month > 2 { month - 3 } else { month + 9 };
     let doy = (153 * m + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days_since_epoch_0 = era * 146097 + doe;
+    let days_since_epoch_0 = era * 146_097 + doe;
     // Shift: civil day 0 is 0000-03-01, Unix epoch is 1970-01-01 = day 719468
-    days_since_epoch_0 - 719468
+    days_since_epoch_0 - 719_468
 }

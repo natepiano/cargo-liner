@@ -1,9 +1,12 @@
 [package]
 authors    = ["natepiano"]
 edition    = "2024"
-homepage   = "https://github.com/natepiano/cargo-port"
-license    = "MIT OR Apache-2.0"
-name       = "cargo-port"
+categories  = ["command-line-utilities", "development-tools"]
+description = "A TUI for inspecting and managing Rust projects"
+homepage    = "https://github.com/natepiano/cargo-port"
+keywords    = ["cargo", "rust", "tui", "project", "inspect"]
+license     = "MIT OR Apache-2.0"
+name        = "cargo-port"
 repository = "https://github.com/natepiano/cargo-port"
 version    = "0.0.1"
 

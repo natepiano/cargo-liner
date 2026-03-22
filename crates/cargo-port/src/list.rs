@@ -64,12 +64,9 @@ pub fn filter_workspace_members(projects: &mut Vec<RustProject>) {
 }
 
 pub fn run(path: PathBuf, args: ListArgs) -> ExitCode {
-    let scan_root = match path.canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Error: cannot resolve path '{}': {e}", path.display());
-            return ExitCode::FAILURE;
-        },
+    let Ok(scan_root) = path.canonicalize() else {
+        eprintln!("Error: cannot resolve path '{}'", path.display());
+        return ExitCode::FAILURE;
     };
 
     let mut projects = scan_projects(&scan_root);

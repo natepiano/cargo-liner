@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt::Write;
 use std::io;
 use std::io::Stdout;
 use std::path::Path;
@@ -80,7 +81,7 @@ enum DetailField {
 }
 
 impl DetailField {
-    fn label(self) -> &'static str {
+    const fn label(self) -> &'static str {
         match self {
             Self::Name => "Name",
             Self::Path => "Path",
@@ -107,10 +108,10 @@ impl DetailField {
             Self::Origin => info.git_origin.as_deref().unwrap_or("").to_string(),
             Self::Owner => info.git_owner.as_deref().unwrap_or("").to_string(),
             Self::Repo => info.git_url.as_deref().unwrap_or("").to_string(),
-            Self::Version => match &info.crates_version {
-                Some(cv) => format!("{} (crates.io: {cv})", info.version),
-                None => (*info.version).to_string(),
-            },
+            Self::Version => info.crates_version.as_ref().map_or_else(
+                || (*info.version).to_string(),
+                |cv| format!("{} (crates.io: {cv})", info.version),
+            ),
             Self::Description => info.description.as_deref().unwrap_or("—").to_string(),
         }
     }
@@ -258,6 +259,7 @@ enum VisibleRow {
     },
 }
 
+#[allow(clippy::struct_excessive_bools)]
 struct App {
     scan_root:            PathBuf,
     inline_dirs:          Vec<String>,
@@ -305,7 +307,7 @@ impl App {
         let inline_dirs = cfg.tui.inline_dirs.clone();
         let exclude_dirs = cfg.tui.exclude_dirs.clone();
         let ci_run_count = cfg.tui.ci_run_count;
-        let nodes = build_tree(&scan_root, projects.clone(), &inline_dirs);
+        let nodes = build_tree(projects.clone(), &inline_dirs);
         let flat_entries = build_flat_entries(&nodes);
         let mut list_state = ListState::default();
         if !nodes.is_empty() {
@@ -351,11 +353,7 @@ impl App {
 
     fn rebuild_tree(&mut self) {
         let selected_path = self.selected_project().map(|p| (*p.path).to_string());
-        self.nodes = build_tree(
-            &self.scan_root,
-            self.all_projects.clone(),
-            &self.inline_dirs,
-        );
+        self.nodes = build_tree(self.all_projects.clone(), &self.inline_dirs);
         self.flat_entries = build_flat_entries(&self.nodes);
 
         // Propagate CI runs from workspace roots to their members
@@ -781,11 +779,11 @@ impl App {
                     return;
                 }
             }
-            if let VisibleRow::Root { node_index } = row {
-                if self.nodes[*node_index].project.path == target_path {
-                    self.list_state.select(Some(i));
-                    return;
-                }
+            if let VisibleRow::Root { node_index } = row
+                && self.nodes[*node_index].project.path == target_path
+            {
+                self.list_state.select(Some(i));
+                return;
             }
         }
     }
@@ -896,8 +894,7 @@ impl App {
         self.ci_runs
             .get(&project.path)
             .and_then(|runs| runs.first())
-            .map(|run| (*run.conclusion).to_string())
-            .unwrap_or_else(|| "—".to_string())
+            .map_or_else(|| "—".to_string(), |run| (*run.conclusion).to_string())
     }
 
     fn ci_runs_for(&self, project: &RustProject) -> Option<&Vec<CiRun>> {
@@ -905,14 +902,14 @@ impl App {
     }
 
     fn git_icon(&self, project: &RustProject) -> &'static str {
-        match self.git_info.get(&project.path) {
-            Some(info) => info.origin.icon(),
-            None => " ",
-        }
+        self.git_info
+            .get(&project.path)
+            .map_or(" ", |info| info.origin.icon())
     }
 }
 
 fn format_bytes(bytes: u64) -> String {
+    #[allow(clippy::cast_precision_loss)]
     if bytes >= BYTES_PER_GIB {
         format!("{:.1} GiB", bytes as f64 / BYTES_PER_GIB as f64)
     } else {
@@ -991,11 +988,7 @@ fn dir_size(path: &Path, excludes: &HashSet<String>) -> u64 {
         .sum()
 }
 
-fn build_tree(
-    _scan_root: &Path,
-    projects: Vec<RustProject>,
-    inline_dirs: &[String],
-) -> Vec<ProjectNode> {
+fn build_tree(projects: Vec<RustProject>, inline_dirs: &[String]) -> Vec<ProjectNode> {
     let workspace_paths: Vec<String> = projects
         .iter()
         .filter(|p| p.is_workspace())
@@ -1083,7 +1076,7 @@ fn group_members(
 
         // Members in configured inline dirs or directly in the workspace root are shown inline.
         // Everything else gets grouped by first subdirectory.
-        let group_name = if inline_dirs.iter().any(|d| *d == subdir) || !relative.contains('/') {
+        let group_name = if inline_dirs.contains(&subdir) || !relative.contains('/') {
             String::new()
         } else {
             subdir
@@ -1172,7 +1165,7 @@ fn project_row_spans(
 ) -> Line<'static> {
     let prefix_width = display_width(prefix);
     let available = name_width.saturating_sub(prefix_width);
-    let padded_name = format!("{prefix}{name:<width$}", width = available);
+    let padded_name = format!("{prefix}{name:<available$}");
     let version_style = Style::default().fg(Color::DarkGray);
     let disk_style = Style::default().fg(Color::DarkGray);
     let ci_style = if ci.contains('✓') {
@@ -1200,7 +1193,7 @@ fn project_row_spans(
 fn group_header_spans(prefix: &str, name: &str, name_width: usize) -> Line<'static> {
     let prefix_width = display_width(prefix);
     let available = name_width.saturating_sub(prefix_width);
-    let padded = format!("{prefix}{name:<width$}", width = available);
+    let padded = format!("{prefix}{name:<available$}");
     Line::from(vec![Span::styled(
         padded,
         Style::default().fg(Color::Yellow),
@@ -1219,6 +1212,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let disk_col_width = 10;
     let ci_col_width = 4;
     let git_col_width = 2;
+    #[allow(clippy::cast_possible_truncation)]
     let left_width = (app.max_name_width()
         + version_col_width
         + disk_col_width
@@ -1235,7 +1229,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let left_constraints = if app.scan_complete {
         vec![Constraint::Length(3), Constraint::Min(1)]
     } else {
-        // Project list height = rows + 2 (borders), minimum 3 so the box is visible
+        #[allow(clippy::cast_possible_truncation)]
         let project_rows = app.visible_rows().len() as u16;
         let project_height = (project_rows + 2).max(3);
         vec![
@@ -1249,7 +1243,84 @@ fn ui(frame: &mut Frame, app: &mut App) {
         .constraints(left_constraints)
         .split(main_layout[0]);
 
-    // Search bar
+    render_search_bar(frame, app, left_layout[0]);
+
+    #[allow(clippy::cast_possible_truncation)]
+    let inner_width = left_layout[1].width.saturating_sub(2) as usize;
+    let name_col_width = inner_width
+        .saturating_sub(version_col_width + disk_col_width + ci_col_width + git_col_width);
+
+    let selected_project_ref = resolve_selected_project(app);
+    let detail_info = selected_project_ref.map(|p| build_detail_info(app, p));
+    let detail_ci_runs: Vec<CiRun> = selected_project_ref
+        .and_then(|p| app.ci_runs_for(p))
+        .cloned()
+        .unwrap_or_default();
+
+    render_project_list(
+        frame,
+        app,
+        name_col_width,
+        version_col_width,
+        left_layout[1],
+    );
+
+    if !app.scan_complete {
+        render_scan_log(frame, app, left_layout[2]);
+    }
+
+    // Right panel
+    let has_ci_runs = !detail_ci_runs.is_empty();
+    let right_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if has_ci_runs {
+            vec![Constraint::Length(14), Constraint::Min(3)]
+        } else {
+            vec![Constraint::Min(1), Constraint::Length(0)]
+        })
+        .split(main_layout[1]);
+
+    render_detail_panel(frame, app, detail_info.as_ref(), right_layout[0]);
+
+    if has_ci_runs {
+        render_ci_panel(frame, app, &detail_ci_runs, right_layout[1]);
+    }
+
+    render_status_bar(frame, app, outer_layout[1]);
+
+    if app.show_settings {
+        render_settings_popup(frame, app);
+    }
+}
+
+/// Resolve which project is currently selected, accounting for search mode.
+fn resolve_selected_project(app: &App) -> Option<&RustProject> {
+    let selected_idx = app.list_state.selected();
+    if app.searching && !app.search_query.is_empty() {
+        selected_idx.and_then(|sel| {
+            let flat_idx = app.filtered.get(sel)?;
+            let entry = &app.flat_entries[*flat_idx];
+            Some(&app.nodes[entry.node_index].groups[entry.group_index].members[entry.member_index])
+        })
+    } else {
+        let rows = app.visible_rows();
+        selected_idx.and_then(|sel| {
+            let row = rows.get(sel)?;
+            match row {
+                VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
+                    Some(&app.nodes[*node_index].project)
+                },
+                VisibleRow::Member {
+                    node_index,
+                    group_index,
+                    member_index,
+                } => Some(&app.nodes[*node_index].groups[*group_index].members[*member_index]),
+            }
+        })
+    }
+}
+
+fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     let search_style = if app.searching {
         Style::default().fg(Color::White)
     } else {
@@ -1280,45 +1351,16 @@ fn ui(frame: &mut Frame, app: &mut App) {
             }),
     );
 
-    frame.render_widget(search_bar, left_layout[0]);
+    frame.render_widget(search_bar, area);
+}
 
-    // Column widths (version/disk/ci defined above in layout calc)
-    let inner_width = left_layout[1].width.saturating_sub(2) as usize;
-    let name_col_width = inner_width
-        .saturating_sub(version_col_width + disk_col_width + ci_col_width + git_col_width);
-
-    // Collect detail info directly without selected_project()
-    let selected_idx = app.list_state.selected();
-    let selected_project_ref: Option<&RustProject> = if app.searching
-        && !app.search_query.is_empty()
-    {
-        selected_idx.and_then(|sel| {
-            let flat_idx = app.filtered.get(sel)?;
-            let entry = &app.flat_entries[*flat_idx];
-            Some(&app.nodes[entry.node_index].groups[entry.group_index].members[entry.member_index])
-        })
-    } else {
-        let rows = app.visible_rows();
-        selected_idx.and_then(|sel| {
-            let row = rows.get(sel)?;
-            match row {
-                VisibleRow::Root { node_index } => Some(&app.nodes[*node_index].project),
-                VisibleRow::GroupHeader { node_index, .. } => Some(&app.nodes[*node_index].project),
-                VisibleRow::Member {
-                    node_index,
-                    group_index,
-                    member_index,
-                } => Some(&app.nodes[*node_index].groups[*group_index].members[*member_index]),
-            }
-        })
-    };
-
-    let detail_info = selected_project_ref.map(|p| build_detail_info(app, p));
-    let detail_ci_runs: Vec<CiRun> = selected_project_ref
-        .and_then(|p| app.ci_runs_for(p))
-        .cloned()
-        .unwrap_or_default();
-
+fn render_project_list(
+    frame: &mut Frame,
+    app: &mut App,
+    name_col_width: usize,
+    version_col_width: usize,
+    area: Rect,
+) {
     let items: Vec<ListItem> = if app.searching && !app.search_query.is_empty() {
         render_filtered_items(app, name_col_width)
     } else {
@@ -1330,16 +1372,17 @@ fn ui(frame: &mut Frame, app: &mut App) {
         .add_modifier(Modifier::BOLD);
 
     let header_line = Line::from(vec![
+        Span::styled(format!("{:<name_col_width$}", "Project"), header_style),
         Span::styled(
-            format!("{:<width$}", "Project", width = name_col_width),
-            header_style,
-        ),
-        Span::styled(
-            format!(" {:>width$}", "Version", width = version_col_width - 1),
+            format!(
+                " {:>width$}",
+                "Version",
+                width = version_col_width.saturating_sub(1)
+            ),
             header_style,
         ),
         Span::styled(format!(" {:>9}", "Disk"), header_style),
-        Span::styled(format!("  {}", "CI"), header_style),
+        Span::styled("  CI", header_style),
     ]);
 
     let project_list = List::new(items)
@@ -1362,72 +1405,60 @@ fn ui(frame: &mut Frame, app: &mut App) {
             Style::default().fg(Color::Cyan)
         });
 
-    frame.render_stateful_widget(project_list, left_layout[1], &mut app.list_state);
+    frame.render_stateful_widget(project_list, area, &mut app.list_state);
+}
 
-    // Scan log panel (only during scanning)
-    if !app.scan_complete {
-        let log_items: Vec<ListItem> = app
-            .scan_log
-            .iter()
-            .map(|p| {
-                ListItem::new(Span::styled(
-                    format!("  {p}"),
-                    Style::default().fg(Color::DarkGray),
-                ))
-            })
-            .collect();
-
-        let scan_focused = app.focus == FocusTarget::ScanLog;
-        let scan_title = if scan_focused {
-            " Scanning (focused) "
-        } else {
-            " Scanning "
-        };
-        let scan_log = List::new(log_items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(scan_title)
-                    .title_style(if scan_focused {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
-                    })
-                    .border_style(if scan_focused {
-                        Style::default().fg(Color::Cyan)
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    }),
-            )
-            .highlight_style(
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            );
-
-        frame.render_stateful_widget(scan_log, left_layout[2], &mut app.scan_log_state);
-    }
-
-    // Right panel: split into detail fields (top) and CI runs (bottom)
-    let detail_focused = app.focus == FocusTarget::DetailFields;
-    let ci_focused = app.focus == FocusTarget::CiRuns;
-
-    let has_ci_runs = !detail_ci_runs.is_empty();
-    let right_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(if has_ci_runs {
-            vec![Constraint::Length(14), Constraint::Min(3)]
-        } else {
-            vec![Constraint::Min(1), Constraint::Length(0)]
+fn render_scan_log(frame: &mut Frame, app: &mut App, area: Rect) {
+    let log_items: Vec<ListItem> = app
+        .scan_log
+        .iter()
+        .map(|p| {
+            ListItem::new(Span::styled(
+                format!("  {p}"),
+                Style::default().fg(Color::DarkGray),
+            ))
         })
-        .split(main_layout[1]);
+        .collect();
 
-    // --- Detail fields: two columns ---
+    let scan_focused = app.focus == FocusTarget::ScanLog;
+    let scan_title = if scan_focused {
+        " Scanning (focused) "
+    } else {
+        " Scanning "
+    };
+    let scan_log = List::new(log_items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(scan_title)
+                .title_style(if scan_focused {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                })
+                .border_style(if scan_focused {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                }),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    frame.render_stateful_widget(scan_log, area, &mut app.scan_log_state);
+}
+
+fn render_detail_panel(frame: &mut Frame, app: &App, detail_info: Option<&DetailInfo>, area: Rect) {
+    let detail_focused = app.focus == FocusTarget::DetailFields;
+
     let detail_block = Block::default()
         .borders(Borders::ALL)
         .title(" Details ")
@@ -1442,200 +1473,191 @@ fn ui(frame: &mut Frame, app: &mut App) {
             Style::default()
         });
 
-    match &detail_info {
-        Some(info) => {
-            let detail_inner = detail_block.inner(right_layout[0]);
-            frame.render_widget(detail_block, right_layout[0]);
+    if let Some(info) = detail_info {
+        let detail_inner = detail_block.inner(area);
+        frame.render_widget(detail_block, area);
 
-            let columns = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-                .split(detail_inner);
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(detail_inner);
 
-            let highlight_style = Style::default().fg(Color::Black).bg(Color::Cyan);
-            let editable_label_style = Style::default().fg(Color::Cyan);
-            let readonly_label_style = Style::default().fg(Color::DarkGray);
+        let highlight_style = Style::default().fg(Color::Black).bg(Color::Cyan);
+        let editable_label_style = Style::default().fg(Color::Cyan);
+        let readonly_label_style = Style::default().fg(Color::DarkGray);
 
-            // Left column: non-editable info fields
-            let left_fields = info_fields(info);
-            let mut left_lines: Vec<Line<'static>> = Vec::new();
-            for (i, field) in left_fields.iter().enumerate() {
-                let label = field.label();
-                let value = field.value(info);
-                let is_focused = detail_focused && app.detail_column == 0 && i == app.detail_cursor;
-                let style = if is_focused {
-                    highlight_style
-                } else if *field == DetailField::Ci {
-                    conclusion_style(&info.ci)
-                } else {
-                    Style::default()
+        // Left column: non-editable info fields
+        let left_fields = info_fields(info);
+        let mut left_lines: Vec<Line<'static>> = Vec::new();
+        for (i, field) in left_fields.iter().enumerate() {
+            let label = field.label();
+            let value = field.value(info);
+            let is_focused = detail_focused && app.detail_column == 0 && i == app.detail_cursor;
+            let style = if is_focused {
+                highlight_style
+            } else if *field == DetailField::Ci {
+                conclusion_style(&info.ci)
+            } else {
+                Style::default()
+            };
+            let label_style = if is_focused {
+                highlight_style
+            } else {
+                readonly_label_style
+            };
+            left_lines.push(Line::from(vec![
+                Span::styled(format!("  {label:<8} "), label_style),
+                Span::styled(value, style),
+            ]));
+        }
+        frame.render_widget(Paragraph::new(left_lines), columns[0]);
+
+        // Right column: editable fields
+        let right_fields = editable_fields();
+        let mut right_lines: Vec<Line<'static>> = Vec::new();
+        for (i, field) in right_fields.iter().enumerate() {
+            let label = field.label();
+            let is_focused = detail_focused && app.detail_column == 1 && i == app.detail_cursor;
+
+            let is_editing = is_focused
+                && ((*field == DetailField::Version && app.editing_version)
+                    || (*field == DetailField::Description && app.editing_description));
+
+            if is_editing {
+                let buf = match *field {
+                    DetailField::Description => &app.description_edit_buf,
+                    _ => &app.version_edit_buf,
                 };
+                let text = format!("{buf}_");
+                right_lines.push(Line::from(vec![
+                    Span::styled(format!("  {label:<8} "), Style::default().fg(Color::Yellow)),
+                    Span::styled(text, Style::default().fg(Color::Yellow)),
+                ]));
+            } else {
+                let value = field.value(info);
                 let label_style = if is_focused {
                     highlight_style
                 } else {
-                    readonly_label_style
+                    editable_label_style
                 };
-                left_lines.push(Line::from(vec![
+                let value_style = if is_focused {
+                    highlight_style
+                } else {
+                    Style::default()
+                };
+                right_lines.push(Line::from(vec![
                     Span::styled(format!("  {label:<8} "), label_style),
-                    Span::styled(value, style),
+                    Span::styled(value, value_style),
                 ]));
             }
-            frame.render_widget(Paragraph::new(left_lines), columns[0]);
-
-            // Right column: editable fields
-            let right_fields = editable_fields();
-            let mut right_lines: Vec<Line<'static>> = Vec::new();
-            for (i, field) in right_fields.iter().enumerate() {
-                let label = field.label();
-                let is_focused = detail_focused && app.detail_column == 1 && i == app.detail_cursor;
-
-                let is_editing = is_focused
-                    && ((*field == DetailField::Version && app.editing_version)
-                        || (*field == DetailField::Description && app.editing_description));
-
-                if is_editing {
-                    let buf = match *field {
-                        DetailField::Version => &app.version_edit_buf,
-                        DetailField::Description => &app.description_edit_buf,
-                        _ => &app.version_edit_buf,
-                    };
-                    let text = format!("{buf}_");
-                    right_lines.push(Line::from(vec![
-                        Span::styled(format!("  {label:<8} "), Style::default().fg(Color::Yellow)),
-                        Span::styled(text, Style::default().fg(Color::Yellow)),
-                    ]));
-                } else {
-                    let value = field.value(info);
-                    let label_style = if is_focused {
-                        highlight_style
-                    } else {
-                        editable_label_style
-                    };
-                    let value_style = if is_focused {
-                        highlight_style
-                    } else {
-                        Style::default()
-                    };
-                    right_lines.push(Line::from(vec![
-                        Span::styled(format!("  {label:<8} "), label_style),
-                        Span::styled(value, value_style),
-                    ]));
-                }
-            }
-            frame.render_widget(Paragraph::new(right_lines), columns[1]);
-        },
-        None => {
-            let content = vec![Line::from("  No project selected")];
-            let detail = Paragraph::new(content).block(detail_block);
-            frame.render_widget(detail, right_layout[0]);
-        },
-    };
-
-    // --- CI Runs panel ---
-    if has_ci_runs {
-        let ci_block = Block::default()
-            .borders(Borders::ALL)
-            .title(" CI Runs ")
-            .title_style(
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .border_style(if ci_focused {
-                Style::default().fg(Color::Cyan)
-            } else {
-                Style::default()
-            });
-
-        let mut ci_lines: Vec<Line<'static>> = Vec::new();
-
-        let has_bench = detail_ci_runs
-            .iter()
-            .any(|r| r.jobs.iter().any(|j| matches_column(&j.name, "bench")));
-
-        let mut cols: Vec<&str> = vec!["fmt", "taplo", "clippy", "mend", "build", "test"];
-        if has_bench {
-            cols.push("bench");
         }
+        frame.render_widget(Paragraph::new(right_lines), columns[1]);
+    } else {
+        let content = vec![Line::from("  No project selected")];
+        let detail = Paragraph::new(content).block(detail_block);
+        frame.render_widget(detail, area);
+    }
+}
 
-        const COL_W: usize = 10;
+fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Rect) {
+    const COL_W: usize = 10;
+    let ci_focused = app.focus == FocusTarget::CiRuns;
 
-        // Header
-        let mut hdr = format!("  | {:<12} | {:<10} |", "Branch", "Date");
-        for col in &cols {
-            hdr.push_str(&format!(" {:<COL_W$} |", col));
-        }
-        hdr.push_str(&format!(" {:<COL_W$} |", "Total"));
-        ci_lines.push(Line::from(hdr));
+    let ci_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" CI Runs ")
+        .title_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+        .border_style(if ci_focused {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        });
 
-        // Separator
-        let col_sep = format!("{}-|", "-".repeat(COL_W));
-        let mut sep = "  |--------------|------------|".to_string();
-        for _ in &cols {
-            sep.push_str(&col_sep);
-        }
-        sep.push_str(&col_sep);
-        ci_lines.push(Line::from(sep));
+    let mut ci_lines: Vec<Line<'static>> = Vec::new();
 
-        // Data rows
-        for (ri, ci_run) in detail_ci_runs.iter().enumerate() {
-            let date = ci_run
-                .created_at
-                .split_once('T')
-                .map(|(d, _)| (*d).to_string())
-                .unwrap_or_else(|| (*ci_run.created_at).to_string());
+    let has_bench = ci_runs
+        .iter()
+        .any(|r| r.jobs.iter().any(|j| matches_column(&j.name, "bench")));
 
-            let branch = truncate_str(&ci_run.branch, 12);
-
-            let total_dur = ci_run
-                .wall_clock_secs
-                .map(crate::ci::format_secs)
-                .unwrap_or_else(|| "—".to_string());
-
-            let mut spans: Vec<Span> = Vec::new();
-            let row_prefix = if ci_focused && ri == app.ci_runs_cursor {
-                format!(" ▶| {branch:<12} | {date:<10} |")
-            } else {
-                format!("  | {branch:<12} | {date:<10} |")
-            };
-            spans.push(Span::raw(row_prefix));
-
-            for col in &cols {
-                let job = ci_run.jobs.iter().find(|j| matches_column(&j.name, col));
-
-                match job {
-                    Some(j) => {
-                        let cell = format!("{} {}", j.conclusion, j.duration);
-                        let padded = pad_to_width(&cell, COL_W);
-                        let style = conclusion_style(&j.conclusion);
-                        spans.push(Span::styled(format!(" {padded}"), style));
-                        spans.push(Span::raw("|"));
-                    },
-                    None => {
-                        spans.push(Span::styled(
-                            format!(" {}", pad_to_width("—", COL_W)),
-                            Style::default().fg(Color::DarkGray),
-                        ));
-                        spans.push(Span::raw("|"));
-                    },
-                }
-            }
-
-            // Total column
-            let total_cell = format!("{} {total_dur}", ci_run.conclusion);
-            let padded_total = pad_to_width(&total_cell, COL_W);
-            let total_style = conclusion_style(&ci_run.conclusion);
-            spans.push(Span::styled(format!(" {padded_total}"), total_style));
-            spans.push(Span::raw("|"));
-
-            ci_lines.push(Line::from(spans));
-        }
-
-        let ci_paragraph = Paragraph::new(ci_lines).block(ci_block);
-        frame.render_widget(ci_paragraph, right_layout[1]);
+    let mut cols: Vec<&str> = vec!["fmt", "taplo", "clippy", "mend", "build", "test"];
+    if has_bench {
+        cols.push("bench");
     }
 
-    // Bottom bar
+    // Header
+    let mut hdr = format!("  | {:<12} | {:<10} |", "Branch", "Date");
+    for col in &cols {
+        let _ = write!(hdr, " {col:<COL_W$} |");
+    }
+    let _ = write!(hdr, " {:<COL_W$} |", "Total");
+    ci_lines.push(Line::from(hdr));
+
+    // Separator
+    let col_sep = format!("{}-|", "-".repeat(COL_W));
+    let mut sep = "  |--------------|------------|".to_string();
+    for _ in &cols {
+        sep.push_str(&col_sep);
+    }
+    sep.push_str(&col_sep);
+    ci_lines.push(Line::from(sep));
+
+    // Data rows
+    for (ri, ci_run) in ci_runs.iter().enumerate() {
+        let date = ci_run.created_at.split_once('T').map_or_else(
+            || (*ci_run.created_at).to_string(),
+            |(d, _)| (*d).to_string(),
+        );
+
+        let branch = truncate_str(&ci_run.branch, 12);
+
+        let total_dur = ci_run
+            .wall_clock_secs
+            .map_or_else(|| "—".to_string(), crate::ci::format_secs);
+
+        let mut spans: Vec<Span> = Vec::new();
+        let row_prefix = if ci_focused && ri == app.ci_runs_cursor {
+            format!(" ▶| {branch:<12} | {date:<10} |")
+        } else {
+            format!("  | {branch:<12} | {date:<10} |")
+        };
+        spans.push(Span::raw(row_prefix));
+
+        for col in &cols {
+            let job = ci_run.jobs.iter().find(|j| matches_column(&j.name, col));
+
+            if let Some(j) = job {
+                let cell = format!("{} {}", j.conclusion, j.duration);
+                let padded = pad_to_width(&cell, COL_W);
+                let style = conclusion_style(&j.conclusion);
+                spans.push(Span::styled(format!(" {padded}"), style));
+            } else {
+                spans.push(Span::styled(
+                    format!(" {}", pad_to_width("—", COL_W)),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            spans.push(Span::raw("|"));
+        }
+
+        // Total column
+        let total_cell = format!("{} {total_dur}", ci_run.conclusion);
+        let padded_total = pad_to_width(&total_cell, COL_W);
+        let total_style = conclusion_style(&ci_run.conclusion);
+        spans.push(Span::styled(format!(" {padded_total}"), total_style));
+        spans.push(Span::raw("|"));
+
+        ci_lines.push(Line::from(spans));
+    }
+
+    let ci_paragraph = Paragraph::new(ci_lines).block(ci_block);
+    frame.render_widget(ci_paragraph, area);
+}
+
+fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let key_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
@@ -1724,12 +1746,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let status_bar = Paragraph::new(Line::from(status_spans))
         .style(Style::default().bg(Color::DarkGray).fg(Color::White));
 
-    frame.render_widget(status_bar, outer_layout[1]);
-
-    // Settings popup
-    if app.show_settings {
-        render_settings_popup(frame, app);
-    }
+    frame.render_widget(status_bar, area);
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
@@ -1745,6 +1762,7 @@ const SETTING_INLINE_DIRS: usize = 2;
 const SETTING_EXCLUDE_DIRS: usize = 3;
 
 fn render_settings_popup(frame: &mut Frame, app: &App) {
+    #[allow(clippy::cast_possible_truncation)]
     let area = centered_rect(60, SETTINGS_COUNT as u16 + 6, frame.area());
 
     frame.render_widget(Clear, area);
@@ -1772,14 +1790,46 @@ fn render_settings_popup(frame: &mut Frame, app: &App) {
             "Invert scroll",
             if app.invert_scroll { "ON" } else { "OFF" }.to_string(),
         ),
-        ("CI run count", format!("{}", cfg.tui.ci_run_count)),
+        ("CI run count", cfg.tui.ci_run_count.to_string()),
         ("Inline dirs", cfg.tui.inline_dirs.join(", ")),
         ("Exclude dirs", cfg.tui.exclude_dirs.join(", ")),
     ];
 
     let mut lines: Vec<Line<'static>> = vec![Line::from("")];
+    build_settings_lines(app, &settings, &mut lines, highlight_style, label_style);
+    lines.push(Line::from(""));
+    if app.settings_editing {
+        lines.push(Line::from(vec![
+            Span::styled("  Enter", key_style),
+            Span::raw(" confirm  "),
+            Span::styled("Esc", key_style),
+            Span::raw(" cancel"),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("  ↑/↓", key_style),
+            Span::raw(" nav  "),
+            Span::styled("Enter", key_style),
+            Span::raw(" edit  "),
+            Span::styled("←/→", key_style),
+            Span::raw(" toggle  "),
+            Span::styled("Esc", key_style),
+            Span::raw(" close"),
+        ]));
+    }
 
-    for (i, (name, value)) in settings.into_iter().enumerate() {
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+fn build_settings_lines(
+    app: &App,
+    settings: &[(&str, String)],
+    lines: &mut Vec<Line<'static>>,
+    highlight_style: Style,
+    label_style: Style,
+) {
+    for (i, (name, value)) in settings.iter().enumerate() {
         let cursor = if app.settings_cursor == i {
             "▶ "
         } else {
@@ -1812,14 +1862,17 @@ fn render_settings_popup(frame: &mut Frame, app: &App) {
             lines.push(Line::from(vec![
                 Span::styled(format!("  {cursor}{name}:  "), row_style),
                 Span::styled("< ", Style::default().fg(Color::DarkGray)),
-                Span::styled(value, toggle_style),
+                Span::styled((*value).clone(), toggle_style),
                 Span::styled(" >", Style::default().fg(Color::DarkGray)),
             ]));
         } else if i == SETTING_CI_RUN_COUNT && is_selected && !app.settings_editing {
             lines.push(Line::from(vec![
                 Span::styled(format!("  {cursor}{name}:  "), highlight_style),
                 Span::styled("< ", Style::default().fg(Color::DarkGray)),
-                Span::styled(value, Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    (*value).clone(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" >", Style::default().fg(Color::DarkGray)),
             ]));
         } else {
@@ -1834,30 +1887,6 @@ fn render_settings_popup(frame: &mut Frame, app: &App) {
             )));
         }
     }
-
-    lines.push(Line::from(""));
-    if app.settings_editing {
-        lines.push(Line::from(vec![
-            Span::styled("  Enter", key_style),
-            Span::raw(" confirm  "),
-            Span::styled("Esc", key_style),
-            Span::raw(" cancel"),
-        ]));
-    } else {
-        lines.push(Line::from(vec![
-            Span::styled("  ↑/↓", key_style),
-            Span::raw(" nav  "),
-            Span::styled("Enter", key_style),
-            Span::raw(" edit  "),
-            Span::styled("←/→", key_style),
-            Span::raw(" toggle  "),
-            Span::styled("Esc", key_style),
-            Span::raw(" close"),
-        ]));
-    }
-
-    let paragraph = Paragraph::new(lines).block(block);
-    frame.render_widget(paragraph, area);
 }
 
 fn conclusion_style(conclusion: &str) -> Style {
@@ -1918,10 +1947,8 @@ struct DetailInfo {
 
 fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
     let ws_counts = app.workspace_counts(project);
-    let stats = ws_counts
-        .as_ref()
-        .map(ProjectCounts::summary)
-        .unwrap_or_else(|| {
+    let stats = ws_counts.as_ref().map_or_else(
+        || {
             let mut parts: Vec<String> = Vec::new();
             if project.example_count > 0 {
                 parts.push(format!("{} examples", project.example_count));
@@ -1937,7 +1964,9 @@ fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
             } else {
                 parts.join("  ")
             }
-        });
+        },
+        ProjectCounts::summary,
+    );
 
     let git = app.git_info.get(&project.path);
     let git_origin = git.map(|g| format!("{} {}", g.origin.icon(), g.origin.label()));
@@ -1953,7 +1982,7 @@ fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
         types: project
             .types
             .iter()
-            .map(|t| t.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(", "),
         disk: app.formatted_disk(project),
@@ -2088,69 +2117,68 @@ fn spawn_streaming_scan(
                     let rel = entry
                         .path()
                         .strip_prefix(&root)
-                        .unwrap_or(entry.path())
+                        .unwrap_or_else(|_| entry.path())
                         .display()
                         .to_string();
                     let _ = tx.send(BackgroundMsg::ScanActivity {
                         path: if rel.is_empty() { ".".to_string() } else { rel },
                     });
                 }
-                if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
-                    if let Ok(project) = RustProject::from_cargo_toml(entry.path(), &root) {
-                        let abs_path = root.join(&project.path);
-                        let has_git = abs_path.join(".git").exists();
+                if entry.file_type().is_file()
+                    && entry.file_name() == "Cargo.toml"
+                    && let Ok(project) = RustProject::from_cargo_toml(entry.path(), &root)
+                {
+                    let abs_path = root.join(&project.path);
+                    let has_git = abs_path.join(".git").exists();
 
-                        let _ = tx.send(BackgroundMsg::ProjectDiscovered {
-                            project: project.clone(),
+                    let _ = tx.send(BackgroundMsg::ProjectDiscovered {
+                        project: project.clone(),
+                    });
+
+                    // Spawn one rayon task per project that does disk + CI together
+                    let task_tx = tx.clone();
+                    let task_path = (*project.path).to_string();
+                    let task_name = project.name.clone();
+                    let task_abs = abs_path;
+                    let task_excludes = excludes.clone();
+                    s.spawn(move |_| {
+                        // Disk
+                        let bytes = dir_size(&task_abs, &task_excludes);
+                        let _ = task_tx.send(BackgroundMsg::DiskUsage {
+                            path: (*task_path).to_string(),
+                            bytes,
                         });
 
-                        // Spawn one rayon task per project that does disk + CI together
-                        let task_tx = tx.clone();
-                        let task_path = (*project.path).to_string();
-                        let task_name = project.name.clone();
-                        let task_abs = abs_path;
-                        let task_excludes = excludes.clone();
-                        s.spawn(move |_| {
-                            // Disk
-                            let bytes = dir_size(&task_abs, &task_excludes);
-                            let _ = task_tx.send(BackgroundMsg::DiskUsage {
+                        // Git info (fork vs clone, owner, URL)
+                        if has_git && let Some(info) = GitInfo::detect(&task_abs) {
+                            let _ = task_tx.send(BackgroundMsg::GitInfo {
                                 path: (*task_path).to_string(),
-                                bytes,
+                                info,
                             });
+                        }
 
-                            // Git info (fork vs clone, owner, URL)
-                            if has_git {
-                                if let Some(info) = GitInfo::detect(&task_abs) {
-                                    let _ = task_tx.send(BackgroundMsg::GitInfo {
-                                        path: (*task_path).to_string(),
-                                        info,
-                                    });
-                                }
-                            }
+                        // Crates.io version
+                        if let Some(name) = &task_name
+                            && let Some(version) = fetch_crates_io_version(name)
+                        {
+                            let _ = task_tx.send(BackgroundMsg::CratesIoVersion {
+                                path: (*task_path).to_string(),
+                                version,
+                            });
+                        }
 
-                            // Crates.io version
-                            if let Some(name) = &task_name {
-                                if let Some(version) = fetch_crates_io_version(name) {
-                                    let _ = task_tx.send(BackgroundMsg::CratesIoVersion {
-                                        path: (*task_path).to_string(),
-                                        version,
-                                    });
-                                }
-                            }
-
-                            // CI
-                            if has_git {
-                                let _ = task_tx.send(BackgroundMsg::ScanActivity {
-                                    path: format!("CI: {task_path}"),
-                                });
-                                let runs = fetch_ci_runs_cached(&task_abs, ci_run_count);
-                                let _ = task_tx.send(BackgroundMsg::CiRuns {
-                                    path: task_path,
-                                    runs,
-                                });
-                            }
-                        });
-                    }
+                        // CI
+                        if has_git {
+                            let _ = task_tx.send(BackgroundMsg::ScanActivity {
+                                path: format!("CI: {task_path}"),
+                            });
+                            let runs = fetch_ci_runs_cached(&task_abs, ci_run_count);
+                            let _ = task_tx.send(BackgroundMsg::CiRuns {
+                                path: task_path,
+                                runs,
+                            });
+                        }
+                    });
                 }
             }
         });
@@ -2162,12 +2190,9 @@ fn spawn_streaming_scan(
 }
 
 pub fn run(path: PathBuf) -> ExitCode {
-    let scan_root = match path.canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Error: cannot resolve path '{}': {e}", path.display());
-            return ExitCode::FAILURE;
-        },
+    let Ok(scan_root) = path.canonicalize() else {
+        eprintln!("Error: cannot resolve path '{}'", path.display());
+        return ExitCode::FAILURE;
     };
 
     let cfg = config::load();
@@ -2367,7 +2392,7 @@ fn handle_settings_key(app: &mut App, key: KeyCode) {
             },
             SETTING_CI_RUN_COUNT => {
                 let cfg = config::load();
-                app.settings_edit_buf = format!("{}", cfg.tui.ci_run_count);
+                app.settings_edit_buf = cfg.tui.ci_run_count.to_string();
                 app.settings_editing = true;
             },
             SETTING_INLINE_DIRS => {
@@ -2404,7 +2429,7 @@ fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                         .collect();
-                    app.inline_dirs = dirs.clone();
+                    app.inline_dirs.clone_from(&dirs);
                     let mut cfg = config::load();
                     cfg.tui.inline_dirs = dirs;
                     let _ = config::save(&cfg);
@@ -2416,7 +2441,7 @@ fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                         .collect();
-                    app.exclude_dirs = dirs.clone();
+                    app.exclude_dirs.clone_from(&dirs);
                     let mut cfg = config::load();
                     cfg.tui.exclude_dirs = dirs;
                     let _ = config::save(&cfg);
@@ -2481,38 +2506,37 @@ fn advance_focus(app: &mut App) {
             if has_ci {
                 app.ci_runs_cursor = 0;
                 FocusTarget::CiRuns
-            } else if !app.scan_complete {
-                FocusTarget::ScanLog
-            } else {
+            } else if app.scan_complete {
                 FocusTarget::ProjectList
+            } else {
+                FocusTarget::ScanLog
             }
         },
         FocusTarget::CiRuns => {
-            if !app.scan_complete {
-                FocusTarget::ScanLog
-            } else {
+            if app.scan_complete {
                 FocusTarget::ProjectList
+            } else {
+                FocusTarget::ScanLog
             }
         },
         FocusTarget::ScanLog => FocusTarget::ProjectList,
     };
 
-    if app.focus == FocusTarget::ScanLog && !app.scan_log.is_empty() {
-        if app.scan_log_state.selected().is_none() {
-            app.scan_log_state
-                .select(Some(app.scan_log.len().saturating_sub(1)));
-        }
+    if app.focus == FocusTarget::ScanLog
+        && !app.scan_log.is_empty()
+        && app.scan_log_state.selected().is_none()
+    {
+        app.scan_log_state
+            .select(Some(app.scan_log.len().saturating_sub(1)));
     }
 }
 
 fn handle_detail_key(app: &mut App, key: KeyCode) {
     let field_count = if app.detail_column == 0 {
-        app.selected_project()
-            .map(|p| {
-                let info = build_detail_info(app, p);
-                info_fields(&info).len()
-            })
-            .unwrap_or(0)
+        app.selected_project().map_or(0, |p| {
+            let info = build_detail_info(app, p);
+            info_fields(&info).len()
+        })
     } else {
         editable_fields().len()
     };
@@ -2532,13 +2556,10 @@ fn handle_detail_key(app: &mut App, key: KeyCode) {
             if app.detail_column > 0 {
                 app.detail_column = 0;
                 // Clamp cursor to left column size
-                let left_count = app
-                    .selected_project()
-                    .map(|p| {
-                        let info = build_detail_info(app, p);
-                        info_fields(&info).len()
-                    })
-                    .unwrap_or(0);
+                let left_count = app.selected_project().map_or(0, |p| {
+                    let info = build_detail_info(app, p);
+                    info_fields(&info).len()
+                });
                 if app.detail_cursor >= left_count {
                     app.detail_cursor = left_count.saturating_sub(1);
                 }
@@ -2556,23 +2577,23 @@ fn handle_detail_key(app: &mut App, key: KeyCode) {
         KeyCode::Enter => {
             if app.detail_column == 1 {
                 let fields = editable_fields();
-                if let Some(field) = fields.get(app.detail_cursor) {
-                    if let Some(project) = app.selected_project() {
-                        match *field {
-                            DetailField::Version => {
-                                let version = project.version.clone().unwrap_or_default();
-                                if version != "(workspace)" {
-                                    app.version_edit_buf = version;
-                                    app.editing_version = true;
-                                }
-                            },
-                            DetailField::Description => {
-                                app.description_edit_buf =
-                                    project.description.clone().unwrap_or_default();
-                                app.editing_description = true;
-                            },
-                            _ => {},
-                        }
+                if let Some(field) = fields.get(app.detail_cursor)
+                    && let Some(project) = app.selected_project()
+                {
+                    match *field {
+                        DetailField::Version => {
+                            let version = project.version.clone().unwrap_or_default();
+                            if version != "(workspace)" {
+                                app.version_edit_buf = version;
+                                app.editing_version = true;
+                            }
+                        },
+                        DetailField::Description => {
+                            app.description_edit_buf =
+                                project.description.clone().unwrap_or_default();
+                            app.editing_description = true;
+                        },
+                        _ => {},
                     }
                 }
             }
@@ -2590,8 +2611,7 @@ fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
     let run_count = app
         .selected_project()
         .and_then(|p| app.ci_runs_for(p))
-        .map(Vec::len)
-        .unwrap_or(0);
+        .map_or(0, Vec::len);
 
     match key {
         KeyCode::Up => {
@@ -2624,18 +2644,18 @@ fn handle_field_edit_key(app: &mut App, key: KeyCode) {
         KeyCode::Enter => {
             let new_value = buf.clone();
             if app.editing_version {
-                if let Some(result) = write_toml_field(app, "version", &new_value) {
-                    if result.is_ok() {
-                        update_project_field(app, "version", &new_value);
-                    }
+                if let Some(result) = write_toml_field(app, "version", &new_value)
+                    && result.is_ok()
+                {
+                    update_project_field(app, "version", &new_value);
                 }
                 app.editing_version = false;
                 app.version_edit_buf.clear();
             } else {
-                if let Some(result) = write_toml_field(app, "description", &new_value) {
-                    if result.is_ok() {
-                        update_project_field(app, "description", &new_value);
-                    }
+                if let Some(result) = write_toml_field(app, "description", &new_value)
+                    && result.is_ok()
+                {
+                    update_project_field(app, "description", &new_value);
                 }
                 app.editing_description = false;
                 app.description_edit_buf.clear();
