@@ -34,11 +34,13 @@ impl GitOrigin {
     }
 }
 
-/// Git metadata for a project: origin type, owner, and repo URL.
+/// Git metadata for a project: origin type, owner, repo URL, and current branch.
 #[derive(Debug, Clone, Serialize)]
 pub struct GitInfo {
     /// Whether this is a clone or a fork.
     pub origin: GitOrigin,
+    /// The current branch name.
+    pub branch: Option<String>,
     /// The GitHub/GitLab owner (e.g. "natepiano").
     pub owner:  Option<String>,
     /// The HTTPS URL to the repository.
@@ -76,7 +78,22 @@ impl GitInfo {
 
         let (owner, url) = parse_remote_url(&raw_url);
 
-        Some(Self { origin, owner, url })
+        let branch = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(project_dir)
+            .output()
+            .ok()
+            .and_then(|o| {
+                let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if b.is_empty() { None } else { Some(b) }
+            });
+
+        Some(Self {
+            origin,
+            branch,
+            owner,
+            url,
+        })
     }
 }
 
@@ -129,16 +146,47 @@ impl fmt::Display for ProjectType {
     }
 }
 
+/// A group of examples in a subdirectory, or root-level examples (empty category).
+#[derive(Debug, Clone, Serialize)]
+pub struct ExampleGroup {
+    /// Subdirectory name, or empty for root-level examples.
+    pub category: String,
+    pub names:    Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RustProject {
+    /// Display path (e.g. `~/rust/bevy`).
     pub path:          String,
+    /// Absolute filesystem path for operations that need to access the project on disk.
+    #[serde(skip)]
+    pub abs_path:      String,
     pub name:          Option<String>,
     pub version:       Option<String>,
     pub description:   Option<String>,
+    pub worktree_name: Option<String>,
     pub types:         Vec<ProjectType>,
-    pub example_count: usize,
-    pub bench_count:   usize,
+    pub examples:      Vec<ExampleGroup>,
+    pub benches:       Vec<String>,
     pub test_count:    usize,
+}
+
+impl RustProject {
+    /// Total number of examples across all groups.
+    pub fn example_count(&self) -> usize { self.examples.iter().map(|g| g.names.len()).sum() }
+
+    /// Display name for the project list.
+    /// Shows `name (worktree_dir)` for worktrees, just `name` otherwise.
+    /// Falls back to the last path component for workspace-only projects.
+    pub fn display_name(&self) -> String {
+        let name = self
+            .name
+            .as_deref()
+            .unwrap_or_else(|| self.path.rsplit('/').next().unwrap_or(&self.path));
+        self.worktree_name
+            .as_ref()
+            .map_or_else(|| name.to_string(), |wt| format!("{name} ({wt})"))
+    }
 }
 
 pub enum ProjectParseError {
@@ -156,22 +204,14 @@ impl fmt::Display for ProjectParseError {
 }
 
 impl RustProject {
-    pub fn from_cargo_toml(
-        cargo_toml_path: &Path,
-        scan_root: &Path,
-    ) -> Result<Self, ProjectParseError> {
+    pub fn from_cargo_toml(cargo_toml_path: &Path) -> Result<Self, ProjectParseError> {
         let contents =
             std::fs::read_to_string(cargo_toml_path).map_err(ProjectParseError::ReadError)?;
         let table: Value = contents.parse().map_err(ProjectParseError::ParseError)?;
 
         let project_dir = cargo_toml_path.parent().unwrap_or(cargo_toml_path);
 
-        let relative_path = project_dir.strip_prefix(scan_root).unwrap_or(project_dir);
-        let path_str = if relative_path == Path::new("") {
-            ".".to_string()
-        } else {
-            relative_path.display().to_string()
-        };
+        let path_str = home_relative_path(project_dir);
 
         let name = table
             .get("package")
@@ -201,19 +241,26 @@ impl RustProject {
             .and_then(|n| n.as_str())
             .map(|s| (*s).to_string());
 
+        // A `.git` file (not directory) indicates a git worktree
+        let worktree_name = detect_worktree_name(project_dir);
+
         let types = detect_types(&table, project_dir);
-        let example_count = count_examples(&table, project_dir);
-        let bench_count = count_targets(&table, project_dir, "bench", "benches");
+        let examples = collect_examples(&table, project_dir);
+        let benches = collect_target_names(&table, project_dir, "bench", "benches");
         let test_count = count_targets(&table, project_dir, "test", "tests");
+
+        let abs_path = project_dir.display().to_string();
 
         Ok(Self {
             path: path_str,
+            abs_path,
             name,
             version,
             description,
+            worktree_name,
             types,
-            example_count,
-            bench_count,
+            examples,
+            benches,
             test_count,
         })
     }
@@ -261,24 +308,177 @@ fn detect_types(table: &Value, project_dir: &Path) -> Vec<ProjectType> {
     types
 }
 
-fn count_examples(table: &Value, project_dir: &Path) -> usize {
-    // Count [[example]] entries in Cargo.toml
-    let declared = table
-        .get("example")
-        .and_then(|v| v.as_array())
-        .map_or(0, Vec::len);
+/// Collect examples grouped by category. Prefers `[[example]]` declarations, falls back to
+/// file discovery.
+fn collect_examples(table: &Value, project_dir: &Path) -> Vec<ExampleGroup> {
+    use std::collections::HashMap;
 
-    if declared > 0 {
-        return declared;
+    // Collect from [[example]] entries in Cargo.toml
+    if let Some(arr) = table.get("example").and_then(|v| v.as_array())
+        && !arr.is_empty()
+    {
+        let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+        for entry in arr {
+            let name = entry
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            // Derive category from path: "examples/2d/foo.rs" -> "2d"
+            let category = entry
+                .get("path")
+                .and_then(|p| p.as_str())
+                .and_then(|p| {
+                    let parts: Vec<&str> = p.split('/').collect();
+                    // "examples/category/file.rs" -> category
+                    if parts.len() >= 3 {
+                        Some(parts[1].to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+            groups.entry(category).or_default().push(name);
+        }
+        return build_sorted_groups(groups);
     }
 
-    // Auto-discover: count .rs files in examples/ directory
+    // Auto-discover from examples/ directory
     let examples_dir = project_dir.join("examples");
     if !examples_dir.is_dir() {
-        return 0;
+        return Vec::new();
     }
 
-    count_rs_files_recursive(&examples_dir)
+    discover_examples_grouped(&examples_dir)
+}
+
+fn build_sorted_groups(
+    mut groups: std::collections::HashMap<String, Vec<String>>,
+) -> Vec<ExampleGroup> {
+    let mut result: Vec<ExampleGroup> = groups
+        .drain()
+        .map(|(category, mut names)| {
+            names.sort();
+            ExampleGroup { category, names }
+        })
+        .collect();
+    // Root-level first, then alphabetically by category
+    result.sort_by(|a, b| {
+        let a_root = a.category.is_empty();
+        let b_root = b.category.is_empty();
+        match (a_root, b_root) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.category.cmp(&b.category),
+        }
+    });
+    result
+}
+
+/// Auto-discover examples from a directory, grouping by subdirectory.
+fn discover_examples_grouped(examples_dir: &Path) -> Vec<ExampleGroup> {
+    use std::collections::HashMap;
+
+    let Ok(entries) = std::fs::read_dir(examples_dir) else {
+        return Vec::new();
+    };
+
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.extension().is_some_and(|e| e == "rs") {
+            if let Some(stem) = path.file_stem() {
+                groups
+                    .entry(String::new())
+                    .or_default()
+                    .push(stem.to_string_lossy().to_string());
+            }
+        } else if path.is_dir() {
+            let dir_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            // Collect .rs files and main.rs subdirs within this category
+            if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                for sub in sub_entries.flatten() {
+                    let sub_path = sub.path();
+                    if sub_path.is_file() && sub_path.extension().is_some_and(|e| e == "rs") {
+                        if let Some(stem) = sub_path.file_stem() {
+                            groups
+                                .entry(dir_name.clone())
+                                .or_default()
+                                .push(stem.to_string_lossy().to_string());
+                        }
+                    } else if sub_path.is_dir()
+                        && sub_path.join("main.rs").exists()
+                        && let Some(name) = sub_path.file_name()
+                    {
+                        groups
+                            .entry(dir_name.clone())
+                            .or_default()
+                            .push(name.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    build_sorted_groups(groups)
+}
+
+/// Collect target names (e.g. benches). Prefers `[[toml_key]]` declarations, falls back to
+/// file discovery in `dir_name/`.
+fn collect_target_names(
+    table: &Value,
+    project_dir: &Path,
+    toml_key: &str,
+    dir_name: &str,
+) -> Vec<String> {
+    if let Some(arr) = table.get(toml_key).and_then(|v| v.as_array())
+        && !arr.is_empty()
+    {
+        let mut names: Vec<String> = arr
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .map(std::string::ToString::to_string)
+            })
+            .collect();
+        names.sort();
+        return names;
+    }
+
+    let dir = project_dir.join(dir_name);
+    if !dir.is_dir() {
+        return Vec::new();
+    }
+
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+
+    let mut names = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.extension().is_some_and(|e| e == "rs") {
+            if let Some(stem) = path.file_stem() {
+                names.push(stem.to_string_lossy().to_string());
+            }
+        } else if path.is_dir()
+            && path.join("main.rs").exists()
+            && let Some(name) = path.file_name()
+        {
+            names.push(name.to_string_lossy().to_string());
+        }
+    }
+    names.sort();
+    names
 }
 
 fn count_targets(table: &Value, project_dir: &Path, toml_key: &str, dir_name: &str) -> usize {
@@ -297,6 +497,34 @@ fn count_targets(table: &Value, project_dir: &Path, toml_key: &str, dir_name: &s
     }
 
     count_rs_files_recursive(&dir)
+}
+
+/// Detect if a project directory is inside a git worktree.
+/// Walks up the directory tree looking for a `.git` file (not directory).
+/// Returns the worktree root directory name as the label.
+/// Returns a `~/`-prefixed path if under the home directory, otherwise the absolute path.
+fn home_relative_path(path: &Path) -> String {
+    if let Some(home) = dirs::home_dir()
+        && let Ok(rel) = path.strip_prefix(&home)
+    {
+        return format!("~/{}", rel.display());
+    }
+    path.display().to_string()
+}
+
+fn detect_worktree_name(project_dir: &Path) -> Option<String> {
+    let mut dir = project_dir;
+    loop {
+        let git_path = dir.join(".git");
+        if git_path.is_file() {
+            return dir.file_name().map(|n| n.to_string_lossy().to_string());
+        }
+        if git_path.is_dir() {
+            // Found a real .git directory — not a worktree
+            return None;
+        }
+        dir = dir.parent()?;
+    }
 }
 
 fn count_rs_files_recursive(dir: &Path) -> usize {

@@ -1,8 +1,10 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Args;
+use walkdir::DirEntry;
 use walkdir::WalkDir;
 
 use crate::output;
@@ -19,21 +21,32 @@ pub struct ListArgs {
     members: bool,
 }
 
+/// Returns `true` if a directory entry should be visited during a walk.
+/// Hidden directories (starting with `.`) and `target` are always skipped.
+/// Additional directory names can be excluded via the `excludes` set.
+pub fn should_visit_entry(entry: &DirEntry, excludes: Option<&HashSet<String>>) -> bool {
+    if entry.file_type().is_dir() {
+        let name = entry.file_name().to_string_lossy();
+        if name.starts_with('.') || name == "target" {
+            return false;
+        }
+        if let Some(set) = excludes {
+            return !set.contains(name.as_ref());
+        }
+    }
+    true
+}
+
 pub fn scan_projects(scan_root: &Path) -> Vec<RustProject> {
     let mut projects = Vec::new();
 
-    let entries = WalkDir::new(scan_root).into_iter().filter_entry(|entry| {
-        if entry.file_type().is_dir() {
-            let name = entry.file_name().to_string_lossy();
-            !name.starts_with('.') && name != "target"
-        } else {
-            true
-        }
-    });
+    let entries = WalkDir::new(scan_root)
+        .into_iter()
+        .filter_entry(|entry| should_visit_entry(entry, None));
 
     for entry in entries.flatten() {
         if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
-            match RustProject::from_cargo_toml(entry.path(), scan_root) {
+            match RustProject::from_cargo_toml(entry.path()) {
                 Ok(project) => projects.push(project),
                 Err(e) => {
                     eprintln!("Warning: skipping {}: {e}", entry.path().display());
@@ -50,7 +63,7 @@ pub fn filter_workspace_members(projects: &mut Vec<RustProject>) {
     let workspace_paths: Vec<String> = projects
         .iter()
         .filter(|p| p.is_workspace())
-        .map(|p| (*p.path).to_string())
+        .map(|p| p.path.clone())
         .collect();
 
     projects.retain(|p| {
