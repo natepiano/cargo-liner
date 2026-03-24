@@ -25,6 +25,7 @@ use crossterm::terminal::LeaveAlternateScreen;
 use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::enable_raw_mode;
 use detail::EditingState;
+use detail::PendingCiFetch;
 use detail::PendingExampleRun;
 use detail::RunTargetKind;
 use detail::handle_ci_runs_key;
@@ -67,7 +68,6 @@ pub enum FocusTarget {
 pub enum ExpandKey {
     Node(usize),
     Group(usize, usize),
-    Vendored(usize),
 }
 
 /// What a visible row represents.
@@ -89,13 +89,6 @@ pub enum VisibleRow {
     WorktreeEntry {
         node_index:     usize,
         worktree_index: usize,
-    },
-    /// The "vendored" group header.
-    VendoredHeader { node_index: usize },
-    /// A vendored dependency.
-    VendoredEntry {
-        node_index:     usize,
-        vendored_index: usize,
     },
 }
 
@@ -143,6 +136,12 @@ pub enum BackgroundMsg {
     ProjectDiscovered { project: RustProject },
     ScanActivity { path: String },
     ScanComplete,
+}
+
+/// Message sent when a background CI fetch completes.
+pub enum CiFetchMsg {
+    /// The fetch completed with updated runs for the given project path.
+    Complete { path: String, runs: Vec<CiRun> },
 }
 
 #[derive(Default)]
@@ -234,6 +233,12 @@ pub struct App {
     pub expanded_example_groups: HashSet<String>,
     pub editing:                 Option<EditingState>,
     pub pending_example_run:     Option<PendingExampleRun>,
+    pub pending_ci_fetch:        Option<PendingCiFetch>,
+    pub ci_fetching:             bool,
+    pub ci_fetch_count:          u32,
+    pub spinner_tick:            usize,
+    pub ci_fetch_tx:             mpsc::Sender<CiFetchMsg>,
+    pub ci_fetch_rx:             mpsc::Receiver<CiFetchMsg>,
     pub example_running:         Option<String>,
     pub example_output:          Vec<String>,
     pub example_tx:              mpsc::Sender<ExampleMsg>,
@@ -249,6 +254,7 @@ impl App {
         cfg: &Config,
     ) -> Self {
         let (example_tx, example_rx) = mpsc::channel();
+        let (ci_fetch_tx, ci_fetch_rx) = mpsc::channel();
         let inline_dirs = cfg.tui.inline_dirs.clone();
         let exclude_dirs = cfg.tui.exclude_dirs.clone();
         let ci_run_count = cfg.tui.ci_run_count;
@@ -292,6 +298,12 @@ impl App {
             expanded_example_groups: HashSet::new(),
             editing: None,
             pending_example_run: None,
+            pending_ci_fetch: None,
+            ci_fetching: false,
+            ci_fetch_count: 0,
+            spinner_tick: 0,
+            ci_fetch_tx,
+            ci_fetch_rx,
             example_running: None,
             example_output: Vec::new(),
             example_tx,
@@ -352,6 +364,7 @@ impl App {
         self.examples_scroll = 0;
         self.expanded_example_groups.clear();
         self.editing = None;
+        self.pending_ci_fetch = None;
         self.expanded.clear();
         self.list_state = ListState::default();
         self.bg_rx = spawn_streaming_scan(&self.scan_root, self.ci_run_count, &self.exclude_dirs);
@@ -406,6 +419,25 @@ impl App {
                     if self.focus == FocusTarget::ScanLog {
                         self.focus = FocusTarget::ProjectList;
                     }
+                },
+            }
+        }
+        // Poll CI fetch results
+        while let Ok(msg) = self.ci_fetch_rx.try_recv() {
+            match msg {
+                CiFetchMsg::Complete { path, runs } => {
+                    self.ci_fetching = false;
+                    // Propagate to workspace members
+                    if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
+                        for group in &node.groups {
+                            for member in &group.members {
+                                self.ci_runs
+                                    .entry(member.path.clone())
+                                    .or_insert_with(|| runs.clone());
+                            }
+                        }
+                    }
+                    self.ci_runs.insert(path, runs);
                 },
             }
         }
@@ -465,19 +497,6 @@ impl App {
                         worktree_index: wi,
                     });
                 }
-
-                // Vendored dependencies
-                if !node.vendored.is_empty() {
-                    rows.push(VisibleRow::VendoredHeader { node_index: ni });
-                    if self.expanded.contains(&ExpandKey::Vendored(ni)) {
-                        for (vi, _) in node.vendored.iter().enumerate() {
-                            rows.push(VisibleRow::VendoredEntry {
-                                node_index:     ni,
-                                vendored_index: vi,
-                            });
-                        }
-                    }
-                }
             }
         }
         rows
@@ -512,9 +531,7 @@ impl App {
             let rows = self.visible_rows();
             let selected = self.list_state.selected()?;
             match rows.get(selected)? {
-                VisibleRow::Root { node_index }
-                | VisibleRow::GroupHeader { node_index, .. }
-                | VisibleRow::VendoredHeader { node_index } => {
+                VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
                     Some(&self.nodes.get(*node_index)?.project)
                 },
                 VisibleRow::Member {
@@ -534,13 +551,6 @@ impl App {
                     let wt = node.worktrees.get(*worktree_index)?;
                     Some(&wt.project)
                 },
-                VisibleRow::VendoredEntry {
-                    node_index,
-                    vendored_index,
-                } => {
-                    let node = self.nodes.get(*node_index)?;
-                    node.vendored.get(*vendored_index)
-                },
             }
         }
     }
@@ -555,7 +565,7 @@ impl App {
         };
         match rows.get(selected) {
             Some(VisibleRow::Root { node_index }) => self.nodes[*node_index].has_children(),
-            Some(VisibleRow::GroupHeader { .. } | VisibleRow::VendoredHeader { .. }) => true,
+            Some(VisibleRow::GroupHeader { .. }) => true,
             _ => false,
         }
     }
@@ -571,9 +581,6 @@ impl App {
         match rows.get(selected) {
             Some(VisibleRow::Root { node_index }) => {
                 self.expanded.insert(ExpandKey::Node(*node_index));
-            },
-            Some(VisibleRow::VendoredHeader { node_index }) => {
-                self.expanded.insert(ExpandKey::Vendored(*node_index));
             },
             Some(VisibleRow::GroupHeader {
                 node_index,
@@ -656,31 +663,6 @@ impl App {
                     .iter()
                     .position(|r| matches!(r, VisibleRow::Root { node_index } if *node_index == ni))
                 {
-                    self.list_state.select(Some(pos));
-                }
-            },
-            VisibleRow::VendoredHeader { node_index } => {
-                if self.expanded.remove(&ExpandKey::Vendored(*node_index)) {
-                    // Was expanded, now collapsed
-                } else {
-                    // Already collapsed — collapse parent node
-                    let ni = *node_index;
-                    self.expanded.remove(&ExpandKey::Node(ni));
-                    let new_rows = self.visible_rows();
-                    if let Some(pos) = new_rows.iter().position(
-                        |r| matches!(r, VisibleRow::Root { node_index } if *node_index == ni),
-                    ) {
-                        self.list_state.select(Some(pos));
-                    }
-                }
-            },
-            VisibleRow::VendoredEntry { node_index, .. } => {
-                let ni = *node_index;
-                self.expanded.remove(&ExpandKey::Vendored(ni));
-                let new_rows = self.visible_rows();
-                if let Some(pos) = new_rows.iter().position(
-                    |r| matches!(r, VisibleRow::VendoredHeader { node_index } if *node_index == ni),
-                ) {
                     self.list_state.select(Some(pos));
                 }
             },
@@ -899,14 +881,6 @@ impl App {
                     .unwrap_or(&wt.project.path);
                 max_width = max_width.max(8 + wt_name.len());
             }
-            // Vendored: header "    ▶ vendored (N)" = 6 + 8 + 4
-            if !node.vendored.is_empty() {
-                max_width = max_width.max(6 + "vendored".len() + 4);
-                for v in &node.vendored {
-                    let name = v.display_name();
-                    max_width = max_width.max(8 + name.len());
-                }
-            }
         }
         max_width
     }
@@ -973,6 +947,24 @@ impl App {
         } else {
             "—".to_string()
         }
+    }
+
+    /// Get total disk bytes for a node (sum of root + worktrees).
+    pub fn disk_bytes_for_node(&self, node: &ProjectNode) -> Option<u64> {
+        if node.worktrees.is_empty() {
+            return self.disk_usage.get(&node.project.path).copied();
+        }
+        let mut total: u64 = 0;
+        let mut any_data = false;
+        for path in std::iter::once(&node.project.path)
+            .chain(node.worktrees.iter().map(|wt| &wt.project.path))
+        {
+            if let Some(&bytes) = self.disk_usage.get(path) {
+                total += bytes;
+                any_data = true;
+            }
+        }
+        if any_data { Some(total) } else { None }
     }
 
     /// Aggregate CI for a node: ✓ if all green, ✗ if any red, — otherwise.
@@ -1131,6 +1123,7 @@ fn handle_event(app: &mut App, event: Event) {
 fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
     loop {
         app.poll_background();
+        app.spinner_tick = app.spinner_tick.wrapping_add(1);
         terminal.draw(|frame| ui(frame, app))?;
 
         // Wait for at least one event (up to 16ms for ~60fps)
@@ -1154,6 +1147,13 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
         if let Some(run) = app.pending_example_run.take() {
             spawn_example_process(app, &run);
         }
+
+        // Spawn a pending CI fetch as a background process
+        if let Some(fetch) = app.pending_ci_fetch.take() {
+            app.ci_fetching = true;
+            app.ci_fetch_count = 5;
+            spawn_ci_fetch(app, &fetch);
+        }
     }
     Ok(())
 }
@@ -1165,6 +1165,9 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
 
     let mut cmd = std::process::Command::new("cargo");
     match run.kind {
+        RunTargetKind::Binary => {
+            cmd.arg("run");
+        },
         RunTargetKind::Example => {
             cmd.arg("run").arg("--example").arg(&run.target_name);
         },
@@ -1216,9 +1219,27 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
     });
 }
 
+fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
+    use scan::fetch_older_runs;
+
+    let tx = app.ci_fetch_tx.clone();
+    let abs_path = fetch.abs_path.clone();
+    let project_path = fetch.project_path.clone();
+    let current_count = fetch.current_count;
+
+    thread::spawn(move || {
+        let repo_dir = PathBuf::from(&abs_path);
+        let runs = fetch_older_runs(&repo_dir, current_count);
+        let _ = tx.send(CiFetchMsg::Complete {
+            path: project_path,
+            runs,
+        });
+    });
+}
+
 fn handle_normal_key(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+        KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Tab => advance_focus(app),
         KeyCode::BackTab => reverse_focus(app),
         KeyCode::Up => {

@@ -17,6 +17,7 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
+use ratatui::widgets::TableState;
 use toml_edit::DocumentMut;
 
 use super::App;
@@ -36,6 +37,7 @@ pub struct EditingState {
 }
 
 pub enum RunTargetKind {
+    Binary,
     Example,
     Bench,
 }
@@ -45,6 +47,13 @@ pub struct PendingExampleRun {
     pub target_name:  String,
     pub package_name: Option<String>,
     pub kind:         RunTargetKind,
+}
+
+/// A pending request to fetch more CI runs for a project.
+pub struct PendingCiFetch {
+    pub abs_path:      String,
+    pub project_path:  String,
+    pub current_count: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -60,6 +69,7 @@ pub enum DetailField {
     Owner,
     Repo,
     Worktree,
+    Vendored,
     Version,
     Description,
 }
@@ -78,6 +88,7 @@ impl DetailField {
             Self::Owner => "Owner",
             Self::Repo => "Repo",
             Self::Worktree => "Worktree",
+            Self::Vendored => "Vendored",
             Self::Version => "Version",
             Self::Description => "Desc",
         }
@@ -106,6 +117,7 @@ impl DetailField {
             Self::Owner => info.git_owner.as_deref().unwrap_or("").to_string(),
             Self::Repo => info.git_url.as_deref().unwrap_or("").to_string(),
             Self::Worktree => info.worktree_label.as_deref().unwrap_or("").to_string(),
+            Self::Vendored => info.vendored_names.clone(),
             Self::Version => info.crates_version.as_ref().map_or_else(
                 || info.version.clone(),
                 |cv| format!("{} (crates.io: {cv})", info.version),
@@ -116,17 +128,21 @@ impl DetailField {
 }
 
 /// All fields for the Project column: read-only info then editable at the bottom.
-pub fn project_fields() -> Vec<DetailField> {
-    vec![
+pub fn project_fields(info: &DetailInfo) -> Vec<DetailField> {
+    let mut fields = vec![
         DetailField::Name,
         DetailField::Path,
         DetailField::Types,
         DetailField::Disk,
         DetailField::Ci,
         DetailField::Stats,
-        DetailField::Version,
-        DetailField::Description,
-    ]
+    ];
+    if !info.vendored_names.is_empty() {
+        fields.push(DetailField::Vendored);
+    }
+    fields.push(DetailField::Version);
+    fields.push(DetailField::Description);
+    fields
 }
 
 /// Git fields (right column). Only includes fields that have data.
@@ -169,10 +185,41 @@ pub struct DetailInfo {
     pub git_url:        Option<String>,
     pub worktree_label: Option<String>,
     pub worktree_names: Vec<String>,
+    pub vendored_names: String,
+    pub is_binary:      bool,
+    pub binary_name:    Option<String>,
     pub examples:       Vec<ExampleGroup>,
     pub benches:        Vec<String>,
 }
 
+/// Collect vendored crate names for a project from the node tree.
+fn collect_vendored_names(app: &App, project: &RustProject) -> String {
+    for node in &app.nodes {
+        // Check the node itself
+        if node.project.path == project.path && !node.vendored.is_empty() {
+            return node
+                .vendored
+                .iter()
+                .filter_map(|v| v.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+        }
+        // Check worktrees
+        for wt in &node.worktrees {
+            if wt.project.path == project.path && !wt.vendored.is_empty() {
+                return wt
+                    .vendored
+                    .iter()
+                    .filter_map(|v| v.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+            }
+        }
+    }
+    String::new()
+}
+
+#[allow(clippy::too_many_lines)]
 pub fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
     let ws_counts = app.workspace_counts(project);
     let stats = ws_counts.as_ref().map_or_else(
@@ -247,6 +294,20 @@ pub fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
             .collect()
     });
 
+    // Collect vendored crate names for this project
+    let vendored_names = collect_vendored_names(app, project);
+
+    // Check if this project is a binary
+    let is_binary = project
+        .types
+        .iter()
+        .any(|t| matches!(t, crate::project::ProjectType::Binary));
+    let binary_name = if is_binary {
+        project.name.clone()
+    } else {
+        None
+    };
+
     DetailInfo {
         project_title,
         name: project.name.clone().unwrap_or_else(|| "-".to_string()),
@@ -269,6 +330,9 @@ pub fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
         git_url,
         worktree_label,
         worktree_names,
+        vendored_names,
+        is_binary,
+        binary_name,
         examples: project.examples.clone(),
         benches: project.benches.clone(),
     }
@@ -330,8 +394,10 @@ fn render_column(
             Style::default()
         };
 
-        // Word-wrap Description across multiple lines
-        if *field == DetailField::Description && !value.is_empty() {
+        // Word-wrap Description and Vendored across multiple lines
+        if (*field == DetailField::Description || *field == DetailField::Vendored)
+            && !value.is_empty()
+        {
             let prefix = format!("  {label:<8} ");
             let prefix_len = prefix.len();
             let col_width = area.width as usize;
@@ -430,6 +496,21 @@ fn build_target_lines(app: &App, info: &DetailInfo, active: bool) -> Vec<Line<'s
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut line_idx: usize = 0;
+
+    // Binary section
+    if info.is_binary
+        && let Some(name) = &info.binary_name
+    {
+        lines.push(Line::from(Span::styled("  Binary", title_style)));
+        line_idx += 1;
+        let style = if active && line_idx == app.examples_scroll {
+            highlight_style
+        } else {
+            name_style
+        };
+        lines.push(Line::from(Span::styled(format!("    {name}"), style)));
+        line_idx += 1;
+    }
 
     // Examples section
     if !info.examples.is_empty() {
@@ -580,7 +661,7 @@ pub fn render_detail_panel(
 
         let git = git_fields(info);
         let has_git = !git.is_empty();
-        let has_targets = !info.examples.is_empty() || !info.benches.is_empty();
+        let has_targets = info.is_binary || !info.examples.is_empty() || !info.benches.is_empty();
 
         let columns = Layout::default()
             .direction(Direction::Horizontal)
@@ -607,7 +688,7 @@ pub fn render_detail_panel(
             &info.project_title,
             app,
             info,
-            &project_fields(),
+            &project_fields(info),
             detail_focused,
             app.detail_column == 0,
             app.detail_cursor,
@@ -654,6 +735,13 @@ pub fn render_detail_panel(
 }
 
 /// Format ISO 8601 timestamp as `yyyy-mm-dd hh:mm`.
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+fn spinner_frame(tick: usize) -> &'static str {
+    // Divide tick to slow down the spinner (renders at ~60fps, we want ~10fps spin)
+    SPINNER_FRAMES[(tick / 6) % SPINNER_FRAMES.len()]
+}
+
 fn format_timestamp(iso: &str) -> String {
     let stripped = iso.trim_end_matches('Z');
     match stripped.split_once('T') {
@@ -665,12 +753,23 @@ fn format_timestamp(iso: &str) -> String {
     }
 }
 
+/// The number of extra rows beyond the CI run data (the "fetch more" action row).
+pub const CI_EXTRA_ROWS: usize = 1;
+
+#[allow(clippy::too_many_lines)]
 pub fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Rect) {
     let ci_focused = app.focus == FocusTarget::CiRuns;
 
+    let title = if app.ci_fetching {
+        let spinner = spinner_frame(app.spinner_tick);
+        format!(" CI Runs {spinner} fetching {} more… ", app.ci_fetch_count)
+    } else {
+        " CI Runs ".to_string()
+    };
+
     let ci_block = Block::default()
         .borders(Borders::ALL)
-        .title(" CI Runs ")
+        .title(title)
         .title_style(
             Style::default()
                 .fg(Color::Yellow)
@@ -719,10 +818,10 @@ pub fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Re
     let header = Row::new(header_cells).bottom_margin(0);
 
     // Data rows
-    let rows: Vec<Row> = ci_runs
+    let col_count = 2 + cols.len() + 1; // branch + timestamp + job cols + total
+    let mut rows: Vec<Row> = ci_runs
         .iter()
-        .enumerate()
-        .map(|(ri, ci_run)| {
+        .map(|ci_run| {
             let timestamp = format_timestamp(&ci_run.created_at);
             let branch = &ci_run.branch;
 
@@ -730,16 +829,7 @@ pub fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Re
                 .wall_clock_secs
                 .map_or_else(|| "—".to_string(), crate::ci::format_secs);
 
-            let cursor = if ci_focused && ri == app.ci_runs_cursor {
-                "▶"
-            } else {
-                " "
-            };
-
-            let mut cells = vec![
-                Cell::from(format!("{cursor}{branch}")),
-                Cell::from(timestamp),
-            ];
+            let mut cells = vec![Cell::from(branch.clone()), Cell::from(timestamp)];
 
             for col in &cols {
                 let job = ci_run.jobs.iter().find(|j| col.matches(&j.name));
@@ -768,6 +858,20 @@ pub fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Re
         })
         .collect();
 
+    // "Fetch more" action row at the bottom
+    let fetch_style = Style::default().fg(Color::Cyan);
+    let fetch_label = if app.ci_fetching {
+        let spinner = spinner_frame(app.spinner_tick);
+        format!("{spinner} fetching {} more…", app.ci_fetch_count)
+    } else {
+        "↓ fetch more runs".to_string()
+    };
+    let mut fetch_cells: Vec<Cell> = vec![Cell::from(fetch_label).style(fetch_style)];
+    for _ in 1..col_count {
+        fetch_cells.push(Cell::from(""));
+    }
+    rows.push(Row::new(fetch_cells));
+
     // Column widths — branch fills remaining space, others fit content
     let mut widths = vec![
         Constraint::Fill(1),    // Branch — takes leftover space
@@ -778,12 +882,20 @@ pub fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Re
     }
     widths.push(Constraint::Min(8)); // Total
 
+    let highlight_style = if ci_focused {
+        Style::default().fg(Color::Black).bg(Color::Cyan)
+    } else {
+        Style::default()
+    };
+
     let table = Table::new(rows, widths)
         .header(header)
         .block(ci_block)
-        .column_spacing(1);
+        .column_spacing(1)
+        .row_highlight_style(highlight_style);
 
-    frame.render_widget(table, area);
+    let mut table_state = TableState::default().with_selected(Some(app.ci_runs_cursor));
+    frame.render_stateful_widget(table, area, &mut table_state);
 }
 
 /// Returns the maximum column index (0 if no git info, 1 if git info present).
@@ -792,7 +904,13 @@ pub fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Re
 fn detail_layout(app: &App) -> (usize, Option<usize>) {
     let project = app.selected_project();
     let has_git = project.and_then(|p| app.git_info.get(&p.path)).is_some();
-    let has_targets = project.is_some_and(|p| !p.examples.is_empty() || !p.benches.is_empty());
+    let has_targets = project.is_some_and(|p| {
+        p.types
+            .iter()
+            .any(|t| matches!(t, crate::project::ProjectType::Binary))
+            || !p.examples.is_empty()
+            || !p.benches.is_empty()
+    });
 
     let mut col = 0; // Project is always column 0
     if has_git {
@@ -815,7 +933,10 @@ fn detail_column_field_count(app: &App, column: usize) -> usize {
         return 0; // Examples column uses scroll, not cursor
     }
     if column == 0 {
-        project_fields().len()
+        app.selected_project().map_or(0, |p| {
+            let info = build_detail_info(app, p);
+            project_fields(&info).len()
+        })
     } else {
         // Git column
         app.selected_project().map_or(0, |p| {
@@ -835,6 +956,8 @@ fn clamp_detail_cursor(app: &mut App) {
 
 /// What the cursor is pointing at in the targets column.
 enum TargetItem {
+    /// The binary itself.
+    Binary(String),
     /// A root-level example (no category).
     RootExample(String),
     /// A category group header.
@@ -848,7 +971,19 @@ enum TargetItem {
 /// Identify what's at the given scroll position in the targets column.
 fn target_item_at(app: &App, scroll: usize) -> Option<TargetItem> {
     let project = app.selected_project()?;
+    let info = build_detail_info(app, project);
     let mut line = 0;
+
+    // Binary section
+    if info.is_binary
+        && let Some(name) = &info.binary_name
+    {
+        line += 1; // "Binary" header
+        if line == scroll {
+            return Some(TargetItem::Binary(name.clone()));
+        }
+        line += 1;
+    }
 
     // Examples section
     if !project.examples.is_empty() {
@@ -900,7 +1035,13 @@ fn targets_visible_line_count(app: &App) -> usize {
     let Some(project) = app.selected_project() else {
         return 0;
     };
+    let info = build_detail_info(app, project);
     let mut count = 0;
+
+    // Binary
+    if info.is_binary && info.binary_name.is_some() {
+        count += 2; // header + name
+    }
 
     // Examples
     if !project.examples.is_empty() {
@@ -1034,6 +1175,16 @@ fn handle_example_enter(app: &mut App) {
                 });
             }
         },
+        Some(TargetItem::Binary(name)) => {
+            if let Some(project) = app.selected_project() {
+                app.pending_example_run = Some(PendingExampleRun {
+                    abs_path:     project.abs_path.clone(),
+                    target_name:  name,
+                    package_name: project.name.clone(),
+                    kind:         RunTargetKind::Binary,
+                });
+            }
+        },
         None => {},
     }
 }
@@ -1083,7 +1234,13 @@ pub fn handle_detail_key(app: &mut App, key: KeyCode) {
             if on_examples {
                 handle_example_enter(app);
             } else if app.detail_column == 0 {
-                let fields = project_fields();
+                let fields = app
+                    .selected_project()
+                    .map(|p| {
+                        let info = build_detail_info(app, p);
+                        project_fields(&info)
+                    })
+                    .unwrap_or_default();
                 if let Some(field) = fields.get(app.detail_cursor)
                     && field.is_editable()
                     && let Some(project) = app.selected_project()
@@ -1125,6 +1282,8 @@ pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
         .selected_project()
         .and_then(|p| app.ci_runs_for(p))
         .map_or(0, Vec::len);
+    // Total rows = run data rows + the "fetch more" action row
+    let total_rows = run_count + CI_EXTRA_ROWS;
 
     match key {
         KeyCode::Up => {
@@ -1133,8 +1292,22 @@ pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
             }
         },
         KeyCode::Down => {
-            if run_count > 0 && app.ci_runs_cursor < run_count - 1 {
+            if total_rows > 0 && app.ci_runs_cursor < total_rows - 1 {
                 app.ci_runs_cursor += 1;
+            }
+        },
+        KeyCode::Enter => {
+            // If cursor is on the "fetch more" row, trigger a background fetch
+            if app.ci_runs_cursor == run_count
+                && let Some(project) = app.selected_project()
+            {
+                #[allow(clippy::cast_possible_truncation)]
+                let current_count = run_count as u32;
+                app.pending_ci_fetch = Some(PendingCiFetch {
+                    abs_path: project.abs_path.clone(),
+                    project_path: project.path.clone(),
+                    current_count,
+                });
             }
         },
         KeyCode::Tab => advance_focus(app),
@@ -1142,9 +1315,39 @@ pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
         KeyCode::Esc => {
             app.focus = FocusTarget::ProjectList;
         },
+        KeyCode::Char('c') => {
+            if let Some(project) = app.selected_project() {
+                let path = project.path.clone();
+                clear_ci_cache(app, &path);
+            }
+        },
         KeyCode::Char('q') => app.should_quit = true,
         _ => {},
     }
+}
+
+/// Clear CI cache for a project and remove its runs from the app.
+fn clear_ci_cache(app: &mut App, project_path: &str) {
+    use crate::ci::parse_owner_repo;
+
+    // Find abs_path to derive repo URL
+    let abs_path = app
+        .nodes
+        .iter()
+        .find(|n| n.project.path == project_path)
+        .map(|n| n.project.abs_path.clone());
+
+    if let Some(abs_path) = abs_path
+        && let Some(repo_url) = crate::ci::get_repo_url(std::path::Path::new(&abs_path))
+        && let Some((owner, repo)) = parse_owner_repo(&repo_url)
+        && let Some(dir) = super::scan::repo_cache_dir_pub(&owner, &repo)
+    {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // Insert empty vec so the CI panel stays visible with the "fetch more" row
+    app.ci_runs.insert(project_path.to_string(), Vec::new());
+    app.ci_runs_cursor = 0;
 }
 
 pub fn handle_field_edit_key(app: &mut App, key: KeyCode) {

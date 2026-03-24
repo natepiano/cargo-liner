@@ -32,10 +32,10 @@ pub struct CiArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GhRun {
-    database_id: u64,
-    created_at:  String,
-    head_branch: String,
+pub struct GhRun {
+    pub database_id: u64,
+    pub created_at:  String,
+    pub head_branch: String,
 }
 
 #[derive(Deserialize)]
@@ -66,7 +66,11 @@ pub struct CiRun {
     pub conclusion:      String,
     pub jobs:            Vec<CiJob>,
     pub wall_clock_secs: Option<u64>,
+    #[serde(default = "default_fetched")]
+    pub fetched:         bool,
 }
+
+const fn default_fetched() -> bool { true }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CiJob {
@@ -121,23 +125,7 @@ pub fn run(path: PathBuf, args: CiArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Fetch CI runs for a repo directory. Used by both CLI and TUI.
-pub fn fetch_ci_runs(repo_dir: &Path, count: u32) -> Vec<CiRun> {
-    let Some(repo_url) = get_repo_url(repo_dir) else {
-        return Vec::new();
-    };
-
-    let runs = match list_runs(repo_dir, None, count) {
-        Some(runs) if !runs.is_empty() => runs,
-        _ => return Vec::new(),
-    };
-
-    runs.iter()
-        .filter_map(|gh_run| process_gh_run(gh_run, repo_dir, &repo_url))
-        .collect()
-}
-
-fn process_gh_run(gh_run: &GhRun, repo_dir: &Path, repo_url: &str) -> Option<CiRun> {
+pub fn process_gh_run(gh_run: &GhRun, repo_dir: &Path, repo_url: &str) -> Option<CiRun> {
     let jobs = get_jobs(repo_dir, gh_run.database_id)?;
     let mut earliest_start: Option<u64> = None;
     let mut latest_completion: Option<u64> = None;
@@ -184,6 +172,7 @@ fn process_gh_run(gh_run: &GhRun, repo_dir: &Path, repo_url: &str) -> Option<CiR
         conclusion,
         wall_clock_secs,
         jobs: ci_jobs,
+        fetched: true,
     })
 }
 
@@ -221,13 +210,25 @@ fn gh_command_with_timeout(repo_dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
     }
 }
 
-fn get_repo_url(repo_dir: &Path) -> Option<String> {
+/// Extract `(owner, repo)` from a GitHub URL like `https://github.com/owner/repo`.
+pub fn parse_owner_repo(url: &str) -> Option<(String, String)> {
+    let stripped = url.strip_prefix("https://github.com/")?;
+    let mut parts = stripped.split('/');
+    let owner = parts.next()?.to_string();
+    let repo = parts.next()?.to_string();
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((owner, repo))
+}
+
+pub fn get_repo_url(repo_dir: &Path) -> Option<String> {
     let stdout = gh_command_with_timeout(repo_dir, &["repo", "view", "--json", "url"])?;
     let repo: GhRepo = serde_json::from_slice(&stdout).ok()?;
     Some(repo.url)
 }
 
-fn list_runs(repo_dir: &Path, branch: Option<&String>, count: u32) -> Option<Vec<GhRun>> {
+pub fn list_runs(repo_dir: &Path, branch: Option<&String>, count: u32) -> Option<Vec<GhRun>> {
     let count_str = count.to_string();
     let mut args = vec![
         "run",
