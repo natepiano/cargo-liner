@@ -19,10 +19,10 @@ use crate::list::should_visit_entry;
 use crate::project::GitInfo;
 use crate::project::RustProject;
 
-pub const CACHE_DIR: &str = "cargo-port/ci-cache";
+pub(super) const CACHE_DIR: &str = "cargo-port/ci-cache";
 
 /// Base cache directory: `$TMPDIR/cargo-port/ci-cache`.
-pub fn cache_dir() -> Option<PathBuf> {
+pub(super) fn cache_dir() -> Option<PathBuf> {
     std::env::var("TMPDIR")
         .ok()
         .map(PathBuf::from)
@@ -36,8 +36,23 @@ fn repo_cache_dir(owner: &str, repo: &str) -> Option<PathBuf> {
 }
 
 /// Public accessor for clearing the cache directory.
-pub fn repo_cache_dir_pub(owner: &str, repo: &str) -> Option<PathBuf> {
+pub(super) fn repo_cache_dir_pub(owner: &str, repo: &str) -> Option<PathBuf> {
     repo_cache_dir(owner, repo)
+}
+
+const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";
+
+/// Check if the "no more runs" marker exists for a repo.
+pub(super) fn is_exhausted(owner: &str, repo: &str) -> bool {
+    repo_cache_dir(owner, repo).is_some_and(|d| d.join(NO_MORE_RUNS_MARKER).exists())
+}
+
+/// Save the "no more runs" marker for a repo.
+pub(super) fn mark_exhausted(owner: &str, repo: &str) {
+    if let Some(dir) = repo_cache_dir(owner, repo) {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join(NO_MORE_RUNS_MARKER), "");
+    }
 }
 
 fn save_cached_run(owner: &str, repo: &str, ci_run: &CiRun) {
@@ -59,7 +74,7 @@ fn load_cached_run(owner: &str, repo: &str, run_id: u64) -> Option<CiRun> {
 }
 
 /// Load all cached CI runs for a given repo.
-pub fn load_all_cached_runs(owner: &str, repo: &str) -> Vec<CiRun> {
+pub(super) fn load_all_cached_runs(owner: &str, repo: &str) -> Vec<CiRun> {
     let Some(dir) = repo_cache_dir(owner, repo) else {
         return Vec::new();
     };
@@ -125,7 +140,7 @@ fn merge_runs(fetched: Vec<CiRun>, cached: Vec<CiRun>) -> Vec<CiRun> {
 
 /// Fetch CI runs, using the repo-keyed cache. Merges freshly fetched runs
 /// with all previously cached runs for this repo, deduplicated and sorted by `run_id` descending.
-pub fn fetch_ci_runs_cached(repo_dir: &Path, count: u32) -> Vec<CiRun> {
+pub(super) fn fetch_ci_runs_cached(repo_dir: &Path, count: u32) -> Vec<CiRun> {
     use crate::ci::get_repo_url;
     use crate::ci::list_runs;
 
@@ -146,7 +161,7 @@ pub fn fetch_ci_runs_cached(repo_dir: &Path, count: u32) -> Vec<CiRun> {
 
 /// Fetch older CI runs beyond what we currently have, by requesting a larger
 /// `--limit` from `gh run list` and returning any newly discovered runs.
-pub fn fetch_older_runs(repo_dir: &Path, current_count: u32) -> Vec<CiRun> {
+pub(super) fn fetch_older_runs(repo_dir: &Path, current_count: u32) -> Vec<CiRun> {
     use crate::ci::get_repo_url;
     use crate::ci::list_runs;
 
@@ -162,12 +177,15 @@ pub fn fetch_older_runs(repo_dir: &Path, current_count: u32) -> Vec<CiRun> {
     let fetch_count = current_count + 5;
     let gh_runs = list_runs(repo_dir, None, fetch_count).unwrap_or_default();
     let fetched = fetch_recent_runs(repo_dir, &repo_url, &owner, &repo, &gh_runs);
-    let cached = load_all_cached_runs(&owner, &repo);
 
-    merge_runs(fetched, cached)
+    // Only return the fetched runs — don't merge with the full cache.
+    // The caller already has runs in memory; these get merged there.
+    let mut result = fetched;
+    result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
+    result
 }
 
-pub fn fetch_crates_io_version(crate_name: &str) -> Option<String> {
+pub(super) fn fetch_crates_io_version(crate_name: &str) -> Option<String> {
     let url = format!("https://crates.io/api/v1/crates/{crate_name}");
     let output = std::process::Command::new("curl")
         .args([
@@ -190,7 +208,7 @@ pub fn fetch_crates_io_version(crate_name: &str) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-pub fn dir_size(path: &Path) -> u64 {
+pub(super) fn dir_size(path: &Path) -> u64 {
     WalkDir::new(path)
         .into_iter()
         .flatten()
@@ -200,7 +218,7 @@ pub fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
-pub fn build_tree(projects: Vec<RustProject>, inline_dirs: &[String]) -> Vec<ProjectNode> {
+pub(super) fn build_tree(projects: Vec<RustProject>, inline_dirs: &[String]) -> Vec<ProjectNode> {
     let workspace_paths: Vec<String> = projects
         .iter()
         .filter(|p| p.is_workspace())
@@ -441,7 +459,7 @@ fn extract_vendored(nodes: &mut Vec<ProjectNode>) {
     }
 }
 
-pub fn group_members(
+pub(super) fn group_members(
     workspace_path: &str,
     members: Vec<RustProject>,
     inline_dirs: &[String],
@@ -484,7 +502,7 @@ pub fn group_members(
     groups
 }
 
-pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
+pub(super) fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
     let mut entries = Vec::new();
     for (ni, node) in nodes.iter().enumerate() {
         // Add workspace root itself
@@ -513,7 +531,7 @@ pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
 
 /// Spawn a streaming scan: walk the directory tree, and for each project discovered
 /// do disk + CI together on rayon so progress fills in visibly.
-pub fn spawn_streaming_scan(
+pub(super) fn spawn_streaming_scan(
     scan_root: &Path,
     ci_run_count: u32,
     exclude_dirs: &[String],

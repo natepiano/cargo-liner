@@ -44,7 +44,7 @@ impl Default for TuiConfig {
 
 fn default_inline_dirs() -> Vec<String> { vec!["crates".to_string()] }
 
-const fn default_ci_run_count() -> u32 { 3 }
+const fn default_ci_run_count() -> u32 { 5 }
 
 const fn default_exclude_dirs() -> Vec<String> { Vec::new() }
 
@@ -99,7 +99,7 @@ invert_scroll = true
 
 [tui]
 inline_dirs = ["crates"]
-ci_run_count = 3
+ci_run_count = 5
 
 # Directories to skip when scanning. Edit this list for your setup.
 exclude_dirs = [

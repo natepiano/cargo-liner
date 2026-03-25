@@ -47,6 +47,7 @@ pub struct PendingExampleRun {
     pub target_name:  String,
     pub package_name: Option<String>,
     pub kind:         RunTargetKind,
+    pub release:      bool,
 }
 
 /// A pending request to fetch more CI runs for a project.
@@ -75,7 +76,7 @@ pub enum DetailField {
 }
 
 impl DetailField {
-    pub const fn label(self) -> &'static str {
+    pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Name => "Name",
             Self::Path => "Path",
@@ -94,9 +95,11 @@ impl DetailField {
         }
     }
 
-    pub const fn is_editable(self) -> bool { matches!(self, Self::Version | Self::Description) }
+    pub(super) const fn is_editable(self) -> bool {
+        matches!(self, Self::Version | Self::Description)
+    }
 
-    pub const fn toml_key(self) -> &'static str {
+    pub(super) const fn toml_key(self) -> &'static str {
         match self {
             Self::Version => "version",
             Self::Description => "description",
@@ -104,7 +107,7 @@ impl DetailField {
         }
     }
 
-    pub fn value(self, info: &DetailInfo) -> String {
+    pub(super) fn value(self, info: &DetailInfo) -> String {
         match self {
             Self::Name => info.name.clone(),
             Self::Path => info.path.clone(),
@@ -128,7 +131,7 @@ impl DetailField {
 }
 
 /// All fields for the Project column: read-only info then editable at the bottom.
-pub fn project_fields(info: &DetailInfo) -> Vec<DetailField> {
+pub(super) fn project_fields(info: &DetailInfo) -> Vec<DetailField> {
     let mut fields = vec![
         DetailField::Name,
         DetailField::Path,
@@ -147,7 +150,7 @@ pub fn project_fields(info: &DetailInfo) -> Vec<DetailField> {
 
 /// Git fields (right column). Only includes fields that have data.
 /// For worktree parents, skip Branch and Origin (those vary per worktree).
-pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
+pub(super) fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     let is_worktree_parent = !info.worktree_names.is_empty();
     let mut fields = Vec::new();
     if !is_worktree_parent && info.git_branch.is_some() {
@@ -168,7 +171,7 @@ pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     fields
 }
 
-pub struct DetailInfo {
+pub(super) struct DetailInfo {
     pub project_title:  String,
     pub name:           String,
     pub path:           String,
@@ -220,7 +223,7 @@ fn collect_vendored_names(app: &App, project: &RustProject) -> String {
 }
 
 #[allow(clippy::too_many_lines)]
-pub fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
+pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
     let ws_counts = app.workspace_counts(project);
     let stats = ws_counts.as_ref().map_or_else(
         || {
@@ -596,24 +599,31 @@ fn render_targets_column(
     // Scrollable view — keep cursor visible
     let visible_height = area.height as usize;
     let total_lines = visible_lines.len();
-    let max_scroll = total_lines.saturating_sub(visible_height);
-    let viewport_start = if app.examples_scroll < visible_height / 2 {
+    let needs_indicator = total_lines > visible_height;
+    let content_height = if needs_indicator {
+        visible_height.saturating_sub(1)
+    } else {
+        visible_height
+    };
+
+    // Ensure the cursor is always visible within the content area
+    let max_scroll = total_lines.saturating_sub(content_height);
+    let viewport_start = if app.examples_scroll < content_height / 2 {
         0
     } else {
-        (app.examples_scroll - visible_height / 2).min(max_scroll)
+        (app.examples_scroll - content_height / 2).min(max_scroll)
     };
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     for line in visible_lines
         .into_iter()
         .skip(viewport_start)
-        .take(visible_height)
+        .take(content_height)
     {
         lines.push(line);
     }
 
-    // Scroll indicator
-    if total_lines > visible_height {
+    if needs_indicator {
         let indicator = if viewport_start > 0 && viewport_start < max_scroll {
             format!("  ↑↓ {}/{total_lines}", app.examples_scroll + 1)
         } else if viewport_start > 0 {
@@ -621,19 +631,16 @@ fn render_targets_column(
         } else {
             format!("  ↓ {}/{total_lines}", app.examples_scroll + 1)
         };
-        if !lines.is_empty() {
-            lines.pop();
-            lines.push(Line::from(Span::styled(
-                indicator,
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
+        lines.push(Line::from(Span::styled(
+            indicator,
+            Style::default().fg(Color::DarkGray),
+        )));
     }
 
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-pub fn render_detail_panel(
+pub(super) fn render_detail_panel(
     frame: &mut Frame,
     app: &App,
     detail_info: Option<&DetailInfo>,
@@ -754,10 +761,10 @@ fn format_timestamp(iso: &str) -> String {
 }
 
 /// The number of extra rows beyond the CI run data (the "fetch more" action row).
-pub const CI_EXTRA_ROWS: usize = 1;
+pub(super) const CI_EXTRA_ROWS: usize = 1;
 
 #[allow(clippy::too_many_lines)]
-pub fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Rect) {
+pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Rect) {
     let ci_focused = app.focus == FocusTarget::CiRuns;
 
     let title = if app.ci_fetching {
@@ -802,6 +809,7 @@ pub fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Re
         .add_modifier(Modifier::BOLD)
         .fg(Color::DarkGray);
     let mut header_cells = vec![
+        Cell::from("#").style(right_aligned),
         Cell::from("Branch").style(right_aligned),
         Cell::from("Timestamp").style(right_aligned),
     ];
@@ -818,10 +826,10 @@ pub fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Re
     let header = Row::new(header_cells).bottom_margin(0);
 
     // Data rows
-    let col_count = 2 + cols.len() + 1; // branch + timestamp + job cols + total
     let mut rows: Vec<Row> = ci_runs
         .iter()
-        .map(|ci_run| {
+        .enumerate()
+        .map(|(i, ci_run)| {
             let timestamp = format_timestamp(&ci_run.created_at);
             let branch = &ci_run.branch;
 
@@ -829,7 +837,12 @@ pub fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Re
                 .wall_clock_secs
                 .map_or_else(|| "—".to_string(), crate::ci::format_secs);
 
-            let mut cells = vec![Cell::from(branch.clone()), Cell::from(timestamp)];
+            let row_num = format!("{}", i + 1);
+            let mut cells = vec![
+                Cell::from(row_num).style(Style::default().fg(Color::DarkGray)),
+                Cell::from(branch.clone()),
+                Cell::from(timestamp),
+            ];
 
             for col in &cols {
                 let job = ci_run.jobs.iter().find(|j| col.matches(&j.name));
@@ -858,22 +871,9 @@ pub fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Re
         })
         .collect();
 
-    // "Fetch more" action row at the bottom
-    let fetch_style = Style::default().fg(Color::Cyan);
-    let fetch_label = if app.ci_fetching {
-        let spinner = spinner_frame(app.spinner_tick);
-        format!("{spinner} fetching {} more…", app.ci_fetch_count)
-    } else {
-        "↓ fetch more runs".to_string()
-    };
-    let mut fetch_cells: Vec<Cell> = vec![Cell::from(fetch_label).style(fetch_style)];
-    for _ in 1..col_count {
-        fetch_cells.push(Cell::from(""));
-    }
-    rows.push(Row::new(fetch_cells));
-
-    // Column widths — branch fills remaining space, others fit content
+    // Column widths
     let mut widths = vec![
+        Constraint::Length(3),  // # row number
         Constraint::Fill(1),    // Branch — takes leftover space
         Constraint::Length(16), // Timestamp (yyyy-mm-dd hh:mm)
     ];
@@ -881,6 +881,34 @@ pub fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Re
         widths.push(Constraint::Min(8));
     }
     widths.push(Constraint::Min(8)); // Total
+
+    // "Fetch more" / "no older runs" as a table row
+    let no_more = app
+        .selected_project()
+        .is_some_and(|p| app.ci_no_more_runs.contains(&p.path));
+    let fetch_label = if app.ci_fetching {
+        let spinner = spinner_frame(app.spinner_tick);
+        format!("{spinner} fetching {} more…", app.ci_fetch_count)
+    } else if no_more {
+        "— no older runs".to_string()
+    } else {
+        "↓ fetch more runs".to_string()
+    };
+    let fetch_style = if no_more {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::Cyan)
+    };
+
+    let num_cols = widths.len();
+    let mut fetch_cells: Vec<Cell> = vec![
+        Cell::from("").style(fetch_style),
+        Cell::from(fetch_label).style(fetch_style),
+    ];
+    for _ in 2..num_cols {
+        fetch_cells.push(Cell::from(""));
+    }
+    rows.push(Row::new(fetch_cells));
 
     let highlight_style = if ci_focused {
         Style::default().fg(Color::Black).bg(Color::Cyan)
@@ -1144,11 +1172,22 @@ fn collapse_example_group(app: &mut App) -> bool {
     }
 }
 
-/// Handle Enter on the examples column: expand/collapse groups, or run examples.
-fn handle_example_enter(app: &mut App) {
+/// Launch the selected target, or toggle a group header.
+fn run_selected_target(app: &mut App, kind: RunTargetKind, name: String, release: bool) {
+    if let Some(project) = app.selected_project() {
+        app.pending_example_run = Some(PendingExampleRun {
+            abs_path: project.abs_path.clone(),
+            target_name: name,
+            package_name: project.name.clone(),
+            kind,
+            release,
+        });
+    }
+}
+
+fn handle_target_action(app: &mut App, release: bool) {
     match target_item_at(app, app.examples_scroll) {
-        Some(TargetItem::GroupHeader(cat)) => {
-            // Toggle
+        Some(TargetItem::GroupHeader(cat)) if !release => {
             if app.expanded_example_groups.contains(&cat) {
                 app.expanded_example_groups.remove(&cat);
             } else {
@@ -1156,40 +1195,19 @@ fn handle_example_enter(app: &mut App) {
             }
         },
         Some(TargetItem::RootExample(name) | TargetItem::GroupExample { name, .. }) => {
-            if let Some(project) = app.selected_project() {
-                app.pending_example_run = Some(PendingExampleRun {
-                    abs_path:     project.abs_path.clone(),
-                    target_name:  name,
-                    package_name: project.name.clone(),
-                    kind:         RunTargetKind::Example,
-                });
-            }
+            run_selected_target(app, RunTargetKind::Example, name, release);
         },
         Some(TargetItem::Bench(name)) => {
-            if let Some(project) = app.selected_project() {
-                app.pending_example_run = Some(PendingExampleRun {
-                    abs_path:     project.abs_path.clone(),
-                    target_name:  name,
-                    package_name: project.name.clone(),
-                    kind:         RunTargetKind::Bench,
-                });
-            }
+            run_selected_target(app, RunTargetKind::Bench, name, release);
         },
         Some(TargetItem::Binary(name)) => {
-            if let Some(project) = app.selected_project() {
-                app.pending_example_run = Some(PendingExampleRun {
-                    abs_path:     project.abs_path.clone(),
-                    target_name:  name,
-                    package_name: project.name.clone(),
-                    kind:         RunTargetKind::Binary,
-                });
-            }
+            run_selected_target(app, RunTargetKind::Binary, name, release);
         },
-        None => {},
+        _ => {},
     }
 }
 
-pub fn handle_detail_key(app: &mut App, key: KeyCode) {
+pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
     let (max_col, examples_col) = detail_layout(app);
     let on_examples = Some(app.detail_column) == examples_col;
     let field_count = detail_column_field_count(app, app.detail_column);
@@ -1232,7 +1250,7 @@ pub fn handle_detail_key(app: &mut App, key: KeyCode) {
         },
         KeyCode::Enter => {
             if on_examples {
-                handle_example_enter(app);
+                handle_target_action(app, false);
             } else if app.detail_column == 0 {
                 let fields = app
                     .selected_project()
@@ -1267,6 +1285,11 @@ pub fn handle_detail_key(app: &mut App, key: KeyCode) {
                 }
             }
         },
+        KeyCode::Char('r') => {
+            if on_examples {
+                handle_target_action(app, true);
+            }
+        },
         KeyCode::Tab => advance_focus(app),
         KeyCode::BackTab => reverse_focus(app),
         KeyCode::Esc => {
@@ -1277,7 +1300,7 @@ pub fn handle_detail_key(app: &mut App, key: KeyCode) {
     }
 }
 
-pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
+pub(super) fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
     let run_count = app
         .selected_project()
         .and_then(|p| app.ci_runs_for(p))
@@ -1296,10 +1319,20 @@ pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
                 app.ci_runs_cursor += 1;
             }
         },
+        KeyCode::Home => {
+            app.ci_runs_cursor = 0;
+        },
+        KeyCode::End => {
+            if total_rows > 0 {
+                app.ci_runs_cursor = total_rows - 1;
+            }
+        },
         KeyCode::Enter => {
             // If cursor is on the "fetch more" row, trigger a background fetch
             if app.ci_runs_cursor == run_count
+                && !app.ci_fetching
                 && let Some(project) = app.selected_project()
+                && !app.ci_no_more_runs.contains(&project.path)
             {
                 #[allow(clippy::cast_possible_truncation)]
                 let current_count = run_count as u32;
@@ -1347,10 +1380,11 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
 
     // Insert empty vec so the CI panel stays visible with the "fetch more" row
     app.ci_runs.insert(project_path.to_string(), Vec::new());
+    app.ci_no_more_runs.remove(project_path);
     app.ci_runs_cursor = 0;
 }
 
-pub fn handle_field_edit_key(app: &mut App, key: KeyCode) {
+pub(super) fn handle_field_edit_key(app: &mut App, key: KeyCode) {
     let Some(editing) = app.editing.as_mut() else {
         return;
     };
@@ -1417,7 +1451,11 @@ fn apply_field_update(project: &mut RustProject, field: DetailField, value: &str
     }
 }
 
-pub fn write_toml_field(app: &App, field: DetailField, value: &str) -> Option<Result<(), String>> {
+pub(super) fn write_toml_field(
+    app: &App,
+    field: DetailField,
+    value: &str,
+) -> Option<Result<(), String>> {
     let project = app.selected_project()?;
     let abs_path = PathBuf::from(&project.abs_path).join("Cargo.toml");
     let contents = match std::fs::read_to_string(&abs_path) {
@@ -1441,7 +1479,7 @@ pub fn write_toml_field(app: &App, field: DetailField, value: &str) -> Option<Re
     Some(Ok(()))
 }
 
-pub fn update_project_field(app: &mut App, field: DetailField, new_value: &str) {
+pub(super) fn update_project_field(app: &mut App, field: DetailField, new_value: &str) {
     let project_path = match app.selected_project() {
         Some(p) => p.path.clone(),
         None => return,

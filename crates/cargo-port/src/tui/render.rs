@@ -12,6 +12,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
+use ratatui::widgets::Clear;
 use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::Paragraph;
@@ -26,16 +27,16 @@ use super::detail::render_detail_panel;
 use super::settings::render_settings_popup;
 use crate::ci::CiRun;
 
-pub const BYTES_PER_MIB: u64 = 1024 * 1024;
-pub const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
+pub(super) const BYTES_PER_MIB: u64 = 1024 * 1024;
+pub(super) const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 
-pub const DISK_COL_WIDTH: usize = 10;
-pub const CI_COL_WIDTH: usize = 4;
-pub const GIT_COL_WIDTH: usize = 2;
-pub const BORDER_PADDING: usize = 3;
+pub(super) const DISK_COL_WIDTH: usize = 10;
+pub(super) const CI_COL_WIDTH: usize = 4;
+pub(super) const GIT_COL_WIDTH: usize = 2;
+pub(super) const BORDER_PADDING: usize = 3;
 
 #[derive(Clone, Copy)]
-pub enum CiColumn {
+pub(super) enum CiColumn {
     Fmt,
     Taplo,
     Clippy,
@@ -46,7 +47,7 @@ pub enum CiColumn {
 }
 
 impl CiColumn {
-    pub fn matches(self, job_name: &str) -> bool {
+    pub(super) fn matches(self, job_name: &str) -> bool {
         let lower = job_name.to_lowercase();
         match self {
             Self::Fmt => lower.contains("format") || lower.contains("fmt"),
@@ -59,7 +60,7 @@ impl CiColumn {
         }
     }
 
-    pub const fn label(self) -> &'static str {
+    pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Fmt => "fmt",
             Self::Taplo => "taplo",
@@ -72,7 +73,7 @@ impl CiColumn {
     }
 }
 
-pub fn format_bytes(bytes: u64) -> String {
+pub(super) fn format_bytes(bytes: u64) -> String {
     #[allow(clippy::cast_precision_loss)]
     if bytes >= BYTES_PER_GIB {
         format!("{:.1} GiB", bytes as f64 / BYTES_PER_GIB as f64)
@@ -81,12 +82,12 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-pub fn display_width(s: &str) -> usize {
+pub(super) fn display_width(s: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
     UnicodeWidthStr::width(s)
 }
 
-pub fn conclusion_style(conclusion: &str) -> Style {
+pub(super) fn conclusion_style(conclusion: &str) -> Style {
     if conclusion.contains('✓') {
         Style::default().fg(Color::Green)
     } else if conclusion.contains('✗') {
@@ -96,7 +97,7 @@ pub fn conclusion_style(conclusion: &str) -> Style {
     }
 }
 
-pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+pub(super) fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     Rect::new(x, y, width.min(area.width), height.min(area.height))
@@ -108,7 +109,7 @@ pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
 )]
-pub fn disk_color(bytes: Option<u64>, min_bytes: u64, max_bytes: u64) -> Style {
+pub(super) fn disk_color(bytes: Option<u64>, min_bytes: u64, max_bytes: u64) -> Style {
     let Some(bytes) = bytes else {
         return Style::default().fg(Color::DarkGray);
     };
@@ -142,7 +143,7 @@ pub fn disk_color(bytes: Option<u64>, min_bytes: u64, max_bytes: u64) -> Style {
     Style::default().fg(Color::Rgb(r, g, b))
 }
 
-pub fn project_row_spans(
+pub(super) fn project_row_spans(
     prefix: &str,
     name: &str,
     disk: &str,
@@ -169,7 +170,7 @@ pub fn project_row_spans(
     ])
 }
 
-pub fn group_header_spans(prefix: &str, name: &str, name_width: usize) -> Line<'static> {
+pub(super) fn group_header_spans(prefix: &str, name: &str, name_width: usize) -> Line<'static> {
     let prefix_width = display_width(prefix);
     let available = name_width.saturating_sub(prefix_width);
     let padded = format!("{prefix}{name:<available$}");
@@ -179,7 +180,7 @@ pub fn group_header_spans(prefix: &str, name: &str, name_width: usize) -> Line<'
     )])
 }
 
-pub fn ui(frame: &mut Frame, app: &mut App) {
+pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     let outer_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -237,14 +238,24 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
         render_scan_log(frame, app, left_layout[2]);
     }
 
-    // Right panel
+    // Right panel — clear to prevent artifacts when layout changes
+    frame.render_widget(Clear, main_layout[1]);
     let has_example_output = !app.example_output.is_empty();
+
+    // CI table height: header + data rows + fetch row + 2 borders
+    #[allow(clippy::cast_possible_truncation)]
+    let ci_height = if has_ci_runs {
+        (detail_ci_runs.len() + 4) as u16
+    } else {
+        0
+    };
+
     let right_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints(match (has_ci_runs, has_example_output) {
             (true, true) => vec![
                 Constraint::Length(14),
-                Constraint::Length(6),
+                Constraint::Length(ci_height),
                 Constraint::Min(5),
             ],
             (true, false) => {
@@ -275,7 +286,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
     }
 }
 
-pub fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
+pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     let search_style = if app.searching {
         Style::default().fg(Color::White)
     } else {
@@ -309,7 +320,12 @@ pub fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(search_bar, area);
 }
 
-pub fn render_project_list(frame: &mut Frame, app: &mut App, name_col_width: usize, area: Rect) {
+pub(super) fn render_project_list(
+    frame: &mut Frame,
+    app: &mut App,
+    name_col_width: usize,
+    area: Rect,
+) {
     let items: Vec<ListItem> = if app.searching && !app.search_query.is_empty() {
         render_filtered_items(app, name_col_width)
     } else {
@@ -349,7 +365,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, name_col_width: usi
     frame.render_stateful_widget(project_list, area, &mut app.list_state);
 }
 
-pub fn render_scan_log(frame: &mut Frame, app: &mut App, area: Rect) {
+pub(super) fn render_scan_log(frame: &mut Frame, app: &mut App, area: Rect) {
     let log_items: Vec<ListItem> = app
         .scan_log
         .iter()
@@ -399,7 +415,7 @@ pub fn render_scan_log(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
     let title = app.example_running.as_ref().map_or_else(
-        || " Example Output ".to_string(),
+        || " Output (Esc to close) ".to_string(),
         |n| format!(" Running: {n} "),
     );
 
@@ -486,7 +502,9 @@ fn status_bar_spans(app: &App) -> Vec<Span<'static>> {
             Span::styled("←/→", key_style),
             Span::raw(" column  "),
             Span::styled("Enter", key_style),
-            Span::raw(" edit  "),
+            Span::raw(" run  "),
+            Span::styled("r", key_style),
+            Span::raw(" release  "),
             Span::styled("Tab", key_style),
             Span::raw(" next  "),
             Span::styled("Esc", key_style),
@@ -531,7 +549,7 @@ fn status_bar_spans(app: &App) -> Vec<Span<'static>> {
     }
 }
 
-pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let status_spans = status_bar_spans(app);
 
     // Total disk usage on the right
@@ -612,7 +630,7 @@ fn child_disk_ranges(app: &App) -> HashMap<usize, (u64, u64)> {
 }
 
 #[allow(clippy::too_many_lines)]
-pub fn render_tree_items(app: &App, name_width: usize) -> Vec<ListItem<'static>> {
+pub(super) fn render_tree_items(app: &App, name_width: usize) -> Vec<ListItem<'static>> {
     // Precompute min/max disk bytes per level for coloring
     let (root_min, root_max) = root_disk_range(app);
     let child_ranges = child_disk_ranges(app);
@@ -712,7 +730,7 @@ pub fn render_tree_items(app: &App, name_width: usize) -> Vec<ListItem<'static>>
         .collect()
 }
 
-pub fn render_filtered_items(app: &App, name_width: usize) -> Vec<ListItem<'static>> {
+pub(super) fn render_filtered_items(app: &App, name_width: usize) -> Vec<ListItem<'static>> {
     let (root_min, root_max) = root_disk_range(app);
     app.filtered
         .iter()

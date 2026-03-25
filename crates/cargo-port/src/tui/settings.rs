@@ -15,7 +15,7 @@ use super::render::centered_rect;
 use crate::config;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SettingOption {
+pub(super) enum SettingOption {
     InvertScroll,
     CiRunCount,
     InlineDirs,
@@ -23,7 +23,7 @@ pub enum SettingOption {
 }
 
 impl SettingOption {
-    pub const fn from_index(i: usize) -> Option<Self> {
+    pub(super) const fn from_index(i: usize) -> Option<Self> {
         match i {
             0 => Some(Self::InvertScroll),
             1 => Some(Self::CiRunCount),
@@ -33,7 +33,7 @@ impl SettingOption {
         }
     }
 
-    pub const fn count() -> usize { 4 }
+    pub(super) const fn count() -> usize { 4 }
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
@@ -44,7 +44,7 @@ fn parse_dir_list(value: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn render_settings_popup(frame: &mut Frame, app: &App) {
+pub(super) fn render_settings_popup(frame: &mut Frame, app: &App) {
     #[allow(clippy::cast_possible_truncation)]
     let area = centered_rect(60, SettingOption::count() as u16 + 6, frame.area());
 
@@ -105,7 +105,7 @@ pub fn render_settings_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
-pub fn build_settings_lines(
+pub(super) fn build_settings_lines(
     app: &App,
     settings: &[(&str, String)],
     lines: &mut Vec<Line<'static>>,
@@ -174,7 +174,7 @@ pub fn build_settings_lines(
     }
 }
 
-pub fn handle_settings_key(app: &mut App, key: KeyCode) {
+pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
     if app.settings_editing {
         handle_settings_edit_key(app, key);
         return;
@@ -238,7 +238,7 @@ pub fn handle_settings_key(app: &mut App, key: KeyCode) {
     }
 }
 
-pub fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
+pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
     let setting = SettingOption::from_index(app.settings_cursor);
 
     match key {
@@ -288,7 +288,7 @@ pub fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
     }
 }
 
-pub fn save_settings(app: &App) {
+pub(super) fn save_settings(app: &App) {
     let mut cfg = config::load();
     cfg.mouse.invert_scroll = app.invert_scroll;
     let _ = config::save(&cfg);

@@ -9,6 +9,8 @@ use std::io;
 use std::io::Stdout;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::thread;
@@ -236,13 +238,17 @@ pub struct App {
     pub pending_ci_fetch:        Option<PendingCiFetch>,
     pub ci_fetching:             bool,
     pub ci_fetch_count:          u32,
+    pub ci_fetch_prev_count:     usize,
+    pub ci_no_more_runs:         HashSet<String>,
     pub spinner_tick:            usize,
     pub ci_fetch_tx:             mpsc::Sender<CiFetchMsg>,
     pub ci_fetch_rx:             mpsc::Receiver<CiFetchMsg>,
     pub example_running:         Option<String>,
+    pub example_child:           Arc<Mutex<Option<u32>>>,
     pub example_output:          Vec<String>,
     pub example_tx:              mpsc::Sender<ExampleMsg>,
     pub example_rx:              mpsc::Receiver<ExampleMsg>,
+    pub last_selected_path:      Option<String>,
     pub should_quit:             bool,
 }
 
@@ -301,19 +307,26 @@ impl App {
             pending_ci_fetch: None,
             ci_fetching: false,
             ci_fetch_count: 0,
+            ci_fetch_prev_count: 0,
+            ci_no_more_runs: HashSet::new(),
             spinner_tick: 0,
             ci_fetch_tx,
             ci_fetch_rx,
             example_running: None,
+            example_child: Arc::new(Mutex::new(None)),
             example_output: Vec::new(),
             example_tx,
             example_rx,
+            last_selected_path: load_last_selected(),
             should_quit: false,
         }
     }
 
     pub fn rebuild_tree(&mut self) {
-        let selected_path = self.selected_project().map(|p| p.path.clone());
+        let selected_path = self
+            .selected_project()
+            .map(|p| p.path.clone())
+            .or_else(|| self.last_selected_path.clone());
         self.nodes = build_tree(self.all_projects.clone(), &self.inline_dirs);
         self.flat_entries = build_flat_entries(&self.nodes);
 
@@ -370,6 +383,7 @@ impl App {
         self.bg_rx = spawn_streaming_scan(&self.scan_root, self.ci_run_count, &self.exclude_dirs);
     }
 
+    #[allow(clippy::too_many_lines)]
     fn poll_background(&mut self) {
         let mut needs_rebuild = false;
         while let Ok(msg) = self.bg_rx.try_recv() {
@@ -378,8 +392,16 @@ impl App {
                     self.disk_usage.insert(path, bytes);
                 },
                 BackgroundMsg::CiRuns { path, runs } => {
-                    // Propagate to workspace members
+                    // Check if this repo is marked as exhausted
                     if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
+                        if let Some(url) =
+                            crate::ci::get_repo_url(std::path::Path::new(&node.project.abs_path))
+                            && let Some((owner, repo)) = crate::ci::parse_owner_repo(&url)
+                            && scan::is_exhausted(&owner, &repo)
+                        {
+                            self.ci_no_more_runs.insert(path.clone());
+                        }
+                        // Propagate to workspace members
                         for group in &node.groups {
                             for member in &group.members {
                                 self.ci_runs
@@ -427,17 +449,53 @@ impl App {
             match msg {
                 CiFetchMsg::Complete { path, runs } => {
                     self.ci_fetching = false;
+
+                    // Merge new runs with existing in-memory runs
+                    let existing = self.ci_runs.remove(&path).unwrap_or_default();
+                    let mut seen = HashSet::new();
+                    let mut merged: Vec<CiRun> = Vec::new();
+                    // New runs take priority
+                    for run in runs {
+                        if seen.insert(run.run_id) {
+                            merged.push(run);
+                        }
+                    }
+                    for run in existing {
+                        if seen.insert(run.run_id) {
+                            merged.push(run);
+                        }
+                    }
+                    merged.sort_by(|a, b| b.run_id.cmp(&a.run_id));
+
+                    // Detect if no new runs were found and persist marker
+                    if merged.len() <= self.ci_fetch_prev_count {
+                        self.ci_no_more_runs.insert(path.clone());
+                        // Persist to disk
+                        if let Some(node) = self.nodes.iter().find(|n| n.project.path == path)
+                            && let Some(url) = crate::ci::get_repo_url(std::path::Path::new(
+                                &node.project.abs_path,
+                            ))
+                            && let Some((owner, repo)) = crate::ci::parse_owner_repo(&url)
+                        {
+                            scan::mark_exhausted(&owner, &repo);
+                        }
+                    } else {
+                        self.ci_no_more_runs.remove(&path);
+                    }
+
                     // Propagate to workspace members
                     if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
                         for group in &node.groups {
                             for member in &group.members {
                                 self.ci_runs
                                     .entry(member.path.clone())
-                                    .or_insert_with(|| runs.clone());
+                                    .or_insert_with(|| merged.clone());
                             }
                         }
                     }
-                    self.ci_runs.insert(path, runs);
+                    // Jump cursor to the fetch row (last row)
+                    self.ci_runs_cursor = merged.len();
+                    self.ci_runs.insert(path, merged);
                 },
             }
         }
@@ -449,7 +507,7 @@ impl App {
                 },
                 ExampleMsg::Finished => {
                     self.example_running = None;
-                    self.example_output.clear();
+                    self.example_output.push("── done ──".to_string());
                 },
             }
         }
@@ -1073,6 +1131,27 @@ pub fn run(path: PathBuf) -> ExitCode {
 fn handle_event(app: &mut App, event: Event) {
     match event {
         Event::Key(key) => {
+            // Esc: if running, kill process (keep output). If not running, clear output.
+            if key.code == KeyCode::Esc && app.example_running.is_some() {
+                // First Esc: kill the process, keep output visible
+                let pid = *app
+                    .example_child
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(pid) = pid {
+                    let _ = std::process::Command::new("kill")
+                        .arg(pid.to_string())
+                        .output();
+                }
+                app.example_running = None;
+                app.example_output.push("── killed ──".to_string());
+                return;
+            }
+            if key.code == KeyCode::Esc && !app.example_output.is_empty() {
+                // Second Esc: clear the output panel
+                app.example_output.clear();
+                return;
+            }
             if app.show_settings {
                 handle_settings_key(app, key.code);
             } else if app.editing.is_some() {
@@ -1118,6 +1197,11 @@ fn handle_event(app: &mut App, event: Event) {
         },
         _ => {},
     }
+
+    // Track project selection changes for session persistence
+    if app.focus == FocusTarget::ProjectList {
+        track_selection(app);
+    }
 }
 
 fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
@@ -1152,6 +1236,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
         if let Some(fetch) = app.pending_ci_fetch.take() {
             app.ci_fetching = true;
             app.ci_fetch_count = 5;
+            app.ci_fetch_prev_count = app.ci_runs.get(&fetch.project_path).map_or(0, Vec::len);
             spawn_ci_fetch(app, &fetch);
         }
     }
@@ -1175,6 +1260,9 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
             cmd.arg("bench").arg("--bench").arg(&run.target_name);
         },
     }
+    if run.release {
+        cmd.arg("--release");
+    }
     if let Some(pkg) = &run.package_name {
         cmd.arg("-p").arg(pkg);
     }
@@ -1182,7 +1270,7 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let child = match cmd.spawn() {
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             app.example_output = vec![format!("Failed to start: {e}")];
@@ -1191,15 +1279,24 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
         },
     };
 
-    let name = run.target_name.clone();
-    app.example_output = vec![format!("Building {name}...")];
-    app.example_running = Some(name);
+    // Store PID so we can kill from the main thread
+    let pid = child.id();
+    *app.example_child
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pid);
 
+    let name = run.target_name.clone();
+    let mode = if run.release { " (release)" } else { "" };
+    app.example_output = vec![format!("Building {name}{mode}...")];
+    app.example_running = Some(format!("{name}{mode}"));
+
+    // Take ownership of pipes before moving child to thread
+    let stderr = child.stderr.take();
+    let stdout = child.stdout.take();
+
+    let pid_holder = app.example_child.clone();
     let tx = app.example_tx.clone();
     thread::spawn(move || {
-        let stderr = child.stderr;
-        let stdout = child.stdout;
-
         // Read stderr (cargo output goes here)
         if let Some(stderr) = stderr {
             let reader = BufReader::new(stderr);
@@ -1215,6 +1312,11 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
             }
         }
 
+        // Wait for the child to finish and clear the PID
+        let _ = child.wait();
+        *pid_holder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         let _ = tx.send(ExampleMsg::Finished);
     });
 }
@@ -1235,6 +1337,33 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
             runs,
         });
     });
+}
+
+fn last_selected_path_file() -> Option<PathBuf> {
+    scan::cache_dir().map(|d| d.join("last_selected.txt"))
+}
+
+fn load_last_selected() -> Option<String> {
+    let path = last_selected_path_file()?;
+    std::fs::read_to_string(path).ok().filter(|s| !s.is_empty())
+}
+
+fn save_last_selected(project_path: &str) {
+    if let Some(path) = last_selected_path_file() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, project_path);
+    }
+}
+
+/// Update the last selected path when the user navigates.
+fn track_selection(app: &mut App) {
+    if let Some(project) = app.selected_project() {
+        let path = project.path.clone();
+        app.last_selected_path = Some(path.clone());
+        save_last_selected(&path);
+    }
 }
 
 fn handle_normal_key(app: &mut App, key: KeyCode) {
