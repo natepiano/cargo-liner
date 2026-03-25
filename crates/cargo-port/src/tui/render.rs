@@ -226,7 +226,12 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
 
     let selected_project_ref = app.selected_project();
     let detail_info = selected_project_ref.map(|p| build_detail_info(app, p));
-    let has_ci_runs = selected_project_ref.is_some_and(|p| app.ci_runs.contains_key(&p.path));
+    let has_ci_runs = selected_project_ref.is_some_and(|p| {
+        app.ci_runs
+            .get(&p.path)
+            .is_some_and(|runs| !runs.is_empty())
+            || app.git_info.get(&p.path).is_some_and(|g| g.url.is_some())
+    });
     let detail_ci_runs: Vec<CiRun> = selected_project_ref
         .and_then(|p| app.ci_runs_for(p))
         .cloned()
@@ -337,7 +342,7 @@ pub(super) fn render_project_list(
         .add_modifier(Modifier::BOLD);
 
     let header_line = Line::from(vec![
-        Span::styled(format!("{:<name_col_width$}", "Project"), header_style),
+        Span::styled(format!("{:<name_col_width$}", "Projects"), header_style),
         Span::styled(format!(" {:>9}", "Disk"), header_style),
         Span::styled("  CI", header_style),
     ]);

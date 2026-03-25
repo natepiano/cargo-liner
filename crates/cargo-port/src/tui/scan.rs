@@ -529,17 +529,67 @@ pub(super) fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
     entries
 }
 
+/// Fetch all details (disk, git, crates.io, CI) for a single project and send
+/// results through the provided channel. Used by both the main scan and priority fetch.
+pub(super) fn fetch_project_details(
+    tx: &mpsc::Sender<BackgroundMsg>,
+    project_path: &str,
+    abs_path: &Path,
+    project_name: Option<&String>,
+    has_git: bool,
+    ci_run_count: u32,
+) {
+    // Git info first (local, instant)
+    if has_git && let Some(info) = GitInfo::detect(abs_path) {
+        let _ = tx.send(BackgroundMsg::GitInfo {
+            path: project_path.to_string(),
+            info,
+        });
+    }
+
+    // Disk usage (local but slow for large projects)
+    let bytes = dir_size(abs_path);
+    let _ = tx.send(BackgroundMsg::DiskUsage {
+        path: project_path.to_string(),
+        bytes,
+    });
+
+    // CI runs (network, can be slow)
+    if has_git {
+        let _ = tx.send(BackgroundMsg::ScanActivity {
+            path: format!("CI: {project_path}"),
+        });
+        let runs = fetch_ci_runs_cached(abs_path, ci_run_count);
+        let _ = tx.send(BackgroundMsg::CiRuns {
+            path: project_path.to_string(),
+            runs,
+        });
+    }
+
+    // Crates.io version (network)
+    if let Some(name) = project_name
+        && let Some(version) = fetch_crates_io_version(name)
+    {
+        let _ = tx.send(BackgroundMsg::CratesIoVersion {
+            path: project_path.to_string(),
+            version,
+        });
+    }
+}
+
 /// Spawn a streaming scan: walk the directory tree, and for each project discovered
 /// do disk + CI together on rayon so progress fills in visibly.
+/// Returns `(Sender, Receiver)` — the sender is retained by the caller for priority fetches.
 pub(super) fn spawn_streaming_scan(
     scan_root: &Path,
     ci_run_count: u32,
     exclude_dirs: &[String],
-) -> Receiver<BackgroundMsg> {
+) -> (mpsc::Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
     let (tx, rx) = mpsc::channel();
     let root = scan_root.to_path_buf();
     let excludes: HashSet<String> = exclude_dirs.iter().cloned().collect();
 
+    let scan_tx = tx.clone();
     thread::spawn(move || {
         let entries = WalkDir::new(&root)
             .into_iter()
@@ -554,7 +604,7 @@ pub(super) fn spawn_streaming_scan(
                         .unwrap_or_else(|_| entry.path())
                         .display()
                         .to_string();
-                    let _ = tx.send(BackgroundMsg::ScanActivity {
+                    let _ = scan_tx.send(BackgroundMsg::ScanActivity {
                         path: if rel.is_empty() { ".".to_string() } else { rel },
                     });
                 }
@@ -565,59 +615,31 @@ pub(super) fn spawn_streaming_scan(
                     let abs_path = PathBuf::from(&project.abs_path);
                     let has_git = abs_path.join(".git").exists();
 
-                    let _ = tx.send(BackgroundMsg::ProjectDiscovered {
+                    let _ = scan_tx.send(BackgroundMsg::ProjectDiscovered {
                         project: project.clone(),
                     });
 
                     // Spawn one rayon task per project that does disk + CI together
-                    let task_tx = tx.clone();
+                    let task_tx = scan_tx.clone();
                     let task_path = project.path.clone();
                     let task_name = project.name.clone();
                     let task_abs = abs_path;
                     s.spawn(move |_| {
-                        // Disk
-                        let bytes = dir_size(&task_abs);
-                        let _ = task_tx.send(BackgroundMsg::DiskUsage {
-                            path: task_path.clone(),
-                            bytes,
-                        });
-
-                        // Git info (fork vs clone, owner, URL)
-                        if has_git && let Some(info) = GitInfo::detect(&task_abs) {
-                            let _ = task_tx.send(BackgroundMsg::GitInfo {
-                                path: task_path.clone(),
-                                info,
-                            });
-                        }
-
-                        // Crates.io version
-                        if let Some(name) = &task_name
-                            && let Some(version) = fetch_crates_io_version(name)
-                        {
-                            let _ = task_tx.send(BackgroundMsg::CratesIoVersion {
-                                path: task_path.clone(),
-                                version,
-                            });
-                        }
-
-                        // CI
-                        if has_git {
-                            let _ = task_tx.send(BackgroundMsg::ScanActivity {
-                                path: format!("CI: {task_path}"),
-                            });
-                            let runs = fetch_ci_runs_cached(&task_abs, ci_run_count);
-                            let _ = task_tx.send(BackgroundMsg::CiRuns {
-                                path: task_path,
-                                runs,
-                            });
-                        }
+                        fetch_project_details(
+                            &task_tx,
+                            &task_path,
+                            &task_abs,
+                            task_name.as_ref(),
+                            has_git,
+                            ci_run_count,
+                        );
                     });
                 }
             }
         });
 
-        let _ = tx.send(BackgroundMsg::ScanComplete);
+        let _ = scan_tx.send(BackgroundMsg::ScanComplete);
     });
 
-    rx
+    (tx, rx)
 }

@@ -33,9 +33,10 @@ pub struct CiArgs {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GhRun {
-    pub database_id: u64,
-    pub created_at:  String,
-    pub head_branch: String,
+    pub database_id:   u64,
+    pub created_at:    String,
+    pub head_branch:   String,
+    pub display_title: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -66,6 +67,8 @@ pub struct CiRun {
     pub conclusion:      String,
     pub jobs:            Vec<CiJob>,
     pub wall_clock_secs: Option<u64>,
+    #[serde(default)]
+    pub commit_title:    Option<String>,
     #[serde(default = "default_fetched")]
     pub fetched:         bool,
 }
@@ -172,6 +175,7 @@ pub fn process_gh_run(gh_run: &GhRun, repo_dir: &Path, repo_url: &str) -> Option
         conclusion,
         wall_clock_secs,
         jobs: ci_jobs,
+        commit_title: gh_run.display_title.clone(),
         fetched: true,
     })
 }
@@ -238,7 +242,7 @@ pub fn list_runs(repo_dir: &Path, branch: Option<&String>, count: u32) -> Option
         "--status",
         "completed",
         "--json",
-        "databaseId,createdAt,headBranch",
+        "databaseId,createdAt,headBranch,displayTitle",
     ];
 
     if let Some(branch) = branch {
@@ -292,10 +296,14 @@ fn compute_duration_secs(
 }
 
 pub fn format_secs(secs: u64) -> String {
-    if secs >= 60 {
+    if secs >= 3600 {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        format!("{h}h {m:>2}m")
+    } else if secs >= 60 {
         format!("{:>2}m {:>2}s", secs / 60, secs % 60)
     } else {
-        format!("    {secs:>2}s")
+        format!("{secs:>2}s")
     }
 }
 

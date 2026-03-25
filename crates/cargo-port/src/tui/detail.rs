@@ -61,7 +61,7 @@ pub struct PendingCiFetch {
 pub enum DetailField {
     Name,
     Path,
-    Types,
+    Targets,
     Disk,
     Ci,
     Stats,
@@ -80,7 +80,7 @@ impl DetailField {
         match self {
             Self::Name => "Name",
             Self::Path => "Path",
-            Self::Types => "Types",
+            Self::Targets => "Targets",
             Self::Disk => "Disk",
             Self::Ci => "CI",
             Self::Stats => "Stats",
@@ -111,7 +111,7 @@ impl DetailField {
         match self {
             Self::Name => info.name.clone(),
             Self::Path => info.path.clone(),
-            Self::Types => info.types.clone(),
+            Self::Targets => info.types.clone(),
             Self::Disk => info.disk.clone(),
             Self::Ci => info.ci.clone(),
             Self::Stats => info.stats.clone(),
@@ -130,12 +130,12 @@ impl DetailField {
     }
 }
 
-/// All fields for the Project column: read-only info then editable at the bottom.
-pub(super) fn project_fields(info: &DetailInfo) -> Vec<DetailField> {
+/// All fields for the `Package` column: read-only info then editable at the bottom.
+pub(super) fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
     let mut fields = vec![
         DetailField::Name,
         DetailField::Path,
-        DetailField::Types,
+        DetailField::Targets,
         DetailField::Disk,
         DetailField::Ci,
         DetailField::Stats,
@@ -172,7 +172,7 @@ pub(super) fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
 }
 
 pub(super) struct DetailInfo {
-    pub project_title:  String,
+    pub package_title:  String,
     pub name:           String,
     pub path:           String,
     pub version:        String,
@@ -264,7 +264,7 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
         |node| (app.formatted_disk_for_node(node), app.ci_for_node(node)),
     );
 
-    let project_title = if project.is_workspace() {
+    let package_title = if project.is_workspace() {
         "Workspace".to_string()
     } else {
         // Check if this project is under a workspace node
@@ -280,7 +280,7 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
         if is_member {
             "Workspace Member".to_string()
         } else {
-            "Project".to_string()
+            "Package".to_string()
         }
     };
 
@@ -312,7 +312,7 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
     };
 
     DetailInfo {
-        project_title,
+        package_title,
         name: project.name.clone().unwrap_or_else(|| "-".to_string()),
         path: project.path.clone(),
         version: project.version.clone().unwrap_or_else(|| "-".to_string()),
@@ -342,9 +342,8 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_column(
+fn render_column_inner(
     frame: &mut Frame,
-    title: &str,
     app: &App,
     info: &DetailInfo,
     fields: &[DetailField],
@@ -356,11 +355,7 @@ fn render_column(
     editable_label_style: Style,
     area: Rect,
 ) {
-    let title_style = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
-    let mut lines: Vec<Line<'static>> =
-        vec![Line::from(Span::styled(format!("  {title}"), title_style))];
+    let mut lines: Vec<Line<'static>> = Vec::new();
     for (i, field) in fields.iter().enumerate() {
         let label = field.label();
         let is_focused = detail_focused && is_active_column && i == cursor;
@@ -437,7 +432,7 @@ fn render_column(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_git_column(
+fn render_git_column_inner(
     frame: &mut Frame,
     app: &App,
     info: &DetailInfo,
@@ -449,10 +444,7 @@ fn render_git_column(
     label_style: Style,
     area: Rect,
 ) {
-    let title_style = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
-    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled("  Git", title_style))];
+    let mut lines: Vec<Line<'static>> = Vec::new();
 
     for (i, field) in fields.iter().enumerate() {
         let label = field.label();
@@ -477,7 +469,10 @@ fn render_git_column(
     // Worktree list for worktree parents
     if !info.worktree_names.is_empty() {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("  Worktrees", title_style)));
+        let wt_title_style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        lines.push(Line::from(Span::styled("  Worktrees", wt_title_style)));
         let wt_style = Style::default().fg(Color::DarkGray);
         for name in &info.worktree_names {
             lines.push(Line::from(Span::styled(format!("    {name}"), wt_style)));
@@ -517,13 +512,6 @@ fn build_target_lines(app: &App, info: &DetailInfo, active: bool) -> Vec<Line<'s
 
     // Examples section
     if !info.examples.is_empty() {
-        let total: usize = info.examples.iter().map(|g| g.names.len()).sum();
-        lines.push(Line::from(Span::styled(
-            format!("  Examples ({total})"),
-            title_style,
-        )));
-        line_idx += 1;
-
         for group in &info.examples {
             if group.category.is_empty() {
                 for name in &group.names {
@@ -640,6 +628,7 @@ fn render_targets_column(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn render_detail_panel(
     frame: &mut Frame,
     app: &App,
@@ -647,25 +636,11 @@ pub(super) fn render_detail_panel(
     area: Rect,
 ) {
     let detail_focused = app.focus == FocusTarget::DetailFields;
-
-    let detail_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Details ")
-        .title_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-        .border_style(if detail_focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        });
+    let title_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
 
     if let Some(info) = detail_info {
-        let detail_inner = detail_block.inner(area);
-        frame.render_widget(detail_block, area);
-
         let git = git_fields(info);
         let has_git = !git.is_empty();
         let has_targets = info.is_binary || !info.examples.is_empty() || !info.benches.is_empty();
@@ -674,41 +649,64 @@ pub(super) fn render_detail_panel(
             .direction(Direction::Horizontal)
             .constraints(match (has_git, has_targets) {
                 (true, true) => vec![
-                    Constraint::Percentage(35),
-                    Constraint::Percentage(30),
-                    Constraint::Percentage(35),
+                    Constraint::Min(30),
+                    Constraint::Min(25),
+                    Constraint::Fill(1),
                 ],
-                (true, false) | (false, true) => {
-                    vec![Constraint::Percentage(50), Constraint::Percentage(50)]
-                },
-                (false, false) => vec![Constraint::Percentage(100)],
+                (true, false) => vec![Constraint::Fill(1), Constraint::Min(30)],
+                (false, true) => vec![Constraint::Min(35), Constraint::Fill(1)],
+                (false, false) => vec![Constraint::Fill(1)],
             })
-            .split(detail_inner);
+            .split(area);
 
         let highlight_style = Style::default().fg(Color::Black).bg(Color::Cyan);
         let editable_label_style = Style::default().fg(Color::Cyan);
         let readonly_label_style = Style::default().fg(Color::DarkGray);
 
-        // Left column: project info + editable fields
-        render_column(
+        let active_border = Style::default().fg(Color::Cyan);
+        let inactive_border = Style::default();
+
+        // Project panel
+        let project_block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {} ", info.package_title))
+            .title_style(title_style)
+            .border_style(if detail_focused && app.detail_column == 0 {
+                active_border
+            } else {
+                inactive_border
+            });
+        let project_inner = project_block.inner(columns[0]);
+        frame.render_widget(project_block, columns[0]);
+        render_column_inner(
             frame,
-            &info.project_title,
             app,
             info,
-            &project_fields(info),
+            &package_fields(info),
             detail_focused,
             app.detail_column == 0,
             app.detail_cursor,
             highlight_style,
             readonly_label_style,
             editable_label_style,
-            columns[0],
+            project_inner,
         );
 
-        // Git column
+        // Git panel
         let mut next_col = 1;
         if has_git {
-            render_git_column(
+            let git_block = Block::default()
+                .borders(Borders::ALL)
+                .title(" Git ")
+                .title_style(title_style)
+                .border_style(if detail_focused && app.detail_column == next_col {
+                    active_border
+                } else {
+                    inactive_border
+                });
+            let git_inner = git_block.inner(columns[next_col]);
+            frame.render_widget(git_block, columns[next_col]);
+            render_git_column_inner(
                 frame,
                 app,
                 info,
@@ -718,30 +716,89 @@ pub(super) fn render_detail_panel(
                 app.detail_cursor,
                 highlight_style,
                 readonly_label_style,
-                columns[next_col],
+                git_inner,
             );
             next_col += 1;
         }
 
-        // Examples & benches column (scrollable)
+        // Examples & benches panel (scrollable)
         if has_targets {
+            let ex_count: usize = info.examples.iter().map(|g| g.names.len()).sum();
+            let bench_count = info.benches.len();
+            let targets_title = match (ex_count > 0, bench_count > 0) {
+                (true, true) => format!(" Examples ({ex_count}) / Benches ({bench_count}) "),
+                (true, false) => format!(" Examples ({ex_count}) "),
+                (false, true) => format!(" Benches ({bench_count}) "),
+                (false, false) => " Targets ".to_string(),
+            };
+            let targets_block = Block::default()
+                .borders(Borders::ALL)
+                .title(targets_title)
+                .title_style(title_style)
+                .border_style(if detail_focused && app.detail_column == next_col {
+                    active_border
+                } else {
+                    inactive_border
+                });
+            let targets_inner = targets_block.inner(columns[next_col]);
+            frame.render_widget(targets_block, columns[next_col]);
             render_targets_column(
                 frame,
                 app,
                 info,
                 detail_focused,
                 app.detail_column == next_col,
-                columns[next_col],
+                targets_inner,
             );
         }
     } else {
+        let empty_block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Details ")
+            .title_style(title_style);
         let content = vec![Line::from("  No project selected")];
-        let detail = Paragraph::new(content).block(detail_block);
+        let detail = Paragraph::new(content).block(empty_block);
         frame.render_widget(detail, area);
     }
 }
 
 /// Format ISO 8601 timestamp as `yyyy-mm-dd hh:mm`.
+/// Get the local UTC offset in seconds (e.g., -28800 for PST).
+fn local_utc_offset_secs() -> i64 {
+    use std::process::Command;
+    // Use `date +%z` to get the timezone offset like "-0700" or "+0530"
+    Command::new("date")
+        .arg("+%z")
+        .output()
+        .ok()
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.len() >= 5 {
+                let sign: i64 = if s.starts_with('-') { -1 } else { 1 };
+                let hours: i64 = s[1..3].parse().ok()?;
+                let mins: i64 = s[3..5].parse().ok()?;
+                Some(sign * (hours * 3600 + mins * 60))
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0)
+}
+
+const fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        2 => {
+            if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                29
+            } else {
+                28
+            }
+        },
+        _ => 30,
+    }
+}
+
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 fn spinner_frame(tick: usize) -> &'static str {
@@ -749,10 +806,61 @@ fn spinner_frame(tick: usize) -> &'static str {
     SPINNER_FRAMES[(tick / 6) % SPINNER_FRAMES.len()]
 }
 
+/// Convert a UTC ISO 8601 timestamp to local time, formatted as `yyyy-mm-dd hh:mm`.
 fn format_timestamp(iso: &str) -> String {
+    // Get local UTC offset using libc (macOS/Linux)
+    let utc_offset_secs = local_utc_offset_secs();
+
     let stripped = iso.trim_end_matches('Z');
     match stripped.split_once('T') {
         Some((date, time)) => {
+            // Parse date and time components
+            let date_parts: Vec<&str> = date.split('-').collect();
+            let time_parts: Vec<&str> = time.split(':').collect();
+            if date_parts.len() >= 3
+                && time_parts.len() >= 2
+                && let (Ok(y), Ok(mo), Ok(d), Ok(h), Ok(mi)) = (
+                    date_parts[0].parse::<i64>(),
+                    date_parts[1].parse::<i64>(),
+                    date_parts[2].parse::<i64>(),
+                    time_parts[0].parse::<i64>(),
+                    time_parts[1].parse::<i64>(),
+                )
+            {
+                // Convert to total minutes, apply offset, reconstruct
+                let total_mins = h * 60 + mi + utc_offset_secs / 60;
+                let mut day = d;
+                let mut month = mo;
+                let mut year = y;
+                let mut adj_mins = total_mins % (24 * 60);
+                if adj_mins < 0 {
+                    adj_mins += 24 * 60;
+                    day -= 1;
+                    if day < 1 {
+                        month -= 1;
+                        if month < 1 {
+                            month = 12;
+                            year -= 1;
+                        }
+                        day = days_in_month(year, month);
+                    }
+                } else if adj_mins >= 24 * 60 {
+                    adj_mins -= 24 * 60;
+                    day += 1;
+                    if day > days_in_month(year, month) {
+                        day = 1;
+                        month += 1;
+                        if month > 12 {
+                            month = 1;
+                            year += 1;
+                        }
+                    }
+                }
+                let local_h = adj_mins / 60;
+                let local_m = adj_mins % 60;
+                return format!("{year:04}-{month:02}-{day:02} {local_h:02}:{local_m:02}");
+            }
+            // Fallback: just strip Z and show as-is
             let short_time = if time.len() >= 5 { &time[..5] } else { time };
             format!("{date} {short_time}")
         },
@@ -810,6 +918,7 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], a
         .fg(Color::DarkGray);
     let mut header_cells = vec![
         Cell::from("#").style(right_aligned),
+        Cell::from("Commit").style(right_aligned),
         Cell::from("Branch").style(right_aligned),
         Cell::from("Timestamp").style(right_aligned),
     ];
@@ -818,11 +927,13 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], a
             Cell::from(Line::from(col.label()).alignment(ratatui::layout::Alignment::Right))
                 .style(right_aligned),
         );
+        header_cells.push(Cell::from("")); // glyph column
     }
     header_cells.push(
         Cell::from(Line::from("Total").alignment(ratatui::layout::Alignment::Right))
             .style(right_aligned),
     );
+    header_cells.push(Cell::from("")); // glyph column
     let header = Row::new(header_cells).bottom_margin(0);
 
     // Data rows
@@ -838,8 +949,10 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], a
                 .map_or_else(|| "—".to_string(), crate::ci::format_secs);
 
             let row_num = format!("{}", i + 1);
+            let commit = ci_run.commit_title.as_deref().unwrap_or("");
             let mut cells = vec![
                 Cell::from(row_num).style(Style::default().fg(Color::DarkGray)),
+                Cell::from(commit.to_string()),
                 Cell::from(branch.clone()),
                 Cell::from(timestamp),
             ];
@@ -847,40 +960,70 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], a
             for col in &cols {
                 let job = ci_run.jobs.iter().find(|j| col.matches(&j.name));
                 if let Some(j) = job {
-                    let text = format!("{} {}", j.duration, j.conclusion);
+                    let style = conclusion_style(&j.conclusion);
                     cells.push(
-                        Cell::from(Line::from(text).alignment(ratatui::layout::Alignment::Right))
-                            .style(conclusion_style(&j.conclusion)),
+                        Cell::from(
+                            Line::from(j.duration.trim().to_string())
+                                .alignment(ratatui::layout::Alignment::Right),
+                        )
+                        .style(style),
                     );
+                    cells.push(Cell::from(j.conclusion.clone()).style(style));
                 } else {
                     cells.push(
                         Cell::from(Line::from("—").alignment(ratatui::layout::Alignment::Right))
                             .style(Style::default().fg(Color::DarkGray)),
                     );
+                    cells.push(Cell::from(""));
                 }
             }
 
             // Total column
-            let total_text = format!("{total_dur} {}", ci_run.conclusion);
+            let total_style = conclusion_style(&ci_run.conclusion);
             cells.push(
-                Cell::from(Line::from(total_text).alignment(ratatui::layout::Alignment::Right))
-                    .style(conclusion_style(&ci_run.conclusion)),
+                Cell::from(
+                    Line::from(total_dur.trim().to_string())
+                        .alignment(ratatui::layout::Alignment::Right),
+                )
+                .style(total_style),
             );
+            cells.push(Cell::from(ci_run.conclusion.clone()).style(total_style));
 
             Row::new(cells)
         })
         .collect();
 
-    // Column widths
+    // Fit columns to their longest content
+    #[allow(clippy::cast_possible_truncation)]
+    let max_commit_width = ci_runs
+        .iter()
+        .filter_map(|r| r.commit_title.as_ref())
+        .map(String::len)
+        .max()
+        .unwrap_or(18)
+        .max(18) as u16; // minimum fits "↓ fetch more runs"
+
+    #[allow(clippy::cast_possible_truncation)]
+    let max_branch_width = ci_runs
+        .iter()
+        .map(|r| r.branch.len())
+        .max()
+        .unwrap_or(6)
+        .max(6) as u16;
+
+    // Column widths — commit and branch fit content, timings tight
     let mut widths = vec![
-        Constraint::Length(3),  // # row number
-        Constraint::Fill(1),    // Branch — takes leftover space
-        Constraint::Length(16), // Timestamp (yyyy-mm-dd hh:mm)
+        Constraint::Length(3),                // # row number
+        Constraint::Length(max_commit_width), // Commit — fits longest
+        Constraint::Length(max_branch_width), // Branch — fits longest
+        Constraint::Length(16),               // Timestamp (yyyy-mm-dd hh:mm)
     ];
     for _ in &cols {
-        widths.push(Constraint::Min(8));
+        widths.push(Constraint::Length(8)); // duration: ##m ##s
+        widths.push(Constraint::Length(1)); // glyph: ✓/✗/⊘
     }
-    widths.push(Constraint::Min(8)); // Total
+    widths.push(Constraint::Length(8)); // Total duration
+    widths.push(Constraint::Length(1)); // Total glyph
 
     // "Fetch more" / "no older runs" as a table row
     let no_more = app
@@ -963,7 +1106,7 @@ fn detail_column_field_count(app: &App, column: usize) -> usize {
     if column == 0 {
         app.selected_project().map_or(0, |p| {
             let info = build_detail_info(app, p);
-            project_fields(&info).len()
+            package_fields(&info).len()
         })
     } else {
         // Git column
@@ -1015,7 +1158,6 @@ fn target_item_at(app: &App, scroll: usize) -> Option<TargetItem> {
 
     // Examples section
     if !project.examples.is_empty() {
-        line += 1; // "Examples (N)" header
         for group in &project.examples {
             if group.category.is_empty() {
                 for name in &group.names {
@@ -1073,7 +1215,6 @@ fn targets_visible_line_count(app: &App) -> usize {
 
     // Examples
     if !project.examples.is_empty() {
-        count += 1; // header
         for group in &project.examples {
             if group.category.is_empty() {
                 count += group.names.len();
@@ -1256,7 +1397,7 @@ pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
                     .selected_project()
                     .map(|p| {
                         let info = build_detail_info(app, p);
-                        project_fields(&info)
+                        package_fields(&info)
                     })
                     .unwrap_or_default();
                 if let Some(field) = fields.get(app.detail_cursor)

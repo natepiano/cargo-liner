@@ -1,14 +1,14 @@
 [package]
-authors    = ["natepiano"]
-edition    = "2024"
+authors     = ["natepiano"]
 categories  = ["command-line-utilities", "development-tools"]
 description = "A TUI for inspecting and managing Rust projects"
+edition     = "2024"
 homepage    = "https://github.com/natepiano/cargo-port"
-keywords    = ["cargo", "rust", "tui", "project", "inspect"]
+keywords    = ["cargo", "inspect", "project", "rust", "tui"]
 license     = "MIT OR Apache-2.0"
 name        = "cargo-port"
-repository = "https://github.com/natepiano/cargo-port"
-version    = "0.0.1"
+repository  = "https://github.com/natepiano/cargo-port"
+version     = "0.0.1"
 
 [lints.clippy]
 # Our strict lints

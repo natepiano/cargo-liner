@@ -213,7 +213,10 @@ pub struct App {
     pub ci_runs:                 HashMap<String, Vec<CiRun>>,
     pub git_info:                HashMap<String, GitInfo>,
     pub crates_versions:         HashMap<String, String>,
+    pub bg_tx:                   mpsc::Sender<BackgroundMsg>,
     pub bg_rx:                   Receiver<BackgroundMsg>,
+    pub fully_loaded:            HashSet<String>,
+    pub priority_fetch_path:     Option<String>,
     pub invert_scroll:           bool,
     pub expanded:                HashSet<ExpandKey>,
     pub list_state:              ListState,
@@ -256,6 +259,7 @@ impl App {
     fn new(
         scan_root: PathBuf,
         projects: Vec<RustProject>,
+        bg_tx: mpsc::Sender<BackgroundMsg>,
         bg_rx: Receiver<BackgroundMsg>,
         cfg: &Config,
     ) -> Self {
@@ -282,7 +286,10 @@ impl App {
             ci_runs: HashMap::new(),
             git_info: HashMap::new(),
             crates_versions: HashMap::new(),
+            bg_tx,
             bg_rx,
+            fully_loaded: HashSet::new(),
+            priority_fetch_path: None,
             invert_scroll: cfg.mouse.invert_scroll,
             expanded: HashSet::new(),
             list_state,
@@ -370,6 +377,8 @@ impl App {
         self.scan_log.clear();
         self.scan_log_state = ListState::default();
         self.scan_complete = false;
+        self.fully_loaded.clear();
+        self.priority_fetch_path = None;
         self.focus = FocusTarget::ProjectList;
         self.detail_column = 0;
         self.detail_cursor = 0;
@@ -380,28 +389,38 @@ impl App {
         self.pending_ci_fetch = None;
         self.expanded.clear();
         self.list_state = ListState::default();
-        self.bg_rx = spawn_streaming_scan(&self.scan_root, self.ci_run_count, &self.exclude_dirs);
+        let (tx, rx) = spawn_streaming_scan(&self.scan_root, self.ci_run_count, &self.exclude_dirs);
+        self.bg_tx = tx;
+        self.bg_rx = rx;
     }
 
     #[allow(clippy::too_many_lines)]
     fn poll_background(&mut self) {
+        const MAX_MSGS_PER_FRAME: usize = 50;
         let mut needs_rebuild = false;
-        while let Ok(msg) = self.bg_rx.try_recv() {
+        let mut msg_count = 0;
+
+        while msg_count < MAX_MSGS_PER_FRAME {
+            let Ok(msg) = self.bg_rx.try_recv() else {
+                break;
+            };
+            msg_count += 1;
             match msg {
                 BackgroundMsg::DiskUsage { path, bytes } => {
+                    self.fully_loaded.insert(path.clone());
                     self.disk_usage.insert(path, bytes);
                 },
                 BackgroundMsg::CiRuns { path, runs } => {
-                    // Check if this repo is marked as exhausted
+                    // Check exhausted using cached git_info (no gh call!)
+                    if let Some(git) = self.git_info.get(&path)
+                        && let Some(ref url) = git.url
+                        && let Some((owner, repo)) = crate::ci::parse_owner_repo(url)
+                        && scan::is_exhausted(&owner, &repo)
+                    {
+                        self.ci_no_more_runs.insert(path.clone());
+                    }
+                    // Propagate to workspace members
                     if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
-                        if let Some(url) =
-                            crate::ci::get_repo_url(std::path::Path::new(&node.project.abs_path))
-                            && let Some((owner, repo)) = crate::ci::parse_owner_repo(&url)
-                            && scan::is_exhausted(&owner, &repo)
-                        {
-                            self.ci_no_more_runs.insert(path.clone());
-                        }
-                        // Propagate to workspace members
                         for group in &node.groups {
                             for member in &group.members {
                                 self.ci_runs
@@ -470,12 +489,10 @@ impl App {
                     // Detect if no new runs were found and persist marker
                     if merged.len() <= self.ci_fetch_prev_count {
                         self.ci_no_more_runs.insert(path.clone());
-                        // Persist to disk
-                        if let Some(node) = self.nodes.iter().find(|n| n.project.path == path)
-                            && let Some(url) = crate::ci::get_repo_url(std::path::Path::new(
-                                &node.project.abs_path,
-                            ))
-                            && let Some((owner, repo)) = crate::ci::parse_owner_repo(&url)
+                        // Persist to disk using cached git info (no gh call)
+                        if let Some(git) = self.git_info.get(&path)
+                            && let Some(ref url) = git.url
+                            && let Some((owner, repo)) = crate::ci::parse_owner_repo(url)
                         {
                             scan::mark_exhausted(&owner, &repo);
                         }
@@ -514,6 +531,25 @@ impl App {
 
         if needs_rebuild {
             self.rebuild_tree();
+            // Trigger priority fetch for the currently selected project
+            self.maybe_priority_fetch();
+        }
+    }
+
+    /// Spawn a priority fetch for the selected project if it hasn't been loaded yet.
+    fn maybe_priority_fetch(&mut self) {
+        if self.scan_complete {
+            return;
+        }
+        let Some(project) = self.selected_project() else {
+            return;
+        };
+        let path = project.path.clone();
+        let abs_path = project.abs_path.clone();
+        let name = project.name.clone();
+        if !self.fully_loaded.contains(&path) && self.priority_fetch_path.as_ref() != Some(&path) {
+            self.priority_fetch_path = Some(path.clone());
+            spawn_priority_fetch(self, &path, &abs_path, name.as_ref());
         }
     }
 
@@ -1095,7 +1131,8 @@ pub fn run(path: PathBuf) -> ExitCode {
     };
 
     let cfg = config::load();
-    let bg_rx = spawn_streaming_scan(&scan_root, cfg.tui.ci_run_count, &cfg.tui.exclude_dirs);
+    let (bg_tx, bg_rx) =
+        spawn_streaming_scan(&scan_root, cfg.tui.ci_run_count, &cfg.tui.exclude_dirs);
     let projects: Vec<RustProject> = Vec::new();
 
     let original_hook = std::panic::take_hook();
@@ -1113,7 +1150,7 @@ pub fn run(path: PathBuf) -> ExitCode {
         },
     };
 
-    let mut app = App::new(scan_root, projects, bg_rx, &cfg);
+    let mut app = App::new(scan_root, projects, bg_tx, bg_rx, &cfg);
 
     let result = event_loop(&mut terminal, &mut app);
 
@@ -1358,12 +1395,74 @@ fn save_last_selected(project_path: &str) {
 }
 
 /// Update the last selected path when the user navigates.
+/// If the scan is still running and the selected project doesn't have details yet,
+/// spawn a priority fetch to load its data immediately.
 fn track_selection(app: &mut App) {
     if let Some(project) = app.selected_project() {
         let path = project.path.clone();
         app.last_selected_path = Some(path.clone());
         save_last_selected(&path);
     }
+    app.maybe_priority_fetch();
+}
+
+/// Spawn a background thread to fetch details for a single project ahead of the main scan.
+fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: Option<&String>) {
+    use crate::project::GitInfo;
+
+    let tx = app.bg_tx.clone();
+    let project_path = path.to_string();
+    let abs = PathBuf::from(abs_path);
+    let has_git = abs.join(".git").exists();
+    let ci_run_count = app.ci_run_count;
+    let project_name = name.cloned();
+
+    // Git info is local and instant — fetch on a separate thread immediately
+    if has_git {
+        let tx_git = tx.clone();
+        let path_git = project_path.clone();
+        let abs_git = abs.clone();
+        thread::spawn(move || {
+            if let Some(info) = GitInfo::detect(&abs_git) {
+                let _ = tx_git.send(BackgroundMsg::GitInfo {
+                    path: path_git,
+                    info,
+                });
+            }
+        });
+    }
+
+    // CI runs from cache are also fast — separate thread
+    if has_git {
+        let tx_ci = tx.clone();
+        let path_ci = project_path.clone();
+        let abs_ci = abs.clone();
+        thread::spawn(move || {
+            let runs = scan::fetch_ci_runs_cached(&abs_ci, ci_run_count);
+            let _ = tx_ci.send(BackgroundMsg::CiRuns {
+                path: path_ci,
+                runs,
+            });
+        });
+    }
+
+    // Disk + crates.io on another thread (slower)
+    thread::spawn(move || {
+        let bytes = scan::dir_size(&abs);
+        let _ = tx.send(BackgroundMsg::DiskUsage {
+            path: project_path.clone(),
+            bytes,
+        });
+
+        if let Some(name) = project_name.as_ref()
+            && let Some(version) = scan::fetch_crates_io_version(name)
+        {
+            let _ = tx.send(BackgroundMsg::CratesIoVersion {
+                path: project_path,
+                version,
+            });
+        }
+    });
 }
 
 fn handle_normal_key(app: &mut App, key: KeyCode) {

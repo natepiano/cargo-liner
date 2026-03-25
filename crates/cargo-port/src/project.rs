@@ -10,24 +10,26 @@ use toml::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GitOrigin {
-    /// A plain git clone (only "origin" remote).
+    /// A local-only repo (no origin remote).
+    Local,
+    /// A plain git clone (has "origin" remote).
     Clone,
     /// A fork (has an "upstream" remote).
     Fork,
 }
 
 impl GitOrigin {
-    /// Returns a single-character icon: `⑂` for fork, `⊙` for clone.
     pub const fn icon(self) -> &'static str {
         match self {
+            Self::Local => "●",
             Self::Clone => "⊙",
             Self::Fork => "⑂",
         }
     }
 
-    /// Returns the label: "clone" or "fork".
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Local => "local",
             Self::Clone => "clone",
             Self::Fork => "fork",
         }
@@ -60,8 +62,11 @@ impl GitInfo {
             .output()
             .ok()?;
         let remotes = String::from_utf8_lossy(&remote_output.stdout);
+        let has_origin = remotes.lines().any(|line| line.trim() == "origin");
         let has_upstream = remotes.lines().any(|line| line.trim() == "upstream");
-        let origin = if has_upstream {
+        let origin = if !has_origin {
+            GitOrigin::Local
+        } else if has_upstream {
             GitOrigin::Fork
         } else {
             GitOrigin::Clone
