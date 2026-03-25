@@ -7,6 +7,8 @@ use super::cli::FixCli;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FixKind {
     ShortenImport,
+    PreferModuleImport,
+    InlinePathQualifiedType,
     FixPubUse,
 }
 
@@ -20,10 +22,21 @@ impl FixSelection {
         let mut kinds = BTreeSet::new();
         if fix_cli.fix {
             kinds.insert(FixKind::ShortenImport);
+            kinds.insert(FixKind::PreferModuleImport);
+            kinds.insert(FixKind::InlinePathQualifiedType);
         }
         if fix_cli.fix_pub_use {
             kinds.insert(FixKind::FixPubUse);
         }
+        Self { kinds }
+    }
+
+    fn all_fix_kinds() -> Self {
+        let mut kinds = BTreeSet::new();
+        kinds.insert(FixKind::ShortenImport);
+        kinds.insert(FixKind::PreferModuleImport);
+        kinds.insert(FixKind::InlinePathQualifiedType);
+        kinds.insert(FixKind::FixPubUse);
         Self { kinds }
     }
 
@@ -49,12 +62,14 @@ impl OperationMode {
     pub fn from_cli(fix_cli: &FixCli) -> Result<Self> {
         let fixes = FixSelection::from_cli(fix_cli);
         if fix_cli.dry_run {
-            if fixes.is_empty() {
-                anyhow::bail!("`--dry-run` requires `--fix` or `--fix-pub-use`");
-            }
+            let effective_fixes = if fixes.is_empty() {
+                FixSelection::all_fix_kinds()
+            } else {
+                fixes
+            };
             return Ok(Self {
                 intent: OperationIntent::DryRun,
-                fixes,
+                fixes:  effective_fixes,
             });
         }
 
@@ -93,20 +108,20 @@ mod tests {
     }
 
     #[test]
-    fn operation_mode_rejects_dry_run_without_fix_flags() {
+    fn operation_mode_dry_run_alone_implies_all_fix_kinds() {
         let cli = FixCli {
             fix:         false,
             fix_pub_use: false,
             dry_run:     true,
         };
-        let mode = OperationMode::from_cli(&cli);
-        let Err(err) = mode else {
-            unreachable!("dry run without fix flags should be rejected");
+        let Ok(mode) = OperationMode::from_cli(&cli) else {
+            unreachable!("dry run alone should parse");
         };
-        assert!(
-            err.to_string()
-                .contains("`--dry-run` requires `--fix` or `--fix-pub-use`")
-        );
+        assert_eq!(mode.intent, OperationIntent::DryRun);
+        assert!(mode.fixes.contains(FixKind::ShortenImport));
+        assert!(mode.fixes.contains(FixKind::PreferModuleImport));
+        assert!(mode.fixes.contains(FixKind::InlinePathQualifiedType));
+        assert!(mode.fixes.contains(FixKind::FixPubUse));
     }
 
     #[test]

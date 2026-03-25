@@ -4,6 +4,7 @@ use crate::compiler;
 use crate::config;
 use crate::diagnostics;
 use crate::imports;
+use crate::inline_path_qualified_type;
 use crate::outcome::AnalysisFailure;
 use crate::outcome::CompilerFailureCause;
 use crate::outcome::ExecutionNotice;
@@ -14,6 +15,7 @@ use crate::outcome::MendFailure;
 use crate::outcome::NoticeKind;
 use crate::outcome::PubUseNotice;
 use crate::outcome::RollbackStatus;
+use crate::prefer_module_import;
 use crate::pub_use_fixes;
 use crate::run_mode::FixKind;
 use crate::run_mode::OperationIntent;
@@ -31,10 +33,12 @@ enum BuildReportFailure {
 }
 
 struct RunPlan {
-    mode:         OperationMode,
-    report:       diagnostics::Report,
-    import_scan:  Option<imports::ImportScan>,
-    pub_use_scan: Option<pub_use_fixes::PubUseFixScan>,
+    mode:                      OperationMode,
+    report:                    diagnostics::Report,
+    import_scan:               Option<imports::ImportScan>,
+    prefer_module_import_scan: Option<prefer_module_import::PreferModuleImportScan>,
+    inline_path_scan:          Option<inline_path_qualified_type::InlinePathScan>,
+    pub_use_scan:              Option<pub_use_fixes::PubUseFixScan>,
 }
 
 impl<'a> MendRunner<'a> {
@@ -65,6 +69,18 @@ impl<'a> MendRunner<'a> {
             .then(|| imports::scan_selection(self.selection))
             .transpose()
             .map_err(MendFailure::Unexpected)?;
+        let prefer_module_import_scan = mode
+            .fixes
+            .contains(FixKind::PreferModuleImport)
+            .then(|| prefer_module_import::scan_selection(self.selection))
+            .transpose()
+            .map_err(MendFailure::Unexpected)?;
+        let inline_path_scan = mode
+            .fixes
+            .contains(FixKind::InlinePathQualifiedType)
+            .then(|| inline_path_qualified_type::scan_selection(self.selection))
+            .transpose()
+            .map_err(MendFailure::Unexpected)?;
         let pub_use_scan = mode
             .fixes
             .contains(FixKind::FixPubUse)
@@ -76,6 +92,8 @@ impl<'a> MendRunner<'a> {
             mode,
             report,
             import_scan,
+            prefer_module_import_scan,
+            inline_path_scan,
             pub_use_scan,
         })
     }
@@ -91,6 +109,8 @@ impl<'a> MendRunner<'a> {
                     planned.mode.intent,
                     Some(&planned.report),
                     planned.import_scan.as_ref(),
+                    planned.prefer_module_import_scan.as_ref(),
+                    planned.inline_path_scan.as_ref(),
                     planned.pub_use_scan.as_ref(),
                 );
                 Ok(ExecutionOutcome {
@@ -103,13 +123,19 @@ impl<'a> MendRunner<'a> {
     }
 
     fn apply(&self, planned: RunPlan) -> Result<ExecutionOutcome, MendFailure> {
-        let fixes =
-            Self::combined_fixes(planned.import_scan.as_ref(), planned.pub_use_scan.as_ref())?;
+        let fixes = Self::combined_fixes(
+            planned.import_scan.as_ref(),
+            planned.prefer_module_import_scan.as_ref(),
+            planned.inline_path_scan.as_ref(),
+            planned.pub_use_scan.as_ref(),
+        )?;
         if fixes.is_empty() {
             let notice = Self::build_fix_notice(
                 planned.mode.intent,
                 Some(&planned.report),
                 planned.import_scan.as_ref(),
+                planned.prefer_module_import_scan.as_ref(),
+                planned.inline_path_scan.as_ref(),
                 planned.pub_use_scan.as_ref(),
             );
             return Ok(ExecutionOutcome {
@@ -126,6 +152,8 @@ impl<'a> MendRunner<'a> {
                     planned.mode.intent,
                     Some(&report),
                     planned.import_scan.as_ref(),
+                    planned.prefer_module_import_scan.as_ref(),
+                    planned.inline_path_scan.as_ref(),
                     planned.pub_use_scan.as_ref(),
                 );
                 Ok(ExecutionOutcome { report, notice })
@@ -145,10 +173,34 @@ impl<'a> MendRunner<'a> {
 
     fn combined_fixes(
         import_scan: Option<&imports::ImportScan>,
+        prefer_module_import_scan: Option<&prefer_module_import::PreferModuleImportScan>,
+        inline_path_scan: Option<&inline_path_qualified_type::InlinePathScan>,
         pub_use_scan: Option<&pub_use_fixes::PubUseFixScan>,
     ) -> Result<imports::ValidatedFixSet, MendFailure> {
+        // Collect prefer_module_import fix ranges for deconfliction with ShortenImport
+        let prefer_ranges: Vec<(&std::path::Path, usize, usize)> = prefer_module_import_scan
+            .iter()
+            .flat_map(|scan| scan.fixes.iter())
+            .map(|fix| (fix.path.as_path(), fix.start, fix.end))
+            .collect();
+
         let mut fixes = Vec::new();
+
+        // Add ShortenImport fixes, filtering out any that overlap with PreferModuleImport
         if let Some(scan) = import_scan {
+            for fix in scan.fixes.iter() {
+                let overlaps = prefer_ranges.iter().any(|(path, start, end)| {
+                    fix.path.as_path() == *path && fix.start < *end && *start < fix.end
+                });
+                if !overlaps {
+                    fixes.push(fix.clone());
+                }
+            }
+        }
+        if let Some(scan) = prefer_module_import_scan {
+            fixes.extend(scan.fixes.iter().cloned());
+        }
+        if let Some(scan) = inline_path_scan {
             fixes.extend(scan.fixes.iter().cloned());
         }
         if let Some(scan) = pub_use_scan {
@@ -161,13 +213,28 @@ impl<'a> MendRunner<'a> {
         intent: OperationIntent,
         report: Option<&diagnostics::Report>,
         import_scan: Option<&imports::ImportScan>,
+        prefer_module_import_scan: Option<&prefer_module_import::PreferModuleImportScan>,
+        inline_path_scan: Option<&inline_path_qualified_type::InlinePathScan>,
         pub_use_scan: Option<&pub_use_fixes::PubUseFixScan>,
     ) -> Option<ExecutionNotice> {
         let mut notices = Vec::new();
+        let mut import_fix_count = 0;
         if let Some(scan) = import_scan {
+            import_fix_count += scan.findings.len();
+        }
+        if let Some(scan) = prefer_module_import_scan {
+            import_fix_count += scan.findings.len();
+        }
+        if let Some(scan) = inline_path_scan {
+            import_fix_count += scan.findings.len();
+        }
+        if import_scan.is_some()
+            || prefer_module_import_scan.is_some()
+            || inline_path_scan.is_some()
+        {
             notices.push(NoticeKind::ImportFixes(FixNotice::from_intent(
                 intent,
-                scan.fixes.len(),
+                import_fix_count,
             )));
         }
 
@@ -203,6 +270,12 @@ impl<'a> MendRunner<'a> {
         let import_scan =
             imports::scan_selection(self.selection).map_err(BuildReportFailure::Unexpected)?;
         report.findings.extend(import_scan.findings);
+        let prefer_module_import_scan = prefer_module_import::scan_selection(self.selection)
+            .map_err(BuildReportFailure::Unexpected)?;
+        report.findings.extend(prefer_module_import_scan.findings);
+        let inline_path_scan = inline_path_qualified_type::scan_selection(self.selection)
+            .map_err(BuildReportFailure::Unexpected)?;
+        report.findings.extend(inline_path_scan.findings);
         report.findings.sort_by(|a, b| {
             (
                 a.severity,

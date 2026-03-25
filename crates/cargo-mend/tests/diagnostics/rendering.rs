@@ -52,6 +52,8 @@ mod private_parent;
 mod internal_parent;
 mod stale_parent;
 mod wild_parent;
+mod func_parent;
+mod type_parent;
 pub mod review_mod;
 pub use private_parent::PublicContainer;
 
@@ -60,6 +62,38 @@ fn main() {}
     )
     .expect("write fixture main");
     fs::write(temp.path().join("src/review_mod.rs"), "\n").expect("write review mod");
+    fs::create_dir_all(temp.path().join("src/type_parent")).expect("create type_parent");
+    fs::write(
+        temp.path().join("src/type_parent/mod.rs"),
+        "mod types;\nmod consumer;\n",
+    )
+    .expect("write type_parent mod");
+    fs::write(
+        temp.path().join("src/type_parent/types.rs"),
+        "pub struct MyWidget;\n",
+    )
+    .expect("write type_parent types");
+    fs::write(
+        temp.path().join("src/type_parent/consumer.rs"),
+        "fn example(_w: crate::type_parent::types::MyWidget) {}\n",
+    )
+    .expect("write type_parent consumer");
+    fs::create_dir_all(temp.path().join("src/func_parent")).expect("create func_parent");
+    fs::write(
+        temp.path().join("src/func_parent/mod.rs"),
+        "mod utils;\nmod consumer;\n",
+    )
+    .expect("write func_parent mod");
+    fs::write(
+        temp.path().join("src/func_parent/utils.rs"),
+        "pub fn do_thing() -> i32 { 42 }\n",
+    )
+    .expect("write func_parent utils");
+    fs::write(
+        temp.path().join("src/func_parent/consumer.rs"),
+        "use crate::func_parent::utils::do_thing;\n\nfn example() -> i32 { do_thing() }\n",
+    )
+    .expect("write func_parent consumer");
     fs::write(
         temp.path().join("src/private_parent.rs"),
         "mod child;\npub use child::PublicContainer;\n",
@@ -145,7 +179,7 @@ pub struct Suspicious;
         codes, expected_codes,
         "fixture should trigger every diagnostic at least once"
     );
-    assert_eq!(report.findings.len(), 7);
+    assert_eq!(report.findings.len(), 10);
     assert_summary_matches_findings(&report);
 
     let rendered_output = mend_command()

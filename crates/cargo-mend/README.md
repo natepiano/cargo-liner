@@ -546,6 +546,58 @@ Today, that auto-fix mode is intentionally narrow:
 - it preserves the original import visibility (`use`, `pub use`, `pub(crate) use`, and so on)
 - it rolls the edits back automatically if the follow-up `cargo check` fails
 
+<a id="prefer-module-import"></a>
+### Prefer module import
+
+This warning detects direct function imports and suggests importing the parent module instead,
+then calling the function with module qualification.
+
+Example:
+
+```rust
+// Before:
+use crate::error::report_to_mcp_error;
+
+fn example() {
+    let error = report_to_mcp_error(&err);
+}
+
+// After:
+use crate::error;
+
+fn example() {
+    let error = error::report_to_mcp_error(&err);
+}
+```
+
+`cargo mend --fix` can rewrite these cases automatically. It rewrites the `use` statement and
+qualifies all bare references in the file.
+
+<a id="inline-path-qualified-type"></a>
+### Inline path-qualified type
+
+This warning detects types used with inline path qualification (like `crate::module::MyType`)
+and suggests adding a `use` import at the top of the file instead.
+
+Example:
+
+```rust
+// Before:
+fn example() -> crate::module::MyType {
+    crate::module::MyType::new()
+}
+
+// After:
+use crate::module::MyType;
+
+fn example() -> MyType {
+    MyType::new()
+}
+```
+
+`cargo mend --fix` can rewrite these cases automatically. It adds the `use` import and replaces
+all inline occurrences with the bare type name.
+
 ## License
 
 Licensed under either of

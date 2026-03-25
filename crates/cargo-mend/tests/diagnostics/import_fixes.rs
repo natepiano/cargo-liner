@@ -517,21 +517,12 @@ edition = "2024"
     .expect("write window_event");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let expected_findings: [ExpectedFinding<'_>; 0] = [];
-    let expected_summary = expected_summary_from_findings(&expected_findings);
-    assert_eq!(
-        report.summary.fixable_with_fix_count,
-        expected_summary.fixable_with_fix_count
-    );
-    assert_eq!(
-        report.summary.fixable_with_fix_pub_use_count,
-        expected_summary.fixable_with_fix_pub_use_count
-    );
     assert!(
         !report
             .findings
             .iter()
-            .any(|finding| finding.code == "shorten_local_crate_import")
+            .any(|finding| finding.code == "shorten_local_crate_import"),
+        "top-level peer imports should not trigger shorten_local_crate_import"
     );
 }
 

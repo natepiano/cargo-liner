@@ -53,6 +53,22 @@ pub const DIAGNOSTICS: &[DiagnosticSpec] = &[
         fix_support: FixSupport::None,
     },
     DiagnosticSpec {
+        code:        "prefer_module_import",
+        headline:    "function import should use module-qualified form",
+        inline_help: None,
+        help_anchor: "prefer-module-import",
+        detail_mode: DetailMode::MessageRelatedAndFix,
+        fix_support: FixSupport::PreferModuleImport,
+    },
+    DiagnosticSpec {
+        code:        "inline_path_qualified_type",
+        headline:    "inline path-qualified type should use a `use` import",
+        inline_help: None,
+        help_anchor: "inline-path-qualified-type",
+        detail_mode: DetailMode::MessageRelatedAndFix,
+        fix_support: FixSupport::InlinePathQualifiedType,
+    },
+    DiagnosticSpec {
         code:        "shorten_local_crate_import",
         headline:    "crate-relative import can be shortened to a local-relative import",
         inline_help: None,
