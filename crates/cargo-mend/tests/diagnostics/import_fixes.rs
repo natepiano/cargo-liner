@@ -340,25 +340,26 @@ edition = "2024"
 "#,
     )
     .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::create_dir_all(temp.path().join("src/outer/parent")).expect("create src/outer/parent");
     fs::write(
         temp.path().join("src/main.rs"),
-        "mod parent;\nfn main() {}\n",
+        "mod outer;\nfn main() {}\n",
     )
     .expect("write fixture main");
+    fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer mod");
     fs::write(
-        temp.path().join("src/parent.rs"),
+        temp.path().join("src/outer/parent.rs"),
         "mod child;\nmod consumer;\n",
     )
     .expect("write parent mod");
     fs::write(
-        temp.path().join("src/parent/child.rs"),
+        temp.path().join("src/outer/parent/child.rs"),
         "pub struct Thing;\n",
     )
     .expect("write child");
     fs::write(
-        temp.path().join("src/parent/consumer.rs"),
-        "use crate::parent::child::Thing;\n\nfn use_it(_thing: Thing) {}\n",
+        temp.path().join("src/outer/parent/consumer.rs"),
+        "use crate::outer::parent::child::Thing;\n\nfn use_it(_thing: Thing) {}\n",
     )
     .expect("write consumer");
 

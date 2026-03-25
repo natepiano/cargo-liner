@@ -145,7 +145,7 @@ pub struct Suspicious;
         codes, expected_codes,
         "fixture should trigger every diagnostic at least once"
     );
-    assert_eq!(report.findings.len(), 9);
+    assert_eq!(report.findings.len(), 7);
     assert_summary_matches_findings(&report);
 
     let rendered_output = mend_command()

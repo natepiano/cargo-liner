@@ -352,6 +352,7 @@ fn run_cargo_check(
     }
 
     command
+        .env("RUSTUP_TOOLCHAIN", "nightly")
         .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
         .env(DRIVER_ENV, "1")
         .env(CONFIG_ROOT_ENV, &loaded_config.root)
@@ -388,6 +389,7 @@ fn run_cargo_rustc_for_package(
     }
 
     command
+        .env("RUSTUP_TOOLCHAIN", "nightly")
         .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
         .env(DRIVER_ENV, "1")
         .env(CONFIG_ROOT_ENV, &loaded_config.root)
@@ -1091,13 +1093,25 @@ fn record_visibility_findings(
     let parent_is_public = tcx
         .local_visibility(parent_module.to_local_def_id())
         .is_public();
-    let parent_is_crate_root = parent_module.to_local_def_id() == CRATE_DEF_ID;
-    let grandparent_is_crate_root = !parent_is_crate_root
-        && tcx
-            .parent_module_from_def_id(parent_module.to_local_def_id())
-            .to_local_def_id()
-            == CRATE_DEF_ID;
-    let module_location = module_location(parent_is_crate_root, grandparent_is_crate_root);
+    let parent_def = parent_module.to_local_def_id();
+    let parent_is_crate_root = parent_def == CRATE_DEF_ID;
+    let grandparent_def = if parent_is_crate_root {
+        None
+    } else {
+        Some(tcx.parent_module_from_def_id(parent_def).to_local_def_id())
+    };
+    let grandparent_is_crate_root = grandparent_def == Some(CRATE_DEF_ID);
+    let great_grandparent_is_crate_root = match grandparent_def {
+        Some(gp) if gp != CRATE_DEF_ID => {
+            tcx.parent_module_from_def_id(gp).to_local_def_id() == CRATE_DEF_ID
+        },
+        _ => false,
+    };
+    let module_location = module_location(
+        parent_is_crate_root,
+        grandparent_is_crate_root,
+        great_grandparent_is_crate_root,
+    );
 
     if matches!(vis_text, "pub(crate)")
         && !allow_pub_crate_by_policy(crate_kind, module_location, parent_is_public)
@@ -1302,7 +1316,6 @@ fn classify_suspicious_pub(
         def_id,
         config_rel_path,
         parent_is_public,
-        module_location,
         item_name,
     ) {
         return Ok(SuspiciousPubAssessment::Allowed(allowance));
@@ -1331,6 +1344,15 @@ fn classify_suspicious_pub(
                 | ParentFacadeUsage::UsedInsideParentSubtreeByCrateImport
         )
     });
+
+    if matches!(module_location, ModuleLocation::TopLevelPrivateModule)
+        && stale_parent_pub_use.is_none()
+    {
+        return Ok(SuspiciousPubAssessment::Allowed(
+            AllowanceReason::TopLevelPrivateModulePolicy,
+        ));
+    }
+
     let related = stale_parent_pub_use.map(|status| {
         match status.usage {
             ParentFacadeUsage::Unused => format!(
@@ -1367,7 +1389,6 @@ fn basic_suspicious_pub_allowance(
     def_id: LocalDefId,
     config_rel_path: Option<&str>,
     parent_is_public: bool,
-    module_location: ModuleLocation,
     item_name: Option<&str>,
 ) -> Option<AllowanceReason> {
     let item_key = config_rel_path.and_then(|path| item_name.map(|name| format!("{path}::{name}")));
@@ -1383,9 +1404,6 @@ fn basic_suspicious_pub_allowance(
     }
     if parent_is_public {
         return Some(AllowanceReason::ParentIsPublic);
-    }
-    if matches!(module_location, ModuleLocation::TopLevelPrivateModule) {
-        return Some(AllowanceReason::TopLevelPrivateModulePolicy);
     }
     if effective_visibilities.is_public_at_level(def_id, Level::Reachable) {
         return Some(AllowanceReason::ReachablePublicApi);
@@ -1517,10 +1535,11 @@ fn build_line_finding(
 const fn module_location(
     parent_is_crate_root: bool,
     grandparent_is_crate_root: bool,
+    great_grandparent_is_crate_root: bool,
 ) -> ModuleLocation {
     if parent_is_crate_root {
         ModuleLocation::CrateRoot
-    } else if grandparent_is_crate_root {
+    } else if grandparent_is_crate_root || great_grandparent_is_crate_root {
         ModuleLocation::TopLevelPrivateModule
     } else {
         ModuleLocation::NestedModule
@@ -2936,13 +2955,24 @@ mod tests {
 
     #[test]
     fn module_location_handles_crate_root() {
-        assert_eq!(module_location(true, false), ModuleLocation::CrateRoot);
+        assert_eq!(
+            module_location(true, false, false),
+            ModuleLocation::CrateRoot
+        );
     }
 
     #[test]
     fn module_location_handles_top_level_private_module() {
         assert_eq!(
-            module_location(false, true),
+            module_location(false, true, false),
+            ModuleLocation::TopLevelPrivateModule
+        );
+    }
+
+    #[test]
+    fn module_location_handles_child_of_top_level_module() {
+        assert_eq!(
+            module_location(false, false, true),
             ModuleLocation::TopLevelPrivateModule
         );
     }

@@ -13,19 +13,20 @@ edition = "2024"
 "#,
     )
     .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::create_dir_all(temp.path().join("src/outer/parent")).expect("create src/outer/parent");
     fs::write(
         temp.path().join("src/main.rs"),
-        "mod parent;\nfn main() {}\n",
+        "mod outer;\nfn main() {}\n",
     )
     .expect("write fixture main");
+    fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer mod");
     fs::write(
-        temp.path().join("src/parent.rs"),
+        temp.path().join("src/outer/parent.rs"),
         "mod child;\npub use child::SpawnStats;\nuse child::Leftover;\n",
     )
     .expect("write parent mod");
     fs::write(
-        temp.path().join("src/parent/child.rs"),
+        temp.path().join("src/outer/parent/child.rs"),
         "pub struct SpawnStats;\npub struct Leftover;\n",
     )
     .expect("write child");
@@ -812,10 +813,7 @@ edition = "2024"
         .iter()
         .map(|finding| finding.code.as_str())
         .collect::<BTreeSet<_>>();
-    assert_eq!(
-        codes,
-        BTreeSet::from(["internal_parent_pub_use_facade", "suspicious_pub"])
-    );
+    assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
     assert_eq!(report.summary.fixable_with_fix_count, 0);
     assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
 }
@@ -861,10 +859,7 @@ edition = "2024"
         .iter()
         .map(|finding| finding.code.as_str())
         .collect::<BTreeSet<_>>();
-    assert_eq!(
-        codes,
-        BTreeSet::from(["internal_parent_pub_use_facade", "suspicious_pub"])
-    );
+    assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
     assert_eq!(report.summary.fixable_with_fix_count, 0);
     assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
 }
@@ -1073,10 +1068,7 @@ edition = "2024"
         .iter()
         .map(|finding| finding.code.as_str())
         .collect::<BTreeSet<_>>();
-    assert_eq!(
-        codes,
-        BTreeSet::from(["internal_parent_pub_use_facade", "suspicious_pub"])
-    );
+    assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
     assert_eq!(report.summary.fixable_with_fix_count, 0);
     assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
 }
