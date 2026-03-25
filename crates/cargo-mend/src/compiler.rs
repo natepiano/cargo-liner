@@ -1093,25 +1093,7 @@ fn record_visibility_findings(
     let parent_is_public = tcx
         .local_visibility(parent_module.to_local_def_id())
         .is_public();
-    let parent_def = parent_module.to_local_def_id();
-    let parent_is_crate_root = parent_def == CRATE_DEF_ID;
-    let grandparent_def = if parent_is_crate_root {
-        None
-    } else {
-        Some(tcx.parent_module_from_def_id(parent_def).to_local_def_id())
-    };
-    let grandparent_is_crate_root = grandparent_def == Some(CRATE_DEF_ID);
-    let great_grandparent_is_crate_root = match grandparent_def {
-        Some(gp) if gp != CRATE_DEF_ID => {
-            tcx.parent_module_from_def_id(gp).to_local_def_id() == CRATE_DEF_ID
-        },
-        _ => false,
-    };
-    let module_location = module_location(
-        parent_is_crate_root,
-        grandparent_is_crate_root,
-        great_grandparent_is_crate_root,
-    );
+    let module_location = resolve_module_location(tcx, parent_module.to_local_def_id());
 
     if matches!(vis_text, "pub(crate)")
         && !allow_pub_crate_by_policy(crate_kind, module_location, parent_is_public)
@@ -1544,6 +1526,27 @@ const fn module_location(
     } else {
         ModuleLocation::NestedModule
     }
+}
+
+fn resolve_module_location(tcx: TyCtxt<'_>, parent_def: LocalDefId) -> ModuleLocation {
+    let parent_is_crate_root = parent_def == CRATE_DEF_ID;
+    let grandparent_def = if parent_is_crate_root {
+        None
+    } else {
+        Some(tcx.parent_module_from_def_id(parent_def).to_local_def_id())
+    };
+    let grandparent_is_crate_root = grandparent_def == Some(CRATE_DEF_ID);
+    let great_grandparent_is_crate_root = match grandparent_def {
+        Some(gp) if gp != CRATE_DEF_ID => {
+            tcx.parent_module_from_def_id(gp).to_local_def_id() == CRATE_DEF_ID
+        },
+        _ => false,
+    };
+    module_location(
+        parent_is_crate_root,
+        grandparent_is_crate_root,
+        great_grandparent_is_crate_root,
+    )
 }
 
 fn parent_facade_export_status(
