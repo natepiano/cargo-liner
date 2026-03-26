@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::process::Command;
+use std::sync::OnceLock;
 
 use crossterm::event::KeyCode;
 use ratatui::Frame;
@@ -23,10 +25,7 @@ use toml_edit::DocumentMut;
 use super::App;
 use super::FocusTarget;
 use super::ProjectCounts;
-use super::advance_focus;
 use super::render::CiColumn;
-use super::render::conclusion_style;
-use super::reverse_focus;
 use crate::ci::CiRun;
 use crate::project::ExampleGroup;
 use crate::project::RustProject;
@@ -46,6 +45,16 @@ pub enum RunTargetKind {
 pub struct TargetEntry {
     pub name: String,
     pub kind: RunTargetKind,
+}
+
+/// Shared style constants for detail panel rendering.
+struct RenderStyles {
+    highlight:       Style,
+    readonly_label:  Style,
+    editable_label:  Style,
+    active_border:   Style,
+    inactive_border: Style,
+    title:           Style,
 }
 
 /// Build a flat list of all runnable targets: binaries first, then examples alphabetically,
@@ -432,7 +441,6 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_column_inner(
     frame: &mut Frame,
     app: &App,
@@ -441,9 +449,7 @@ fn render_column_inner(
     detail_focused: bool,
     is_active_column: bool,
     cursor: usize,
-    highlight_style: Style,
-    readonly_label_style: Style,
-    editable_label_style: Style,
+    styles: &RenderStyles,
     area: Rect,
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -467,19 +473,19 @@ fn render_column_inner(
 
         let value = field.value(info);
         let base_label_style = if field.is_editable() && info.owned {
-            editable_label_style
+            styles.editable_label
         } else {
-            readonly_label_style
+            styles.readonly_label
         };
         let ls = if is_focused {
-            highlight_style
+            styles.highlight
         } else {
             base_label_style
         };
         let vs = if is_focused {
-            highlight_style
+            styles.highlight
         } else if *field == DetailField::Ci {
-            conclusion_style(&info.ci)
+            super::render::conclusion_style(&info.ci)
         } else {
             Style::default()
         };
@@ -523,7 +529,6 @@ fn render_column_inner(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_git_column_inner(
     frame: &mut Frame,
     app: &App,
@@ -532,8 +537,7 @@ fn render_git_column_inner(
     detail_focused: bool,
     is_active_column: bool,
     cursor: usize,
-    highlight_style: Style,
-    label_style: Style,
+    styles: &RenderStyles,
     area: Rect,
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -543,12 +547,12 @@ fn render_git_column_inner(
         let value = field.value(info);
         let is_focused = detail_focused && is_active_column && i == cursor;
         let ls = if is_focused {
-            highlight_style
+            styles.highlight
         } else {
-            label_style
+            styles.readonly_label
         };
         let vs = if is_focused {
-            highlight_style
+            styles.highlight
         } else {
             Style::default()
         };
@@ -605,26 +609,16 @@ pub(super) fn render_detail_panel(
             })
             .split(area);
 
-        let highlight_style = Style::default().fg(Color::Black).bg(Color::Cyan);
-        let editable_label_style = Style::default().fg(Color::Cyan);
-        let readonly_label_style = Style::default().fg(Color::DarkGray);
+        let styles = RenderStyles {
+            highlight:       Style::default().fg(Color::Black).bg(Color::Cyan),
+            editable_label:  Style::default().fg(Color::Cyan),
+            readonly_label:  Style::default().fg(Color::DarkGray),
+            active_border:   Style::default().fg(Color::Cyan),
+            inactive_border: Style::default(),
+            title:           title_style,
+        };
 
-        let active_border = Style::default().fg(Color::Cyan);
-        let inactive_border = Style::default();
-
-        render_project_panel(
-            frame,
-            app,
-            info,
-            detail_focused,
-            highlight_style,
-            readonly_label_style,
-            editable_label_style,
-            active_border,
-            inactive_border,
-            title_style,
-            columns[0],
-        );
+        render_project_panel(frame, app, info, detail_focused, &styles, columns[0]);
 
         let mut next_col = 1;
         if has_git {
@@ -635,11 +629,7 @@ pub(super) fn render_detail_panel(
                 &git,
                 detail_focused,
                 next_col,
-                highlight_style,
-                readonly_label_style,
-                active_border,
-                inactive_border,
-                title_style,
+                &styles,
                 columns[next_col],
             );
             next_col += 1;
@@ -652,9 +642,7 @@ pub(super) fn render_detail_panel(
                 info,
                 detail_focused,
                 next_col,
-                active_border,
-                inactive_border,
-                title_style,
+                &styles,
                 columns[next_col],
             );
         } else {
@@ -677,28 +665,22 @@ pub(super) fn render_detail_panel(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_project_panel(
     frame: &mut Frame,
     app: &App,
     info: &DetailInfo,
     detail_focused: bool,
-    highlight_style: Style,
-    readonly_label_style: Style,
-    editable_label_style: Style,
-    active_border: Style,
-    inactive_border: Style,
-    title_style: Style,
+    styles: &RenderStyles,
     area: Rect,
 ) {
     let project_block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {} ", info.package_title))
-        .title_style(title_style)
+        .title_style(styles.title)
         .border_style(if detail_focused && app.detail_column == 0 {
-            active_border
+            styles.active_border
         } else {
-            inactive_border
+            styles.inactive_border
         });
     let project_inner = project_block.inner(area);
     frame.render_widget(project_block, area);
@@ -712,9 +694,7 @@ fn render_project_panel(
             detail_focused,
             app.detail_column == 0,
             app.detail_cursor,
-            highlight_style,
-            readonly_label_style,
-            editable_label_style,
+            styles,
             project_inner,
         );
     } else {
@@ -742,9 +722,7 @@ fn render_project_panel(
             detail_focused,
             app.detail_column == 0,
             app.detail_cursor,
-            highlight_style,
-            readonly_label_style,
-            editable_label_style,
+            styles,
             sub_cols[0],
         );
 
@@ -766,7 +744,6 @@ fn render_project_panel(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_git_panel(
     frame: &mut Frame,
     app: &App,
@@ -774,21 +751,17 @@ fn render_git_panel(
     git: &[DetailField],
     detail_focused: bool,
     col: usize,
-    highlight_style: Style,
-    readonly_label_style: Style,
-    active_border: Style,
-    inactive_border: Style,
-    title_style: Style,
+    styles: &RenderStyles,
     area: Rect,
 ) {
     let git_block = Block::default()
         .borders(Borders::ALL)
         .title(" Git ")
-        .title_style(title_style)
+        .title_style(styles.title)
         .border_style(if detail_focused && app.detail_column == col {
-            active_border
+            styles.active_border
         } else {
-            inactive_border
+            styles.inactive_border
         });
     let git_inner = git_block.inner(area);
     frame.render_widget(git_block, area);
@@ -800,22 +773,18 @@ fn render_git_panel(
         detail_focused,
         app.detail_column == col,
         app.detail_cursor,
-        highlight_style,
-        readonly_label_style,
+        styles,
         git_inner,
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_targets_panel(
     frame: &mut Frame,
     app: &App,
     info: &DetailInfo,
     detail_focused: bool,
     col: usize,
-    active_border: Style,
-    inactive_border: Style,
-    title_style: Style,
+    styles: &RenderStyles,
     area: Rect,
 ) {
     let bin_count: usize = usize::from(info.is_binary);
@@ -837,11 +806,11 @@ fn render_targets_panel(
     let targets_block = Block::default()
         .borders(Borders::ALL)
         .title(targets_title)
-        .title_style(title_style)
+        .title_style(styles.title)
         .border_style(if is_active {
-            active_border
+            styles.active_border
         } else {
-            inactive_border
+            styles.inactive_border
         });
 
     let entries = build_target_list(info);
@@ -888,10 +857,8 @@ fn render_targets_panel(
 /// Format ISO 8601 timestamp as `yyyy-mm-dd hh:mm`.
 /// Get the local UTC offset in seconds (e.g., -28800 for PST).
 fn local_utc_offset_secs() -> i64 {
-    use std::sync::OnceLock;
     static OFFSET: OnceLock<i64> = OnceLock::new();
     *OFFSET.get_or_init(|| {
-        use std::process::Command;
         Command::new("date")
             .arg("+%z")
             .output()
@@ -1044,7 +1011,7 @@ fn build_ci_data_row(index: usize, ci_run: &CiRun, cols: &[CiColumn]) -> Row<'st
     for col in cols {
         let job = ci_run.jobs.iter().find(|j| col.matches(&j.name));
         if let Some(j) = job {
-            let style = conclusion_style(&j.conclusion);
+            let style = super::render::conclusion_style(&j.conclusion);
             cells.push(
                 Cell::from(
                     Line::from(j.duration.trim().to_string())
@@ -1063,7 +1030,7 @@ fn build_ci_data_row(index: usize, ci_run: &CiRun, cols: &[CiColumn]) -> Row<'st
     }
 
     // Total column
-    let total_style = conclusion_style(&ci_run.conclusion);
+    let total_style = super::render::conclusion_style(&ci_run.conclusion);
     cells.push(
         Cell::from(
             Line::from(total_dur.trim().to_string()).alignment(ratatui::layout::Alignment::Right),
@@ -1362,8 +1329,8 @@ pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
                 handle_target_action(app, true);
             }
         },
-        KeyCode::Tab => advance_focus(app),
-        KeyCode::BackTab => reverse_focus(app),
+        KeyCode::Tab => super::advance_focus(app),
+        KeyCode::BackTab => super::reverse_focus(app),
         KeyCode::Esc => {
             app.focus = FocusTarget::ProjectList;
         },
@@ -1458,8 +1425,8 @@ pub(super) fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
                 });
             }
         },
-        KeyCode::Tab => advance_focus(app),
-        KeyCode::BackTab => reverse_focus(app),
+        KeyCode::Tab => super::advance_focus(app),
+        KeyCode::BackTab => super::reverse_focus(app),
         KeyCode::Esc => {
             app.focus = FocusTarget::ProjectList;
         },
@@ -1476,8 +1443,6 @@ pub(super) fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
 
 /// Clear CI cache for a project and remove its runs from the app.
 fn clear_ci_cache(app: &mut App, project_path: &str) {
-    use crate::ci::parse_owner_repo;
-
     // Find abs_path to derive repo URL
     let abs_path = app
         .nodes
@@ -1487,7 +1452,7 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
 
     if let Some(abs_path) = abs_path
         && let Some(repo_url) = crate::ci::get_repo_url(std::path::Path::new(&abs_path))
-        && let Some((owner, repo)) = parse_owner_repo(&repo_url)
+        && let Some((owner, repo)) = crate::ci::parse_owner_repo(&repo_url)
         && let Some(dir) = super::scan::repo_cache_dir_pub(&owner, &repo)
     {
         let _ = std::fs::remove_dir_all(dir);

@@ -4,7 +4,6 @@ use comfy_table::Table;
 use comfy_table::presets::ASCII_MARKDOWN;
 
 use crate::ci::CiRun;
-use crate::ci::format_secs;
 use crate::project::RustProject;
 
 pub fn render_table(projects: &[RustProject]) {
@@ -60,7 +59,11 @@ fn render_ci_single(ci_run: &CiRun) {
 
     if let Some(secs) = ci_run.wall_clock_secs {
         let result = colorize_conclusion(&ci_run.conclusion);
-        table.add_row(vec!["Total".to_string(), result, format_secs(secs)]);
+        table.add_row(vec![
+            "Total".to_string(),
+            result,
+            crate::ci::format_secs(secs),
+        ]);
     }
 
     println!("{table}");
@@ -168,7 +171,7 @@ fn render_total_time_table(runs: &[CiRun], run_labels: &[String]) {
         let (date, time) = format_datetime(&ci_run.created_at);
         let duration = ci_run
             .wall_clock_secs
-            .map_or_else(|| "—".to_string(), format_secs);
+            .map_or_else(|| "—".to_string(), crate::ci::format_secs);
         let result = format_result(&ci_run.conclusion, longest_idx == Some(i));
         total_table.add_row(vec![
             &run_labels[i],

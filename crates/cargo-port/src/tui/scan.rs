@@ -14,8 +14,6 @@ use super::MemberGroup;
 use super::ProjectNode;
 use crate::ci::CiRun;
 use crate::ci::GhRun;
-use crate::ci::parse_owner_repo;
-use crate::list::should_visit_entry;
 use crate::project::GitInfo;
 use crate::project::RustProject;
 
@@ -100,8 +98,6 @@ fn fetch_recent_runs(
     repo: &str,
     gh_runs: &[GhRun],
 ) -> Vec<CiRun> {
-    use crate::ci::process_gh_run;
-
     gh_runs
         .iter()
         .filter_map(|gh_run| {
@@ -110,7 +106,7 @@ fn fetch_recent_runs(
                 return Some(cached);
             }
             // Cache miss — fetch from `gh` and save
-            let ci_run = process_gh_run(gh_run, repo_dir, repo_url)?;
+            let ci_run = crate::ci::process_gh_run(gh_run, repo_dir, repo_url)?;
             save_cached_run(owner, repo, &ci_run);
             Some(ci_run)
         })
@@ -141,18 +137,15 @@ fn merge_runs(fetched: Vec<CiRun>, cached: Vec<CiRun>) -> Vec<CiRun> {
 /// Fetch CI runs, using the repo-keyed cache. Merges freshly fetched runs
 /// with all previously cached runs for this repo, deduplicated and sorted by `run_id` descending.
 pub(super) fn fetch_ci_runs_cached(repo_dir: &Path, count: u32) -> Vec<CiRun> {
-    use crate::ci::get_repo_url;
-    use crate::ci::list_runs;
-
-    let Some(repo_url) = get_repo_url(repo_dir) else {
+    let Some(repo_url) = crate::ci::get_repo_url(repo_dir) else {
         return Vec::new();
     };
 
-    let Some((owner, repo)) = parse_owner_repo(&repo_url) else {
+    let Some((owner, repo)) = crate::ci::parse_owner_repo(&repo_url) else {
         return Vec::new();
     };
 
-    let gh_runs = list_runs(repo_dir, None, count).unwrap_or_default();
+    let gh_runs = crate::ci::list_runs(repo_dir, None, count).unwrap_or_default();
     let fetched = fetch_recent_runs(repo_dir, &repo_url, &owner, &repo, &gh_runs);
     let cached = load_all_cached_runs(&owner, &repo);
 
@@ -162,20 +155,17 @@ pub(super) fn fetch_ci_runs_cached(repo_dir: &Path, count: u32) -> Vec<CiRun> {
 /// Fetch older CI runs beyond what we currently have, by requesting a larger
 /// `--limit` from `gh run list` and returning any newly discovered runs.
 pub(super) fn fetch_older_runs(repo_dir: &Path, current_count: u32) -> Vec<CiRun> {
-    use crate::ci::get_repo_url;
-    use crate::ci::list_runs;
-
-    let Some(repo_url) = get_repo_url(repo_dir) else {
+    let Some(repo_url) = crate::ci::get_repo_url(repo_dir) else {
         return Vec::new();
     };
 
-    let Some((owner, repo)) = parse_owner_repo(&repo_url) else {
+    let Some((owner, repo)) = crate::ci::parse_owner_repo(&repo_url) else {
         return Vec::new();
     };
 
     // Request 5 more runs than we currently have
     let fetch_count = current_count + 5;
-    let gh_runs = list_runs(repo_dir, None, fetch_count).unwrap_or_default();
+    let gh_runs = crate::ci::list_runs(repo_dir, None, fetch_count).unwrap_or_default();
     let fetched = fetch_recent_runs(repo_dir, &repo_url, &owner, &repo, &gh_runs);
 
     // Only return the fetched runs — don't merge with the full cache.
@@ -628,7 +618,7 @@ pub(super) fn spawn_streaming_scan(
     thread::spawn(move || {
         let entries = WalkDir::new(&root)
             .into_iter()
-            .filter_entry(|entry| should_visit_entry(entry, Some(&excludes)));
+            .filter_entry(|entry| crate::list::should_visit_entry(entry, Some(&excludes)));
 
         rayon::scope(|s| {
             for entry in entries.flatten() {

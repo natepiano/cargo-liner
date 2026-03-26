@@ -14,14 +14,12 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
 
 use super::App;
 use super::ExpandKey;
 use super::FocusTarget;
 use super::VisibleRow;
-use super::detail::render_ci_panel;
-use super::detail::render_detail_panel;
-use super::settings::render_settings_popup;
 use crate::ci::CiRun;
 use crate::project::RustProject;
 
@@ -81,10 +79,7 @@ pub(super) fn format_bytes(bytes: u64) -> String {
     }
 }
 
-pub(super) fn display_width(s: &str) -> usize {
-    use unicode_width::UnicodeWidthStr;
-    UnicodeWidthStr::width(s)
-}
+pub(super) fn display_width(s: &str) -> usize { UnicodeWidthStr::width(s) }
 
 pub(super) fn conclusion_style(conclusion: &str) -> Style {
     if conclusion.contains('✓') {
@@ -198,7 +193,6 @@ pub(super) fn group_header_spans(prefix: &str, name: &str, name_width: usize) ->
     )])
 }
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     let outer_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -219,7 +213,17 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Length(left_width), Constraint::Min(20)])
         .split(outer_layout[0]);
 
-    // Left panel: split into optional search bar + project list + optional scan log
+    render_left_panel(frame, app, main_layout[0]);
+    render_right_panel(frame, app, main_layout[1]);
+
+    render_status_bar(frame, app, outer_layout[1]);
+
+    if app.show_settings {
+        super::settings::render_settings_popup(frame, app);
+    }
+}
+
+fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let search_height = if app.searching { 3 } else { 0 };
     let left_constraints = if app.scan_complete {
         vec![Constraint::Length(search_height), Constraint::Min(1)]
@@ -236,7 +240,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     let left_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints(left_constraints)
-        .split(main_layout[0]);
+        .split(area);
 
     if app.searching {
         render_search_bar(frame, app, left_layout[0]);
@@ -246,6 +250,16 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     let inner_width = left_layout[1].width.saturating_sub(2) as usize;
     let name_col_width =
         inner_width.saturating_sub(LANG_COL_WIDTH + DISK_COL_WIDTH + CI_COL_WIDTH + GIT_COL_WIDTH);
+
+    render_project_list(frame, app, name_col_width, left_layout[1]);
+
+    if !app.scan_complete {
+        render_scan_log(frame, app, left_layout[2]);
+    }
+}
+
+fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
+    frame.render_widget(Clear, area);
 
     let selected_project_ref = app.selected_project();
     let detail_info = app.cached_detail_info.clone();
@@ -259,15 +273,6 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         .and_then(|p| app.ci_runs_for(p))
         .cloned()
         .unwrap_or_default();
-
-    render_project_list(frame, app, name_col_width, left_layout[1]);
-
-    if !app.scan_complete {
-        render_scan_log(frame, app, left_layout[2]);
-    }
-
-    // Right panel — clear to prevent artifacts when layout changes
-    frame.render_widget(Clear, main_layout[1]);
     let has_example_output = !app.example_output.is_empty();
 
     // CI table height: header + data rows + fetch row + 2 borders
@@ -294,23 +299,17 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
             },
             (false, false) => vec![Constraint::Min(1)],
         })
-        .split(main_layout[1]);
+        .split(area);
 
-    render_detail_panel(frame, app, detail_info.as_ref(), right_layout[0]);
+    super::detail::render_detail_panel(frame, app, detail_info.as_ref(), right_layout[0]);
 
     if has_ci_runs {
-        render_ci_panel(frame, app, &detail_ci_runs, right_layout[1]);
+        super::detail::render_ci_panel(frame, app, &detail_ci_runs, right_layout[1]);
     }
 
     if has_example_output {
         let example_area = right_layout[right_layout.len() - 1];
         render_example_output(frame, app, example_area);
-    }
-
-    render_status_bar(frame, app, outer_layout[1]);
-
-    if app.show_settings {
-        render_settings_popup(frame, app);
     }
 }
 
@@ -363,7 +362,7 @@ pub(super) fn render_project_list(
     // Append disk total as the last row
     let total_bytes: u64 = app.disk_usage.values().sum();
     if total_bytes > 0 {
-        let total_str = super::format_bytes(total_bytes);
+        let total_str = format_bytes(total_bytes);
         let total_style = Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD);

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::path::Path;
@@ -347,8 +348,6 @@ fn detect_types(table: &Value, project_dir: &Path) -> Vec<ProjectType> {
 /// Collect examples grouped by category. Prefers `[[example]]` declarations, falls back to
 /// file discovery.
 fn collect_examples(table: &Value, project_dir: &Path) -> Vec<ExampleGroup> {
-    use std::collections::HashMap;
-
     // Collect from [[example]] entries in Cargo.toml
     if let Some(arr) = table.get("example").and_then(|v| v.as_array())
         && !arr.is_empty()
@@ -416,8 +415,6 @@ fn build_sorted_groups(
 
 /// Auto-discover examples from a directory, grouping by subdirectory.
 fn discover_examples_grouped(examples_dir: &Path) -> Vec<ExampleGroup> {
-    use std::collections::HashMap;
-
     let Ok(entries) = std::fs::read_dir(examples_dir) else {
         return Vec::new();
     };
