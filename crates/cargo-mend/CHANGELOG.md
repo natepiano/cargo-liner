@@ -5,7 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-03-25
+
+### Added
+- `prefer_module_import` diagnostic: detects direct function imports and rewrites to module-qualified form (`use module` + `module::function()`)
+- `inline_path_qualified_type` diagnostic: detects inline path-qualified types (`crate::module::MyType`) and adds `use` imports with bare type names
+- Global configuration file at `~/.config/cargo-mend/config.toml` with per-diagnostic enable/disable, auto-created on first run
+- Per-project `[diagnostics]` section in `mend.toml` that overrides global settings
+- `--help` now shows diagnostic enable/disable status and config file path
+- `--dry-run` alone now previews all fixes (no longer requires `--fix` or `--fix-pub-use`)
+- `DiagnosticCode` enum for compile-time safe diagnostic code references
+- Pre-1.0 warning in README about semver instability and destructive `--fix` behavior
+
+### Changed
+- `--fix` now activates all import-related fixes (`ShortenImport`, `PreferModuleImport`, `InlinePathQualifiedType`)
+- Fix notice reports finding count instead of raw edit count, matching the summary line
+- `OperationMode::from_cli` no longer returns `Result` (cannot fail)
+
+### Fixed
+- Overlapping fixes between `ShortenImport` and `PreferModuleImport` on the same `use` statement are resolved automatically
+- Two-segment `super::` imports (`use super::module`) no longer falsely flagged as function imports
+- Idempotency: running `--fix` twice produces zero findings on the second run
+- Exempt depth-2 modules from `suspicious_pub`
 
 ## [0.1.1] - 2026-03-10
 
