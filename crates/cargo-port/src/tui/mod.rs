@@ -73,6 +73,7 @@ pub enum ExpandKey {
 }
 
 /// What a visible row represents.
+#[derive(Clone, Copy)]
 pub enum VisibleRow {
     /// A top-level project/workspace root.
     Root { node_index: usize },
@@ -139,6 +140,21 @@ pub enum BackgroundMsg {
     ProjectDiscovered { project: RustProject },
     ScanActivity { path: String },
     ScanComplete,
+}
+
+impl BackgroundMsg {
+    /// Returns the project path this message relates to, if any.
+    fn path(&self) -> Option<&str> {
+        match self {
+            Self::DiskUsage { path, .. }
+            | Self::CiRuns { path, .. }
+            | Self::GitInfo { path, .. }
+            | Self::CratesIoVersion { path, .. }
+            | Self::Stars { path, .. } => Some(path),
+            Self::ProjectDiscovered { project } => Some(&project.path),
+            Self::ScanActivity { .. } | Self::ScanComplete => None,
+        }
+    }
 }
 
 /// Message sent when a background CI fetch completes.
@@ -285,6 +301,17 @@ pub struct App {
     pub example_rx:          mpsc::Receiver<ExampleMsg>,
     pub last_selected_path:  Option<String>,
     pub should_quit:         bool,
+
+    // Caches for per-frame hot paths
+    pub cached_visible_rows:       Vec<VisibleRow>,
+    pub rows_dirty:                bool,
+    pub cached_root_sorted:        Vec<u64>,
+    pub cached_child_sorted:       HashMap<usize, Vec<u64>>,
+    pub disk_cache_dirty:          bool,
+    pub(super) cached_detail_path: String,
+    pub(super) cached_detail_info: Option<detail::DetailInfo>,
+    pub(super) detail_dirty:       bool,
+    pub(super) selection_changed:  bool,
 }
 
 impl App {
@@ -362,6 +389,16 @@ impl App {
             example_rx,
             last_selected_path: load_last_selected(),
             should_quit: false,
+
+            cached_visible_rows: Vec::new(),
+            rows_dirty: true,
+            cached_root_sorted: Vec::new(),
+            cached_child_sorted: HashMap::new(),
+            disk_cache_dirty: true,
+            cached_detail_path: String::new(),
+            cached_detail_info: None,
+            detail_dirty: true,
+            selection_changed: false,
         }
     }
 
@@ -372,6 +409,9 @@ impl App {
             .or_else(|| self.last_selected_path.clone());
         self.nodes = build_tree(self.all_projects.clone(), &self.inline_dirs);
         self.flat_entries = build_flat_entries(&self.nodes);
+        self.rows_dirty = true;
+        self.disk_cache_dirty = true;
+        self.detail_dirty = true;
 
         // Re-run search if active so filtered indices match new flat_entries
         if self.searching && !self.search_query.is_empty() {
@@ -441,6 +481,9 @@ impl App {
         self.pending_ci_fetch = None;
         self.expanded.clear();
         self.list_state = ListState::default();
+        self.rows_dirty = true;
+        self.disk_cache_dirty = true;
+        self.detail_dirty = true;
         let (tx, rx) = spawn_streaming_scan(
             &self.scan_root,
             self.ci_run_count,
@@ -494,10 +537,18 @@ impl App {
 
     /// Handle a single `BackgroundMsg`. Returns `true` if the tree needs rebuilding.
     fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
+        // Only mark detail dirty if this message is for the selected project
+        let selected_path = self.cached_detail_path.clone();
+        if let Some(msg_path) = msg.path()
+            && msg_path == selected_path
+        {
+            self.detail_dirty = true;
+        }
         match msg {
             BackgroundMsg::DiskUsage { path, bytes } => {
                 self.fully_loaded.insert(path.clone());
                 self.disk_usage.insert(path, bytes);
+                self.disk_cache_dirty = true;
             },
             BackgroundMsg::CiRuns { path, runs } => {
                 if let Some(git) = self.git_info.get(&path)
@@ -638,28 +689,34 @@ impl App {
         }
     }
 
-    pub fn visible_rows(&self) -> Vec<VisibleRow> {
-        let mut rows = Vec::new();
+    /// Ensure the cached visible rows are up to date, recomputing only when dirty.
+    pub fn ensure_visible_rows_cached(&mut self) {
+        if !self.rows_dirty {
+            return;
+        }
+        self.rows_dirty = false;
+        self.cached_visible_rows.clear();
         for (ni, node) in self.nodes.iter().enumerate() {
-            rows.push(VisibleRow::Root { node_index: ni });
+            self.cached_visible_rows
+                .push(VisibleRow::Root { node_index: ni });
             if self.expanded.contains(&ExpandKey::Node(ni)) {
                 for (gi, group) in node.groups.iter().enumerate() {
                     if group.name.is_empty() {
                         for (mi, _) in group.members.iter().enumerate() {
-                            rows.push(VisibleRow::Member {
+                            self.cached_visible_rows.push(VisibleRow::Member {
                                 node_index:   ni,
                                 group_index:  gi,
                                 member_index: mi,
                             });
                         }
                     } else {
-                        rows.push(VisibleRow::GroupHeader {
+                        self.cached_visible_rows.push(VisibleRow::GroupHeader {
                             node_index:  ni,
                             group_index: gi,
                         });
                         if self.expanded.contains(&ExpandKey::Group(ni, gi)) {
                             for (mi, _) in group.members.iter().enumerate() {
-                                rows.push(VisibleRow::Member {
+                                self.cached_visible_rows.push(VisibleRow::Member {
                                     node_index:   ni,
                                     group_index:  gi,
                                     member_index: mi,
@@ -671,14 +728,73 @@ impl App {
 
                 // Worktree entries shown directly under the node
                 for (wi, _wt) in node.worktrees.iter().enumerate() {
-                    rows.push(VisibleRow::WorktreeEntry {
+                    self.cached_visible_rows.push(VisibleRow::WorktreeEntry {
                         node_index:     ni,
                         worktree_index: wi,
                     });
                 }
             }
         }
-        rows
+    }
+
+    /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
+    pub fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
+
+    /// Ensure the cached disk sort data is up to date, recomputing only when dirty.
+    pub fn ensure_disk_cache(&mut self) {
+        if !self.disk_cache_dirty {
+            return;
+        }
+        self.disk_cache_dirty = false;
+
+        // Root-level sorted disk values
+        self.cached_root_sorted.clear();
+        for node in &self.nodes {
+            if let Some(bytes) = self.disk_bytes_for_node(node) {
+                self.cached_root_sorted.push(bytes);
+            }
+        }
+        self.cached_root_sorted.sort_unstable();
+
+        // Per-node child sorted disk values
+        self.cached_child_sorted.clear();
+        for (ni, node) in self.nodes.iter().enumerate() {
+            let mut values: Vec<u64> = Vec::new();
+            for group in &node.groups {
+                for member in &group.members {
+                    if let Some(&bytes) = self.disk_usage.get(&member.path) {
+                        values.push(bytes);
+                    }
+                }
+            }
+            for wt in &node.worktrees {
+                if let Some(&bytes) = self.disk_usage.get(&wt.project.path) {
+                    values.push(bytes);
+                }
+            }
+            if !values.is_empty() {
+                values.sort_unstable();
+                self.cached_child_sorted.insert(ni, values);
+            }
+        }
+    }
+
+    /// Ensure the cached `DetailInfo` is up to date for the selected project.
+    pub fn ensure_detail_cached(&mut self) {
+        let current_path = self
+            .selected_project()
+            .map(|p| p.path.clone())
+            .unwrap_or_default();
+
+        if !self.detail_dirty && self.cached_detail_path == current_path {
+            return;
+        }
+
+        self.cached_detail_path = current_path;
+        self.cached_detail_info = self
+            .selected_project()
+            .map(|p| detail::build_detail_info(self, p));
+        self.detail_dirty = false;
     }
 
     /// Returns the `ProjectNode` when a root row is selected (not a member or worktree).
@@ -753,37 +869,40 @@ impl App {
         if !self.selected_is_expandable() {
             return;
         }
-        let rows = self.visible_rows();
         let Some(selected) = self.list_state.selected() else {
             return;
         };
-        match rows.get(selected) {
-            Some(VisibleRow::Root { node_index }) => {
-                self.expanded.insert(ExpandKey::Node(*node_index));
+        let Some(row) = self.visible_rows().get(selected).copied() else {
+            return;
+        };
+        match row {
+            VisibleRow::Root { node_index } => {
+                self.expanded.insert(ExpandKey::Node(node_index));
             },
-            Some(VisibleRow::GroupHeader {
+            VisibleRow::GroupHeader {
                 node_index,
                 group_index,
-            }) => {
+            } => {
                 self.expanded
-                    .insert(ExpandKey::Group(*node_index, *group_index));
+                    .insert(ExpandKey::Group(node_index, group_index));
             },
             _ => {},
         }
+        self.rows_dirty = true;
     }
 
     fn collapse(&mut self) {
-        let rows = self.visible_rows();
         let Some(selected) = self.list_state.selected() else {
             return;
         };
-        let Some(row) = rows.get(selected) else {
+        let Some(row) = self.visible_rows().get(selected).copied() else {
             return;
         };
 
         match row {
             VisibleRow::Root { node_index } => {
-                self.expanded.remove(&ExpandKey::Node(*node_index));
+                self.expanded.remove(&ExpandKey::Node(node_index));
+                self.rows_dirty = true;
             },
             VisibleRow::GroupHeader {
                 node_index,
@@ -791,17 +910,18 @@ impl App {
             } => {
                 if self
                     .expanded
-                    .remove(&ExpandKey::Group(*node_index, *group_index))
+                    .remove(&ExpandKey::Group(node_index, group_index))
                 {
                     // Group was expanded, now collapsed — done
+                    self.rows_dirty = true;
                 } else {
                     // Already collapsed group — collapse parent node
-                    let ni = *node_index;
-                    self.expanded.remove(&ExpandKey::Node(ni));
-                    // Move cursor to the node root
-                    let new_rows = self.visible_rows();
-                    if let Some(pos) = new_rows.iter().position(
-                        |r| matches!(r, VisibleRow::Root { node_index } if *node_index == ni),
+                    self.expanded.remove(&ExpandKey::Node(node_index));
+                    self.rows_dirty = true;
+                    // Recompute rows and move cursor to the node root
+                    self.ensure_visible_rows_cached();
+                    if let Some(pos) = self.visible_rows().iter().position(
+                        |r| matches!(r, VisibleRow::Root { node_index: ni } if *ni == node_index),
                     ) {
                         self.list_state.select(Some(pos));
                     }
@@ -812,36 +932,36 @@ impl App {
                 group_index,
                 ..
             } => {
-                let ni = *node_index;
-                let gi = *group_index;
-                let group_name = &self.nodes[ni].groups[gi].name;
+                let group_name = &self.nodes[node_index].groups[group_index].name;
                 if group_name.is_empty() {
-                    self.expanded.remove(&ExpandKey::Node(ni));
-                    let new_rows = self.visible_rows();
-                    if let Some(pos) = new_rows.iter().position(
-                        |r| matches!(r, VisibleRow::Root { node_index } if *node_index == ni),
+                    self.expanded.remove(&ExpandKey::Node(node_index));
+                    self.rows_dirty = true;
+                    self.ensure_visible_rows_cached();
+                    if let Some(pos) = self.visible_rows().iter().position(
+                        |r| matches!(r, VisibleRow::Root { node_index: ni } if *ni == node_index),
                     ) {
                         self.list_state.select(Some(pos));
                     }
                 } else {
-                    self.expanded.remove(&ExpandKey::Group(ni, gi));
-                    let new_rows = self.visible_rows();
-                    if let Some(pos) = new_rows.iter().position(|r| {
-                        matches!(r, VisibleRow::GroupHeader { node_index, group_index }
-                            if *node_index == ni && *group_index == gi)
+                    self.expanded
+                        .remove(&ExpandKey::Group(node_index, group_index));
+                    self.rows_dirty = true;
+                    self.ensure_visible_rows_cached();
+                    if let Some(pos) = self.visible_rows().iter().position(|r| {
+                        matches!(r, VisibleRow::GroupHeader { node_index: ni, group_index: gi }
+                            if *ni == node_index && *gi == group_index)
                     }) {
                         self.list_state.select(Some(pos));
                     }
                 }
             },
             VisibleRow::WorktreeEntry { node_index, .. } => {
-                let ni = *node_index;
-                self.expanded.remove(&ExpandKey::Node(ni));
-                let new_rows = self.visible_rows();
-                if let Some(pos) = new_rows
-                    .iter()
-                    .position(|r| matches!(r, VisibleRow::Root { node_index } if *node_index == ni))
-                {
+                self.expanded.remove(&ExpandKey::Node(node_index));
+                self.rows_dirty = true;
+                self.ensure_visible_rows_cached();
+                if let Some(pos) = self.visible_rows().iter().position(
+                    |r| matches!(r, VisibleRow::Root { node_index: ni } if *ni == node_index),
+                ) {
                     self.list_state.select(Some(pos));
                 }
             },
@@ -928,12 +1048,14 @@ impl App {
         self.searching = true;
         self.search_query.clear();
         self.filtered.clear();
+        self.rows_dirty = true;
     }
 
     fn cancel_search(&mut self) {
         self.searching = false;
         self.search_query.clear();
         self.filtered.clear();
+        self.rows_dirty = true;
         if !self.nodes.is_empty() {
             self.list_state.select(Some(0));
         }
@@ -944,6 +1066,7 @@ impl App {
         self.searching = false;
         self.search_query.clear();
         self.filtered.clear();
+        self.rows_dirty = true;
 
         if let Some(target_path) = project_path {
             self.select_project_in_tree(&target_path);
@@ -965,6 +1088,8 @@ impl App {
             }
         }
 
+        self.rows_dirty = true;
+        self.ensure_visible_rows_cached();
         let rows = self.visible_rows();
         for (i, row) in rows.iter().enumerate() {
             if let VisibleRow::Member {
@@ -1321,6 +1446,9 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
     loop {
         app.poll_background();
         app.spinner_tick = app.spinner_tick.wrapping_add(1);
+        app.ensure_visible_rows_cached();
+        app.ensure_disk_cache();
+        app.ensure_detail_cached();
         terminal.draw(|frame| ui(frame, app))?;
 
         // Wait for at least one event (up to 16ms for ~60fps)
@@ -1334,9 +1462,21 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
                     return Ok(());
                 }
             }
+        } else if app.selection_changed {
+            // No events this frame — flush deferred selection save to disk
+            if let Some(path) = &app.last_selected_path {
+                save_last_selected(path);
+            }
+            app.selection_changed = false;
         }
 
         if app.should_quit {
+            // Flush any pending selection save
+            if app.selection_changed
+                && let Some(path) = &app.last_selected_path
+            {
+                save_last_selected(path);
+            }
             break;
         }
 
@@ -1463,9 +1603,6 @@ fn load_last_selected() -> Option<String> {
 
 fn save_last_selected(project_path: &str) {
     if let Some(path) = last_selected_path_file() {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         let _ = std::fs::write(path, project_path);
     }
 }
@@ -1476,10 +1613,14 @@ fn save_last_selected(project_path: &str) {
 fn track_selection(app: &mut App) {
     if let Some(project) = app.selected_project() {
         let path = project.path.clone();
-        app.last_selected_path = Some(path.clone());
-        save_last_selected(&path);
+        if app.last_selected_path.as_ref() != Some(&path) {
+            app.detail_dirty = true;
+            app.last_selected_path = Some(path);
+            // Disk write deferred to save_selection_on_idle / quit
+            app.selection_changed = true;
+            app.maybe_priority_fetch();
+        }
     }
-    app.maybe_priority_fetch();
 }
 
 /// Spawn a background thread to fetch details for a single project ahead of the main scan.

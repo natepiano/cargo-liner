@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
@@ -21,7 +19,6 @@ use super::App;
 use super::ExpandKey;
 use super::FocusTarget;
 use super::VisibleRow;
-use super::detail::build_detail_info;
 use super::detail::render_ci_panel;
 use super::detail::render_detail_panel;
 use super::settings::render_settings_popup;
@@ -201,6 +198,7 @@ pub(super) fn group_header_spans(prefix: &str, name: &str, name_width: usize) ->
     )])
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     let outer_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -250,7 +248,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         inner_width.saturating_sub(LANG_COL_WIDTH + DISK_COL_WIDTH + CI_COL_WIDTH + GIT_COL_WIDTH);
 
     let selected_project_ref = app.selected_project();
-    let detail_info = selected_project_ref.map(|p| build_detail_info(app, p));
+    let detail_info = app.cached_detail_info.clone();
     let has_ci_runs = selected_project_ref.is_some_and(|p| {
         app.ci_runs
             .get(&p.path)
@@ -629,43 +627,6 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(status_bar, area);
 }
 
-/// Collect sorted disk byte values across all top-level nodes for percentile coloring.
-fn root_disk_sorted(app: &App) -> Vec<u64> {
-    let mut values: Vec<u64> = app
-        .nodes
-        .iter()
-        .filter_map(|node| app.disk_bytes_for_node(node))
-        .collect();
-    values.sort_unstable();
-    values
-}
-
-/// Collect sorted disk byte values for children within each node (members + worktrees).
-/// Returns a map from `node_index` to sorted values.
-fn child_disk_sorted(app: &App) -> HashMap<usize, Vec<u64>> {
-    let mut map = HashMap::new();
-    for (ni, node) in app.nodes.iter().enumerate() {
-        let mut values: Vec<u64> = Vec::new();
-        for group in &node.groups {
-            for member in &group.members {
-                if let Some(&bytes) = app.disk_usage.get(&member.path) {
-                    values.push(bytes);
-                }
-            }
-        }
-        for wt in &node.worktrees {
-            if let Some(&bytes) = app.disk_usage.get(&wt.project.path) {
-                values.push(bytes);
-            }
-        }
-        if !values.is_empty() {
-            values.sort_unstable();
-            map.insert(ni, values);
-        }
-    }
-    map
-}
-
 /// Build a `ListItem` for a root-level project node.
 fn render_root_item(
     app: &App,
@@ -734,14 +695,14 @@ fn render_child_item(
 }
 
 pub(super) fn render_tree_items(app: &App, name_width: usize) -> Vec<ListItem<'static>> {
-    let root_sorted = root_disk_sorted(app);
-    let child_sorted = child_disk_sorted(app);
+    let root_sorted = &app.cached_root_sorted;
+    let child_sorted = &app.cached_child_sorted;
 
     let rows = app.visible_rows();
     rows.iter()
         .map(|row| match row {
             VisibleRow::Root { node_index } => {
-                render_root_item(app, *node_index, &root_sorted, name_width)
+                render_root_item(app, *node_index, root_sorted, name_width)
             },
             VisibleRow::GroupHeader {
                 node_index,
@@ -797,7 +758,7 @@ pub(super) fn render_tree_items(app: &App, name_width: usize) -> Vec<ListItem<'s
 }
 
 pub(super) fn render_filtered_items(app: &App, name_width: usize) -> Vec<ListItem<'static>> {
-    let root_sorted = root_disk_sorted(app);
+    let root_sorted = &app.cached_root_sorted;
     app.filtered
         .iter()
         .filter_map(|&flat_idx| {
@@ -810,7 +771,7 @@ pub(super) fn render_filtered_items(app: &App, name_width: usize) -> Vec<ListIte
                 .unwrap_or(&node.project);
             let disk = app.formatted_disk(project);
             let disk_bytes = app.disk_usage.get(&project.path).copied();
-            let ds = disk_color(disk_percentile(disk_bytes, &root_sorted));
+            let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
             let lang = project.lang_icon();
             let ci = app.ci_for(project);
             let git = app.git_icon(project);

@@ -238,7 +238,8 @@ pub(super) fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     fields
 }
 
-pub(super) struct DetailInfo {
+#[derive(Clone)]
+pub struct DetailInfo {
     pub package_title:  String,
     pub name:           String,
     pub path:           String,
@@ -887,24 +888,27 @@ fn render_targets_panel(
 /// Format ISO 8601 timestamp as `yyyy-mm-dd hh:mm`.
 /// Get the local UTC offset in seconds (e.g., -28800 for PST).
 fn local_utc_offset_secs() -> i64 {
-    use std::process::Command;
-    // Use `date +%z` to get the timezone offset like "-0700" or "+0530"
-    Command::new("date")
-        .arg("+%z")
-        .output()
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.len() >= 5 {
-                let sign: i64 = if s.starts_with('-') { -1 } else { 1 };
-                let hours: i64 = s[1..3].parse().ok()?;
-                let mins: i64 = s[3..5].parse().ok()?;
-                Some(sign * (hours * 3600 + mins * 60))
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0)
+    use std::sync::OnceLock;
+    static OFFSET: OnceLock<i64> = OnceLock::new();
+    *OFFSET.get_or_init(|| {
+        use std::process::Command;
+        Command::new("date")
+            .arg("+%z")
+            .output()
+            .ok()
+            .and_then(|o| {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if s.len() >= 5 {
+                    let sign: i64 = if s.starts_with('-') { -1 } else { 1 };
+                    let hours: i64 = s[1..3].parse().ok()?;
+                    let mins: i64 = s[3..5].parse().ok()?;
+                    Some(sign * (hours * 3600 + mins * 60))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0)
+    })
 }
 
 const fn days_in_month(year: i64, month: i64) -> i64 {
