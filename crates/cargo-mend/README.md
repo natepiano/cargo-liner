@@ -5,6 +5,11 @@
 [![Crates.io](https://img.shields.io/crates/d/cargo-mend.svg)](https://crates.io/crates/cargo-mend)
 [![CI](https://github.com/natepiano/cargo-mend/workflows/CI/badge.svg)](https://github.com/natepiano/cargo-mend/actions)
 
+**Warning:** This project is pre-1.0 and under active development. Diagnostics, config format,
+and CLI flags may change without notice between releases. The `--fix` flag modifies source files
+in place (it rolls back on `cargo check` failure, but always review the diff before committing).
+Use at your own risk.
+
 `cargo-mend` provides the `cargo mend` subcommand for enforcing an opinionated Rust
 visibility style across a crate or workspace.
 

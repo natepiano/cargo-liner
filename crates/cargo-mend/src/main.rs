@@ -44,14 +44,31 @@ fn main() -> ExitCode {
     }
 }
 
+fn build_diagnostics_help(diagnostics: &config::DiagnosticsConfig) -> String {
+    let config_path = config::global_config_path()
+        .map_or_else(|| "(unavailable)".to_string(), |p| p.display().to_string());
+
+    let mut lines = vec![String::new(), "Diagnostics:".to_string()];
+    for (code, enabled) in diagnostics.entries() {
+        let status = if enabled { "enabled" } else { "disabled" };
+        lines.push(format!("  {code:<40} {status}"));
+    }
+    lines.push(String::new());
+    lines.push(format!("Config: {config_path}"));
+    lines.join("\n")
+}
+
 fn run() -> Result<ExitCode, MendFailure> {
-    let cli = cli::parse();
+    let global_diagnostics = config::load_global_diagnostics();
+    let after_help = build_diagnostics_help(&global_diagnostics);
+    let cli = cli::parse(&after_help);
     let selection = selection::resolve_cargo_selection(cli.manifest_path.as_deref())
         .map_err(MendFailure::Unexpected)?;
     let config = config::load_config(
         selection.manifest_dir.as_path(),
         selection.workspace_root.as_path(),
         cli.config.as_deref(),
+        &global_diagnostics,
     )
     .map_err(MendFailure::Unexpected)?;
     let operation_mode = OperationMode::from_cli(&cli.fix).map_err(MendFailure::Unexpected)?;

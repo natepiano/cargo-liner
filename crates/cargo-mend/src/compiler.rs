@@ -3129,6 +3129,7 @@ mod tests {
 
         let loaded_config = LoadedConfig {
             config:      VisibilityConfig::default(),
+            diagnostics: crate::config::DiagnosticsConfig::default(),
             root:        PathBuf::from("/tmp"),
             fingerprint: "expected".to_string(),
         };
@@ -3172,6 +3173,7 @@ mod tests {
 
         let loaded_config = LoadedConfig {
             config:      VisibilityConfig::default(),
+            diagnostics: crate::config::DiagnosticsConfig::default(),
             root:        temp_dir.clone(),
             fingerprint: "expected".to_string(),
         };
@@ -3227,6 +3229,7 @@ mod tests {
 
         let loaded_config = LoadedConfig {
             config:      VisibilityConfig::default(),
+            diagnostics: crate::config::DiagnosticsConfig::default(),
             root:        temp_dir.clone(),
             fingerprint: "new-config".to_string(),
         };
@@ -3271,6 +3274,7 @@ mod tests {
 
         let loaded_config = LoadedConfig {
             config:      VisibilityConfig::default(),
+            diagnostics: crate::config::DiagnosticsConfig::default(),
             root:        temp_dir.clone(),
             fingerprint: "expected".to_string(),
         };

@@ -63,24 +63,22 @@ impl<'a> MendRunner<'a> {
         let report = self
             .build_report(output_mode)
             .map_err(Self::build_report_failure_into_mend_failure)?;
-        let import_scan = mode
-            .fixes
-            .contains(FixKind::ShortenImport)
-            .then(|| imports::scan_selection(self.selection))
-            .transpose()
-            .map_err(MendFailure::Unexpected)?;
-        let prefer_module_import_scan = mode
-            .fixes
-            .contains(FixKind::PreferModuleImport)
-            .then(|| prefer_module_import::scan_selection(self.selection))
-            .transpose()
-            .map_err(MendFailure::Unexpected)?;
-        let inline_path_scan = mode
-            .fixes
-            .contains(FixKind::InlinePathQualifiedType)
-            .then(|| inline_path_qualified_type::scan_selection(self.selection))
-            .transpose()
-            .map_err(MendFailure::Unexpected)?;
+        let diagnostics = &self.config.diagnostics;
+        let import_scan = (mode.fixes.contains(FixKind::ShortenImport)
+            && diagnostics.is_enabled("shorten_local_crate_import"))
+        .then(|| imports::scan_selection(self.selection))
+        .transpose()
+        .map_err(MendFailure::Unexpected)?;
+        let prefer_module_import_scan = (mode.fixes.contains(FixKind::PreferModuleImport)
+            && diagnostics.is_enabled("prefer_module_import"))
+        .then(|| prefer_module_import::scan_selection(self.selection))
+        .transpose()
+        .map_err(MendFailure::Unexpected)?;
+        let inline_path_scan = (mode.fixes.contains(FixKind::InlinePathQualifiedType)
+            && diagnostics.is_enabled("inline_path_qualified_type"))
+        .then(|| inline_path_qualified_type::scan_selection(self.selection))
+        .transpose()
+        .map_err(MendFailure::Unexpected)?;
         let pub_use_scan = mode
             .fixes
             .contains(FixKind::FixPubUse)
@@ -267,15 +265,22 @@ impl<'a> MendRunner<'a> {
     ) -> Result<diagnostics::Report, BuildReportFailure> {
         let mut report = compiler::run_selection(self.selection, self.config, output_mode)
             .map_err(Self::mend_failure_into_build_report_failure)?;
-        let import_scan =
-            imports::scan_selection(self.selection).map_err(BuildReportFailure::Unexpected)?;
-        report.findings.extend(import_scan.findings);
-        let prefer_module_import_scan = prefer_module_import::scan_selection(self.selection)
-            .map_err(BuildReportFailure::Unexpected)?;
-        report.findings.extend(prefer_module_import_scan.findings);
-        let inline_path_scan = inline_path_qualified_type::scan_selection(self.selection)
-            .map_err(BuildReportFailure::Unexpected)?;
-        report.findings.extend(inline_path_scan.findings);
+        let diagnostics = &self.config.diagnostics;
+        if diagnostics.is_enabled("shorten_local_crate_import") {
+            let import_scan =
+                imports::scan_selection(self.selection).map_err(BuildReportFailure::Unexpected)?;
+            report.findings.extend(import_scan.findings);
+        }
+        if diagnostics.is_enabled("prefer_module_import") {
+            let prefer_module_import_scan = prefer_module_import::scan_selection(self.selection)
+                .map_err(BuildReportFailure::Unexpected)?;
+            report.findings.extend(prefer_module_import_scan.findings);
+        }
+        if diagnostics.is_enabled("inline_path_qualified_type") {
+            let inline_path_scan = inline_path_qualified_type::scan_selection(self.selection)
+                .map_err(BuildReportFailure::Unexpected)?;
+            report.findings.extend(inline_path_scan.findings);
+        }
         report.findings.sort_by(|a, b| {
             (
                 a.severity,
@@ -308,6 +313,10 @@ impl<'a> MendRunner<'a> {
                 && a.item == b.item
                 && a.suggestion == b.suggestion
         });
+        // Filter out disabled diagnostics
+        report
+            .findings
+            .retain(|f| self.config.diagnostics.is_enabled(&f.code));
         report.refresh_summary();
         Ok(report)
     }

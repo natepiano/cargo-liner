@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
 use clap::Args;
+use clap::CommandFactory;
+use clap::FromArgMatches;
 use clap::Parser;
 
 #[derive(Parser, Debug)]
@@ -23,7 +25,12 @@ pub struct Cli {
     pub fix: FixCli,
 }
 
-pub fn parse() -> Cli { Cli::parse_from(normalized_args()) }
+pub fn parse(after_help: &str) -> Cli {
+    let matches = Cli::command()
+        .after_long_help(after_help.to_string())
+        .get_matches_from(normalized_args());
+    Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
+}
 
 #[derive(Args, Debug)]
 pub struct FixCli {

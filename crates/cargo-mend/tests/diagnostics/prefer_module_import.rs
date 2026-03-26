@@ -847,3 +847,58 @@ fn example() -> i32 { utils::do_thing() }
         "`use super::module;` should not be flagged as prefer_module_import"
     );
 }
+
+#[test]
+fn project_config_disables_prefer_module_import() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "config_disable_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("mend.toml"),
+        r#"[diagnostics]
+prefer_module_import = false
+"#,
+    )
+    .expect("write mend.toml");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod utils;\nmod consumer;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/utils.rs"),
+        "pub fn do_thing() -> i32 { 42 }\n",
+    )
+    .expect("write utils");
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        r#"use crate::parent::utils::do_thing;
+
+fn example() -> i32 { do_thing() }
+"#,
+    )
+    .expect("write consumer");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == "prefer_module_import"),
+        "disabled diagnostic should produce no findings"
+    );
+}
