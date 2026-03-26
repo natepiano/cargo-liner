@@ -77,9 +77,25 @@ fn scan_file(
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let offsets = line_offsets(&text);
 
+    // Collect `mod` declarations in this file to avoid conflicts
+    let declared_modules: BTreeSet<String> = syntax
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let syn::Item::Mod(item_mod) = item {
+                // Only external `mod foo;` declarations (no inline body)
+                if item_mod.content.is_none() {
+                    return Some(item_mod.ident.to_string());
+                }
+            }
+            None
+        })
+        .collect();
+
     // Pass 1: detect candidate function imports
     let mut detector = ImportDetector {
         current_module_path: &current_module_path,
+        declared_modules:    &declared_modules,
         candidates:          Vec::new(),
     };
     detector.visit_file(&syntax);
@@ -222,18 +238,25 @@ fn build_findings_and_fixes(
 
 struct ImportDetector<'a> {
     current_module_path: &'a [String],
+    declared_modules:    &'a BTreeSet<String>,
     candidates:          Vec<RawCandidate>,
 }
 
 impl Visit<'_> for ImportDetector<'_> {
     fn visit_item_use(&mut self, node: &ItemUse) {
-        if let Some(candidate) = analyze_function_import(self.current_module_path, node) {
+        if let Some(candidate) =
+            analyze_function_import(self.current_module_path, self.declared_modules, node)
+        {
             self.candidates.push(candidate);
         }
     }
 }
 
-fn analyze_function_import(current_module_path: &[String], node: &ItemUse) -> Option<RawCandidate> {
+fn analyze_function_import(
+    current_module_path: &[String],
+    declared_modules: &BTreeSet<String>,
+    node: &ItemUse,
+) -> Option<RawCandidate> {
     let flat = flatten_use_tree(&node.tree)?;
 
     // Skip renames
@@ -262,6 +285,17 @@ fn analyze_function_import(current_module_path: &[String], node: &ItemUse) -> Op
     // Build the module import path (everything except the leaf)
     let module_segments = &flat.segments[..flat.segments.len() - 1];
     let module_name = flat.segments[flat.segments.len() - 2].clone();
+
+    // Skip if the module name is `super` — `use super::super;` is nonsensical
+    if module_name == "super" || module_name == "crate" {
+        return None;
+    }
+
+    // Skip if the module has a `mod` declaration in the same file — `use crate::foo;`
+    // would conflict with `mod foo;`
+    if declared_modules.contains(&module_name) {
+        return None;
+    }
 
     // Apply path shortening: try to use super:: instead of crate:: when possible
     let shortened_module_segments = shorten_module_path(current_module_path, module_segments);

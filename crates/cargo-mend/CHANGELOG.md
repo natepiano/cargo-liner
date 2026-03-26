@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `prefer_module_import` no longer flags `use super::super::module_name;` where the leaf is a module, not a function
+- `prefer_module_import` no longer flags function imports when the target module has a `mod` declaration in the same file (e.g., `mod input;` + `use crate::input::function;`)
+
 ## [0.2.0] - 2026-03-25
 
 ### Added

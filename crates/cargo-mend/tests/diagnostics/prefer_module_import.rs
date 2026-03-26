@@ -902,3 +902,100 @@ fn example() -> i32 { do_thing() }
         "disabled diagnostic should produce no findings"
     );
 }
+
+#[test]
+fn skips_super_super_module_import() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "super_super_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/extras/visualization")).expect("create dirs");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod extras;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/extras.rs"),
+        "mod support;\nmod visualization;\n",
+    )
+    .expect("write extras mod");
+    fs::write(
+        temp.path().join("src/extras/support.rs"),
+        "pub fn helper() -> i32 { 42 }\npub struct CameraBasis;\n",
+    )
+    .expect("write support");
+    fs::write(
+        temp.path().join("src/extras/visualization.rs"),
+        "mod convex_hull;\n",
+    )
+    .expect("write visualization mod");
+    fs::write(
+        temp.path().join("src/extras/visualization/convex_hull.rs"),
+        r#"use super::super::support;
+use super::super::support::CameraBasis;
+
+fn example(_basis: CameraBasis) -> i32 { support::helper() }
+"#,
+    )
+    .expect("write convex_hull");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let false_positives: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.code == "prefer_module_import" && f.path.contains("convex_hull"))
+        .collect();
+    assert!(
+        false_positives.is_empty(),
+        "`use super::super::module;` should not be flagged, got: {:?}",
+        false_positives.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn skips_function_import_when_mod_declared_in_same_file() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "mod_conflict_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod input;
+
+use crate::input::button_zoom_just_pressed;
+
+fn main() { button_zoom_just_pressed(); }
+"#,
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/input.rs"),
+        "pub fn button_zoom_just_pressed() {}\n",
+    )
+    .expect("write input");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == "prefer_module_import"),
+        "function import should not be flagged when `mod` declaration exists in same file"
+    );
+}
