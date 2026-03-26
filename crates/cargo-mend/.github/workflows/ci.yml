@@ -56,7 +56,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run clippy
-        run: cargo clippy --all-targets
+        run: cargo +stable clippy --all-targets
 
   build:
     name: Build Check
