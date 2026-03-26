@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -12,90 +13,83 @@ use serde::Serialize;
 const APP_NAME: &str = "cargo-mend";
 const GLOBAL_CONFIG_FILE: &str = "config.toml";
 
-// --- Diagnostics config ---
+// --- Diagnostic codes ---
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DiagnosticsConfig {
-    #[serde(default = "default_true")]
-    pub forbidden_pub_crate:            bool,
-    #[serde(default = "default_true")]
-    pub forbidden_pub_in_crate:         bool,
-    #[serde(default = "default_true")]
-    pub review_pub_mod:                 bool,
-    #[serde(default = "default_true")]
-    pub suspicious_pub:                 bool,
-    #[serde(default = "default_true")]
-    pub prefer_module_import:           bool,
-    #[serde(default = "default_true")]
-    pub inline_path_qualified_type:     bool,
-    #[serde(default = "default_true")]
-    pub shorten_local_crate_import:     bool,
-    #[serde(default = "default_true")]
-    pub wildcard_parent_pub_use:        bool,
-    #[serde(default = "default_true")]
-    pub internal_parent_pub_use_facade: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticCode {
+    ForbiddenPubCrate,
+    ForbiddenPubInCrate,
+    ReviewPubMod,
+    SuspiciousPub,
+    PreferModuleImport,
+    InlinePathQualifiedType,
+    ShortenLocalCrateImport,
+    WildcardParentPubUse,
+    InternalParentPubUseFacade,
 }
 
-const fn default_true() -> bool { true }
+impl DiagnosticCode {
+    pub const ALL: &[Self] = &[
+        Self::ForbiddenPubCrate,
+        Self::ForbiddenPubInCrate,
+        Self::ReviewPubMod,
+        Self::SuspiciousPub,
+        Self::PreferModuleImport,
+        Self::InlinePathQualifiedType,
+        Self::ShortenLocalCrateImport,
+        Self::WildcardParentPubUse,
+        Self::InternalParentPubUseFacade,
+    ];
 
-impl Default for DiagnosticsConfig {
-    fn default() -> Self {
-        Self {
-            forbidden_pub_crate:            true,
-            forbidden_pub_in_crate:         true,
-            review_pub_mod:                 true,
-            suspicious_pub:                 true,
-            prefer_module_import:           true,
-            inline_path_qualified_type:     true,
-            shorten_local_crate_import:     true,
-            wildcard_parent_pub_use:        true,
-            internal_parent_pub_use_facade: true,
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ForbiddenPubCrate => "forbidden_pub_crate",
+            Self::ForbiddenPubInCrate => "forbidden_pub_in_crate",
+            Self::ReviewPubMod => "review_pub_mod",
+            Self::SuspiciousPub => "suspicious_pub",
+            Self::PreferModuleImport => "prefer_module_import",
+            Self::InlinePathQualifiedType => "inline_path_qualified_type",
+            Self::ShortenLocalCrateImport => "shorten_local_crate_import",
+            Self::WildcardParentPubUse => "wildcard_parent_pub_use",
+            Self::InternalParentPubUseFacade => "internal_parent_pub_use_facade",
         }
     }
+}
+
+// --- Diagnostics config ---
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiagnosticsConfig {
+    #[serde(flatten)]
+    rules: BTreeMap<DiagnosticCode, bool>,
 }
 
 impl DiagnosticsConfig {
-    pub fn is_enabled(&self, code: &str) -> bool {
-        match code {
-            "forbidden_pub_crate" => self.forbidden_pub_crate,
-            "forbidden_pub_in_crate" => self.forbidden_pub_in_crate,
-            "review_pub_mod" => self.review_pub_mod,
-            "suspicious_pub" => self.suspicious_pub,
-            "prefer_module_import" => self.prefer_module_import,
-            "inline_path_qualified_type" => self.inline_path_qualified_type,
-            "shorten_local_crate_import" => self.shorten_local_crate_import,
-            "wildcard_parent_pub_use" => self.wildcard_parent_pub_use,
-            "internal_parent_pub_use_facade" => self.internal_parent_pub_use_facade,
-            _ => true,
-        }
+    pub fn is_enabled(&self, code: DiagnosticCode) -> bool {
+        self.rules.get(&code).copied().unwrap_or(true)
     }
 
-    /// Merge a project-level override on top of this config.
-    /// Only fields explicitly present in the project config override the global.
-    pub fn merge_project(&self, project: &DiagnosticsConfig) -> Self { project.clone() }
+    pub fn is_enabled_str(&self, code_str: &str) -> bool {
+        DiagnosticCode::ALL
+            .iter()
+            .find(|c| c.as_str() == code_str)
+            .is_none_or(|code| self.is_enabled(*code))
+    }
 
-    /// Returns an iterator of `(code, enabled)` pairs for display.
-    pub fn entries(&self) -> Vec<(&'static str, bool)> {
-        vec![
-            ("forbidden_pub_crate", self.forbidden_pub_crate),
-            ("forbidden_pub_in_crate", self.forbidden_pub_in_crate),
-            ("review_pub_mod", self.review_pub_mod),
-            ("suspicious_pub", self.suspicious_pub),
-            ("prefer_module_import", self.prefer_module_import),
-            (
-                "inline_path_qualified_type",
-                self.inline_path_qualified_type,
-            ),
-            (
-                "shorten_local_crate_import",
-                self.shorten_local_crate_import,
-            ),
-            ("wildcard_parent_pub_use", self.wildcard_parent_pub_use),
-            (
-                "internal_parent_pub_use_facade",
-                self.internal_parent_pub_use_facade,
-            ),
-        ]
+    pub fn entries(&self) -> Vec<(DiagnosticCode, bool)> {
+        DiagnosticCode::ALL
+            .iter()
+            .map(|code| (*code, self.is_enabled(*code)))
+            .collect()
+    }
+
+    pub fn merge_project(&self, project: &Self) -> Self {
+        let mut rules = self.rules.clone();
+        for (code, enabled) in &project.rules {
+            rules.insert(*code, *enabled);
+        }
+        Self { rules }
     }
 }
 
@@ -133,7 +127,7 @@ pub fn load_global_diagnostics() -> DiagnosticsConfig {
         .map_or_else(|_| DiagnosticsConfig::default(), |f| f.diagnostics)
 }
 
-const DEFAULT_GLOBAL_CONFIG_TOML: &str = r#"# cargo-mend global configuration
+const DEFAULT_GLOBAL_CONFIG_TOML: &str = r"# cargo-mend global configuration
 # See https://github.com/natepiano/cargo-mend#diagnostics for details on each rule.
 # Per-project overrides go in mend.toml at your project or workspace root.
 
@@ -147,7 +141,7 @@ inline_path_qualified_type = true
 shorten_local_crate_import = true
 wildcard_parent_pub_use = true
 internal_parent_pub_use_facade = true
-"#;
+";
 
 fn create_default_global_config(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -248,6 +242,7 @@ fn fingerprint_for(root: &Path, config: &VisibilityConfig) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::DEFAULT_GLOBAL_CONFIG_TOML;
+    use super::DiagnosticCode;
     use super::DiagnosticsConfig;
     use super::GlobalConfigFile;
 
@@ -255,51 +250,69 @@ mod tests {
     fn default_global_config_toml_parses_correctly() {
         let result: Result<GlobalConfigFile, _> = toml::from_str(DEFAULT_GLOBAL_CONFIG_TOML);
         assert!(result.is_ok(), "DEFAULT_GLOBAL_CONFIG_TOML should parse");
-        let cfg = result.expect("just asserted ok").diagnostics;
-        for (code, enabled) in cfg.entries() {
-            assert!(enabled, "default config should have {code} enabled");
+        let Ok(cfg) = result else {
+            unreachable!();
+        };
+        for (code, enabled) in cfg.diagnostics.entries() {
+            assert!(
+                enabled,
+                "default config should have {} enabled",
+                code.as_str()
+            );
         }
     }
 
     #[test]
-    fn is_enabled_reflects_field_values() {
+    fn is_enabled_reflects_config_values() {
         let mut cfg = DiagnosticsConfig::default();
-        assert!(cfg.is_enabled("prefer_module_import"));
-        cfg.prefer_module_import = false;
-        assert!(!cfg.is_enabled("prefer_module_import"));
+        assert!(cfg.is_enabled(DiagnosticCode::PreferModuleImport));
+        cfg.rules.insert(DiagnosticCode::PreferModuleImport, false);
+        assert!(!cfg.is_enabled(DiagnosticCode::PreferModuleImport));
     }
 
     #[test]
-    fn unknown_code_defaults_to_enabled() {
+    fn missing_code_defaults_to_enabled() {
         let cfg = DiagnosticsConfig::default();
-        assert!(cfg.is_enabled("some_future_diagnostic"));
+        assert!(cfg.is_enabled(DiagnosticCode::ForbiddenPubCrate));
     }
 
     #[test]
     fn merge_project_overrides_global() {
-        let global = DiagnosticsConfig {
-            prefer_module_import: false,
-            ..DiagnosticsConfig::default()
-        };
-        let project = DiagnosticsConfig {
-            prefer_module_import: true,
-            suspicious_pub: false,
-            ..DiagnosticsConfig::default()
-        };
+        let mut global = DiagnosticsConfig::default();
+        global
+            .rules
+            .insert(DiagnosticCode::PreferModuleImport, false);
+
+        let mut project = DiagnosticsConfig::default();
+        project
+            .rules
+            .insert(DiagnosticCode::PreferModuleImport, true);
+        project.rules.insert(DiagnosticCode::SuspiciousPub, false);
+
         let merged = global.merge_project(&project);
-        assert!(merged.prefer_module_import);
-        assert!(!merged.suspicious_pub);
+        assert!(merged.is_enabled(DiagnosticCode::PreferModuleImport));
+        assert!(!merged.is_enabled(DiagnosticCode::SuspiciousPub));
     }
 
     #[test]
     fn partial_toml_uses_defaults_for_missing_fields() {
-        let toml_str = r#"
+        let toml_str = r"
 [diagnostics]
 prefer_module_import = false
-"#;
-        let cfg: GlobalConfigFile = toml::from_str(toml_str).expect("partial toml should parse");
-        assert!(!cfg.diagnostics.prefer_module_import);
-        assert!(cfg.diagnostics.forbidden_pub_crate);
-        assert!(cfg.diagnostics.suspicious_pub);
+";
+        let result: Result<GlobalConfigFile, _> = toml::from_str(toml_str);
+        assert!(result.is_ok(), "partial toml should parse");
+        let Ok(cfg) = result else {
+            unreachable!();
+        };
+        assert!(
+            !cfg.diagnostics
+                .is_enabled(DiagnosticCode::PreferModuleImport)
+        );
+        assert!(
+            cfg.diagnostics
+                .is_enabled(DiagnosticCode::ForbiddenPubCrate)
+        );
+        assert!(cfg.diagnostics.is_enabled(DiagnosticCode::SuspiciousPub));
     }
 }

@@ -1,7 +1,5 @@
 use std::collections::BTreeSet;
 
-use anyhow::Result;
-
 use super::cli::FixCli;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -59,7 +57,7 @@ pub struct OperationMode {
 }
 
 impl OperationMode {
-    pub fn from_cli(fix_cli: &FixCli) -> Result<Self> {
+    pub fn from_cli(fix_cli: &FixCli) -> Self {
         let fixes = FixSelection::from_cli(fix_cli);
         if fix_cli.dry_run {
             let effective_fixes = if fixes.is_empty() {
@@ -67,22 +65,22 @@ impl OperationMode {
             } else {
                 fixes
             };
-            return Ok(Self {
+            return Self {
                 intent: OperationIntent::DryRun,
                 fixes:  effective_fixes,
-            });
+            };
         }
 
         if fixes.is_empty() {
-            Ok(Self {
+            Self {
                 intent: OperationIntent::ReadOnly,
                 fixes,
-            })
+            }
         } else {
-            Ok(Self {
+            Self {
                 intent: OperationIntent::Apply,
                 fixes,
-            })
+            }
         }
     }
 }
@@ -101,9 +99,7 @@ mod tests {
             fix_pub_use: false,
             dry_run:     false,
         };
-        let Ok(mode) = OperationMode::from_cli(&cli) else {
-            unreachable!("read-only mode should parse");
-        };
+        let mode = OperationMode::from_cli(&cli);
         assert_eq!(mode.intent, OperationIntent::ReadOnly);
     }
 
@@ -114,9 +110,7 @@ mod tests {
             fix_pub_use: false,
             dry_run:     true,
         };
-        let Ok(mode) = OperationMode::from_cli(&cli) else {
-            unreachable!("dry run alone should parse");
-        };
+        let mode = OperationMode::from_cli(&cli);
         assert_eq!(mode.intent, OperationIntent::DryRun);
         assert!(mode.fixes.contains(FixKind::ShortenImport));
         assert!(mode.fixes.contains(FixKind::PreferModuleImport));
@@ -131,9 +125,7 @@ mod tests {
             fix_pub_use: true,
             dry_run:     true,
         };
-        let Ok(mode) = OperationMode::from_cli(&cli) else {
-            unreachable!("preview mode should parse");
-        };
+        let mode = OperationMode::from_cli(&cli);
         assert_eq!(mode.intent, OperationIntent::DryRun);
         assert!(mode.fixes.contains(FixKind::ShortenImport));
         assert!(mode.fixes.contains(FixKind::FixPubUse));
@@ -146,9 +138,7 @@ mod tests {
             fix_pub_use: true,
             dry_run:     false,
         };
-        let Ok(mode) = OperationMode::from_cli(&cli) else {
-            unreachable!("apply mode should parse");
-        };
+        let mode = OperationMode::from_cli(&cli);
         assert_eq!(mode.intent, OperationIntent::Apply);
         assert!(mode.fixes.contains(FixKind::ShortenImport));
         assert!(mode.fixes.contains(FixKind::FixPubUse));

@@ -19,7 +19,7 @@ use super::diagnostics::Severity;
 use super::fix_support::FixSupport;
 use super::imports::UseFix;
 use super::imports::ValidatedFixSet;
-use super::module_paths::file_module_path;
+use super::module_paths;
 use super::selection::Selection;
 
 pub struct PreferModuleImportScan {
@@ -73,7 +73,7 @@ fn scan_file(
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
         parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
-    let current_module_path = file_module_path(src_root, path)
+    let current_module_path = module_paths::file_module_path(src_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let offsets = line_offsets(&text);
 
@@ -120,6 +120,28 @@ fn scan_file(
         }
     }
 
+    let (findings, fixes) = build_findings_and_fixes(
+        analysis_root,
+        path,
+        &text,
+        &offsets,
+        &module_to_functions,
+        &func_to_module,
+        &collector.references,
+    );
+
+    Ok((findings, fixes))
+}
+
+fn build_findings_and_fixes(
+    analysis_root: &Path,
+    path: &Path,
+    text: &str,
+    offsets: &[usize],
+    module_to_functions: &BTreeMap<String, Vec<RawCandidate>>,
+    func_to_module: &BTreeMap<&str, &str>,
+    references: &[BareReference],
+) -> (Vec<Finding>, Vec<UseFix>) {
     let display_path = path
         .strip_prefix(analysis_root)
         .unwrap_or(path)
@@ -129,13 +151,11 @@ fn scan_file(
     let mut findings = Vec::new();
     let mut fixes = Vec::new();
 
-    // Generate use-statement rewrite fixes and findings
     let mut rewritten_modules: BTreeSet<String> = BTreeSet::new();
     for functions in module_to_functions.values() {
         for func in functions {
-            let byte_start = offset(&offsets, func.span_start);
-            let byte_end = offset(&offsets, func.span_end);
-            // Include trailing newline in removal range
+            let byte_start = offset(offsets, func.span_start);
+            let byte_end = offset(offsets, func.span_end);
             let byte_end_with_newline = if text.as_bytes().get(byte_end) == Some(&b'\n') {
                 byte_end + 1
             } else {
@@ -167,7 +187,6 @@ fn scan_file(
             });
 
             if rewritten_modules.insert(func.module_path.clone()) {
-                // First function from this module: rewrite the use statement
                 fixes.push(UseFix {
                     path:        path.to_path_buf(),
                     start:       byte_start,
@@ -175,7 +194,6 @@ fn scan_file(
                     replacement: func.replacement_use.clone(),
                 });
             } else {
-                // Additional function from same module: remove the use statement entirely
                 fixes.push(UseFix {
                     path:        path.to_path_buf(),
                     start:       byte_start,
@@ -186,8 +204,7 @@ fn scan_file(
         }
     }
 
-    // Generate reference-qualifying fixes
-    for reference in &collector.references {
+    for reference in references {
         if let Some(&module_name) = func_to_module.get(reference.name.as_str()) {
             fixes.push(UseFix {
                 path:        path.to_path_buf(),
@@ -198,7 +215,7 @@ fn scan_file(
         }
     }
 
-    Ok((findings, fixes))
+    (findings, fixes)
 }
 
 // --- Pass 1: Detect function imports ---
@@ -361,9 +378,8 @@ struct FlattenedImport {
 }
 
 fn is_snake_case_function_name(name: &str) -> bool {
-    let first = match name.chars().next() {
-        Some(ch) => ch,
-        None => return false,
+    let Some(first) = name.chars().next() else {
+        return false;
     };
     if !first.is_ascii_lowercase() && first != '_' {
         return false;

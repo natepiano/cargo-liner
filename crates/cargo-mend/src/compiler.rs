@@ -45,10 +45,11 @@ use super::diagnostics::ReportFacts;
 use super::diagnostics::ReportSummary;
 use super::diagnostics::Severity;
 use super::fix_support::FixSupport;
-use super::module_paths::module_name_for_child_boundary_file;
+use super::module_paths;
 use super::outcome::AnalysisFailure;
 use super::outcome::CompilerFailureCause;
 use super::outcome::MendFailure;
+use super::selection::SelectedPackage;
 use super::selection::Selection;
 
 const DRIVER_ENV: &str = "MEND_DRIVER";
@@ -369,7 +370,7 @@ fn run_cargo_check(
 }
 
 fn run_cargo_rustc_for_package(
-    package: &super::selection::SelectedPackage,
+    package: &SelectedPackage,
     loaded_config: &LoadedConfig,
     findings_dir: &Path,
     output_mode: BuildOutputMode,
@@ -1559,7 +1560,7 @@ fn parent_facade_export_status(
         return Ok(None);
     };
 
-    let child_module_name = module_name_for_child_boundary_file(child_file)
+    let child_module_name = module_paths::module_name_for_child_boundary_file(child_file)
         .context("failed to resolve child module name for facade check")?;
 
     let parent_source = fs::read_to_string(&parent_boundary.boundary_file).with_context(|| {

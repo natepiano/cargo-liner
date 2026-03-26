@@ -18,7 +18,7 @@ use walkdir::WalkDir;
 use super::diagnostics::Finding;
 use super::diagnostics::Severity;
 use super::fix_support::FixSupport;
-use super::module_paths::file_module_path;
+use super::module_paths;
 use super::selection::Selection;
 
 pub struct ImportScan {
@@ -105,8 +105,6 @@ impl ValidatedFixSet {
     }
 
     pub const fn is_empty(&self) -> bool { self.fixes.is_empty() }
-
-    pub const fn len(&self) -> usize { self.fixes.len() }
 
     pub fn iter(&self) -> impl Iterator<Item = &UseFix> { self.fixes.iter() }
 }
@@ -244,7 +242,7 @@ fn scan_file(analysis_root: &Path, src_root: &Path, path: &Path) -> Result<Vec<I
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
         parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
-    let base_module_path = file_module_path(src_root, path)
+    let base_module_path = module_paths::file_module_path(src_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let offsets = line_offsets(&text);
     let mut visitor = UseVisitor {
@@ -483,6 +481,6 @@ mod tests {
         let Ok(validated) = validated_result else {
             return;
         };
-        assert_eq!(validated.len(), 2);
+        assert_eq!(validated.iter().count(), 2);
     }
 }

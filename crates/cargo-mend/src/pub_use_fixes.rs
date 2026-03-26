@@ -17,7 +17,7 @@ use syn::visit::Visit;
 use super::diagnostics::Report;
 use super::imports::UseFix;
 use super::imports::ValidatedFixSet;
-use super::module_paths::file_module_path;
+use super::module_paths;
 use super::selection::Selection;
 
 pub struct PubUseFixScan {
@@ -344,7 +344,7 @@ fn rewrite_in_subtree_imports(
             analysis_root.display()
         )
     })?;
-    let base_module_path = file_module_path(&src_root, file)
+    let base_module_path = module_paths::file_module_path(&src_root, file)
         .with_context(|| format!("failed to determine module path for {}", file.display()))?;
     let offsets = line_offsets(&source);
     let mut visitor = PubUseFixVisitor {
@@ -960,7 +960,7 @@ fn module_path_from_boundary_file(src_root: &Path, boundary_file: &Path) -> Opti
         return module_path_from_dir(src_root, boundary_file.parent()?);
     }
 
-    file_module_path(src_root, boundary_file)
+    module_paths::file_module_path(src_root, boundary_file)
 }
 
 fn rust_source_files(dir: &Path) -> Result<Vec<PathBuf>> {

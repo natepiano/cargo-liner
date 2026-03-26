@@ -262,9 +262,8 @@ fn flatten_use_path(tree: &UseTree) -> Option<String> {
 }
 
 fn is_pascal_case(name: &str) -> bool {
-    let first = match name.chars().next() {
-        Some(ch) => ch,
-        None => return false,
+    let Some(first) = name.chars().next() else {
+        return false;
     };
     first.is_ascii_uppercase() && name.chars().any(|ch| ch.is_ascii_lowercase())
 }

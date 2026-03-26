@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use crate::compiler;
 use crate::config;
+use crate::config::DiagnosticCode;
 use crate::diagnostics;
 use crate::imports;
 use crate::inline_path_qualified_type;
@@ -65,17 +66,17 @@ impl<'a> MendRunner<'a> {
             .map_err(Self::build_report_failure_into_mend_failure)?;
         let diagnostics = &self.config.diagnostics;
         let import_scan = (mode.fixes.contains(FixKind::ShortenImport)
-            && diagnostics.is_enabled("shorten_local_crate_import"))
+            && diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport))
         .then(|| imports::scan_selection(self.selection))
         .transpose()
         .map_err(MendFailure::Unexpected)?;
         let prefer_module_import_scan = (mode.fixes.contains(FixKind::PreferModuleImport)
-            && diagnostics.is_enabled("prefer_module_import"))
+            && diagnostics.is_enabled(DiagnosticCode::PreferModuleImport))
         .then(|| prefer_module_import::scan_selection(self.selection))
         .transpose()
         .map_err(MendFailure::Unexpected)?;
         let inline_path_scan = (mode.fixes.contains(FixKind::InlinePathQualifiedType)
-            && diagnostics.is_enabled("inline_path_qualified_type"))
+            && diagnostics.is_enabled(DiagnosticCode::InlinePathQualifiedType))
         .then(|| inline_path_qualified_type::scan_selection(self.selection))
         .transpose()
         .map_err(MendFailure::Unexpected)?;
@@ -266,17 +267,17 @@ impl<'a> MendRunner<'a> {
         let mut report = compiler::run_selection(self.selection, self.config, output_mode)
             .map_err(Self::mend_failure_into_build_report_failure)?;
         let diagnostics = &self.config.diagnostics;
-        if diagnostics.is_enabled("shorten_local_crate_import") {
+        if diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport) {
             let import_scan =
                 imports::scan_selection(self.selection).map_err(BuildReportFailure::Unexpected)?;
             report.findings.extend(import_scan.findings);
         }
-        if diagnostics.is_enabled("prefer_module_import") {
+        if diagnostics.is_enabled(DiagnosticCode::PreferModuleImport) {
             let prefer_module_import_scan = prefer_module_import::scan_selection(self.selection)
                 .map_err(BuildReportFailure::Unexpected)?;
             report.findings.extend(prefer_module_import_scan.findings);
         }
-        if diagnostics.is_enabled("inline_path_qualified_type") {
+        if diagnostics.is_enabled(DiagnosticCode::InlinePathQualifiedType) {
             let inline_path_scan = inline_path_qualified_type::scan_selection(self.selection)
                 .map_err(BuildReportFailure::Unexpected)?;
             report.findings.extend(inline_path_scan.findings);
@@ -316,7 +317,7 @@ impl<'a> MendRunner<'a> {
         // Filter out disabled diagnostics
         report
             .findings
-            .retain(|f| self.config.diagnostics.is_enabled(&f.code));
+            .retain(|f| self.config.diagnostics.is_enabled_str(&f.code));
         report.refresh_summary();
         Ok(report)
     }

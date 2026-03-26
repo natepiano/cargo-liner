@@ -50,8 +50,9 @@ fn build_diagnostics_help(diagnostics: &config::DiagnosticsConfig) -> String {
 
     let mut lines = vec![String::new(), "Diagnostics:".to_string()];
     for (code, enabled) in diagnostics.entries() {
+        let name = code.as_str();
         let status = if enabled { "enabled" } else { "disabled" };
-        lines.push(format!("  {code:<40} {status}"));
+        lines.push(format!("  {name:<40} {status}"));
     }
     lines.push(String::new());
     lines.push(format!("Config: {config_path}"));
@@ -71,7 +72,7 @@ fn run() -> Result<ExitCode, MendFailure> {
         &global_diagnostics,
     )
     .map_err(MendFailure::Unexpected)?;
-    let operation_mode = OperationMode::from_cli(&cli.fix).map_err(MendFailure::Unexpected)?;
+    let operation_mode = OperationMode::from_cli(&cli.fix);
     let outcome = MendRunner::new(&selection, &config).run(operation_mode)?;
 
     if cli.json {
