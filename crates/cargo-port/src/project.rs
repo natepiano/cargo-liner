@@ -3,6 +3,7 @@ use std::io;
 use std::path::Path;
 use std::process::Command;
 
+use serde::Deserialize;
 use serde::Serialize;
 use toml::Value;
 
@@ -129,10 +130,9 @@ fn parse_remote_url(raw: &str) -> (Option<String>, Option<String>) {
     (None, None)
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProjectType {
-    Workspace,
     Binary,
     Library,
     ProcMacro,
@@ -142,7 +142,6 @@ pub enum ProjectType {
 impl fmt::Display for ProjectType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Workspace => write!(f, "workspace"),
             Self::Binary => write!(f, "binary"),
             Self::Library => write!(f, "library"),
             Self::ProcMacro => write!(f, "proc-macro"),
@@ -152,14 +151,17 @@ impl fmt::Display for ProjectType {
 }
 
 /// A group of examples in a subdirectory, or root-level examples (empty category).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExampleGroup {
     /// Subdirectory name, or empty for root-level examples.
     pub category: String,
     pub names:    Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// Serde default helper that returns `true`.
+const fn default_true() -> bool { true }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RustProject {
     /// Display path (e.g. `~/rust/bevy`).
     pub path:          String,
@@ -170,15 +172,24 @@ pub struct RustProject {
     pub version:       Option<String>,
     pub description:   Option<String>,
     pub worktree_name: Option<String>,
+    /// Whether this project has a `[workspace]` section.
+    #[serde(default)]
+    pub is_workspace:  bool,
     pub types:         Vec<ProjectType>,
     pub examples:      Vec<ExampleGroup>,
     pub benches:       Vec<String>,
     pub test_count:    usize,
+    /// Whether this project is a Rust project (has `Cargo.toml`).
+    #[serde(default = "default_true")]
+    pub is_rust:       bool,
 }
 
 impl RustProject {
     /// Total number of examples across all groups.
     pub fn example_count(&self) -> usize { self.examples.iter().map(|g| g.names.len()).sum() }
+
+    /// Language icon for the project list.
+    pub const fn lang_icon(&self) -> &'static str { if self.is_rust { "🦀" } else { "  " } }
 
     /// Display name for the project list.
     /// Shows `name (worktree_dir)` for worktrees, just `name` otherwise.
@@ -249,6 +260,7 @@ impl RustProject {
         // A `.git` file (not directory) indicates a git worktree
         let worktree_name = detect_worktree_name(project_dir);
 
+        let is_workspace = table.get("workspace").is_some();
         let types = detect_types(&table, project_dir);
         let examples = collect_examples(&table, project_dir);
         let benches = collect_target_names(&table, project_dir, "bench", "benches");
@@ -263,26 +275,45 @@ impl RustProject {
             version,
             description,
             worktree_name,
+            is_workspace,
             types,
             examples,
             benches,
             test_count,
+            is_rust: true,
         })
     }
 
-    pub fn is_workspace(&self) -> bool {
-        self.types
-            .iter()
-            .any(|t| matches!(t, ProjectType::Workspace))
+    /// Create a project entry for a non-Rust git repository (no `Cargo.toml`).
+    pub fn from_git_dir(project_dir: &Path) -> Self {
+        let name = project_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string());
+        let path = home_relative_path(project_dir);
+        let abs_path = project_dir.display().to_string();
+        let worktree_name = detect_worktree_name(project_dir);
+
+        Self {
+            path,
+            abs_path,
+            name,
+            version: None,
+            description: None,
+            worktree_name,
+            is_workspace: false,
+            types: Vec::new(),
+            examples: Vec::new(),
+            benches: Vec::new(),
+            test_count: 0,
+            is_rust: false,
+        }
     }
+
+    pub const fn is_workspace(&self) -> bool { self.is_workspace }
 }
 
 fn detect_types(table: &Value, project_dir: &Path) -> Vec<ProjectType> {
     let mut types = Vec::new();
-
-    if table.get("workspace").is_some() {
-        types.push(ProjectType::Workspace);
-    }
 
     let is_proc_macro = table
         .get("lib")
@@ -508,7 +539,8 @@ fn count_targets(table: &Value, project_dir: &Path, toml_key: &str, dir_name: &s
 /// Walks up the directory tree looking for a `.git` file (not directory).
 /// Returns the worktree root directory name as the label.
 /// Returns a `~/`-prefixed path if under the home directory, otherwise the absolute path.
-fn home_relative_path(path: &Path) -> String {
+/// Returns a `~/`-prefixed path if under the home directory, otherwise the absolute path.
+pub fn home_relative_path(path: &Path) -> String {
     if let Some(home) = dirs::home_dir()
         && let Ok(rel) = path.strip_prefix(&home)
     {

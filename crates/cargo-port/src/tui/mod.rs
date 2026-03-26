@@ -135,6 +135,7 @@ pub enum BackgroundMsg {
     CiRuns { path: String, runs: Vec<CiRun> },
     GitInfo { path: String, info: GitInfo },
     CratesIoVersion { path: String, version: String },
+    Stars { path: String, count: u64 },
     ProjectDiscovered { project: RustProject },
     ScanActivity { path: String },
     ScanComplete,
@@ -159,9 +160,11 @@ pub struct ProjectCounts {
 
 impl ProjectCounts {
     pub fn add_project(&mut self, project: &RustProject) {
+        if project.is_workspace() {
+            self.workspaces += 1;
+        }
         for t in &project.types {
             match t {
-                ProjectType::Workspace => self.workspaces += 1,
                 ProjectType::Library => self.libs += 1,
                 ProjectType::Binary => self.bins += 1,
                 ProjectType::ProcMacro => self.proc_macros += 1,
@@ -198,61 +201,90 @@ impl ProjectCounts {
         }
         parts.join("  ")
     }
+
+    /// Returns non-zero stats as (label, count) pairs for column display.
+    pub fn to_rows(&self) -> Vec<(&'static str, usize)> {
+        let mut rows = Vec::new();
+        if self.workspaces > 0 {
+            rows.push(("ws", self.workspaces));
+        }
+        if self.libs > 0 {
+            rows.push(("lib", self.libs));
+        }
+        if self.bins > 0 {
+            rows.push(("bin", self.bins));
+        }
+        if self.proc_macros > 0 {
+            rows.push(("proc-macro", self.proc_macros));
+        }
+        if self.examples > 0 {
+            rows.push(("example", self.examples));
+        }
+        if self.benches > 0 {
+            rows.push(("bench", self.benches));
+        }
+        if self.tests > 0 {
+            rows.push(("test", self.tests));
+        }
+        rows
+    }
 }
 
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
-    pub scan_root:               PathBuf,
-    pub inline_dirs:             Vec<String>,
-    pub exclude_dirs:            Vec<String>,
-    pub ci_run_count:            u32,
-    pub all_projects:            Vec<RustProject>,
-    pub nodes:                   Vec<ProjectNode>,
-    pub flat_entries:            Vec<FlatEntry>,
-    pub disk_usage:              HashMap<String, u64>,
-    pub ci_runs:                 HashMap<String, Vec<CiRun>>,
-    pub git_info:                HashMap<String, GitInfo>,
-    pub crates_versions:         HashMap<String, String>,
-    pub bg_tx:                   mpsc::Sender<BackgroundMsg>,
-    pub bg_rx:                   Receiver<BackgroundMsg>,
-    pub fully_loaded:            HashSet<String>,
-    pub priority_fetch_path:     Option<String>,
-    pub invert_scroll:           bool,
-    pub expanded:                HashSet<ExpandKey>,
-    pub list_state:              ListState,
-    pub searching:               bool,
-    pub search_query:            String,
-    pub filtered:                Vec<usize>,
-    pub show_settings:           bool,
-    pub settings_cursor:         usize,
-    pub settings_editing:        bool,
-    pub settings_edit_buf:       String,
-    pub scan_complete:           bool,
-    pub scan_log:                Vec<String>,
-    pub scan_log_state:          ListState,
-    pub focus:                   FocusTarget,
-    pub detail_column:           usize,
-    pub detail_cursor:           usize,
-    pub ci_runs_cursor:          usize,
-    pub examples_scroll:         usize,
-    pub expanded_example_groups: HashSet<String>,
-    pub editing:                 Option<EditingState>,
-    pub pending_example_run:     Option<PendingExampleRun>,
-    pub pending_ci_fetch:        Option<PendingCiFetch>,
-    pub ci_fetching:             bool,
-    pub ci_fetch_count:          u32,
-    pub ci_fetch_prev_count:     usize,
-    pub ci_no_more_runs:         HashSet<String>,
-    pub spinner_tick:            usize,
-    pub ci_fetch_tx:             mpsc::Sender<CiFetchMsg>,
-    pub ci_fetch_rx:             mpsc::Receiver<CiFetchMsg>,
-    pub example_running:         Option<String>,
-    pub example_child:           Arc<Mutex<Option<u32>>>,
-    pub example_output:          Vec<String>,
-    pub example_tx:              mpsc::Sender<ExampleMsg>,
-    pub example_rx:              mpsc::Receiver<ExampleMsg>,
-    pub last_selected_path:      Option<String>,
-    pub should_quit:             bool,
+    pub scan_root:           PathBuf,
+    pub inline_dirs:         Vec<String>,
+    pub exclude_dirs:        Vec<String>,
+    pub ci_run_count:        u32,
+    pub include_non_rust:    bool,
+    pub owned_owners:        Vec<String>,
+    pub all_projects:        Vec<RustProject>,
+    pub nodes:               Vec<ProjectNode>,
+    pub flat_entries:        Vec<FlatEntry>,
+    pub disk_usage:          HashMap<String, u64>,
+    pub ci_runs:             HashMap<String, Vec<CiRun>>,
+    pub git_info:            HashMap<String, GitInfo>,
+    pub crates_versions:     HashMap<String, String>,
+    pub stars:               HashMap<String, u64>,
+    pub bg_tx:               mpsc::Sender<BackgroundMsg>,
+    pub bg_rx:               Receiver<BackgroundMsg>,
+    pub fully_loaded:        HashSet<String>,
+    pub priority_fetch_path: Option<String>,
+    pub invert_scroll:       bool,
+    pub expanded:            HashSet<ExpandKey>,
+    pub list_state:          ListState,
+    pub searching:           bool,
+    pub search_query:        String,
+    pub filtered:            Vec<usize>,
+    pub show_settings:       bool,
+    pub settings_cursor:     usize,
+    pub settings_editing:    bool,
+    pub settings_edit_buf:   String,
+    pub scan_complete:       bool,
+    pub scan_log:            Vec<String>,
+    pub scan_log_state:      ListState,
+    pub focus:               FocusTarget,
+    pub detail_column:       usize,
+    pub detail_cursor:       usize,
+    pub ci_runs_cursor:      usize,
+    pub examples_scroll:     usize,
+    pub editing:             Option<EditingState>,
+    pub pending_example_run: Option<PendingExampleRun>,
+    pub pending_ci_fetch:    Option<PendingCiFetch>,
+    pub ci_fetching:         bool,
+    pub ci_fetch_count:      u32,
+    pub ci_fetch_prev_count: usize,
+    pub ci_no_more_runs:     HashSet<String>,
+    pub spinner_tick:        usize,
+    pub ci_fetch_tx:         mpsc::Sender<CiFetchMsg>,
+    pub ci_fetch_rx:         mpsc::Receiver<CiFetchMsg>,
+    pub example_running:     Option<String>,
+    pub example_child:       Arc<Mutex<Option<u32>>>,
+    pub example_output:      Vec<String>,
+    pub example_tx:          mpsc::Sender<ExampleMsg>,
+    pub example_rx:          mpsc::Receiver<ExampleMsg>,
+    pub last_selected_path:  Option<String>,
+    pub should_quit:         bool,
 }
 
 impl App {
@@ -268,6 +300,8 @@ impl App {
         let inline_dirs = cfg.tui.inline_dirs.clone();
         let exclude_dirs = cfg.tui.exclude_dirs.clone();
         let ci_run_count = cfg.tui.ci_run_count;
+        let include_non_rust = cfg.tui.include_non_rust;
+        let owned_owners = cfg.tui.owned_owners.clone();
         let nodes = build_tree(projects.clone(), &inline_dirs);
         let flat_entries = build_flat_entries(&nodes);
         let mut list_state = ListState::default();
@@ -279,6 +313,8 @@ impl App {
             inline_dirs,
             exclude_dirs,
             ci_run_count,
+            include_non_rust,
+            owned_owners,
             all_projects: projects,
             nodes,
             flat_entries,
@@ -286,6 +322,7 @@ impl App {
             ci_runs: HashMap::new(),
             git_info: HashMap::new(),
             crates_versions: HashMap::new(),
+            stars: HashMap::new(),
             bg_tx,
             bg_rx,
             fully_loaded: HashSet::new(),
@@ -308,7 +345,6 @@ impl App {
             detail_cursor: 0,
             ci_runs_cursor: 0,
             examples_scroll: 0,
-            expanded_example_groups: HashSet::new(),
             editing: None,
             pending_example_run: None,
             pending_ci_fetch: None,
@@ -345,7 +381,7 @@ impl App {
             self.filtered.clear();
         }
 
-        // Propagate CI runs from workspace roots to their members
+        // Propagate CI runs, git info, and stars from workspace roots to their members
         for node in &self.nodes {
             if let Some(runs) = self.ci_runs.get(&node.project.path).cloned() {
                 for group in &node.groups {
@@ -353,6 +389,22 @@ impl App {
                         self.ci_runs
                             .entry(member.path.clone())
                             .or_insert_with(|| runs.clone());
+                    }
+                }
+            }
+            if let Some(info) = self.git_info.get(&node.project.path).cloned() {
+                for group in &node.groups {
+                    for member in &group.members {
+                        self.git_info
+                            .entry(member.path.clone())
+                            .or_insert_with(|| info.clone());
+                    }
+                }
+            }
+            if let Some(&stars) = self.stars.get(&node.project.path) {
+                for group in &node.groups {
+                    for member in &group.members {
+                        self.stars.entry(member.path.clone()).or_insert(stars);
                     }
                 }
             }
@@ -374,6 +426,7 @@ impl App {
         self.ci_runs.clear();
         self.git_info.clear();
         self.crates_versions.clear();
+        self.stars.clear();
         self.scan_log.clear();
         self.scan_log_state = ListState::default();
         self.scan_complete = false;
@@ -384,17 +437,20 @@ impl App {
         self.detail_cursor = 0;
         self.ci_runs_cursor = 0;
         self.examples_scroll = 0;
-        self.expanded_example_groups.clear();
         self.editing = None;
         self.pending_ci_fetch = None;
         self.expanded.clear();
         self.list_state = ListState::default();
-        let (tx, rx) = spawn_streaming_scan(&self.scan_root, self.ci_run_count, &self.exclude_dirs);
+        let (tx, rx) = spawn_streaming_scan(
+            &self.scan_root,
+            self.ci_run_count,
+            &self.exclude_dirs,
+            self.include_non_rust,
+        );
         self.bg_tx = tx;
         self.bg_rx = rx;
     }
 
-    #[allow(clippy::too_many_lines)]
     fn poll_background(&mut self) {
         const MAX_MSGS_PER_FRAME: usize = 50;
         let mut needs_rebuild = false;
@@ -405,117 +461,18 @@ impl App {
                 break;
             };
             msg_count += 1;
-            match msg {
-                BackgroundMsg::DiskUsage { path, bytes } => {
-                    self.fully_loaded.insert(path.clone());
-                    self.disk_usage.insert(path, bytes);
-                },
-                BackgroundMsg::CiRuns { path, runs } => {
-                    // Check exhausted using cached git_info (no gh call!)
-                    if let Some(git) = self.git_info.get(&path)
-                        && let Some(ref url) = git.url
-                        && let Some((owner, repo)) = crate::ci::parse_owner_repo(url)
-                        && scan::is_exhausted(&owner, &repo)
-                    {
-                        self.ci_no_more_runs.insert(path.clone());
-                    }
-                    // Propagate to workspace members
-                    if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
-                        for group in &node.groups {
-                            for member in &group.members {
-                                self.ci_runs
-                                    .entry(member.path.clone())
-                                    .or_insert_with(|| runs.clone());
-                            }
-                        }
-                    }
-                    self.ci_runs.insert(path, runs);
-                },
-                BackgroundMsg::GitInfo { path, info } => {
-                    self.git_info.insert(path, info);
-                },
-                BackgroundMsg::CratesIoVersion { path, version } => {
-                    self.crates_versions.insert(path, version);
-                },
-                BackgroundMsg::ProjectDiscovered { project } => {
-                    if !self.all_projects.iter().any(|p| p.path == project.path) {
-                        self.all_projects.push(project);
-                        needs_rebuild = true;
-                    }
-                },
-                BackgroundMsg::ScanActivity { path } => {
-                    self.scan_log.push(path);
-                    // Auto-scroll to bottom unless user has scrolled up
-                    let len = self.scan_log.len();
-                    if self
-                        .scan_log_state
-                        .selected()
-                        .is_none_or(|s| s >= len.saturating_sub(2))
-                    {
-                        self.scan_log_state.select(Some(len.saturating_sub(1)));
-                    }
-                },
-                BackgroundMsg::ScanComplete => {
-                    self.scan_complete = true;
-                    if self.focus == FocusTarget::ScanLog {
-                        self.focus = FocusTarget::ProjectList;
-                    }
-                },
-            }
+            needs_rebuild |= self.handle_bg_msg(msg);
         }
+
         // Poll CI fetch results
         while let Ok(msg) = self.ci_fetch_rx.try_recv() {
             match msg {
                 CiFetchMsg::Complete { path, runs } => {
-                    self.ci_fetching = false;
-
-                    // Merge new runs with existing in-memory runs
-                    let existing = self.ci_runs.remove(&path).unwrap_or_default();
-                    let mut seen = HashSet::new();
-                    let mut merged: Vec<CiRun> = Vec::new();
-                    // New runs take priority
-                    for run in runs {
-                        if seen.insert(run.run_id) {
-                            merged.push(run);
-                        }
-                    }
-                    for run in existing {
-                        if seen.insert(run.run_id) {
-                            merged.push(run);
-                        }
-                    }
-                    merged.sort_by(|a, b| b.run_id.cmp(&a.run_id));
-
-                    // Detect if no new runs were found and persist marker
-                    if merged.len() <= self.ci_fetch_prev_count {
-                        self.ci_no_more_runs.insert(path.clone());
-                        // Persist to disk using cached git info (no gh call)
-                        if let Some(git) = self.git_info.get(&path)
-                            && let Some(ref url) = git.url
-                            && let Some((owner, repo)) = crate::ci::parse_owner_repo(url)
-                        {
-                            scan::mark_exhausted(&owner, &repo);
-                        }
-                    } else {
-                        self.ci_no_more_runs.remove(&path);
-                    }
-
-                    // Propagate to workspace members
-                    if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
-                        for group in &node.groups {
-                            for member in &group.members {
-                                self.ci_runs
-                                    .entry(member.path.clone())
-                                    .or_insert_with(|| merged.clone());
-                            }
-                        }
-                    }
-                    // Jump cursor to the fetch row (last row)
-                    self.ci_runs_cursor = merged.len();
-                    self.ci_runs.insert(path, merged);
+                    self.handle_ci_fetch_complete(path, runs);
                 },
             }
         }
+
         // Poll example process output
         while let Ok(msg) = self.example_rx.try_recv() {
             match msg {
@@ -531,9 +488,137 @@ impl App {
 
         if needs_rebuild {
             self.rebuild_tree();
-            // Trigger priority fetch for the currently selected project
             self.maybe_priority_fetch();
         }
+    }
+
+    /// Handle a single `BackgroundMsg`. Returns `true` if the tree needs rebuilding.
+    fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
+        match msg {
+            BackgroundMsg::DiskUsage { path, bytes } => {
+                self.fully_loaded.insert(path.clone());
+                self.disk_usage.insert(path, bytes);
+            },
+            BackgroundMsg::CiRuns { path, runs } => {
+                if let Some(git) = self.git_info.get(&path)
+                    && let Some(ref url) = git.url
+                    && let Some((owner, repo)) = crate::ci::parse_owner_repo(url)
+                    && scan::is_exhausted(&owner, &repo)
+                {
+                    self.ci_no_more_runs.insert(path.clone());
+                }
+                if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
+                    for group in &node.groups {
+                        for member in &group.members {
+                            self.ci_runs
+                                .entry(member.path.clone())
+                                .or_insert_with(|| runs.clone());
+                        }
+                    }
+                }
+                self.ci_runs.insert(path, runs);
+            },
+            BackgroundMsg::GitInfo { path, info } => {
+                // Propagate to workspace members
+                if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
+                    for group in &node.groups {
+                        for member in &group.members {
+                            self.git_info
+                                .entry(member.path.clone())
+                                .or_insert_with(|| info.clone());
+                        }
+                    }
+                    for wt in &node.worktrees {
+                        self.git_info
+                            .entry(wt.project.path.clone())
+                            .or_insert_with(|| info.clone());
+                    }
+                }
+                self.git_info.insert(path, info);
+            },
+            BackgroundMsg::CratesIoVersion { path, version } => {
+                self.crates_versions.insert(path, version);
+            },
+            BackgroundMsg::Stars { path, count } => {
+                // Propagate to workspace members
+                if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
+                    for group in &node.groups {
+                        for member in &group.members {
+                            self.stars.entry(member.path.clone()).or_insert(count);
+                        }
+                    }
+                }
+                self.stars.insert(path, count);
+            },
+            BackgroundMsg::ProjectDiscovered { project } => {
+                if !self.all_projects.iter().any(|p| p.path == project.path) {
+                    self.all_projects.push(project);
+                    return true;
+                }
+            },
+            BackgroundMsg::ScanActivity { path } => {
+                self.scan_log.push(path);
+                let len = self.scan_log.len();
+                if self
+                    .scan_log_state
+                    .selected()
+                    .is_none_or(|s| s >= len.saturating_sub(2))
+                {
+                    self.scan_log_state.select(Some(len.saturating_sub(1)));
+                }
+            },
+            BackgroundMsg::ScanComplete => {
+                self.scan_complete = true;
+                if self.focus == FocusTarget::ScanLog {
+                    self.focus = FocusTarget::ProjectList;
+                }
+            },
+        }
+        false
+    }
+
+    /// Process a completed CI fetch: merge runs, detect exhaustion, propagate to members.
+    fn handle_ci_fetch_complete(&mut self, path: String, runs: Vec<CiRun>) {
+        self.ci_fetching = false;
+
+        let existing = self.ci_runs.remove(&path).unwrap_or_default();
+        let mut seen = HashSet::new();
+        let mut merged: Vec<CiRun> = Vec::new();
+        for run in runs {
+            if seen.insert(run.run_id) {
+                merged.push(run);
+            }
+        }
+        for run in existing {
+            if seen.insert(run.run_id) {
+                merged.push(run);
+            }
+        }
+        merged.sort_by(|a, b| b.run_id.cmp(&a.run_id));
+
+        if merged.len() <= self.ci_fetch_prev_count {
+            self.ci_no_more_runs.insert(path.clone());
+            if let Some(git) = self.git_info.get(&path)
+                && let Some(ref url) = git.url
+                && let Some((owner, repo)) = crate::ci::parse_owner_repo(url)
+            {
+                scan::mark_exhausted(&owner, &repo);
+            }
+        } else {
+            self.ci_no_more_runs.remove(&path);
+        }
+
+        if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
+            for group in &node.groups {
+                for member in &group.members {
+                    self.ci_runs
+                        .entry(member.path.clone())
+                        .or_insert_with(|| merged.clone());
+                }
+            }
+        }
+        self.ci_runs_cursor = merged.len();
+        self.ci_runs.insert(path, merged);
     }
 
     /// Spawn a priority fetch for the selected project if it hasn't been loaded yet.
@@ -979,19 +1064,6 @@ impl App {
         max_width
     }
 
-    pub fn project_counts(&self) -> ProjectCounts {
-        let mut counts = ProjectCounts::default();
-        for node in &self.nodes {
-            counts.add_project(&node.project);
-            for group in &node.groups {
-                for member in &group.members {
-                    counts.add_project(member);
-                }
-            }
-        }
-        counts
-    }
-
     pub fn workspace_counts(&self, project: &RustProject) -> Option<ProjectCounts> {
         let node = self.nodes.iter().find(|n| n.project.path == project.path)?;
         if !node.has_members() {
@@ -1131,8 +1203,12 @@ pub fn run(path: PathBuf) -> ExitCode {
     };
 
     let cfg = config::load();
-    let (bg_tx, bg_rx) =
-        spawn_streaming_scan(&scan_root, cfg.tui.ci_run_count, &cfg.tui.exclude_dirs);
+    let (bg_tx, bg_rx) = spawn_streaming_scan(
+        &scan_root,
+        cfg.tui.ci_run_count,
+        &cfg.tui.exclude_dirs,
+        cfg.tui.include_non_rust,
+    );
     let projects: Vec<RustProject> = Vec::new();
 
     let original_hook = std::panic::take_hook();
@@ -1529,10 +1605,15 @@ fn handle_search_key(app: &mut App, key: KeyCode) {
 }
 
 pub fn advance_focus(app: &mut App) {
-    let has_ci = app
-        .selected_project()
-        .and_then(|p| app.ci_runs_for(p))
-        .is_some_and(|r| !r.is_empty());
+    use detail::detail_layout_pub;
+    use detail::detail_max_column;
+
+    let has_ci = app.selected_project().is_some_and(|p| {
+        app.ci_runs.get(&p.path).is_some_and(|r| !r.is_empty())
+            || app.git_info.get(&p.path).is_some_and(|g| g.url.is_some())
+    });
+
+    let max_detail_col = detail_max_column(app);
 
     app.focus = match app.focus {
         FocusTarget::ProjectList => {
@@ -1541,7 +1622,16 @@ pub fn advance_focus(app: &mut App) {
             FocusTarget::DetailFields
         },
         FocusTarget::DetailFields => {
-            if has_ci {
+            // Advance through detail columns first
+            if app.detail_column < max_detail_col {
+                app.detail_column += 1;
+                app.detail_cursor = 0;
+                let (_, targets_col) = detail_layout_pub(app);
+                if Some(app.detail_column) == targets_col {
+                    app.examples_scroll = 0;
+                }
+                FocusTarget::DetailFields
+            } else if has_ci {
                 app.ci_runs_cursor = 0;
                 FocusTarget::CiRuns
             } else if app.scan_complete {
@@ -1570,10 +1660,16 @@ pub fn advance_focus(app: &mut App) {
 }
 
 pub fn reverse_focus(app: &mut App) {
-    let has_ci = app
-        .selected_project()
-        .and_then(|p| app.ci_runs_for(p))
-        .is_some_and(|r| !r.is_empty());
+    use detail::detail_layout_pub;
+    use detail::detail_max_column;
+
+    let has_ci = app.selected_project().is_some_and(|p| {
+        app.ci_runs.get(&p.path).is_some_and(|r| !r.is_empty())
+            || app.git_info.get(&p.path).is_some_and(|g| g.url.is_some())
+    });
+
+    let max_detail_col = detail_max_column(app);
+    let (_, targets_col) = detail_layout_pub(app);
 
     app.focus = match app.focus {
         FocusTarget::ProjectList => {
@@ -1583,15 +1679,30 @@ pub fn reverse_focus(app: &mut App) {
                 app.ci_runs_cursor = 0;
                 FocusTarget::CiRuns
             } else {
-                app.detail_column = 0;
+                app.detail_column = max_detail_col;
                 app.detail_cursor = 0;
+                if Some(max_detail_col) == targets_col {
+                    app.examples_scroll = 0;
+                }
                 FocusTarget::DetailFields
             }
         },
-        FocusTarget::DetailFields => FocusTarget::ProjectList,
+        FocusTarget::DetailFields => {
+            // Reverse through detail columns first
+            if app.detail_column > 0 {
+                app.detail_column -= 1;
+                app.detail_cursor = 0;
+                FocusTarget::DetailFields
+            } else {
+                FocusTarget::ProjectList
+            }
+        },
         FocusTarget::CiRuns => {
-            app.detail_column = 0;
+            app.detail_column = max_detail_col;
             app.detail_cursor = 0;
+            if Some(max_detail_col) == targets_col {
+                app.examples_scroll = 0;
+            }
             FocusTarget::DetailFields
         },
         FocusTarget::ScanLog => {
@@ -1599,8 +1710,11 @@ pub fn reverse_focus(app: &mut App) {
                 app.ci_runs_cursor = 0;
                 FocusTarget::CiRuns
             } else {
-                app.detail_column = 0;
+                app.detail_column = max_detail_col;
                 app.detail_cursor = 0;
+                if Some(max_detail_col) == targets_col {
+                    app.examples_scroll = 0;
+                }
                 FocusTarget::DetailFields
             }
         },

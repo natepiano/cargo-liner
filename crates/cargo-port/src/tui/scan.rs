@@ -575,15 +575,50 @@ pub(super) fn fetch_project_details(
             version,
         });
     }
+
+    // GitHub stars (network)
+    if has_git
+        && let Some(repo_url) = crate::ci::get_repo_url(abs_path)
+        && let Some((owner, repo)) = crate::ci::parse_owner_repo(&repo_url)
+        && let Some(count) = fetch_star_count(&owner, &repo)
+    {
+        let _ = tx.send(BackgroundMsg::Stars {
+            path: project_path.to_string(),
+            count,
+        });
+    }
+}
+
+/// Fetch the star count for a GitHub repo.
+fn fetch_star_count(owner: &str, repo: &str) -> Option<u64> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "api",
+            &format!("repos/{owner}/{repo}"),
+            "--jq",
+            ".stargazers_count",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
 /// Spawn a streaming scan: walk the directory tree, and for each project discovered
 /// do disk + CI together on rayon so progress fills in visibly.
 /// Returns `(Sender, Receiver)` — the sender is retained by the caller for priority fetches.
+///
+/// When `include_non_rust` is true, directories containing `.git` (directory, not file)
+/// but no `Cargo.toml` are also discovered as non-Rust projects.
 pub(super) fn spawn_streaming_scan(
     scan_root: &Path,
     ci_run_count: u32,
     exclude_dirs: &[String],
+    include_non_rust: bool,
 ) -> (mpsc::Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
     let (tx, rx) = mpsc::channel();
     let root = scan_root.to_path_buf();
@@ -607,6 +642,33 @@ pub(super) fn spawn_streaming_scan(
                     let _ = scan_tx.send(BackgroundMsg::ScanActivity {
                         path: if rel.is_empty() { ".".to_string() } else { rel },
                     });
+
+                    // Non-Rust project detection: .git dir present but no Cargo.toml
+                    if include_non_rust
+                        && entry.path().join(".git").is_dir()
+                        && !entry.path().join("Cargo.toml").exists()
+                    {
+                        let project = RustProject::from_git_dir(entry.path());
+                        let abs_path = PathBuf::from(&project.abs_path);
+
+                        let _ = scan_tx.send(BackgroundMsg::ProjectDiscovered {
+                            project: project.clone(),
+                        });
+
+                        let task_tx = scan_tx.clone();
+                        let task_path = project.path.clone();
+                        let task_abs = abs_path;
+                        s.spawn(move |_| {
+                            fetch_project_details(
+                                &task_tx,
+                                &task_path,
+                                &task_abs,
+                                None,
+                                true,
+                                ci_run_count,
+                            );
+                        });
+                    }
                 }
                 if entry.file_type().is_file()
                     && entry.file_name() == "Cargo.toml"

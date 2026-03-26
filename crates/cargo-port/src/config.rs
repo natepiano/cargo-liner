@@ -30,14 +30,25 @@ pub struct TuiConfig {
     /// Directory names to skip during scanning.
     #[serde(default = "default_exclude_dirs")]
     pub exclude_dirs: Vec<String>,
+
+    /// Whether to include non-Rust projects (git repos without `Cargo.toml`).
+    #[serde(default)]
+    pub include_non_rust: bool,
+
+    /// GitHub owners whose projects you can edit (Version, Description).
+    /// Add your username and/or org names here.
+    #[serde(default)]
+    pub owned_owners: Vec<String>,
 }
 
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            inline_dirs:  default_inline_dirs(),
-            ci_run_count: default_ci_run_count(),
-            exclude_dirs: default_exclude_dirs(),
+            inline_dirs:      default_inline_dirs(),
+            ci_run_count:     default_ci_run_count(),
+            exclude_dirs:     default_exclude_dirs(),
+            include_non_rust: false,
+            owned_owners:     Vec::new(),
         }
     }
 }
@@ -88,13 +99,8 @@ pub fn load() -> Config {
     toml::from_str(&contents).unwrap_or_default()
 }
 
-fn create_default_config(path: &Path) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create config directory: {e}"))?;
-    }
-
-    let contents = r#"[mouse]
+/// Default configuration TOML written on first run.
+const DEFAULT_CONFIG_TOML: &str = r#"[mouse]
 invert_scroll = true
 
 [tui]
@@ -113,9 +119,23 @@ exclude_dirs = [
     "Public",
     "vendor",
 ]
+
+# Include non-Rust projects (git repos without Cargo.toml).
+include_non_rust = false
+
+# GitHub owners whose projects you can edit (Version, Description).
+# Add your username and/or org names here.
+owned_owners = []
 "#;
 
-    std::fs::write(path, contents).map_err(|e| format!("Failed to write config: {e}"))?;
+fn create_default_config(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create config directory: {e}"))?;
+    }
+
+    std::fs::write(path, DEFAULT_CONFIG_TOML)
+        .map_err(|e| format!("Failed to write config: {e}"))?;
     Ok(())
 }
 
@@ -135,4 +155,21 @@ pub fn save(config: &Config) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| format!("Failed to write config: {e}"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_toml_parses_correctly() {
+        let result: Result<Config, _> = toml::from_str(DEFAULT_CONFIG_TOML);
+        assert!(result.is_ok(), "DEFAULT_CONFIG_TOML should parse");
+        let cfg = result.unwrap_or_default();
+        assert!(!cfg.tui.include_non_rust);
+        assert_eq!(cfg.tui.ci_run_count, 5);
+        assert_eq!(cfg.tui.inline_dirs, vec!["crates".to_string()]);
+        assert!(cfg.tui.owned_owners.is_empty());
+        assert!(cfg.mouse.invert_scroll);
+    }
 }

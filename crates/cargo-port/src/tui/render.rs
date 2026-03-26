@@ -26,10 +26,12 @@ use super::detail::render_ci_panel;
 use super::detail::render_detail_panel;
 use super::settings::render_settings_popup;
 use crate::ci::CiRun;
+use crate::project::RustProject;
 
 pub(super) const BYTES_PER_MIB: u64 = 1024 * 1024;
 pub(super) const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 
+pub(super) const LANG_COL_WIDTH: usize = 2;
 pub(super) const DISK_COL_WIDTH: usize = 10;
 pub(super) const CI_COL_WIDTH: usize = 4;
 pub(super) const GIT_COL_WIDTH: usize = 2;
@@ -109,20 +111,24 @@ pub(super) fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
 )]
-pub(super) fn disk_color(bytes: Option<u64>, min_bytes: u64, max_bytes: u64) -> Style {
-    let Some(bytes) = bytes else {
+/// Compute the percentile rank of `bytes` within `sorted_values` (0.0 to 1.0).
+pub(super) fn disk_percentile(bytes: Option<u64>, sorted_values: &[u64]) -> Option<f64> {
+    let bytes = bytes?;
+    if sorted_values.len() <= 1 {
+        return None;
+    }
+    let rank = sorted_values
+        .iter()
+        .position(|&v| v >= bytes)
+        .unwrap_or(sorted_values.len() - 1);
+    Some(rank as f64 / (sorted_values.len() - 1) as f64)
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(super) fn disk_color(percentile: Option<f64>) -> Style {
+    let Some(pos) = percentile else {
         return Style::default().fg(Color::DarkGray);
     };
-
-    if min_bytes == max_bytes {
-        return Style::default();
-    }
-
-    // Normalize to 0.0..1.0 using log scale for better distribution with outliers
-    let log_min = (min_bytes.max(1) as f64).ln();
-    let log_max = (max_bytes.max(1) as f64).ln();
-    let log_val = (bytes.max(1) as f64).ln();
-    let pos = (log_val - log_min) / (log_max - log_min);
 
     // Green (0.0) → White (0.5) → Red (1.0)
     let (r, g, b) = if pos < 0.5 {
@@ -143,22 +149,36 @@ pub(super) fn disk_color(bytes: Option<u64>, min_bytes: u64, max_bytes: u64) -> 
     Style::default().fg(Color::Rgb(r, g, b))
 }
 
-pub(super) fn project_row_spans(
-    prefix: &str,
-    name: &str,
-    disk: &str,
-    disk_style: Style,
-    ci: &str,
-    git_icon: &str,
-    name_width: usize,
-) -> Line<'static> {
+pub(super) struct RowData<'a> {
+    pub prefix:     &'a str,
+    pub name:       &'a str,
+    pub lang_icon:  &'a str,
+    pub disk:       &'a str,
+    pub disk_style: Style,
+    pub ci:         &'a str,
+    pub git_icon:   &'a str,
+    pub name_width: usize,
+}
+
+pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
+    let prefix = row.prefix;
+    let name = row.name;
+    let lang_icon = row.lang_icon;
+    let disk = row.disk;
+    let disk_style = row.disk_style;
+    let ci = row.ci;
+    let git_icon = row.git_icon;
+    let name_width = row.name_width;
     let prefix_width = display_width(prefix);
     let available = name_width.saturating_sub(prefix_width);
     let padded_name = format!("{prefix}{name:<available$}");
     let ci_style = conclusion_style(ci);
     let git_style = match git_icon {
-        "⑂" => Style::default().fg(Color::Cyan),
-        "⊙" => Style::default().fg(Color::DarkGray),
+        "⑂" => Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+        "⊙" => Style::default().fg(Color::White),
+        "●" => Style::default().fg(Color::DarkGray),
         _ => Style::default(),
     };
 
@@ -167,6 +187,7 @@ pub(super) fn project_row_spans(
         Span::styled(format!(" {disk:>9}"), disk_style),
         Span::styled(format!("  {ci}"), ci_style),
         Span::styled(format!(" {git_icon}"), git_style),
+        Span::raw(format!(" {lang_icon}")),
     ])
 }
 
@@ -188,9 +209,12 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
 
     // Left panel width: name column + disk + ci + git + borders + padding
     #[allow(clippy::cast_possible_truncation)]
-    let left_width =
-        (app.max_name_width() + DISK_COL_WIDTH + CI_COL_WIDTH + GIT_COL_WIDTH + BORDER_PADDING)
-            as u16;
+    let left_width = (app.max_name_width()
+        + LANG_COL_WIDTH
+        + DISK_COL_WIDTH
+        + CI_COL_WIDTH
+        + GIT_COL_WIDTH
+        + BORDER_PADDING) as u16;
 
     let main_layout = Layout::default()
         .direction(Direction::Horizontal)
@@ -222,7 +246,8 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
 
     #[allow(clippy::cast_possible_truncation)]
     let inner_width = left_layout[1].width.saturating_sub(2) as usize;
-    let name_col_width = inner_width.saturating_sub(DISK_COL_WIDTH + CI_COL_WIDTH + GIT_COL_WIDTH);
+    let name_col_width =
+        inner_width.saturating_sub(LANG_COL_WIDTH + DISK_COL_WIDTH + CI_COL_WIDTH + GIT_COL_WIDTH);
 
     let selected_project_ref = app.selected_project();
     let detail_info = selected_project_ref.map(|p| build_detail_info(app, p));
@@ -331,18 +356,49 @@ pub(super) fn render_project_list(
     name_col_width: usize,
     area: Rect,
 ) {
-    let items: Vec<ListItem> = if app.searching && !app.search_query.is_empty() {
+    let mut items: Vec<ListItem> = if app.searching && !app.search_query.is_empty() {
         render_filtered_items(app, name_col_width)
     } else {
         render_tree_items(app, name_col_width)
     };
+
+    // Append disk total as the last row
+    let total_bytes: u64 = app.disk_usage.values().sum();
+    if total_bytes > 0 {
+        let total_str = super::format_bytes(total_bytes);
+        let total_style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        // Build using project_row_spans for alignment, then restyle the name span
+        let mut row_line = project_row_spans(&RowData {
+            prefix:     "",
+            name:       &format!("{:>width$}", "Σ", width = name_col_width),
+            lang_icon:  "  ",
+            disk:       &total_str,
+            disk_style: total_style,
+            ci:         " ",
+            git_icon:   " ",
+            name_width: name_col_width,
+        });
+        // Restyle the first span (name) to yellow bold
+        if let Some(span) = row_line.spans.first_mut() {
+            span.style = total_style;
+        }
+        items.push(ListItem::new(row_line));
+    }
 
     let header_style = Style::default()
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
 
     let header_line = Line::from(vec![
-        Span::styled(format!("{:<name_col_width$}", "Projects"), header_style),
+        Span::styled(
+            format!(
+                "{:<name_col_width$}",
+                crate::project::home_relative_path(&app.scan_root)
+            ),
+            header_style,
+        ),
         Span::styled(format!(" {:>9}", "Disk"), header_style),
         Span::styled("  CI", header_style),
     ]);
@@ -466,10 +522,6 @@ fn status_bar_spans(app: &App) -> Vec<Span<'static>> {
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
 
-    let global_counts = app.project_counts();
-    let count_str = global_counts.summary();
-    let count_style = Style::default().fg(Color::Yellow);
-
     let scan_indicator = if app.scan_complete {
         Span::raw("")
     } else {
@@ -500,46 +552,61 @@ fn status_bar_spans(app: &App) -> Vec<Span<'static>> {
             Span::raw(" cancel"),
         ]
     } else if app.focus == FocusTarget::DetailFields {
-        vec![
+        let on_targets = {
+            let (_, examples_col) = super::detail::detail_layout_pub(app);
+            Some(app.detail_column) == examples_col
+        };
+        let mut spans = vec![
             scan_indicator,
             Span::styled(" ↑/↓", key_style),
             Span::raw(" nav  "),
             Span::styled("←/→", key_style),
             Span::raw(" column  "),
-            Span::styled("Enter", key_style),
-            Span::raw(" run  "),
-            Span::styled("r", key_style),
-            Span::raw(" release  "),
-            Span::styled("Tab", key_style),
-            Span::raw(" next  "),
+        ];
+        if on_targets {
+            spans.extend([
+                Span::styled("Enter", key_style),
+                Span::raw(" run  "),
+                Span::styled("r", key_style),
+                Span::raw(" release  "),
+            ]);
+        } else {
+            spans.extend([Span::styled("Enter", key_style), Span::raw(" select  ")]);
+        }
+        spans.extend([
+            Span::styled("Home/End", key_style),
+            Span::raw(" top/btm  "),
+            Span::styled("Tab/⬆ Tab", key_style),
+            Span::raw(" pane  "),
             Span::styled("Esc", key_style),
             Span::raw(" back"),
-        ]
+        ]);
+        spans
     } else if app.focus == FocusTarget::CiRuns {
         vec![
             scan_indicator,
             Span::styled(" ↑/↓", key_style),
             Span::raw(" nav  "),
+            Span::styled("Home/End", key_style),
+            Span::raw(" top/btm  "),
             Span::styled("Enter", key_style),
             Span::raw(" fetch  "),
             Span::styled("c", key_style),
             Span::raw(" clear cache  "),
-            Span::styled("Tab", key_style),
-            Span::raw(" next  "),
+            Span::styled("Tab/⬆ Tab", key_style),
+            Span::raw(" pane  "),
             Span::styled("Esc", key_style),
             Span::raw(" back"),
         ]
     } else {
         vec![
             scan_indicator,
-            Span::styled(format!(" {count_str}"), count_style),
-            Span::raw("  "),
-            Span::styled("↑/↓", key_style),
+            Span::styled(" ↑/↓", key_style),
             Span::raw(" nav  "),
             Span::styled("←/→", key_style),
             Span::raw(" expand  "),
-            Span::styled("Tab", key_style),
-            Span::raw(" details  "),
+            Span::styled("Tab/⬆ Tab", key_style),
+            Span::raw(" pane  "),
             Span::styled("Home/End", key_style),
             Span::raw(" top/btm  "),
             Span::styled("/", key_style),
@@ -556,119 +623,125 @@ fn status_bar_spans(app: &App) -> Vec<Span<'static>> {
 
 pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let status_spans = status_bar_spans(app);
-
-    // Total disk usage on the right
-    let total_bytes: u64 = app.disk_usage.values().sum();
-    let total_disk = if total_bytes > 0 {
-        format!("  Σ {}", super::format_bytes(total_bytes))
-    } else {
-        String::new()
-    };
-    let disk_style = Style::default().fg(Color::Yellow);
-
-    // Build a two-part line: left-aligned keys, right-aligned disk total
     let left = Line::from(status_spans);
-    let right = Span::styled(total_disk, disk_style);
-
-    // Render left-aligned status
     let status_bar =
         Paragraph::new(left).style(Style::default().bg(Color::DarkGray).fg(Color::White));
     frame.render_widget(status_bar, area);
-
-    // Render right-aligned disk total
-    #[allow(clippy::cast_possible_truncation)]
-    let right_width = right.width() as u16;
-    if area.width > right_width {
-        let right_area = Rect::new(area.x + area.width - right_width, area.y, right_width, 1);
-        let right_para =
-            Paragraph::new(Line::from(right)).style(Style::default().bg(Color::DarkGray));
-        frame.render_widget(right_para, right_area);
-    }
 }
 
-/// Compute (min, max) disk bytes across all top-level nodes.
-fn root_disk_range(app: &App) -> (u64, u64) {
-    let mut min = u64::MAX;
-    let mut max = 0u64;
-    let mut any = false;
-    for node in &app.nodes {
-        if let Some(bytes) = app.disk_bytes_for_node(node) {
-            min = min.min(bytes);
-            max = max.max(bytes);
-            any = true;
-        }
-    }
-    if any { (min, max) } else { (0, 0) }
+/// Collect sorted disk byte values across all top-level nodes for percentile coloring.
+fn root_disk_sorted(app: &App) -> Vec<u64> {
+    let mut values: Vec<u64> = app
+        .nodes
+        .iter()
+        .filter_map(|node| app.disk_bytes_for_node(node))
+        .collect();
+    values.sort_unstable();
+    values
 }
 
-/// Compute (min, max) disk bytes for children within each node (members + worktrees).
-/// Returns a map from `node_index` to (min, max).
-fn child_disk_ranges(app: &App) -> HashMap<usize, (u64, u64)> {
-    let mut ranges = HashMap::new();
+/// Collect sorted disk byte values for children within each node (members + worktrees).
+/// Returns a map from `node_index` to sorted values.
+fn child_disk_sorted(app: &App) -> HashMap<usize, Vec<u64>> {
+    let mut map = HashMap::new();
     for (ni, node) in app.nodes.iter().enumerate() {
-        let mut min = u64::MAX;
-        let mut max = 0u64;
-        let mut any = false;
-        // Members
+        let mut values: Vec<u64> = Vec::new();
         for group in &node.groups {
             for member in &group.members {
                 if let Some(&bytes) = app.disk_usage.get(&member.path) {
-                    min = min.min(bytes);
-                    max = max.max(bytes);
-                    any = true;
+                    values.push(bytes);
                 }
             }
         }
-        // Worktrees
         for wt in &node.worktrees {
             if let Some(&bytes) = app.disk_usage.get(&wt.project.path) {
-                min = min.min(bytes);
-                max = max.max(bytes);
-                any = true;
+                values.push(bytes);
             }
         }
-        if any {
-            ranges.insert(ni, (min, max));
+        if !values.is_empty() {
+            values.sort_unstable();
+            map.insert(ni, values);
         }
     }
-    ranges
+    map
 }
 
-#[allow(clippy::too_many_lines)]
+/// Build a `ListItem` for a root-level project node.
+fn render_root_item(
+    app: &App,
+    node_index: usize,
+    root_sorted: &[u64],
+    name_width: usize,
+) -> ListItem<'static> {
+    let node = &app.nodes[node_index];
+    let project = &node.project;
+    let mut name = project.display_name();
+    if !node.worktrees.is_empty() {
+        name = format!("{name} wt:{}", node.worktrees.len());
+    }
+    let disk = app.formatted_disk_for_node(node);
+    let disk_bytes = app.disk_bytes_for_node(node);
+    let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
+    let ci = app.ci_for_node(node);
+    let lang = project.lang_icon();
+    let git = app.git_icon(project);
+    let prefix = if node.has_children() {
+        if app.expanded.contains(&ExpandKey::Node(node_index)) {
+            "▼ "
+        } else {
+            "▶ "
+        }
+    } else {
+        "  "
+    };
+    ListItem::new(project_row_spans(&RowData {
+        prefix,
+        name: &name,
+        lang_icon: lang,
+        disk: &disk,
+        disk_style: ds,
+        ci: &ci,
+        git_icon: git,
+        name_width,
+    }))
+}
+
+/// Build a `ListItem` for a child project (workspace member or worktree).
+fn render_child_item(
+    app: &App,
+    project: &RustProject,
+    name: &str,
+    child_sorted: &[u64],
+    prefix: &'static str,
+    name_width: usize,
+) -> ListItem<'static> {
+    let disk = app.formatted_disk(project);
+    let disk_bytes = app.disk_usage.get(&project.path).copied();
+    let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
+    let lang = project.lang_icon();
+    let ci = app.ci_for(project);
+    let git = app.git_icon(project);
+    ListItem::new(project_row_spans(&RowData {
+        prefix,
+        name,
+        lang_icon: lang,
+        disk: &disk,
+        disk_style: ds,
+        ci: &ci,
+        git_icon: git,
+        name_width,
+    }))
+}
+
 pub(super) fn render_tree_items(app: &App, name_width: usize) -> Vec<ListItem<'static>> {
-    // Precompute min/max disk bytes per level for coloring
-    let (root_min, root_max) = root_disk_range(app);
-    let child_ranges = child_disk_ranges(app);
+    let root_sorted = root_disk_sorted(app);
+    let child_sorted = child_disk_sorted(app);
 
     let rows = app.visible_rows();
     rows.iter()
         .map(|row| match row {
             VisibleRow::Root { node_index } => {
-                let node = &app.nodes[*node_index];
-                let project = &node.project;
-                let mut name = project.display_name();
-                if !node.worktrees.is_empty() {
-                    name = format!("{name} wt:{}", node.worktrees.len());
-                }
-                let disk = app.formatted_disk_for_node(node);
-                let disk_bytes = app.disk_bytes_for_node(node);
-                let ds = disk_color(disk_bytes, root_min, root_max);
-                let ci = app.ci_for_node(node);
-                let git = app.git_icon(project);
-                if node.has_children() {
-                    let arrow = if app.expanded.contains(&ExpandKey::Node(*node_index)) {
-                        "▼ "
-                    } else {
-                        "▶ "
-                    };
-                    ListItem::new(project_row_spans(
-                        arrow, &name, &disk, ds, &ci, git, name_width,
-                    ))
-                } else {
-                    ListItem::new(project_row_spans(
-                        "  ", &name, &disk, ds, &ci, git, name_width,
-                    ))
-                }
+                render_root_item(app, *node_index, &root_sorted, name_width)
             },
             VisibleRow::GroupHeader {
                 node_index,
@@ -694,49 +767,37 @@ pub(super) fn render_tree_items(app: &App, name_width: usize) -> Vec<ListItem<'s
             } => {
                 let group = &app.nodes[*node_index].groups[*group_index];
                 let member = &group.members[*member_index];
-                let name = member.display_name();
-                let disk = app.formatted_disk(member);
-                let disk_bytes = app.disk_usage.get(&member.path).copied();
-                let (cmin, cmax) = child_ranges.get(node_index).copied().unwrap_or((0, 0));
-                let ds = disk_color(disk_bytes, cmin, cmax);
-                let ci = app.ci_for(member);
-                let git = app.git_icon(member);
+                let empty = Vec::new();
+                let sorted = child_sorted.get(node_index).unwrap_or(&empty);
                 let indent = if group.name.is_empty() {
                     "    "
                 } else {
                     "        "
                 };
-                ListItem::new(project_row_spans(
-                    indent, &name, &disk, ds, &ci, git, name_width,
-                ))
+                let name = member.display_name();
+                render_child_item(app, member, &name, sorted, indent, name_width)
             },
             VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
             } => {
                 let wt = &app.nodes[*node_index].worktrees[*worktree_index];
+                let empty = Vec::new();
+                let sorted = child_sorted.get(node_index).unwrap_or(&empty);
                 let name = wt
                     .project
                     .worktree_name
                     .as_deref()
                     .unwrap_or(&wt.project.path)
                     .to_string();
-                let disk = app.formatted_disk(&wt.project);
-                let disk_bytes = app.disk_usage.get(&wt.project.path).copied();
-                let (cmin, cmax) = child_ranges.get(node_index).copied().unwrap_or((0, 0));
-                let ds = disk_color(disk_bytes, cmin, cmax);
-                let ci = app.ci_for(&wt.project);
-                let git = app.git_icon(&wt.project);
-                ListItem::new(project_row_spans(
-                    "    ", &name, &disk, ds, &ci, git, name_width,
-                ))
+                render_child_item(app, &wt.project, &name, sorted, "    ", name_width)
             },
         })
         .collect()
 }
 
 pub(super) fn render_filtered_items(app: &App, name_width: usize) -> Vec<ListItem<'static>> {
-    let (root_min, root_max) = root_disk_range(app);
+    let root_sorted = root_disk_sorted(app);
     app.filtered
         .iter()
         .filter_map(|&flat_idx| {
@@ -749,18 +810,20 @@ pub(super) fn render_filtered_items(app: &App, name_width: usize) -> Vec<ListIte
                 .unwrap_or(&node.project);
             let disk = app.formatted_disk(project);
             let disk_bytes = app.disk_usage.get(&project.path).copied();
-            let ds = disk_color(disk_bytes, root_min, root_max);
+            let ds = disk_color(disk_percentile(disk_bytes, &root_sorted));
+            let lang = project.lang_icon();
             let ci = app.ci_for(project);
             let git = app.git_icon(project);
-            Some(ListItem::new(project_row_spans(
-                "  ",
-                &entry.name,
-                &disk,
-                ds,
-                &ci,
-                git,
+            Some(ListItem::new(project_row_spans(&RowData {
+                prefix: "  ",
+                name: &entry.name,
+                lang_icon: lang,
+                disk: &disk,
+                disk_style: ds,
+                ci: &ci,
+                git_icon: git,
                 name_width,
-            )))
+            })))
         })
         .collect()
 }

@@ -20,6 +20,8 @@ pub(super) enum SettingOption {
     CiRunCount,
     InlineDirs,
     ExcludeDirs,
+    IncludeNonRust,
+    OwnedOwners,
 }
 
 impl SettingOption {
@@ -29,11 +31,13 @@ impl SettingOption {
             1 => Some(Self::CiRunCount),
             2 => Some(Self::InlineDirs),
             3 => Some(Self::ExcludeDirs),
+            4 => Some(Self::IncludeNonRust),
+            5 => Some(Self::OwnedOwners),
             _ => None,
         }
     }
 
-    pub(super) const fn count() -> usize { 4 }
+    pub(super) const fn count() -> usize { 6 }
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
@@ -76,6 +80,11 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &App) {
         ("CI run count", cfg.tui.ci_run_count.to_string()),
         ("Inline dirs", cfg.tui.inline_dirs.join(", ")),
         ("Exclude dirs", cfg.tui.exclude_dirs.join(", ")),
+        (
+            "Non-Rust projects",
+            if app.include_non_rust { "ON" } else { "OFF" }.to_string(),
+        ),
+        ("Owned owners", app.owned_owners.join(", ")),
     ];
 
     let mut lines: Vec<Line<'static>> = vec![Line::from("")];
@@ -130,8 +139,15 @@ pub(super) fn build_settings_lines(
                     Style::default().fg(Color::Yellow),
                 ),
             ]));
-        } else if setting == Some(SettingOption::InvertScroll) {
-            let toggle_style = if app.invert_scroll {
+        } else if setting == Some(SettingOption::InvertScroll)
+            || setting == Some(SettingOption::IncludeNonRust)
+        {
+            let is_on = match setting {
+                Some(SettingOption::InvertScroll) => app.invert_scroll,
+                Some(SettingOption::IncludeNonRust) => app.include_non_rust,
+                _ => false,
+            };
+            let toggle_style = if is_on {
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD)
@@ -212,6 +228,13 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
                 app.ci_run_count = cfg.tui.ci_run_count;
                 let _ = config::save(&cfg);
             },
+            Some(SettingOption::IncludeNonRust) => {
+                app.include_non_rust = !app.include_non_rust;
+                let mut cfg = config::load();
+                cfg.tui.include_non_rust = app.include_non_rust;
+                let _ = config::save(&cfg);
+                app.rescan();
+            },
             _ => {},
         },
         KeyCode::Enter | KeyCode::Char(' ') => match setting {
@@ -230,6 +253,17 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
             },
             Some(SettingOption::ExcludeDirs) => {
                 app.settings_edit_buf = app.exclude_dirs.join(", ");
+                app.settings_editing = true;
+            },
+            Some(SettingOption::IncludeNonRust) => {
+                app.include_non_rust = !app.include_non_rust;
+                let mut cfg = config::load();
+                cfg.tui.include_non_rust = app.include_non_rust;
+                let _ = config::save(&cfg);
+                app.rescan();
+            },
+            Some(SettingOption::OwnedOwners) => {
+                app.settings_edit_buf = app.owned_owners.join(", ");
                 app.settings_editing = true;
             },
             None => {},
@@ -267,6 +301,13 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                     app.exclude_dirs.clone_from(&dirs);
                     let mut cfg = config::load();
                     cfg.tui.exclude_dirs = dirs;
+                    let _ = config::save(&cfg);
+                },
+                Some(SettingOption::OwnedOwners) => {
+                    let owners = parse_dir_list(&value);
+                    app.owned_owners.clone_from(&owners);
+                    let mut cfg = config::load();
+                    cfg.tui.owned_owners = owners;
                     let _ = config::save(&cfg);
                 },
                 _ => {},

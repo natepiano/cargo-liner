@@ -36,10 +36,55 @@ pub struct EditingState {
     pub buf:   String,
 }
 
+#[derive(Clone, Copy)]
 pub enum RunTargetKind {
     Binary,
     Example,
     Bench,
+}
+
+pub struct TargetEntry {
+    pub name: String,
+    pub kind: RunTargetKind,
+}
+
+/// Build a flat list of all runnable targets: binaries first, then examples alphabetically,
+/// then benches alphabetically.
+pub fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
+    let mut entries = Vec::new();
+
+    if info.is_binary
+        && let Some(name) = &info.binary_name
+    {
+        entries.push(TargetEntry {
+            name: name.clone(),
+            kind: RunTargetKind::Binary,
+        });
+    }
+
+    let mut example_names: Vec<String> = info
+        .examples
+        .iter()
+        .flat_map(|g| g.names.iter().cloned())
+        .collect();
+    example_names.sort();
+    for name in example_names {
+        entries.push(TargetEntry {
+            name,
+            kind: RunTargetKind::Example,
+        });
+    }
+
+    let mut bench_names = info.benches.clone();
+    bench_names.sort();
+    for name in bench_names {
+        entries.push(TargetEntry {
+            name,
+            kind: RunTargetKind::Bench,
+        });
+    }
+
+    entries
 }
 
 pub struct PendingExampleRun {
@@ -69,8 +114,10 @@ pub enum DetailField {
     Origin,
     Owner,
     Repo,
+    Stars,
     Worktree,
     Vendored,
+    CratesIo,
     Version,
     Description,
 }
@@ -88,8 +135,10 @@ impl DetailField {
             Self::Origin => "Origin",
             Self::Owner => "Owner",
             Self::Repo => "Repo",
+            Self::Stars => "Stars",
             Self::Worktree => "Worktree",
             Self::Vendored => "Vendored",
+            Self::CratesIo => "Crate",
             Self::Version => "Version",
             Self::Description => "Desc",
         }
@@ -119,29 +168,44 @@ impl DetailField {
             Self::Origin => info.git_origin.as_deref().unwrap_or("").to_string(),
             Self::Owner => info.git_owner.as_deref().unwrap_or("").to_string(),
             Self::Repo => info.git_url.as_deref().unwrap_or("").to_string(),
+            Self::Stars => info
+                .git_stars
+                .map_or_else(String::new, |c| format!("⭐ {c}")),
             Self::Worktree => info.worktree_label.as_deref().unwrap_or("").to_string(),
             Self::Vendored => info.vendored_names.clone(),
-            Self::Version => info.crates_version.as_ref().map_or_else(
-                || info.version.clone(),
-                |cv| format!("{} (crates.io: {cv})", info.version),
-            ),
+            Self::CratesIo => info.crates_version.as_deref().unwrap_or("").to_string(),
+            Self::Version => info.version.clone(),
             Self::Description => info.description.as_deref().unwrap_or("—").to_string(),
         }
     }
 }
 
 /// All fields for the `Package` column: read-only info then editable at the bottom.
+/// Non-Rust projects show only name, path, disk, and CI.
 pub(super) fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
+    if !info.is_rust {
+        return vec![
+            DetailField::Name,
+            DetailField::Path,
+            DetailField::Disk,
+            DetailField::Ci,
+        ];
+    }
     let mut fields = vec![
         DetailField::Name,
         DetailField::Path,
         DetailField::Targets,
         DetailField::Disk,
         DetailField::Ci,
-        DetailField::Stats,
     ];
+    if info.stats_rows.is_empty() {
+        fields.push(DetailField::Stats);
+    }
     if !info.vendored_names.is_empty() {
         fields.push(DetailField::Vendored);
+    }
+    if info.crates_version.is_some() {
+        fields.push(DetailField::CratesIo);
     }
     fields.push(DetailField::Version);
     fields.push(DetailField::Description);
@@ -168,6 +232,9 @@ pub(super) fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     if info.git_owner.is_some() {
         fields.push(DetailField::Owner);
     }
+    if info.git_stars.is_some() {
+        fields.push(DetailField::Stars);
+    }
     fields
 }
 
@@ -182,10 +249,12 @@ pub(super) struct DetailInfo {
     pub disk:           String,
     pub ci:             String,
     pub stats:          String,
+    pub stats_rows:     Vec<(&'static str, usize)>,
     pub git_branch:     Option<String>,
     pub git_origin:     Option<String>,
     pub git_owner:      Option<String>,
     pub git_url:        Option<String>,
+    pub git_stars:      Option<u64>,
     pub worktree_label: Option<String>,
     pub worktree_names: Vec<String>,
     pub vendored_names: String,
@@ -193,6 +262,10 @@ pub(super) struct DetailInfo {
     pub binary_name:    Option<String>,
     pub examples:       Vec<ExampleGroup>,
     pub benches:        Vec<String>,
+    /// Whether this is a Rust project (has `Cargo.toml`).
+    pub is_rust:        bool,
+    /// Whether the current user owns this project (git owner matches `owned_owners`).
+    pub owned:          bool,
 }
 
 /// Collect vendored crate names for a project from the node tree.
@@ -222,9 +295,37 @@ fn collect_vendored_names(app: &App, project: &RustProject) -> String {
     String::new()
 }
 
-#[allow(clippy::too_many_lines)]
+/// Resolve the title shown in the `Package` column header.
+fn resolve_package_title(app: &App, project: &RustProject) -> String {
+    if !project.is_rust {
+        return "Project".to_string();
+    }
+    if project.is_workspace() {
+        return "Workspace".to_string();
+    }
+    // Check if this project is under a workspace node
+    let is_member = app.nodes.iter().any(|n| {
+        n.project.is_workspace()
+            && n.project.path != project.path
+            && (n
+                .groups
+                .iter()
+                .any(|g| g.members.iter().any(|m| m.path == project.path))
+                || n.worktrees.iter().any(|wt| wt.project.path == project.path))
+    });
+    if is_member {
+        "Workspace Member".to_string()
+    } else {
+        "Package".to_string()
+    }
+}
+
 pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
     let ws_counts = app.workspace_counts(project);
+    let stats_rows = ws_counts
+        .as_ref()
+        .map(ProjectCounts::to_rows)
+        .unwrap_or_default();
     let stats = ws_counts.as_ref().map_or_else(
         || {
             let mut parts: Vec<String> = Vec::new();
@@ -251,6 +352,9 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
     let git_origin = git.map(|g| format!("{} {}", g.origin.icon(), g.origin.label()));
     let git_owner = git.and_then(|g| g.owner.clone());
     let git_url = git.and_then(|g| g.url.clone());
+    let owned = git_owner
+        .as_ref()
+        .is_some_and(|owner| app.owned_owners.iter().any(|o| o == owner));
     let crates_version = app.crates_versions.get(&project.path).cloned();
     let worktree_label = project.worktree_name.clone();
 
@@ -264,25 +368,7 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
         |node| (app.formatted_disk_for_node(node), app.ci_for_node(node)),
     );
 
-    let package_title = if project.is_workspace() {
-        "Workspace".to_string()
-    } else {
-        // Check if this project is under a workspace node
-        let is_member = app.nodes.iter().any(|n| {
-            n.project.is_workspace()
-                && n.project.path != project.path
-                && (n
-                    .groups
-                    .iter()
-                    .any(|g| g.members.iter().any(|m| m.path == project.path))
-                    || n.worktrees.iter().any(|wt| wt.project.path == project.path))
-        });
-        if is_member {
-            "Workspace Member".to_string()
-        } else {
-            "Package".to_string()
-        }
-    };
+    let package_title = resolve_package_title(app, project);
 
     let worktree_names: Vec<String> = worktree_node.map_or_else(Vec::new, |node| {
         node.worktrees
@@ -326,11 +412,13 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
         disk,
         ci,
         stats,
+        stats_rows,
         crates_version,
         git_branch,
         git_origin,
         git_owner,
         git_url,
+        git_stars: app.stars.get(&project.path).copied(),
         worktree_label,
         worktree_names,
         vendored_names,
@@ -338,6 +426,8 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
         binary_name,
         examples: project.examples.clone(),
         benches: project.benches.clone(),
+        is_rust: project.is_rust,
+        owned,
     }
 }
 
@@ -362,6 +452,7 @@ fn render_column_inner(
 
         // Editable field that is actively being edited
         if field.is_editable()
+            && info.owned
             && is_focused
             && let Some(editing) = app.editing.as_ref().filter(|e| e.field == *field)
         {
@@ -374,7 +465,7 @@ fn render_column_inner(
         }
 
         let value = field.value(info);
-        let base_label_style = if field.is_editable() {
+        let base_label_style = if field.is_editable() && info.owned {
             editable_label_style
         } else {
             readonly_label_style
@@ -484,151 +575,6 @@ fn render_git_column_inner(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn build_target_lines(app: &App, info: &DetailInfo, active: bool) -> Vec<Line<'static>> {
-    let title_style = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
-    let group_style = Style::default().fg(Color::Yellow);
-    let name_style = Style::default();
-    let highlight_style = Style::default().fg(Color::Black).bg(Color::Cyan);
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut line_idx: usize = 0;
-
-    // Binary section
-    if info.is_binary
-        && let Some(name) = &info.binary_name
-    {
-        lines.push(Line::from(Span::styled("  Binary", title_style)));
-        line_idx += 1;
-        let style = if active && line_idx == app.examples_scroll {
-            highlight_style
-        } else {
-            name_style
-        };
-        lines.push(Line::from(Span::styled(format!("    {name}"), style)));
-        line_idx += 1;
-    }
-
-    // Examples section
-    if !info.examples.is_empty() {
-        for group in &info.examples {
-            if group.category.is_empty() {
-                for name in &group.names {
-                    let style = if active && line_idx == app.examples_scroll {
-                        highlight_style
-                    } else {
-                        name_style
-                    };
-                    lines.push(Line::from(Span::styled(format!("    {name}"), style)));
-                    line_idx += 1;
-                }
-            } else {
-                let expanded = app.expanded_example_groups.contains(&group.category);
-                let arrow = if expanded { "▼" } else { "▶" };
-                let style = if active && line_idx == app.examples_scroll {
-                    highlight_style
-                } else {
-                    group_style
-                };
-                lines.push(Line::from(Span::styled(
-                    format!("  {arrow} {} ({})", group.category, group.names.len()),
-                    style,
-                )));
-                line_idx += 1;
-                if expanded {
-                    for name in &group.names {
-                        let style = if active && line_idx == app.examples_scroll {
-                            highlight_style
-                        } else {
-                            name_style
-                        };
-                        lines.push(Line::from(Span::styled(format!("      {name}"), style)));
-                        line_idx += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    // Benches section
-    if !info.benches.is_empty() {
-        lines.push(Line::from(Span::styled(
-            format!("  Benches ({})", info.benches.len()),
-            title_style,
-        )));
-        line_idx += 1;
-
-        for name in &info.benches {
-            let style = if active && line_idx == app.examples_scroll {
-                highlight_style
-            } else {
-                name_style
-            };
-            lines.push(Line::from(Span::styled(format!("    {name}"), style)));
-            line_idx += 1;
-        }
-    }
-
-    lines
-}
-
-fn render_targets_column(
-    frame: &mut Frame,
-    app: &App,
-    info: &DetailInfo,
-    detail_focused: bool,
-    is_active_column: bool,
-    area: Rect,
-) {
-    let active = detail_focused && is_active_column;
-    let visible_lines = build_target_lines(app, info, active);
-
-    // Scrollable view — keep cursor visible
-    let visible_height = area.height as usize;
-    let total_lines = visible_lines.len();
-    let needs_indicator = total_lines > visible_height;
-    let content_height = if needs_indicator {
-        visible_height.saturating_sub(1)
-    } else {
-        visible_height
-    };
-
-    // Ensure the cursor is always visible within the content area
-    let max_scroll = total_lines.saturating_sub(content_height);
-    let viewport_start = if app.examples_scroll < content_height / 2 {
-        0
-    } else {
-        (app.examples_scroll - content_height / 2).min(max_scroll)
-    };
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    for line in visible_lines
-        .into_iter()
-        .skip(viewport_start)
-        .take(content_height)
-    {
-        lines.push(line);
-    }
-
-    if needs_indicator {
-        let indicator = if viewport_start > 0 && viewport_start < max_scroll {
-            format!("  ↑↓ {}/{total_lines}", app.examples_scroll + 1)
-        } else if viewport_start > 0 {
-            format!("  ↑ {}/{total_lines}", app.examples_scroll + 1)
-        } else {
-            format!("  ↓ {}/{total_lines}", app.examples_scroll + 1)
-        };
-        lines.push(Line::from(Span::styled(
-            indicator,
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
-#[allow(clippy::too_many_lines)]
 pub(super) fn render_detail_panel(
     frame: &mut Frame,
     app: &App,
@@ -647,15 +593,14 @@ pub(super) fn render_detail_panel(
 
         let columns = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints(match (has_git, has_targets) {
-                (true, true) => vec![
+            .constraints(if has_git {
+                vec![
                     Constraint::Min(30),
                     Constraint::Min(25),
                     Constraint::Fill(1),
-                ],
-                (true, false) => vec![Constraint::Fill(1), Constraint::Min(30)],
-                (false, true) => vec![Constraint::Min(35), Constraint::Fill(1)],
-                (false, false) => vec![Constraint::Fill(1)],
+                ]
+            } else {
+                vec![Constraint::Min(35), Constraint::Fill(1)]
             })
             .split(area);
 
@@ -666,18 +611,98 @@ pub(super) fn render_detail_panel(
         let active_border = Style::default().fg(Color::Cyan);
         let inactive_border = Style::default();
 
-        // Project panel
-        let project_block = Block::default()
+        render_project_panel(
+            frame,
+            app,
+            info,
+            detail_focused,
+            highlight_style,
+            readonly_label_style,
+            editable_label_style,
+            active_border,
+            inactive_border,
+            title_style,
+            columns[0],
+        );
+
+        let mut next_col = 1;
+        if has_git {
+            render_git_panel(
+                frame,
+                app,
+                info,
+                &git,
+                detail_focused,
+                next_col,
+                highlight_style,
+                readonly_label_style,
+                active_border,
+                inactive_border,
+                title_style,
+                columns[next_col],
+            );
+            next_col += 1;
+        }
+
+        if has_targets {
+            render_targets_panel(
+                frame,
+                app,
+                info,
+                detail_focused,
+                next_col,
+                active_border,
+                inactive_border,
+                title_style,
+                columns[next_col],
+            );
+        } else {
+            // Empty targets pane — greyed out
+            let empty_targets = Block::default()
+                .borders(Borders::ALL)
+                .title(" No Targets ")
+                .title_style(Style::default().fg(Color::DarkGray))
+                .border_style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(empty_targets, columns[next_col]);
+        }
+    } else {
+        let empty_block = Block::default()
             .borders(Borders::ALL)
-            .title(format!(" {} ", info.package_title))
-            .title_style(title_style)
-            .border_style(if detail_focused && app.detail_column == 0 {
-                active_border
-            } else {
-                inactive_border
-            });
-        let project_inner = project_block.inner(columns[0]);
-        frame.render_widget(project_block, columns[0]);
+            .title(" Details ")
+            .title_style(title_style);
+        let content = vec![Line::from("  No project selected")];
+        let detail = Paragraph::new(content).block(empty_block);
+        frame.render_widget(detail, area);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_project_panel(
+    frame: &mut Frame,
+    app: &App,
+    info: &DetailInfo,
+    detail_focused: bool,
+    highlight_style: Style,
+    readonly_label_style: Style,
+    editable_label_style: Style,
+    active_border: Style,
+    inactive_border: Style,
+    title_style: Style,
+    area: Rect,
+) {
+    let project_block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", info.package_title))
+        .title_style(title_style)
+        .border_style(if detail_focused && app.detail_column == 0 {
+            active_border
+        } else {
+            inactive_border
+        });
+    let project_inner = project_block.inner(area);
+    frame.render_widget(project_block, area);
+
+    if info.stats_rows.is_empty() {
         render_column_inner(
             frame,
             app,
@@ -691,75 +716,172 @@ pub(super) fn render_detail_panel(
             editable_label_style,
             project_inner,
         );
-
-        // Git panel
-        let mut next_col = 1;
-        if has_git {
-            let git_block = Block::default()
-                .borders(Borders::ALL)
-                .title(" Git ")
-                .title_style(title_style)
-                .border_style(if detail_focused && app.detail_column == next_col {
-                    active_border
-                } else {
-                    inactive_border
-                });
-            let git_inner = git_block.inner(columns[next_col]);
-            frame.render_widget(git_block, columns[next_col]);
-            render_git_column_inner(
-                frame,
-                app,
-                info,
-                &git,
-                detail_focused,
-                app.detail_column == next_col,
-                app.detail_cursor,
-                highlight_style,
-                readonly_label_style,
-                git_inner,
-            );
-            next_col += 1;
-        }
-
-        // Examples & benches panel (scrollable)
-        if has_targets {
-            let ex_count: usize = info.examples.iter().map(|g| g.names.len()).sum();
-            let bench_count = info.benches.len();
-            let targets_title = match (ex_count > 0, bench_count > 0) {
-                (true, true) => format!(" Examples ({ex_count}) / Benches ({bench_count}) "),
-                (true, false) => format!(" Examples ({ex_count}) "),
-                (false, true) => format!(" Benches ({bench_count}) "),
-                (false, false) => " Targets ".to_string(),
-            };
-            let targets_block = Block::default()
-                .borders(Borders::ALL)
-                .title(targets_title)
-                .title_style(title_style)
-                .border_style(if detail_focused && app.detail_column == next_col {
-                    active_border
-                } else {
-                    inactive_border
-                });
-            let targets_inner = targets_block.inner(columns[next_col]);
-            frame.render_widget(targets_block, columns[next_col]);
-            render_targets_column(
-                frame,
-                app,
-                info,
-                detail_focused,
-                app.detail_column == next_col,
-                targets_inner,
-            );
-        }
     } else {
-        let empty_block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Details ")
-            .title_style(title_style);
-        let content = vec![Line::from("  No project selected")];
-        let detail = Paragraph::new(content).block(empty_block);
-        frame.render_widget(detail, area);
+        // Compute stats column width: 4 (number) + 1 (space) + longest label + 1 (border)
+        #[allow(clippy::cast_possible_truncation)]
+        let max_label_len = info
+            .stats_rows
+            .iter()
+            .map(|(label, _)| label.len())
+            .max()
+            .unwrap_or(2) as u16;
+        let stats_width = 4 + 1 + max_label_len + 1; // num + space + label + border
+
+        // Split into fields (left) and stats column (right) with border
+        let sub_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(20), Constraint::Length(stats_width)])
+            .split(project_inner);
+
+        render_column_inner(
+            frame,
+            app,
+            info,
+            &package_fields(info),
+            detail_focused,
+            app.detail_column == 0,
+            app.detail_cursor,
+            highlight_style,
+            readonly_label_style,
+            editable_label_style,
+            sub_cols[0],
+        );
+
+        // Stats column with left border
+        let stats_block = Block::default().borders(Borders::LEFT);
+        let stats_inner = stats_block.inner(sub_cols[1]);
+        frame.render_widget(stats_block, sub_cols[1]);
+
+        let stat_label_style = Style::default().fg(Color::DarkGray);
+        let stat_num_style = Style::default().fg(Color::Yellow);
+        let mut stat_lines: Vec<Line<'static>> = Vec::new();
+        for &(label, count) in &info.stats_rows {
+            stat_lines.push(Line::from(vec![
+                Span::styled(format!("{count:>4} "), stat_num_style),
+                Span::styled(label, stat_label_style),
+            ]));
+        }
+        frame.render_widget(Paragraph::new(stat_lines), stats_inner);
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_git_panel(
+    frame: &mut Frame,
+    app: &App,
+    info: &DetailInfo,
+    git: &[DetailField],
+    detail_focused: bool,
+    col: usize,
+    highlight_style: Style,
+    readonly_label_style: Style,
+    active_border: Style,
+    inactive_border: Style,
+    title_style: Style,
+    area: Rect,
+) {
+    let git_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Git ")
+        .title_style(title_style)
+        .border_style(if detail_focused && app.detail_column == col {
+            active_border
+        } else {
+            inactive_border
+        });
+    let git_inner = git_block.inner(area);
+    frame.render_widget(git_block, area);
+    render_git_column_inner(
+        frame,
+        app,
+        info,
+        git,
+        detail_focused,
+        app.detail_column == col,
+        app.detail_cursor,
+        highlight_style,
+        readonly_label_style,
+        git_inner,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_targets_panel(
+    frame: &mut Frame,
+    app: &App,
+    info: &DetailInfo,
+    detail_focused: bool,
+    col: usize,
+    active_border: Style,
+    inactive_border: Style,
+    title_style: Style,
+    area: Rect,
+) {
+    let bin_count: usize = usize::from(info.is_binary);
+    let ex_count: usize = info.examples.iter().map(|g| g.names.len()).sum();
+    let bench_count = info.benches.len();
+    let mut title_parts = Vec::new();
+    if bin_count > 0 {
+        title_parts.push(format!("Binary ({bin_count})"));
+    }
+    if ex_count > 0 {
+        title_parts.push(format!("Examples ({ex_count})"));
+    }
+    if bench_count > 0 {
+        title_parts.push(format!("Benches ({bench_count})"));
+    }
+    let targets_title = format!(" {} ", title_parts.join(" / "));
+
+    let is_active = detail_focused && app.detail_column == col;
+    let targets_block = Block::default()
+        .borders(Borders::ALL)
+        .title(targets_title)
+        .title_style(title_style)
+        .border_style(if is_active {
+            active_border
+        } else {
+            inactive_border
+        });
+
+    let entries = build_target_list(info);
+
+    let type_style = Style::default().fg(Color::DarkGray);
+    let rows: Vec<Row> = entries
+        .iter()
+        .map(|entry| {
+            let kind_label = match entry.kind {
+                RunTargetKind::Binary => "bin",
+                RunTargetKind::Example => "example",
+                RunTargetKind::Bench => "bench",
+            };
+            Row::new(vec![
+                Cell::from(entry.name.clone()),
+                Cell::from(Line::from(kind_label).alignment(ratatui::layout::Alignment::Right))
+                    .style(type_style),
+            ])
+        })
+        .collect();
+
+    let widths = [Constraint::Fill(1), Constraint::Length(7)];
+
+    let highlight_style = if is_active {
+        Style::default().fg(Color::Black).bg(Color::Cyan)
+    } else {
+        Style::default()
+    };
+
+    let table = Table::new(rows, widths)
+        .block(targets_block)
+        .column_spacing(1)
+        .row_highlight_style(highlight_style);
+
+    let selected = if is_active {
+        Some(app.examples_scroll)
+    } else {
+        None
+    };
+    let mut table_state = TableState::default().with_selected(selected);
+    frame.render_stateful_widget(table, area, &mut table_state);
 }
 
 /// Format ISO 8601 timestamp as `yyyy-mm-dd hh:mm`.
@@ -871,7 +993,118 @@ fn format_timestamp(iso: &str) -> String {
 /// The number of extra rows beyond the CI run data (the "fetch more" action row).
 pub(super) const CI_EXTRA_ROWS: usize = 1;
 
-#[allow(clippy::too_many_lines)]
+/// Build the header `Row` for the CI table from the given columns.
+fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
+    let right_aligned = Style::default()
+        .add_modifier(Modifier::BOLD)
+        .fg(Color::DarkGray);
+    let mut header_cells = vec![
+        Cell::from("#").style(right_aligned),
+        Cell::from("Commit").style(right_aligned),
+        Cell::from("Branch").style(right_aligned),
+        Cell::from("Timestamp").style(right_aligned),
+    ];
+    for col in cols {
+        header_cells.push(
+            Cell::from(Line::from(col.label()).alignment(ratatui::layout::Alignment::Right))
+                .style(right_aligned),
+        );
+        header_cells.push(Cell::from("")); // glyph column
+    }
+    header_cells.push(
+        Cell::from(Line::from("Total").alignment(ratatui::layout::Alignment::Right))
+            .style(right_aligned),
+    );
+    header_cells.push(Cell::from("")); // glyph column
+    Row::new(header_cells).bottom_margin(0)
+}
+
+/// Build one data `Row` for a single `CiRun`.
+fn build_ci_data_row(index: usize, ci_run: &CiRun, cols: &[CiColumn]) -> Row<'static> {
+    let timestamp = format_timestamp(&ci_run.created_at);
+    let branch = &ci_run.branch;
+
+    let total_dur = ci_run
+        .wall_clock_secs
+        .map_or_else(|| "—".to_string(), crate::ci::format_secs);
+
+    let row_num = format!("{}", index + 1);
+    let commit = ci_run.commit_title.as_deref().unwrap_or("");
+    let mut cells = vec![
+        Cell::from(row_num).style(Style::default().fg(Color::DarkGray)),
+        Cell::from(commit.to_string()),
+        Cell::from(branch.clone()),
+        Cell::from(timestamp),
+    ];
+
+    for col in cols {
+        let job = ci_run.jobs.iter().find(|j| col.matches(&j.name));
+        if let Some(j) = job {
+            let style = conclusion_style(&j.conclusion);
+            cells.push(
+                Cell::from(
+                    Line::from(j.duration.trim().to_string())
+                        .alignment(ratatui::layout::Alignment::Right),
+                )
+                .style(style),
+            );
+            cells.push(Cell::from(j.conclusion.clone()).style(style));
+        } else {
+            cells.push(
+                Cell::from(Line::from("—").alignment(ratatui::layout::Alignment::Right))
+                    .style(Style::default().fg(Color::DarkGray)),
+            );
+            cells.push(Cell::from(""));
+        }
+    }
+
+    // Total column
+    let total_style = conclusion_style(&ci_run.conclusion);
+    cells.push(
+        Cell::from(
+            Line::from(total_dur.trim().to_string()).alignment(ratatui::layout::Alignment::Right),
+        )
+        .style(total_style),
+    );
+    cells.push(Cell::from(ci_run.conclusion.clone()).style(total_style));
+
+    Row::new(cells)
+}
+
+/// Build column width constraints for the CI table based on content.
+fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn]) -> Vec<Constraint> {
+    #[allow(clippy::cast_possible_truncation)]
+    let max_commit_width = ci_runs
+        .iter()
+        .filter_map(|r| r.commit_title.as_ref())
+        .map(String::len)
+        .max()
+        .unwrap_or(18)
+        .max(18) as u16;
+
+    #[allow(clippy::cast_possible_truncation)]
+    let max_branch_width = ci_runs
+        .iter()
+        .map(|r| r.branch.len())
+        .max()
+        .unwrap_or(6)
+        .max(6) as u16;
+
+    let mut widths = vec![
+        Constraint::Length(3),                // # row number
+        Constraint::Length(max_commit_width), // Commit
+        Constraint::Length(max_branch_width), // Branch
+        Constraint::Length(16),               // Timestamp
+    ];
+    for _ in cols {
+        widths.push(Constraint::Length(8)); // duration
+        widths.push(Constraint::Length(1)); // glyph
+    }
+    widths.push(Constraint::Length(8)); // Total duration
+    widths.push(Constraint::Length(1)); // Total glyph
+    widths
+}
+
 pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Rect) {
     let ci_focused = app.focus == FocusTarget::CiRuns;
 
@@ -912,118 +1145,15 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], a
         cols.push(CiColumn::Bench);
     }
 
-    // Header
-    let right_aligned = Style::default()
-        .add_modifier(Modifier::BOLD)
-        .fg(Color::DarkGray);
-    let mut header_cells = vec![
-        Cell::from("#").style(right_aligned),
-        Cell::from("Commit").style(right_aligned),
-        Cell::from("Branch").style(right_aligned),
-        Cell::from("Timestamp").style(right_aligned),
-    ];
-    for col in &cols {
-        header_cells.push(
-            Cell::from(Line::from(col.label()).alignment(ratatui::layout::Alignment::Right))
-                .style(right_aligned),
-        );
-        header_cells.push(Cell::from("")); // glyph column
-    }
-    header_cells.push(
-        Cell::from(Line::from("Total").alignment(ratatui::layout::Alignment::Right))
-            .style(right_aligned),
-    );
-    header_cells.push(Cell::from("")); // glyph column
-    let header = Row::new(header_cells).bottom_margin(0);
+    let header = build_ci_header_row(&cols);
 
-    // Data rows
     let mut rows: Vec<Row> = ci_runs
         .iter()
         .enumerate()
-        .map(|(i, ci_run)| {
-            let timestamp = format_timestamp(&ci_run.created_at);
-            let branch = &ci_run.branch;
-
-            let total_dur = ci_run
-                .wall_clock_secs
-                .map_or_else(|| "—".to_string(), crate::ci::format_secs);
-
-            let row_num = format!("{}", i + 1);
-            let commit = ci_run.commit_title.as_deref().unwrap_or("");
-            let mut cells = vec![
-                Cell::from(row_num).style(Style::default().fg(Color::DarkGray)),
-                Cell::from(commit.to_string()),
-                Cell::from(branch.clone()),
-                Cell::from(timestamp),
-            ];
-
-            for col in &cols {
-                let job = ci_run.jobs.iter().find(|j| col.matches(&j.name));
-                if let Some(j) = job {
-                    let style = conclusion_style(&j.conclusion);
-                    cells.push(
-                        Cell::from(
-                            Line::from(j.duration.trim().to_string())
-                                .alignment(ratatui::layout::Alignment::Right),
-                        )
-                        .style(style),
-                    );
-                    cells.push(Cell::from(j.conclusion.clone()).style(style));
-                } else {
-                    cells.push(
-                        Cell::from(Line::from("—").alignment(ratatui::layout::Alignment::Right))
-                            .style(Style::default().fg(Color::DarkGray)),
-                    );
-                    cells.push(Cell::from(""));
-                }
-            }
-
-            // Total column
-            let total_style = conclusion_style(&ci_run.conclusion);
-            cells.push(
-                Cell::from(
-                    Line::from(total_dur.trim().to_string())
-                        .alignment(ratatui::layout::Alignment::Right),
-                )
-                .style(total_style),
-            );
-            cells.push(Cell::from(ci_run.conclusion.clone()).style(total_style));
-
-            Row::new(cells)
-        })
+        .map(|(i, ci_run)| build_ci_data_row(i, ci_run, &cols))
         .collect();
 
-    // Fit columns to their longest content
-    #[allow(clippy::cast_possible_truncation)]
-    let max_commit_width = ci_runs
-        .iter()
-        .filter_map(|r| r.commit_title.as_ref())
-        .map(String::len)
-        .max()
-        .unwrap_or(18)
-        .max(18) as u16; // minimum fits "↓ fetch more runs"
-
-    #[allow(clippy::cast_possible_truncation)]
-    let max_branch_width = ci_runs
-        .iter()
-        .map(|r| r.branch.len())
-        .max()
-        .unwrap_or(6)
-        .max(6) as u16;
-
-    // Column widths — commit and branch fit content, timings tight
-    let mut widths = vec![
-        Constraint::Length(3),                // # row number
-        Constraint::Length(max_commit_width), // Commit — fits longest
-        Constraint::Length(max_branch_width), // Branch — fits longest
-        Constraint::Length(16),               // Timestamp (yyyy-mm-dd hh:mm)
-    ];
-    for _ in &cols {
-        widths.push(Constraint::Length(8)); // duration: ##m ##s
-        widths.push(Constraint::Length(1)); // glyph: ✓/✗/⊘
-    }
-    widths.push(Constraint::Length(8)); // Total duration
-    widths.push(Constraint::Length(1)); // Total glyph
+    let widths = build_ci_widths(ci_runs, &cols);
 
     // "Fetch more" / "no older runs" as a table row
     let no_more = app
@@ -1072,6 +1202,14 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], a
 /// Returns the maximum column index (0 if no git info, 1 if git info present).
 /// Column layout: 0=Project, then optionally Git, then optionally targets (examples/benches).
 /// Returns (`max_column_index`, `targets_column_index` or `None`).
+pub fn detail_layout_pub(app: &App) -> (usize, Option<usize>) { detail_layout(app) }
+
+/// Returns the maximum detail column index for the selected project.
+pub fn detail_max_column(app: &App) -> usize {
+    let (max_col, _) = detail_layout(app);
+    max_col
+}
+
 fn detail_layout(app: &App) -> (usize, Option<usize>) {
     let project = app.selected_project();
     let has_git = project.and_then(|p| app.git_info.get(&p.path)).is_some();
@@ -1125,226 +1263,31 @@ fn clamp_detail_cursor(app: &mut App) {
     }
 }
 
-/// What the cursor is pointing at in the targets column.
-enum TargetItem {
-    /// The binary itself.
-    Binary(String),
-    /// A root-level example (no category).
-    RootExample(String),
-    /// A category group header.
-    GroupHeader(String),
-    /// An example inside a category.
-    GroupExample { category: String, name: String },
-    /// A bench target.
-    Bench(String),
-}
-
-/// Identify what's at the given scroll position in the targets column.
-fn target_item_at(app: &App, scroll: usize) -> Option<TargetItem> {
-    let project = app.selected_project()?;
-    let info = build_detail_info(app, project);
-    let mut line = 0;
-
-    // Binary section
-    if info.is_binary
-        && let Some(name) = &info.binary_name
-    {
-        line += 1; // "Binary" header
-        if line == scroll {
-            return Some(TargetItem::Binary(name.clone()));
-        }
-        line += 1;
-    }
-
-    // Examples section
-    if !project.examples.is_empty() {
-        for group in &project.examples {
-            if group.category.is_empty() {
-                for name in &group.names {
-                    if line == scroll {
-                        return Some(TargetItem::RootExample(name.clone()));
-                    }
-                    line += 1;
-                }
-            } else {
-                if line == scroll {
-                    return Some(TargetItem::GroupHeader(group.category.clone()));
-                }
-                line += 1;
-                if app.expanded_example_groups.contains(&group.category) {
-                    for name in &group.names {
-                        if line == scroll {
-                            return Some(TargetItem::GroupExample {
-                                category: group.category.clone(),
-                                name:     name.clone(),
-                            });
-                        }
-                        line += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    // Benches section
-    if !project.benches.is_empty() {
-        line += 1; // "Benches (N)" header
-        for name in &project.benches {
-            if line == scroll {
-                return Some(TargetItem::Bench(name.clone()));
-            }
-            line += 1;
-        }
-    }
-
-    None
-}
-
-/// Count total visible lines in the targets column.
-fn targets_visible_line_count(app: &App) -> usize {
+/// Get the total number of target entries for the selected project.
+fn target_list_len(app: &App) -> usize {
     let Some(project) = app.selected_project() else {
         return 0;
     };
     let info = build_detail_info(app, project);
-    let mut count = 0;
-
-    // Binary
-    if info.is_binary && info.binary_name.is_some() {
-        count += 2; // header + name
-    }
-
-    // Examples
-    if !project.examples.is_empty() {
-        for group in &project.examples {
-            if group.category.is_empty() {
-                count += group.names.len();
-            } else {
-                count += 1; // Group header
-                if app.expanded_example_groups.contains(&group.category) {
-                    count += group.names.len();
-                }
-            }
-        }
-    }
-
-    // Benches
-    if !project.benches.is_empty() {
-        count += 1; // header
-        count += project.benches.len();
-    }
-
-    count
-}
-
-/// Check if a line is a selectable target item (not a section header).
-fn is_selectable_target_line(app: &App, line: usize) -> bool { target_item_at(app, line).is_some() }
-
-/// Find the first selectable line in the targets column.
-fn first_selectable_target(app: &App) -> usize {
-    let total = targets_visible_line_count(app);
-    for i in 0..total {
-        if is_selectable_target_line(app, i) {
-            return i;
-        }
-    }
-    0
-}
-
-/// Find the next selectable line after `from` (going down).
-fn next_selectable_target(app: &App, from: usize) -> usize {
-    let total = targets_visible_line_count(app);
-    for i in (from + 1)..total {
-        if is_selectable_target_line(app, i) {
-            return i;
-        }
-    }
-    from
-}
-
-/// Find the previous selectable line before `from` (going up).
-fn prev_selectable_target(app: &App, from: usize) -> usize {
-    for i in (0..from).rev() {
-        if is_selectable_target_line(app, i) {
-            return i;
-        }
-    }
-    from
-}
-
-/// Expand the group at the current scroll position.
-fn expand_example_group(app: &mut App) {
-    if let Some(TargetItem::GroupHeader(cat)) = target_item_at(app, app.examples_scroll) {
-        app.expanded_example_groups.insert(cat);
-    }
-}
-
-/// Collapse the group at the current scroll position (or parent group if on a child).
-/// Returns `true` if something was collapsed.
-fn collapse_example_group(app: &mut App) -> bool {
-    match target_item_at(app, app.examples_scroll) {
-        Some(TargetItem::GroupHeader(ref cat)) if app.expanded_example_groups.contains(cat) => {
-            app.expanded_example_groups.remove(cat);
-            true
-        },
-        Some(TargetItem::GroupExample { category, .. }) => {
-            app.expanded_example_groups.remove(&category);
-            // Move scroll back to the group header
-            let Some(project) = app.selected_project() else {
-                return true;
-            };
-            let mut line = 0;
-            for group in &project.examples {
-                if group.category.is_empty() {
-                    line += group.names.len();
-                } else {
-                    if group.category == category {
-                        app.examples_scroll = line;
-                        return true;
-                    }
-                    line += 1;
-                    if app.expanded_example_groups.contains(&group.category) {
-                        line += group.names.len();
-                    }
-                }
-            }
-            true
-        },
-        _ => false,
-    }
-}
-
-/// Launch the selected target, or toggle a group header.
-fn run_selected_target(app: &mut App, kind: RunTargetKind, name: String, release: bool) {
-    if let Some(project) = app.selected_project() {
-        app.pending_example_run = Some(PendingExampleRun {
-            abs_path: project.abs_path.clone(),
-            target_name: name,
-            package_name: project.name.clone(),
-            kind,
-            release,
-        });
-    }
+    build_target_list(&info).len()
 }
 
 fn handle_target_action(app: &mut App, release: bool) {
-    match target_item_at(app, app.examples_scroll) {
-        Some(TargetItem::GroupHeader(cat)) if !release => {
-            if app.expanded_example_groups.contains(&cat) {
-                app.expanded_example_groups.remove(&cat);
-            } else {
-                app.expanded_example_groups.insert(cat);
-            }
-        },
-        Some(TargetItem::RootExample(name) | TargetItem::GroupExample { name, .. }) => {
-            run_selected_target(app, RunTargetKind::Example, name, release);
-        },
-        Some(TargetItem::Bench(name)) => {
-            run_selected_target(app, RunTargetKind::Bench, name, release);
-        },
-        Some(TargetItem::Binary(name)) => {
-            run_selected_target(app, RunTargetKind::Binary, name, release);
-        },
-        _ => {},
+    let Some(project) = app.selected_project() else {
+        return;
+    };
+    let info = build_detail_info(app, project);
+    let entries = build_target_list(&info);
+    if let Some(entry) = entries.get(app.examples_scroll)
+        && let Some(project) = app.selected_project()
+    {
+        app.pending_example_run = Some(PendingExampleRun {
+            abs_path: project.abs_path.clone(),
+            target_name: entry.name.clone(),
+            package_name: project.name.clone(),
+            kind: entry.kind,
+            release,
+        });
     }
 }
 
@@ -1356,76 +1299,60 @@ pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Up => {
             if on_examples {
-                app.examples_scroll = prev_selectable_target(app, app.examples_scroll);
+                if app.examples_scroll > 0 {
+                    app.examples_scroll -= 1;
+                }
             } else if app.detail_cursor > 0 {
                 app.detail_cursor -= 1;
             }
         },
         KeyCode::Down => {
             if on_examples {
-                app.examples_scroll = next_selectable_target(app, app.examples_scroll);
+                let total = target_list_len(app);
+                if total > 0 && app.examples_scroll < total - 1 {
+                    app.examples_scroll += 1;
+                }
             } else if field_count > 0 && app.detail_cursor < field_count - 1 {
                 app.detail_cursor += 1;
             }
         },
+        KeyCode::Home => {
+            if on_examples {
+                app.examples_scroll = 0;
+            } else {
+                app.detail_cursor = 0;
+            }
+        },
+        KeyCode::End => {
+            if on_examples {
+                let total = target_list_len(app);
+                if total > 0 {
+                    app.examples_scroll = total - 1;
+                }
+            } else if field_count > 0 {
+                app.detail_cursor = field_count - 1;
+            }
+        },
         KeyCode::Left => {
-            if on_examples && collapse_example_group(app) {
-                // Collapsed an example group — stay in examples column
-            } else if app.detail_column > 0 {
+            if app.detail_column > 0 {
                 app.detail_column -= 1;
                 clamp_detail_cursor(app);
             }
         },
         KeyCode::Right => {
             if on_examples {
-                expand_example_group(app);
+                // No expand — do nothing
             } else if app.detail_column < max_col {
                 app.detail_column += 1;
-                // If entering the targets column, jump to the first selectable item
+                // If entering the targets column, jump to the first item
                 if Some(app.detail_column) == examples_col {
-                    app.examples_scroll = first_selectable_target(app);
+                    app.examples_scroll = 0;
                 } else {
                     clamp_detail_cursor(app);
                 }
             }
         },
-        KeyCode::Enter => {
-            if on_examples {
-                handle_target_action(app, false);
-            } else if app.detail_column == 0 {
-                let fields = app
-                    .selected_project()
-                    .map(|p| {
-                        let info = build_detail_info(app, p);
-                        package_fields(&info)
-                    })
-                    .unwrap_or_default();
-                if let Some(field) = fields.get(app.detail_cursor)
-                    && field.is_editable()
-                    && let Some(project) = app.selected_project()
-                {
-                    match *field {
-                        DetailField::Version => {
-                            let version = project.version.clone().unwrap_or_default();
-                            if version != "(workspace)" {
-                                app.editing = Some(EditingState {
-                                    field: DetailField::Version,
-                                    buf:   version,
-                                });
-                            }
-                        },
-                        DetailField::Description => {
-                            let desc = project.description.clone().unwrap_or_default();
-                            app.editing = Some(EditingState {
-                                field: DetailField::Description,
-                                buf:   desc,
-                            });
-                        },
-                        _ => {},
-                    }
-                }
-            }
-        },
+        KeyCode::Enter => handle_detail_enter(app, on_examples),
         KeyCode::Char('r') => {
             if on_examples {
                 handle_target_action(app, true);
@@ -1438,6 +1365,49 @@ pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
         },
         KeyCode::Char('q') => app.should_quit = true,
         _ => {},
+    }
+}
+
+/// Handle the Enter key in the detail panel.
+fn handle_detail_enter(app: &mut App, on_examples: bool) {
+    if on_examples {
+        handle_target_action(app, false);
+    } else if app.detail_column == 0 {
+        let (fields, owned) = app
+            .selected_project()
+            .map(|p| {
+                let info = build_detail_info(app, p);
+                (package_fields(&info), info.owned)
+            })
+            .unwrap_or_default();
+        if let Some(field) = fields.get(app.detail_cursor)
+            && let Some(project) = app.selected_project()
+        {
+            match *field {
+                DetailField::Name => {
+                    // Open project in zed
+                    let abs_path = project.abs_path.clone();
+                    let _ = std::process::Command::new("zed").arg(&abs_path).spawn();
+                },
+                DetailField::Version if field.is_editable() && owned => {
+                    let version = project.version.clone().unwrap_or_default();
+                    if version != "(workspace)" {
+                        app.editing = Some(EditingState {
+                            field: DetailField::Version,
+                            buf:   version,
+                        });
+                    }
+                },
+                DetailField::Description if field.is_editable() && owned => {
+                    let desc = project.description.clone().unwrap_or_default();
+                    app.editing = Some(EditingState {
+                        field: DetailField::Description,
+                        buf:   desc,
+                    });
+                },
+                _ => {},
+            }
+        }
     }
 }
 
