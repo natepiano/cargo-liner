@@ -1,21 +1,11 @@
 mod app;
 mod detail;
+mod finder;
 mod input;
 mod render;
-mod scan;
 mod settings;
+mod shortcuts;
 mod terminal;
 mod types;
 
-pub use app::App;
-pub use input::advance_focus;
-pub use input::reverse_focus;
 pub use terminal::run;
-pub use types::BackgroundMsg;
-pub use types::ExpandKey;
-pub use types::FlatEntry;
-pub use types::FocusTarget;
-pub use types::MemberGroup;
-pub use types::ProjectCounts;
-pub use types::ProjectNode;
-pub use types::VisibleRow;

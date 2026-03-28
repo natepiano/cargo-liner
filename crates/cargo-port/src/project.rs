@@ -42,13 +42,17 @@ impl GitOrigin {
 #[derive(Debug, Clone, Serialize)]
 pub struct GitInfo {
     /// Whether this is a clone or a fork.
-    pub origin: GitOrigin,
+    pub origin:       GitOrigin,
     /// The current branch name.
-    pub branch: Option<String>,
+    pub branch:       Option<String>,
     /// The GitHub/GitLab owner (e.g. "natepiano").
-    pub owner:  Option<String>,
+    pub owner:        Option<String>,
     /// The HTTPS URL to the repository.
-    pub url:    Option<String>,
+    pub url:          Option<String>,
+    /// ISO 8601 date of the first commit (inception).
+    pub first_commit: Option<String>,
+    /// ISO 8601 date of the most recent commit.
+    pub last_commit:  Option<String>,
 }
 
 impl GitInfo {
@@ -95,11 +99,36 @@ impl GitInfo {
                 if b.is_empty() { None } else { Some(b) }
             });
 
+        let first_commit = Command::new("git")
+            .args(["log", "--reverse", "--format=%aI", "--diff-filter=A"])
+            .current_dir(project_dir)
+            .output()
+            .ok()
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .map(std::string::ToString::to_string)
+            });
+
+        let last_commit = Command::new("git")
+            .args(["log", "-1", "--format=%aI"])
+            .current_dir(project_dir)
+            .output()
+            .ok()
+            .and_then(|o| {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if s.is_empty() { None } else { Some(s) }
+            });
+
         Some(Self {
             origin,
             branch,
             owner,
             url,
+            first_commit,
+            last_commit,
         })
     }
 }
@@ -131,7 +160,7 @@ fn parse_remote_url(raw: &str) -> (Option<String>, Option<String>) {
     (None, None)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProjectType {
     Binary,

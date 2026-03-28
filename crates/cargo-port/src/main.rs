@@ -11,6 +11,7 @@ mod config;
 mod list;
 mod output;
 mod project;
+mod scan;
 mod tui;
 
 use ci::CiArgs;

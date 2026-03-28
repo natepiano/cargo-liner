@@ -2,25 +2,91 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::thread;
 
 use walkdir::WalkDir;
 
-use super::BackgroundMsg;
-use super::FlatEntry;
-use super::MemberGroup;
-use super::ProjectNode;
 use crate::ci::CiRun;
 use crate::ci::GhRun;
 use crate::project::GitInfo;
 use crate::project::RustProject;
 
-pub(super) const CACHE_DIR: &str = "cargo-port/ci-cache";
+/// Members within a workspace are organized into groups by their first subdirectory.
+/// The "inline" group (empty name) contains members directly under the workspace root
+/// or under the primary `crates/` directory -- these are shown without a folder header.
+pub struct MemberGroup {
+    pub name:    String,
+    pub members: Vec<RustProject>,
+}
+
+pub struct ProjectNode {
+    pub project:   RustProject,
+    pub groups:    Vec<MemberGroup>,
+    pub worktrees: Vec<Self>,
+    pub vendored:  Vec<RustProject>,
+}
+
+impl ProjectNode {
+    pub fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members.is_empty()) }
+
+    pub fn has_children(&self) -> bool {
+        self.has_members() || !self.worktrees.is_empty() || !self.vendored.is_empty()
+    }
+}
+
+/// A flattened entry for fuzzy search.
+pub struct FlatEntry {
+    pub node_index:   usize,
+    pub group_index:  usize,
+    pub member_index: usize,
+    pub name:         String,
+}
+
+pub enum BackgroundMsg {
+    DiskUsage { path: String, bytes: u64 },
+    CiRuns { path: String, runs: Vec<CiRun> },
+    GitInfo { path: String, info: GitInfo },
+    CratesIoVersion { path: String, version: String },
+    Stars { path: String, count: u64 },
+    ProjectDiscovered { project: RustProject },
+    ScanActivity { path: String },
+    ScanComplete,
+    NetworkOffline,
+}
+
+impl BackgroundMsg {
+    /// Returns the project path this message relates to, if any.
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Self::DiskUsage { path, .. }
+            | Self::CiRuns { path, .. }
+            | Self::GitInfo { path, .. }
+            | Self::CratesIoVersion { path, .. }
+            | Self::Stars { path, .. } => Some(path),
+            Self::ProjectDiscovered { project } => Some(&project.path),
+            Self::ScanActivity { .. } | Self::ScanComplete | Self::NetworkOffline => None,
+        }
+    }
+}
+
+/// What a CI fetch function returns. Forces callers to handle the
+/// "network failed but cache exists" case explicitly -- the compiler won't
+/// let you silently discard cached runs.
+pub enum CiFetchResult {
+    /// Fresh runs (network succeeded), merged with cache.
+    Loaded(Vec<CiRun>),
+    /// Network failed; returning whatever the disk cache had.
+    CacheOnly(Vec<CiRun>),
+}
+
+pub const CACHE_DIR: &str = "cargo-port/ci-cache";
 
 /// Base cache directory: `$TMPDIR/cargo-port/ci-cache`.
-pub(super) fn cache_dir() -> Option<PathBuf> {
+pub fn cache_dir() -> Option<PathBuf> {
     std::env::var("TMPDIR")
         .ok()
         .map(PathBuf::from)
@@ -34,19 +100,22 @@ fn repo_cache_dir(owner: &str, repo: &str) -> Option<PathBuf> {
 }
 
 /// Public accessor for clearing the cache directory.
-pub(super) fn repo_cache_dir_pub(owner: &str, repo: &str) -> Option<PathBuf> {
+pub fn repo_cache_dir_pub(owner: &str, repo: &str) -> Option<PathBuf> {
     repo_cache_dir(owner, repo)
 }
 
 const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";
+const OLDER_RUNS_FETCH_INCREMENT: u32 = 5;
+const CONNECTIVITY_TIMEOUT_SECS: &str = "2";
+const CRATES_IO_TIMEOUT_SECS: &str = "5";
 
 /// Check if the "no more runs" marker exists for a repo.
-pub(super) fn is_exhausted(owner: &str, repo: &str) -> bool {
+pub fn is_exhausted(owner: &str, repo: &str) -> bool {
     repo_cache_dir(owner, repo).is_some_and(|d| d.join(NO_MORE_RUNS_MARKER).exists())
 }
 
 /// Save the "no more runs" marker for a repo.
-pub(super) fn mark_exhausted(owner: &str, repo: &str) {
+pub fn mark_exhausted(owner: &str, repo: &str) {
     if let Some(dir) = repo_cache_dir(owner, repo) {
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::write(dir.join(NO_MORE_RUNS_MARKER), "");
@@ -72,7 +141,7 @@ fn load_cached_run(owner: &str, repo: &str, run_id: u64) -> Option<CiRun> {
 }
 
 /// Load all cached CI runs for a given repo.
-pub(super) fn load_all_cached_runs(owner: &str, repo: &str) -> Vec<CiRun> {
+pub fn load_all_cached_runs(owner: &str, repo: &str) -> Vec<CiRun> {
     let Some(dir) = repo_cache_dir(owner, repo) else {
         return Vec::new();
     };
@@ -136,52 +205,90 @@ fn merge_runs(fetched: Vec<CiRun>, cached: Vec<CiRun>) -> Vec<CiRun> {
 
 /// Fetch CI runs, using the repo-keyed cache. Merges freshly fetched runs
 /// with all previously cached runs for this repo, deduplicated and sorted by `run_id` descending.
-pub(super) fn fetch_ci_runs_cached(repo_dir: &Path, count: u32) -> Vec<CiRun> {
-    let Some(repo_url) = crate::ci::get_repo_url(repo_dir) else {
-        return Vec::new();
-    };
-
-    let Some((owner, repo)) = crate::ci::parse_owner_repo(&repo_url) else {
-        return Vec::new();
-    };
-
+///
+/// Accepts `(repo_url, owner, repo)` derived from the *local* git remote so that
+/// cache loading never depends on network availability.
+pub fn fetch_ci_runs_cached(
+    repo_dir: &Path,
+    repo_url: &str,
+    owner: &str,
+    repo: &str,
+    count: u32,
+) -> CiFetchResult {
     let gh_runs = crate::ci::list_runs(repo_dir, None, count).unwrap_or_default();
-    let fetched = fetch_recent_runs(repo_dir, &repo_url, &owner, &repo, &gh_runs);
-    let cached = load_all_cached_runs(&owner, &repo);
+    let fetched = fetch_recent_runs(repo_dir, repo_url, owner, repo, &gh_runs);
+    let cached = load_all_cached_runs(owner, repo);
+    let merged = merge_runs(fetched, cached);
 
-    merge_runs(fetched, cached)
+    if gh_runs.is_empty() {
+        CiFetchResult::CacheOnly(merged)
+    } else {
+        CiFetchResult::Loaded(merged)
+    }
 }
 
 /// Fetch older CI runs beyond what we currently have, by requesting a larger
 /// `--limit` from `gh run list` and returning any newly discovered runs.
-pub(super) fn fetch_older_runs(repo_dir: &Path, current_count: u32) -> Vec<CiRun> {
-    let Some(repo_url) = crate::ci::get_repo_url(repo_dir) else {
-        return Vec::new();
-    };
-
-    let Some((owner, repo)) = crate::ci::parse_owner_repo(&repo_url) else {
-        return Vec::new();
-    };
-
-    // Request 5 more runs than we currently have
-    let fetch_count = current_count + 5;
+///
+/// Accepts `(repo_url, owner, repo)` derived from the *local* git remote.
+pub fn fetch_older_runs(
+    repo_dir: &Path,
+    repo_url: &str,
+    owner: &str,
+    repo: &str,
+    current_count: u32,
+) -> CiFetchResult {
+    let fetch_count = current_count + OLDER_RUNS_FETCH_INCREMENT;
     let gh_runs = crate::ci::list_runs(repo_dir, None, fetch_count).unwrap_or_default();
-    let fetched = fetch_recent_runs(repo_dir, &repo_url, &owner, &repo, &gh_runs);
+    let fetched = fetch_recent_runs(repo_dir, repo_url, owner, repo, &gh_runs);
 
     // Only return the fetched runs — don't merge with the full cache.
     // The caller already has runs in memory; these get merged there.
     let mut result = fetched;
     result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
-    result
+
+    if gh_runs.is_empty() {
+        CiFetchResult::CacheOnly(result)
+    } else {
+        CiFetchResult::Loaded(result)
+    }
 }
 
-pub(super) fn fetch_crates_io_version(crate_name: &str) -> Option<String> {
+/// Sent once per session when the first network operation fails.
+static OFFLINE_NOTIFIED: AtomicBool = AtomicBool::new(false);
+
+/// Quick connectivity probe — tries `gh auth status` with a 2-second timeout.
+/// Returns `true` if we appear to be online.
+fn check_online() -> bool {
+    std::process::Command::new("curl")
+        .args([
+            "-sf",
+            "--max-time",
+            CONNECTIVITY_TIMEOUT_SECS,
+            "-o",
+            "/dev/null",
+            "https://crates.io",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Send a one-shot offline notification if we haven't already.
+fn notify_offline_once(tx: &mpsc::Sender<BackgroundMsg>) {
+    if !OFFLINE_NOTIFIED.swap(true, Ordering::Relaxed) {
+        let _ = tx.send(BackgroundMsg::NetworkOffline);
+    }
+}
+
+pub fn fetch_crates_io_version(crate_name: &str) -> Option<String> {
     let url = format!("https://crates.io/api/v1/crates/{crate_name}");
     let output = std::process::Command::new("curl")
         .args([
             "-sf",
             "--max-time",
-            "5",
+            CRATES_IO_TIMEOUT_SECS,
             "-H",
             "User-Agent: cargo-port",
             &url,
@@ -198,7 +305,7 @@ pub(super) fn fetch_crates_io_version(crate_name: &str) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-pub(super) fn dir_size(path: &Path) -> u64 {
+pub fn dir_size(path: &Path) -> u64 {
     WalkDir::new(path)
         .into_iter()
         .flatten()
@@ -208,7 +315,7 @@ pub(super) fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
-pub(super) fn build_tree(projects: Vec<RustProject>, inline_dirs: &[String]) -> Vec<ProjectNode> {
+pub fn build_tree(projects: Vec<RustProject>, inline_dirs: &[String]) -> Vec<ProjectNode> {
     let workspace_paths: Vec<String> = projects
         .iter()
         .filter(|p| p.is_workspace())
@@ -449,7 +556,7 @@ fn extract_vendored(nodes: &mut Vec<ProjectNode>) {
     }
 }
 
-pub(super) fn group_members(
+pub fn group_members(
     workspace_path: &str,
     members: Vec<RustProject>,
     inline_dirs: &[String],
@@ -492,7 +599,7 @@ pub(super) fn group_members(
     groups
 }
 
-pub(super) fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
+pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
     let mut entries = Vec::new();
     for (ni, node) in nodes.iter().enumerate() {
         // Add workspace root itself
@@ -521,7 +628,7 @@ pub(super) fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
 
 /// Fetch all details (disk, git, crates.io, CI) for a single project and send
 /// results through the provided channel. Used by both the main scan and priority fetch.
-pub(super) fn fetch_project_details(
+pub fn fetch_project_details(
     tx: &mpsc::Sender<BackgroundMsg>,
     project_path: &str,
     abs_path: &Path,
@@ -529,11 +636,16 @@ pub(super) fn fetch_project_details(
     has_git: bool,
     ci_run_count: u32,
 ) {
-    // Git info first (local, instant)
-    if has_git && let Some(info) = GitInfo::detect(abs_path) {
+    // Git info first (local, instant) — also provides the repo URL for CI cache lookup
+    let git_info = if has_git {
+        GitInfo::detect(abs_path)
+    } else {
+        None
+    };
+    if let Some(ref info) = git_info {
         let _ = tx.send(BackgroundMsg::GitInfo {
             path: project_path.to_string(),
-            info,
+            info: info.clone(),
         });
     }
 
@@ -544,12 +656,33 @@ pub(super) fn fetch_project_details(
         bytes,
     });
 
-    // CI runs (network, can be slow)
-    if has_git {
+    // Network operations — check connectivity once before attempting
+    let online = if !OFFLINE_NOTIFIED.load(Ordering::Relaxed) {
+        let is_online = check_online();
+        if !is_online {
+            notify_offline_once(tx);
+        }
+        is_online
+    } else {
+        // Already notified offline — skip the check, still try
+        true
+    };
+
+    // CI runs — repo identity from *local* git remote, never from network
+    if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
+        && let Some((owner, repo)) = crate::ci::parse_owner_repo(repo_url)
+    {
         let _ = tx.send(BackgroundMsg::ScanActivity {
             path: format!("CI: {project_path}"),
         });
-        let runs = fetch_ci_runs_cached(abs_path, ci_run_count);
+        let result = fetch_ci_runs_cached(abs_path, repo_url, &owner, &repo, ci_run_count);
+        let is_cache_only = matches!(result, CiFetchResult::CacheOnly(_));
+        let runs = match result {
+            CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
+        };
+        if runs.is_empty() && is_cache_only && !online {
+            notify_offline_once(tx);
+        }
         let _ = tx.send(BackgroundMsg::CiRuns {
             path: project_path.to_string(),
             runs,
@@ -566,10 +699,9 @@ pub(super) fn fetch_project_details(
         });
     }
 
-    // GitHub stars (network)
-    if has_git
-        && let Some(repo_url) = crate::ci::get_repo_url(abs_path)
-        && let Some((owner, repo)) = crate::ci::parse_owner_repo(&repo_url)
+    // GitHub stars (network) — use local URL, only the API call needs network
+    if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
+        && let Some((owner, repo)) = crate::ci::parse_owner_repo(repo_url)
         && let Some(count) = fetch_star_count(&owner, &repo)
     {
         let _ = tx.send(BackgroundMsg::Stars {
@@ -604,7 +736,7 @@ fn fetch_star_count(owner: &str, repo: &str) -> Option<u64> {
 ///
 /// When `include_non_rust` is true, directories containing `.git` (directory, not file)
 /// but no `Cargo.toml` are also discovered as non-Rust projects.
-pub(super) fn spawn_streaming_scan(
+pub fn spawn_streaming_scan(
     scan_root: &Path,
     ci_run_count: u32,
     exclude_dirs: &[String],

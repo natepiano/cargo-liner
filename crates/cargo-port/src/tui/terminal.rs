@@ -18,19 +18,35 @@ use crossterm::terminal::enable_raw_mode;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use super::App;
+use super::app::App;
+
+const FRAME_POLL_MILLIS: u64 = 16;
+const CI_FETCH_DISPLAY_COUNT: u32 = 5;
 use super::detail::PendingCiFetch;
 use super::detail::PendingExampleRun;
 use super::detail::RunTargetKind;
 use super::input;
 use super::render;
-use super::scan;
-use super::types::BackgroundMsg;
-use super::types::CiFetchMsg;
-use super::types::ExampleMsg;
 use crate::config;
 use crate::project::GitInfo;
 use crate::project::RustProject;
+use crate::scan;
+use crate::scan::BackgroundMsg;
+use crate::scan::CiFetchResult;
+
+pub enum ExampleMsg {
+    Output(String),
+    Finished,
+}
+
+/// Message sent when a background CI fetch completes.
+pub enum CiFetchMsg {
+    /// The fetch completed with updated runs for the given project path.
+    Complete {
+        path:   String,
+        result: CiFetchResult,
+    },
+}
 
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
@@ -84,7 +100,12 @@ pub fn run(path: PathBuf) -> ExitCode {
 
     let result = event_loop(&mut terminal, &mut app);
 
+    let should_restart = app.should_restart;
     let _ = restore_terminal(&mut terminal);
+
+    if should_restart {
+        restart_self();
+    }
 
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -93,6 +114,15 @@ pub fn run(path: PathBuf) -> ExitCode {
             ExitCode::FAILURE
         },
     }
+}
+
+/// Replace the current process with a fresh instance of the same binary.
+fn restart_self() {
+    use std::os::unix::process::CommandExt;
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cargo-port"));
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let err = std::process::Command::new(&exe).args(&args).exec();
+    eprintln!("Failed to restart: {err}");
 }
 
 fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
@@ -105,7 +135,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
         terminal.draw(|frame| render::ui(frame, app))?;
 
         // Wait for at least one event (up to 16ms for ~60fps)
-        if crossterm::event::poll(Duration::from_millis(16))? {
+        if crossterm::event::poll(Duration::from_millis(FRAME_POLL_MILLIS))? {
             input::handle_event(app, crossterm::event::read()?);
 
             // Drain any additional queued events without waiting
@@ -140,9 +170,23 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
 
         // Spawn a pending CI fetch as a background process
         if let Some(fetch) = app.pending_ci_fetch.take() {
-            app.ci_fetching = true;
-            app.ci_fetch_count = 5;
-            app.ci_fetch_prev_count = app.ci_runs.get(&fetch.project_path).map_or(0, Vec::len);
+            // Transition to Fetching state, preserving visible runs
+            let existing_runs = app
+                .ci_state
+                .remove(&fetch.project_path)
+                .map(|s| match s {
+                    super::app::CiState::Fetching { runs, .. }
+                    | super::app::CiState::Loaded { runs, .. } => runs,
+                })
+                .unwrap_or_default();
+            app.ci_state.insert(
+                fetch.project_path.clone(),
+                super::app::CiState::Fetching {
+                    runs:  existing_runs,
+                    count: CI_FETCH_DISPLAY_COUNT,
+                },
+            );
+            app.data_generation += 1;
             spawn_ci_fetch(app, &fetch);
         }
     }
@@ -224,17 +268,29 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
 }
 
 fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
+    // Derive (repo_url, owner, repo) from local git info — no network needed
+    let Some(git) = app.git_info.get(&fetch.project_path) else {
+        return;
+    };
+    let Some(repo_url) = &git.url else {
+        return;
+    };
+    let Some((owner, repo)) = crate::ci::parse_owner_repo(repo_url) else {
+        return;
+    };
+
     let tx = app.ci_fetch_tx.clone();
     let abs_path = fetch.abs_path.clone();
     let project_path = fetch.project_path.clone();
     let current_count = fetch.current_count;
+    let url = repo_url.clone();
 
     thread::spawn(move || {
         let repo_dir = PathBuf::from(&abs_path);
-        let runs = scan::fetch_older_runs(&repo_dir, current_count);
+        let result = scan::fetch_older_runs(&repo_dir, &url, &owner, &repo, current_count);
         let _ = tx.send(CiFetchMsg::Complete {
             path: project_path,
-            runs,
+            result,
         });
     });
 }
@@ -261,7 +317,7 @@ pub(super) fn track_selection(app: &mut App) {
     if let Some(project) = app.selected_project() {
         let path = project.path.clone();
         if app.last_selected_path.as_ref() != Some(&path) {
-            app.detail_dirty = true;
+            app.data_generation += 1;
             app.last_selected_path = Some(path);
             // Disk write deferred to save_selection_on_idle / quit
             app.selection_changed = true;
@@ -279,28 +335,28 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
     let ci_run_count = app.ci_run_count;
     let project_name = name.cloned();
 
-    // Git info is local and instant — fetch on a separate thread immediately
-    if has_git {
-        let tx_git = tx.clone();
-        let path_git = project_path.clone();
-        let abs_git = abs.clone();
-        thread::spawn(move || {
-            if let Some(info) = GitInfo::detect(&abs_git) {
-                let _ = tx_git.send(BackgroundMsg::GitInfo {
-                    path: path_git,
-                    info,
-                });
-            }
+    // Git info is local and instant — also provides the repo URL for CI
+    let git_info = if has_git { GitInfo::detect(&abs) } else { None };
+    if let Some(ref info) = git_info {
+        let _ = tx.send(BackgroundMsg::GitInfo {
+            path: project_path.clone(),
+            info: info.clone(),
         });
     }
 
-    // CI runs from cache are also fast — separate thread
-    if has_git {
+    // CI runs from cache — uses local repo URL, never network
+    if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
+        && let Some((owner, repo)) = crate::ci::parse_owner_repo(repo_url)
+    {
         let tx_ci = tx.clone();
         let path_ci = project_path.clone();
         let abs_ci = abs.clone();
+        let url = repo_url.clone();
         thread::spawn(move || {
-            let runs = scan::fetch_ci_runs_cached(&abs_ci, ci_run_count);
+            let result = scan::fetch_ci_runs_cached(&abs_ci, &url, &owner, &repo, ci_run_count);
+            let runs = match result {
+                CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
+            };
             let _ = tx_ci.send(BackgroundMsg::CiRuns {
                 path: path_ci,
                 runs,

@@ -16,10 +16,11 @@ use ratatui::widgets::ListItem;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use super::App;
-use super::ExpandKey;
-use super::FocusTarget;
-use super::VisibleRow;
+use super::app::App;
+use super::app::CiState;
+use super::app::ExpandKey;
+use super::app::VisibleRow;
+use super::types::FocusTarget;
 use crate::ci::CiRun;
 use crate::project::RustProject;
 
@@ -31,6 +32,13 @@ pub(super) const DISK_COL_WIDTH: usize = 10;
 pub(super) const CI_COL_WIDTH: usize = 4;
 pub(super) const GIT_COL_WIDTH: usize = 2;
 pub(super) const BORDER_PADDING: usize = 3;
+
+const OFFLINE_PULSE_CYCLE: usize = 120;
+const OFFLINE_PULSE_AMPLITUDE: f64 = 0.3;
+const OFFLINE_PULSE_OFFSET: f64 = 0.7;
+const OFFLINE_PULSE_RED: f64 = 200.0;
+const OFFLINE_PULSE_GREEN: f64 = 60.0;
+const OFFLINE_PULSE_BLUE: u8 = 60;
 
 #[derive(Clone, Copy)]
 pub(super) enum CiColumn {
@@ -221,6 +229,9 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     if app.show_settings {
         super::settings::render_settings_popup(frame, app);
     }
+    if app.show_finder {
+        super::finder::render_finder_popup(frame, app);
+    }
 }
 
 fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -262,54 +273,115 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Clear, area);
 
     let selected_project_ref = app.selected_project();
-    let detail_info = app.cached_detail_info.clone();
-    let has_ci_runs = selected_project_ref.is_some_and(|p| {
-        app.ci_runs
-            .get(&p.path)
-            .is_some_and(|runs| !runs.is_empty())
-            || app.git_info.get(&p.path).is_some_and(|g| g.url.is_some())
-    });
-    let detail_ci_runs: Vec<CiRun> = selected_project_ref
-        .and_then(|p| app.ci_runs_for(p))
-        .cloned()
+    let detail_info = app.cached_detail.as_ref().map(|c| c.info.clone());
+    let ci_state = selected_project_ref.and_then(|p| app.ci_state_for(p));
+    let detail_ci_runs: Vec<CiRun> = ci_state
+        .map(|s: &CiState| s.runs().to_vec())
         .unwrap_or_default();
     let has_example_output = !app.example_output.is_empty();
 
-    // CI table height: header + data rows + fetch row + 2 borders
-    #[allow(clippy::cast_possible_truncation)]
-    let ci_height = if has_ci_runs {
-        (detail_ci_runs.len() + 4) as u16
-    } else {
-        0
-    };
-
     let right_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(match (has_ci_runs, has_example_output) {
-            (true, true) => vec![
-                Constraint::Length(14),
-                Constraint::Length(ci_height),
-                Constraint::Min(5),
-            ],
-            (true, false) => {
-                vec![Constraint::Length(14), Constraint::Min(3)]
-            },
-            (false, true) => {
-                vec![Constraint::Min(1), Constraint::Min(5)]
-            },
-            (false, false) => vec![Constraint::Min(1)],
-        })
+        .constraints(vec![Constraint::Length(14), Constraint::Min(3)])
         .split(area);
 
     super::detail::render_detail_panel(frame, app, detail_info.as_ref(), right_layout[0]);
 
-    if has_ci_runs {
-        super::detail::render_ci_panel(frame, app, &detail_ci_runs, right_layout[1]);
-    }
-
+    // Running output replaces the CI panel; Esc restores it.
     if has_example_output {
-        let example_area = right_layout[right_layout.len() - 1];
-        render_example_output(frame, app, example_area);
+        render_example_output(frame, app, right_layout[1]);
+    } else if ci_state.is_some() {
+        super::detail::render_ci_panel(frame, app, &detail_ci_runs, right_layout[1]);
+        if app.network_offline {
+            render_offline_overlay(frame, app, right_layout[1]);
+        }
+    } else {
+        render_empty_ci_panel(frame, app, selected_project_ref, right_layout[1]);
+        if app.network_offline {
+            render_offline_overlay(frame, app, right_layout[1]);
+        }
+    }
+}
+
+fn render_empty_ci_panel(frame: &mut Frame, app: &App, project: Option<&RustProject>, area: Rect) {
+    use crate::project::GitOrigin;
+
+    let ci_focused = app.focus == FocusTarget::CiRuns;
+    let border_style = if ci_focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" CI ")
+        .title_style(Style::default().fg(Color::DarkGray))
+        .border_style(border_style);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Determine why there's no CI
+    let has_git = project.is_some_and(|p| app.git_info.contains_key(&p.path));
+    let has_url = project
+        .and_then(|p| app.git_info.get(&p.path))
+        .is_some_and(|g| g.url.is_some());
+    let is_local = project
+        .and_then(|p| app.git_info.get(&p.path))
+        .is_some_and(|g| g.origin == GitOrigin::Local);
+
+    let msg = if !has_git {
+        "Not a git repository"
+    } else if is_local || !has_url {
+        "CI requires a GitHub origin remote"
+    } else if !app.scan_complete {
+        "Loading..."
+    } else {
+        "No CI runs found"
+    };
+
+    if inner.height > 0 {
+        let text = Paragraph::new(Line::from(Span::styled(
+            msg,
+            Style::default().fg(Color::DarkGray),
+        )))
+        .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(text, inner);
+    }
+}
+
+fn render_offline_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    let msg = "  No internet connection  ";
+
+    // Pulsing color wash using spinner_tick (~60fps)
+    let phase = (app.spinner_tick % OFFLINE_PULSE_CYCLE) as f64 / OFFLINE_PULSE_CYCLE as f64;
+    let pulse =
+        (phase * std::f64::consts::TAU).sin() * OFFLINE_PULSE_AMPLITUDE + OFFLINE_PULSE_OFFSET;
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let r = (OFFLINE_PULSE_RED * pulse) as u8;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let g = (OFFLINE_PULSE_GREEN * pulse) as u8;
+    let fg = Color::Rgb(r, g, OFFLINE_PULSE_BLUE);
+
+    #[allow(clippy::cast_possible_truncation)]
+    let msg_width = msg.len() as u16;
+    let x = area.x + area.width.saturating_sub(msg_width) / 2;
+    let y = area.y + area.height / 2;
+
+    if y >= area.y && y < area.y + area.height {
+        let overlay_area = Rect {
+            x,
+            y,
+            width: msg_width.min(area.width),
+            height: 1,
+        };
+        let widget = Paragraph::new(Line::from(Span::styled(
+            msg,
+            Style::default().fg(fg).add_modifier(Modifier::BOLD),
+        )));
+        frame.render_widget(widget, overlay_area);
     }
 }
 
@@ -514,116 +586,108 @@ fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-fn status_bar_spans(app: &App) -> Vec<Span<'static>> {
+fn shortcut_spans(shortcuts: &[super::shortcuts::Shortcut]) -> Vec<Span<'static>> {
     let key_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
-
-    let scan_indicator = if app.scan_complete {
-        Span::raw("")
-    } else {
-        Span::styled(
-            " ⟳ scanning… ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
-    };
-
-    if app.editing.is_some() {
-        vec![
-            scan_indicator,
-            Span::styled(" Enter", key_style),
-            Span::raw(" confirm  "),
-            Span::styled("Esc", key_style),
-            Span::raw(" cancel"),
-        ]
-    } else if app.searching {
-        vec![
-            scan_indicator,
-            Span::styled(" ↑/↓", key_style),
-            Span::raw(" navigate  "),
-            Span::styled("enter", key_style),
-            Span::raw(" select  "),
-            Span::styled("esc", key_style),
-            Span::raw(" cancel"),
-        ]
-    } else if app.focus == FocusTarget::DetailFields {
-        let on_targets = {
-            let (_, examples_col) = super::detail::detail_layout_pub(app);
-            Some(app.detail_column) == examples_col
-        };
-        let mut spans = vec![
-            scan_indicator,
-            Span::styled(" ↑/↓", key_style),
-            Span::raw(" nav  "),
-            Span::styled("←/→", key_style),
-            Span::raw(" column  "),
-        ];
-        if on_targets {
-            spans.extend([
-                Span::styled("Enter", key_style),
-                Span::raw(" run  "),
-                Span::styled("r", key_style),
-                Span::raw(" release  "),
-            ]);
-        } else {
-            spans.extend([Span::styled("Enter", key_style), Span::raw(" select  ")]);
+    let mut spans = Vec::new();
+    for shortcut in shortcuts {
+        if !spans.is_empty() {
+            spans.push(Span::raw("  "));
         }
-        spans.extend([
-            Span::styled("Home/End", key_style),
-            Span::raw(" top/btm  "),
-            Span::styled("Tab/⬆ Tab", key_style),
-            Span::raw(" pane  "),
-            Span::styled("Esc", key_style),
-            Span::raw(" back"),
-        ]);
-        spans
-    } else if app.focus == FocusTarget::CiRuns {
-        vec![
-            scan_indicator,
-            Span::styled(" ↑/↓", key_style),
-            Span::raw(" nav  "),
-            Span::styled("Home/End", key_style),
-            Span::raw(" top/btm  "),
-            Span::styled("Enter", key_style),
-            Span::raw(" fetch  "),
-            Span::styled("c", key_style),
-            Span::raw(" clear cache  "),
-            Span::styled("Tab/⬆ Tab", key_style),
-            Span::raw(" pane  "),
-            Span::styled("Esc", key_style),
-            Span::raw(" back"),
-        ]
-    } else {
-        vec![
-            scan_indicator,
-            Span::styled(" ↑/↓", key_style),
-            Span::raw(" nav  "),
-            Span::styled("←/→", key_style),
-            Span::raw(" expand  "),
-            Span::styled("Tab/⬆ Tab", key_style),
-            Span::raw(" pane  "),
-            Span::styled("Home/End", key_style),
-            Span::raw(" top/btm  "),
-            Span::styled("/", key_style),
-            Span::raw(" search  "),
-            Span::styled("r", key_style),
-            Span::raw(" rescan  "),
-            Span::styled("s", key_style),
-            Span::raw(" settings  "),
-            Span::styled("q", key_style),
-            Span::raw(" quit"),
-        ]
+        spans.push(Span::styled(format!(" {}", shortcut.key), key_style));
+        spans.push(Span::raw(format!(" {}", shortcut.description)));
     }
+    spans
+}
+
+fn shortcut_display_width(shortcuts: &[super::shortcuts::Shortcut]) -> usize {
+    if shortcuts.is_empty() {
+        return 0;
+    }
+    let content: usize = shortcuts
+        .iter()
+        .map(|s| 1 + s.key.len() + 1 + s.description.len())
+        .sum();
+    // separators between items (2 chars each, count - 1 gaps)
+    content + (shortcuts.len() - 1) * 2
 }
 
 pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let status_spans = status_bar_spans(app);
-    let left = Line::from(status_spans);
-    let status_bar =
-        Paragraph::new(left).style(Style::default().bg(Color::DarkGray).fg(Color::White));
-    frame.render_widget(status_bar, area);
+    let bar_style = Style::default().bg(Color::DarkGray).fg(Color::White);
+
+    // Fill the entire bar with the background color
+    frame.render_widget(Paragraph::new("").style(bar_style), area);
+
+    let context = app.input_context();
+    let enter_action = app.enter_action();
+    let groups = super::shortcuts::for_status_bar(context, enter_action);
+
+    let mut left_spans = Vec::new();
+    if !app.scan_complete {
+        let key_style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        left_spans.push(Span::styled(" ⟳ scanning… ", key_style));
+    }
+    left_spans.extend(shortcut_spans(&groups.navigation));
+
+    let center_spans = shortcut_spans(&groups.actions);
+    let right_spans = shortcut_spans(&groups.global);
+
+    let total_width = area.width as usize;
+    let left_width = left_spans.iter().map(|s| s.width()).sum::<usize>();
+    let center_width = shortcut_display_width(&groups.actions);
+    let right_width = shortcut_display_width(&groups.global);
+
+    // Left section
+    if !left_spans.is_empty() {
+        let left_area = Rect {
+            x:      area.x,
+            y:      area.y,
+            width:  area.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(left_spans)).style(bar_style),
+            left_area,
+        );
+    }
+
+    // Center section
+    if !center_spans.is_empty() {
+        let center_start = total_width.saturating_sub(center_width) / 2;
+        // Only render if it doesn't overlap with the left section
+        if center_start >= left_width {
+            #[allow(clippy::cast_possible_truncation)]
+            let center_area = Rect {
+                x:      area.x + center_start as u16,
+                y:      area.y,
+                width:  (total_width - center_start).min(center_width + 1) as u16,
+                height: 1,
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(center_spans)).style(bar_style),
+                center_area,
+            );
+        }
+    }
+
+    // Right section
+    if !right_spans.is_empty() {
+        let right_start = total_width.saturating_sub(right_width + 1);
+        #[allow(clippy::cast_possible_truncation)]
+        let right_area = Rect {
+            x:      area.x + right_start as u16,
+            y:      area.y,
+            width:  (right_width + 1) as u16,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(right_spans)).style(bar_style),
+            right_area,
+        );
+    }
 }
 
 /// Build a `ListItem` for a root-level project node.

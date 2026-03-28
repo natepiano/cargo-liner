@@ -10,7 +10,9 @@ use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 
-use super::App;
+use super::app::App;
+
+const SETTINGS_POPUP_PADDING: u16 = 6;
 use super::render::centered_rect;
 use crate::config;
 
@@ -22,6 +24,7 @@ pub(super) enum SettingOption {
     ExcludeDirs,
     IncludeNonRust,
     OwnedOwners,
+    Editor,
 }
 
 impl SettingOption {
@@ -33,11 +36,12 @@ impl SettingOption {
             3 => Some(Self::ExcludeDirs),
             4 => Some(Self::IncludeNonRust),
             5 => Some(Self::OwnedOwners),
+            6 => Some(Self::Editor),
             _ => None,
         }
     }
 
-    pub(super) const fn count() -> usize { 6 }
+    pub(super) const fn count() -> usize { 7 }
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
@@ -50,7 +54,11 @@ fn parse_dir_list(value: &str) -> Vec<String> {
 
 pub(super) fn render_settings_popup(frame: &mut Frame, app: &App) {
     #[allow(clippy::cast_possible_truncation)]
-    let area = centered_rect(60, SettingOption::count() as u16 + 6, frame.area());
+    let area = centered_rect(
+        60,
+        SettingOption::count() as u16 + SETTINGS_POPUP_PADDING,
+        frame.area(),
+    );
 
     frame.render_widget(Clear, area);
 
@@ -85,6 +93,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &App) {
             if app.include_non_rust { "ON" } else { "OFF" }.to_string(),
         ),
         ("Owned owners", app.owned_owners.join(", ")),
+        ("Editor", app.editor.clone()),
     ];
 
     let mut lines: Vec<Line<'static>> = vec![Line::from("")];
@@ -121,17 +130,23 @@ pub(super) fn build_settings_lines(
     highlight_style: Style,
     label_style: Style,
 ) {
+    let max_label = settings
+        .iter()
+        .map(|(name, _)| name.len())
+        .max()
+        .unwrap_or(0);
+
     for (i, (name, value)) in settings.iter().enumerate() {
-        let cursor = if app.settings_cursor == i {
+        let cursor = if app.settings_cursor.pos() == i {
             "▶ "
         } else {
             "  "
         };
-        let is_selected = app.settings_cursor == i;
+        let is_selected = app.settings_cursor.pos() == i;
         let setting = SettingOption::from_index(i);
+        let label = format!("  {cursor}{name:<max_label$}  ");
 
         if app.settings_editing && is_selected {
-            let label = format!("  {cursor}{name}:  ");
             lines.push(Line::from(vec![
                 Span::styled(label, Style::default().fg(Color::Yellow)),
                 Span::styled(
@@ -160,7 +175,7 @@ pub(super) fn build_settings_lines(
                 label_style
             };
             lines.push(Line::from(vec![
-                Span::styled(format!("  {cursor}{name}:  "), row_style),
+                Span::styled(label, row_style),
                 Span::styled("< ", Style::default().fg(Color::DarkGray)),
                 Span::styled((*value).clone(), toggle_style),
                 Span::styled(" >", Style::default().fg(Color::DarkGray)),
@@ -168,7 +183,7 @@ pub(super) fn build_settings_lines(
         } else if setting == Some(SettingOption::CiRunCount) && is_selected && !app.settings_editing
         {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {cursor}{name}:  "), highlight_style),
+                Span::styled(label, highlight_style),
                 Span::styled("< ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     (*value).clone(),
@@ -182,10 +197,10 @@ pub(super) fn build_settings_lines(
             } else {
                 label_style
             };
-            lines.push(Line::from(Span::styled(
-                format!("  {cursor}{name}:  {value}"),
-                style,
-            )));
+            lines.push(Line::from(vec![
+                Span::styled(label, style),
+                Span::styled((*value).clone(), style),
+            ]));
         }
     }
 }
@@ -196,22 +211,18 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         return;
     }
 
-    let setting = SettingOption::from_index(app.settings_cursor);
+    let setting = SettingOption::from_index(app.settings_cursor.pos());
 
     match key {
         KeyCode::Esc | KeyCode::Char('s') => {
             app.show_settings = false;
-            app.settings_cursor = 0;
+            app.settings_cursor.to_top();
         },
         KeyCode::Up => {
-            if app.settings_cursor > 0 {
-                app.settings_cursor -= 1;
-            }
+            app.settings_cursor.up();
         },
         KeyCode::Down => {
-            if app.settings_cursor < SettingOption::count() - 1 {
-                app.settings_cursor += 1;
-            }
+            app.settings_cursor.down(SettingOption::count());
         },
         KeyCode::Left | KeyCode::Right => match setting {
             Some(SettingOption::InvertScroll) => {
@@ -266,6 +277,10 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
                 app.settings_edit_buf = app.owned_owners.join(", ");
                 app.settings_editing = true;
             },
+            Some(SettingOption::Editor) => {
+                app.settings_edit_buf.clone_from(&app.editor);
+                app.settings_editing = true;
+            },
             None => {},
         },
         _ => {},
@@ -273,7 +288,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
 }
 
 pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
-    let setting = SettingOption::from_index(app.settings_cursor);
+    let setting = SettingOption::from_index(app.settings_cursor.pos());
 
     match key {
         KeyCode::Enter => {
@@ -281,7 +296,7 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
             match setting {
                 Some(SettingOption::CiRunCount) => {
                     if let Ok(n) = value.parse::<u32>() {
-                        let count = n.max(1);
+                        let count: u32 = n.max(1);
                         app.ci_run_count = count;
                         let mut cfg = config::load();
                         cfg.tui.ci_run_count = count;
@@ -309,6 +324,15 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                     let mut cfg = config::load();
                     cfg.tui.owned_owners = owners;
                     let _ = config::save(&cfg);
+                },
+                Some(SettingOption::Editor) => {
+                    let editor = value.trim().to_string();
+                    if !editor.is_empty() {
+                        app.editor.clone_from(&editor);
+                        let mut cfg = config::load();
+                        cfg.tui.editor = editor;
+                        let _ = config::save(&cfg);
+                    }
                 },
                 _ => {},
             }

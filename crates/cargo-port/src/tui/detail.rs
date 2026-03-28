@@ -22,13 +22,89 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use toml_edit::DocumentMut;
 
-use super::App;
-use super::FocusTarget;
-use super::ProjectCounts;
+use super::app::App;
+use super::app::CiState;
 use super::render::CiColumn;
+use super::types::FocusTarget;
 use crate::ci::CiRun;
 use crate::project::ExampleGroup;
+use crate::project::ProjectType;
 use crate::project::RustProject;
+
+#[derive(Default)]
+pub struct ProjectCounts {
+    pub workspaces:  usize,
+    pub libs:        usize,
+    pub bins:        usize,
+    pub proc_macros: usize,
+    pub examples:    usize,
+    pub benches:     usize,
+    pub tests:       usize,
+}
+
+impl ProjectCounts {
+    pub fn add_project(&mut self, project: &RustProject) {
+        if project.is_workspace() {
+            self.workspaces += 1;
+        }
+        for t in &project.types {
+            match t {
+                ProjectType::Library => self.libs += 1,
+                ProjectType::Binary => self.bins += 1,
+                ProjectType::ProcMacro => self.proc_macros += 1,
+                ProjectType::BuildScript => {},
+            }
+        }
+        self.examples += project.example_count();
+        self.benches += project.benches.len();
+        self.tests += project.test_count;
+    }
+
+    /// Returns non-zero stats as (label, count) pairs for column display.
+    pub fn to_rows(&self) -> Vec<(&'static str, usize)> {
+        let mut rows = Vec::new();
+        if self.workspaces > 0 {
+            rows.push(("ws", self.workspaces));
+        }
+        if self.libs > 0 {
+            rows.push(("lib", self.libs));
+        }
+        if self.bins > 0 {
+            rows.push(("bin", self.bins));
+        }
+        if self.proc_macros > 0 {
+            rows.push(("proc-macro", self.proc_macros));
+        }
+        if self.examples > 0 {
+            rows.push(("example", self.examples));
+        }
+        if self.benches > 0 {
+            rows.push(("bench", self.benches));
+        }
+        if self.tests > 0 {
+            rows.push(("test", self.tests));
+        }
+        rows
+    }
+}
+
+/// Compute the fixed stats column width from the stat rows.
+/// Returns `(total_width, digit_width)`.
+///
+/// The column is sized to always fit 3-digit counts alongside "proc-macro"
+/// (the longest possible label) with a trailing space. It only widens when a
+/// count reaches 4+ digits.
+fn stats_column_width(stats_rows: &[(&str, usize)]) -> (u16, u16) {
+    let max_count = stats_rows
+        .iter()
+        .map(|(_, count)| *count)
+        .max()
+        .unwrap_or(0);
+    let digit_width: u16 = if max_count >= 1000 { 4 } else { 3 };
+    // "proc-macro" is the longest possible label at 10 chars
+    let total = 1 + 1 + digit_width + 1 + 10 + 1; // border + lpad + digits + space + label + rpad
+    (total, digit_width)
+}
 
 pub struct EditingState {
     pub field: DetailField,
@@ -43,8 +119,9 @@ pub enum RunTargetKind {
 }
 
 pub struct TargetEntry {
-    pub name: String,
-    pub kind: RunTargetKind,
+    pub name:         String,
+    pub display_name: String,
+    pub kind:         RunTargetKind,
 }
 
 /// Shared style constants for detail panel rendering.
@@ -66,20 +143,41 @@ pub fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
         && let Some(name) = &info.binary_name
     {
         entries.push(TargetEntry {
-            name: name.clone(),
-            kind: RunTargetKind::Binary,
+            display_name: name.clone(),
+            name:         name.clone(),
+            kind:         RunTargetKind::Binary,
         });
     }
 
-    let mut example_names: Vec<String> = info
+    // Collect examples with category prefix for display, sorted with
+    // categorized (containing '/') before uncategorized, then alphabetically.
+    let mut examples: Vec<(String, String)> = info
         .examples
         .iter()
-        .flat_map(|g| g.names.iter().cloned())
+        .flat_map(|g| {
+            g.names.iter().map(|n| {
+                let display = if g.category.is_empty() {
+                    n.clone()
+                } else {
+                    format!("{}/{n}", g.category)
+                };
+                (n.clone(), display)
+            })
+        })
         .collect();
-    example_names.sort();
-    for name in example_names {
+    examples.sort_by(|a, b| {
+        let a_has_cat = a.1.contains('/');
+        let b_has_cat = b.1.contains('/');
+        match (a_has_cat, b_has_cat) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.1.cmp(&b.1),
+        }
+    });
+    for (name, display_name) in examples {
         entries.push(TargetEntry {
             name,
+            display_name,
             kind: RunTargetKind::Example,
         });
     }
@@ -88,6 +186,7 @@ pub fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
     bench_names.sort();
     for name in bench_names {
         entries.push(TargetEntry {
+            display_name: name.clone(),
             name,
             kind: RunTargetKind::Bench,
         });
@@ -118,12 +217,13 @@ pub enum DetailField {
     Targets,
     Disk,
     Ci,
-    Stats,
     Branch,
     Origin,
     Owner,
     Repo,
     Stars,
+    Inception,
+    LastCommit,
     Worktree,
     Vendored,
     CratesIo,
@@ -139,12 +239,13 @@ impl DetailField {
             Self::Targets => "Targets",
             Self::Disk => "Disk",
             Self::Ci => "CI",
-            Self::Stats => "Stats",
             Self::Branch => "Branch",
             Self::Origin => "Origin",
             Self::Owner => "Owner",
             Self::Repo => "Repo",
             Self::Stars => "Stars",
+            Self::Inception => "Incept",
+            Self::LastCommit => "Latest",
             Self::Worktree => "Worktree",
             Self::Vendored => "Vendored",
             Self::CratesIo => "Crate",
@@ -172,7 +273,6 @@ impl DetailField {
             Self::Targets => info.types.clone(),
             Self::Disk => info.disk.clone(),
             Self::Ci => info.ci.clone(),
-            Self::Stats => info.stats.clone(),
             Self::Branch => info.git_branch.as_deref().unwrap_or("").to_string(),
             Self::Origin => info.git_origin.as_deref().unwrap_or("").to_string(),
             Self::Owner => info.git_owner.as_deref().unwrap_or("").to_string(),
@@ -180,6 +280,8 @@ impl DetailField {
             Self::Stars => info
                 .git_stars
                 .map_or_else(String::new, |c| format!("⭐ {c}")),
+            Self::Inception => info.git_inception.as_deref().unwrap_or("").to_string(),
+            Self::LastCommit => info.git_last_commit.as_deref().unwrap_or("").to_string(),
             Self::Worktree => info.worktree_label.as_deref().unwrap_or("").to_string(),
             Self::Vendored => info.vendored_names.clone(),
             Self::CratesIo => info.crates_version.as_deref().unwrap_or("").to_string(),
@@ -207,32 +309,29 @@ pub(super) fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
         DetailField::Disk,
         DetailField::Ci,
     ];
-    if info.stats_rows.is_empty() {
-        fields.push(DetailField::Stats);
-    }
     if !info.vendored_names.is_empty() {
         fields.push(DetailField::Vendored);
     }
     if info.crates_version.is_some() {
         fields.push(DetailField::CratesIo);
     }
-    fields.push(DetailField::Version);
-    fields.push(DetailField::Description);
+    if info.has_package {
+        fields.push(DetailField::Version);
+        fields.push(DetailField::Description);
+    }
     fields
 }
 
 /// Git fields (right column). Only includes fields that have data.
-/// For worktree parents, skip Branch and Origin (those vary per worktree).
 pub(super) fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
-    let is_worktree_parent = !info.worktree_names.is_empty();
     let mut fields = Vec::new();
-    if !is_worktree_parent && info.git_branch.is_some() {
+    if info.git_branch.is_some() {
         fields.push(DetailField::Branch);
     }
     if info.worktree_label.is_some() {
         fields.push(DetailField::Worktree);
     }
-    if !is_worktree_parent && info.git_origin.is_some() {
+    if info.git_origin.is_some() {
         fields.push(DetailField::Origin);
     }
     if info.git_url.is_some() {
@@ -244,38 +343,47 @@ pub(super) fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     if info.git_stars.is_some() {
         fields.push(DetailField::Stars);
     }
+    if info.git_inception.is_some() {
+        fields.push(DetailField::Inception);
+    }
+    if info.git_last_commit.is_some() {
+        fields.push(DetailField::LastCommit);
+    }
     fields
 }
 
 #[derive(Clone)]
 pub struct DetailInfo {
-    pub package_title:  String,
-    pub name:           String,
-    pub path:           String,
-    pub version:        String,
-    pub description:    Option<String>,
-    pub crates_version: Option<String>,
-    pub types:          String,
-    pub disk:           String,
-    pub ci:             String,
-    pub stats:          String,
-    pub stats_rows:     Vec<(&'static str, usize)>,
-    pub git_branch:     Option<String>,
-    pub git_origin:     Option<String>,
-    pub git_owner:      Option<String>,
-    pub git_url:        Option<String>,
-    pub git_stars:      Option<u64>,
-    pub worktree_label: Option<String>,
-    pub worktree_names: Vec<String>,
-    pub vendored_names: String,
-    pub is_binary:      bool,
-    pub binary_name:    Option<String>,
-    pub examples:       Vec<ExampleGroup>,
-    pub benches:        Vec<String>,
+    pub package_title:   String,
+    pub name:            String,
+    pub path:            String,
+    pub version:         String,
+    pub description:     Option<String>,
+    pub crates_version:  Option<String>,
+    pub types:           String,
+    pub disk:            String,
+    pub ci:              String,
+    pub stats_rows:      Vec<(&'static str, usize)>,
+    pub git_branch:      Option<String>,
+    pub git_origin:      Option<String>,
+    pub git_owner:       Option<String>,
+    pub git_url:         Option<String>,
+    pub git_stars:       Option<u64>,
+    pub git_inception:   Option<String>,
+    pub git_last_commit: Option<String>,
+    pub worktree_label:  Option<String>,
+    pub worktree_names:  Vec<String>,
+    pub vendored_names:  String,
+    pub is_binary:       bool,
+    pub binary_name:     Option<String>,
+    pub examples:        Vec<ExampleGroup>,
+    pub benches:         Vec<String>,
     /// Whether this is a Rust project (has `Cargo.toml`).
-    pub is_rust:        bool,
+    pub is_rust:         bool,
+    /// Whether this project declares `[package]` (has version/description fields).
+    pub has_package:     bool,
     /// Whether the current user owns this project (git owner matches `owned_owners`).
-    pub owned:          bool,
+    pub owned:           bool,
 }
 
 /// Collect vendored crate names for a project from the node tree.
@@ -331,31 +439,19 @@ fn resolve_package_title(app: &App, project: &RustProject) -> String {
 }
 
 pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
-    let ws_counts = app.workspace_counts(project);
-    let stats_rows = ws_counts
-        .as_ref()
-        .map(ProjectCounts::to_rows)
-        .unwrap_or_default();
-    let stats = ws_counts.as_ref().map_or_else(
-        || {
-            let mut parts: Vec<String> = Vec::new();
-            if !project.example_count() == 0 {
-                parts.push(format!("{} examples", project.example_count()));
-            }
-            if !project.benches.is_empty() {
-                parts.push(format!("{} benches", project.benches.len()));
-            }
-            if project.test_count > 0 {
-                parts.push(format!("{} tests", project.test_count));
-            }
-            if parts.is_empty() {
-                "—".to_string()
-            } else {
-                parts.join("  ")
-            }
-        },
-        ProjectCounts::summary,
-    );
+    let mut counts = app.workspace_counts(project).unwrap_or_else(|| {
+        let mut c = ProjectCounts::default();
+        c.add_project(project);
+        c
+    });
+    // For standalone crates, add_project doesn't count the root project's
+    // examples/benches/tests — only workspace aggregation does. Fill them in.
+    if !project.is_workspace() {
+        counts.examples = project.example_count();
+        counts.benches = project.benches.len();
+        counts.tests = project.test_count;
+    }
+    let stats_rows = counts.to_rows();
 
     let git = app.git_info.get(&project.path);
     let git_branch = git.and_then(|g| g.branch.clone());
@@ -421,7 +517,6 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
             .join(", "),
         disk,
         ci,
-        stats,
         stats_rows,
         crates_version,
         git_branch,
@@ -429,6 +524,12 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
         git_owner,
         git_url,
         git_stars: app.stars.get(&project.path).copied(),
+        git_inception: git
+            .and_then(|g| g.first_commit.as_deref())
+            .map(format_timestamp),
+        git_last_commit: git
+            .and_then(|g| g.last_commit.as_deref())
+            .map(format_timestamp),
         worktree_label,
         worktree_names,
         vendored_names,
@@ -437,6 +538,7 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
         examples: project.examples.clone(),
         benches: project.benches.clone(),
         is_rust: project.is_rust,
+        has_package: project.name.is_some(),
         owned,
     }
 }
@@ -490,16 +592,41 @@ fn render_column_inner(
             Style::default()
         };
 
-        // Word-wrap Description and Vendored across multiple lines
-        if (*field == DetailField::Description || *field == DetailField::Vendored)
-            && !value.is_empty()
-        {
+        // Word-wrap long fields across multiple lines
+        if matches!(*field, DetailField::Description | DetailField::Vendored) && !value.is_empty() {
             let prefix = format!("  {label:<8} ");
             let prefix_len = prefix.len();
             let col_width = area.width as usize;
-            let avail = col_width.saturating_sub(prefix_len);
+            let avail = col_width.saturating_sub(prefix_len + 1);
             if avail > 0 {
                 let wrapped = word_wrap(&value, avail);
+                for (wi, chunk) in wrapped.iter().enumerate() {
+                    if wi == 0 {
+                        lines.push(Line::from(vec![
+                            Span::styled(prefix.clone(), ls),
+                            Span::styled(chunk.clone(), vs),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::raw(" ".repeat(prefix_len)),
+                            Span::styled(chunk.clone(), vs),
+                        ]));
+                    }
+                }
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {label:<8} "), ls),
+                    Span::styled(value, vs),
+                ]));
+            }
+        } else if matches!(*field, DetailField::Repo | DetailField::Branch) && !value.is_empty() {
+            // Hard-wrap fields that have no spaces (URLs, branch names)
+            let prefix = format!("  {label:<8} ");
+            let prefix_len = prefix.len();
+            let col_width = area.width as usize;
+            let avail = col_width.saturating_sub(prefix_len + 1);
+            if avail > 0 {
+                let wrapped = hard_wrap(&value, avail);
                 for (wi, chunk) in wrapped.iter().enumerate() {
                     if wi == 0 {
                         lines.push(Line::from(vec![
@@ -556,10 +683,38 @@ fn render_git_column_inner(
         } else {
             Style::default()
         };
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {label:<8} "), ls),
-            Span::styled(value, vs),
-        ]));
+        if matches!(*field, DetailField::Repo | DetailField::Branch) && !value.is_empty() {
+            let prefix = format!("  {label:<8} ");
+            let prefix_len = prefix.len();
+            let col_width = area.width as usize;
+            let avail = col_width.saturating_sub(prefix_len + 1);
+            if avail > 0 && value.len() > avail {
+                let wrapped = hard_wrap(&value, avail);
+                for (wi, chunk) in wrapped.iter().enumerate() {
+                    if wi == 0 {
+                        lines.push(Line::from(vec![
+                            Span::styled(prefix.clone(), ls),
+                            Span::styled(chunk.clone(), vs),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::raw(" ".repeat(prefix_len)),
+                            Span::styled(chunk.clone(), vs),
+                        ]));
+                    }
+                }
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, ls),
+                    Span::styled(value, vs),
+                ]));
+            }
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {label:<8} "), ls),
+                Span::styled(value, vs),
+            ]));
+        }
     }
 
     // Worktree list for worktree parents
@@ -677,7 +832,7 @@ fn render_project_panel(
         .borders(Borders::ALL)
         .title(format!(" {} ", info.package_title))
         .title_style(styles.title)
-        .border_style(if detail_focused && app.detail_column == 0 {
+        .border_style(if detail_focused && app.detail_column.pos() == 0 {
             styles.active_border
         } else {
             styles.inactive_border
@@ -692,21 +847,13 @@ fn render_project_panel(
             info,
             &package_fields(info),
             detail_focused,
-            app.detail_column == 0,
-            app.detail_cursor,
+            app.detail_column.pos() == 0,
+            app.detail_cursor.pos(),
             styles,
             project_inner,
         );
     } else {
-        // Compute stats column width: 4 (number) + 1 (space) + longest label + 1 (border)
-        #[allow(clippy::cast_possible_truncation)]
-        let max_label_len = info
-            .stats_rows
-            .iter()
-            .map(|(label, _)| label.len())
-            .max()
-            .unwrap_or(2) as u16;
-        let stats_width = 4 + 1 + max_label_len + 1; // num + space + label + border
+        let (stats_width, digit_width) = stats_column_width(&info.stats_rows);
 
         // Split into fields (left) and stats column (right) with border
         let sub_cols = Layout::default()
@@ -720,8 +867,8 @@ fn render_project_panel(
             info,
             &package_fields(info),
             detail_focused,
-            app.detail_column == 0,
-            app.detail_cursor,
+            app.detail_column.pos() == 0,
+            app.detail_cursor.pos(),
             styles,
             sub_cols[0],
         );
@@ -733,10 +880,11 @@ fn render_project_panel(
 
         let stat_label_style = Style::default().fg(Color::DarkGray);
         let stat_num_style = Style::default().fg(Color::Yellow);
+        let dw = digit_width as usize;
         let mut stat_lines: Vec<Line<'static>> = Vec::new();
         for &(label, count) in &info.stats_rows {
             stat_lines.push(Line::from(vec![
-                Span::styled(format!("{count:>4} "), stat_num_style),
+                Span::styled(format!(" {count:>dw$} "), stat_num_style),
                 Span::styled(label, stat_label_style),
             ]));
         }
@@ -758,7 +906,7 @@ fn render_git_panel(
         .borders(Borders::ALL)
         .title(" Git ")
         .title_style(styles.title)
-        .border_style(if detail_focused && app.detail_column == col {
+        .border_style(if detail_focused && app.detail_column.pos() == col {
             styles.active_border
         } else {
             styles.inactive_border
@@ -771,8 +919,8 @@ fn render_git_panel(
         info,
         git,
         detail_focused,
-        app.detail_column == col,
-        app.detail_cursor,
+        app.detail_column.pos() == col,
+        app.detail_cursor.pos(),
         styles,
         git_inner,
     );
@@ -802,7 +950,7 @@ fn render_targets_panel(
     }
     let targets_title = format!(" {} ", title_parts.join(" / "));
 
-    let is_active = detail_focused && app.detail_column == col;
+    let is_active = detail_focused && app.detail_column.pos() == col;
     let targets_block = Block::default()
         .borders(Borders::ALL)
         .title(targets_title)
@@ -816,23 +964,37 @@ fn render_targets_panel(
     let entries = build_target_list(info);
 
     let type_style = Style::default().fg(Color::DarkGray);
+    let num_style = Style::default().fg(Color::DarkGray);
+    let num_width = entries.len().to_string().len();
     let rows: Vec<Row> = entries
         .iter()
-        .map(|entry| {
+        .enumerate()
+        .map(|(i, entry)| {
             let kind_label = match entry.kind {
                 RunTargetKind::Binary => "bin",
                 RunTargetKind::Example => "example",
                 RunTargetKind::Bench => "bench",
             };
             Row::new(vec![
-                Cell::from(entry.name.clone()),
+                Cell::from(
+                    Line::from(format!("{:>num_width$}", i + 1))
+                        .alignment(ratatui::layout::Alignment::Right),
+                )
+                .style(num_style),
+                Cell::from(entry.display_name.clone()),
                 Cell::from(Line::from(kind_label).alignment(ratatui::layout::Alignment::Right))
                     .style(type_style),
             ])
         })
         .collect();
 
-    let widths = [Constraint::Fill(1), Constraint::Length(7)];
+    #[allow(clippy::cast_possible_truncation)]
+    let num_col_width = (num_width as u16).max(2);
+    let widths = [
+        Constraint::Length(num_col_width),
+        Constraint::Fill(1),
+        Constraint::Length(7),
+    ];
 
     let highlight_style = if is_active {
         Style::default().fg(Color::Black).bg(Color::Cyan)
@@ -846,7 +1008,7 @@ fn render_targets_panel(
         .row_highlight_style(highlight_style);
 
     let selected = if is_active {
-        Some(app.examples_scroll)
+        Some(app.examples_scroll.pos())
     } else {
         None
     };
@@ -1078,10 +1240,12 @@ fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn]) -> Vec<Constraint> {
 
 pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Rect) {
     let ci_focused = app.focus == FocusTarget::CiRuns;
+    let ci_state = app.selected_project().and_then(|p| app.ci_state_for(p));
 
-    let title = if app.ci_fetching {
+    let title = if ci_state.is_some_and(CiState::is_fetching) {
         let spinner = spinner_frame(app.spinner_tick);
-        format!(" CI Runs {spinner} fetching {} more… ", app.ci_fetch_count)
+        let count = ci_state.map_or(0, CiState::fetch_count);
+        format!(" CI Runs {spinner} fetching {count} more… ")
     } else {
         " CI Runs ".to_string()
     };
@@ -1127,18 +1291,18 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], a
     let widths = build_ci_widths(ci_runs, &cols);
 
     // "Fetch more" / "no older runs" as a table row
-    let no_more = app
-        .selected_project()
-        .is_some_and(|p| app.ci_no_more_runs.contains(&p.path));
-    let fetch_label = if app.ci_fetching {
+    let is_fetching = ci_state.is_some_and(CiState::is_fetching);
+    let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
+    let fetch_label = if is_fetching {
         let spinner = spinner_frame(app.spinner_tick);
-        format!("{spinner} fetching {} more…", app.ci_fetch_count)
-    } else if no_more {
+        let count = ci_state.map_or(0, CiState::fetch_count);
+        format!("{spinner} fetching {count} more…")
+    } else if is_exhausted {
         "— no older runs".to_string()
     } else {
         "↓ fetch more runs".to_string()
     };
-    let fetch_style = if no_more {
+    let fetch_style = if is_exhausted {
         Style::default().fg(Color::DarkGray)
     } else {
         Style::default().fg(Color::Cyan)
@@ -1166,7 +1330,7 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], a
         .column_spacing(1)
         .row_highlight_style(highlight_style);
 
-    let mut table_state = TableState::default().with_selected(Some(app.ci_runs_cursor));
+    let mut table_state = TableState::default().with_selected(Some(app.ci_runs_cursor.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
 }
 
@@ -1228,10 +1392,8 @@ fn detail_column_field_count(app: &App, column: usize) -> usize {
 
 /// Clamp the detail cursor to the current column's field count.
 fn clamp_detail_cursor(app: &mut App) {
-    let count = detail_column_field_count(app, app.detail_column);
-    if count > 0 && app.detail_cursor >= count {
-        app.detail_cursor = count - 1;
-    }
+    let count = detail_column_field_count(app, app.detail_column.pos());
+    app.detail_cursor.clamp(count);
 }
 
 /// Get the total number of target entries for the selected project.
@@ -1249,7 +1411,7 @@ fn handle_target_action(app: &mut App, release: bool) {
     };
     let info = build_detail_info(app, project);
     let entries = build_target_list(&info);
-    if let Some(entry) = entries.get(app.examples_scroll)
+    if let Some(entry) = entries.get(app.examples_scroll.pos())
         && let Some(project) = app.selected_project()
     {
         app.pending_example_run = Some(PendingExampleRun {
@@ -1264,60 +1426,54 @@ fn handle_target_action(app: &mut App, release: bool) {
 
 pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
     let (max_col, examples_col) = detail_layout(app);
-    let on_examples = Some(app.detail_column) == examples_col;
-    let field_count = detail_column_field_count(app, app.detail_column);
+    let on_examples = Some(app.detail_column.pos()) == examples_col;
+    let field_count = detail_column_field_count(app, app.detail_column.pos());
 
     match key {
         KeyCode::Up => {
             if on_examples {
-                if app.examples_scroll > 0 {
-                    app.examples_scroll -= 1;
-                }
-            } else if app.detail_cursor > 0 {
-                app.detail_cursor -= 1;
+                app.examples_scroll.up();
+            } else {
+                app.detail_cursor.up();
             }
         },
         KeyCode::Down => {
             if on_examples {
                 let total = target_list_len(app);
-                if total > 0 && app.examples_scroll < total - 1 {
-                    app.examples_scroll += 1;
-                }
-            } else if field_count > 0 && app.detail_cursor < field_count - 1 {
-                app.detail_cursor += 1;
+                app.examples_scroll.down(total);
+            } else {
+                app.detail_cursor.down(field_count);
             }
         },
         KeyCode::Home => {
             if on_examples {
-                app.examples_scroll = 0;
+                app.examples_scroll.to_top();
             } else {
-                app.detail_cursor = 0;
+                app.detail_cursor.to_top();
             }
         },
         KeyCode::End => {
             if on_examples {
                 let total = target_list_len(app);
-                if total > 0 {
-                    app.examples_scroll = total - 1;
-                }
-            } else if field_count > 0 {
-                app.detail_cursor = field_count - 1;
+                app.examples_scroll.to_bottom(total);
+            } else {
+                app.detail_cursor.to_bottom(field_count);
             }
         },
         KeyCode::Left => {
-            if app.detail_column > 0 {
-                app.detail_column -= 1;
+            if app.detail_column.pos() > 0 {
+                app.detail_column.up();
                 clamp_detail_cursor(app);
             }
         },
         KeyCode::Right => {
             if on_examples {
                 // No expand — do nothing
-            } else if app.detail_column < max_col {
-                app.detail_column += 1;
+            } else if app.detail_column.pos() < max_col {
+                app.detail_column.down(max_col + 1);
                 // If entering the targets column, jump to the first item
-                if Some(app.detail_column) == examples_col {
-                    app.examples_scroll = 0;
+                if Some(app.detail_column.pos()) == examples_col {
+                    app.examples_scroll.to_top();
                 } else {
                     clamp_detail_cursor(app);
                 }
@@ -1329,12 +1485,6 @@ pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
                 handle_target_action(app, true);
             }
         },
-        KeyCode::Tab => super::advance_focus(app),
-        KeyCode::BackTab => super::reverse_focus(app),
-        KeyCode::Esc => {
-            app.focus = FocusTarget::ProjectList;
-        },
-        KeyCode::Char('q') => app.should_quit = true,
         _ => {},
     }
 }
@@ -1343,7 +1493,7 @@ pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
 fn handle_detail_enter(app: &mut App, on_examples: bool) {
     if on_examples {
         handle_target_action(app, false);
-    } else if app.detail_column == 0 {
+    } else if app.detail_column.pos() == 0 {
         let (fields, owned) = app
             .selected_project()
             .map(|p| {
@@ -1351,15 +1501,10 @@ fn handle_detail_enter(app: &mut App, on_examples: bool) {
                 (package_fields(&info), info.owned)
             })
             .unwrap_or_default();
-        if let Some(field) = fields.get(app.detail_cursor)
+        if let Some(field) = fields.get(app.detail_cursor.pos())
             && let Some(project) = app.selected_project()
         {
             match *field {
-                DetailField::Name => {
-                    // Open project in zed
-                    let abs_path = project.abs_path.clone();
-                    let _ = std::process::Command::new("zed").arg(&abs_path).spawn();
-                },
                 DetailField::Version if field.is_editable() && owned => {
                     let version = project.version.clone().unwrap_or_default();
                     if version != "(workspace)" {
@@ -1379,43 +1524,70 @@ fn handle_detail_enter(app: &mut App, on_examples: bool) {
                 _ => {},
             }
         }
+    } else {
+        // Git column — open repo URL in browser
+        if let Some(info) = app.selected_project().map(|p| build_detail_info(app, p))
+            && matches!(
+                git_fields(&info).get(app.detail_cursor.pos()),
+                Some(DetailField::Repo)
+            )
+            && let Some(ref url) = info.git_url
+        {
+            open_url(url);
+        }
     }
 }
 
+fn open_url(url: &str) {
+    let _ = std::process::Command::new(if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "start"
+    } else {
+        "xdg-open"
+    })
+    .arg(url)
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .spawn();
+}
+
 pub(super) fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
-    let run_count = app
-        .selected_project()
-        .and_then(|p| app.ci_runs_for(p))
-        .map_or(0, Vec::len);
+    let ci_state = app.selected_project().and_then(|p| app.ci_state_for(p));
+    let run_count = ci_state.map_or(0, |s: &CiState| s.runs().len());
     // Total rows = run data rows + the "fetch more" action row
     let total_rows = run_count + CI_EXTRA_ROWS;
+    let is_fetching = ci_state.is_some_and(CiState::is_fetching);
+    let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
 
     match key {
         KeyCode::Up => {
-            if app.ci_runs_cursor > 0 {
-                app.ci_runs_cursor -= 1;
-            }
+            app.ci_runs_cursor.up();
         },
         KeyCode::Down => {
-            if total_rows > 0 && app.ci_runs_cursor < total_rows - 1 {
-                app.ci_runs_cursor += 1;
-            }
+            app.ci_runs_cursor.down(total_rows);
         },
         KeyCode::Home => {
-            app.ci_runs_cursor = 0;
+            app.ci_runs_cursor.to_top();
         },
         KeyCode::End => {
-            if total_rows > 0 {
-                app.ci_runs_cursor = total_rows - 1;
-            }
+            app.ci_runs_cursor.to_bottom(total_rows);
         },
         KeyCode::Enter => {
-            // If cursor is on the "fetch more" row, trigger a background fetch
-            if app.ci_runs_cursor == run_count
-                && !app.ci_fetching
+            let cursor_pos = app.ci_runs_cursor.pos();
+            if cursor_pos < run_count {
+                // Open the CI run in the browser
+                if let Some(runs) = ci_state.map(CiState::runs)
+                    && let Some(run) = runs.get(cursor_pos)
+                {
+                    let _ = std::process::Command::new("open").arg(&run.url).spawn();
+                }
+            } else if cursor_pos == run_count
+                && !is_fetching
+                && !is_exhausted
                 && let Some(project) = app.selected_project()
-                && !app.ci_no_more_runs.contains(&project.path)
             {
+                // Fetch more runs
                 #[allow(clippy::cast_possible_truncation)]
                 let current_count = run_count as u32;
                 app.pending_ci_fetch = Some(PendingCiFetch {
@@ -1425,43 +1597,37 @@ pub(super) fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
                 });
             }
         },
-        KeyCode::Tab => super::advance_focus(app),
-        KeyCode::BackTab => super::reverse_focus(app),
-        KeyCode::Esc => {
-            app.focus = FocusTarget::ProjectList;
-        },
         KeyCode::Char('c') => {
             if let Some(project) = app.selected_project() {
                 let path = project.path.clone();
                 clear_ci_cache(app, &path);
             }
         },
-        KeyCode::Char('q') => app.should_quit = true,
         _ => {},
     }
 }
 
 /// Clear CI cache for a project and remove its runs from the app.
 fn clear_ci_cache(app: &mut App, project_path: &str) {
-    // Find abs_path to derive repo URL
-    let abs_path = app
-        .nodes
-        .iter()
-        .find(|n| n.project.path == project_path)
-        .map(|n| n.project.abs_path.clone());
-
-    if let Some(abs_path) = abs_path
-        && let Some(repo_url) = crate::ci::get_repo_url(std::path::Path::new(&abs_path))
-        && let Some((owner, repo)) = crate::ci::parse_owner_repo(&repo_url)
-        && let Some(dir) = super::scan::repo_cache_dir_pub(&owner, &repo)
+    // Derive (owner, repo) from local git info — no network needed
+    if let Some(git) = app.git_info.get(project_path)
+        && let Some(url) = &git.url
+        && let Some((owner, repo)) = crate::ci::parse_owner_repo(url)
+        && let Some(dir) = crate::scan::repo_cache_dir_pub(&owner, &repo)
     {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    // Insert empty vec so the CI panel stays visible with the "fetch more" row
-    app.ci_runs.insert(project_path.to_string(), Vec::new());
-    app.ci_no_more_runs.remove(project_path);
-    app.ci_runs_cursor = 0;
+    // Insert empty Loaded so the CI panel stays visible with the "fetch more" row
+    app.ci_state.insert(
+        project_path.to_string(),
+        CiState::Loaded {
+            runs:      Vec::new(),
+            exhausted: false,
+        },
+    );
+    app.ci_runs_cursor.to_top();
+    app.data_generation += 1;
 }
 
 pub(super) fn handle_field_edit_key(app: &mut App, key: KeyCode) {
@@ -1520,6 +1686,21 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     if result.is_empty() {
         result.push(String::new());
     }
+    result
+}
+
+/// Hard-wrap text at exactly `max_width` characters, ignoring word boundaries.
+fn hard_wrap(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut result = Vec::new();
+    let mut remaining = text;
+    while remaining.len() > max_width {
+        result.push(remaining[..max_width].to_string());
+        remaining = &remaining[max_width..];
+    }
+    result.push(remaining.to_string());
     result
 }
 
@@ -1582,5 +1763,46 @@ pub(super) fn update_project_field(app: &mut App, field: DetailField, new_value:
                 }
             }
         }
+    }
+
+    app.data_generation += 1;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stats_column_width;
+
+    #[test]
+    fn stats_width_fixed_for_three_digit_counts() {
+        // 3-digit counts: border + lpad + 3 digits + space + 10 label + rpad = 17
+        let rows = vec![("example", 999), ("lib", 1)];
+        let (total, digits) = stats_column_width(&rows);
+        assert_eq!(digits, 3);
+        assert_eq!(total, 17);
+    }
+
+    #[test]
+    fn stats_width_expands_at_four_digits() {
+        // 4-digit counts: border + lpad + 4 digits + space + 10 label + rpad = 18
+        let rows = vec![("example", 1000), ("lib", 1)];
+        let (total, digits) = stats_column_width(&rows);
+        assert_eq!(digits, 4);
+        assert_eq!(total, 18);
+    }
+
+    #[test]
+    fn stats_width_stable_for_short_labels() {
+        // Even with only short labels present, width stays fixed to fit "proc-macro"
+        let rows = vec![("lib", 5), ("bin", 2)];
+        let (total, _) = stats_column_width(&rows);
+        assert_eq!(total, 17);
+    }
+
+    #[test]
+    fn stats_width_empty_rows() {
+        let rows: Vec<(&str, usize)> = vec![];
+        let (total, digits) = stats_column_width(&rows);
+        assert_eq!(digits, 3);
+        assert_eq!(total, 17);
     }
 }

@@ -2,10 +2,12 @@ use crossterm::event::Event;
 use crossterm::event::KeyCode;
 use crossterm::event::MouseEventKind;
 
-use super::App;
-use super::FocusTarget;
+use super::app::App;
+use super::app::CiState;
 use super::detail;
+use super::finder;
 use super::settings;
+use super::types::FocusTarget;
 
 pub(super) fn handle_event(app: &mut App, event: Event) {
     match event {
@@ -31,18 +33,22 @@ pub(super) fn handle_event(app: &mut App, event: Event) {
                 app.example_output.clear();
                 return;
             }
-            if app.show_settings {
+            // Text-input contexts consume all keys — dispatch directly
+            if app.show_finder {
+                finder::handle_finder_key(app, key.code);
+            } else if app.show_settings {
                 settings::handle_settings_key(app, key.code);
             } else if app.editing.is_some() {
                 detail::handle_field_edit_key(app, key.code);
             } else if app.searching {
                 handle_search_key(app, key.code);
-            } else if app.focus == FocusTarget::DetailFields {
-                detail::handle_detail_key(app, key.code);
-            } else if app.focus == FocusTarget::CiRuns {
-                detail::handle_ci_runs_key(app, key.code);
-            } else {
-                handle_normal_key(app, key.code);
+            } else if !handle_global_key(app, key.code) {
+                // Global key not consumed — fall through to context handler
+                match app.focus {
+                    FocusTarget::DetailFields => detail::handle_detail_key(app, key.code),
+                    FocusTarget::CiRuns => detail::handle_ci_runs_key(app, key.code),
+                    _ => handle_normal_key(app, key.code),
+                }
             }
         },
         Event::Mouse(mouse) => match mouse.kind {
@@ -83,11 +89,64 @@ pub(super) fn handle_event(app: &mut App, event: Event) {
     }
 }
 
-fn handle_normal_key(app: &mut App, key: KeyCode) {
+fn open_in_editor(app: &App) {
+    let Some(project) = app.selected_project() else {
+        return;
+    };
+    // For workspace members, open the workspace root instead
+    let abs_path = app
+        .nodes
+        .iter()
+        .find(|n| {
+            n.groups
+                .iter()
+                .any(|g| g.members.iter().any(|m| m.path == project.path))
+        })
+        .map_or_else(|| project.abs_path.clone(), |n| n.project.abs_path.clone());
+
+    let editor = app.editor.clone();
+    let _ = std::process::Command::new(&editor)
+        .arg(&abs_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+fn open_finder(app: &mut App) {
+    if app.finder_dirty {
+        let (index, col_widths) = super::finder::build_finder_index(&app.nodes, &app.git_info);
+        app.finder_index = index;
+        app.finder_col_widths = col_widths;
+        app.finder_dirty = false;
+    }
+    app.show_finder = true;
+    app.finder_query.clear();
+    app.finder_results.clear();
+    app.finder_total = 0;
+    app.finder_cursor.to_top();
+}
+
+/// Handle keys that work in every non-text-input context.
+/// Returns `true` if the key was consumed.
+fn handle_global_key(app: &mut App, key: KeyCode) -> bool {
     match key {
         KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('R') => {
+            app.should_quit = true;
+            app.should_restart = true;
+        },
+        KeyCode::Char('/') => open_finder(app),
+        KeyCode::Char('s') => app.show_settings = true,
         KeyCode::Tab => advance_focus(app),
         KeyCode::BackTab => reverse_focus(app),
+        KeyCode::Esc => app.focus = FocusTarget::ProjectList,
+        _ => return false,
+    }
+    true
+}
+
+fn handle_normal_key(app: &mut App, key: KeyCode) {
+    match key {
         KeyCode::Up => {
             if app.focus == FocusTarget::ScanLog {
                 app.scan_log_scroll_up();
@@ -116,10 +175,9 @@ fn handle_normal_key(app: &mut App, key: KeyCode) {
                 app.move_to_bottom();
             }
         },
-        KeyCode::Enter | KeyCode::Right => app.expand(),
+        KeyCode::Enter => open_in_editor(app),
+        KeyCode::Right => app.expand(),
         KeyCode::Left => app.collapse(),
-        KeyCode::Char('/') => app.start_search(),
-        KeyCode::Char('s') => app.show_settings = true,
         KeyCode::Char('r') => app.rescan(),
         _ => {},
     }
@@ -148,7 +206,9 @@ fn handle_search_key(app: &mut App, key: KeyCode) {
 
 pub fn advance_focus(app: &mut App) {
     let has_ci = app.selected_project().is_some_and(|p| {
-        app.ci_runs.get(&p.path).is_some_and(|r| !r.is_empty())
+        app.ci_state
+            .get(&p.path)
+            .is_some_and(|s: &CiState| !s.runs().is_empty())
             || app.git_info.get(&p.path).is_some_and(|g| g.url.is_some())
     });
 
@@ -156,22 +216,22 @@ pub fn advance_focus(app: &mut App) {
 
     app.focus = match app.focus {
         FocusTarget::ProjectList => {
-            app.detail_column = 0;
-            app.detail_cursor = 0;
+            app.detail_column.to_top();
+            app.detail_cursor.to_top();
             FocusTarget::DetailFields
         },
         FocusTarget::DetailFields => {
             // Advance through detail columns first
-            if app.detail_column < max_detail_col {
-                app.detail_column += 1;
-                app.detail_cursor = 0;
+            if app.detail_column.pos() < max_detail_col {
+                app.detail_column.down(max_detail_col + 1);
+                app.detail_cursor.to_top();
                 let (_, targets_col) = detail::detail_layout_pub(app);
-                if Some(app.detail_column) == targets_col {
-                    app.examples_scroll = 0;
+                if Some(app.detail_column.pos()) == targets_col {
+                    app.examples_scroll.to_top();
                 }
                 FocusTarget::DetailFields
             } else if has_ci {
-                app.ci_runs_cursor = 0;
+                app.ci_runs_cursor.to_top();
                 FocusTarget::CiRuns
             } else if app.scan_complete {
                 FocusTarget::ProjectList
@@ -200,7 +260,9 @@ pub fn advance_focus(app: &mut App) {
 
 pub fn reverse_focus(app: &mut App) {
     let has_ci = app.selected_project().is_some_and(|p| {
-        app.ci_runs.get(&p.path).is_some_and(|r| !r.is_empty())
+        app.ci_state
+            .get(&p.path)
+            .is_some_and(|s: &CiState| !s.runs().is_empty())
             || app.git_info.get(&p.path).is_some_and(|g| g.url.is_some())
     });
 
@@ -212,44 +274,44 @@ pub fn reverse_focus(app: &mut App) {
             if !app.scan_complete {
                 FocusTarget::ScanLog
             } else if has_ci {
-                app.ci_runs_cursor = 0;
+                app.ci_runs_cursor.to_top();
                 FocusTarget::CiRuns
             } else {
-                app.detail_column = max_detail_col;
-                app.detail_cursor = 0;
+                app.detail_column.set(max_detail_col);
+                app.detail_cursor.to_top();
                 if Some(max_detail_col) == targets_col {
-                    app.examples_scroll = 0;
+                    app.examples_scroll.to_top();
                 }
                 FocusTarget::DetailFields
             }
         },
         FocusTarget::DetailFields => {
             // Reverse through detail columns first
-            if app.detail_column > 0 {
-                app.detail_column -= 1;
-                app.detail_cursor = 0;
+            if app.detail_column.pos() > 0 {
+                app.detail_column.up();
+                app.detail_cursor.to_top();
                 FocusTarget::DetailFields
             } else {
                 FocusTarget::ProjectList
             }
         },
         FocusTarget::CiRuns => {
-            app.detail_column = max_detail_col;
-            app.detail_cursor = 0;
+            app.detail_column.set(max_detail_col);
+            app.detail_cursor.to_top();
             if Some(max_detail_col) == targets_col {
-                app.examples_scroll = 0;
+                app.examples_scroll.to_top();
             }
             FocusTarget::DetailFields
         },
         FocusTarget::ScanLog => {
             if has_ci {
-                app.ci_runs_cursor = 0;
+                app.ci_runs_cursor.to_top();
                 FocusTarget::CiRuns
             } else {
-                app.detail_column = max_detail_col;
-                app.detail_cursor = 0;
+                app.detail_column.set(max_detail_col);
+                app.detail_cursor.to_top();
                 if Some(max_detail_col) == targets_col {
-                    app.examples_scroll = 0;
+                    app.examples_scroll.to_top();
                 }
                 FocusTarget::DetailFields
             }

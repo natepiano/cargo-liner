@@ -39,6 +39,10 @@ pub struct TuiConfig {
     /// Add your username and/or org names here.
     #[serde(default)]
     pub owned_owners: Vec<String>,
+
+    /// Editor application name, opened via `open -a <editor> <path>`.
+    #[serde(default = "default_editor")]
+    pub editor: String,
 }
 
 impl Default for TuiConfig {
@@ -49,6 +53,7 @@ impl Default for TuiConfig {
             exclude_dirs:     default_exclude_dirs(),
             include_non_rust: false,
             owned_owners:     Vec::new(),
+            editor:           default_editor(),
         }
     }
 }
@@ -58,6 +63,8 @@ fn default_inline_dirs() -> Vec<String> { vec!["crates".to_string()] }
 const fn default_ci_run_count() -> u32 { 5 }
 
 const fn default_exclude_dirs() -> Vec<String> { Vec::new() }
+
+fn default_editor() -> String { "zed".to_string() }
 
 #[derive(Deserialize, Serialize)]
 pub struct MouseConfig {
@@ -126,6 +133,9 @@ include_non_rust = false
 # GitHub owners whose projects you can edit (Version, Description).
 # Add your username and/or org names here.
 owned_owners = []
+
+# Editor application name, opened via `open -a <editor> <path>`.
+editor = "zed"
 "#;
 
 fn create_default_config(path: &Path) -> Result<(), String> {

@@ -17,20 +17,100 @@ use ratatui::widgets::ListState;
 use super::detail::EditingState;
 use super::detail::PendingCiFetch;
 use super::detail::PendingExampleRun;
-use super::scan;
-use super::types::BackgroundMsg;
-use super::types::CiFetchMsg;
-use super::types::ExampleMsg;
-use super::types::ExpandKey;
-use super::types::FlatEntry;
+use super::detail::ProjectCounts;
+use super::terminal::CiFetchMsg;
+use super::terminal::ExampleMsg;
 use super::types::FocusTarget;
-use super::types::ProjectCounts;
-use super::types::ProjectNode;
-use super::types::VisibleRow;
+use super::types::ScrollState;
 use crate::ci::CiRun;
 use crate::config::Config;
 use crate::project::GitInfo;
 use crate::project::RustProject;
+use crate::scan;
+use crate::scan::BackgroundMsg;
+use crate::scan::CiFetchResult;
+use crate::scan::FlatEntry;
+use crate::scan::ProjectNode;
+
+/// An expand key: either a workspace node or a group within a node.
+#[derive(Hash, Eq, PartialEq, Clone)]
+pub enum ExpandKey {
+    Node(usize),
+    Group(usize, usize),
+}
+
+/// What a visible row represents.
+#[derive(Clone, Copy)]
+pub enum VisibleRow {
+    /// A top-level project/workspace root.
+    Root { node_index: usize },
+    /// A group header (e.g., "examples").
+    GroupHeader {
+        node_index:  usize,
+        group_index: usize,
+    },
+    /// An actual project member.
+    Member {
+        node_index:   usize,
+        group_index:  usize,
+        member_index: usize,
+    },
+    /// A worktree entry shown directly under the parent node.
+    WorktreeEntry {
+        node_index:     usize,
+        worktree_index: usize,
+    },
+}
+
+/// Per-project CI state. Replaces the scattered `(ci_runs, ci_fetching,
+/// ci_no_more_runs, ci_fetch_count)` fields with a single enum so invalid
+/// combinations are unrepresentable.
+pub enum CiState {
+    /// A fetch-more request is in progress. Keeps existing runs visible
+    /// so the UI never flashes empty during pagination.
+    Fetching { runs: Vec<CiRun>, count: u32 },
+    /// Runs are available (possibly empty when the repo genuinely has no CI).
+    Loaded {
+        runs:      Vec<CiRun>,
+        exhausted: bool,
+    },
+}
+
+impl CiState {
+    /// Access the runs regardless of which variant we are in.
+    pub fn runs(&self) -> &[CiRun] {
+        match self {
+            Self::Fetching { runs, .. } | Self::Loaded { runs, .. } => runs,
+        }
+    }
+
+    pub const fn is_fetching(&self) -> bool { matches!(self, Self::Fetching { .. }) }
+
+    pub const fn is_exhausted(&self) -> bool {
+        matches!(
+            self,
+            Self::Loaded {
+                exhausted: true,
+                ..
+            }
+        )
+    }
+
+    pub const fn fetch_count(&self) -> u32 {
+        match self {
+            Self::Fetching { count, .. } => *count,
+            Self::Loaded { .. } => 0,
+        }
+    }
+}
+
+/// Generation-stamped detail cache. Automatically stale when `data_generation`
+/// on `App` has advanced past the generation stored here.
+pub(super) struct DetailCache {
+    generation: u64,
+    path:       String,
+    pub info:   super::detail::DetailInfo,
+}
 
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
@@ -40,11 +120,12 @@ pub struct App {
     pub ci_run_count:        u32,
     pub include_non_rust:    bool,
     pub owned_owners:        Vec<String>,
+    pub editor:              String,
     pub all_projects:        Vec<RustProject>,
     pub nodes:               Vec<ProjectNode>,
     pub flat_entries:        Vec<FlatEntry>,
     pub disk_usage:          HashMap<String, u64>,
-    pub ci_runs:             HashMap<String, Vec<CiRun>>,
+    pub ci_state:            HashMap<String, CiState>,
     pub git_info:            HashMap<String, GitInfo>,
     pub crates_versions:     HashMap<String, String>,
     pub stars:               HashMap<String, u64>,
@@ -59,24 +140,20 @@ pub struct App {
     pub search_query:        String,
     pub filtered:            Vec<usize>,
     pub show_settings:       bool,
-    pub settings_cursor:     usize,
+    pub settings_cursor:     ScrollState,
     pub settings_editing:    bool,
     pub settings_edit_buf:   String,
     pub scan_complete:       bool,
     pub scan_log:            Vec<String>,
     pub scan_log_state:      ListState,
     pub focus:               FocusTarget,
-    pub detail_column:       usize,
-    pub detail_cursor:       usize,
-    pub ci_runs_cursor:      usize,
-    pub examples_scroll:     usize,
+    pub detail_column:       ScrollState,
+    pub detail_cursor:       ScrollState,
+    pub ci_runs_cursor:      ScrollState,
+    pub examples_scroll:     ScrollState,
     pub editing:             Option<EditingState>,
     pub pending_example_run: Option<PendingExampleRun>,
     pub pending_ci_fetch:    Option<PendingCiFetch>,
-    pub ci_fetching:         bool,
-    pub ci_fetch_count:      u32,
-    pub ci_fetch_prev_count: usize,
-    pub ci_no_more_runs:     HashSet<String>,
     pub spinner_tick:        usize,
     pub ci_fetch_tx:         mpsc::Sender<CiFetchMsg>,
     pub ci_fetch_rx:         mpsc::Receiver<CiFetchMsg>,
@@ -87,20 +164,61 @@ pub struct App {
     pub example_rx:          mpsc::Receiver<ExampleMsg>,
     pub last_selected_path:  Option<String>,
     pub should_quit:         bool,
+    pub should_restart:      bool,
+
+    // Network state
+    pub network_offline: bool,
+
+    // Universal finder
+    pub show_finder:       bool,
+    pub finder_query:      String,
+    pub finder_results:    Vec<usize>,
+    pub finder_total:      usize,
+    pub finder_cursor:     ScrollState,
+    pub finder_index:      Vec<super::finder::FinderItem>,
+    pub finder_col_widths: [usize; super::finder::FINDER_COLUMN_COUNT],
+    pub finder_dirty:      bool,
 
     // Caches for per-frame hot paths
-    pub cached_visible_rows:       Vec<VisibleRow>,
-    pub rows_dirty:                bool,
-    pub cached_root_sorted:        Vec<u64>,
-    pub cached_child_sorted:       HashMap<usize, Vec<u64>>,
-    pub disk_cache_dirty:          bool,
-    pub(super) cached_detail_path: String,
-    pub(super) cached_detail_info: Option<super::detail::DetailInfo>,
-    pub(super) detail_dirty:       bool,
-    pub(super) selection_changed:  bool,
+    pub cached_visible_rows:      Vec<VisibleRow>,
+    pub rows_dirty:               bool,
+    pub cached_root_sorted:       Vec<u64>,
+    pub cached_child_sorted:      HashMap<usize, Vec<u64>>,
+    pub disk_cache_dirty:         bool,
+    pub(super) data_generation:   u64,
+    pub(super) cached_detail:     Option<DetailCache>,
+    pub(super) selection_changed: bool,
 }
 
 impl App {
+    /// Derive the current input context from app state.
+    pub fn input_context(&self) -> super::shortcuts::InputContext {
+        use super::shortcuts::InputContext;
+        if self.show_finder {
+            InputContext::Finder
+        } else if self.show_settings {
+            InputContext::Settings
+        } else if self.editing.is_some() {
+            InputContext::Editing
+        } else if self.searching {
+            InputContext::Searching
+        } else {
+            match self.focus {
+                FocusTarget::DetailFields => {
+                    let (_, targets_col) = super::detail::detail_layout_pub(self);
+                    if Some(self.detail_column.pos()) == targets_col {
+                        InputContext::DetailTargets
+                    } else {
+                        InputContext::DetailFields
+                    }
+                },
+                FocusTarget::CiRuns => InputContext::CiRuns,
+                FocusTarget::ScanLog => InputContext::ScanLog,
+                FocusTarget::ProjectList => InputContext::ProjectList,
+            }
+        }
+    }
+
     pub(super) fn new(
         scan_root: PathBuf,
         projects: Vec<RustProject>,
@@ -115,6 +233,7 @@ impl App {
         let ci_run_count = cfg.tui.ci_run_count;
         let include_non_rust = cfg.tui.include_non_rust;
         let owned_owners = cfg.tui.owned_owners.clone();
+        let editor = cfg.tui.editor.clone();
         let nodes = scan::build_tree(projects.clone(), &inline_dirs);
         let flat_entries = scan::build_flat_entries(&nodes);
         let mut list_state = ListState::default();
@@ -128,11 +247,12 @@ impl App {
             ci_run_count,
             include_non_rust,
             owned_owners,
+            editor,
             all_projects: projects,
             nodes,
             flat_entries,
             disk_usage: HashMap::new(),
-            ci_runs: HashMap::new(),
+            ci_state: HashMap::new(),
             git_info: HashMap::new(),
             crates_versions: HashMap::new(),
             stars: HashMap::new(),
@@ -147,24 +267,20 @@ impl App {
             search_query: String::new(),
             filtered: Vec::new(),
             show_settings: false,
-            settings_cursor: 0,
+            settings_cursor: ScrollState::default(),
             settings_editing: false,
             settings_edit_buf: String::new(),
             scan_complete: false,
             scan_log: Vec::new(),
             scan_log_state: ListState::default(),
             focus: FocusTarget::ProjectList,
-            detail_column: 0,
-            detail_cursor: 0,
-            ci_runs_cursor: 0,
-            examples_scroll: 0,
+            detail_column: ScrollState::default(),
+            detail_cursor: ScrollState::default(),
+            ci_runs_cursor: ScrollState::default(),
+            examples_scroll: ScrollState::default(),
             editing: None,
             pending_example_run: None,
             pending_ci_fetch: None,
-            ci_fetching: false,
-            ci_fetch_count: 0,
-            ci_fetch_prev_count: 0,
-            ci_no_more_runs: HashSet::new(),
             spinner_tick: 0,
             ci_fetch_tx,
             ci_fetch_rx,
@@ -175,15 +291,26 @@ impl App {
             example_rx,
             last_selected_path: super::terminal::load_last_selected(),
             should_quit: false,
+            should_restart: false,
+
+            network_offline: false,
+
+            show_finder: false,
+            finder_query: String::new(),
+            finder_results: Vec::new(),
+            finder_total: 0,
+            finder_cursor: ScrollState::default(),
+            finder_index: Vec::new(),
+            finder_col_widths: [0; super::finder::FINDER_COLUMN_COUNT],
+            finder_dirty: true,
 
             cached_visible_rows: Vec::new(),
             rows_dirty: true,
             cached_root_sorted: Vec::new(),
             cached_child_sorted: HashMap::new(),
             disk_cache_dirty: true,
-            cached_detail_path: String::new(),
-            cached_detail_info: None,
-            detail_dirty: true,
+            data_generation: 0,
+            cached_detail: None,
             selection_changed: false,
         }
     }
@@ -195,9 +322,10 @@ impl App {
             .or_else(|| self.last_selected_path.clone());
         self.nodes = scan::build_tree(self.all_projects.clone(), &self.inline_dirs);
         self.flat_entries = scan::build_flat_entries(&self.nodes);
+        self.finder_dirty = true;
         self.rows_dirty = true;
         self.disk_cache_dirty = true;
-        self.detail_dirty = true;
+        self.data_generation += 1;
 
         // Re-run search if active so filtered indices match new flat_entries
         if self.searching && !self.search_query.is_empty() {
@@ -207,14 +335,21 @@ impl App {
             self.filtered.clear();
         }
 
-        // Propagate CI runs, git info, and stars from workspace roots to their members
+        // Propagate CI state, git info, and stars from workspace roots to their members
         for node in &self.nodes {
-            if let Some(runs) = self.ci_runs.get(&node.project.path).cloned() {
+            if let Some(runs) = self
+                .ci_state
+                .get(&node.project.path)
+                .map(|s| s.runs().to_vec())
+            {
                 for group in &node.groups {
                     for member in &group.members {
-                        self.ci_runs
-                            .entry(member.path.clone())
-                            .or_insert_with(|| runs.clone());
+                        self.ci_state.entry(member.path.clone()).or_insert_with(|| {
+                            CiState::Loaded {
+                                runs:      runs.clone(),
+                                exhausted: false,
+                            }
+                        });
                     }
                 }
             }
@@ -249,7 +384,7 @@ impl App {
         self.nodes.clear();
         self.flat_entries.clear();
         self.disk_usage.clear();
-        self.ci_runs.clear();
+        self.ci_state.clear();
         self.git_info.clear();
         self.crates_versions.clear();
         self.stars.clear();
@@ -259,17 +394,17 @@ impl App {
         self.fully_loaded.clear();
         self.priority_fetch_path = None;
         self.focus = FocusTarget::ProjectList;
-        self.detail_column = 0;
-        self.detail_cursor = 0;
-        self.ci_runs_cursor = 0;
-        self.examples_scroll = 0;
+        self.detail_column.to_top();
+        self.detail_cursor.to_top();
+        self.ci_runs_cursor.to_top();
+        self.examples_scroll.to_top();
         self.editing = None;
         self.pending_ci_fetch = None;
         self.expanded.clear();
         self.list_state = ListState::default();
         self.rows_dirty = true;
         self.disk_cache_dirty = true;
-        self.detail_dirty = true;
+        self.data_generation += 1;
         let (tx, rx) = scan::spawn_streaming_scan(
             &self.scan_root,
             self.ci_run_count,
@@ -296,8 +431,8 @@ impl App {
         // Poll CI fetch results
         while let Ok(msg) = self.ci_fetch_rx.try_recv() {
             match msg {
-                CiFetchMsg::Complete { path, runs } => {
-                    self.handle_ci_fetch_complete(path, runs);
+                CiFetchMsg::Complete { path, result } => {
+                    self.handle_ci_fetch_complete(path, result);
                 },
             }
         }
@@ -323,12 +458,10 @@ impl App {
 
     /// Handle a single `BackgroundMsg`. Returns `true` if the tree needs rebuilding.
     fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
-        // Only mark detail dirty if this message is for the selected project
-        let selected_path = self.cached_detail_path.clone();
-        if let Some(msg_path) = msg.path()
-            && msg_path == selected_path
-        {
-            self.detail_dirty = true;
+        // Bump generation for any message that carries project data, so the
+        // detail cache auto-invalidates without a separate dirty flag.
+        if msg.path().is_some() {
+            self.data_generation += 1;
         }
         match msg {
             BackgroundMsg::DiskUsage { path, bytes } => {
@@ -337,32 +470,27 @@ impl App {
                 self.disk_cache_dirty = true;
             },
             BackgroundMsg::CiRuns { path, runs } => {
-                if let Some(git) = self.git_info.get(&path)
-                    && let Some(ref url) = git.url
-                    && let Some((owner, repo)) = crate::ci::parse_owner_repo(url)
-                    && scan::is_exhausted(&owner, &repo)
-                {
-                    self.ci_no_more_runs.insert(path.clone());
-                }
-                if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
-                    for group in &node.groups {
-                        for member in &group.members {
-                            self.ci_runs
-                                .entry(member.path.clone())
-                                .or_insert_with(|| runs.clone());
-                        }
-                    }
-                }
-                self.ci_runs.insert(path, runs);
+                self.insert_ci_runs(path, runs);
             },
             BackgroundMsg::GitInfo { path, info } => {
-                // Propagate to workspace members
-                if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
+                // Propagate to workspace members and worktrees.
+                // Search both top-level nodes and worktree sub-nodes.
+                let matching_node =
+                    self.nodes
+                        .iter()
+                        .find(|n| n.project.path == path)
+                        .or_else(|| {
+                            self.nodes
+                                .iter()
+                                .flat_map(|n| n.worktrees.iter())
+                                .find(|wt| wt.project.path == path)
+                        });
+                if let Some(node) = matching_node {
                     for group in &node.groups {
                         for member in &group.members {
-                            self.git_info
-                                .entry(member.path.clone())
-                                .or_insert_with(|| info.clone());
+                            // Always overwrite — the correct branch comes from
+                            // the workspace root, not from a stale propagation.
+                            self.git_info.insert(member.path.clone(), info.clone());
                         }
                     }
                     for wt in &node.worktrees {
@@ -372,11 +500,14 @@ impl App {
                     }
                 }
                 self.git_info.insert(path, info);
+                self.finder_dirty = true;
             },
             BackgroundMsg::CratesIoVersion { path, version } => {
                 self.crates_versions.insert(path, version);
+                self.network_offline = false;
             },
             BackgroundMsg::Stars { path, count } => {
+                self.network_offline = false;
                 // Propagate to workspace members
                 if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
                     for group in &node.groups {
@@ -410,18 +541,57 @@ impl App {
                     self.focus = FocusTarget::ProjectList;
                 }
             },
+            BackgroundMsg::NetworkOffline => {
+                self.network_offline = true;
+            },
         }
         false
     }
 
-    /// Process a completed CI fetch: merge runs, detect exhaustion, propagate to members.
-    fn handle_ci_fetch_complete(&mut self, path: String, runs: Vec<CiRun>) {
-        self.ci_fetching = false;
+    /// Insert CI runs from the initial scan, propagating to workspace members.
+    fn insert_ci_runs(&mut self, path: String, runs: Vec<CiRun>) {
+        let exhausted = self
+            .git_info
+            .get(&path)
+            .and_then(|g| g.url.as_ref())
+            .and_then(|url| crate::ci::parse_owner_repo(url))
+            .is_some_and(|(owner, repo)| scan::is_exhausted(&owner, &repo));
+        if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
+            for group in &node.groups {
+                for member in &group.members {
+                    self.ci_state
+                        .entry(member.path.clone())
+                        .or_insert_with(|| CiState::Loaded {
+                            runs: runs.clone(),
+                            exhausted,
+                        });
+                }
+            }
+        }
+        self.ci_state
+            .insert(path, CiState::Loaded { runs, exhausted });
+    }
 
-        let existing = self.ci_runs.remove(&path).unwrap_or_default();
+    /// Process a completed CI fetch: merge runs, detect exhaustion, propagate to members.
+    fn handle_ci_fetch_complete(&mut self, path: String, result: CiFetchResult) {
+        let new_runs = match result {
+            CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
+        };
+
+        // Previous count comes from what was visible in the Fetching state
+        let prev_count = self.ci_state.get(&path).map_or(0, |s| s.runs().len());
+
+        let existing = self
+            .ci_state
+            .remove(&path)
+            .map(|s| match s {
+                CiState::Fetching { runs, .. } | CiState::Loaded { runs, .. } => runs,
+            })
+            .unwrap_or_default();
+
         let mut seen = HashSet::new();
         let mut merged: Vec<CiRun> = Vec::new();
-        for run in runs {
+        for run in new_runs {
             if seen.insert(run.run_id) {
                 merged.push(run);
             }
@@ -433,29 +603,38 @@ impl App {
         }
         merged.sort_by(|a, b| b.run_id.cmp(&a.run_id));
 
-        if merged.len() <= self.ci_fetch_prev_count {
-            self.ci_no_more_runs.insert(path.clone());
+        let exhausted = if merged.len() <= prev_count {
             if let Some(git) = self.git_info.get(&path)
                 && let Some(ref url) = git.url
                 && let Some((owner, repo)) = crate::ci::parse_owner_repo(url)
             {
                 scan::mark_exhausted(&owner, &repo);
             }
+            true
         } else {
-            self.ci_no_more_runs.remove(&path);
-        }
+            false
+        };
+
+        let state = CiState::Loaded {
+            runs: merged.clone(),
+            exhausted,
+        };
 
         if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
             for group in &node.groups {
                 for member in &group.members {
-                    self.ci_runs
+                    self.ci_state
                         .entry(member.path.clone())
-                        .or_insert_with(|| merged.clone());
+                        .or_insert_with(|| CiState::Loaded {
+                            runs: merged.clone(),
+                            exhausted,
+                        });
                 }
             }
         }
-        self.ci_runs_cursor = merged.len();
-        self.ci_runs.insert(path, merged);
+        self.ci_runs_cursor.set(merged.len());
+        self.ci_state.insert(path, state);
+        self.data_generation += 1;
     }
 
     /// Spawn a priority fetch for the selected project if it hasn't been loaded yet.
@@ -566,21 +745,25 @@ impl App {
     }
 
     /// Ensure the cached `DetailInfo` is up to date for the selected project.
+    /// The cache is valid only when the generation AND path both match.
     pub fn ensure_detail_cached(&mut self) {
         let current_path = self
             .selected_project()
             .map(|p| p.path.clone())
             .unwrap_or_default();
 
-        if !self.detail_dirty && self.cached_detail_path == current_path {
+        if let Some(ref cache) = self.cached_detail
+            && cache.generation == self.data_generation
+            && cache.path == current_path
+        {
             return;
         }
 
-        self.cached_detail_path = current_path;
-        self.cached_detail_info = self
-            .selected_project()
-            .map(|p| super::detail::build_detail_info(self, p));
-        self.detail_dirty = false;
+        self.cached_detail = self.selected_project().map(|p| DetailCache {
+            generation: self.data_generation,
+            path:       current_path,
+            info:       super::detail::build_detail_info(self, p),
+        });
     }
 
     /// Returns the `ProjectNode` when a root row is selected (not a member or worktree).
@@ -830,13 +1013,6 @@ impl App {
         }
     }
 
-    pub(super) fn start_search(&mut self) {
-        self.searching = true;
-        self.search_query.clear();
-        self.filtered.clear();
-        self.rows_dirty = true;
-    }
-
     pub(super) fn cancel_search(&mut self) {
         self.searching = false;
         self.search_query.clear();
@@ -859,9 +1035,10 @@ impl App {
         }
     }
 
-    fn select_project_in_tree(&mut self, target_path: &str) {
-        // Expand the containing node and group
+    pub(super) fn select_project_in_tree(&mut self, target_path: &str) {
+        // Expand the containing node, group, or worktree parent
         for (ni, node) in self.nodes.iter().enumerate() {
+            // Direct members
             for (gi, group) in node.groups.iter().enumerate() {
                 for member in &group.members {
                     if member.path == target_path {
@@ -872,29 +1049,55 @@ impl App {
                     }
                 }
             }
+            // Worktree entries
+            for wt in &node.worktrees {
+                if wt.project.path == target_path {
+                    self.expanded.insert(ExpandKey::Node(ni));
+                }
+                for group in &wt.groups {
+                    for member in &group.members {
+                        if member.path == target_path {
+                            self.expanded.insert(ExpandKey::Node(ni));
+                        }
+                    }
+                }
+            }
         }
 
         self.rows_dirty = true;
         self.ensure_visible_rows_cached();
         let rows = self.visible_rows();
         for (i, row) in rows.iter().enumerate() {
-            if let VisibleRow::Member {
-                node_index,
-                group_index,
-                member_index,
-            } = row
-            {
-                let project = &self.nodes[*node_index].groups[*group_index].members[*member_index];
-                if project.path == target_path {
-                    self.list_state.select(Some(i));
-                    return;
-                }
-            }
-            if let VisibleRow::Root { node_index } = row
-                && self.nodes[*node_index].project.path == target_path
-            {
-                self.list_state.select(Some(i));
-                return;
+            match row {
+                VisibleRow::Root { node_index } => {
+                    if self.nodes[*node_index].project.path == target_path {
+                        self.list_state.select(Some(i));
+                        return;
+                    }
+                },
+                VisibleRow::Member {
+                    node_index,
+                    group_index,
+                    member_index,
+                } => {
+                    let project =
+                        &self.nodes[*node_index].groups[*group_index].members[*member_index];
+                    if project.path == target_path {
+                        self.list_state.select(Some(i));
+                        return;
+                    }
+                },
+                VisibleRow::WorktreeEntry {
+                    node_index,
+                    worktree_index,
+                } => {
+                    let wt = &self.nodes[*node_index].worktrees[*worktree_index];
+                    if wt.project.path == target_path {
+                        self.list_state.select(Some(i));
+                        return;
+                    }
+                },
+                VisibleRow::GroupHeader { .. } => {},
             }
         }
     }
@@ -998,9 +1201,9 @@ impl App {
     }
 
     pub fn ci_for(&self, project: &RustProject) -> String {
-        self.ci_runs
+        self.ci_state
             .get(&project.path)
-            .and_then(|runs| runs.first())
+            .and_then(|s| s.runs().first())
             .map_or_else(|| "—".to_string(), |run| run.conclusion.clone())
     }
 
@@ -1055,8 +1258,8 @@ impl App {
         for path in std::iter::once(&node.project.path)
             .chain(node.worktrees.iter().map(|wt| &wt.project.path))
         {
-            if let Some(runs) = self.ci_runs.get(path)
-                && let Some(run) = runs.first()
+            if let Some(state) = self.ci_state.get(path)
+                && let Some(run) = state.runs().first()
             {
                 any_data = true;
                 if run.conclusion.contains('✗') {
@@ -1078,13 +1281,67 @@ impl App {
         }
     }
 
-    pub fn ci_runs_for(&self, project: &RustProject) -> Option<&Vec<CiRun>> {
-        self.ci_runs.get(&project.path)
+    pub fn ci_state_for(&self, project: &RustProject) -> Option<&CiState> {
+        self.ci_state.get(&project.path)
     }
 
     pub fn git_icon(&self, project: &RustProject) -> &'static str {
         self.git_info
             .get(&project.path)
             .map_or(" ", |info| info.origin.icon())
+    }
+
+    /// Returns the Enter-key action label for the current cursor position,
+    /// or `None` if Enter does nothing here. Used by the shortcut bar to
+    /// only show Enter when it's actionable.
+    pub fn enter_action(&self) -> Option<&'static str> {
+        use super::shortcuts::InputContext;
+        match self.input_context() {
+            InputContext::ProjectList | InputContext::ScanLog => Some("open"),
+            InputContext::DetailTargets => Some("run"),
+            InputContext::DetailFields => {
+                if self.detail_column.pos() == 0 {
+                    let info = self
+                        .selected_project()
+                        .map(|p| super::detail::build_detail_info(self, p))?;
+                    let fields = super::detail::package_fields(&info);
+                    let field = *fields.get(self.detail_cursor.pos())?;
+                    match field {
+                        super::detail::DetailField::Version
+                        | super::detail::DetailField::Description
+                            if field.is_editable() && info.owned =>
+                        {
+                            Some("edit")
+                        },
+                        _ => None,
+                    }
+                } else {
+                    // Git column — Repo field opens URL
+                    let info = self
+                        .selected_project()
+                        .map(|p| super::detail::build_detail_info(self, p))?;
+                    let fields = super::detail::git_fields(&info);
+                    match fields.get(self.detail_cursor.pos()) {
+                        Some(super::detail::DetailField::Repo) if info.git_url.is_some() => {
+                            Some("open")
+                        },
+                        _ => None,
+                    }
+                }
+            },
+            InputContext::CiRuns => {
+                let ci_state = self.selected_project().and_then(|p| self.ci_state_for(p));
+                let run_count = ci_state.map_or(0, |s| s.runs().len());
+                if self.ci_runs_cursor.pos() == run_count
+                    && !ci_state.is_some_and(CiState::is_fetching)
+                    && !ci_state.is_some_and(CiState::is_exhausted)
+                {
+                    Some("fetch")
+                } else {
+                    None
+                }
+            },
+            _ => None,
+        }
     }
 }
