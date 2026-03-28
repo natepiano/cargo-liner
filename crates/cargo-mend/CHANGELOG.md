@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `inline_path_qualified_type` autofix no longer drops generic parameters (e.g., `crate::error::Result<T>` was incorrectly replaced with `Result` instead of `Result<T>`)
+- `inline_path_qualified_type` autofix no longer adds `use` imports that shadow prelude types (e.g., adding `use crate::error::Result;` would break existing bare `Result<T, E>` usage in the same file)
 - `prefer_module_import` no longer flags `use super::super::module_name;` where the leaf is a module, not a function
 - `prefer_module_import` no longer flags function imports when the target module has a `mod` declaration in the same file (e.g., `mod input;` + `use crate::input::function;`)
 
