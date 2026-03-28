@@ -161,6 +161,7 @@ pub(super) struct App {
     pub ci_state:            HashMap<String, CiState>,
     pub git_info:            HashMap<String, GitInfo>,
     pub crates_versions:     HashMap<String, String>,
+    pub crates_downloads:    HashMap<String, u64>,
     pub stars:               HashMap<String, u64>,
     pub bg_tx:               mpsc::Sender<BackgroundMsg>,
     pub bg_rx:               Receiver<BackgroundMsg>,
@@ -291,6 +292,7 @@ impl App {
             ci_state: HashMap::new(),
             git_info: HashMap::new(),
             crates_versions: HashMap::new(),
+            crates_downloads: HashMap::new(),
             stars: HashMap::new(),
             bg_tx,
             bg_rx,
@@ -429,6 +431,7 @@ impl App {
         self.ci_state.clear();
         self.git_info.clear();
         self.crates_versions.clear();
+        self.crates_downloads.clear();
         self.stars.clear();
         self.scan_log.clear();
         self.scan_log_state = ListState::default();
@@ -553,8 +556,13 @@ impl App {
                 self.git_info.insert(path, info);
                 self.finder_dirty = true;
             },
-            BackgroundMsg::CratesIoVersion { path, version } => {
-                self.crates_versions.insert(path, version);
+            BackgroundMsg::CratesIoVersion {
+                path,
+                version,
+                downloads,
+            } => {
+                self.crates_versions.insert(path.clone(), version);
+                self.crates_downloads.insert(path, downloads);
                 self.network_offline = false;
             },
             BackgroundMsg::Stars { path, count } => {

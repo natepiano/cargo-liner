@@ -367,7 +367,13 @@ impl DetailField {
             Self::LastCommit => info.git_last_commit.as_deref().unwrap_or("").to_string(),
             Self::Worktree => info.worktree_label.as_deref().unwrap_or("").to_string(),
             Self::Vendored => info.vendored_names.clone(),
-            Self::CratesIo => info.crates_version.as_deref().unwrap_or("").to_string(),
+            Self::CratesIo => {
+                let version = info.crates_version.as_deref().unwrap_or("");
+                info.crates_downloads.map_or_else(
+                    || version.to_string(),
+                    |dl| format!("{version} ({})", format_downloads(dl)),
+                )
+            },
             Self::Version => info.version.clone(),
             Self::Description => info.description.as_deref().unwrap_or("—").to_string(),
         }
@@ -446,41 +452,42 @@ pub(super) fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
 
 #[derive(Clone)]
 pub(super) struct DetailInfo {
-    pub package_title:   String,
-    pub name:            String,
-    pub path:            String,
-    pub version:         String,
-    pub description:     Option<String>,
-    pub crates_version:  Option<String>,
-    pub types:           String,
-    pub disk:            String,
-    pub ci:              String,
-    pub stats_rows:      Vec<(&'static str, usize)>,
-    pub git_branch:      Option<String>,
-    pub git_sync:        Option<String>,
+    pub package_title:    String,
+    pub name:             String,
+    pub path:             String,
+    pub version:          String,
+    pub description:      Option<String>,
+    pub crates_version:   Option<String>,
+    pub crates_downloads: Option<u64>,
+    pub types:            String,
+    pub disk:             String,
+    pub ci:               String,
+    pub stats_rows:       Vec<(&'static str, usize)>,
+    pub git_branch:       Option<String>,
+    pub git_sync:         Option<String>,
     /// Ahead/behind vs `origin/{default_branch}`.
-    pub git_vs_origin:   Option<String>,
+    pub git_vs_origin:    Option<String>,
     /// Ahead/behind vs local `{default_branch}`.
-    pub git_vs_local:    Option<String>,
+    pub git_vs_local:     Option<String>,
     /// The repo's default branch name (e.g. "main", "master").
-    pub default_branch:  Option<String>,
-    pub git_origin:      Option<String>,
-    pub git_owner:       Option<String>,
-    pub git_url:         Option<String>,
-    pub git_stars:       Option<u64>,
-    pub git_inception:   Option<String>,
-    pub git_last_commit: Option<String>,
-    pub worktree_label:  Option<String>,
-    pub worktree_names:  Vec<String>,
-    pub vendored_names:  String,
-    pub is_binary:       bool,
-    pub binary_name:     Option<String>,
-    pub examples:        Vec<ExampleGroup>,
-    pub benches:         Vec<String>,
+    pub default_branch:   Option<String>,
+    pub git_origin:       Option<String>,
+    pub git_owner:        Option<String>,
+    pub git_url:          Option<String>,
+    pub git_stars:        Option<u64>,
+    pub git_inception:    Option<String>,
+    pub git_last_commit:  Option<String>,
+    pub worktree_label:   Option<String>,
+    pub worktree_names:   Vec<String>,
+    pub vendored_names:   String,
+    pub is_binary:        bool,
+    pub binary_name:      Option<String>,
+    pub examples:         Vec<ExampleGroup>,
+    pub benches:          Vec<String>,
     /// Whether this is a Rust project (has `Cargo.toml`).
-    pub is_rust:         bool,
+    pub is_rust:          bool,
     /// Whether this project declares `[package]` (has version/description fields).
-    pub has_package:     bool,
+    pub has_package:      bool,
 }
 
 /// Collect vendored crate names for a project from the node tree.
@@ -542,6 +549,19 @@ fn format_ahead_behind((ahead, behind): (usize, usize)) -> String {
         (0, b) => format!("↓{b} behind"),
         (a, b) => format!("↑{a} ↓{b}"),
     }
+}
+
+/// Format a download count with comma-separated thousands (e.g. `1,234,567`).
+fn format_downloads(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            result.push(',');
+        }
+        result.push(ch);
+    }
+    result
 }
 
 struct GitDetailFields {
@@ -620,6 +640,7 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
 
     let git_detail = build_git_detail_fields(app, project);
     let crates_version = app.crates_versions.get(&project.path).cloned();
+    let crates_downloads = app.crates_downloads.get(&project.path).copied();
     let worktree_label = project.worktree_name.clone();
 
     // Aggregate disk and CI across worktrees when the selected node has them
@@ -677,6 +698,7 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
         ci,
         stats_rows,
         crates_version,
+        crates_downloads,
         git_branch: git_detail.branch,
         git_sync: git_detail.sync,
         git_vs_origin: git_detail.vs_origin,

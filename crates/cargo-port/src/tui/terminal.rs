@@ -474,11 +474,12 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
         });
 
         if let Some(name) = project_name.as_ref()
-            && let Some(version) = scan::fetch_crates_io_version(name)
+            && let Some(info) = scan::fetch_crates_io_info(name)
         {
             let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                path: project_path,
-                version,
+                path:      project_path,
+                version:   info.version,
+                downloads: info.downloads,
             });
         }
     });

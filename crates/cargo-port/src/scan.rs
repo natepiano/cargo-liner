@@ -47,13 +47,33 @@ pub struct FlatEntry {
 }
 
 pub enum BackgroundMsg {
-    DiskUsage { path: String, bytes: u64 },
-    CiRuns { path: String, runs: Vec<CiRun> },
-    GitInfo { path: String, info: GitInfo },
-    CratesIoVersion { path: String, version: String },
-    Stars { path: String, count: u64 },
-    ProjectDiscovered { project: RustProject },
-    ScanActivity { path: String },
+    DiskUsage {
+        path:  String,
+        bytes: u64,
+    },
+    CiRuns {
+        path: String,
+        runs: Vec<CiRun>,
+    },
+    GitInfo {
+        path: String,
+        info: GitInfo,
+    },
+    CratesIoVersion {
+        path:      String,
+        version:   String,
+        downloads: u64,
+    },
+    Stars {
+        path:  String,
+        count: u64,
+    },
+    ProjectDiscovered {
+        project: RustProject,
+    },
+    ScanActivity {
+        path: String,
+    },
     ScanComplete,
     NetworkOffline,
 }
@@ -296,7 +316,12 @@ fn notify_offline_once(tx: &mpsc::Sender<BackgroundMsg>) {
     }
 }
 
-pub fn fetch_crates_io_version(crate_name: &str) -> Option<String> {
+pub struct CratesIoInfo {
+    pub version:   String,
+    pub downloads: u64,
+}
+
+pub fn fetch_crates_io_info(crate_name: &str) -> Option<CratesIoInfo> {
     let url = format!("https://crates.io/api/v1/crates/{crate_name}");
     let output = std::process::Command::new("curl")
         .args([
@@ -313,10 +338,13 @@ pub fn fetch_crates_io_version(crate_name: &str) -> Option<String> {
         return None;
     }
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    json.get("crate")?
+    let krate = json.get("crate")?;
+    let version = krate
         .get("max_stable_version")?
         .as_str()
-        .map(std::string::ToString::to_string)
+        .map(std::string::ToString::to_string)?;
+    let downloads = krate.get("downloads")?.as_u64().unwrap_or(0);
+    Some(CratesIoInfo { version, downloads })
 }
 
 pub fn dir_size(path: &Path) -> u64 {
@@ -703,13 +731,14 @@ pub fn fetch_project_details(
         });
     }
 
-    // Crates.io version (network)
+    // Crates.io version + downloads (network)
     if let Some(name) = project_name
-        && let Some(version) = fetch_crates_io_version(name)
+        && let Some(info) = fetch_crates_io_info(name)
     {
         let _ = tx.send(BackgroundMsg::CratesIoVersion {
-            path: project_path.to_string(),
-            version,
+            path:      project_path.to_string(),
+            version:   info.version,
+            downloads: info.downloads,
         });
     }
 
