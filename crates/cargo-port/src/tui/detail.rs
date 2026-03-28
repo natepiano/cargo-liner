@@ -1635,7 +1635,7 @@ fn handle_detail_enter(app: &mut App, on_targets: bool) {
         handle_target_action(app, false);
     } else if app.detail_column.pos() == 0 {
         let info = app.selected_project().map(|p| build_detail_info(app, p));
-        let fields = info.as_ref().map(|i| package_fields(i)).unwrap_or_default();
+        let fields = info.as_ref().map(package_fields).unwrap_or_default();
         match fields.get(app.detail_cursor.pos()) {
             Some(DetailField::CratesIo) => {
                 if let Some(ref info) = info {
