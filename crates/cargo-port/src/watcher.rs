@@ -7,7 +7,7 @@
 //!
 //! On Linux (inotify) this creates one watch per subdirectory. The
 //! default limit of 8192 handles ~10-25 projects; developers using
-//! VS Code or JetBrains typically have this raised already.
+//! VS Code or `JetBrains` typically have this raised already.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
