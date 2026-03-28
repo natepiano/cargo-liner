@@ -20,9 +20,11 @@ use super::app::App;
 use super::app::CiState;
 use super::app::ConfirmAction;
 use super::app::ExpandKey;
+use super::app::FitWidths;
 use super::app::VisibleRow;
 use super::shortcuts::Shortcut;
 use super::types::FocusTarget;
+use super::types::LayoutCache;
 use crate::ci::CiRun;
 use crate::project::RustProject;
 
@@ -227,7 +229,7 @@ pub(super) fn group_header_spans(prefix: &str, name: &str, name_width: usize) ->
 }
 
 pub(super) fn ui(frame: &mut Frame, app: &mut App) {
-    app.layout_cache = super::types::LayoutCache::default();
+    app.layout_cache = LayoutCache::default();
 
     let outer_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -488,14 +490,12 @@ pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
-    let name_width = app.cached_fit_widths.name;
-    let disk_width = app.cached_fit_widths.disk;
-    let sync_width = app.cached_fit_widths.sync;
+    let widths = &app.cached_fit_widths;
 
     let mut items: Vec<ListItem> = if app.searching && !app.search_query.is_empty() {
-        render_filtered_items(app, name_width, disk_width, sync_width)
+        render_filtered_items(app, widths)
     } else {
-        render_tree_items(app, name_width, disk_width, sync_width)
+        render_tree_items(app, widths)
     };
 
     // Append disk total as the last row
@@ -506,17 +506,17 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD);
         let mut row_line = project_row_spans(&RowData {
-            prefix: "",
-            name: &format!("{:>width$}", "Σ", width = name_width),
-            lang_icon: "  ",
-            disk: &total_str,
+            prefix:     "",
+            name:       &format!("{:>width$}", "Σ", width = widths.name),
+            lang_icon:  "  ",
+            disk:       &total_str,
             disk_style: total_style,
-            ci: " ",
-            git_icon: " ",
-            git_sync: "",
-            name_width,
-            disk_width,
-            sync_width,
+            ci:         " ",
+            git_icon:   " ",
+            git_sync:   "",
+            name_width: widths.name,
+            disk_width: widths.disk,
+            sync_width: widths.sync,
         });
         if let Some(span) = row_line.spans.first_mut() {
             span.style = total_style;
@@ -535,11 +535,16 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
             format!(
                 "{scan_root} ({node_count}){:<pad$}",
                 "",
-                pad = name_width.saturating_sub(scan_root.len() + 3 + node_count.to_string().len()),
+                pad = widths
+                    .name
+                    .saturating_sub(scan_root.len() + 3 + node_count.to_string().len()),
             ),
             header_style,
         ),
-        Span::styled(format!(" {:>disk_width$}", "Disk"), header_style),
+        Span::styled(
+            format!(" {:>width$}", "Disk", width = widths.disk),
+            header_style,
+        ),
         Span::styled("  R Git CI", header_style),
     ]);
 
@@ -815,9 +820,7 @@ fn render_child_item(
     name: &str,
     child_sorted: &[u64],
     prefix: &'static str,
-    name_width: usize,
-    disk_width: usize,
-    sync_width: usize,
+    widths: &FitWidths,
 ) -> ListItem<'static> {
     let disk = app.formatted_disk(project);
     let disk_bytes = app.disk_usage.get(&project.path).copied();
@@ -835,18 +838,13 @@ fn render_child_item(
         ci: &ci,
         git_icon: git,
         git_sync: &sync,
-        name_width,
-        disk_width,
-        sync_width,
+        name_width: widths.name,
+        disk_width: widths.disk,
+        sync_width: widths.sync,
     }))
 }
 
-pub(super) fn render_tree_items(
-    app: &App,
-    name_width: usize,
-    disk_width: usize,
-    sync_width: usize,
-) -> Vec<ListItem<'static>> {
+pub(super) fn render_tree_items(app: &App, widths: &FitWidths) -> Vec<ListItem<'static>> {
     let root_sorted = &app.cached_root_sorted;
     let child_sorted = &app.cached_child_sorted;
 
@@ -857,9 +855,9 @@ pub(super) fn render_tree_items(
                 app,
                 *node_index,
                 root_sorted,
-                name_width,
-                disk_width,
-                sync_width,
+                widths.name,
+                widths.disk,
+                widths.sync,
             ),
             VisibleRow::GroupHeader {
                 node_index,
@@ -876,7 +874,7 @@ pub(super) fn render_tree_items(
                 };
                 let prefix = format!("    {arrow}");
                 let label = format!("{} ({})", group.name, group.members.len());
-                ListItem::new(group_header_spans(&prefix, &label, name_width))
+                ListItem::new(group_header_spans(&prefix, &label, widths.name))
             },
             VisibleRow::Member {
                 node_index,
@@ -893,9 +891,7 @@ pub(super) fn render_tree_items(
                     "        "
                 };
                 let name = member.display_name();
-                render_child_item(
-                    app, member, &name, sorted, indent, name_width, disk_width, sync_width,
-                )
+                render_child_item(app, member, &name, sorted, indent, widths)
             },
             VisibleRow::WorktreeEntry {
                 node_index,
@@ -910,27 +906,13 @@ pub(super) fn render_tree_items(
                     .as_deref()
                     .unwrap_or(&wt.project.path)
                     .to_string();
-                render_child_item(
-                    app,
-                    &wt.project,
-                    &name,
-                    sorted,
-                    "    ",
-                    name_width,
-                    disk_width,
-                    sync_width,
-                )
+                render_child_item(app, &wt.project, &name, sorted, "    ", widths)
             },
         })
         .collect()
 }
 
-pub(super) fn render_filtered_items(
-    app: &App,
-    name_width: usize,
-    disk_width: usize,
-    sync_width: usize,
-) -> Vec<ListItem<'static>> {
+pub(super) fn render_filtered_items(app: &App, widths: &FitWidths) -> Vec<ListItem<'static>> {
     let root_sorted = &app.cached_root_sorted;
     app.filtered
         .iter()
@@ -950,17 +932,17 @@ pub(super) fn render_filtered_items(
             let git = app.git_icon(project);
             let sync = app.git_sync(project);
             Some(ListItem::new(project_row_spans(&RowData {
-                prefix: "  ",
-                name: &entry.name,
-                lang_icon: lang,
-                disk: &disk,
+                prefix:     "  ",
+                name:       &entry.name,
+                lang_icon:  lang,
+                disk:       &disk,
                 disk_style: ds,
-                ci: &ci,
-                git_icon: git,
-                git_sync: &sync,
-                name_width,
-                disk_width,
-                sync_width,
+                ci:         &ci,
+                git_icon:   git,
+                git_sync:   &sync,
+                name_width: widths.name,
+                disk_width: widths.disk,
+                sync_width: widths.sync,
             })))
         })
         .collect()

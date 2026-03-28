@@ -26,6 +26,7 @@ use super::shortcuts::InputContext;
 use super::terminal::CiFetchMsg;
 use super::terminal::ExampleMsg;
 use super::types::FocusTarget;
+use super::types::LayoutCache;
 use super::types::ScrollState;
 use crate::ci::CiRun;
 use crate::config::Config;
@@ -221,7 +222,7 @@ pub struct App {
     pub(super) data_generation:   u64,
     pub(super) cached_detail:     Option<DetailCache>,
     pub(super) selection_changed: bool,
-    pub(super) layout_cache:      super::types::LayoutCache,
+    pub(super) layout_cache:      LayoutCache,
 }
 
 impl App {
@@ -344,7 +345,7 @@ impl App {
             data_generation: 0,
             cached_detail: None,
             selection_changed: false,
-            layout_cache: super::types::LayoutCache::default(),
+            layout_cache: LayoutCache::default(),
         }
     }
 
@@ -757,7 +758,7 @@ impl App {
         let mut sync_width = 0usize;
 
         for node in &self.nodes {
-            name_width = name_width.max(self.fit_name_for_node(node));
+            name_width = name_width.max(Self::fit_name_for_node(node));
             disk_width = disk_width.max(self.formatted_disk_for_node(node).len());
             sync_width = sync_width.max(UnicodeWidthStr::width(
                 self.git_sync(&node.project).as_str(),
@@ -796,7 +797,7 @@ impl App {
         };
     }
 
-    fn fit_name_for_node(&self, node: &ProjectNode) -> usize {
+    fn fit_name_for_node(node: &ProjectNode) -> usize {
         let mut name = node.project.display_name();
         if !node.worktrees.is_empty() {
             name = format!("{name} wt:{}", node.worktrees.len());

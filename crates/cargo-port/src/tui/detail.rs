@@ -28,6 +28,7 @@ use super::render::CiColumn;
 use super::types::FocusTarget;
 use crate::ci::CiRun;
 use crate::project::ExampleGroup;
+use crate::project::GitOrigin;
 use crate::project::ProjectType;
 use crate::project::RustProject;
 
@@ -157,6 +158,16 @@ struct ColumnFocus {
     cursor:         usize,
 }
 
+enum GitPresence {
+    Available,
+    Missing,
+}
+
+enum TargetPresence {
+    Available,
+    Missing,
+}
+
 struct DetailLayoutSpec {
     constraints: Vec<Constraint>,
     git_col:     Option<usize>,
@@ -164,9 +175,10 @@ struct DetailLayoutSpec {
     max_col:     usize,
 }
 
-fn detail_layout_spec(has_git: bool, has_targets: bool) -> DetailLayoutSpec {
-    match has_git {
-        true => DetailLayoutSpec {
+fn detail_layout_spec(git: GitPresence, targets: TargetPresence) -> DetailLayoutSpec {
+    let has_targets = matches!(targets, TargetPresence::Available);
+    match git {
+        GitPresence::Available => DetailLayoutSpec {
             constraints: vec![
                 Constraint::Percentage(37),
                 Constraint::Percentage(37),
@@ -174,18 +186,18 @@ fn detail_layout_spec(has_git: bool, has_targets: bool) -> DetailLayoutSpec {
             ],
             git_col:     Some(1),
             targets_col: Some(2),
-            max_col:     if has_targets { 2 } else { 1 },
+            max_col:     1 + usize::from(has_targets),
         },
-        false => DetailLayoutSpec {
+        GitPresence::Missing => DetailLayoutSpec {
             constraints: vec![Constraint::Percentage(74), Constraint::Percentage(26)],
             git_col:     None,
             targets_col: Some(1),
-            max_col:     if has_targets { 1 } else { 0 },
+            max_col:     usize::from(has_targets),
         },
     }
 }
 
-fn has_targets(info: &DetailInfo) -> bool {
+const fn has_targets(info: &DetailInfo) -> bool {
     info.is_binary || !info.examples.is_empty() || !info.benches.is_empty()
 }
 
@@ -531,6 +543,65 @@ fn format_ahead_behind((ahead, behind): (usize, usize)) -> String {
     }
 }
 
+struct GitDetailFields {
+    branch:         Option<String>,
+    sync:           Option<String>,
+    vs_origin:      Option<String>,
+    vs_local:       Option<String>,
+    default_branch: Option<String>,
+    origin:         Option<String>,
+    owner:          Option<String>,
+    url:            Option<String>,
+    stars:          Option<u64>,
+    inception:      Option<String>,
+    last_commit:    Option<String>,
+}
+
+fn build_git_detail_fields(app: &App, project: &RustProject) -> GitDetailFields {
+    let git = app.git_info.get(&project.path);
+    let branch = git.and_then(|g| g.branch.clone());
+    let sync = git
+        .map(|g| match g.ahead_behind {
+            Some((0, 0)) => "✓".to_string(),
+            Some((a, 0)) => format!("↑{a} ahead"),
+            Some((0, b)) => format!("↓{b} behind"),
+            Some((a, b)) => format!("↑{a} ↓{b}"),
+            None if g.origin != GitOrigin::Local => "not published".to_string(),
+            None => String::new(),
+        })
+        .filter(|s| !s.is_empty());
+    let vs_origin = git
+        .and_then(|g| g.ahead_behind_origin)
+        .map(format_ahead_behind);
+    let vs_local = git
+        .and_then(|g| g.ahead_behind_local)
+        .map(format_ahead_behind);
+    let default_branch = git.and_then(|g| g.default_branch.clone());
+    let origin = git.map(|g| format!("{} {}", g.origin.icon(), g.origin.label()));
+    let owner = git.and_then(|g| g.owner.clone());
+    let url = git.and_then(|g| g.url.clone());
+    let stars = app.stars.get(&project.path).copied();
+    let inception = git
+        .and_then(|g| g.first_commit.as_deref())
+        .map(format_timestamp);
+    let last_commit = git
+        .and_then(|g| g.last_commit.as_deref())
+        .map(format_timestamp);
+    GitDetailFields {
+        branch,
+        sync,
+        vs_origin,
+        vs_local,
+        default_branch,
+        origin,
+        owner,
+        url,
+        stars,
+        inception,
+        last_commit,
+    }
+}
+
 pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
     let mut counts = app.workspace_counts(project).unwrap_or_else(|| {
         let mut c = ProjectCounts::default();
@@ -546,28 +617,7 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
     }
     let stats_rows = counts.to_rows();
 
-    let git = app.git_info.get(&project.path);
-    let git_branch = git.and_then(|g| g.branch.clone());
-    let git_sync = git.map(|g| match g.ahead_behind {
-        Some((0, 0)) => "✓".to_string(),
-        Some((a, 0)) => format!("↑{a} ahead"),
-        Some((0, b)) => format!("↓{b} behind"),
-        Some((a, b)) => format!("↑{a} ↓{b}"),
-        None if g.origin != crate::project::GitOrigin::Local => "not published".to_string(),
-        None => return String::new(),
-    });
-    // Filter out empty strings so the Sync row hides for local repos.
-    let git_sync = git_sync.filter(|s| !s.is_empty());
-    let default_branch = git.and_then(|g| g.default_branch.clone());
-    let git_vs_origin = git
-        .and_then(|g| g.ahead_behind_origin)
-        .map(|ab| format_ahead_behind(ab));
-    let git_vs_local = git
-        .and_then(|g| g.ahead_behind_local)
-        .map(|ab| format_ahead_behind(ab));
-    let git_origin = git.map(|g| format!("{} {}", g.origin.icon(), g.origin.label()));
-    let git_owner = git.and_then(|g| g.owner.clone());
-    let git_url = git.and_then(|g| g.url.clone());
+    let git_detail = build_git_detail_fields(app, project);
     let crates_version = app.crates_versions.get(&project.path).cloned();
     let worktree_label = project.worktree_name.clone();
 
@@ -626,21 +676,17 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
         ci,
         stats_rows,
         crates_version,
-        git_branch,
-        git_sync,
-        git_vs_origin,
-        git_vs_local,
-        default_branch,
-        git_origin,
-        git_owner,
-        git_url,
-        git_stars: app.stars.get(&project.path).copied(),
-        git_inception: git
-            .and_then(|g| g.first_commit.as_deref())
-            .map(format_timestamp),
-        git_last_commit: git
-            .and_then(|g| g.last_commit.as_deref())
-            .map(format_timestamp),
+        git_branch: git_detail.branch,
+        git_sync: git_detail.sync,
+        git_vs_origin: git_detail.vs_origin,
+        git_vs_local: git_detail.vs_local,
+        default_branch: git_detail.default_branch,
+        git_origin: git_detail.origin,
+        git_owner: git_detail.owner,
+        git_url: git_detail.url,
+        git_stars: git_detail.stars,
+        git_inception: git_detail.inception,
+        git_last_commit: git_detail.last_commit,
         worktree_label,
         worktree_names,
         vendored_names,
@@ -858,7 +904,17 @@ pub(super) fn render_detail_panel(
 
     if let Some(info) = detail_info {
         let git = git_fields(info);
-        let spec = detail_layout_spec(!git.is_empty(), has_targets(info));
+        let git_presence = if git.is_empty() {
+            GitPresence::Missing
+        } else {
+            GitPresence::Available
+        };
+        let target_presence = if has_targets(info) {
+            TargetPresence::Available
+        } else {
+            TargetPresence::Missing
+        };
+        let spec = detail_layout_spec(git_presence, target_presence);
 
         let columns = Layout::default()
             .direction(Direction::Horizontal)
@@ -1408,10 +1464,20 @@ pub fn detail_max_column(app: &App) -> usize { detail_layout(app).max_col }
 
 fn detail_layout(app: &App) -> DetailLayoutSpec {
     let Some(project) = app.selected_project() else {
-        return detail_layout_spec(false, false);
+        return detail_layout_spec(GitPresence::Missing, TargetPresence::Missing);
     };
     let info = build_detail_info(app, project);
-    detail_layout_spec(!git_fields(&info).is_empty(), has_targets(&info))
+    let git = if git_fields(&info).is_empty() {
+        GitPresence::Missing
+    } else {
+        GitPresence::Available
+    };
+    let targets = if has_targets(&info) {
+        TargetPresence::Available
+    } else {
+        TargetPresence::Missing
+    };
+    detail_layout_spec(git, targets)
 }
 
 /// Returns the field count for a given column index.

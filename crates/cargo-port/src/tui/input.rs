@@ -140,17 +140,17 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     }
 
     // Scan log
-    if let Some(scan_rect) = cache.scan_log {
-        if scan_rect.contains(pos) {
-            app.focus = FocusTarget::ScanLog;
-            let inner_y = row.saturating_sub(scan_rect.y + 1);
-            let scroll_offset = app.scan_log_state.offset();
-            let clicked_index = scroll_offset + inner_y as usize;
-            if clicked_index < app.scan_log.len() {
-                app.scan_log_state.select(Some(clicked_index));
-            }
-            return;
+    if let Some(scan_rect) = cache.scan_log
+        && scan_rect.contains(pos)
+    {
+        app.focus = FocusTarget::ScanLog;
+        let inner_y = row.saturating_sub(scan_rect.y + 1);
+        let scroll_offset = app.scan_log_state.offset();
+        let clicked_index = scroll_offset + inner_y as usize;
+        if clicked_index < app.scan_log.len() {
+            app.scan_log_state.select(Some(clicked_index));
         }
+        return;
     }
 
     // Detail columns (project, git, targets)
@@ -198,7 +198,7 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     }
 }
 
-fn handle_finder_click(app: &mut App, pos: Position) {
+const fn handle_finder_click(app: &mut App, pos: Position) {
     let Some(results_area) = app.layout_cache.finder_results_area else {
         return;
     };
@@ -213,7 +213,7 @@ fn handle_finder_click(app: &mut App, pos: Position) {
     }
 }
 
-fn handle_settings_click(app: &mut App, pos: Position) {
+const fn handle_settings_click(app: &mut App, pos: Position) {
     let Some(area) = app.layout_cache.settings_area else {
         return;
     };
