@@ -368,7 +368,6 @@ fn run_cargo_check(
     command
         .arg("--target-dir")
         .arg(mend_target_dir)
-        .env("RUSTUP_TOOLCHAIN", "nightly")
         .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
         .env(DRIVER_ENV, "1")
         .env(CONFIG_ROOT_ENV, &loaded_config.root)
@@ -407,7 +406,6 @@ fn run_cargo_rustc_for_package(
     }
 
     command
-        .env("RUSTUP_TOOLCHAIN", "nightly")
         .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
         .env(DRIVER_ENV, "1")
         .env(CONFIG_ROOT_ENV, &loaded_config.root)

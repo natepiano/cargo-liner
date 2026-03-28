@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Compiler driver no longer forces `RUSTUP_TOOLCHAIN=nightly`, using the caller's toolchain instead — prevents `E0514` errors when the mend binary was compiled with a different rustc version than nightly
+- Compiler driver uses an isolated target directory (`target/mend/`) to prevent cross-toolchain artifact conflicts from cached builds
+
 ## [0.2.2] - 2026-03-28
 
 ### Fixed
