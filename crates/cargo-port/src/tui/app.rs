@@ -1113,13 +1113,13 @@ impl App {
         }
     }
 
-    pub(super) fn scan_log_to_top(&mut self) {
+    pub(super) const fn scan_log_to_top(&mut self) {
         if !self.scan_log.is_empty() {
             self.scan_log_state.select(Some(0));
         }
     }
 
-    pub(super) fn scan_log_to_bottom(&mut self) {
+    pub(super) const fn scan_log_to_bottom(&mut self) {
         if !self.scan_log.is_empty() {
             self.scan_log_state
                 .select(Some(self.scan_log.len().saturating_sub(1)));

@@ -1,15 +1,13 @@
-//! Watches project `target/` directories for filesystem changes and
+//! Watches project directories recursively for `target/` changes and
 //! recalculates disk usage after a debounce period.
 //!
-//! Each project gets two non-recursive watches:
-//! - **Project root** — detects `target/` creation and deletion.
-//! - **`target/`** (when present) — detects build activity via files cargo touches directly in
-//!   `target/` (e.g. `.rustc_info.json`).
+//! Each project gets a single recursive watch at the project root.
+//! Events outside `target/` are ignored. The 3-second debounce ensures
+//! disk recalculation waits for build/clean activity to settle.
 //!
-//! On macOS (FSEvents) the non-recursive watches still report subtree
-//! events, so build activity is caught even without a recursive watch.
-//! On Linux (inotify) the `target/`-level watch catches the direct
-//! children that cargo modifies on every build.
+//! On Linux (inotify) this creates one watch per subdirectory. The
+//! default limit of 8192 handles ~10-25 projects; developers using
+//! VS Code or JetBrains typically have this raised already.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,12 +23,15 @@ use crate::scan;
 use crate::scan::BackgroundMsg;
 
 /// Wait for build/clean activity to settle before recalculating.
-const DEBOUNCE_DURATION: Duration = Duration::from_secs(3);
+const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
 
-/// How often the watcher thread checks for expired debounce timers.
+/// Maximum time before forcing a recalc even if events keep arriving.
+const MAX_WAIT: Duration = Duration::from_secs(1);
+
+/// How often the watcher thread checks for expired timers.
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Request to start watching a project's `target/` directory.
+/// Request to start watching a project directory.
 pub struct WatchRequest {
     /// Display path (e.g. `~/foo/bar`).
     pub project_path: String,
@@ -38,8 +39,8 @@ pub struct WatchRequest {
     pub abs_path:     PathBuf,
 }
 
-/// Spawn a background thread that watches project `target/` directories
-/// for filesystem changes. Returns a sender for registering new projects.
+/// Spawn a background thread that watches project directories for
+/// `target/` changes. Returns a sender for registering new projects.
 ///
 /// When changes are detected (with debouncing), the thread recalculates
 /// `dir_size` and sends `BackgroundMsg::DiskUsage` through `bg_tx`.
@@ -55,9 +56,8 @@ pub fn spawn_disk_watcher(bg_tx: mpsc::Sender<BackgroundMsg>) -> mpsc::Sender<Wa
 
 /// Per-project tracking state.
 struct ProjectWatch {
-    project_path:   String,
-    abs_path:       PathBuf,
-    target_watched: bool,
+    project_path: String,
+    abs_path:     PathBuf,
 }
 
 fn watcher_loop(bg_tx: mpsc::Sender<BackgroundMsg>, watch_rx: mpsc::Receiver<WatchRequest>) {
@@ -71,8 +71,8 @@ fn watcher_loop(bg_tx: mpsc::Sender<BackgroundMsg>, watch_rx: mpsc::Receiver<Wat
 
     // project abs_path → watch state
     let mut projects: HashMap<PathBuf, ProjectWatch> = HashMap::new();
-    // project_path → (deadline, abs_path) for debouncing
-    let mut pending: HashMap<String, (Instant, PathBuf)> = HashMap::new();
+    // project_path → (debounce_deadline, max_deadline, abs_path)
+    let mut pending: HashMap<String, (Instant, Instant, PathBuf)> = HashMap::new();
 
     loop {
         // Drain new registrations (exit when the sender is dropped).
@@ -87,20 +87,20 @@ fn watcher_loop(bg_tx: mpsc::Sender<BackgroundMsg>, watch_rx: mpsc::Receiver<Wat
         // Drain filesystem events.
         while let Ok(result) = notify_rx.try_recv() {
             if let Ok(event) = result {
-                handle_event(&event, &mut watcher, &mut projects, &mut pending);
+                handle_event(&event, &projects, &mut pending);
             }
         }
 
-        // Fire any expired debounce timers.
+        // Fire when debounce expires or max wait is reached.
         let now = Instant::now();
         let ready: Vec<String> = pending
             .iter()
-            .filter(|(_, (deadline, _))| now >= *deadline)
+            .filter(|(_, (debounce, max, _))| now >= *debounce || now >= *max)
             .map(|(key, _)| key.clone())
             .collect();
 
         for project_path in ready {
-            if let Some((_, abs_path)) = pending.remove(&project_path) {
+            if let Some((_, _, abs_path)) = pending.remove(&project_path) {
                 let bytes = scan::dir_size(&abs_path);
                 if bg_tx
                     .send(BackgroundMsg::DiskUsage {
@@ -123,37 +123,28 @@ fn register(
     projects: &mut HashMap<PathBuf, ProjectWatch>,
     req: WatchRequest,
 ) {
-    // Watch project root (catches target/ creation/deletion).
-    let _ = watcher.watch(&req.abs_path, RecursiveMode::NonRecursive);
-
-    // Watch target/ if it already exists (catches build activity).
-    let target_dir = req.abs_path.join("target");
-    let target_watched = target_dir.is_dir()
-        && watcher
-            .watch(&target_dir, RecursiveMode::NonRecursive)
-            .is_ok();
+    let _ = watcher.watch(&req.abs_path, RecursiveMode::Recursive);
 
     projects.insert(
         req.abs_path.clone(),
         ProjectWatch {
             project_path: req.project_path,
-            abs_path: req.abs_path,
-            target_watched,
+            abs_path:     req.abs_path,
         },
     );
 }
 
 fn handle_event(
     event: &notify::Event,
-    watcher: &mut impl Watcher,
-    projects: &mut HashMap<PathBuf, ProjectWatch>,
-    pending: &mut HashMap<String, (Instant, PathBuf)>,
+    projects: &HashMap<PathBuf, ProjectWatch>,
+    pending: &mut HashMap<String, (Instant, Instant, PathBuf)>,
 ) {
-    let deadline = Instant::now() + DEBOUNCE_DURATION;
+    let now = Instant::now();
+    let debounce_deadline = now + DEBOUNCE_DURATION;
 
     for event_path in &event.paths {
         let Some((_, project)) = projects
-            .iter_mut()
+            .iter()
             .find(|(root, _)| event_path.starts_with(root))
         else {
             continue;
@@ -171,25 +162,14 @@ fn handle_event(
             continue;
         }
 
-        // If target/ just appeared, start watching it.
-        let target_dir = project.abs_path.join("target");
-        if !project.target_watched && target_dir.is_dir() {
-            if watcher
-                .watch(&target_dir, RecursiveMode::NonRecursive)
-                .is_ok()
-            {
-                project.target_watched = true;
-            }
-        }
-
-        // If target/ was removed, mark the watch as stale.
-        if project.target_watched && !target_dir.is_dir() {
-            project.target_watched = false;
-        }
+        // Preserve the max deadline from the first event; reset the debounce.
+        let max_deadline = pending
+            .get(&project.project_path)
+            .map_or(now + MAX_WAIT, |(_, max, _)| *max);
 
         pending.insert(
             project.project_path.clone(),
-            (deadline, project.abs_path.clone()),
+            (debounce_deadline, max_deadline, project.abs_path.clone()),
         );
     }
 }
