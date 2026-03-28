@@ -6,6 +6,7 @@ use std::process::Command;
 
 use serde::Deserialize;
 use serde::Serialize;
+use toml::Table;
 use toml::Value;
 
 /// Whether a project is a plain clone or a fork (has an "upstream" remote).
@@ -306,7 +307,7 @@ impl RustProject {
     pub fn from_cargo_toml(cargo_toml_path: &Path) -> Result<Self, ProjectParseError> {
         let contents =
             std::fs::read_to_string(cargo_toml_path).map_err(ProjectParseError::ReadError)?;
-        let table: Value = contents.parse().map_err(ProjectParseError::ParseError)?;
+        let table: Table = contents.parse().map_err(ProjectParseError::ParseError)?;
 
         let project_dir = cargo_toml_path.parent().unwrap_or(cargo_toml_path);
 
@@ -395,7 +396,7 @@ impl RustProject {
     pub const fn is_workspace(&self) -> bool { self.is_workspace }
 }
 
-fn detect_types(table: &Value, project_dir: &Path) -> Vec<ProjectType> {
+fn detect_types(table: &Table, project_dir: &Path) -> Vec<ProjectType> {
     let mut types = Vec::new();
 
     let is_proc_macro = table
@@ -429,7 +430,7 @@ fn detect_types(table: &Value, project_dir: &Path) -> Vec<ProjectType> {
 
 /// Collect examples grouped by category. Prefers `[[example]]` declarations, falls back to
 /// file discovery.
-fn collect_examples(table: &Value, project_dir: &Path) -> Vec<ExampleGroup> {
+fn collect_examples(table: &Table, project_dir: &Path) -> Vec<ExampleGroup> {
     // Collect from [[example]] entries in Cargo.toml
     if let Some(arr) = table.get("example").and_then(|v| v.as_array())
         && !arr.is_empty()
@@ -548,7 +549,7 @@ fn discover_examples_grouped(examples_dir: &Path) -> Vec<ExampleGroup> {
 /// Collect target names (e.g. benches). Prefers `[[toml_key]]` declarations, falls back to
 /// file discovery in `dir_name/`.
 fn collect_target_names(
-    table: &Value,
+    table: &Table,
     project_dir: &Path,
     toml_key: &str,
     dir_name: &str,
@@ -596,7 +597,7 @@ fn collect_target_names(
     names
 }
 
-fn count_targets(table: &Value, project_dir: &Path, toml_key: &str, dir_name: &str) -> usize {
+fn count_targets(table: &Table, project_dir: &Path, toml_key: &str, dir_name: &str) -> usize {
     let declared = table
         .get(toml_key)
         .and_then(|v| v.as_array())
