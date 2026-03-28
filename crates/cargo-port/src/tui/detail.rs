@@ -1318,36 +1318,50 @@ fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn]) -> Row<'static> {
 }
 
 /// Build column width constraints for the CI table based on content.
+///
+/// Duration and timestamp columns use `Min` so they are never truncated.
+/// Commit and branch use `Fill` so they absorb remaining space and shrink
+/// first when the terminal is narrow.
 fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn]) -> Vec<Constraint> {
-    #[allow(clippy::cast_possible_truncation)]
-    let max_commit_width = ci_runs
-        .iter()
-        .filter_map(|r| r.commit_title.as_ref())
-        .map(String::len)
-        .max()
-        .unwrap_or(18)
-        .max(18) as u16;
-
-    #[allow(clippy::cast_possible_truncation)]
-    let max_branch_width = ci_runs
-        .iter()
-        .map(|r| r.branch.len())
-        .max()
-        .unwrap_or(6)
-        .max(6) as u16;
-
     let mut widths = vec![
-        Constraint::Length(max_commit_width), // Commit
-        Constraint::Length(max_branch_width), // Branch
-        Constraint::Length(16),               // Timestamp
+        Constraint::Fill(2), // Commit — overflow victim, 2× branch share
+        Constraint::Fill(1), // Branch — overflow victim
+        Constraint::Min(16), // Timestamp — protected
     ];
-    for _ in cols {
-        widths.push(Constraint::Length(8)); // duration
-        widths.push(Constraint::Length(1)); // glyph
+    for col in cols {
+        #[allow(clippy::cast_possible_truncation)]
+        let dur_min = ci_duration_min_width(ci_runs, *col) as u16;
+        widths.push(Constraint::Min(dur_min)); // duration — protected
+        widths.push(Constraint::Min(1)); // glyph
     }
-    widths.push(Constraint::Length(8)); // Total duration
-    widths.push(Constraint::Length(1)); // Total glyph
+    #[allow(clippy::cast_possible_truncation)]
+    let total_min = ci_total_min_width(ci_runs) as u16;
+    widths.push(Constraint::Min(total_min)); // Total duration — protected
+    widths.push(Constraint::Min(1)); // Total glyph
     widths
+}
+
+/// Minimum width for a CI duration column: the wider of the header label
+/// and the widest duration value across all runs.
+fn ci_duration_min_width(ci_runs: &[CiRun], col: CiColumn) -> usize {
+    let max_data = ci_runs
+        .iter()
+        .filter_map(|r| r.jobs.iter().find(|j| col.matches(&j.name)))
+        .map(|j| j.duration.trim().len())
+        .max()
+        .unwrap_or(0);
+    col.label().len().max(max_data)
+}
+
+/// Minimum width for the Total duration column.
+fn ci_total_min_width(ci_runs: &[CiRun]) -> usize {
+    let max_data = ci_runs
+        .iter()
+        .filter_map(|r| r.wall_clock_secs)
+        .map(|s| crate::ci::format_secs(s).trim().len())
+        .max()
+        .unwrap_or(0);
+    "Total".len().max(max_data)
 }
 
 pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun], area: Rect) {
