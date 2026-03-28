@@ -777,7 +777,7 @@ fn render_git_column_inner(
 
 pub(super) fn render_detail_panel(
     frame: &mut Frame,
-    app: &App,
+    app: &mut App,
     detail_info: Option<&DetailInfo>,
     area: Rect,
 ) {
@@ -794,6 +794,9 @@ pub(super) fn render_detail_panel(
             .direction(Direction::Horizontal)
             .constraints(spec.constraints)
             .split(area);
+
+        app.layout_cache.detail_columns = columns.to_vec();
+        app.layout_cache.detail_targets_col = spec.targets_col;
 
         let styles = RenderStyles {
             highlight:       Style::default().fg(Color::Black).bg(Color::Cyan),
@@ -932,7 +935,7 @@ fn render_git_panel(
 
 fn render_targets_panel(
     frame: &mut Frame,
-    app: &App,
+    app: &mut App,
     info: &DetailInfo,
     detail_focused: bool,
     col: usize,
@@ -1000,6 +1003,7 @@ fn render_targets_panel(
     };
     let mut table_state = TableState::default().with_selected(selected);
     frame.render_stateful_widget(table, area, &mut table_state);
+    app.layout_cache.targets_table_offset = table_state.offset();
 }
 
 /// Format ISO 8601 timestamp as `yyyy-mm-dd hh:mm`.
@@ -1220,7 +1224,7 @@ fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn]) -> Vec<Constraint> {
     widths
 }
 
-pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], area: Rect) {
+pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun], area: Rect) {
     let ci_focused = app.focus == FocusTarget::CiRuns;
     let ci_state = app.selected_project().and_then(|p| app.ci_state_for(p));
 
@@ -1320,6 +1324,7 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], a
 
     let mut table_state = TableState::default().with_selected(Some(app.ci_runs_cursor.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
+    app.layout_cache.ci_table_offset = table_state.offset();
 }
 
 /// Returns (`max_column_index`, `targets_column_index` or `None`).
@@ -1341,7 +1346,7 @@ fn detail_layout(app: &App) -> DetailLayoutSpec {
 
 /// Returns the field count for a given column index.
 /// Returns 0 for the targets column (it uses scroll, not cursor).
-fn detail_column_field_count(app: &App, column: usize) -> usize {
+pub(super) fn detail_column_field_count(app: &App, column: usize) -> usize {
     let spec = detail_layout(app);
     if Some(column) == spec.targets_col {
         return 0; // Targets column uses scroll, not cursor
@@ -1367,7 +1372,7 @@ fn clamp_detail_cursor(app: &mut App) {
 }
 
 /// Get the total number of target entries for the selected project.
-fn target_list_len(app: &App) -> usize {
+pub(super) fn target_list_len(app: &App) -> usize {
     let Some(project) = app.selected_project() else {
         return 0;
     };

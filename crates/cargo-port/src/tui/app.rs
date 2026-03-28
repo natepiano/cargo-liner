@@ -219,6 +219,7 @@ pub struct App {
     pub(super) data_generation:   u64,
     pub(super) cached_detail:     Option<DetailCache>,
     pub(super) selection_changed: bool,
+    pub(super) layout_cache:      super::types::LayoutCache,
 }
 
 impl App {
@@ -341,6 +342,7 @@ impl App {
             data_generation: 0,
             cached_detail: None,
             selection_changed: false,
+            layout_cache: super::types::LayoutCache::default(),
         }
     }
 
@@ -1028,7 +1030,7 @@ impl App {
         }
     }
 
-    fn row_count(&self) -> usize {
+    pub(super) fn row_count(&self) -> usize {
         if self.searching && !self.search_query.is_empty() {
             self.filtered.len()
         } else {

@@ -1,3 +1,5 @@
+use ratatui::layout::Rect;
+
 /// A bounded cursor for scrollable lists. Replaces raw `usize` index + manual
 /// bounds checking with a single type that enforces invariants.
 #[derive(Default, Clone)]
@@ -43,4 +45,20 @@ pub enum FocusTarget {
     DetailFields,
     CiRuns,
     ScanLog,
+}
+
+/// Cached layout rectangles from the last render frame, used for mouse
+/// hit-testing in the event handler.
+#[derive(Default)]
+pub struct LayoutCache {
+    pub project_list:         Rect,
+    pub scan_log:             Option<Rect>,
+    pub detail_columns:       Vec<Rect>,
+    pub detail_targets_col:   Option<usize>,
+    pub ci_panel:             Rect,
+    pub ci_table_offset:      usize,
+    pub targets_table_offset: usize,
+    pub finder_results_area:  Option<Rect>,
+    pub finder_table_offset:  usize,
+    pub settings_area:        Option<Rect>,
 }

@@ -1,6 +1,8 @@
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
+use crossterm::event::MouseButton;
 use crossterm::event::MouseEventKind;
+use ratatui::layout::Position;
 
 use super::app::App;
 use super::app::CiState;
@@ -93,6 +95,9 @@ pub(super) fn handle_event(app: &mut App, event: Event) {
                     app.move_down();
                 }
             },
+            MouseEventKind::Down(MouseButton::Left) => {
+                handle_mouse_click(app, mouse.column, mouse.row);
+            },
             _ => {},
         },
         _ => {},
@@ -101,6 +106,124 @@ pub(super) fn handle_event(app: &mut App, event: Event) {
     // Track project selection changes for session persistence
     if app.focus == FocusTarget::ProjectList {
         super::terminal::track_selection(app);
+    }
+}
+
+fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
+    let pos = Position::new(column, row);
+
+    // Popups consume all clicks
+    if app.confirm.is_some() {
+        return;
+    }
+    if app.show_finder {
+        handle_finder_click(app, pos);
+        return;
+    }
+    if app.show_settings {
+        handle_settings_click(app, pos);
+        return;
+    }
+
+    let cache = &app.layout_cache;
+
+    // Project list
+    if cache.project_list.contains(pos) {
+        app.focus = FocusTarget::ProjectList;
+        let inner_y = row.saturating_sub(cache.project_list.y + 1);
+        let scroll_offset = app.list_state.offset();
+        let clicked_index = scroll_offset + inner_y as usize;
+        if clicked_index < app.row_count() {
+            app.list_state.select(Some(clicked_index));
+        }
+        return;
+    }
+
+    // Scan log
+    if let Some(scan_rect) = cache.scan_log {
+        if scan_rect.contains(pos) {
+            app.focus = FocusTarget::ScanLog;
+            let inner_y = row.saturating_sub(scan_rect.y + 1);
+            let scroll_offset = app.scan_log_state.offset();
+            let clicked_index = scroll_offset + inner_y as usize;
+            if clicked_index < app.scan_log.len() {
+                app.scan_log_state.select(Some(clicked_index));
+            }
+            return;
+        }
+    }
+
+    // Detail columns (project, git, targets)
+    // Clone to release borrow on `app.layout_cache` before mutating `app`.
+    let detail_columns = cache.detail_columns.clone();
+    let detail_targets_col = cache.detail_targets_col;
+    let targets_offset = cache.targets_table_offset;
+    for (col_idx, col_rect) in detail_columns.iter().enumerate() {
+        if col_rect.contains(pos) {
+            app.focus = FocusTarget::DetailFields;
+            app.detail_column.set(col_idx);
+            let inner_y = row.saturating_sub(col_rect.y + 1) as usize;
+
+            if Some(col_idx) == detail_targets_col {
+                let total = detail::target_list_len(app);
+                let clicked_row = targets_offset + inner_y;
+                if clicked_row < total {
+                    app.examples_scroll.set(clicked_row);
+                }
+            } else {
+                let field_count = detail::detail_column_field_count(app, col_idx);
+                if inner_y < field_count {
+                    app.detail_cursor.set(inner_y);
+                }
+            }
+            return;
+        }
+    }
+
+    // CI panel (header row adds +1 beyond the border)
+    let ci_panel = cache.ci_panel;
+    let ci_offset = cache.ci_table_offset;
+    if ci_panel.contains(pos) {
+        app.focus = FocusTarget::CiRuns;
+        let inner_y = row.saturating_sub(ci_panel.y + 2) as usize; // +1 border, +1 header
+        let clicked_row = ci_offset + inner_y;
+        let ci_run_count = app
+            .selected_project()
+            .and_then(|p| app.ci_state_for(p))
+            .map_or(0, |s| s.runs().len());
+        let total_rows = ci_run_count + detail::CI_EXTRA_ROWS;
+        if clicked_row < total_rows {
+            app.ci_runs_cursor.set(clicked_row);
+        }
+    }
+}
+
+fn handle_finder_click(app: &mut App, pos: Position) {
+    let Some(results_area) = app.layout_cache.finder_results_area else {
+        return;
+    };
+    if !results_area.contains(pos) {
+        return;
+    }
+    // +1 for the header row inside the results table
+    let inner_y = pos.y.saturating_sub(results_area.y + 1) as usize;
+    let clicked_index = app.layout_cache.finder_table_offset + inner_y;
+    if clicked_index < app.finder_results.len() {
+        app.finder_cursor.set(clicked_index);
+    }
+}
+
+fn handle_settings_click(app: &mut App, pos: Position) {
+    let Some(area) = app.layout_cache.settings_area else {
+        return;
+    };
+    if !area.contains(pos) {
+        return;
+    }
+    // Settings layout inside border: 1 empty line, then settings rows
+    let inner_y = pos.y.saturating_sub(area.y + 1 + 1) as usize;
+    if inner_y < settings::SettingOption::count() {
+        app.settings_cursor.set(inner_y);
     }
 }
 

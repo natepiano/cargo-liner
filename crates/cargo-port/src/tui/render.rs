@@ -207,6 +207,8 @@ pub(super) fn group_header_spans(prefix: &str, name: &str, name_width: usize) ->
 }
 
 pub(super) fn ui(frame: &mut Frame, app: &mut App) {
+    app.layout_cache = super::types::LayoutCache::default();
+
     let outer_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -295,6 +297,13 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         .constraints(left_constraints)
         .split(area);
 
+    app.layout_cache.project_list = left_layout[1];
+    app.layout_cache.scan_log = if app.scan_complete {
+        None
+    } else {
+        Some(left_layout[2])
+    };
+
     if app.searching {
         render_search_bar(frame, app, left_layout[0]);
     }
@@ -306,13 +315,17 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn render_right_panel(frame: &mut Frame, app: &App, area: Rect) {
+fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Clear, area);
 
-    let selected_project_ref = app.selected_project();
     let detail_info = app.cached_detail.as_ref().map(|c| c.info.clone());
-    let ci_state = selected_project_ref.and_then(|p| app.ci_state_for(p));
-    let detail_ci_runs: Vec<CiRun> = ci_state
+    let has_ci = app
+        .selected_project()
+        .and_then(|p| app.ci_state_for(p))
+        .is_some();
+    let detail_ci_runs: Vec<CiRun> = app
+        .selected_project()
+        .and_then(|p| app.ci_state_for(p))
         .map(|s: &CiState| s.runs().to_vec())
         .unwrap_or_default();
     let has_example_output = !app.example_output.is_empty();
@@ -322,17 +335,20 @@ fn render_right_panel(frame: &mut Frame, app: &App, area: Rect) {
         .constraints(vec![Constraint::Length(14), Constraint::Min(3)])
         .split(area);
 
+    app.layout_cache.ci_panel = right_layout[1];
+
     super::detail::render_detail_panel(frame, app, detail_info.as_ref(), right_layout[0]);
 
     // Running output replaces the CI panel; Esc restores it.
     if has_example_output {
         render_example_output(frame, app, right_layout[1]);
-    } else if ci_state.is_some() {
+    } else if has_ci {
         super::detail::render_ci_panel(frame, app, &detail_ci_runs, right_layout[1]);
         if app.network_offline {
             render_offline_overlay(frame, app, right_layout[1]);
         }
     } else {
+        let selected_project_ref = app.selected_project();
         render_empty_ci_panel(frame, app, selected_project_ref, right_layout[1]);
         if app.network_offline {
             render_offline_overlay(frame, app, right_layout[1]);

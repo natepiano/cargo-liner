@@ -401,7 +401,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
 
 // ── Rendering ───────────────────────────────────────────────────────────
 
-pub(super) fn render_finder_popup(frame: &mut Frame, app: &App) {
+pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     // Use cached column widths (computed at index build time) for stable popup sizing
     let col_widths = app.finder_col_widths;
 
@@ -486,12 +486,13 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &App) {
         height: inner.height.saturating_sub(2),
     };
 
+    app.layout_cache.finder_results_area = Some(results_area);
     render_finder_results(frame, app, col_widths, results_area);
 }
 
 fn render_finder_results(
     frame: &mut Frame,
-    app: &App,
+    app: &mut App,
     col_widths: [usize; FINDER_COLUMN_COUNT],
     area: Rect,
 ) {
@@ -555,4 +556,5 @@ fn render_finder_results(
 
     let mut table_state = TableState::default().with_selected(Some(app.finder_cursor.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
+    app.layout_cache.finder_table_offset = table_state.offset();
 }
