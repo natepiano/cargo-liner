@@ -1485,6 +1485,13 @@ pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
                 handle_target_action(app, true);
             }
         },
+        KeyCode::Char('c') => {
+            if let Some(project) = app.selected_project()
+                && project.is_rust
+            {
+                app.confirm = Some(super::app::ConfirmAction::Clean(project.abs_path.clone()));
+            }
+        },
         _ => {},
     }
 }

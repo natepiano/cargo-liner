@@ -26,11 +26,27 @@ pub(super) fn handle_event(app: &mut App, event: Event) {
                 }
                 app.example_running = None;
                 app.example_output.push("── killed ──".to_string());
+                app.terminal_dirty = true;
                 return;
             }
             if key.code == KeyCode::Esc && !app.example_output.is_empty() {
                 // Second Esc: clear the output panel
                 app.example_output.clear();
+                return;
+            }
+            // Confirmation dialog: y confirms, anything else cancels
+            if app.confirm.is_some() {
+                if key.code == KeyCode::Char('y') {
+                    if let Some(action) = app.confirm.take() {
+                        match action {
+                            super::app::ConfirmAction::Clean(abs_path) => {
+                                app.pending_clean = Some(abs_path);
+                            },
+                        }
+                    }
+                } else {
+                    app.confirm = None;
+                }
                 return;
             }
             // Text-input contexts consume all keys — dispatch directly
@@ -179,6 +195,13 @@ fn handle_normal_key(app: &mut App, key: KeyCode) {
         KeyCode::Right => app.expand(),
         KeyCode::Left => app.collapse(),
         KeyCode::Char('r') => app.rescan(),
+        KeyCode::Char('c') => {
+            if let Some(project) = app.selected_project()
+                && project.is_rust
+            {
+                app.confirm = Some(super::app::ConfirmAction::Clean(project.abs_path.clone()));
+            }
+        },
         _ => {},
     }
 }

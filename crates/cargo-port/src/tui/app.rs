@@ -39,6 +39,12 @@ pub enum ExpandKey {
     Group(usize, usize),
 }
 
+/// An action waiting for user confirmation (y/n).
+pub enum ConfirmAction {
+    /// `cargo clean` on the project at this absolute path.
+    Clean(String),
+}
+
 /// What a visible row represents.
 #[derive(Clone, Copy)]
 pub enum VisibleRow {
@@ -154,6 +160,8 @@ pub struct App {
     pub editing:             Option<EditingState>,
     pub pending_example_run: Option<PendingExampleRun>,
     pub pending_ci_fetch:    Option<PendingCiFetch>,
+    pub pending_clean:       Option<String>,
+    pub confirm:             Option<ConfirmAction>,
     pub spinner_tick:        usize,
     pub ci_fetch_tx:         mpsc::Sender<CiFetchMsg>,
     pub ci_fetch_rx:         mpsc::Receiver<CiFetchMsg>,
@@ -163,6 +171,7 @@ pub struct App {
     pub example_tx:          mpsc::Sender<ExampleMsg>,
     pub example_rx:          mpsc::Receiver<ExampleMsg>,
     pub last_selected_path:  Option<String>,
+    pub terminal_dirty:      bool,
     pub should_quit:         bool,
     pub should_restart:      bool,
 
@@ -281,6 +290,8 @@ impl App {
             editing: None,
             pending_example_run: None,
             pending_ci_fetch: None,
+            pending_clean: None,
+            confirm: None,
             spinner_tick: 0,
             ci_fetch_tx,
             ci_fetch_rx,
@@ -290,6 +301,7 @@ impl App {
             example_tx,
             example_rx,
             last_selected_path: super::terminal::load_last_selected(),
+            terminal_dirty: false,
             should_quit: false,
             should_restart: false,
 
@@ -443,9 +455,18 @@ impl App {
                 ExampleMsg::Output(line) => {
                     self.example_output.push(line);
                 },
+                ExampleMsg::Progress(line) => {
+                    // Replace the last line (cargo progress bar uses \r)
+                    if let Some(last) = self.example_output.last_mut() {
+                        *last = line;
+                    } else {
+                        self.example_output.push(line);
+                    }
+                },
                 ExampleMsg::Finished => {
                     self.example_running = None;
                     self.example_output.push("── done ──".to_string());
+                    self.terminal_dirty = true;
                 },
             }
         }

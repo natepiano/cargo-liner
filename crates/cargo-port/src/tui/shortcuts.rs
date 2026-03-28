@@ -68,6 +68,10 @@ const RELEASE: Shortcut = Shortcut {
     key:         "r",
     description: "release",
 };
+const CLEAN: Shortcut = Shortcut {
+    key:         "c",
+    description: "clean",
+};
 const CLEAR_CACHE: Shortcut = Shortcut {
     key:         "c",
     description: "clear cache",
@@ -114,6 +118,7 @@ pub(super) struct StatusBarGroups {
 pub(super) fn for_status_bar(
     context: InputContext,
     enter_action: Option<&'static str>,
+    is_rust: bool,
 ) -> StatusBarGroups {
     let (navigation, actions) = match context {
         InputContext::Editing => (vec![], vec![enter("confirm"), ESC_CANCEL]),
@@ -121,10 +126,12 @@ pub(super) fn for_status_bar(
         InputContext::Finder => (vec![NAV], vec![enter("go to"), ESC_CLOSE]),
         InputContext::Settings => (vec![NAV, ARROWS_TOGGLE], vec![enter("edit"), ESC_CLOSE]),
         InputContext::DetailFields | InputContext::DetailTargets => {
-            detail_groups(context, enter_action)
+            detail_groups(context, enter_action, is_rust)
         },
         InputContext::CiRuns => ci_groups(enter_action),
-        InputContext::ScanLog | InputContext::ProjectList => project_list_groups(enter_action),
+        InputContext::ScanLog | InputContext::ProjectList => {
+            project_list_groups(enter_action, is_rust)
+        },
     };
 
     let global = if context.is_text_input() {
@@ -145,6 +152,7 @@ pub(super) fn for_status_bar(
 fn detail_groups(
     context: InputContext,
     enter_action: Option<&'static str>,
+    is_rust: bool,
 ) -> (Vec<Shortcut>, Vec<Shortcut>) {
     let navigation = vec![NAV, ARROWS_COLUMN, TAB_PANE, ESC_BACK];
 
@@ -154,6 +162,9 @@ fn detail_groups(
     }
     if context == InputContext::DetailTargets {
         actions.push(RELEASE);
+    }
+    if is_rust {
+        actions.push(CLEAN);
     }
 
     (navigation, actions)
@@ -171,12 +182,18 @@ fn ci_groups(enter_action: Option<&'static str>) -> (Vec<Shortcut>, Vec<Shortcut
     (navigation, actions)
 }
 
-fn project_list_groups(enter_action: Option<&'static str>) -> (Vec<Shortcut>, Vec<Shortcut>) {
+fn project_list_groups(
+    enter_action: Option<&'static str>,
+    is_rust: bool,
+) -> (Vec<Shortcut>, Vec<Shortcut>) {
     let navigation = vec![NAV, ARROWS_EXPAND, TAB_PANE];
 
     let mut actions = Vec::new();
     if let Some(action) = enter_action {
         actions.push(enter(action));
+    }
+    if is_rust {
+        actions.push(CLEAN);
     }
     actions.push(RESCAN);
 

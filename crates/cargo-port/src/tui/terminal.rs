@@ -11,6 +11,8 @@ use std::time::Duration;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableMouseCapture;
 use crossterm::execute;
+use crossterm::terminal::Clear;
+use crossterm::terminal::ClearType;
 use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
 use crossterm::terminal::disable_raw_mode;
@@ -36,6 +38,8 @@ use crate::scan::CiFetchResult;
 
 pub enum ExampleMsg {
     Output(String),
+    /// Carriage-return line — replaces the last output line (cargo progress).
+    Progress(String),
     Finished,
 }
 
@@ -128,6 +132,15 @@ fn restart_self() {
 fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
     loop {
         app.poll_background();
+
+        // A child process may have written to /dev/tty, clobbering the screen.
+        // Clear the actual terminal, then reset ratatui's buffer so it repaints.
+        if app.terminal_dirty {
+            app.terminal_dirty = false;
+            execute!(terminal.backend_mut(), Clear(ClearType::All))?;
+            terminal.clear()?;
+        }
+
         app.spinner_tick = app.spinner_tick.wrapping_add(1);
         app.ensure_visible_rows_cached();
         app.ensure_disk_cache();
@@ -166,6 +179,11 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
         // Spawn a pending example as a background process
         if let Some(run) = app.pending_example_run.take() {
             spawn_example_process(app, &run);
+        }
+
+        // Spawn a pending cargo clean
+        if let Some(abs_path) = app.pending_clean.take() {
+            spawn_clean_process(app, &abs_path);
         }
 
         // Spawn a pending CI fetch as a background process
@@ -213,6 +231,8 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
         cmd.arg("-p").arg(pkg);
     }
     cmd.current_dir(&run.abs_path)
+        .env("CARGO_TERM_PROGRESS_WHEN", "always")
+        .env("CARGO_TERM_PROGRESS_WIDTH", "80")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -242,20 +262,20 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
 
     let pid_holder = app.example_child.clone();
     let tx = app.example_tx.clone();
+    let bg_tx = app.bg_tx.clone();
+    let project_path = app
+        .selected_project()
+        .map(|p| p.path.clone())
+        .unwrap_or_default();
+    let abs = PathBuf::from(&run.abs_path);
     thread::spawn(move || {
-        // Read stderr (cargo output goes here)
+        // Read stderr with \r handling for cargo progress lines
         if let Some(stderr) = stderr {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                let _ = tx.send(ExampleMsg::Output(line));
-            }
+            read_with_progress(&tx, stderr);
         }
-        // Read stdout
+        // Read stdout (typically just program output, plain lines)
         if let Some(stdout) = stdout {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
-                let _ = tx.send(ExampleMsg::Output(line));
-            }
+            read_with_progress(&tx, stdout);
         }
 
         // Wait for the child to finish and clear the PID
@@ -263,6 +283,111 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
         *pid_holder
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+
+        // Refresh disk usage — building increases target dir size
+        let bytes = scan::dir_size(&abs);
+        let _ = bg_tx.send(BackgroundMsg::DiskUsage {
+            path: project_path,
+            bytes,
+        });
+
+        let _ = tx.send(ExampleMsg::Finished);
+    });
+}
+
+/// Read a stream byte-by-byte, splitting on `\n` (new line) and `\r` (progress update).
+/// `\r`-terminated chunks are sent as `Progress` so the UI replaces the last line.
+fn read_with_progress(tx: &std::sync::mpsc::Sender<ExampleMsg>, stream: impl io::Read) {
+    use std::io::Read;
+    let mut reader = BufReader::new(stream);
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+
+    while reader.read_exact(&mut byte).is_ok() {
+        match byte[0] {
+            b'\n' => {
+                let line = String::from_utf8_lossy(&buf).to_string();
+                let _ = tx.send(ExampleMsg::Output(line));
+                buf.clear();
+            },
+            b'\r' => {
+                if !buf.is_empty() {
+                    let line = String::from_utf8_lossy(&buf).to_string();
+                    let _ = tx.send(ExampleMsg::Progress(line));
+                    buf.clear();
+                }
+            },
+            b => buf.push(b),
+        }
+    }
+    // Flush any remaining data
+    if !buf.is_empty() {
+        let line = String::from_utf8_lossy(&buf).to_string();
+        let _ = tx.send(ExampleMsg::Output(line));
+    }
+}
+
+fn spawn_clean_process(app: &mut App, abs_path: &str) {
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.arg("clean")
+        .current_dir(abs_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            app.example_output = vec![format!("Failed to start cargo clean: {e}")];
+            app.example_running = Some("cargo clean".to_string());
+            return;
+        },
+    };
+
+    let pid = child.id();
+    *app.example_child
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pid);
+
+    app.example_output = vec!["Running cargo clean...".to_string()];
+    app.example_running = Some("cargo clean".to_string());
+
+    let stderr = child.stderr.take();
+    let stdout = child.stdout.take();
+
+    let pid_holder = app.example_child.clone();
+    let tx = app.example_tx.clone();
+    let bg_tx = app.bg_tx.clone();
+    let project_path = app
+        .selected_project()
+        .map(|p| p.path.clone())
+        .unwrap_or_default();
+    let abs = PathBuf::from(abs_path);
+    thread::spawn(move || {
+        if let Some(stderr) = stderr {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                let _ = tx.send(ExampleMsg::Output(line));
+            }
+        }
+        if let Some(stdout) = stdout {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                let _ = tx.send(ExampleMsg::Output(line));
+            }
+        }
+
+        let _ = child.wait();
+        *pid_holder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+
+        // Refresh disk usage for this project
+        let bytes = scan::dir_size(&abs);
+        let _ = bg_tx.send(BackgroundMsg::DiskUsage {
+            path: project_path,
+            bytes,
+        });
+
         let _ = tx.send(ExampleMsg::Finished);
     });
 }

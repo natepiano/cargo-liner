@@ -165,35 +165,34 @@ fn add_project_items(items: &mut Vec<FinderItem>, project: &RustProject, branch:
     let branch = branch.to_string();
     let dir = project.path.clone();
 
-    let branch_suffix = if branch.is_empty() {
-        String::new()
-    } else {
-        format!(" {branch}")
-    };
-
     // The project itself
+    let kind = FinderKind::Project;
     items.push(FinderItem {
+        search_text: format!("{project_name} {dir} {branch} {}", kind.label()),
         display_name: project_name.clone(),
-        search_text:  format!("{project_name}{branch_suffix}"),
-        kind:         FinderKind::Project,
+        kind,
         project_path: project.path.clone(),
-        target_name:  None,
+        target_name: None,
         parent_label: String::new(),
-        branch:       branch.clone(),
-        dir:          dir.clone(),
+        branch: branch.clone(),
+        dir: dir.clone(),
     });
 
     // Binary
     if project.types.contains(&ProjectType::Binary) {
+        let kind = FinderKind::Binary;
         items.push(FinderItem {
+            search_text: format!(
+                "{project_name} {project_name} {dir} {branch} {}",
+                kind.label()
+            ),
             display_name: project_name.clone(),
-            search_text:  format!("{project_name} bin{branch_suffix}"),
-            kind:         FinderKind::Binary,
+            kind,
             project_path: project.path.clone(),
-            target_name:  Some(project_name.clone()),
+            target_name: Some(project_name.clone()),
             parent_label: project_name.clone(),
-            branch:       branch.clone(),
-            dir:          dir.clone(),
+            branch: branch.clone(),
+            dir: dir.clone(),
         });
     }
 
@@ -205,57 +204,77 @@ fn add_project_items(items: &mut Vec<FinderItem>, project: &RustProject, branch:
             } else {
                 format!("{}/{name}", group.category)
             };
+            let kind = FinderKind::Example;
             items.push(FinderItem {
-                display_name: display.clone(),
-                search_text:  format!("{display} {project_name}{branch_suffix}"),
-                kind:         FinderKind::Example,
+                search_text: format!("{display} {project_name} {dir} {branch} {}", kind.label()),
+                display_name: display,
+                kind,
                 project_path: project.path.clone(),
-                target_name:  Some(name.clone()),
+                target_name: Some(name.clone()),
                 parent_label: project_name.clone(),
-                branch:       branch.clone(),
-                dir:          dir.clone(),
+                branch: branch.clone(),
+                dir: dir.clone(),
             });
         }
     }
 
     // Benches
     for name in &project.benches {
+        let kind = FinderKind::Bench;
         items.push(FinderItem {
+            search_text: format!("{name} {project_name} {dir} {branch} {}", kind.label()),
             display_name: name.clone(),
-            search_text:  format!("{name} {project_name}{branch_suffix}"),
-            kind:         FinderKind::Bench,
+            kind,
             project_path: project.path.clone(),
-            target_name:  Some(name.clone()),
+            target_name: Some(name.clone()),
             parent_label: project_name.clone(),
-            branch:       branch.clone(),
-            dir:          dir.clone(),
+            branch: branch.clone(),
+            dir: dir.clone(),
         });
     }
 }
 
 /// Fuzzy-match the query against the finder index. Returns `(indices, total_matches)`.
 /// Indices are sorted by score descending and capped at `max_results`.
+///
+/// Each whitespace-separated word is matched independently so that
+/// "bench diegetic" and "diegetic bench" produce the same results.
 pub fn search_finder(index: &[FinderItem], query: &str, max_results: usize) -> (Vec<usize>, usize) {
     if query.is_empty() {
         return (Vec::new(), 0);
     }
 
-    let mut matcher = Matcher::default();
-    let atom = Atom::new(
-        query,
-        CaseMatching::Smart,
-        Normalization::Smart,
-        AtomKind::Fuzzy,
-        false,
-    );
+    let words: Vec<&str> = query.split_whitespace().collect();
+    if words.is_empty() {
+        return (Vec::new(), 0);
+    }
 
+    // Single word: fuzzy for forgiving typo-tolerant search.
+    // Multiple words: each must be a substring so extra terms narrow, not widen.
+    let kind = if words.len() == 1 {
+        AtomKind::Fuzzy
+    } else {
+        AtomKind::Substring
+    };
+
+    let atoms: Vec<Atom> = words
+        .iter()
+        .map(|w| Atom::new(w, CaseMatching::Smart, Normalization::Smart, kind, false))
+        .collect();
+
+    let mut matcher = Matcher::default();
     let mut scored: Vec<(usize, u16)> = index
         .iter()
         .enumerate()
         .filter_map(|(i, item)| {
             let mut buf = Vec::new();
             let haystack = Utf32Str::new(&item.search_text, &mut buf);
-            atom.score(haystack, &mut matcher).map(|score| (i, score))
+            let mut total_score: u16 = 0;
+            for atom in &atoms {
+                let score = atom.score(haystack, &mut matcher)?;
+                total_score = total_score.saturating_add(score);
+            }
+            Some((i, total_score))
         })
         .collect();
 

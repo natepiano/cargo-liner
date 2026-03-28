@@ -232,6 +232,38 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     if app.show_finder {
         super::finder::render_finder_popup(frame, app);
     }
+    if let Some(ref action) = app.confirm {
+        render_confirm_popup(frame, action);
+    }
+}
+
+fn render_confirm_popup(frame: &mut Frame, action: &super::app::ConfirmAction) {
+    let prompt = match action {
+        super::app::ConfirmAction::Clean(_) => "Run cargo clean?",
+    };
+
+    let text = format!(" {prompt}  (y/n) ");
+    #[allow(clippy::cast_possible_truncation)]
+    let width = (text.len() + 4) as u16;
+    let area = centered_rect(width, 3, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let line = Line::from(vec![
+        Span::styled(format!(" {prompt}  "), Style::default().fg(Color::White)),
+        Span::styled(
+            "(y/n)",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line), inner);
 }
 
 fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -621,7 +653,8 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let context = app.input_context();
     let enter_action = app.enter_action();
-    let groups = super::shortcuts::for_status_bar(context, enter_action);
+    let is_rust = app.selected_project().is_some_and(|p| p.is_rust);
+    let groups = super::shortcuts::for_status_bar(context, enter_action, is_rust);
 
     let mut left_spans = Vec::new();
     if !app.scan_complete {
