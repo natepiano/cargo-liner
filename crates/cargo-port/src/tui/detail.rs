@@ -274,6 +274,8 @@ pub enum DetailField {
     Ci,
     Branch,
     Sync,
+    VsOrigin,
+    VsLocal,
     Origin,
     Owner,
     Repo,
@@ -297,6 +299,8 @@ impl DetailField {
             Self::Ci => "CI",
             Self::Branch => "Branch",
             Self::Sync => "Sync",
+            Self::VsOrigin => "vs o/dflt",
+            Self::VsLocal => "vs dflt",
             Self::Origin => "Origin",
             Self::Owner => "Owner",
             Self::Repo => "Repo",
@@ -325,8 +329,21 @@ impl DetailField {
             Self::Targets => info.types.clone(),
             Self::Disk => info.disk.clone(),
             Self::Ci => info.ci.clone(),
-            Self::Branch => info.git_branch.as_deref().unwrap_or("").to_string(),
+            Self::Branch => {
+                let branch = info.git_branch.as_deref().unwrap_or("");
+                let is_default = info
+                    .default_branch
+                    .as_deref()
+                    .is_some_and(|db| db == branch);
+                if is_default {
+                    format!("{branch} (HEAD)")
+                } else {
+                    branch.to_string()
+                }
+            },
             Self::Sync => info.git_sync.as_deref().unwrap_or("").to_string(),
+            Self::VsOrigin => info.git_vs_origin.as_deref().unwrap_or("").to_string(),
+            Self::VsLocal => info.git_vs_local.as_deref().unwrap_or("").to_string(),
             Self::Origin => info.git_origin.as_deref().unwrap_or("").to_string(),
             Self::Owner => info.git_owner.as_deref().unwrap_or("").to_string(),
             Self::Repo => info.git_url.as_deref().unwrap_or("").to_string(),
@@ -384,6 +401,12 @@ pub(super) fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     if info.git_sync.is_some() {
         fields.push(DetailField::Sync);
     }
+    if info.git_vs_origin.is_some() {
+        fields.push(DetailField::VsOrigin);
+    }
+    if info.git_vs_local.is_some() {
+        fields.push(DetailField::VsLocal);
+    }
     if info.worktree_label.is_some() {
         fields.push(DetailField::Worktree);
     }
@@ -422,6 +445,12 @@ pub struct DetailInfo {
     pub stats_rows:      Vec<(&'static str, usize)>,
     pub git_branch:      Option<String>,
     pub git_sync:        Option<String>,
+    /// Ahead/behind vs `origin/{default_branch}`.
+    pub git_vs_origin:   Option<String>,
+    /// Ahead/behind vs local `{default_branch}`.
+    pub git_vs_local:    Option<String>,
+    /// The repo's default branch name (e.g. "main", "master").
+    pub default_branch:  Option<String>,
     pub git_origin:      Option<String>,
     pub git_owner:       Option<String>,
     pub git_url:         Option<String>,
@@ -493,6 +522,15 @@ fn resolve_package_title(app: &App, project: &RustProject) -> String {
     }
 }
 
+fn format_ahead_behind((ahead, behind): (usize, usize)) -> String {
+    match (ahead, behind) {
+        (0, 0) => "✓".to_string(),
+        (a, 0) => format!("↑{a} ahead"),
+        (0, b) => format!("↓{b} behind"),
+        (a, b) => format!("↑{a} ↓{b}"),
+    }
+}
+
 pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
     let mut counts = app.workspace_counts(project).unwrap_or_else(|| {
         let mut c = ProjectCounts::default();
@@ -510,14 +548,23 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
 
     let git = app.git_info.get(&project.path);
     let git_branch = git.and_then(|g| g.branch.clone());
-    let git_sync = git
-        .and_then(|g| g.ahead_behind)
-        .map(|(ahead, behind)| match (ahead, behind) {
-            (0, 0) => "✓".to_string(),
-            (a, 0) => format!("↑{a} ahead"),
-            (0, b) => format!("↓{b} behind"),
-            (a, b) => format!("↑{a} ↓{b}"),
-        });
+    let git_sync = git.map(|g| match g.ahead_behind {
+        Some((0, 0)) => "✓".to_string(),
+        Some((a, 0)) => format!("↑{a} ahead"),
+        Some((0, b)) => format!("↓{b} behind"),
+        Some((a, b)) => format!("↑{a} ↓{b}"),
+        None if g.origin != crate::project::GitOrigin::Local => "not published".to_string(),
+        None => return String::new(),
+    });
+    // Filter out empty strings so the Sync row hides for local repos.
+    let git_sync = git_sync.filter(|s| !s.is_empty());
+    let default_branch = git.and_then(|g| g.default_branch.clone());
+    let git_vs_origin = git
+        .and_then(|g| g.ahead_behind_origin)
+        .map(|ab| format_ahead_behind(ab));
+    let git_vs_local = git
+        .and_then(|g| g.ahead_behind_local)
+        .map(|ab| format_ahead_behind(ab));
     let git_origin = git.map(|g| format!("{} {}", g.origin.icon(), g.origin.label()));
     let git_owner = git.and_then(|g| g.owner.clone());
     let git_url = git.and_then(|g| g.url.clone());
@@ -581,6 +628,9 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
         crates_version,
         git_branch,
         git_sync,
+        git_vs_origin,
+        git_vs_local,
+        default_branch,
         git_origin,
         git_owner,
         git_url,
@@ -706,7 +756,21 @@ fn render_git_column_inner(
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     for (i, field) in fields.iter().enumerate() {
-        let label = field.label();
+        // Dynamic labels for vs-default fields — show actual branch name.
+        let dynamic_label;
+        let label = match *field {
+            DetailField::VsOrigin => {
+                let branch = info.default_branch.as_deref().unwrap_or("main");
+                dynamic_label = format!("vs o/{branch}");
+                &dynamic_label
+            },
+            DetailField::VsLocal => {
+                let branch = info.default_branch.as_deref().unwrap_or("main");
+                dynamic_label = format!("vs {branch}");
+                &dynamic_label
+            },
+            _ => field.label(),
+        };
         let value = field.value(info);
         let is_focused = focus.detail_focused && focus.is_active && i == focus.cursor;
         let ls = if is_focused {
@@ -720,8 +784,14 @@ fn render_git_column_inner(
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD)
-        } else if *field == DetailField::Sync && value == "✓" {
+        } else if matches!(
+            *field,
+            DetailField::Sync | DetailField::VsOrigin | DetailField::VsLocal
+        ) && value == "✓"
+        {
             Style::default().fg(Color::Green)
+        } else if *field == DetailField::Sync && value == "not published" {
+            Style::default().fg(Color::DarkGray)
         } else {
             Style::default()
         };

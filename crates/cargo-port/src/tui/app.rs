@@ -13,6 +13,7 @@ use nucleo_matcher::pattern::AtomKind;
 use nucleo_matcher::pattern::CaseMatching;
 use nucleo_matcher::pattern::Normalization;
 use ratatui::widgets::ListState;
+use unicode_width::UnicodeWidthStr;
 
 use super::detail::DetailField;
 use super::detail::DetailInfo;
@@ -29,6 +30,7 @@ use super::types::ScrollState;
 use crate::ci::CiRun;
 use crate::config::Config;
 use crate::project::GitInfo;
+use crate::project::GitOrigin;
 use crate::project::RustProject;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -757,14 +759,17 @@ impl App {
         for node in &self.nodes {
             name_width = name_width.max(self.fit_name_for_node(node));
             disk_width = disk_width.max(self.formatted_disk_for_node(node).len());
-            sync_width = sync_width.max(self.git_sync(&node.project).len());
+            sync_width = sync_width.max(UnicodeWidthStr::width(
+                self.git_sync(&node.project).as_str(),
+            ));
 
             for group in &node.groups {
                 for member in &group.members {
                     let prefix = if group.name.is_empty() { 4 } else { 8 };
                     name_width = name_width.max(prefix + member.display_name().len());
                     disk_width = disk_width.max(self.formatted_disk(member).len());
-                    sync_width = sync_width.max(self.git_sync(member).len());
+                    sync_width =
+                        sync_width.max(UnicodeWidthStr::width(self.git_sync(member).as_str()));
                 }
                 if !group.name.is_empty() {
                     name_width = name_width.max(6 + group.name.len() + 4);
@@ -776,14 +781,15 @@ impl App {
                     .worktree_name
                     .as_deref()
                     .unwrap_or(&wt.project.path);
-                name_width = name_width.max(8 + wt_name.len());
+                name_width = name_width.max(4 + wt_name.len());
                 disk_width = disk_width.max(self.formatted_disk(&wt.project).len());
-                sync_width = sync_width.max(self.git_sync(&wt.project).len());
+                sync_width =
+                    sync_width.max(UnicodeWidthStr::width(self.git_sync(&wt.project).as_str()));
             }
         }
 
         self.cached_fit_widths = FitWidths {
-            name:       name_width + 1,
+            name:       name_width,
             disk:       disk_width,
             sync:       sync_width,
             generation: self.data_generation,
@@ -1352,14 +1358,14 @@ impl App {
         let Some(info) = self.git_info.get(&project.path) else {
             return String::new();
         };
-        let Some((ahead, behind)) = info.ahead_behind else {
-            return String::new();
-        };
-        match (ahead, behind) {
-            (0, 0) => "✓".to_string(),
-            (a, 0) => format!("↑{a}"),
-            (0, b) => format!("↓{b}"),
-            (a, b) => format!("↑{a}↓{b}"),
+        match info.ahead_behind {
+            Some((0, 0)) => "✓".to_string(),
+            Some((a, 0)) => format!("↑{a}"),
+            Some((0, b)) => format!("↓{b}"),
+            Some((a, b)) => format!("↑{a}↓{b}"),
+            // No upstream but has a remote — branch not published.
+            None if info.origin != GitOrigin::Local => "-".to_string(),
+            None => String::new(),
         }
     }
 

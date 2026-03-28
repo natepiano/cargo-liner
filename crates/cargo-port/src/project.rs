@@ -42,19 +42,25 @@ impl GitOrigin {
 #[derive(Debug, Clone, Serialize)]
 pub struct GitInfo {
     /// Whether this is a clone or a fork.
-    pub origin:       GitOrigin,
+    pub origin:              GitOrigin,
     /// The current branch name.
-    pub branch:       Option<String>,
+    pub branch:              Option<String>,
     /// The GitHub/GitLab owner (e.g. "natepiano").
-    pub owner:        Option<String>,
+    pub owner:               Option<String>,
     /// The HTTPS URL to the repository.
-    pub url:          Option<String>,
+    pub url:                 Option<String>,
     /// ISO 8601 date of the first commit (inception).
-    pub first_commit: Option<String>,
+    pub first_commit:        Option<String>,
     /// ISO 8601 date of the most recent commit.
-    pub last_commit:  Option<String>,
+    pub last_commit:         Option<String>,
     /// Commits ahead and behind the upstream tracking branch (ahead, behind).
-    pub ahead_behind: Option<(usize, usize)>,
+    pub ahead_behind:        Option<(usize, usize)>,
+    /// The repo's default branch name resolved from `origin/HEAD`.
+    pub default_branch:      Option<String>,
+    /// Commits ahead and behind `origin/{default_branch}`.
+    pub ahead_behind_origin: Option<(usize, usize)>,
+    /// Commits ahead and behind the local `{default_branch}`.
+    pub ahead_behind_local:  Option<(usize, usize)>,
 }
 
 impl GitInfo {
@@ -101,18 +107,30 @@ impl GitInfo {
                 if b.is_empty() { None } else { Some(b) }
             });
 
-        let ahead_behind = Command::new("git")
-            .args(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
+        let ahead_behind = parse_ahead_behind(project_dir, "HEAD...@{upstream}");
+
+        // Resolve the repo's default branch from origin/HEAD (e.g. "origin/main").
+        let default_branch = Command::new("git")
+            .args(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"])
             .current_dir(project_dir)
             .output()
             .ok()
             .and_then(|o| {
-                let s = String::from_utf8_lossy(&o.stdout);
-                let mut parts = s.trim().split('\t');
-                let ahead = parts.next()?.parse::<usize>().ok()?;
-                let behind = parts.next()?.parse::<usize>().ok()?;
-                Some((ahead, behind))
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                // Comes back as "origin/main" — strip the "origin/" prefix.
+                s.strip_prefix("origin/")
+                    .filter(|b| !b.is_empty())
+                    .map(str::to_string)
             });
+
+        // Compare HEAD against the default branch when it differs from the current branch.
+        let not_on_default = default_branch
+            .as_deref()
+            .filter(|db| branch.as_deref() != Some(*db));
+        let ahead_behind_origin = not_on_default
+            .and_then(|db| parse_ahead_behind(project_dir, &format!("HEAD...origin/{db}")));
+        let ahead_behind_local =
+            not_on_default.and_then(|db| parse_ahead_behind(project_dir, &format!("HEAD...{db}")));
 
         let first_commit = Command::new("git")
             .args(["log", "--reverse", "--format=%aI", "--diff-filter=A"])
@@ -145,8 +163,27 @@ impl GitInfo {
             first_commit,
             last_commit,
             ahead_behind,
+            default_branch,
+            ahead_behind_origin,
+            ahead_behind_local,
         })
     }
+}
+
+/// Parse `git rev-list --left-right --count` output into `(ahead, behind)`.
+fn parse_ahead_behind(project_dir: &Path, revspec: &str) -> Option<(usize, usize)> {
+    Command::new("git")
+        .args(["rev-list", "--left-right", "--count", revspec])
+        .current_dir(project_dir)
+        .output()
+        .ok()
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout);
+            let mut parts = s.trim().split('\t');
+            let ahead = parts.next()?.parse::<usize>().ok()?;
+            let behind = parts.next()?.parse::<usize>().ok()?;
+            Some((ahead, behind))
+        })
 }
 
 /// Extract the owner and HTTPS URL from a git remote URL.

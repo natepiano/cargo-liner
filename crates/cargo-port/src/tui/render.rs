@@ -29,10 +29,8 @@ use crate::project::RustProject;
 pub(super) const BYTES_PER_MIB: u64 = 1024 * 1024;
 pub(super) const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 
-pub(super) const LANG_COL_WIDTH: usize = 2;
-pub(super) const CI_COL_WIDTH: usize = 2;
-pub(super) const ORIGIN_COL_WIDTH: usize = 1;
-pub(super) const BORDER_PADDING: usize = 3;
+/// Block border costs 2 horizontal characters (left + right).
+const BLOCK_BORDER_WIDTH: usize = 2;
 
 const OFFLINE_PULSE_CYCLE: usize = 120;
 const OFFLINE_PULSE_AMPLITUDE: f64 = 0.3;
@@ -189,11 +187,33 @@ pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
     Line::from(vec![
         Span::raw(padded_name),
         Span::styled(format!(" {:>disk_width$}", row.disk), row.disk_style),
-        Span::styled(format!(" {}", row.ci), ci_style),
+        Span::raw(format!(" {}", row.lang_icon)),
         Span::styled(format!(" {}", row.git_icon), origin_style),
         Span::styled(format!(" {:<sync_width$}", row.git_sync), sync_style),
-        Span::raw(row.lang_icon.to_string()),
+        Span::styled(row.ci.to_string(), ci_style),
     ])
+}
+
+/// Build a probe row using max-width placeholders and measure its display width.
+/// This is the single source of truth for panel width — no hand-counted arithmetic.
+pub(super) fn probe_row_width(name_width: usize, disk_width: usize, sync_width: usize) -> usize {
+    let name_pad = "X".repeat(name_width);
+    let disk_pad = "X".repeat(disk_width);
+    let sync_pad = "X".repeat(sync_width);
+    let row = project_row_spans(&RowData {
+        prefix: "",
+        name: &name_pad,
+        lang_icon: "🦀",
+        disk: &disk_pad,
+        disk_style: Style::default(),
+        ci: "✓",
+        git_icon: "⊙",
+        git_sync: &sync_pad,
+        name_width,
+        disk_width,
+        sync_width,
+    });
+    row.width()
 }
 
 pub(super) fn group_header_spans(prefix: &str, name: &str, name_width: usize) -> Line<'static> {
@@ -214,19 +234,12 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
 
-    // Left panel width: name + 1 + disk + 1 + ci + 1 + origin + 1 + sync + lang + borders
     #[allow(clippy::cast_possible_truncation)]
-    let left_width = (app.cached_fit_widths.name
-        + 1
-        + app.cached_fit_widths.disk
-        + 1
-        + CI_COL_WIDTH
-        + 1
-        + ORIGIN_COL_WIDTH
-        + 1
-        + app.cached_fit_widths.sync
-        + LANG_COL_WIDTH
-        + BORDER_PADDING) as u16;
+    let left_width = (probe_row_width(
+        app.cached_fit_widths.name,
+        app.cached_fit_widths.disk,
+        app.cached_fit_widths.sync,
+    ) + BLOCK_BORDER_WIDTH) as u16;
 
     let main_layout = Layout::default()
         .direction(Direction::Horizontal)
@@ -527,7 +540,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
             header_style,
         ),
         Span::styled(format!(" {:>disk_width$}", "Disk"), header_style),
-        Span::styled(format!(" CI O {:<sync_width$}R", ""), header_style),
+        Span::styled("  R Git CI", header_style),
     ]);
 
     let project_list = List::new(items)
