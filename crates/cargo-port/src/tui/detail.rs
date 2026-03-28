@@ -321,7 +321,7 @@ impl DetailField {
             Self::LastCommit => "Latest",
             Self::Worktree => "Worktree",
             Self::Vendored => "Vendored",
-            Self::CratesIo => "Crate",
+            Self::CratesIo => "crates.io",
             Self::Version => "Version",
             Self::Description => "Desc",
         }
@@ -1319,25 +1319,31 @@ fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn]) -> Row<'static> {
 
 /// Build column width constraints for the CI table based on content.
 ///
-/// Duration and timestamp columns use `Min` so they are never truncated.
-/// Commit and branch use `Fill` so they absorb remaining space and shrink
-/// first when the terminal is narrow.
+/// Duration, timestamp, branch, and glyph columns use `Length` (exact
+/// fit-to-content). Commit uses `Fill` to absorb all remaining space.
 fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn]) -> Vec<Constraint> {
+    #[allow(clippy::cast_possible_truncation)]
+    let branch_width = ci_runs
+        .iter()
+        .map(|r| r.branch.len())
+        .max()
+        .unwrap_or("Branch".len())
+        .max("Branch".len()) as u16;
     let mut widths = vec![
-        Constraint::Fill(2), // Commit — overflow victim, 2× branch share
-        Constraint::Fill(1), // Branch — overflow victim
-        Constraint::Min(16), // Timestamp — protected
+        Constraint::Fill(1),              // Commit — absorbs remaining space
+        Constraint::Length(branch_width), // Branch — fit-to-content
+        Constraint::Length(16),           // Timestamp — exact
     ];
     for col in cols {
         #[allow(clippy::cast_possible_truncation)]
-        let dur_min = ci_duration_min_width(ci_runs, *col) as u16;
-        widths.push(Constraint::Min(dur_min)); // duration — protected
-        widths.push(Constraint::Min(1)); // glyph
+        let width = ci_duration_min_width(ci_runs, *col) as u16;
+        widths.push(Constraint::Length(width)); // duration — exact
+        widths.push(Constraint::Length(1)); // glyph
     }
     #[allow(clippy::cast_possible_truncation)]
-    let total_min = ci_total_min_width(ci_runs) as u16;
-    widths.push(Constraint::Min(total_min)); // Total duration — protected
-    widths.push(Constraint::Min(1)); // Total glyph
+    let total_width = ci_total_min_width(ci_runs) as u16;
+    widths.push(Constraint::Length(total_width)); // Total duration — exact
+    widths.push(Constraint::Length(1)); // Total glyph
     widths
 }
 
@@ -1400,21 +1406,23 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun
             Style::default()
         });
 
-    let has_bench = ci_runs
-        .iter()
-        .any(|r| r.jobs.iter().any(|j| CiColumn::Bench.matches(&j.name)));
-
-    let mut cols: Vec<CiColumn> = vec![
+    let all_columns = [
         CiColumn::Fmt,
         CiColumn::Taplo,
         CiColumn::Clippy,
         CiColumn::Mend,
         CiColumn::Build,
         CiColumn::Test,
+        CiColumn::Bench,
     ];
-    if has_bench {
-        cols.push(CiColumn::Bench);
-    }
+    let cols: Vec<CiColumn> = all_columns
+        .into_iter()
+        .filter(|col| {
+            ci_runs
+                .iter()
+                .any(|r| r.jobs.iter().any(|j| col.matches(&j.name)))
+        })
+        .collect();
 
     let header = build_ci_header_row(&cols);
 
@@ -1626,14 +1634,16 @@ fn handle_detail_enter(app: &mut App, on_targets: bool) {
     if on_targets {
         handle_target_action(app, false);
     } else if app.detail_column.pos() == 0 {
-        let fields = app
-            .selected_project()
-            .map(|p| package_fields(&build_detail_info(app, p)))
-            .unwrap_or_default();
-        if let Some(field) = fields.get(app.detail_cursor.pos())
-            && field.is_from_cargo_toml()
-        {
-            open_cargo_toml(app);
+        let info = app.selected_project().map(|p| build_detail_info(app, p));
+        let fields = info.as_ref().map(|i| package_fields(i)).unwrap_or_default();
+        match fields.get(app.detail_cursor.pos()) {
+            Some(DetailField::CratesIo) => {
+                if let Some(ref info) = info {
+                    open_url(&format!("https://crates.io/crates/{}", info.name));
+                }
+            },
+            Some(field) if field.is_from_cargo_toml() => open_cargo_toml(app),
+            _ => {},
         }
     } else {
         // Git column — open repo URL in browser
