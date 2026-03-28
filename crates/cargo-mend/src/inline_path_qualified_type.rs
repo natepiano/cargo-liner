@@ -89,7 +89,8 @@ fn scan_file(analysis_root: &Path, path: &Path) -> Result<(Vec<Finding>, Vec<Use
 
     // Visit the AST to find inline path-qualified types
     let mut visitor = InlinePathVisitor {
-        occurrences: Vec::new(),
+        occurrences:     Vec::new(),
+        bare_type_names: BTreeSet::new(),
     };
     visitor.visit_file(&syntax);
 
@@ -97,21 +98,11 @@ fn scan_file(analysis_root: &Path, path: &Path) -> Result<(Vec<Finding>, Vec<Use
         return Ok((Vec::new(), Vec::new()));
     }
 
-    // Group by type name to detect collisions
-    let mut name_to_paths: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for occ in &visitor.occurrences {
-        name_to_paths
-            .entry(occ.type_name.clone())
-            .or_default()
-            .insert(occ.full_path.clone());
-    }
-
-    // Find collision names (same type name, different full paths)
-    let collision_names: BTreeSet<&str> = name_to_paths
-        .iter()
-        .filter(|(_, paths)| paths.len() > 1)
-        .map(|(name, _)| name.as_str())
-        .collect();
+    let collision_names = find_collision_names(
+        &visitor.occurrences,
+        &visitor.bare_type_names,
+        &existing_imports,
+    );
 
     let display_path = path
         .strip_prefix(analysis_root)
@@ -128,7 +119,7 @@ fn scan_file(analysis_root: &Path, path: &Path) -> Result<(Vec<Finding>, Vec<Use
 
     for occ in &visitor.occurrences {
         // Skip collisions
-        if collision_names.contains(occ.type_name.as_str()) {
+        if collision_names.contains(&occ.type_name) {
             continue;
         }
 
@@ -184,10 +175,40 @@ fn scan_file(analysis_root: &Path, path: &Path) -> Result<(Vec<Finding>, Vec<Use
     Ok((findings, fixes))
 }
 
+/// Finds type names that cannot be safely imported because they either:
+/// - map to multiple distinct paths (ambiguous), or
+/// - are already used bare in the file (importing would shadow the existing usage, e.g. prelude
+///   `Result<T, E>` shadowed by `use crate::error::Result;`).
+fn find_collision_names(
+    occurrences: &[InlinePathOccurrence],
+    bare_type_names: &BTreeSet<String>,
+    existing_imports: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut name_to_paths: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for occ in occurrences {
+        name_to_paths
+            .entry(&occ.type_name)
+            .or_default()
+            .insert(&occ.full_path);
+    }
+
+    let mut collisions = BTreeSet::new();
+    for (name, paths) in &name_to_paths {
+        let ambiguous = paths.len() > 1;
+        let would_shadow =
+            bare_type_names.contains(*name) && !paths.iter().all(|p| existing_imports.contains(*p));
+        if ambiguous || would_shadow {
+            collisions.insert((*name).to_owned());
+        }
+    }
+    collisions
+}
+
 // --- AST Visitor ---
 
 struct InlinePathVisitor {
-    occurrences: Vec<InlinePathOccurrence>,
+    occurrences:     Vec<InlinePathOccurrence>,
+    bare_type_names: BTreeSet<String>,
 }
 
 impl InlinePathVisitor {
@@ -209,13 +230,19 @@ impl InlinePathVisitor {
         }
 
         let full_path = segments.join("::");
-        let span = path.span();
+
+        // Use ident spans to exclude generic arguments from the replacement range.
+        // path.span() includes generic args (e.g., `<T>`), but we only want to
+        // replace the path portion, leaving generic args in place.
+        // Safety: segments.len() >= 3, checked above.
+        let first_ident_span = path.segments[0].ident.span();
+        let last_ident_span = path.segments[segments.len() - 1].ident.span();
 
         self.occurrences.push(InlinePathOccurrence {
             full_path,
             type_name: leaf.clone(),
-            span_start: span.start(),
-            span_end: span.end(),
+            span_start: first_ident_span.start(),
+            span_end: last_ident_span.end(),
         });
     }
 }
@@ -228,6 +255,13 @@ impl Visit<'_> for InlinePathVisitor {
     fn visit_type_path(&mut self, node: &TypePath) {
         if node.qself.is_none() {
             self.check_path(&node.path);
+            // Track bare type names to detect potential shadowing
+            if node.path.segments.len() == 1 {
+                let name = node.path.segments[0].ident.to_string();
+                if is_pascal_case(&name) {
+                    self.bare_type_names.insert(name);
+                }
+            }
         }
         syn::visit::visit_type_path(self, node);
     }
@@ -235,6 +269,12 @@ impl Visit<'_> for InlinePathVisitor {
     fn visit_expr_path(&mut self, node: &syn::ExprPath) {
         if node.qself.is_none() {
             self.check_path(&node.path);
+            if node.path.segments.len() == 1 {
+                let name = node.path.segments[0].ident.to_string();
+                if is_pascal_case(&name) {
+                    self.bare_type_names.insert(name);
+                }
+            }
         }
         // Don't recurse — path segments don't contain sub-expressions
     }

@@ -643,3 +643,133 @@ edition = "2024"
         "clean project should not have inline_path_qualified_type findings"
     );
 }
+
+#[test]
+fn generic_type_params_preserved() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_generic_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod types;\nmod consumer;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/types.rs"),
+        "pub struct Container<T>(pub T);\n",
+    )
+    .expect("write types");
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        r#"fn example(_x: crate::parent::types::Container<String>) {}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
+    assert!(
+        consumer.contains("Container<String>"),
+        "generic params should be preserved, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("_x: Container<String>"),
+        "expected bare type with generics, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("_x: Container<String>") && !consumer.contains("_x: crate::"),
+        "inline path should be replaced with bare type, got:\n{consumer}"
+    );
+}
+
+#[test]
+fn bare_name_shadowing_skipped() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_shadow_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/error")).expect("create src/error");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod error;\nmod consumer;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/error.rs"),
+        "pub type Result<T> = core::result::Result<T, String>;\n",
+    )
+    .expect("write error mod");
+    // consumer uses both prelude Result<T, E> and crate::error::Result<T> inline
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        r#"fn uses_prelude() -> Result<String, String> {
+    Ok("hello".to_string())
+}
+fn uses_inline() -> crate::error::Result<String> {
+    Ok("hello".to_string())
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/consumer.rs")).expect("read fixed file");
+    // The inline path should NOT be replaced because doing so would
+    // add `use crate::error::Result;` which shadows prelude `Result<T, E>`
+    assert!(
+        consumer.contains("crate::error::Result<String>"),
+        "inline path should be left alone to avoid shadowing prelude Result, got:\n{consumer}"
+    );
+    // Prelude usage should remain unchanged
+    assert!(
+        consumer.contains("Result<String, String>"),
+        "prelude Result should be unchanged, got:\n{consumer}"
+    );
+}
