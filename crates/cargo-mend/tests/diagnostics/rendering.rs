@@ -27,14 +27,18 @@ fn every_diagnostic_has_a_unique_readme_anchor() {
     }
 }
 
-#[test]
-fn fixture_renders_every_current_diagnostic() {
+fn create_all_diagnostics_fixture() -> tempfile::TempDir {
     let temp = tempdir().expect("create temp fixture dir");
-    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
-    fs::create_dir_all(temp.path().join("src/stale_parent"))
-        .expect("create stale nested fixture dir");
-    fs::create_dir_all(temp.path().join("src/wild_parent"))
-        .expect("create wildcard nested fixture dir");
+    for dir in [
+        "src/private_parent",
+        "src/stale_parent",
+        "src/wild_parent",
+        "src/type_parent",
+        "src/func_parent",
+        "src/internal_parent",
+    ] {
+        fs::create_dir_all(temp.path().join(dir)).expect("create fixture dir");
+    }
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -62,45 +66,49 @@ fn main() {}
     )
     .expect("write fixture main");
     fs::write(temp.path().join("src/review_mod.rs"), "\n").expect("write review mod");
-    fs::create_dir_all(temp.path().join("src/type_parent")).expect("create type_parent");
+    write_diagnostic_fixture_modules(temp.path());
+
+    temp
+}
+
+fn write_diagnostic_fixture_modules(root: &std::path::Path) {
     fs::write(
-        temp.path().join("src/type_parent/mod.rs"),
+        root.join("src/type_parent/mod.rs"),
         "mod types;\nmod consumer;\n",
     )
     .expect("write type_parent mod");
     fs::write(
-        temp.path().join("src/type_parent/types.rs"),
+        root.join("src/type_parent/types.rs"),
         "pub struct MyWidget;\n",
     )
     .expect("write type_parent types");
     fs::write(
-        temp.path().join("src/type_parent/consumer.rs"),
+        root.join("src/type_parent/consumer.rs"),
         "fn example(_w: crate::type_parent::types::MyWidget) {}\n",
     )
     .expect("write type_parent consumer");
-    fs::create_dir_all(temp.path().join("src/func_parent")).expect("create func_parent");
     fs::write(
-        temp.path().join("src/func_parent/mod.rs"),
+        root.join("src/func_parent/mod.rs"),
         "mod utils;\nmod consumer;\n",
     )
     .expect("write func_parent mod");
     fs::write(
-        temp.path().join("src/func_parent/utils.rs"),
+        root.join("src/func_parent/utils.rs"),
         "pub fn do_thing() -> i32 { 42 }\n",
     )
     .expect("write func_parent utils");
     fs::write(
-        temp.path().join("src/func_parent/consumer.rs"),
+        root.join("src/func_parent/consumer.rs"),
         "use crate::func_parent::utils::do_thing;\n\nfn example() -> i32 { do_thing() }\n",
     )
     .expect("write func_parent consumer");
     fs::write(
-        temp.path().join("src/private_parent.rs"),
+        root.join("src/private_parent.rs"),
         "mod child;\npub use child::PublicContainer;\n",
     )
     .expect("write private parent");
     fs::write(
-        temp.path().join("src/private_parent/child.rs"),
+        root.join("src/private_parent/child.rs"),
         r#"use crate::private_parent::PublicContainer as ParentContainer;
 
 pub enum LegitDependency {
@@ -117,42 +125,88 @@ pub struct Suspicious;
 "#,
     )
     .expect("write suspicious child");
-    fs::create_dir_all(temp.path().join("src/internal_parent")).expect("create internal parent");
     fs::write(
-        temp.path().join("src/internal_parent.rs"),
+        root.join("src/internal_parent.rs"),
         "mod child;\nmod sibling;\npub use child::InternalFacade;\n",
     )
     .expect("write internal parent");
     fs::write(
-        temp.path().join("src/internal_parent/child.rs"),
+        root.join("src/internal_parent/child.rs"),
         "pub struct InternalFacade;\n",
     )
     .expect("write internal child");
     fs::write(
-        temp.path().join("src/internal_parent/sibling.rs"),
+        root.join("src/internal_parent/sibling.rs"),
         "use super::InternalFacade;\n\nfn use_parent_facade(_value: InternalFacade) {}\n",
     )
     .expect("write internal sibling");
     fs::write(
-        temp.path().join("src/stale_parent/mod.rs"),
+        root.join("src/stale_parent/mod.rs"),
         "mod child;\npub use child::StaleExport;\n",
     )
     .expect("write stale parent");
     fs::write(
-        temp.path().join("src/stale_parent/child.rs"),
+        root.join("src/stale_parent/child.rs"),
         "pub struct StaleExport;\n",
     )
     .expect("write stale child");
     fs::write(
-        temp.path().join("src/wild_parent/mod.rs"),
+        root.join("src/wild_parent/mod.rs"),
         "mod child;\npub use child::*;\n",
     )
     .expect("write wildcard parent");
     fs::write(
-        temp.path().join("src/wild_parent/child.rs"),
+        root.join("src/wild_parent/child.rs"),
         "pub struct WildExport;\n",
     )
     .expect("write wildcard child");
+}
+
+fn assert_rendered_diagnostics(report: &Report, rendered: &str) {
+    for spec in diagnostic_specs() {
+        assert!(
+            rendered.contains(spec.headline),
+            "rendered output is missing headline for {}",
+            spec.code
+        );
+        let help_url = format!(
+            "https://github.com/natepiano/cargo-mend#{}",
+            spec.help_anchor
+        );
+        assert!(
+            rendered.contains(&help_url),
+            "rendered output is missing help URL for {}",
+            spec.code
+        );
+    }
+
+    assert!(rendered.contains("help: consider using just `pub` or removing `pub(crate)` entirely"));
+    assert!(rendered.contains("help: consider using: `pub(super)`"));
+    assert!(
+        rendered.contains("help: consider using: `use super::PublicContainer as ParentContainer;`")
+    );
+    assert!(rendered.contains(
+        "help: consider removing this parent facade and importing the item from its defining child module"
+    ));
+    for finding in &report.findings {
+        if let Some(note) = fix_support_for(&finding.code, finding.fix_support).note() {
+            assert!(
+                rendered.contains(note),
+                "rendered output is missing fix note for {}",
+                finding.code
+            );
+        }
+    }
+    assert!(rendered.contains(&expected_summary_text(report)));
+    assert!(rendered.contains(
+        "parent module also has an `unused import` warning for this `pub use` at stale_parent/mod.rs"
+    ));
+    assert!(rendered.contains("help: consider re-exporting explicit items instead of `*`"));
+}
+
+#[test]
+fn fixture_renders_every_current_diagnostic() {
+    let temp = create_all_diagnostics_fixture();
 
     let output = mend_command()
         .arg("--manifest-path")
@@ -196,45 +250,7 @@ pub struct Suspicious;
     let rendered =
         strip_ansi(&String::from_utf8(rendered_output.stdout).expect("decode human output"));
 
-    for spec in diagnostic_specs() {
-        assert!(
-            rendered.contains(spec.headline),
-            "rendered output is missing headline for {}",
-            spec.code
-        );
-        let help_url = format!(
-            "https://github.com/natepiano/cargo-mend#{}",
-            spec.help_anchor
-        );
-        assert!(
-            rendered.contains(&help_url),
-            "rendered output is missing help URL for {}",
-            spec.code
-        );
-    }
-
-    assert!(rendered.contains("help: consider using just `pub` or removing `pub(crate)` entirely"));
-    assert!(rendered.contains("help: consider using: `pub(super)`"));
-    assert!(
-        rendered.contains("help: consider using: `use super::PublicContainer as ParentContainer;`")
-    );
-    assert!(rendered.contains(
-        "help: consider removing this parent facade and importing the item from its defining child module"
-    ));
-    for finding in &report.findings {
-        if let Some(note) = fix_support_for(&finding.code, finding.fix_support).note() {
-            assert!(
-                rendered.contains(note),
-                "rendered output is missing fix note for {}",
-                finding.code
-            );
-        }
-    }
-    assert!(rendered.contains(&expected_summary_text(&report)));
-    assert!(rendered.contains(
-        "parent module also has an `unused import` warning for this `pub use` at stale_parent/mod.rs"
-    ));
-    assert!(rendered.contains("help: consider re-exporting explicit items instead of `*`"));
+    assert_rendered_diagnostics(&report, &rendered);
 }
 
 #[test]

@@ -217,6 +217,7 @@ pub fn run_selection(
     output_mode: BuildOutputMode,
 ) -> Result<Report, MendFailure> {
     let findings_dir = selection.target_directory.join("mend-findings");
+    let mend_target_dir = selection.target_directory.join("mend");
     fs::create_dir_all(&findings_dir).with_context(|| {
         format!(
             "failed to create persistent findings directory {}",
@@ -224,12 +225,18 @@ pub fn run_selection(
         )
     })?;
 
-    let mut command_outcome = run_cargo_check(selection, loaded_config, &findings_dir, output_mode)
-        .map_err(|err| {
-            MendFailure::Analysis(AnalysisFailure {
-                cause: CompilerFailureCause::DriverSetup(err),
-            })
-        })?;
+    let mut command_outcome = run_cargo_check(
+        selection,
+        loaded_config,
+        &findings_dir,
+        &mend_target_dir,
+        output_mode,
+    )
+    .map_err(|err| {
+        MendFailure::Analysis(AnalysisFailure {
+            cause: CompilerFailureCause::DriverSetup(err),
+        })
+    })?;
 
     if !command_outcome.status.success() {
         return Err(MendFailure::Analysis(AnalysisFailure {
@@ -245,13 +252,18 @@ pub fn run_selection(
 
     if !missing_packages.is_empty() {
         for package in missing_packages {
-            let status =
-                run_cargo_rustc_for_package(package, loaded_config, &findings_dir, output_mode)
-                    .map_err(|err| {
-                        MendFailure::Analysis(AnalysisFailure {
-                            cause: CompilerFailureCause::DriverSetup(err),
-                        })
-                    })?;
+            let status = run_cargo_rustc_for_package(
+                package,
+                loaded_config,
+                &findings_dir,
+                &mend_target_dir,
+                output_mode,
+            )
+            .map_err(|err| {
+                MendFailure::Analysis(AnalysisFailure {
+                    cause: CompilerFailureCause::DriverSetup(err),
+                })
+            })?;
             command_outcome.saw_unused_import_warning |= status.saw_unused_import_warning;
             if !status.status.success() {
                 return Err(MendFailure::Analysis(AnalysisFailure {
@@ -338,6 +350,7 @@ fn run_cargo_check(
     selection: &Selection,
     loaded_config: &LoadedConfig,
     findings_dir: &Path,
+    mend_target_dir: &Path,
     output_mode: BuildOutputMode,
 ) -> Result<CommandOutcome> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
@@ -353,6 +366,8 @@ fn run_cargo_check(
     }
 
     command
+        .arg("--target-dir")
+        .arg(mend_target_dir)
         .env("RUSTUP_TOOLCHAIN", "nightly")
         .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
         .env(DRIVER_ENV, "1")
@@ -373,6 +388,7 @@ fn run_cargo_rustc_for_package(
     package: &SelectedPackage,
     loaded_config: &LoadedConfig,
     findings_dir: &Path,
+    mend_target_dir: &Path,
     output_mode: BuildOutputMode,
 ) -> Result<CommandOutcome> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
@@ -381,6 +397,7 @@ fn run_cargo_rustc_for_package(
     command
         .arg("--manifest-path")
         .arg(package.manifest_path.as_os_str());
+    command.arg("--target-dir").arg(mend_target_dir);
 
     for arg in package.target.cargo_args() {
         command.arg(arg);
@@ -845,45 +862,27 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
 
     let mut sink = FindingsSink::default();
     let crate_items = tcx.hir_crate_items(());
-    let effective_visibilities = tcx.effective_visibilities(());
+    let ctx = VisibilityContext {
+        tcx,
+        settings,
+        src_root: &src_root,
+        root_module: &crate_root_file,
+        effective_visibilities: tcx.effective_visibilities(()),
+    };
 
     for item_id in crate_items.free_items() {
         let item = tcx.hir_item(item_id);
-        analyze_item(
-            tcx,
-            settings,
-            &src_root,
-            &crate_root_file,
-            effective_visibilities,
-            item,
-            &mut sink,
-        )?;
+        analyze_item(&ctx, item, &mut sink)?;
     }
 
     for item_id in crate_items.impl_items() {
         let item = tcx.hir_impl_item(item_id);
-        analyze_impl_item(
-            tcx,
-            settings,
-            &src_root,
-            &crate_root_file,
-            effective_visibilities,
-            item,
-            &mut sink,
-        )?;
+        analyze_impl_item(&ctx, item, &mut sink)?;
     }
 
     for item_id in crate_items.foreign_items() {
         let item = tcx.hir_foreign_item(item_id);
-        analyze_foreign_item(
-            tcx,
-            settings,
-            &src_root,
-            &crate_root_file,
-            effective_visibilities,
-            item,
-            &mut sink,
-        )?;
+        analyze_foreign_item(&ctx, item, &mut sink)?;
     }
 
     let output_path = settings
@@ -924,6 +923,36 @@ struct FindingsSink {
     pub_use_fix_facts: Vec<StoredPubUseFixFact>,
 }
 
+struct VisibilityContext<'a, 'tcx> {
+    tcx:                    TyCtxt<'tcx>,
+    settings:               &'a DriverSettings,
+    src_root:               &'a Path,
+    root_module:            &'a Path,
+    effective_visibilities: &'a rustc_middle::middle::privacy::EffectiveVisibilities,
+}
+
+struct ItemInfo<'a> {
+    def_id:         LocalDefId,
+    file_path:      &'a Path,
+    vis_text:       &'a str,
+    kind_label:     Option<&'static str>,
+    item_name:      Option<&'a str>,
+    highlight_span: Span,
+    is_module_item: bool,
+}
+
+struct SuspiciousPubInput<'a> {
+    def_id:           LocalDefId,
+    file_path:        &'a Path,
+    config_rel_path:  Option<&'a str>,
+    parent_is_public: bool,
+    module_location:  ModuleLocation,
+    crate_kind:       CrateKind,
+    kind_label:       Option<&'static str>,
+    item_name:        Option<&'a str>,
+    highlight_span:   Span,
+}
+
 fn cache_filename_for(package_root: &Path) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     package_root.hash(&mut hasher);
@@ -931,33 +960,29 @@ fn cache_filename_for(package_root: &Path) -> String {
 }
 
 fn analyze_item(
-    tcx: TyCtxt<'_>,
-    settings: &DriverSettings,
-    src_root: &Path,
-    root_module: &Path,
-    effective_visibilities: &rustc_middle::middle::privacy::EffectiveVisibilities,
+    ctx: &VisibilityContext<'_, '_>,
     item: &Item<'_>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
     if item.span.from_expansion() || item.vis_span.from_expansion() {
         return Ok(());
     }
-    let Some(file_path) = real_file_path(tcx, item.vis_span) else {
+    let Some(file_path) = real_file_path(ctx.tcx, item.vis_span) else {
         return Ok(());
     };
-    let Some(vis_text) = visibility_text(tcx, item.vis_span)? else {
+    let Some(vis_text) = visibility_text(ctx.tcx, item.vis_span)? else {
         return Ok(());
     };
 
     let item_name = item.kind.ident().map(|ident| ident.to_string());
 
     if vis_text == "pub"
-        && is_boundary_file(src_root, root_module, &file_path)
+        && is_boundary_file(ctx.src_root, ctx.root_module, &file_path)
         && matches!(item.kind, ItemKind::Use(..))
-        && use_item_contains_glob(tcx, item.span)?
+        && use_item_contains_glob(ctx.tcx, item.span)?
     {
         sink.findings.push(build_finding(
-            tcx,
+            ctx.tcx,
             &file_path,
             item.span,
             FindingParams {
@@ -973,28 +998,25 @@ fn analyze_item(
     }
 
     record_visibility_findings(
-        tcx,
-        settings,
-        src_root,
-        root_module,
-        effective_visibilities,
-        item.owner_id.def_id,
-        &file_path,
-        &vis_text,
-        item_kind_label(item.kind),
-        item_name.as_deref(),
-        highlight_span(item.vis_span, item.kind.ident().map(|ident| ident.span)),
-        matches!(item.kind, ItemKind::Mod(..)),
+        ctx,
+        &ItemInfo {
+            def_id:         item.owner_id.def_id,
+            file_path:      &file_path,
+            vis_text:       &vis_text,
+            kind_label:     item_kind_label(item.kind),
+            item_name:      item_name.as_deref(),
+            highlight_span: highlight_span(
+                item.vis_span,
+                item.kind.ident().map(|ident| ident.span),
+            ),
+            is_module_item: matches!(item.kind, ItemKind::Mod(..)),
+        },
         sink,
     )
 }
 
 fn analyze_impl_item(
-    tcx: TyCtxt<'_>,
-    settings: &DriverSettings,
-    src_root: &Path,
-    root_module: &Path,
-    effective_visibilities: &rustc_middle::middle::privacy::EffectiveVisibilities,
+    ctx: &VisibilityContext<'_, '_>,
     item: &ImplItem<'_>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
@@ -1004,105 +1026,88 @@ fn analyze_impl_item(
     if item.span.from_expansion() || vis_span.from_expansion() {
         return Ok(());
     }
-    let Some(file_path) = real_file_path(tcx, vis_span) else {
+    let Some(file_path) = real_file_path(ctx.tcx, vis_span) else {
         return Ok(());
     };
-    let Some(vis_text) = visibility_text(tcx, vis_span)? else {
+    let Some(vis_text) = visibility_text(ctx.tcx, vis_span)? else {
         return Ok(());
     };
 
     let item_name = item.ident.to_string();
 
     record_visibility_findings(
-        tcx,
-        settings,
-        src_root,
-        root_module,
-        effective_visibilities,
-        item.owner_id.def_id,
-        &file_path,
-        &vis_text,
-        Some(impl_item_kind_label(item.kind)),
-        Some(item_name.as_str()),
-        highlight_span(vis_span, Some(item.ident.span)),
-        false,
+        ctx,
+        &ItemInfo {
+            def_id:         item.owner_id.def_id,
+            file_path:      &file_path,
+            vis_text:       &vis_text,
+            kind_label:     Some(impl_item_kind_label(item.kind)),
+            item_name:      Some(item_name.as_str()),
+            highlight_span: highlight_span(vis_span, Some(item.ident.span)),
+            is_module_item: false,
+        },
         sink,
     )
 }
 
 fn analyze_foreign_item(
-    tcx: TyCtxt<'_>,
-    settings: &DriverSettings,
-    src_root: &Path,
-    root_module: &Path,
-    effective_visibilities: &rustc_middle::middle::privacy::EffectiveVisibilities,
+    ctx: &VisibilityContext<'_, '_>,
     item: &ForeignItem<'_>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
     if item.span.from_expansion() || item.vis_span.from_expansion() {
         return Ok(());
     }
-    let Some(file_path) = real_file_path(tcx, item.vis_span) else {
+    let Some(file_path) = real_file_path(ctx.tcx, item.vis_span) else {
         return Ok(());
     };
-    let Some(vis_text) = visibility_text(tcx, item.vis_span)? else {
+    let Some(vis_text) = visibility_text(ctx.tcx, item.vis_span)? else {
         return Ok(());
     };
 
     let item_name = item.ident.to_string();
 
     record_visibility_findings(
-        tcx,
-        settings,
-        src_root,
-        root_module,
-        effective_visibilities,
-        item.owner_id.def_id,
-        &file_path,
-        &vis_text,
-        Some(foreign_item_kind_label(item.kind)),
-        Some(item_name.as_str()),
-        highlight_span(item.vis_span, Some(item.ident.span)),
-        false,
+        ctx,
+        &ItemInfo {
+            def_id:         item.owner_id.def_id,
+            file_path:      &file_path,
+            vis_text:       &vis_text,
+            kind_label:     Some(foreign_item_kind_label(item.kind)),
+            item_name:      Some(item_name.as_str()),
+            highlight_span: highlight_span(item.vis_span, Some(item.ident.span)),
+            is_module_item: false,
+        },
         sink,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn record_visibility_findings(
-    tcx: TyCtxt<'_>,
-    settings: &DriverSettings,
-    src_root: &Path,
-    root_module: &Path,
-    effective_visibilities: &rustc_middle::middle::privacy::EffectiveVisibilities,
-    def_id: LocalDefId,
-    file_path: &Path,
-    vis_text: &str,
-    kind_label: Option<&'static str>,
-    item_name: Option<&str>,
-    highlight_span: Span,
-    is_module_item: bool,
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    let crate_kind = if root_module.file_name().and_then(|name| name.to_str()) == Some("lib.rs") {
+    let crate_kind = if ctx.root_module.file_name().and_then(|name| name.to_str()) == Some("lib.rs")
+    {
         CrateKind::Library
     } else {
         CrateKind::Binary
     };
-    let config_rel_path = config_relative_path_for_settings(file_path, settings);
-    let parent_module = tcx.parent_module_from_def_id(def_id);
-    let parent_is_public = tcx
+    let config_rel_path = config_relative_path_for_settings(item.file_path, ctx.settings);
+    let parent_module = ctx.tcx.parent_module_from_def_id(item.def_id);
+    let parent_is_public = ctx
+        .tcx
         .local_visibility(parent_module.to_local_def_id())
         .is_public();
-    let module_location = resolve_module_location(tcx, parent_module.to_local_def_id());
+    let module_location = resolve_module_location(ctx.tcx, parent_module.to_local_def_id());
 
-    if matches!(vis_text, "pub(crate)")
+    if matches!(item.vis_text, "pub(crate)")
         && !allow_pub_crate_by_policy(crate_kind, module_location, parent_is_public)
     {
         sink.findings.push(build_finding(
-            tcx,
-            file_path,
-            highlight_span,
+            ctx.tcx,
+            item.file_path,
+            item.highlight_span,
             FindingParams {
                 severity:    Severity::Error,
                 code:        "forbidden_pub_crate",
@@ -1115,11 +1120,11 @@ fn record_visibility_findings(
         )?);
     }
 
-    if vis_text.starts_with("pub(in crate::") {
+    if item.vis_text.starts_with("pub(in crate::") {
         sink.findings.push(build_finding(
-            tcx,
-            file_path,
-            highlight_span,
+            ctx.tcx,
+            item.file_path,
+            item.highlight_span,
             FindingParams {
                 severity:    Severity::Error,
                 code:        "forbidden_pub_in_crate",
@@ -1132,9 +1137,9 @@ fn record_visibility_findings(
         )?);
     }
 
-    if is_module_item && vis_text.starts_with("pub") {
+    if item.is_module_item && item.vis_text.starts_with("pub") {
         let allowlisted = config_rel_path.as_ref().is_some_and(|path| {
-            settings
+            ctx.settings
                 .config
                 .allow_pub_mod
                 .iter()
@@ -1142,13 +1147,13 @@ fn record_visibility_findings(
         });
         if !allowlisted {
             sink.findings.push(build_finding(
-                tcx,
-                file_path,
-                highlight_span,
+                ctx.tcx,
+                item.file_path,
+                item.highlight_span,
                 FindingParams {
                     severity:    Severity::Error,
                     code:        "review_pub_mod",
-                    item:        item_name.map(str::to_owned),
+                    item:        item.item_name.map(str::to_owned),
                     message:     "`pub mod` requires explicit review or allowlisting".to_string(),
                     suggestion:  None,
                     fix_support: FixSupport::None,
@@ -1158,63 +1163,43 @@ fn record_visibility_findings(
         }
     }
 
-    if vis_text == "pub" && !is_boundary_file(src_root, root_module, file_path) {
+    if item.vis_text == "pub" && !is_boundary_file(ctx.src_root, ctx.root_module, item.file_path) {
         maybe_record_suspicious_pub(
-            tcx,
-            settings,
-            src_root,
-            effective_visibilities,
-            def_id,
-            file_path,
-            config_rel_path.as_deref(),
-            parent_is_public,
-            module_location,
-            kind_label,
-            item_name,
-            highlight_span,
+            ctx,
+            &SuspiciousPubInput {
+                def_id: item.def_id,
+                file_path: item.file_path,
+                config_rel_path: config_rel_path.as_deref(),
+                parent_is_public,
+                module_location,
+                crate_kind,
+                kind_label: item.kind_label,
+                item_name: item.item_name,
+                highlight_span: item.highlight_span,
+            },
             sink,
-            crate_kind,
         )?;
     }
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn maybe_record_suspicious_pub(
-    tcx: TyCtxt<'_>,
-    settings: &DriverSettings,
-    src_root: &Path,
-    effective_visibilities: &rustc_middle::middle::privacy::EffectiveVisibilities,
-    def_id: LocalDefId,
-    file_path: &Path,
-    config_rel_path: Option<&str>,
-    parent_is_public: bool,
-    module_location: ModuleLocation,
-    kind_label: Option<&'static str>,
-    item_name: Option<&str>,
-    highlight_span: Span,
+    ctx: &VisibilityContext<'_, '_>,
+    input: &SuspiciousPubInput<'_>,
     sink: &mut FindingsSink,
-    crate_kind: CrateKind,
 ) -> Result<()> {
-    let Some(kind_label) = kind_label else {
+    let Some(kind_label) = input.kind_label else {
         return Ok(());
     };
 
-    match classify_suspicious_pub(
-        settings,
-        src_root,
-        effective_visibilities,
-        def_id,
-        file_path,
-        config_rel_path,
-        parent_is_public,
-        module_location,
-        item_name,
-    )? {
+    match classify_suspicious_pub(ctx, input)? {
         SuspiciousPubAssessment::Allowed(_) => {},
         SuspiciousPubAssessment::ReviewInternalParentFacade { related } => {
-            let Some(status) = item_name
-                .map(|name| parent_facade_export_status(settings, src_root, file_path, name))
+            let Some(status) = input
+                .item_name
+                .map(|name| {
+                    parent_facade_export_status(ctx.settings, ctx.src_root, input.file_path, name)
+                })
                 .transpose()?
                 .flatten()
             else {
@@ -1226,7 +1211,7 @@ fn maybe_record_suspicious_pub(
                 FindingParams {
                     severity: Severity::Warning,
                     code: "internal_parent_pub_use_facade",
-                    item: item_name.map(|name| format!("pub use {name}")),
+                    item: input.item_name.map(|name| format!("pub use {name}")),
                     message: String::from(
                         "this `pub use` is used inside its parent module subtree",
                     ),
@@ -1242,24 +1227,25 @@ fn maybe_record_suspicious_pub(
             stale_parent_pub_use,
         } => {
             sink.findings.push(build_finding(
-                tcx,
-                file_path,
-                highlight_span,
+                ctx.tcx,
+                input.file_path,
+                input.highlight_span,
                 FindingParams {
                     severity: Severity::Warning,
                     code: "suspicious_pub",
-                    item: item_name.map(|name| format!("{kind_label} {name}")),
-                    message: suspicious_pub_note(crate_kind, kind_label),
+                    item: input.item_name.map(|name| format!("{kind_label} {name}")),
+                    message: suspicious_pub_note(input.crate_kind, kind_label),
                     suggestion: None,
                     fix_support,
                     related,
                 },
             )?);
-            if let (Some(status), Some(item_name)) = (stale_parent_pub_use, item_name)
+            if let (Some(status), Some(item_name)) = (stale_parent_pub_use, input.item_name)
                 && fix_support == FixSupport::FixPubUse
             {
-                let display = line_display(tcx, file_path, highlight_span)?;
-                let Some(child_module) = file_path
+                let display = line_display(ctx.tcx, input.file_path, input.highlight_span)?;
+                let Some(child_module) = input
+                    .file_path
                     .file_stem()
                     .and_then(|stem| stem.to_str())
                     .filter(|stem| *stem != "mod")
@@ -1268,7 +1254,7 @@ fn maybe_record_suspicious_pub(
                     return Ok(());
                 };
                 sink.pub_use_fix_facts.push(StoredPubUseFixFact {
-                    child_path: file_path.to_string_lossy().into_owned(),
+                    child_path: input.file_path.to_string_lossy().into_owned(),
                     child_line: display.line,
                     child_item_name: item_name.to_string(),
                     parent_path: status.parent_path.to_string_lossy().into_owned(),
@@ -1281,31 +1267,24 @@ fn maybe_record_suspicious_pub(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn classify_suspicious_pub(
-    settings: &DriverSettings,
-    src_root: &Path,
-    effective_visibilities: &rustc_middle::middle::privacy::EffectiveVisibilities,
-    def_id: LocalDefId,
-    file_path: &Path,
-    config_rel_path: Option<&str>,
-    parent_is_public: bool,
-    module_location: ModuleLocation,
-    item_name: Option<&str>,
+    ctx: &VisibilityContext<'_, '_>,
+    input: &SuspiciousPubInput<'_>,
 ) -> Result<SuspiciousPubAssessment> {
     if let Some(allowance) = basic_suspicious_pub_allowance(
-        settings,
-        effective_visibilities,
-        def_id,
-        config_rel_path,
-        parent_is_public,
-        item_name,
+        ctx.settings,
+        ctx.effective_visibilities,
+        input.def_id,
+        input.config_rel_path,
+        input.parent_is_public,
+        input.item_name,
     ) {
         return Ok(SuspiciousPubAssessment::Allowed(allowance));
     }
 
-    let parent_facade_export = item_name
-        .map(|name| parent_facade_export_status(settings, src_root, file_path, name))
+    let parent_facade_export = input
+        .item_name
+        .map(|name| parent_facade_export_status(ctx.settings, ctx.src_root, input.file_path, name))
         .transpose()?
         .flatten();
 
@@ -1313,9 +1292,12 @@ fn classify_suspicious_pub(
         return Ok(assessment);
     }
 
-    if let Some(allowance) =
-        assess_signature_exposure_allowance(settings, src_root, file_path, item_name)?
-    {
+    if let Some(allowance) = assess_signature_exposure_allowance(
+        ctx.settings,
+        ctx.src_root,
+        input.file_path,
+        input.item_name,
+    )? {
         return Ok(SuspiciousPubAssessment::Allowed(allowance));
     }
 
@@ -1328,7 +1310,7 @@ fn classify_suspicious_pub(
         )
     });
 
-    if matches!(module_location, ModuleLocation::TopLevelPrivateModule)
+    if matches!(input.module_location, ModuleLocation::TopLevelPrivateModule)
         && stale_parent_pub_use.is_none()
     {
         return Ok(SuspiciousPubAssessment::Allowed(

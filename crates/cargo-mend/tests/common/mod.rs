@@ -1,7 +1,6 @@
 #![allow(clippy::expect_used)]
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::struct_field_names)]
-#![allow(clippy::too_many_lines)]
 
 pub use std::collections::BTreeSet;
 pub use std::fs;
@@ -206,7 +205,10 @@ pub fn run_mend_json(manifest_path: &std::path::Path) -> Report {
 }
 
 pub mod cargo_mend_tests_support {
-    #![allow(dead_code)]
+    #![allow(
+        dead_code,
+        reason = "include!() pulls in entire source files; only a subset is re-exported"
+    )]
 
     mod fix_support {
         include!("../../src/fix_support.rs");

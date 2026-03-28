@@ -1,31 +1,37 @@
 use anyhow::Result;
 
-use crate::compiler;
-use crate::config;
-use crate::config::DiagnosticCode;
-use crate::diagnostics;
-use crate::imports;
-use crate::inline_path_qualified_type;
-use crate::outcome::AnalysisFailure;
-use crate::outcome::CompilerFailureCause;
-use crate::outcome::ExecutionNotice;
-use crate::outcome::ExecutionOutcome;
-use crate::outcome::FixNotice;
-use crate::outcome::FixValidationFailure;
-use crate::outcome::MendFailure;
-use crate::outcome::NoticeKind;
-use crate::outcome::PubUseNotice;
-use crate::outcome::RollbackStatus;
-use crate::prefer_module_import;
-use crate::pub_use_fixes;
-use crate::run_mode::FixKind;
-use crate::run_mode::OperationIntent;
-use crate::run_mode::OperationMode;
-use crate::selection;
+use super::compiler;
+use super::compiler::BuildOutputMode;
+use super::config::DiagnosticCode;
+use super::config::LoadedConfig;
+use super::diagnostics::Report;
+use super::imports;
+use super::imports::ImportScan;
+use super::imports::ValidatedFixSet;
+use super::inline_path_qualified_type;
+use super::inline_path_qualified_type::InlinePathScan;
+use super::outcome::AnalysisFailure;
+use super::outcome::CompilerFailureCause;
+use super::outcome::ExecutionNotice;
+use super::outcome::ExecutionOutcome;
+use super::outcome::FixNotice;
+use super::outcome::FixValidationFailure;
+use super::outcome::MendFailure;
+use super::outcome::NoticeKind;
+use super::outcome::PubUseNotice;
+use super::outcome::RollbackStatus;
+use super::prefer_module_import;
+use super::prefer_module_import::PreferModuleImportScan;
+use super::pub_use_fixes;
+use super::pub_use_fixes::PubUseFixScan;
+use super::run_mode::FixKind;
+use super::run_mode::OperationIntent;
+use super::run_mode::OperationMode;
+use super::selection::Selection;
 
 pub struct MendRunner<'a> {
-    selection: &'a selection::Selection,
-    config:    &'a config::LoadedConfig,
+    selection: &'a Selection,
+    config:    &'a LoadedConfig,
 }
 
 enum BuildReportFailure {
@@ -35,18 +41,15 @@ enum BuildReportFailure {
 
 struct RunPlan {
     mode:                      OperationMode,
-    report:                    diagnostics::Report,
-    import_scan:               Option<imports::ImportScan>,
-    prefer_module_import_scan: Option<prefer_module_import::PreferModuleImportScan>,
-    inline_path_scan:          Option<inline_path_qualified_type::InlinePathScan>,
-    pub_use_scan:              Option<pub_use_fixes::PubUseFixScan>,
+    report:                    Report,
+    import_scan:               Option<ImportScan>,
+    prefer_module_import_scan: Option<PreferModuleImportScan>,
+    inline_path_scan:          Option<InlinePathScan>,
+    pub_use_scan:              Option<PubUseFixScan>,
 }
 
 impl<'a> MendRunner<'a> {
-    pub const fn new(
-        selection: &'a selection::Selection,
-        config: &'a config::LoadedConfig,
-    ) -> Self {
+    pub const fn new(selection: &'a Selection, config: &'a LoadedConfig) -> Self {
         Self { selection, config }
     }
 
@@ -57,9 +60,9 @@ impl<'a> MendRunner<'a> {
 
     fn plan(&self, mode: OperationMode) -> Result<RunPlan, MendFailure> {
         let output_mode = if mode.fixes.contains(FixKind::FixPubUse) {
-            compiler::BuildOutputMode::SuppressUnusedImportWarnings
+            BuildOutputMode::SuppressUnusedImportWarnings
         } else {
-            compiler::BuildOutputMode::Full
+            BuildOutputMode::Full
         };
         let report = self
             .build_report(output_mode)
@@ -145,7 +148,7 @@ impl<'a> MendRunner<'a> {
 
         let snapshots = imports::snapshot_files(&fixes).map_err(MendFailure::Unexpected)?;
         let _applied = imports::apply_fixes(&fixes).map_err(MendFailure::Unexpected)?;
-        match self.build_report(compiler::BuildOutputMode::Full) {
+        match self.build_report(BuildOutputMode::Full) {
             Ok(report) => {
                 let notice = Self::build_fix_notice(
                     planned.mode.intent,
@@ -171,11 +174,11 @@ impl<'a> MendRunner<'a> {
     }
 
     fn combined_fixes(
-        import_scan: Option<&imports::ImportScan>,
-        prefer_module_import_scan: Option<&prefer_module_import::PreferModuleImportScan>,
-        inline_path_scan: Option<&inline_path_qualified_type::InlinePathScan>,
-        pub_use_scan: Option<&pub_use_fixes::PubUseFixScan>,
-    ) -> Result<imports::ValidatedFixSet, MendFailure> {
+        import_scan: Option<&ImportScan>,
+        prefer_module_import_scan: Option<&PreferModuleImportScan>,
+        inline_path_scan: Option<&InlinePathScan>,
+        pub_use_scan: Option<&PubUseFixScan>,
+    ) -> Result<ValidatedFixSet, MendFailure> {
         // Collect prefer_module_import fix ranges for deconfliction with ShortenImport
         let prefer_ranges: Vec<(&std::path::Path, usize, usize)> = prefer_module_import_scan
             .iter()
@@ -210,11 +213,11 @@ impl<'a> MendRunner<'a> {
 
     fn build_fix_notice(
         intent: OperationIntent,
-        report: Option<&diagnostics::Report>,
-        import_scan: Option<&imports::ImportScan>,
-        prefer_module_import_scan: Option<&prefer_module_import::PreferModuleImportScan>,
-        inline_path_scan: Option<&inline_path_qualified_type::InlinePathScan>,
-        pub_use_scan: Option<&pub_use_fixes::PubUseFixScan>,
+        report: Option<&Report>,
+        import_scan: Option<&ImportScan>,
+        prefer_module_import_scan: Option<&PreferModuleImportScan>,
+        inline_path_scan: Option<&InlinePathScan>,
+        pub_use_scan: Option<&PubUseFixScan>,
     ) -> Option<ExecutionNotice> {
         let mut notices = Vec::new();
         let mut import_fix_count = 0;
@@ -260,10 +263,7 @@ impl<'a> MendRunner<'a> {
         }
     }
 
-    fn build_report(
-        &self,
-        output_mode: compiler::BuildOutputMode,
-    ) -> Result<diagnostics::Report, BuildReportFailure> {
+    fn build_report(&self, output_mode: BuildOutputMode) -> Result<Report, BuildReportFailure> {
         let mut report = compiler::run_selection(self.selection, self.config, output_mode)
             .map_err(Self::mend_failure_into_build_report_failure)?;
         let diagnostics = &self.config.diagnostics;

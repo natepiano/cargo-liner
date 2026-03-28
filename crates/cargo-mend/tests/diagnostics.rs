@@ -1,7 +1,6 @@
 #![allow(clippy::expect_used)]
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::struct_field_names)]
-#![allow(clippy::too_many_lines)]
 
 #[path = "diagnostics/allowances.rs"]
 mod allowances;

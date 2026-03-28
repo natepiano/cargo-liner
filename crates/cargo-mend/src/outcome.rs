@@ -3,8 +3,8 @@ use std::process::ExitCode;
 
 use anyhow::Error;
 
-use crate::diagnostics::Report;
-use crate::run_mode::OperationIntent;
+use super::diagnostics::Report;
+use super::run_mode::OperationIntent;
 
 #[derive(Debug)]
 pub struct ExecutionOutcome {

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Compiler driver now uses an isolated target directory (`target/mend/`) to prevent `E0514` errors when the main `target/` contains artifacts compiled by a different rustc version (e.g., CI caching stable and nightly builds together)
+
 ## [0.2.1] - 2026-03-28
 
 ### Fixed

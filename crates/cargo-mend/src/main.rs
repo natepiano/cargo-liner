@@ -26,6 +26,7 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use anyhow::Result;
+use config::DiagnosticsConfig;
 use outcome::MendFailure;
 use run_mode::OperationMode;
 use runner::MendRunner;
@@ -44,7 +45,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn build_diagnostics_help(diagnostics: &config::DiagnosticsConfig) -> String {
+fn build_diagnostics_help(diagnostics: &DiagnosticsConfig) -> String {
     let config_path = config::global_config_path()
         .map_or_else(|| "(unavailable)".to_string(), |p| p.display().to_string());
 

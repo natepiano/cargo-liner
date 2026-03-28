@@ -905,8 +905,7 @@ edition = "2024"
     assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
 }
 
-#[test]
-fn fix_pub_use_preserves_exports_used_outside_parent_via_normal_paths() {
+fn create_preserve_exports_fixture() -> tempfile::TempDir {
     let temp = tempdir().expect("create temp fixture dir");
     fs::create_dir_all(temp.path().join("src/utils")).expect("create src/utils");
 
@@ -974,6 +973,13 @@ pub struct Sha256Cache;
 "#,
     )
     .expect("write sha256 child");
+
+    temp
+}
+
+#[test]
+fn fix_pub_use_preserves_exports_used_outside_parent_via_normal_paths() {
+    let temp = create_preserve_exports_fixture();
 
     let output = mend_command()
         .arg("--manifest-path")
