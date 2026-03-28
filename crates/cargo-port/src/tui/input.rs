@@ -7,6 +7,7 @@ use ratatui::layout::Position;
 use super::app::App;
 use super::app::CiState;
 use super::app::ConfirmAction;
+use super::constants::CI_EXTRA_ROWS;
 use super::detail;
 use super::finder;
 use super::settings;
@@ -191,7 +192,7 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
             .selected_project()
             .and_then(|p| app.ci_state_for(p))
             .map_or(0, |s| s.runs().len());
-        let total_rows = ci_run_count + detail::CI_EXTRA_ROWS;
+        let total_rows = ci_run_count + CI_EXTRA_ROWS;
         if clicked_row < total_rows {
             app.ci_runs_cursor.set(clicked_row);
         }
@@ -349,7 +350,7 @@ fn handle_search_key(app: &mut App, key: KeyCode) {
     }
 }
 
-pub fn advance_focus(app: &mut App) {
+pub(super) fn advance_focus(app: &mut App) {
     let has_ci = app.selected_project().is_some_and(|p| {
         app.ci_state
             .get(&p.path)
@@ -403,7 +404,7 @@ pub fn advance_focus(app: &mut App) {
     }
 }
 
-pub fn reverse_focus(app: &mut App) {
+pub(super) fn reverse_focus(app: &mut App) {
     let has_ci = app.selected_project().is_some_and(|p| {
         app.ci_state
             .get(&p.path)

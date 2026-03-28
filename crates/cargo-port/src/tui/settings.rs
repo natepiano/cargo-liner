@@ -11,8 +11,7 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 
 use super::app::App;
-
-const SETTINGS_POPUP_PADDING: u16 = 6;
+use super::constants::SETTINGS_POPUP_PADDING;
 use super::render;
 use crate::config;
 

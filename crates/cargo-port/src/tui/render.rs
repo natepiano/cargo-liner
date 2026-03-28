@@ -22,24 +22,20 @@ use super::app::ConfirmAction;
 use super::app::ExpandKey;
 use super::app::FitWidths;
 use super::app::VisibleRow;
+use super::constants::BLOCK_BORDER_WIDTH;
+use super::constants::BYTES_PER_GIB;
+use super::constants::BYTES_PER_MIB;
+use super::constants::OFFLINE_PULSE_AMPLITUDE;
+use super::constants::OFFLINE_PULSE_BLUE;
+use super::constants::OFFLINE_PULSE_CYCLE;
+use super::constants::OFFLINE_PULSE_GREEN;
+use super::constants::OFFLINE_PULSE_OFFSET;
+use super::constants::OFFLINE_PULSE_RED;
 use super::shortcuts::Shortcut;
 use super::types::FocusTarget;
 use super::types::LayoutCache;
 use crate::ci::CiRun;
 use crate::project::RustProject;
-
-pub(super) const BYTES_PER_MIB: u64 = 1024 * 1024;
-pub(super) const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
-
-/// Block border costs 2 horizontal characters (left + right).
-const BLOCK_BORDER_WIDTH: usize = 2;
-
-const OFFLINE_PULSE_CYCLE: usize = 120;
-const OFFLINE_PULSE_AMPLITUDE: f64 = 0.3;
-const OFFLINE_PULSE_OFFSET: f64 = 0.7;
-const OFFLINE_PULSE_RED: f64 = 200.0;
-const OFFLINE_PULSE_GREEN: f64 = 60.0;
-const OFFLINE_PULSE_BLUE: u8 = 60;
 
 #[derive(Clone, Copy)]
 pub(super) enum CiColumn {

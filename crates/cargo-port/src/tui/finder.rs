@@ -24,8 +24,7 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
 use super::app::App;
-
-const MAX_FINDER_RESULTS: usize = 50;
+use super::constants::MAX_FINDER_RESULTS;
 use super::detail::RunTargetKind;
 use super::render;
 use crate::project::GitInfo;
@@ -35,7 +34,7 @@ use crate::scan::ProjectNode;
 
 /// A searchable item in the universal finder.
 #[derive(Clone)]
-pub struct FinderItem {
+pub(super) struct FinderItem {
     /// Display name shown in the results list.
     pub display_name: String,
     /// The haystack string used for fuzzy matching (includes parent context).
@@ -55,7 +54,7 @@ pub struct FinderItem {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum FinderKind {
+pub(super) enum FinderKind {
     Project,
     Binary,
     Example,
@@ -84,8 +83,8 @@ impl FinderKind {
 
 /// Column width metrics cached at index build time so the popup renders at a
 /// stable size regardless of the current query results.
-pub const FINDER_COLUMN_COUNT: usize = 5;
-pub const FINDER_HEADERS: [&str; FINDER_COLUMN_COUNT] =
+pub(super) const FINDER_COLUMN_COUNT: usize = 5;
+pub(super) const FINDER_HEADERS: [&str; FINDER_COLUMN_COUNT] =
     ["Name", "Project", "Branch", "Dir", "Type"];
 
 /// Build a flat index of all searchable items from the node tree.
@@ -93,7 +92,7 @@ pub const FINDER_HEADERS: [&str; FINDER_COLUMN_COUNT] =
 /// from their workspace root (members don't have their own `.git`).
 /// Returns `(items, col_widths)` where `col_widths` is the max display
 /// width of each column across the entire index.
-pub fn build_finder_index(
+pub(super) fn build_finder_index(
     nodes: &[ProjectNode],
     git_info: &HashMap<String, GitInfo>,
 ) -> (Vec<FinderItem>, [usize; FINDER_COLUMN_COUNT]) {
@@ -240,7 +239,11 @@ fn add_project_items(items: &mut Vec<FinderItem>, project: &RustProject, branch:
 ///
 /// Each whitespace-separated word is matched independently so that
 /// "bench diegetic" and "diegetic bench" produce the same results.
-pub fn search_finder(index: &[FinderItem], query: &str, max_results: usize) -> (Vec<usize>, usize) {
+pub(super) fn search_finder(
+    index: &[FinderItem],
+    query: &str,
+    max_results: usize,
+) -> (Vec<usize>, usize) {
     if query.is_empty() {
         return (Vec::new(), 0);
     }

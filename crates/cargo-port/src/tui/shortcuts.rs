@@ -1,7 +1,7 @@
 /// The current input context, derived from app state. Determines which
 /// shortcuts are shown in the status bar and how keys are dispatched.
 #[derive(PartialEq, Eq, Clone, Copy)]
-pub enum InputContext {
+pub(super) enum InputContext {
     ProjectList,
     ScanLog,
     DetailFields,
@@ -21,7 +21,7 @@ impl InputContext {
 }
 
 /// A keyboard shortcut for display in the status bar.
-pub struct Shortcut {
+pub(super) struct Shortcut {
     pub key:         &'static str,
     pub description: &'static str,
 }

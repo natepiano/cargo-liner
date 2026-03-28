@@ -1,4 +1,5 @@
 mod app;
+mod constants;
 mod detail;
 mod finder;
 mod input;

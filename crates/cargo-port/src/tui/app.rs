@@ -43,19 +43,19 @@ use crate::watcher::WatchRequest;
 
 /// An expand key: either a workspace node or a group within a node.
 #[derive(Hash, Eq, PartialEq, Clone)]
-pub enum ExpandKey {
+pub(super) enum ExpandKey {
     Node(usize),
     Group(usize, usize),
 }
 
 /// An action waiting for user confirmation (y/n).
-pub enum ConfirmAction {
+pub(super) enum ConfirmAction {
     /// `cargo clean` on the project at this absolute path.
     Clean(String),
 }
 
 /// Cached column widths for fit-to-content columns in the project list.
-pub struct FitWidths {
+pub(super) struct FitWidths {
     pub name:       usize,
     pub disk:       usize,
     pub sync:       usize,
@@ -75,7 +75,7 @@ impl Default for FitWidths {
 
 /// What a visible row represents.
 #[derive(Clone, Copy)]
-pub enum VisibleRow {
+pub(super) enum VisibleRow {
     /// A top-level project/workspace root.
     Root { node_index: usize },
     /// A group header (e.g., "examples").
@@ -99,7 +99,7 @@ pub enum VisibleRow {
 /// Per-project CI state. Replaces the scattered `(ci_runs, ci_fetching,
 /// ci_no_more_runs, ci_fetch_count)` fields with a single enum so invalid
 /// combinations are unrepresentable.
-pub enum CiState {
+pub(super) enum CiState {
     /// A fetch-more request is in progress. Keeps existing runs visible
     /// so the UI never flashes empty during pagination.
     Fetching { runs: Vec<CiRun>, count: u32 },
@@ -147,7 +147,7 @@ pub(super) struct DetailCache {
 }
 
 #[allow(clippy::struct_excessive_bools)]
-pub struct App {
+pub(super) struct App {
     pub scan_root:           PathBuf,
     pub inline_dirs:         Vec<String>,
     pub exclude_dirs:        Vec<String>,

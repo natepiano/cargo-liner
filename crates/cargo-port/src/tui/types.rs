@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 /// A bounded cursor for scrollable lists. Replaces raw `usize` index + manual
 /// bounds checking with a single type that enforces invariants.
 #[derive(Default, Clone)]
-pub struct ScrollState {
+pub(super) struct ScrollState {
     pos: usize,
 }
 
@@ -39,7 +39,7 @@ impl ScrollState {
 }
 
 #[derive(Default, PartialEq, Eq, Clone, Copy)]
-pub enum FocusTarget {
+pub(super) enum FocusTarget {
     #[default]
     ProjectList,
     DetailFields,
@@ -50,7 +50,7 @@ pub enum FocusTarget {
 /// Cached layout rectangles from the last render frame, used for mouse
 /// hit-testing in the event handler.
 #[derive(Default)]
-pub struct LayoutCache {
+pub(super) struct LayoutCache {
     pub project_list:         Rect,
     pub scan_log:             Option<Rect>,
     pub detail_columns:       Vec<Rect>,

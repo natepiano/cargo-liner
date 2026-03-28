@@ -21,9 +21,8 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use super::app::App;
-
-const FRAME_POLL_MILLIS: u64 = 16;
-const CI_FETCH_DISPLAY_COUNT: u32 = 5;
+use super::constants::CI_FETCH_DISPLAY_COUNT;
+use super::constants::FRAME_POLL_MILLIS;
 use super::detail::PendingCiFetch;
 use super::detail::PendingExampleRun;
 use super::detail::RunTargetKind;
@@ -36,7 +35,7 @@ use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
 
-pub enum ExampleMsg {
+pub(super) enum ExampleMsg {
     Output(String),
     /// Carriage-return line — replaces the last output line (cargo progress).
     Progress(String),
@@ -44,7 +43,7 @@ pub enum ExampleMsg {
 }
 
 /// Message sent when a background CI fetch completes.
-pub enum CiFetchMsg {
+pub(super) enum CiFetchMsg {
     /// The fetch completed with updated runs for the given project path.
     Complete {
         path:   String,

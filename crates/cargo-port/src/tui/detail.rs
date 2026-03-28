@@ -24,6 +24,7 @@ use ratatui::widgets::TableState;
 use super::app::App;
 use super::app::CiState;
 use super::app::ConfirmAction;
+use super::constants::CI_EXTRA_ROWS;
 use super::render::CiColumn;
 use super::types::FocusTarget;
 use crate::ci::CiRun;
@@ -33,7 +34,7 @@ use crate::project::ProjectType;
 use crate::project::RustProject;
 
 #[derive(Default)]
-pub struct ProjectCounts {
+pub(super) struct ProjectCounts {
     pub workspaces:  usize,
     pub libs:        usize,
     pub bins:        usize,
@@ -108,7 +109,7 @@ fn stats_column_width(stats_rows: &[(&str, usize)]) -> (u16, u16) {
 }
 
 #[derive(Clone, Copy)]
-pub enum RunTargetKind {
+pub(super) enum RunTargetKind {
     Binary,
     Example,
     Bench,
@@ -136,7 +137,7 @@ impl RunTargetKind {
     }
 }
 
-pub struct TargetEntry {
+pub(super) struct TargetEntry {
     pub name:         String,
     pub display_name: String,
     pub kind:         RunTargetKind,
@@ -203,7 +204,7 @@ const fn has_targets(info: &DetailInfo) -> bool {
 
 /// Build a flat list of all runnable targets: binaries first, then examples alphabetically,
 /// then benches alphabetically.
-pub fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
+pub(super) fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
     let mut entries = Vec::new();
 
     if info.is_binary
@@ -262,7 +263,7 @@ pub fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
     entries
 }
 
-pub struct PendingExampleRun {
+pub(super) struct PendingExampleRun {
     pub abs_path:     String,
     pub target_name:  String,
     pub package_name: Option<String>,
@@ -271,14 +272,14 @@ pub struct PendingExampleRun {
 }
 
 /// A pending request to fetch more CI runs for a project.
-pub struct PendingCiFetch {
+pub(super) struct PendingCiFetch {
     pub abs_path:      String,
     pub project_path:  String,
     pub current_count: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum DetailField {
+pub(super) enum DetailField {
     Name,
     Path,
     Targets,
@@ -444,7 +445,7 @@ pub(super) fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
 }
 
 #[derive(Clone)]
-pub struct DetailInfo {
+pub(super) struct DetailInfo {
     pub package_title:   String,
     pub name:            String,
     pub path:            String,
@@ -1239,9 +1240,6 @@ fn format_timestamp(iso: &str) -> String {
     }
 }
 
-/// The number of extra rows beyond the CI run data (the "fetch more" action row).
-pub(super) const CI_EXTRA_ROWS: usize = 1;
-
 /// Build the header `Row` for the CI table from the given columns.
 fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
     let right_aligned = Style::default()
@@ -1476,13 +1474,13 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun
 }
 
 /// Returns (`max_column_index`, `targets_column_index` or `None`).
-pub fn detail_layout_pub(app: &App) -> (usize, Option<usize>) {
+pub(super) fn detail_layout_pub(app: &App) -> (usize, Option<usize>) {
     let spec = detail_layout(app);
     (spec.max_col, spec.targets_col)
 }
 
 /// Returns the maximum detail column index for the selected project.
-pub fn detail_max_column(app: &App) -> usize { detail_layout(app).max_col }
+pub(super) fn detail_max_column(app: &App) -> usize { detail_layout(app).max_col }
 
 fn detail_layout(app: &App) -> DetailLayoutSpec {
     let Some(project) = app.selected_project() else {
