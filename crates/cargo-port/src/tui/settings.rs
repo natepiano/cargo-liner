@@ -13,7 +13,7 @@ use ratatui::widgets::Paragraph;
 use super::app::App;
 
 const SETTINGS_POPUP_PADDING: u16 = 6;
-use super::render::centered_rect;
+use super::render;
 use crate::config;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -23,7 +23,6 @@ pub(super) enum SettingOption {
     InlineDirs,
     ExcludeDirs,
     IncludeNonRust,
-    OwnedOwners,
     Editor,
 }
 
@@ -35,13 +34,12 @@ impl SettingOption {
             2 => Some(Self::InlineDirs),
             3 => Some(Self::ExcludeDirs),
             4 => Some(Self::IncludeNonRust),
-            5 => Some(Self::OwnedOwners),
-            6 => Some(Self::Editor),
+            5 => Some(Self::Editor),
             _ => None,
         }
     }
 
-    pub(super) const fn count() -> usize { 7 }
+    pub(super) const fn count() -> usize { 6 }
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
@@ -54,7 +52,7 @@ fn parse_dir_list(value: &str) -> Vec<String> {
 
 pub(super) fn render_settings_popup(frame: &mut Frame, app: &App) {
     #[allow(clippy::cast_possible_truncation)]
-    let area = centered_rect(
+    let area = render::centered_rect(
         60,
         SettingOption::count() as u16 + SETTINGS_POPUP_PADDING,
         frame.area(),
@@ -92,7 +90,6 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &App) {
             "Non-Rust projects",
             if app.include_non_rust { "ON" } else { "OFF" }.to_string(),
         ),
-        ("Owned owners", app.owned_owners.join(", ")),
         ("Editor", app.editor.clone()),
     ];
 
@@ -216,7 +213,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc | KeyCode::Char('s') => {
             app.show_settings = false;
-            app.settings_cursor.to_top();
+            app.settings_cursor.jump_home();
         },
         KeyCode::Up => {
             app.settings_cursor.up();
@@ -273,10 +270,6 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
                 let _ = config::save(&cfg);
                 app.rescan();
             },
-            Some(SettingOption::OwnedOwners) => {
-                app.settings_edit_buf = app.owned_owners.join(", ");
-                app.settings_editing = true;
-            },
             Some(SettingOption::Editor) => {
                 app.settings_edit_buf.clone_from(&app.editor);
                 app.settings_editing = true;
@@ -316,13 +309,6 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                     app.exclude_dirs.clone_from(&dirs);
                     let mut cfg = config::load();
                     cfg.tui.exclude_dirs = dirs;
-                    let _ = config::save(&cfg);
-                },
-                Some(SettingOption::OwnedOwners) => {
-                    let owners = parse_dir_list(&value);
-                    app.owned_owners.clone_from(&owners);
-                    let mut cfg = config::load();
-                    cfg.tui.owned_owners = owners;
                     let _ = config::save(&cfg);
                 },
                 Some(SettingOption::Editor) => {

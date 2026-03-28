@@ -27,10 +27,11 @@ use super::app::App;
 
 const MAX_FINDER_RESULTS: usize = 50;
 use super::detail::RunTargetKind;
-use super::render::centered_rect;
+use super::render;
 use crate::project::GitInfo;
 use crate::project::ProjectType;
 use crate::project::RustProject;
+use crate::scan::ProjectNode;
 
 /// A searchable item in the universal finder.
 #[derive(Clone)]
@@ -73,10 +74,10 @@ impl FinderKind {
 
     pub const fn color(self) -> Color {
         match self {
-            Self::Project => Color::Cyan,
-            Self::Binary => Color::Green,
-            Self::Example => Color::Yellow,
-            Self::Bench => Color::Magenta,
+            Self::Project => Color::Yellow,
+            Self::Binary => RunTargetKind::BINARY_COLOR,
+            Self::Example => RunTargetKind::EXAMPLE_COLOR,
+            Self::Bench => RunTargetKind::BENCH_COLOR,
         }
     }
 }
@@ -93,7 +94,7 @@ pub const FINDER_HEADERS: [&str; FINDER_COLUMN_COUNT] =
 /// Returns `(items, col_widths)` where `col_widths` is the max display
 /// width of each column across the entire index.
 pub fn build_finder_index(
-    nodes: &[crate::scan::ProjectNode],
+    nodes: &[ProjectNode],
     git_info: &HashMap<String, GitInfo>,
 ) -> (Vec<FinderItem>, [usize; FINDER_COLUMN_COUNT]) {
     let mut items = Vec::new();
@@ -296,7 +297,7 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
             app.show_finder = false;
             app.finder_query.clear();
             app.finder_results.clear();
-            app.finder_cursor.to_top();
+            app.finder_cursor.jump_home();
         },
         KeyCode::Enter => {
             confirm_finder(app);
@@ -308,16 +309,16 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
             app.finder_cursor.down(app.finder_results.len());
         },
         KeyCode::Home => {
-            app.finder_cursor.to_top();
+            app.finder_cursor.jump_home();
         },
         KeyCode::End => {
-            app.finder_cursor.to_bottom(app.finder_results.len());
+            app.finder_cursor.jump_end(app.finder_results.len());
         },
         KeyCode::Backspace => {
             if app.finder_query.is_empty() {
                 app.show_finder = false;
                 app.finder_results.clear();
-                app.finder_cursor.to_top();
+                app.finder_cursor.jump_home();
             } else {
                 app.finder_query.pop();
                 refresh_finder_results(app);
@@ -335,7 +336,7 @@ fn refresh_finder_results(app: &mut App) {
     let (results, total) = search_finder(&app.finder_index, &app.finder_query, MAX_FINDER_RESULTS);
     app.finder_results = results;
     app.finder_total = total;
-    app.finder_cursor.to_top();
+    app.finder_cursor.jump_home();
 }
 
 fn confirm_finder(app: &mut App) {
@@ -348,7 +349,7 @@ fn confirm_finder(app: &mut App) {
     app.show_finder = false;
     app.finder_query.clear();
     app.finder_results.clear();
-    app.finder_cursor.to_top();
+    app.finder_cursor.jump_home();
 
     // Navigate to the project
     app.select_project_in_tree(&item.project_path);
@@ -373,7 +374,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
     if let Some(col) = targets_col {
         app.focus = FocusTarget::DetailFields;
         app.detail_column.set(col);
-        app.detail_cursor.to_top();
+        app.detail_cursor.jump_home();
 
         // Build target list and find the matching entry index
         if let Some(project) = app.selected_project() {
@@ -411,7 +412,7 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &App) {
     #[allow(clippy::cast_possible_truncation)]
     let popup_width = (natural_width as u16).clamp(min_popup_width, max_popup_width);
 
-    let area = centered_rect(popup_width, 28, frame.area());
+    let area = render::centered_rect(popup_width, 28, frame.area());
     frame.render_widget(Clear, area);
 
     let title = if app.finder_query.is_empty() {
@@ -485,6 +486,15 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &App) {
         height: inner.height.saturating_sub(2),
     };
 
+    render_finder_results(frame, app, col_widths, results_area);
+}
+
+fn render_finder_results(
+    frame: &mut Frame,
+    app: &App,
+    col_widths: [usize; FINDER_COLUMN_COUNT],
+    area: Rect,
+) {
     if app.finder_results.is_empty() {
         let msg = if app.finder_query.is_empty() {
             "Type to search projects, examples, benches..."
@@ -495,7 +505,7 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &App) {
             format!("  {msg}"),
             Style::default().fg(Color::DarkGray),
         )));
-        frame.render_widget(hint, results_area);
+        frame.render_widget(hint, area);
         return;
     }
 
@@ -534,8 +544,7 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &App) {
     let header = Row::new(
         FINDER_HEADERS
             .iter()
-            .map(|h| Cell::from(Span::styled(*h, header_style)))
-            .collect::<Vec<_>>(),
+            .map(|h| Cell::from(Span::styled(*h, header_style))),
     );
 
     let highlight_style = Style::default().fg(Color::Black).bg(Color::Cyan);
@@ -545,5 +554,5 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &App) {
         .row_highlight_style(highlight_style);
 
     let mut table_state = TableState::default().with_selected(Some(app.finder_cursor.pos()));
-    frame.render_stateful_widget(table, results_area, &mut table_state);
+    frame.render_stateful_widget(table, area, &mut table_state);
 }

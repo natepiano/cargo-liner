@@ -53,6 +53,8 @@ pub struct GitInfo {
     pub first_commit: Option<String>,
     /// ISO 8601 date of the most recent commit.
     pub last_commit:  Option<String>,
+    /// Commits ahead and behind the upstream tracking branch (ahead, behind).
+    pub ahead_behind: Option<(usize, usize)>,
 }
 
 impl GitInfo {
@@ -99,6 +101,19 @@ impl GitInfo {
                 if b.is_empty() { None } else { Some(b) }
             });
 
+        let ahead_behind = Command::new("git")
+            .args(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
+            .current_dir(project_dir)
+            .output()
+            .ok()
+            .and_then(|o| {
+                let s = String::from_utf8_lossy(&o.stdout);
+                let mut parts = s.trim().split('\t');
+                let ahead = parts.next()?.parse::<usize>().ok()?;
+                let behind = parts.next()?.parse::<usize>().ok()?;
+                Some((ahead, behind))
+            });
+
         let first_commit = Command::new("git")
             .args(["log", "--reverse", "--format=%aI", "--diff-filter=A"])
             .current_dir(project_dir)
@@ -129,6 +144,7 @@ impl GitInfo {
             url,
             first_commit,
             last_commit,
+            ahead_behind,
         })
     }
 }

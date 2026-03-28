@@ -140,6 +140,20 @@ fn load_cached_run(owner: &str, repo: &str, run_id: u64) -> Option<CiRun> {
     serde_json::from_str(&contents).ok()
 }
 
+/// Count the number of cached CI run files on disk for a given repo.
+pub fn count_cached_runs(owner: &str, repo: &str) -> usize {
+    let Some(dir) = repo_cache_dir(owner, repo) else {
+        return 0;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+        .count()
+}
+
 /// Load all cached CI runs for a given repo.
 pub fn load_all_cached_runs(owner: &str, repo: &str) -> Vec<CiRun> {
     let Some(dir) = repo_cache_dir(owner, repo) else {
@@ -657,15 +671,15 @@ pub fn fetch_project_details(
     });
 
     // Network operations — check connectivity once before attempting
-    let online = if !OFFLINE_NOTIFIED.load(Ordering::Relaxed) {
+    let online = if OFFLINE_NOTIFIED.load(Ordering::Relaxed) {
+        // Already notified offline — skip the check, still try
+        true
+    } else {
         let is_online = check_online();
         if !is_online {
             notify_offline_once(tx);
         }
         is_online
-    } else {
-        // Already notified offline — skip the check, still try
-        true
     };
 
     // CI runs — repo identity from *local* git remote, never from network

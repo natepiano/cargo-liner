@@ -20,10 +20,10 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
-use toml_edit::DocumentMut;
 
 use super::app::App;
 use super::app::CiState;
+use super::app::ConfirmAction;
 use super::render::CiColumn;
 use super::types::FocusTarget;
 use crate::ci::CiRun;
@@ -106,16 +106,33 @@ fn stats_column_width(stats_rows: &[(&str, usize)]) -> (u16, u16) {
     (total, digit_width)
 }
 
-pub struct EditingState {
-    pub field: DetailField,
-    pub buf:   String,
-}
-
 #[derive(Clone, Copy)]
 pub enum RunTargetKind {
     Binary,
     Example,
     Bench,
+}
+
+impl RunTargetKind {
+    pub const BINARY_COLOR: Color = Color::Green;
+    pub const EXAMPLE_COLOR: Color = Color::Cyan;
+    pub const BENCH_COLOR: Color = Color::Magenta;
+
+    pub const fn color(self) -> Color {
+        match self {
+            Self::Binary => Self::BINARY_COLOR,
+            Self::Example => Self::EXAMPLE_COLOR,
+            Self::Bench => Self::BENCH_COLOR,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Binary => "bin",
+            Self::Example => "example",
+            Self::Bench => "bench",
+        }
+    }
 }
 
 pub struct TargetEntry {
@@ -128,10 +145,48 @@ pub struct TargetEntry {
 struct RenderStyles {
     highlight:       Style,
     readonly_label:  Style,
-    editable_label:  Style,
     active_border:   Style,
     inactive_border: Style,
     title:           Style,
+}
+
+/// Focus state passed to column renderers to avoid per-function argument bloat.
+struct ColumnFocus {
+    detail_focused: bool,
+    is_active:      bool,
+    cursor:         usize,
+}
+
+struct DetailLayoutSpec {
+    constraints: Vec<Constraint>,
+    git_col:     Option<usize>,
+    targets_col: Option<usize>,
+    max_col:     usize,
+}
+
+fn detail_layout_spec(has_git: bool, has_targets: bool) -> DetailLayoutSpec {
+    match has_git {
+        true => DetailLayoutSpec {
+            constraints: vec![
+                Constraint::Percentage(37),
+                Constraint::Percentage(37),
+                Constraint::Percentage(26),
+            ],
+            git_col:     Some(1),
+            targets_col: Some(2),
+            max_col:     if has_targets { 2 } else { 1 },
+        },
+        false => DetailLayoutSpec {
+            constraints: vec![Constraint::Percentage(74), Constraint::Percentage(26)],
+            git_col:     None,
+            targets_col: Some(1),
+            max_col:     if has_targets { 1 } else { 0 },
+        },
+    }
+}
+
+fn has_targets(info: &DetailInfo) -> bool {
+    info.is_binary || !info.examples.is_empty() || !info.benches.is_empty()
 }
 
 /// Build a flat list of all runnable targets: binaries first, then examples alphabetically,
@@ -218,6 +273,7 @@ pub enum DetailField {
     Disk,
     Ci,
     Branch,
+    Sync,
     Origin,
     Owner,
     Repo,
@@ -240,6 +296,7 @@ impl DetailField {
             Self::Disk => "Disk",
             Self::Ci => "CI",
             Self::Branch => "Branch",
+            Self::Sync => "Sync",
             Self::Origin => "Origin",
             Self::Owner => "Owner",
             Self::Repo => "Repo",
@@ -254,16 +311,11 @@ impl DetailField {
         }
     }
 
-    pub(super) const fn is_editable(self) -> bool {
-        matches!(self, Self::Version | Self::Description)
-    }
-
-    pub(super) const fn toml_key(self) -> &'static str {
-        match self {
-            Self::Version => "version",
-            Self::Description => "description",
-            _ => "",
-        }
+    pub(super) const fn is_from_cargo_toml(self) -> bool {
+        matches!(
+            self,
+            Self::Name | Self::Targets | Self::Version | Self::Description
+        )
     }
 
     pub(super) fn value(self, info: &DetailInfo) -> String {
@@ -274,6 +326,7 @@ impl DetailField {
             Self::Disk => info.disk.clone(),
             Self::Ci => info.ci.clone(),
             Self::Branch => info.git_branch.as_deref().unwrap_or("").to_string(),
+            Self::Sync => info.git_sync.as_deref().unwrap_or("").to_string(),
             Self::Origin => info.git_origin.as_deref().unwrap_or("").to_string(),
             Self::Owner => info.git_owner.as_deref().unwrap_or("").to_string(),
             Self::Repo => info.git_url.as_deref().unwrap_or("").to_string(),
@@ -291,7 +344,7 @@ impl DetailField {
     }
 }
 
-/// All fields for the `Package` column: read-only info then editable at the bottom.
+/// All fields for the `Package` column.
 /// Non-Rust projects show only name, path, disk, and CI.
 pub(super) fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
     if !info.is_rust {
@@ -327,6 +380,9 @@ pub(super) fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     let mut fields = Vec::new();
     if info.git_branch.is_some() {
         fields.push(DetailField::Branch);
+    }
+    if info.git_sync.is_some() {
+        fields.push(DetailField::Sync);
     }
     if info.worktree_label.is_some() {
         fields.push(DetailField::Worktree);
@@ -365,6 +421,7 @@ pub struct DetailInfo {
     pub ci:              String,
     pub stats_rows:      Vec<(&'static str, usize)>,
     pub git_branch:      Option<String>,
+    pub git_sync:        Option<String>,
     pub git_origin:      Option<String>,
     pub git_owner:       Option<String>,
     pub git_url:         Option<String>,
@@ -382,8 +439,6 @@ pub struct DetailInfo {
     pub is_rust:         bool,
     /// Whether this project declares `[package]` (has version/description fields).
     pub has_package:     bool,
-    /// Whether the current user owns this project (git owner matches `owned_owners`).
-    pub owned:           bool,
 }
 
 /// Collect vendored crate names for a project from the node tree.
@@ -455,12 +510,17 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
 
     let git = app.git_info.get(&project.path);
     let git_branch = git.and_then(|g| g.branch.clone());
+    let git_sync = git
+        .and_then(|g| g.ahead_behind)
+        .map(|(ahead, behind)| match (ahead, behind) {
+            (0, 0) => "✓".to_string(),
+            (a, 0) => format!("↑{a} ahead"),
+            (0, b) => format!("↓{b} behind"),
+            (a, b) => format!("↑{a} ↓{b}"),
+        });
     let git_origin = git.map(|g| format!("{} {}", g.origin.icon(), g.origin.label()));
     let git_owner = git.and_then(|g| g.owner.clone());
     let git_url = git.and_then(|g| g.url.clone());
-    let owned = git_owner
-        .as_ref()
-        .is_some_and(|owner| app.owned_owners.iter().any(|o| o == owner));
     let crates_version = app.crates_versions.get(&project.path).cloned();
     let worktree_label = project.worktree_name.clone();
 
@@ -520,6 +580,7 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
         stats_rows,
         crates_version,
         git_branch,
+        git_sync,
         git_origin,
         git_owner,
         git_url,
@@ -539,46 +600,24 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
         benches: project.benches.clone(),
         is_rust: project.is_rust,
         has_package: project.name.is_some(),
-        owned,
     }
 }
 
 fn render_column_inner(
     frame: &mut Frame,
-    app: &App,
     info: &DetailInfo,
     fields: &[DetailField],
-    detail_focused: bool,
-    is_active_column: bool,
-    cursor: usize,
+    focus: &ColumnFocus,
     styles: &RenderStyles,
     area: Rect,
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     for (i, field) in fields.iter().enumerate() {
         let label = field.label();
-        let is_focused = detail_focused && is_active_column && i == cursor;
-
-        // Editable field that is actively being edited
-        if field.is_editable()
-            && info.owned
-            && is_focused
-            && let Some(editing) = app.editing.as_ref().filter(|e| e.field == *field)
-        {
-            let text = format!("{}_", editing.buf);
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {label:<8} "), Style::default().fg(Color::Yellow)),
-                Span::styled(text, Style::default().fg(Color::Yellow)),
-            ]));
-            continue;
-        }
+        let is_focused = focus.detail_focused && focus.is_active && i == focus.cursor;
 
         let value = field.value(info);
-        let base_label_style = if field.is_editable() && info.owned {
-            styles.editable_label
-        } else {
-            styles.readonly_label
-        };
+        let base_label_style = styles.readonly_label;
         let ls = if is_focused {
             styles.highlight
         } else {
@@ -658,12 +697,9 @@ fn render_column_inner(
 
 fn render_git_column_inner(
     frame: &mut Frame,
-    app: &App,
     info: &DetailInfo,
     fields: &[DetailField],
-    detail_focused: bool,
-    is_active_column: bool,
-    cursor: usize,
+    focus: &ColumnFocus,
     styles: &RenderStyles,
     area: Rect,
 ) {
@@ -672,7 +708,7 @@ fn render_git_column_inner(
     for (i, field) in fields.iter().enumerate() {
         let label = field.label();
         let value = field.value(info);
-        let is_focused = detail_focused && is_active_column && i == cursor;
+        let is_focused = focus.detail_focused && focus.is_active && i == focus.cursor;
         let ls = if is_focused {
             styles.highlight
         } else {
@@ -680,6 +716,12 @@ fn render_git_column_inner(
         };
         let vs = if is_focused {
             styles.highlight
+        } else if *field == DetailField::Origin && value.starts_with('⑂') {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else if *field == DetailField::Sync && value == "✓" {
+            Style::default().fg(Color::Green)
         } else {
             Style::default()
         };
@@ -730,8 +772,6 @@ fn render_git_column_inner(
         }
     }
 
-    // Ignore the editing params — git column is read-only
-    let _ = app;
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -748,25 +788,15 @@ pub(super) fn render_detail_panel(
 
     if let Some(info) = detail_info {
         let git = git_fields(info);
-        let has_git = !git.is_empty();
-        let has_targets = info.is_binary || !info.examples.is_empty() || !info.benches.is_empty();
+        let spec = detail_layout_spec(!git.is_empty(), has_targets(info));
 
         let columns = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints(if has_git {
-                vec![
-                    Constraint::Min(30),
-                    Constraint::Min(25),
-                    Constraint::Fill(1),
-                ]
-            } else {
-                vec![Constraint::Min(35), Constraint::Fill(1)]
-            })
+            .constraints(spec.constraints)
             .split(area);
 
         let styles = RenderStyles {
             highlight:       Style::default().fg(Color::Black).bg(Color::Cyan),
-            editable_label:  Style::default().fg(Color::Cyan),
             readonly_label:  Style::default().fg(Color::DarkGray),
             active_border:   Style::default().fg(Color::Cyan),
             inactive_border: Style::default(),
@@ -775,39 +805,26 @@ pub(super) fn render_detail_panel(
 
         render_project_panel(frame, app, info, detail_focused, &styles, columns[0]);
 
-        let mut next_col = 1;
-        if has_git {
-            render_git_panel(
-                frame,
-                app,
-                info,
-                &git,
+        if let Some(col) = spec.git_col {
+            let focus = ColumnFocus {
                 detail_focused,
-                next_col,
-                &styles,
-                columns[next_col],
-            );
-            next_col += 1;
+                is_active: app.detail_column.pos() == col,
+                cursor: app.detail_cursor.pos(),
+            };
+            render_git_panel(frame, info, &git, &focus, &styles, columns[col]);
         }
 
-        if has_targets {
-            render_targets_panel(
-                frame,
-                app,
-                info,
-                detail_focused,
-                next_col,
-                &styles,
-                columns[next_col],
-            );
-        } else {
-            // Empty targets pane — greyed out
-            let empty_targets = Block::default()
-                .borders(Borders::ALL)
-                .title(" No Targets ")
-                .title_style(Style::default().fg(Color::DarkGray))
-                .border_style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(empty_targets, columns[next_col]);
+        if let Some(col) = spec.targets_col {
+            if has_targets(info) {
+                render_targets_panel(frame, app, info, detail_focused, col, &styles, columns[col]);
+            } else {
+                let empty_targets = Block::default()
+                    .borders(Borders::ALL)
+                    .title(" No Targets ")
+                    .title_style(Style::default().fg(Color::DarkGray))
+                    .border_style(Style::default().fg(Color::DarkGray));
+                frame.render_widget(empty_targets, columns[col]);
+            }
         }
     } else {
         let empty_block = Block::default()
@@ -828,11 +845,16 @@ fn render_project_panel(
     styles: &RenderStyles,
     area: Rect,
 ) {
+    let focus = ColumnFocus {
+        detail_focused,
+        is_active: app.detail_column.pos() == 0,
+        cursor: app.detail_cursor.pos(),
+    };
     let project_block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {} ", info.package_title))
         .title_style(styles.title)
-        .border_style(if detail_focused && app.detail_column.pos() == 0 {
+        .border_style(if focus.is_active {
             styles.active_border
         } else {
             styles.inactive_border
@@ -843,12 +865,9 @@ fn render_project_panel(
     if info.stats_rows.is_empty() {
         render_column_inner(
             frame,
-            app,
             info,
             &package_fields(info),
-            detail_focused,
-            app.detail_column.pos() == 0,
-            app.detail_cursor.pos(),
+            &focus,
             styles,
             project_inner,
         );
@@ -863,12 +882,9 @@ fn render_project_panel(
 
         render_column_inner(
             frame,
-            app,
             info,
             &package_fields(info),
-            detail_focused,
-            app.detail_column.pos() == 0,
-            app.detail_cursor.pos(),
+            &focus,
             styles,
             sub_cols[0],
         );
@@ -894,11 +910,9 @@ fn render_project_panel(
 
 fn render_git_panel(
     frame: &mut Frame,
-    app: &App,
     info: &DetailInfo,
     git: &[DetailField],
-    detail_focused: bool,
-    col: usize,
+    focus: &ColumnFocus,
     styles: &RenderStyles,
     area: Rect,
 ) {
@@ -906,24 +920,14 @@ fn render_git_panel(
         .borders(Borders::ALL)
         .title(" Git ")
         .title_style(styles.title)
-        .border_style(if detail_focused && app.detail_column.pos() == col {
+        .border_style(if focus.is_active {
             styles.active_border
         } else {
             styles.inactive_border
         });
     let git_inner = git_block.inner(area);
     frame.render_widget(git_block, area);
-    render_git_column_inner(
-        frame,
-        app,
-        info,
-        git,
-        detail_focused,
-        app.detail_column.pos() == col,
-        app.detail_cursor.pos(),
-        styles,
-        git_inner,
-    );
+    render_git_column_inner(frame, info, git, focus, styles, git_inner);
 }
 
 fn render_targets_panel(
@@ -963,38 +967,20 @@ fn render_targets_panel(
 
     let entries = build_target_list(info);
 
-    let type_style = Style::default().fg(Color::DarkGray);
-    let num_style = Style::default().fg(Color::DarkGray);
-    let num_width = entries.len().to_string().len();
     let rows: Vec<Row> = entries
         .iter()
-        .enumerate()
-        .map(|(i, entry)| {
-            let kind_label = match entry.kind {
-                RunTargetKind::Binary => "bin",
-                RunTargetKind::Example => "example",
-                RunTargetKind::Bench => "bench",
-            };
+        .map(|entry| {
             Row::new(vec![
-                Cell::from(
-                    Line::from(format!("{:>num_width$}", i + 1))
-                        .alignment(ratatui::layout::Alignment::Right),
-                )
-                .style(num_style),
                 Cell::from(entry.display_name.clone()),
-                Cell::from(Line::from(kind_label).alignment(ratatui::layout::Alignment::Right))
-                    .style(type_style),
+                Cell::from(
+                    Line::from(entry.kind.label()).alignment(ratatui::layout::Alignment::Right),
+                )
+                .style(Style::default().fg(entry.kind.color())),
             ])
         })
         .collect();
 
-    #[allow(clippy::cast_possible_truncation)]
-    let num_col_width = (num_width as u16).max(2);
-    let widths = [
-        Constraint::Length(num_col_width),
-        Constraint::Fill(1),
-        Constraint::Length(7),
-    ];
+    let widths = [Constraint::Fill(1), Constraint::Length(7)];
 
     let highlight_style = if is_active {
         Style::default().fg(Color::Black).bg(Color::Cyan)
@@ -1132,7 +1118,6 @@ fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
         .add_modifier(Modifier::BOLD)
         .fg(Color::DarkGray);
     let mut header_cells = vec![
-        Cell::from("#").style(right_aligned),
         Cell::from("Commit").style(right_aligned),
         Cell::from("Branch").style(right_aligned),
         Cell::from("Timestamp").style(right_aligned),
@@ -1153,7 +1138,7 @@ fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
 }
 
 /// Build one data `Row` for a single `CiRun`.
-fn build_ci_data_row(index: usize, ci_run: &CiRun, cols: &[CiColumn]) -> Row<'static> {
+fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn]) -> Row<'static> {
     let timestamp = format_timestamp(&ci_run.created_at);
     let branch = &ci_run.branch;
 
@@ -1161,10 +1146,8 @@ fn build_ci_data_row(index: usize, ci_run: &CiRun, cols: &[CiColumn]) -> Row<'st
         .wall_clock_secs
         .map_or_else(|| "—".to_string(), crate::ci::format_secs);
 
-    let row_num = format!("{}", index + 1);
     let commit = ci_run.commit_title.as_deref().unwrap_or("");
     let mut cells = vec![
-        Cell::from(row_num).style(Style::default().fg(Color::DarkGray)),
         Cell::from(commit.to_string()),
         Cell::from(branch.clone()),
         Cell::from(timestamp),
@@ -1224,7 +1207,6 @@ fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn]) -> Vec<Constraint> {
         .max(6) as u16;
 
     let mut widths = vec![
-        Constraint::Length(3),                // # row number
         Constraint::Length(max_commit_width), // Commit
         Constraint::Length(max_branch_width), // Branch
         Constraint::Length(16),               // Timestamp
@@ -1242,12 +1224,22 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], a
     let ci_focused = app.focus == FocusTarget::CiRuns;
     let ci_state = app.selected_project().and_then(|p| app.ci_state_for(p));
 
+    let total = ci_runs.len();
+    let cached = app
+        .selected_project()
+        .and_then(|p| app.git_info.get(&p.path))
+        .and_then(|g| g.url.as_ref())
+        .and_then(|url| crate::ci::parse_owner_repo(url))
+        .map_or(0, |(owner, repo)| {
+            crate::scan::count_cached_runs(&owner, &repo)
+        });
+
     let title = if ci_state.is_some_and(CiState::is_fetching) {
         let spinner = spinner_frame(app.spinner_tick);
         let count = ci_state.map_or(0, CiState::fetch_count);
         format!(" CI Runs {spinner} fetching {count} more… ")
     } else {
-        " CI Runs ".to_string()
+        format!(" CI Runs (cached {cached}, total {total}) ")
     };
 
     let ci_block = Block::default()
@@ -1284,8 +1276,7 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], a
 
     let mut rows: Vec<Row> = ci_runs
         .iter()
-        .enumerate()
-        .map(|(i, ci_run)| build_ci_data_row(i, ci_run, &cols))
+        .map(|ci_run| build_ci_data_row(ci_run, &cols))
         .collect();
 
     let widths = build_ci_widths(ci_runs, &cols);
@@ -1309,11 +1300,8 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], a
     };
 
     let num_cols = widths.len();
-    let mut fetch_cells: Vec<Cell> = vec![
-        Cell::from("").style(fetch_style),
-        Cell::from(fetch_label).style(fetch_style),
-    ];
-    for _ in 2..num_cols {
+    let mut fetch_cells: Vec<Cell> = vec![Cell::from(fetch_label).style(fetch_style)];
+    for _ in 1..num_cols {
         fetch_cells.push(Cell::from(""));
     }
     rows.push(Row::new(fetch_cells));
@@ -1334,47 +1322,29 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &App, ci_runs: &[CiRun], a
     frame.render_stateful_widget(table, area, &mut table_state);
 }
 
-/// Returns the maximum column index (0 if no git info, 1 if git info present).
-/// Column layout: 0=Project, then optionally Git, then optionally targets (examples/benches).
 /// Returns (`max_column_index`, `targets_column_index` or `None`).
-pub fn detail_layout_pub(app: &App) -> (usize, Option<usize>) { detail_layout(app) }
-
-/// Returns the maximum detail column index for the selected project.
-pub fn detail_max_column(app: &App) -> usize {
-    let (max_col, _) = detail_layout(app);
-    max_col
+pub fn detail_layout_pub(app: &App) -> (usize, Option<usize>) {
+    let spec = detail_layout(app);
+    (spec.max_col, spec.targets_col)
 }
 
-fn detail_layout(app: &App) -> (usize, Option<usize>) {
-    let project = app.selected_project();
-    let has_git = project.and_then(|p| app.git_info.get(&p.path)).is_some();
-    let has_targets = project.is_some_and(|p| {
-        p.types
-            .iter()
-            .any(|t| matches!(t, crate::project::ProjectType::Binary))
-            || !p.examples.is_empty()
-            || !p.benches.is_empty()
-    });
+/// Returns the maximum detail column index for the selected project.
+pub fn detail_max_column(app: &App) -> usize { detail_layout(app).max_col }
 
-    let mut col = 0; // Project is always column 0
-    if has_git {
-        col += 1;
-    }
-    let examples_col = if has_targets {
-        col += 1;
-        Some(col)
-    } else {
-        None
+fn detail_layout(app: &App) -> DetailLayoutSpec {
+    let Some(project) = app.selected_project() else {
+        return detail_layout_spec(false, false);
     };
-    (col, examples_col)
+    let info = build_detail_info(app, project);
+    detail_layout_spec(!git_fields(&info).is_empty(), has_targets(&info))
 }
 
 /// Returns the field count for a given column index.
-/// Returns 0 for the examples column (it uses scroll, not cursor).
+/// Returns 0 for the targets column (it uses scroll, not cursor).
 fn detail_column_field_count(app: &App, column: usize) -> usize {
-    let (_, examples_col) = detail_layout(app);
-    if Some(column) == examples_col {
-        return 0; // Examples column uses scroll, not cursor
+    let spec = detail_layout(app);
+    if Some(column) == spec.targets_col {
+        return 0; // Targets column uses scroll, not cursor
     }
     if column == 0 {
         app.selected_project().map_or(0, |p| {
@@ -1425,20 +1395,20 @@ fn handle_target_action(app: &mut App, release: bool) {
 }
 
 pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
-    let (max_col, examples_col) = detail_layout(app);
-    let on_examples = Some(app.detail_column.pos()) == examples_col;
+    let spec = detail_layout(app);
+    let on_targets = Some(app.detail_column.pos()) == spec.targets_col;
     let field_count = detail_column_field_count(app, app.detail_column.pos());
 
     match key {
         KeyCode::Up => {
-            if on_examples {
+            if on_targets {
                 app.examples_scroll.up();
             } else {
                 app.detail_cursor.up();
             }
         },
         KeyCode::Down => {
-            if on_examples {
+            if on_targets {
                 let total = target_list_len(app);
                 app.examples_scroll.down(total);
             } else {
@@ -1446,18 +1416,18 @@ pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
             }
         },
         KeyCode::Home => {
-            if on_examples {
-                app.examples_scroll.to_top();
+            if on_targets {
+                app.examples_scroll.jump_home();
             } else {
-                app.detail_cursor.to_top();
+                app.detail_cursor.jump_home();
             }
         },
         KeyCode::End => {
-            if on_examples {
+            if on_targets {
                 let total = target_list_len(app);
-                app.examples_scroll.to_bottom(total);
+                app.examples_scroll.jump_end(total);
             } else {
-                app.detail_cursor.to_bottom(field_count);
+                app.detail_cursor.jump_end(field_count);
             }
         },
         KeyCode::Left => {
@@ -1467,21 +1437,21 @@ pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
             }
         },
         KeyCode::Right => {
-            if on_examples {
+            if on_targets {
                 // No expand — do nothing
-            } else if app.detail_column.pos() < max_col {
-                app.detail_column.down(max_col + 1);
+            } else if app.detail_column.pos() < spec.max_col {
+                app.detail_column.down(spec.max_col + 1);
                 // If entering the targets column, jump to the first item
-                if Some(app.detail_column.pos()) == examples_col {
-                    app.examples_scroll.to_top();
+                if Some(app.detail_column.pos()) == spec.targets_col {
+                    app.examples_scroll.jump_home();
                 } else {
                     clamp_detail_cursor(app);
                 }
             }
         },
-        KeyCode::Enter => handle_detail_enter(app, on_examples),
+        KeyCode::Enter => handle_detail_enter(app, on_targets),
         KeyCode::Char('r') => {
-            if on_examples {
+            if on_targets {
                 handle_target_action(app, true);
             }
         },
@@ -1489,7 +1459,7 @@ pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
             if let Some(project) = app.selected_project()
                 && project.is_rust
             {
-                app.confirm = Some(super::app::ConfirmAction::Clean(project.abs_path.clone()));
+                app.confirm = Some(ConfirmAction::Clean(project.abs_path.clone()));
             }
         },
         _ => {},
@@ -1497,39 +1467,18 @@ pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
 }
 
 /// Handle the Enter key in the detail panel.
-fn handle_detail_enter(app: &mut App, on_examples: bool) {
-    if on_examples {
+fn handle_detail_enter(app: &mut App, on_targets: bool) {
+    if on_targets {
         handle_target_action(app, false);
     } else if app.detail_column.pos() == 0 {
-        let (fields, owned) = app
+        let fields = app
             .selected_project()
-            .map(|p| {
-                let info = build_detail_info(app, p);
-                (package_fields(&info), info.owned)
-            })
+            .map(|p| package_fields(&build_detail_info(app, p)))
             .unwrap_or_default();
         if let Some(field) = fields.get(app.detail_cursor.pos())
-            && let Some(project) = app.selected_project()
+            && field.is_from_cargo_toml()
         {
-            match *field {
-                DetailField::Version if field.is_editable() && owned => {
-                    let version = project.version.clone().unwrap_or_default();
-                    if version != "(workspace)" {
-                        app.editing = Some(EditingState {
-                            field: DetailField::Version,
-                            buf:   version,
-                        });
-                    }
-                },
-                DetailField::Description if field.is_editable() && owned => {
-                    let desc = project.description.clone().unwrap_or_default();
-                    app.editing = Some(EditingState {
-                        field: DetailField::Description,
-                        buf:   desc,
-                    });
-                },
-                _ => {},
-            }
+            open_cargo_toml(app);
         }
     } else {
         // Git column — open repo URL in browser
@@ -1575,10 +1524,10 @@ pub(super) fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
             app.ci_runs_cursor.down(total_rows);
         },
         KeyCode::Home => {
-            app.ci_runs_cursor.to_top();
+            app.ci_runs_cursor.jump_home();
         },
         KeyCode::End => {
-            app.ci_runs_cursor.to_bottom(total_rows);
+            app.ci_runs_cursor.jump_end(total_rows);
         },
         KeyCode::Enter => {
             let cursor_pos = app.ci_runs_cursor.pos();
@@ -1633,37 +1582,32 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
             exhausted: false,
         },
     );
-    app.ci_runs_cursor.to_top();
+    app.ci_runs_cursor.jump_home();
     app.data_generation += 1;
 }
 
-pub(super) fn handle_field_edit_key(app: &mut App, key: KeyCode) {
-    let Some(editing) = app.editing.as_mut() else {
+fn open_cargo_toml(app: &App) {
+    let Some(project) = app.selected_project() else {
         return;
     };
+    // For workspace members, open the workspace root; for standalone, open the project dir.
+    let project_dir = app
+        .nodes
+        .iter()
+        .find(|n| {
+            n.groups
+                .iter()
+                .any(|g| g.members.iter().any(|m| m.path == project.path))
+        })
+        .map_or_else(|| project.abs_path.clone(), |n| n.project.abs_path.clone());
 
-    match key {
-        KeyCode::Enter => {
-            let field = editing.field;
-            let new_value = editing.buf.clone();
-            app.editing = None;
-            if let Some(result) = write_toml_field(app, field, &new_value)
-                && result.is_ok()
-            {
-                update_project_field(app, field, &new_value);
-            }
-        },
-        KeyCode::Esc => {
-            app.editing = None;
-        },
-        KeyCode::Backspace => {
-            editing.buf.pop();
-        },
-        KeyCode::Char(c) => {
-            editing.buf.push(c);
-        },
-        _ => {},
-    }
+    let cargo_toml = PathBuf::from(&project.abs_path).join("Cargo.toml");
+    let _ = std::process::Command::new(&app.editor)
+        .arg(&project_dir)
+        .arg(&cargo_toml)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 /// Word-wrap text to fit within `max_width` characters, breaking at word boundaries.
@@ -1709,70 +1653,6 @@ fn hard_wrap(text: &str, max_width: usize) -> Vec<String> {
     }
     result.push(remaining.to_string());
     result
-}
-
-fn apply_field_update(project: &mut RustProject, field: DetailField, value: &str) {
-    match field {
-        DetailField::Version => project.version = Some(value.to_string()),
-        DetailField::Description => project.description = Some(value.to_string()),
-        _ => {},
-    }
-}
-
-pub(super) fn write_toml_field(
-    app: &App,
-    field: DetailField,
-    value: &str,
-) -> Option<Result<(), String>> {
-    let project = app.selected_project()?;
-    let abs_path = PathBuf::from(&project.abs_path).join("Cargo.toml");
-    let contents = match std::fs::read_to_string(&abs_path) {
-        Ok(c) => c,
-        Err(e) => return Some(Err(format!("Failed to read {}: {e}", abs_path.display()))),
-    };
-    let mut doc: DocumentMut = match contents.parse() {
-        Ok(d) => d,
-        Err(e) => return Some(Err(format!("Failed to parse TOML: {e}"))),
-    };
-    doc["package"][field.toml_key()] = toml_edit::value(value);
-    if let Err(e) = std::fs::write(&abs_path, doc.to_string()) {
-        return Some(Err(format!("Failed to write {}: {e}", abs_path.display())));
-    }
-
-    // Run taplo fmt on the edited file
-    let _ = std::process::Command::new("taplo")
-        .args(["fmt", &abs_path.to_string_lossy()])
-        .output();
-
-    Some(Ok(()))
-}
-
-pub(super) fn update_project_field(app: &mut App, field: DetailField, new_value: &str) {
-    let project_path = match app.selected_project() {
-        Some(p) => p.path.clone(),
-        None => return,
-    };
-
-    for p in &mut app.all_projects {
-        if p.path == project_path {
-            apply_field_update(p, field, new_value);
-        }
-    }
-
-    for node in &mut app.nodes {
-        if node.project.path == project_path {
-            apply_field_update(&mut node.project, field, new_value);
-        }
-        for group in &mut node.groups {
-            for member in &mut group.members {
-                if member.path == project_path {
-                    apply_field_update(member, field, new_value);
-                }
-            }
-        }
-    }
-
-    app.data_generation += 1;
 }
 
 #[cfg(test)]

@@ -35,11 +35,6 @@ pub struct TuiConfig {
     #[serde(default)]
     pub include_non_rust: bool,
 
-    /// GitHub owners whose projects you can edit (Version, Description).
-    /// Add your username and/or org names here.
-    #[serde(default)]
-    pub owned_owners: Vec<String>,
-
     /// Editor application name, opened via `open -a <editor> <path>`.
     #[serde(default = "default_editor")]
     pub editor: String,
@@ -52,7 +47,6 @@ impl Default for TuiConfig {
             ci_run_count:     default_ci_run_count(),
             exclude_dirs:     default_exclude_dirs(),
             include_non_rust: false,
-            owned_owners:     Vec::new(),
             editor:           default_editor(),
         }
     }
@@ -130,10 +124,6 @@ exclude_dirs = [
 # Include non-Rust projects (git repos without Cargo.toml).
 include_non_rust = false
 
-# GitHub owners whose projects you can edit (Version, Description).
-# Add your username and/or org names here.
-owned_owners = []
-
 # Editor application name, opened via `open -a <editor> <path>`.
 editor = "zed"
 "#;
@@ -179,7 +169,6 @@ mod tests {
         assert!(!cfg.tui.include_non_rust);
         assert_eq!(cfg.tui.ci_run_count, 5);
         assert_eq!(cfg.tui.inline_dirs, vec!["crates".to_string()]);
-        assert!(cfg.tui.owned_owners.is_empty());
         assert!(cfg.mouse.invert_scroll);
     }
 }

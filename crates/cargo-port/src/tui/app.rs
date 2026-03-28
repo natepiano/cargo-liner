@@ -14,10 +14,14 @@ use nucleo_matcher::pattern::CaseMatching;
 use nucleo_matcher::pattern::Normalization;
 use ratatui::widgets::ListState;
 
-use super::detail::EditingState;
+use super::detail::DetailField;
+use super::detail::DetailInfo;
 use super::detail::PendingCiFetch;
 use super::detail::PendingExampleRun;
 use super::detail::ProjectCounts;
+use super::finder::FINDER_COLUMN_COUNT;
+use super::finder::FinderItem;
+use super::shortcuts::InputContext;
 use super::terminal::CiFetchMsg;
 use super::terminal::ExampleMsg;
 use super::types::FocusTarget;
@@ -43,6 +47,25 @@ pub enum ExpandKey {
 pub enum ConfirmAction {
     /// `cargo clean` on the project at this absolute path.
     Clean(String),
+}
+
+/// Cached column widths for fit-to-content columns in the project list.
+pub struct FitWidths {
+    pub name:       usize,
+    pub disk:       usize,
+    pub sync:       usize,
+    pub generation: u64,
+}
+
+impl Default for FitWidths {
+    fn default() -> Self {
+        Self {
+            name:       0,
+            disk:       "Disk".len(),
+            sync:       0,
+            generation: u64::MAX,
+        }
+    }
 }
 
 /// What a visible row represents.
@@ -115,7 +138,7 @@ impl CiState {
 pub(super) struct DetailCache {
     generation: u64,
     path:       String,
-    pub info:   super::detail::DetailInfo,
+    pub info:   DetailInfo,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -125,7 +148,6 @@ pub struct App {
     pub exclude_dirs:        Vec<String>,
     pub ci_run_count:        u32,
     pub include_non_rust:    bool,
-    pub owned_owners:        Vec<String>,
     pub editor:              String,
     pub all_projects:        Vec<RustProject>,
     pub nodes:               Vec<ProjectNode>,
@@ -157,7 +179,6 @@ pub struct App {
     pub detail_cursor:       ScrollState,
     pub ci_runs_cursor:      ScrollState,
     pub examples_scroll:     ScrollState,
-    pub editing:             Option<EditingState>,
     pub pending_example_run: Option<PendingExampleRun>,
     pub pending_ci_fetch:    Option<PendingCiFetch>,
     pub pending_clean:       Option<String>,
@@ -184,8 +205,8 @@ pub struct App {
     pub finder_results:    Vec<usize>,
     pub finder_total:      usize,
     pub finder_cursor:     ScrollState,
-    pub finder_index:      Vec<super::finder::FinderItem>,
-    pub finder_col_widths: [usize; super::finder::FINDER_COLUMN_COUNT],
+    pub finder_index:      Vec<FinderItem>,
+    pub finder_col_widths: [usize; FINDER_COLUMN_COUNT],
     pub finder_dirty:      bool,
 
     // Caches for per-frame hot paths
@@ -194,6 +215,7 @@ pub struct App {
     pub cached_root_sorted:       Vec<u64>,
     pub cached_child_sorted:      HashMap<usize, Vec<u64>>,
     pub disk_cache_dirty:         bool,
+    pub cached_fit_widths:        FitWidths,
     pub(super) data_generation:   u64,
     pub(super) cached_detail:     Option<DetailCache>,
     pub(super) selection_changed: bool,
@@ -201,14 +223,11 @@ pub struct App {
 
 impl App {
     /// Derive the current input context from app state.
-    pub fn input_context(&self) -> super::shortcuts::InputContext {
-        use super::shortcuts::InputContext;
+    pub fn input_context(&self) -> InputContext {
         if self.show_finder {
             InputContext::Finder
         } else if self.show_settings {
             InputContext::Settings
-        } else if self.editing.is_some() {
-            InputContext::Editing
         } else if self.searching {
             InputContext::Searching
         } else {
@@ -241,7 +260,6 @@ impl App {
         let exclude_dirs = cfg.tui.exclude_dirs.clone();
         let ci_run_count = cfg.tui.ci_run_count;
         let include_non_rust = cfg.tui.include_non_rust;
-        let owned_owners = cfg.tui.owned_owners.clone();
         let editor = cfg.tui.editor.clone();
         let nodes = scan::build_tree(projects.clone(), &inline_dirs);
         let flat_entries = scan::build_flat_entries(&nodes);
@@ -255,7 +273,6 @@ impl App {
             exclude_dirs,
             ci_run_count,
             include_non_rust,
-            owned_owners,
             editor,
             all_projects: projects,
             nodes,
@@ -287,7 +304,6 @@ impl App {
             detail_cursor: ScrollState::default(),
             ci_runs_cursor: ScrollState::default(),
             examples_scroll: ScrollState::default(),
-            editing: None,
             pending_example_run: None,
             pending_ci_fetch: None,
             pending_clean: None,
@@ -321,6 +337,7 @@ impl App {
             cached_root_sorted: Vec::new(),
             cached_child_sorted: HashMap::new(),
             disk_cache_dirty: true,
+            cached_fit_widths: FitWidths::default(),
             data_generation: 0,
             cached_detail: None,
             selection_changed: false,
@@ -406,11 +423,10 @@ impl App {
         self.fully_loaded.clear();
         self.priority_fetch_path = None;
         self.focus = FocusTarget::ProjectList;
-        self.detail_column.to_top();
-        self.detail_cursor.to_top();
-        self.ci_runs_cursor.to_top();
-        self.examples_scroll.to_top();
-        self.editing = None;
+        self.detail_column.jump_home();
+        self.detail_cursor.jump_home();
+        self.ci_runs_cursor.jump_home();
+        self.examples_scroll.jump_home();
         self.pending_ci_fetch = None;
         self.expanded.clear();
         self.list_state = ListState::default();
@@ -725,6 +741,60 @@ impl App {
 
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
     pub fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
+
+    /// Recompute fit-to-content column widths across all projects.
+    /// Called alongside other cache refreshes in the render loop.
+    pub fn ensure_fit_widths_cached(&mut self) {
+        if self.cached_fit_widths.generation == self.data_generation {
+            return;
+        }
+        let mut name_width = 0usize;
+        let mut disk_width = "Disk".len();
+        let mut sync_width = 0usize;
+
+        for node in &self.nodes {
+            name_width = name_width.max(self.fit_name_for_node(node));
+            disk_width = disk_width.max(self.formatted_disk_for_node(node).len());
+            sync_width = sync_width.max(self.git_sync(&node.project).len());
+
+            for group in &node.groups {
+                for member in &group.members {
+                    let prefix = if group.name.is_empty() { 4 } else { 8 };
+                    name_width = name_width.max(prefix + member.display_name().len());
+                    disk_width = disk_width.max(self.formatted_disk(member).len());
+                    sync_width = sync_width.max(self.git_sync(member).len());
+                }
+                if !group.name.is_empty() {
+                    name_width = name_width.max(6 + group.name.len() + 4);
+                }
+            }
+            for wt in &node.worktrees {
+                let wt_name = wt
+                    .project
+                    .worktree_name
+                    .as_deref()
+                    .unwrap_or(&wt.project.path);
+                name_width = name_width.max(8 + wt_name.len());
+                disk_width = disk_width.max(self.formatted_disk(&wt.project).len());
+                sync_width = sync_width.max(self.git_sync(&wt.project).len());
+            }
+        }
+
+        self.cached_fit_widths = FitWidths {
+            name:       name_width + 1,
+            disk:       disk_width,
+            sync:       sync_width,
+            generation: self.data_generation,
+        };
+    }
+
+    fn fit_name_for_node(&self, node: &ProjectNode) -> usize {
+        let mut name = node.project.display_name();
+        if !node.worktrees.is_empty() {
+            name = format!("{name} wt:{}", node.worktrees.len());
+        }
+        2 + name.len()
+    }
 
     /// Ensure the cached disk sort data is up to date, recomputing only when dirty.
     pub fn ensure_disk_cache(&mut self) {
@@ -1162,43 +1232,6 @@ impl App {
         }
     }
 
-    pub fn max_name_width(&self) -> usize {
-        let mut max_width = 0usize;
-        for node in &self.nodes {
-            let name = node.project.display_name();
-            // Root items: "▶ " or "  " prefix = 2 display chars
-            max_width = max_width.max(2 + name.len());
-            for group in &node.groups {
-                if group.name.is_empty() {
-                    // Inline members: "    " prefix = 4 chars
-                    for member in &group.members {
-                        let name = member.display_name();
-                        max_width = max_width.max(4 + name.len());
-                    }
-                } else {
-                    // Group header: "    ▶ " prefix = 6 display chars + name + count
-                    let label_len = 6 + group.name.len() + 4; // " (NN)"
-                    max_width = max_width.max(label_len);
-                    // Group members: "        " prefix = 8 chars
-                    for member in &group.members {
-                        let name = member.display_name();
-                        max_width = max_width.max(8 + name.len());
-                    }
-                }
-            }
-            // Worktree entries: "        " prefix = 8 chars
-            for wt in &node.worktrees {
-                let wt_name = wt
-                    .project
-                    .worktree_name
-                    .as_deref()
-                    .unwrap_or(&wt.project.path);
-                max_width = max_width.max(8 + wt_name.len());
-            }
-        }
-        max_width
-    }
-
     pub fn workspace_counts(&self, project: &RustProject) -> Option<ProjectCounts> {
         let node = self.nodes.iter().find(|n| n.project.path == project.path)?;
         if !node.has_members() {
@@ -1312,6 +1345,22 @@ impl App {
             .map_or(" ", |info| info.origin.icon())
     }
 
+    /// Formatted ahead/behind sync status for the project list columns.
+    pub fn git_sync(&self, project: &RustProject) -> String {
+        let Some(info) = self.git_info.get(&project.path) else {
+            return String::new();
+        };
+        let Some((ahead, behind)) = info.ahead_behind else {
+            return String::new();
+        };
+        match (ahead, behind) {
+            (0, 0) => "✓".to_string(),
+            (a, 0) => format!("↑{a}"),
+            (0, b) => format!("↓{b}"),
+            (a, b) => format!("↑{a}↓{b}"),
+        }
+    }
+
     /// Returns the Enter-key action label for the current cursor position,
     /// or `None` if Enter does nothing here. Used by the shortcut bar to
     /// only show Enter when it's actionable.
@@ -1327,14 +1376,10 @@ impl App {
                         .map(|p| super::detail::build_detail_info(self, p))?;
                     let fields = super::detail::package_fields(&info);
                     let field = *fields.get(self.detail_cursor.pos())?;
-                    match field {
-                        super::detail::DetailField::Version
-                        | super::detail::DetailField::Description
-                            if field.is_editable() && info.owned =>
-                        {
-                            Some("edit")
-                        },
-                        _ => None,
+                    if field.is_from_cargo_toml() {
+                        Some("open")
+                    } else {
+                        None
                     }
                 } else {
                     // Git column — Repo field opens URL
@@ -1343,9 +1388,7 @@ impl App {
                         .map(|p| super::detail::build_detail_info(self, p))?;
                     let fields = super::detail::git_fields(&info);
                     match fields.get(self.detail_cursor.pos()) {
-                        Some(super::detail::DetailField::Repo) if info.git_url.is_some() => {
-                            Some("open")
-                        },
+                        Some(DetailField::Repo) if info.git_url.is_some() => Some("open"),
                         _ => None,
                     }
                 }

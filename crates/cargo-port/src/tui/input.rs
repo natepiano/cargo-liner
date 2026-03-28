@@ -4,6 +4,7 @@ use crossterm::event::MouseEventKind;
 
 use super::app::App;
 use super::app::CiState;
+use super::app::ConfirmAction;
 use super::detail;
 use super::finder;
 use super::settings;
@@ -39,7 +40,7 @@ pub(super) fn handle_event(app: &mut App, event: Event) {
                 if key.code == KeyCode::Char('y') {
                     if let Some(action) = app.confirm.take() {
                         match action {
-                            super::app::ConfirmAction::Clean(abs_path) => {
+                            ConfirmAction::Clean(abs_path) => {
                                 app.pending_clean = Some(abs_path);
                             },
                         }
@@ -54,8 +55,6 @@ pub(super) fn handle_event(app: &mut App, event: Event) {
                 finder::handle_finder_key(app, key.code);
             } else if app.show_settings {
                 settings::handle_settings_key(app, key.code);
-            } else if app.editing.is_some() {
-                detail::handle_field_edit_key(app, key.code);
             } else if app.searching {
                 handle_search_key(app, key.code);
             } else if !handle_global_key(app, key.code) {
@@ -139,7 +138,7 @@ fn open_finder(app: &mut App) {
     app.finder_query.clear();
     app.finder_results.clear();
     app.finder_total = 0;
-    app.finder_cursor.to_top();
+    app.finder_cursor.jump_home();
 }
 
 /// Handle keys that work in every non-text-input context.
@@ -199,7 +198,7 @@ fn handle_normal_key(app: &mut App, key: KeyCode) {
             if let Some(project) = app.selected_project()
                 && project.is_rust
             {
-                app.confirm = Some(super::app::ConfirmAction::Clean(project.abs_path.clone()));
+                app.confirm = Some(ConfirmAction::Clean(project.abs_path.clone()));
             }
         },
         _ => {},
@@ -239,22 +238,22 @@ pub fn advance_focus(app: &mut App) {
 
     app.focus = match app.focus {
         FocusTarget::ProjectList => {
-            app.detail_column.to_top();
-            app.detail_cursor.to_top();
+            app.detail_column.jump_home();
+            app.detail_cursor.jump_home();
             FocusTarget::DetailFields
         },
         FocusTarget::DetailFields => {
             // Advance through detail columns first
             if app.detail_column.pos() < max_detail_col {
                 app.detail_column.down(max_detail_col + 1);
-                app.detail_cursor.to_top();
+                app.detail_cursor.jump_home();
                 let (_, targets_col) = detail::detail_layout_pub(app);
                 if Some(app.detail_column.pos()) == targets_col {
-                    app.examples_scroll.to_top();
+                    app.examples_scroll.jump_home();
                 }
                 FocusTarget::DetailFields
             } else if has_ci {
-                app.ci_runs_cursor.to_top();
+                app.ci_runs_cursor.jump_home();
                 FocusTarget::CiRuns
             } else if app.scan_complete {
                 FocusTarget::ProjectList
@@ -297,13 +296,13 @@ pub fn reverse_focus(app: &mut App) {
             if !app.scan_complete {
                 FocusTarget::ScanLog
             } else if has_ci {
-                app.ci_runs_cursor.to_top();
+                app.ci_runs_cursor.jump_home();
                 FocusTarget::CiRuns
             } else {
                 app.detail_column.set(max_detail_col);
-                app.detail_cursor.to_top();
+                app.detail_cursor.jump_home();
                 if Some(max_detail_col) == targets_col {
-                    app.examples_scroll.to_top();
+                    app.examples_scroll.jump_home();
                 }
                 FocusTarget::DetailFields
             }
@@ -312,7 +311,7 @@ pub fn reverse_focus(app: &mut App) {
             // Reverse through detail columns first
             if app.detail_column.pos() > 0 {
                 app.detail_column.up();
-                app.detail_cursor.to_top();
+                app.detail_cursor.jump_home();
                 FocusTarget::DetailFields
             } else {
                 FocusTarget::ProjectList
@@ -320,21 +319,21 @@ pub fn reverse_focus(app: &mut App) {
         },
         FocusTarget::CiRuns => {
             app.detail_column.set(max_detail_col);
-            app.detail_cursor.to_top();
+            app.detail_cursor.jump_home();
             if Some(max_detail_col) == targets_col {
-                app.examples_scroll.to_top();
+                app.examples_scroll.jump_home();
             }
             FocusTarget::DetailFields
         },
         FocusTarget::ScanLog => {
             if has_ci {
-                app.ci_runs_cursor.to_top();
+                app.ci_runs_cursor.jump_home();
                 FocusTarget::CiRuns
             } else {
                 app.detail_column.set(max_detail_col);
-                app.detail_cursor.to_top();
+                app.detail_cursor.jump_home();
                 if Some(max_detail_col) == targets_col {
-                    app.examples_scroll.to_top();
+                    app.examples_scroll.jump_home();
                 }
                 FocusTarget::DetailFields
             }

@@ -7,7 +7,6 @@ pub enum InputContext {
     DetailFields,
     DetailTargets,
     CiRuns,
-    Editing,
     Searching,
     Finder,
     Settings,
@@ -17,10 +16,7 @@ impl InputContext {
     /// Text-input contexts consume all `Char` keys, so global shortcuts
     /// (which are letter-based) must not be shown or dispatched.
     pub const fn is_text_input(self) -> bool {
-        matches!(
-            self,
-            Self::Editing | Self::Searching | Self::Finder | Self::Settings
-        )
+        matches!(self, Self::Searching | Self::Finder | Self::Settings)
     }
 }
 
@@ -121,7 +117,6 @@ pub(super) fn for_status_bar(
     is_rust: bool,
 ) -> StatusBarGroups {
     let (navigation, actions) = match context {
-        InputContext::Editing => (vec![], vec![enter("confirm"), ESC_CANCEL]),
         InputContext::Searching => (vec![NAV], vec![enter("select"), ESC_CANCEL]),
         InputContext::Finder => (vec![NAV], vec![enter("go to"), ESC_CLOSE]),
         InputContext::Settings => (vec![NAV, ARROWS_TOGGLE], vec![enter("edit"), ESC_CLOSE]),

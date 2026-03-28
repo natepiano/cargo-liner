@@ -18,8 +18,10 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
 use super::app::CiState;
+use super::app::ConfirmAction;
 use super::app::ExpandKey;
 use super::app::VisibleRow;
+use super::shortcuts::Shortcut;
 use super::types::FocusTarget;
 use crate::ci::CiRun;
 use crate::project::RustProject;
@@ -28,9 +30,8 @@ pub(super) const BYTES_PER_MIB: u64 = 1024 * 1024;
 pub(super) const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 
 pub(super) const LANG_COL_WIDTH: usize = 2;
-pub(super) const DISK_COL_WIDTH: usize = 10;
-pub(super) const CI_COL_WIDTH: usize = 4;
-pub(super) const GIT_COL_WIDTH: usize = 2;
+pub(super) const CI_COL_WIDTH: usize = 2;
+pub(super) const ORIGIN_COL_WIDTH: usize = 1;
 pub(super) const BORDER_PADDING: usize = 3;
 
 const OFFLINE_PULSE_CYCLE: usize = 120;
@@ -157,37 +158,41 @@ pub(super) struct RowData<'a> {
     pub disk_style: Style,
     pub ci:         &'a str,
     pub git_icon:   &'a str,
+    pub git_sync:   &'a str,
     pub name_width: usize,
+    pub disk_width: usize,
+    pub sync_width: usize,
 }
 
 pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
-    let prefix = row.prefix;
-    let name = row.name;
-    let lang_icon = row.lang_icon;
-    let disk = row.disk;
-    let disk_style = row.disk_style;
-    let ci = row.ci;
-    let git_icon = row.git_icon;
-    let name_width = row.name_width;
-    let prefix_width = display_width(prefix);
-    let available = name_width.saturating_sub(prefix_width);
-    let padded_name = format!("{prefix}{name:<available$}");
-    let ci_style = conclusion_style(ci);
-    let git_style = match git_icon {
+    let prefix_width = display_width(row.prefix);
+    let available = row.name_width.saturating_sub(prefix_width);
+    let padded_name = format!("{}{:<available$}", row.prefix, row.name);
+    let disk_width = row.disk_width;
+    let sync_width = row.sync_width;
+
+    let ci_style = conclusion_style(row.ci);
+    let origin_style = match row.git_icon {
         "⑂" => Style::default()
-            .fg(Color::Cyan)
+            .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
         "⊙" => Style::default().fg(Color::White),
         "●" => Style::default().fg(Color::DarkGray),
         _ => Style::default(),
     };
+    let sync_style = if row.git_sync == "✓" {
+        Style::default().fg(Color::Green)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
 
     Line::from(vec![
         Span::raw(padded_name),
-        Span::styled(format!(" {disk:>9}"), disk_style),
-        Span::styled(format!("  {ci}"), ci_style),
-        Span::styled(format!(" {git_icon}"), git_style),
-        Span::raw(format!(" {lang_icon}")),
+        Span::styled(format!(" {:>disk_width$}", row.disk), row.disk_style),
+        Span::styled(format!(" {}", row.ci), ci_style),
+        Span::styled(format!(" {}", row.git_icon), origin_style),
+        Span::styled(format!(" {:<sync_width$}", row.git_sync), sync_style),
+        Span::raw(row.lang_icon.to_string()),
     ])
 }
 
@@ -207,13 +212,18 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
 
-    // Left panel width: name column + disk + ci + git + borders + padding
+    // Left panel width: name + 1 + disk + 1 + ci + 1 + origin + 1 + sync + lang + borders
     #[allow(clippy::cast_possible_truncation)]
-    let left_width = (app.max_name_width()
-        + LANG_COL_WIDTH
-        + DISK_COL_WIDTH
+    let left_width = (app.cached_fit_widths.name
+        + 1
+        + app.cached_fit_widths.disk
+        + 1
         + CI_COL_WIDTH
-        + GIT_COL_WIDTH
+        + 1
+        + ORIGIN_COL_WIDTH
+        + 1
+        + app.cached_fit_widths.sync
+        + LANG_COL_WIDTH
         + BORDER_PADDING) as u16;
 
     let main_layout = Layout::default()
@@ -237,9 +247,9 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     }
 }
 
-fn render_confirm_popup(frame: &mut Frame, action: &super::app::ConfirmAction) {
+fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
     let prompt = match action {
-        super::app::ConfirmAction::Clean(_) => "Run cargo clean?",
+        ConfirmAction::Clean(_) => "Run cargo clean?",
     };
 
     let text = format!(" {prompt}  (y/n) ");
@@ -289,19 +299,14 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         render_search_bar(frame, app, left_layout[0]);
     }
 
-    #[allow(clippy::cast_possible_truncation)]
-    let inner_width = left_layout[1].width.saturating_sub(2) as usize;
-    let name_col_width =
-        inner_width.saturating_sub(LANG_COL_WIDTH + DISK_COL_WIDTH + CI_COL_WIDTH + GIT_COL_WIDTH);
-
-    render_project_list(frame, app, name_col_width, left_layout[1]);
+    render_project_list(frame, app, left_layout[1]);
 
     if !app.scan_complete {
         render_scan_log(frame, app, left_layout[2]);
     }
 }
 
-fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
+fn render_right_panel(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, area);
 
     let selected_project_ref = app.selected_project();
@@ -387,9 +392,11 @@ fn render_offline_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let msg = "  No internet connection  ";
 
     // Pulsing color wash using spinner_tick (~60fps)
+    #[allow(clippy::cast_precision_loss)]
     let phase = (app.spinner_tick % OFFLINE_PULSE_CYCLE) as f64 / OFFLINE_PULSE_CYCLE as f64;
-    let pulse =
-        (phase * std::f64::consts::TAU).sin() * OFFLINE_PULSE_AMPLITUDE + OFFLINE_PULSE_OFFSET;
+    let pulse = (phase * std::f64::consts::TAU)
+        .sin()
+        .mul_add(OFFLINE_PULSE_AMPLITUDE, OFFLINE_PULSE_OFFSET);
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let r = (OFFLINE_PULSE_RED * pulse) as u8;
@@ -451,16 +458,15 @@ pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(search_bar, area);
 }
 
-pub(super) fn render_project_list(
-    frame: &mut Frame,
-    app: &mut App,
-    name_col_width: usize,
-    area: Rect,
-) {
+pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
+    let name_width = app.cached_fit_widths.name;
+    let disk_width = app.cached_fit_widths.disk;
+    let sync_width = app.cached_fit_widths.sync;
+
     let mut items: Vec<ListItem> = if app.searching && !app.search_query.is_empty() {
-        render_filtered_items(app, name_col_width)
+        render_filtered_items(app, name_width, disk_width, sync_width)
     } else {
-        render_tree_items(app, name_col_width)
+        render_tree_items(app, name_width, disk_width, sync_width)
     };
 
     // Append disk total as the last row
@@ -470,18 +476,19 @@ pub(super) fn render_project_list(
         let total_style = Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD);
-        // Build using project_row_spans for alignment, then restyle the name span
         let mut row_line = project_row_spans(&RowData {
-            prefix:     "",
-            name:       &format!("{:>width$}", "Σ", width = name_col_width),
-            lang_icon:  "  ",
-            disk:       &total_str,
+            prefix: "",
+            name: &format!("{:>width$}", "Σ", width = name_width),
+            lang_icon: "  ",
+            disk: &total_str,
             disk_style: total_style,
-            ci:         " ",
-            git_icon:   " ",
-            name_width: name_col_width,
+            ci: " ",
+            git_icon: " ",
+            git_sync: "",
+            name_width,
+            disk_width,
+            sync_width,
         });
-        // Restyle the first span (name) to yellow bold
         if let Some(span) = row_line.spans.first_mut() {
             span.style = total_style;
         }
@@ -492,16 +499,19 @@ pub(super) fn render_project_list(
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
 
+    let node_count = app.nodes.len();
+    let scan_root = crate::project::home_relative_path(&app.scan_root);
     let header_line = Line::from(vec![
         Span::styled(
             format!(
-                "{:<name_col_width$}",
-                crate::project::home_relative_path(&app.scan_root)
+                "{scan_root} ({node_count}){:<pad$}",
+                "",
+                pad = name_width.saturating_sub(scan_root.len() + 3 + node_count.to_string().len()),
             ),
             header_style,
         ),
-        Span::styled(format!(" {:>9}", "Disk"), header_style),
-        Span::styled("  CI", header_style),
+        Span::styled(format!(" {:>disk_width$}", "Disk"), header_style),
+        Span::styled(format!(" CI O {:<sync_width$}R", ""), header_style),
     ]);
 
     let project_list = List::new(items)
@@ -618,7 +628,7 @@ fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-fn shortcut_spans(shortcuts: &[super::shortcuts::Shortcut]) -> Vec<Span<'static>> {
+fn shortcut_spans(shortcuts: &[Shortcut]) -> Vec<Span<'static>> {
     let key_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
@@ -633,7 +643,7 @@ fn shortcut_spans(shortcuts: &[super::shortcuts::Shortcut]) -> Vec<Span<'static>
     spans
 }
 
-fn shortcut_display_width(shortcuts: &[super::shortcuts::Shortcut]) -> usize {
+fn shortcut_display_width(shortcuts: &[Shortcut]) -> usize {
     if shortcuts.is_empty() {
         return 0;
     }
@@ -669,7 +679,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let right_spans = shortcut_spans(&groups.global);
 
     let total_width = area.width as usize;
-    let left_width = left_spans.iter().map(|s| s.width()).sum::<usize>();
+    let left_width = left_spans.iter().map(Span::width).sum::<usize>();
     let center_width = shortcut_display_width(&groups.actions);
     let right_width = shortcut_display_width(&groups.global);
 
@@ -729,6 +739,8 @@ fn render_root_item(
     node_index: usize,
     root_sorted: &[u64],
     name_width: usize,
+    disk_width: usize,
+    sync_width: usize,
 ) -> ListItem<'static> {
     let node = &app.nodes[node_index];
     let project = &node.project;
@@ -742,6 +754,7 @@ fn render_root_item(
     let ci = app.ci_for_node(node);
     let lang = project.lang_icon();
     let git = app.git_icon(project);
+    let sync = app.git_sync(project);
     let prefix = if node.has_children() {
         if app.expanded.contains(&ExpandKey::Node(node_index)) {
             "▼ "
@@ -759,7 +772,10 @@ fn render_root_item(
         disk_style: ds,
         ci: &ci,
         git_icon: git,
+        git_sync: &sync,
         name_width,
+        disk_width,
+        sync_width,
     }))
 }
 
@@ -771,6 +787,8 @@ fn render_child_item(
     child_sorted: &[u64],
     prefix: &'static str,
     name_width: usize,
+    disk_width: usize,
+    sync_width: usize,
 ) -> ListItem<'static> {
     let disk = app.formatted_disk(project);
     let disk_bytes = app.disk_usage.get(&project.path).copied();
@@ -778,6 +796,7 @@ fn render_child_item(
     let lang = project.lang_icon();
     let ci = app.ci_for(project);
     let git = app.git_icon(project);
+    let sync = app.git_sync(project);
     ListItem::new(project_row_spans(&RowData {
         prefix,
         name,
@@ -786,20 +805,33 @@ fn render_child_item(
         disk_style: ds,
         ci: &ci,
         git_icon: git,
+        git_sync: &sync,
         name_width,
+        disk_width,
+        sync_width,
     }))
 }
 
-pub(super) fn render_tree_items(app: &App, name_width: usize) -> Vec<ListItem<'static>> {
+pub(super) fn render_tree_items(
+    app: &App,
+    name_width: usize,
+    disk_width: usize,
+    sync_width: usize,
+) -> Vec<ListItem<'static>> {
     let root_sorted = &app.cached_root_sorted;
     let child_sorted = &app.cached_child_sorted;
 
     let rows = app.visible_rows();
     rows.iter()
         .map(|row| match row {
-            VisibleRow::Root { node_index } => {
-                render_root_item(app, *node_index, root_sorted, name_width)
-            },
+            VisibleRow::Root { node_index } => render_root_item(
+                app,
+                *node_index,
+                root_sorted,
+                name_width,
+                disk_width,
+                sync_width,
+            ),
             VisibleRow::GroupHeader {
                 node_index,
                 group_index,
@@ -832,7 +864,9 @@ pub(super) fn render_tree_items(app: &App, name_width: usize) -> Vec<ListItem<'s
                     "        "
                 };
                 let name = member.display_name();
-                render_child_item(app, member, &name, sorted, indent, name_width)
+                render_child_item(
+                    app, member, &name, sorted, indent, name_width, disk_width, sync_width,
+                )
             },
             VisibleRow::WorktreeEntry {
                 node_index,
@@ -847,13 +881,27 @@ pub(super) fn render_tree_items(app: &App, name_width: usize) -> Vec<ListItem<'s
                     .as_deref()
                     .unwrap_or(&wt.project.path)
                     .to_string();
-                render_child_item(app, &wt.project, &name, sorted, "    ", name_width)
+                render_child_item(
+                    app,
+                    &wt.project,
+                    &name,
+                    sorted,
+                    "    ",
+                    name_width,
+                    disk_width,
+                    sync_width,
+                )
             },
         })
         .collect()
 }
 
-pub(super) fn render_filtered_items(app: &App, name_width: usize) -> Vec<ListItem<'static>> {
+pub(super) fn render_filtered_items(
+    app: &App,
+    name_width: usize,
+    disk_width: usize,
+    sync_width: usize,
+) -> Vec<ListItem<'static>> {
     let root_sorted = &app.cached_root_sorted;
     app.filtered
         .iter()
@@ -871,6 +919,7 @@ pub(super) fn render_filtered_items(app: &App, name_width: usize) -> Vec<ListIte
             let lang = project.lang_icon();
             let ci = app.ci_for(project);
             let git = app.git_icon(project);
+            let sync = app.git_sync(project);
             Some(ListItem::new(project_row_spans(&RowData {
                 prefix: "  ",
                 name: &entry.name,
@@ -879,7 +928,10 @@ pub(super) fn render_filtered_items(app: &App, name_width: usize) -> Vec<ListIte
                 disk_style: ds,
                 ci: &ci,
                 git_icon: git,
+                git_sync: &sync,
                 name_width,
+                disk_width,
+                sync_width,
             })))
         })
         .collect()

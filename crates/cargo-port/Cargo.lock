@@ -104,7 +104,6 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
- "toml_edit",
  "unicode-width 0.2.0",
  "walkdir",
 ]
