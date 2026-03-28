@@ -5,11 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.3] - 2026-03-28
 
 ### Fixed
 - Compiler driver no longer forces `RUSTUP_TOOLCHAIN=nightly`, using the caller's toolchain instead — prevents `E0514` errors when the mend binary was compiled with a different rustc version than nightly
-- Compiler driver uses an isolated target directory (`target/mend/`) to prevent cross-toolchain artifact conflicts from cached builds
 
 ## [0.2.2] - 2026-03-28
 

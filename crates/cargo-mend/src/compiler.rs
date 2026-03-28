@@ -217,7 +217,6 @@ pub fn run_selection(
     output_mode: BuildOutputMode,
 ) -> Result<Report, MendFailure> {
     let findings_dir = selection.target_directory.join("mend-findings");
-    let mend_target_dir = selection.target_directory.join("mend");
     fs::create_dir_all(&findings_dir).with_context(|| {
         format!(
             "failed to create persistent findings directory {}",
@@ -225,18 +224,12 @@ pub fn run_selection(
         )
     })?;
 
-    let mut command_outcome = run_cargo_check(
-        selection,
-        loaded_config,
-        &findings_dir,
-        &mend_target_dir,
-        output_mode,
-    )
-    .map_err(|err| {
-        MendFailure::Analysis(AnalysisFailure {
-            cause: CompilerFailureCause::DriverSetup(err),
-        })
-    })?;
+    let mut command_outcome = run_cargo_check(selection, loaded_config, &findings_dir, output_mode)
+        .map_err(|err| {
+            MendFailure::Analysis(AnalysisFailure {
+                cause: CompilerFailureCause::DriverSetup(err),
+            })
+        })?;
 
     if !command_outcome.status.success() {
         return Err(MendFailure::Analysis(AnalysisFailure {
@@ -252,18 +245,13 @@ pub fn run_selection(
 
     if !missing_packages.is_empty() {
         for package in missing_packages {
-            let status = run_cargo_rustc_for_package(
-                package,
-                loaded_config,
-                &findings_dir,
-                &mend_target_dir,
-                output_mode,
-            )
-            .map_err(|err| {
-                MendFailure::Analysis(AnalysisFailure {
-                    cause: CompilerFailureCause::DriverSetup(err),
-                })
-            })?;
+            let status =
+                run_cargo_rustc_for_package(package, loaded_config, &findings_dir, output_mode)
+                    .map_err(|err| {
+                        MendFailure::Analysis(AnalysisFailure {
+                            cause: CompilerFailureCause::DriverSetup(err),
+                        })
+                    })?;
             command_outcome.saw_unused_import_warning |= status.saw_unused_import_warning;
             if !status.status.success() {
                 return Err(MendFailure::Analysis(AnalysisFailure {
@@ -350,7 +338,6 @@ fn run_cargo_check(
     selection: &Selection,
     loaded_config: &LoadedConfig,
     findings_dir: &Path,
-    mend_target_dir: &Path,
     output_mode: BuildOutputMode,
 ) -> Result<CommandOutcome> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
@@ -366,8 +353,6 @@ fn run_cargo_check(
     }
 
     command
-        .arg("--target-dir")
-        .arg(mend_target_dir)
         .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
         .env(DRIVER_ENV, "1")
         .env(CONFIG_ROOT_ENV, &loaded_config.root)
@@ -387,7 +372,6 @@ fn run_cargo_rustc_for_package(
     package: &SelectedPackage,
     loaded_config: &LoadedConfig,
     findings_dir: &Path,
-    mend_target_dir: &Path,
     output_mode: BuildOutputMode,
 ) -> Result<CommandOutcome> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
@@ -396,7 +380,6 @@ fn run_cargo_rustc_for_package(
     command
         .arg("--manifest-path")
         .arg(package.manifest_path.as_os_str());
-    command.arg("--target-dir").arg(mend_target_dir);
 
     for arg in package.target.cargo_args() {
         command.arg(arg);
