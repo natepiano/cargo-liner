@@ -38,6 +38,8 @@ use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
 use crate::scan::FlatEntry;
 use crate::scan::ProjectNode;
+use crate::watcher;
+use crate::watcher::WatchRequest;
 
 /// An expand key: either a workspace node or a group within a node.
 #[derive(Hash, Eq, PartialEq, Clone)]
@@ -199,6 +201,9 @@ pub struct App {
     pub should_quit:         bool,
     pub should_restart:      bool,
 
+    // Disk watcher
+    pub watch_tx: mpsc::Sender<WatchRequest>,
+
     // Network state
     pub network_offline: bool,
 
@@ -260,6 +265,7 @@ impl App {
     ) -> Self {
         let (example_tx, example_rx) = mpsc::channel();
         let (ci_fetch_tx, ci_fetch_rx) = mpsc::channel();
+        let watch_tx = watcher::spawn_disk_watcher(bg_tx.clone());
         let inline_dirs = cfg.tui.inline_dirs.clone();
         let exclude_dirs = cfg.tui.exclude_dirs.clone();
         let ci_run_count = cfg.tui.ci_run_count;
@@ -324,6 +330,8 @@ impl App {
             terminal_dirty: false,
             should_quit: false,
             should_restart: false,
+
+            watch_tx,
 
             network_offline: false,
 
@@ -446,6 +454,7 @@ impl App {
         );
         self.bg_tx = tx;
         self.bg_rx = rx;
+        self.watch_tx = watcher::spawn_disk_watcher(self.bg_tx.clone());
     }
 
     pub(super) fn poll_background(&mut self) {
@@ -562,6 +571,10 @@ impl App {
             },
             BackgroundMsg::ProjectDiscovered { project } => {
                 if !self.all_projects.iter().any(|p| p.path == project.path) {
+                    let _ = self.watch_tx.send(WatchRequest {
+                        project_path: project.path.clone(),
+                        abs_path:     PathBuf::from(&project.abs_path),
+                    });
                     self.all_projects.push(project);
                     return true;
                 }

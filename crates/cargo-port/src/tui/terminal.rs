@@ -263,12 +263,6 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
 
     let pid_holder = app.example_child.clone();
     let tx = app.example_tx.clone();
-    let bg_tx = app.bg_tx.clone();
-    let project_path = app
-        .selected_project()
-        .map(|p| p.path.clone())
-        .unwrap_or_default();
-    let abs = PathBuf::from(&run.abs_path);
     thread::spawn(move || {
         // Read stderr with \r handling for cargo progress lines
         if let Some(stderr) = stderr {
@@ -279,18 +273,12 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
             read_with_progress(&tx, stdout);
         }
 
-        // Wait for the child to finish and clear the PID
+        // Wait for the child to finish and clear the PID.
+        // Disk usage is updated automatically by the filesystem watcher.
         let _ = child.wait();
         *pid_holder
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-
-        // Refresh disk usage — building increases target dir size
-        let bytes = scan::dir_size(&abs);
-        let _ = bg_tx.send(BackgroundMsg::DiskUsage {
-            path: project_path,
-            bytes,
-        });
 
         let _ = tx.send(ExampleMsg::Finished);
     });
@@ -357,12 +345,6 @@ fn spawn_clean_process(app: &mut App, abs_path: &str) {
 
     let pid_holder = app.example_child.clone();
     let tx = app.example_tx.clone();
-    let bg_tx = app.bg_tx.clone();
-    let project_path = app
-        .selected_project()
-        .map(|p| p.path.clone())
-        .unwrap_or_default();
-    let abs = PathBuf::from(abs_path);
     thread::spawn(move || {
         if let Some(stderr) = stderr {
             let reader = BufReader::new(stderr);
@@ -377,17 +359,11 @@ fn spawn_clean_process(app: &mut App, abs_path: &str) {
             }
         }
 
+        // Disk usage is updated automatically by the filesystem watcher.
         let _ = child.wait();
         *pid_holder
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-
-        // Refresh disk usage for this project
-        let bytes = scan::dir_size(&abs);
-        let _ = bg_tx.send(BackgroundMsg::DiskUsage {
-            path: project_path,
-            bytes,
-        });
 
         let _ = tx.send(ExampleMsg::Finished);
     });

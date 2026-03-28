@@ -13,6 +13,7 @@ mod output;
 mod project;
 mod scan;
 mod tui;
+mod watcher;
 
 use ci::CiArgs;
 use list::ListArgs;
