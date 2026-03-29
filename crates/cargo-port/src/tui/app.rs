@@ -529,6 +529,33 @@ impl App {
         }
     }
 
+    fn handle_disk_usage(&mut self, path: String, bytes: u64) {
+        self.fully_loaded.insert(path.clone());
+        self.disk_usage.insert(path.clone(), bytes);
+        self.disk_cache_dirty = true;
+        if bytes == 0 {
+            let abs = self
+                .nodes
+                .iter()
+                .find(|n| n.project.path == path)
+                .map(|n| &n.project.abs_path)
+                .or_else(|| {
+                    self.nodes
+                        .iter()
+                        .flat_map(|n| n.worktrees.iter())
+                        .find(|wt| wt.project.path == path)
+                        .map(|wt| &wt.project.abs_path)
+                });
+            if let Some(abs) = abs
+                && !std::path::Path::new(abs).exists()
+            {
+                self.deleted_projects.insert(path);
+            }
+        } else {
+            self.deleted_projects.remove(&path);
+        }
+    }
+
     /// Handle a single `BackgroundMsg`. Returns `true` if the tree needs rebuilding.
     fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
         // Bump generation for any message that carries project data, so the
@@ -538,30 +565,7 @@ impl App {
         }
         match msg {
             BackgroundMsg::DiskUsage { path, bytes } => {
-                self.fully_loaded.insert(path.clone());
-                self.disk_usage.insert(path.clone(), bytes);
-                self.disk_cache_dirty = true;
-                if bytes == 0 {
-                    let abs = self
-                        .nodes
-                        .iter()
-                        .find(|n| n.project.path == path)
-                        .map(|n| &n.project.abs_path)
-                        .or_else(|| {
-                            self.nodes
-                                .iter()
-                                .flat_map(|n| n.worktrees.iter())
-                                .find(|wt| wt.project.path == path)
-                                .map(|wt| &wt.project.abs_path)
-                        });
-                    if let Some(abs) = abs {
-                        if !std::path::Path::new(abs).exists() {
-                            self.deleted_projects.insert(path);
-                        }
-                    }
-                } else {
-                    self.deleted_projects.remove(&path);
-                }
+                self.handle_disk_usage(path, bytes);
             },
             BackgroundMsg::CiRuns { path, runs } => {
                 self.insert_ci_runs(path, runs);

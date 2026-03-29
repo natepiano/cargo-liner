@@ -7,12 +7,13 @@
 //! automatically; removed directories trigger a zero-byte update so the
 //! app can mark them as deleted.
 //!
-//! On macOS (FSEvents) this is a single kernel subscription regardless of
+//! On macOS (`FSEvents`) this is a single kernel subscription regardless of
 //! tree size. Linux / Windows may want a per-project approach in the
 //! future to avoid inotify watch limits.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
@@ -150,8 +151,8 @@ fn watcher_loop(
 }
 
 fn handle_event(
-    event_path: &PathBuf,
-    scan_root: &PathBuf,
+    event_path: &Path,
+    scan_root: &Path,
     projects: &HashMap<PathBuf, ProjectEntry>,
     discovered: &HashSet<PathBuf>,
     pending_disk: &mut HashMap<String, (Instant, Instant)>,
@@ -180,13 +181,13 @@ fn handle_event(
     let Some(parent) = event_path.parent() else {
         return;
     };
-    if parent != scan_root.as_path() {
+    if parent != scan_root {
         return;
     }
     // Always enqueue removals (dir gone); for creations, skip already-discovered.
     if !event_path.is_dir() || !discovered.contains(event_path) {
         pending_new
-            .entry(event_path.clone())
+            .entry(event_path.to_path_buf())
             .or_insert_with(|| now + NEW_PROJECT_DEBOUNCE);
     }
 }
@@ -279,7 +280,7 @@ fn probe_new_projects(
 
 /// Check if a directory is a project (has `Cargo.toml`, or `.git` when
 /// `include_non_rust` is enabled).
-fn probe_project(dir: &PathBuf, include_non_rust: bool) -> Option<RustProject> {
+fn probe_project(dir: &Path, include_non_rust: bool) -> Option<RustProject> {
     let cargo_toml = dir.join("Cargo.toml");
     if cargo_toml.exists() {
         return RustProject::from_cargo_toml(&cargo_toml).ok();
