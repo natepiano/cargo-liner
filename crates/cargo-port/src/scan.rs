@@ -784,7 +784,7 @@ fn fetch_repo_meta(owner: &str, repo: &str) -> Option<RepoMetaInfo> {
     let stars = parts.next()?.parse().ok()?;
     let description = parts
         .next()
-        .map(|s| s.to_string())
+        .map(String::from)
         .filter(|s| s != "null" && !s.is_empty());
     Some(RepoMetaInfo { stars, description })
 }
