@@ -271,12 +271,11 @@ impl App {
     ) -> Self {
         let (example_tx, example_rx) = mpsc::channel();
         let (ci_fetch_tx, ci_fetch_rx) = mpsc::channel();
-        let watch_tx = watcher::spawn_disk_watcher(bg_tx.clone());
         let inline_dirs = cfg.tui.inline_dirs.clone();
         let exclude_dirs = cfg.tui.exclude_dirs.clone();
         let ci_run_count = cfg.tui.ci_run_count;
         let include_non_rust = cfg.tui.include_non_rust;
-        watcher::spawn_new_project_watcher(
+        let watch_tx = watcher::spawn_watcher(
             scan_root.clone(),
             bg_tx.clone(),
             ci_run_count,
@@ -472,8 +471,7 @@ impl App {
         );
         self.bg_tx = tx;
         self.bg_rx = rx;
-        self.watch_tx = watcher::spawn_disk_watcher(self.bg_tx.clone());
-        watcher::spawn_new_project_watcher(
+        self.watch_tx = watcher::spawn_watcher(
             self.scan_root.clone(),
             self.bg_tx.clone(),
             self.ci_run_count,

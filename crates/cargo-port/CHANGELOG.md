@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Detect new projects added under the scan root while running
 - Strikethrough styling for projects whose directories are deleted from disk
 
+### Changed
+- Unify disk and new-project watchers into a single scan-root watcher (macOS FSEvents). Linux users may hit inotify watch limits with large directory trees.
+
 ### Fixed
 - Expand arrow shown on projects with only vendored crates and no workspace members or worktrees
 

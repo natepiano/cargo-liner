@@ -208,7 +208,7 @@ pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
         Span::raw(format!(" {}", row.lang_icon)),
         Span::styled(format!(" {}", row.git_icon), origin_style),
         Span::styled(format!(" {:<sync_width$}", row.git_sync), sync_style),
-        Span::styled(row.ci.to_string(), ci_style),
+        Span::styled(format!(" {}", row.ci), ci_style),
     ])
 }
 
