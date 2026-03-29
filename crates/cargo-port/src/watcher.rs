@@ -5,11 +5,15 @@
 //! Events outside `target/` are ignored. The 3-second debounce ensures
 //! disk recalculation waits for build/clean activity to settle.
 //!
+//! Also watches the scan root for new projects appearing at the top level
+//! (e.g. `cargo init ~/rust/new-project`).
+//!
 //! On Linux (inotify) this creates one watch per subdirectory. The
 //! default limit of 8192 handles ~10-25 projects; developers using
 //! VS Code or `JetBrains` typically have this raised already.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
@@ -19,6 +23,8 @@ use std::time::Instant;
 use notify::RecursiveMode;
 use notify::Watcher;
 
+use crate::project;
+use crate::project::RustProject;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 
@@ -172,4 +178,142 @@ fn handle_event(
             (debounce_deadline, max_deadline, project.abs_path.clone()),
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// New-project watcher: detects projects added under the scan root
+// ---------------------------------------------------------------------------
+
+/// Wait for `cargo init` / `git clone` activity to settle before probing.
+const NEW_PROJECT_DEBOUNCE: Duration = Duration::from_secs(2);
+
+/// Spawn a background thread that watches the scan root (non-recursively)
+/// for new directories containing `Cargo.toml` or `.git`. When found, sends
+/// `ProjectDiscovered` and kicks off detail fetching.
+pub fn spawn_new_project_watcher(
+    scan_root: PathBuf,
+    bg_tx: mpsc::Sender<BackgroundMsg>,
+    ci_run_count: u32,
+    include_non_rust: bool,
+) {
+    thread::spawn(move || {
+        new_project_watcher_loop(scan_root, bg_tx, ci_run_count, include_non_rust);
+    });
+}
+
+fn new_project_watcher_loop(
+    scan_root: PathBuf,
+    bg_tx: mpsc::Sender<BackgroundMsg>,
+    ci_run_count: u32,
+    include_non_rust: bool,
+) {
+    let (notify_tx, notify_rx) = mpsc::channel();
+    let handler = move |res| {
+        let _ = notify_tx.send(res);
+    };
+    let Ok(mut watcher) = notify::recommended_watcher(handler) else {
+        return;
+    };
+    if watcher
+        .watch(&scan_root, RecursiveMode::NonRecursive)
+        .is_err()
+    {
+        return;
+    }
+
+    // Paths we've already discovered (to avoid re-sending).
+    let mut known: HashSet<PathBuf> = HashSet::new();
+    // dir → deadline
+    let mut pending: HashMap<PathBuf, Instant> = HashMap::new();
+
+    loop {
+        // Drain filesystem events.
+        while let Ok(result) = notify_rx.try_recv() {
+            let Ok(event) = result else {
+                continue;
+            };
+            for event_path in &event.paths {
+                // Only care about direct children of the scan root.
+                let Some(parent) = event_path.parent() else {
+                    continue;
+                };
+                if parent != scan_root {
+                    continue;
+                }
+                // Always enqueue removals (dir gone); for creations, skip
+                // paths we've already discovered.
+                if !event_path.is_dir() || !known.contains(event_path) {
+                    pending
+                        .entry(event_path.clone())
+                        .or_insert_with(|| Instant::now() + NEW_PROJECT_DEBOUNCE);
+                }
+            }
+        }
+
+        // Probe paths whose debounce has expired.
+        let now = Instant::now();
+        let ready: Vec<PathBuf> = pending
+            .iter()
+            .filter(|(_, deadline)| now >= **deadline)
+            .map(|(path, _)| path.clone())
+            .collect();
+
+        for dir in ready {
+            pending.remove(&dir);
+
+            if !dir.is_dir() {
+                // Directory was removed — send a zero-byte update so the
+                // app can check whether it was a tracked project and mark
+                // it as deleted. Safe for unknown paths: the handler looks
+                // up `self.nodes` before acting.
+                known.remove(&dir);
+                let display_path = project::home_relative_path(&dir);
+                let _ = bg_tx.send(BackgroundMsg::DiskUsage {
+                    path:  display_path,
+                    bytes: 0,
+                });
+                continue;
+            }
+
+            if known.contains(&dir) {
+                continue;
+            }
+            if let Some(discovered) = probe_new_project(&dir, include_non_rust) {
+                known.insert(dir.clone());
+                let abs_path = PathBuf::from(&discovered.abs_path);
+                let has_git = abs_path.join(".git").exists();
+                let _ = bg_tx.send(BackgroundMsg::ProjectDiscovered {
+                    project: discovered.clone(),
+                });
+                let tx = bg_tx.clone();
+                let path = discovered.path.clone();
+                let name = discovered.name.clone();
+                rayon::spawn(move || {
+                    scan::fetch_project_details(
+                        &tx,
+                        &path,
+                        &abs_path,
+                        name.as_ref(),
+                        has_git,
+                        ci_run_count,
+                    );
+                });
+            }
+        }
+
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Check if a directory is a new project (has `Cargo.toml`, or `.git` when
+/// `include_non_rust` is enabled).
+fn probe_new_project(dir: &PathBuf, include_non_rust: bool) -> Option<RustProject> {
+    let cargo_toml = dir.join("Cargo.toml");
+    if cargo_toml.exists() {
+        return RustProject::from_cargo_toml(&cargo_toml).ok();
+    }
+    if include_non_rust && dir.join(".git").is_dir() {
+        return Some(RustProject::from_git_dir(dir));
+    }
+    None
 }

@@ -210,6 +210,9 @@ pub(super) struct App {
     // Network state
     pub network_offline: bool,
 
+    // Projects whose directories have been deleted from disk.
+    pub deleted_projects: HashSet<String>,
+
     // Universal finder
     pub show_finder:       bool,
     pub finder_query:      String,
@@ -273,6 +276,12 @@ impl App {
         let exclude_dirs = cfg.tui.exclude_dirs.clone();
         let ci_run_count = cfg.tui.ci_run_count;
         let include_non_rust = cfg.tui.include_non_rust;
+        watcher::spawn_new_project_watcher(
+            scan_root.clone(),
+            bg_tx.clone(),
+            ci_run_count,
+            include_non_rust,
+        );
         let editor = cfg.tui.editor.clone();
         let nodes = scan::build_tree(projects.clone(), &inline_dirs);
         let flat_entries = scan::build_flat_entries(&nodes);
@@ -339,6 +348,8 @@ impl App {
             watch_tx,
 
             network_offline: false,
+
+            deleted_projects: HashSet::new(),
 
             show_finder: false,
             finder_query: String::new(),
@@ -462,6 +473,12 @@ impl App {
         self.bg_tx = tx;
         self.bg_rx = rx;
         self.watch_tx = watcher::spawn_disk_watcher(self.bg_tx.clone());
+        watcher::spawn_new_project_watcher(
+            self.scan_root.clone(),
+            self.bg_tx.clone(),
+            self.ci_run_count,
+            self.include_non_rust,
+        );
     }
 
     pub(super) fn poll_background(&mut self) {
@@ -524,8 +541,29 @@ impl App {
         match msg {
             BackgroundMsg::DiskUsage { path, bytes } => {
                 self.fully_loaded.insert(path.clone());
-                self.disk_usage.insert(path, bytes);
+                self.disk_usage.insert(path.clone(), bytes);
                 self.disk_cache_dirty = true;
+                if bytes == 0 {
+                    let abs = self
+                        .nodes
+                        .iter()
+                        .find(|n| n.project.path == path)
+                        .map(|n| &n.project.abs_path)
+                        .or_else(|| {
+                            self.nodes
+                                .iter()
+                                .flat_map(|n| n.worktrees.iter())
+                                .find(|wt| wt.project.path == path)
+                                .map(|wt| &wt.project.abs_path)
+                        });
+                    if let Some(abs) = abs {
+                        if !std::path::Path::new(abs).exists() {
+                            self.deleted_projects.insert(path);
+                        }
+                    }
+                } else {
+                    self.deleted_projects.remove(&path);
+                }
             },
             BackgroundMsg::CiRuns { path, runs } => {
                 self.insert_ci_runs(path, runs);
@@ -1287,6 +1325,8 @@ impl App {
         }
         Some(counts)
     }
+
+    pub fn is_deleted(&self, path: &str) -> bool { self.deleted_projects.contains(path) }
 
     pub fn formatted_disk(&self, project: &RustProject) -> String {
         match self.disk_usage.get(&project.path) {

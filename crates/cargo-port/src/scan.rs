@@ -35,9 +35,7 @@ pub struct ProjectNode {
 impl ProjectNode {
     pub fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members.is_empty()) }
 
-    pub fn has_children(&self) -> bool {
-        self.has_members() || !self.worktrees.is_empty() || !self.vendored.is_empty()
-    }
+    pub fn has_children(&self) -> bool { self.has_members() || !self.worktrees.is_empty() }
 }
 
 /// A flattened entry for fuzzy search.

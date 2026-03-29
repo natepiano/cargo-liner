@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Detect new projects added under the scan root while running
+- Strikethrough styling for projects whose directories are deleted from disk
+
+### Fixed
+- Expand arrow shown on projects with only vendored crates and no workspace members or worktrees
+
 ## [0.0.1] - 2026-03-28
 
 ### Project Discovery & Organization

@@ -163,6 +163,7 @@ pub(super) struct RowData<'a> {
     pub name_width: usize,
     pub disk_width: usize,
     pub sync_width: usize,
+    pub deleted:    bool,
 }
 
 pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
@@ -171,6 +172,20 @@ pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
     let padded_name = format!("{}{:<available$}", row.prefix, row.name);
     let disk_width = row.disk_width;
     let sync_width = row.sync_width;
+
+    if row.deleted {
+        let strike = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::CROSSED_OUT);
+        return Line::from(vec![
+            Span::styled(padded_name, strike),
+            Span::styled(format!(" {:>disk_width$}", row.disk), strike),
+            Span::styled(format!(" {}", row.lang_icon), strike),
+            Span::styled(format!(" {}", row.git_icon), strike),
+            Span::styled(format!(" {:<sync_width$}", row.git_sync), strike),
+            Span::styled(row.ci.to_string(), strike),
+        ]);
+    }
 
     let ci_style = conclusion_style(row.ci);
     let origin_style = match row.git_icon {
@@ -215,6 +230,7 @@ pub(super) fn probe_row_width(name_width: usize, disk_width: usize, sync_width: 
         name_width,
         disk_width,
         sync_width,
+        deleted: false,
     });
     row.width()
 }
@@ -519,6 +535,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
             name_width: widths.name,
             disk_width: widths.disk,
             sync_width: widths.sync,
+            deleted:    false,
         });
         if let Some(span) = row_line.spans.first_mut() {
             span.style = total_style;
@@ -812,6 +829,7 @@ fn render_root_item(
         name_width,
         disk_width,
         sync_width,
+        deleted: app.is_deleted(&project.path),
     }))
 }
 
@@ -843,6 +861,7 @@ fn render_child_item(
         name_width: widths.name,
         disk_width: widths.disk,
         sync_width: widths.sync,
+        deleted: app.is_deleted(&project.path),
     }))
 }
 
@@ -945,6 +964,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &FitWidths) -> Vec<ListIt
                 name_width: widths.name,
                 disk_width: widths.disk,
                 sync_width: widths.sync,
+                deleted:    app.is_deleted(&project.path),
             })))
         })
         .collect()
