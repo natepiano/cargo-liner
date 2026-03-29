@@ -5,6 +5,17 @@
 [![docs.rs](https://docs.rs/cargo-port/badge.svg)](https://docs.rs/cargo-port)
 [![license](https://img.shields.io/crates/l/cargo-port.svg)](LICENSE-MIT)
 
+<img src="assets/screenshot.png" alt="cargo-port TUI" width="100%">
+
+A terminal dashboard for all your Rust projects. Point it at a directory and it discovers every workspace, crate, worktree, and vendored dependency underneath.
+
+- **Find everything** — examples, benchmarks, binaries, and test targets across all your projects in one place
+- **Launch instantly** — run any example, benchmark, or binary in debug or release mode with live output
+- **Jump to context** — open crates.io, GitHub, or your editor directly from any project field
+- **CI at a glance** — per-project GitHub Actions status with job-level detail and run history
+- **Fuzzy search** — find any project, example, or binary across your entire tree in seconds
+- **Offline-ready** — CI data cached to disk, works without network
+
 ## Try me
 
 ```bash
