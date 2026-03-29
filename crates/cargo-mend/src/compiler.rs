@@ -245,13 +245,18 @@ pub fn run_selection(
 
     if !missing_packages.is_empty() {
         for package in missing_packages {
-            let status =
-                run_cargo_rustc_for_package(package, loaded_config, &findings_dir, output_mode)
-                    .map_err(|err| {
-                        MendFailure::Analysis(AnalysisFailure {
-                            cause: CompilerFailureCause::DriverSetup(err),
-                        })
-                    })?;
+            let status = run_cargo_rustc_for_package(
+                package,
+                loaded_config,
+                &findings_dir,
+                &selection.target_directory,
+                output_mode,
+            )
+            .map_err(|err| {
+                MendFailure::Analysis(AnalysisFailure {
+                    cause: CompilerFailureCause::DriverSetup(err),
+                })
+            })?;
             command_outcome.saw_unused_import_warning |= status.saw_unused_import_warning;
             if !status.status.success() {
                 return Err(MendFailure::Analysis(AnalysisFailure {
@@ -334,6 +339,53 @@ fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
     Ok(exit_code_from_i32(status.code().unwrap_or(1)))
 }
 
+/// When the mend binary was compiled with a different toolchain than the target project's
+/// default, `rustc_driver::run_compiler` inside the wrapper will read `.rmeta` files
+/// produced by a mismatched rustc. Detect this and return the toolchain name to force via
+/// `RUSTUP_TOOLCHAIN`, along with an isolated target directory to avoid corrupting the
+/// project's build cache.
+fn toolchain_override() -> Option<ToolchainOverride> {
+    let build_sysroot = option_env!("MEND_BUILD_SYSROOT")?;
+    let output = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let current_sysroot = String::from_utf8(output.stdout).ok()?;
+    if build_sysroot == current_sysroot.trim() {
+        return None;
+    }
+
+    let build_path = Path::new(build_sysroot);
+    let mut components = build_path.components();
+    let toolchain_name = loop {
+        match components.next() {
+            Some(component) if component.as_os_str() == "toolchains" => {
+                break components.next()?.as_os_str().to_str()?.to_string();
+            },
+            Some(_) => continue,
+            None => return None,
+        }
+    };
+
+    Some(ToolchainOverride { toolchain_name })
+}
+
+struct ToolchainOverride {
+    toolchain_name: String,
+}
+
+impl ToolchainOverride {
+    fn apply(&self, command: &mut Command, target_directory: &Path) {
+        command
+            .env("RUSTUP_TOOLCHAIN", &self.toolchain_name)
+            .arg("--target-dir")
+            .arg(target_directory.join("mend"));
+    }
+}
+
 fn run_cargo_check(
     selection: &Selection,
     loaded_config: &LoadedConfig,
@@ -352,6 +404,8 @@ fn run_cargo_check(
             .arg(selection.manifest_path.as_os_str());
     }
 
+    let tc_override = toolchain_override();
+
     command
         .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
         .env(DRIVER_ENV, "1")
@@ -365,6 +419,10 @@ fn run_cargo_check(
         .env(FINDINGS_DIR_ENV, findings_dir)
         .stdin(Stdio::inherit());
 
+    if let Some(tc) = &tc_override {
+        tc.apply(&mut command, &selection.target_directory);
+    }
+
     run_cargo_command(&mut command, output_mode).context("failed to run cargo check for mend")
 }
 
@@ -372,6 +430,7 @@ fn run_cargo_rustc_for_package(
     package: &SelectedPackage,
     loaded_config: &LoadedConfig,
     findings_dir: &Path,
+    target_directory: &Path,
     output_mode: BuildOutputMode,
 ) -> Result<CommandOutcome> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
@@ -388,6 +447,8 @@ fn run_cargo_rustc_for_package(
         command.arg(arg);
     }
 
+    let tc_override = toolchain_override();
+
     command
         .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
         .env(DRIVER_ENV, "1")
@@ -400,6 +461,10 @@ fn run_cargo_rustc_for_package(
         .env(CONFIG_FINGERPRINT_ENV, &loaded_config.fingerprint)
         .env(FINDINGS_DIR_ENV, findings_dir)
         .stdin(Stdio::inherit());
+
+    if let Some(tc) = &tc_override {
+        tc.apply(&mut command, target_directory);
+    }
 
     run_cargo_command(&mut command, output_mode).with_context(|| {
         format!(

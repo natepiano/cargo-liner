@@ -1,6 +1,5 @@
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::io;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::SystemTime;
@@ -12,6 +11,9 @@ fn main() {
     }
     if let Some(build_id) = build_id() {
         println!("cargo:rustc-env=MEND_BUILD_ID={build_id}");
+    }
+    if let Ok(sysroot) = build_sysroot() {
+        println!("cargo:rustc-env=MEND_BUILD_SYSROOT={}", sysroot.display());
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -61,22 +63,7 @@ fn configure_unix_rpath() -> Result<(), String> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn sysroot_path() -> Result<PathBuf, String> {
-    let output = Command::new("rustc")
-        .args(["--print", "sysroot"])
-        .output()
-        .map_err(command_error("failed to run `rustc --print sysroot`"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "`rustc --print sysroot` failed with status {}",
-            output.status
-        ));
-    }
-
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|error| format!("sysroot output was not UTF-8: {error}"))?;
-    Ok(PathBuf::from(stdout.trim()))
-}
+fn sysroot_path() -> Result<PathBuf, String> { build_sysroot() }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn host_triple() -> Result<String, String> {
@@ -94,6 +81,22 @@ fn host_triple() -> Result<String, String> {
         .lines()
         .find_map(|line| line.strip_prefix("host: ").map(str::to_string))
         .ok_or_else(|| "`rustc -vV` did not report a host triple".to_string())
+}
+
+fn build_sysroot() -> Result<PathBuf, String> {
+    let output = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .map_err(|error| format!("failed to run `rustc --print sysroot`: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`rustc --print sysroot` failed with status {}",
+            output.status
+        ));
+    }
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|error| format!("sysroot output was not UTF-8: {error}"))?;
+    Ok(PathBuf::from(stdout.trim()))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
