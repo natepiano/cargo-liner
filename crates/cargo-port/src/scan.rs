@@ -10,8 +10,10 @@ use std::thread;
 
 use walkdir::WalkDir;
 
+use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::GhRun;
+use crate::list;
 use crate::project::GitInfo;
 use crate::project::RustProject;
 
@@ -64,9 +66,10 @@ pub enum BackgroundMsg {
         version:   String,
         downloads: u64,
     },
-    Stars {
-        path:  String,
-        count: u64,
+    RepoMeta {
+        path:        String,
+        stars:       u64,
+        description: Option<String>,
     },
     ProjectDiscovered {
         project: RustProject,
@@ -86,7 +89,7 @@ impl BackgroundMsg {
             | Self::CiRuns { path, .. }
             | Self::GitInfo { path, .. }
             | Self::CratesIoVersion { path, .. }
-            | Self::Stars { path, .. } => Some(path),
+            | Self::RepoMeta { path, .. } => Some(path),
             Self::ProjectDiscovered { project } => Some(&project.path),
             Self::ScanActivity { .. } | Self::ScanComplete | Self::NetworkOffline => None,
         }
@@ -209,7 +212,7 @@ fn fetch_recent_runs(
                 return Some(cached);
             }
             // Cache miss — fetch from `gh` and save
-            let ci_run = crate::ci::process_gh_run(gh_run, repo_dir, repo_url)?;
+            let ci_run = ci::process_gh_run(gh_run, repo_dir, repo_url)?;
             save_cached_run(owner, repo, &ci_run);
             Some(ci_run)
         })
@@ -249,7 +252,7 @@ pub fn fetch_ci_runs_cached(
     repo: &str,
     count: u32,
 ) -> CiFetchResult {
-    let gh_runs = crate::ci::list_runs(repo_dir, None, count).unwrap_or_default();
+    let gh_runs = ci::list_runs(repo_dir, None, count).unwrap_or_default();
     let fetched = fetch_recent_runs(repo_dir, repo_url, owner, repo, &gh_runs);
     let cached = load_all_cached_runs(owner, repo);
     let merged = merge_runs(fetched, cached);
@@ -273,7 +276,7 @@ pub fn fetch_older_runs(
     current_count: u32,
 ) -> CiFetchResult {
     let fetch_count = current_count + OLDER_RUNS_FETCH_INCREMENT;
-    let gh_runs = crate::ci::list_runs(repo_dir, None, fetch_count).unwrap_or_default();
+    let gh_runs = ci::list_runs(repo_dir, None, fetch_count).unwrap_or_default();
     let fetched = fetch_recent_runs(repo_dir, repo_url, owner, repo, &gh_runs);
 
     // Only return the fetched runs — don't merge with the full cache.
@@ -712,7 +715,7 @@ pub fn fetch_project_details(
 
     // CI runs — repo identity from *local* git remote, never from network
     if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
-        && let Some((owner, repo)) = crate::ci::parse_owner_repo(repo_url)
+        && let Some((owner, repo)) = ci::parse_owner_repo(repo_url)
     {
         let _ = tx.send(BackgroundMsg::ScanActivity {
             path: format!("CI: {project_path}"),
@@ -742,26 +745,32 @@ pub fn fetch_project_details(
         });
     }
 
-    // GitHub stars (network) — use local URL, only the API call needs network
+    // GitHub repo metadata (network) — use local URL, only the API call needs network
     if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
-        && let Some((owner, repo)) = crate::ci::parse_owner_repo(repo_url)
-        && let Some(count) = fetch_star_count(&owner, &repo)
+        && let Some((owner, repo)) = ci::parse_owner_repo(repo_url)
+        && let Some(meta) = fetch_repo_meta(&owner, &repo)
     {
-        let _ = tx.send(BackgroundMsg::Stars {
-            path: project_path.to_string(),
-            count,
+        let _ = tx.send(BackgroundMsg::RepoMeta {
+            path:        project_path.to_string(),
+            stars:       meta.stars,
+            description: meta.description,
         });
     }
 }
 
-/// Fetch the star count for a GitHub repo.
-fn fetch_star_count(owner: &str, repo: &str) -> Option<u64> {
+struct RepoMetaInfo {
+    stars:       u64,
+    description: Option<String>,
+}
+
+/// Fetch stars and description for a GitHub repo in a single API call.
+fn fetch_repo_meta(owner: &str, repo: &str) -> Option<RepoMetaInfo> {
     let output = std::process::Command::new("gh")
         .args([
             "api",
             &format!("repos/{owner}/{repo}"),
             "--jq",
-            ".stargazers_count",
+            "[.stargazers_count, .description] | @tsv",
         ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -770,7 +779,14 @@ fn fetch_star_count(owner: &str, repo: &str) -> Option<u64> {
     if !output.status.success() {
         return None;
     }
-    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut parts = text.trim().splitn(2, '\t');
+    let stars = parts.next()?.parse().ok()?;
+    let description = parts
+        .next()
+        .map(|s| s.to_string())
+        .filter(|s| s != "null" && !s.is_empty());
+    Some(RepoMetaInfo { stars, description })
 }
 
 /// Spawn a streaming scan: walk the directory tree, and for each project discovered
@@ -793,7 +809,7 @@ pub fn spawn_streaming_scan(
     thread::spawn(move || {
         let entries = WalkDir::new(&root)
             .into_iter()
-            .filter_entry(|entry| crate::list::should_visit_entry(entry, Some(&excludes)));
+            .filter_entry(|entry| list::should_visit_entry(entry, Some(&excludes)));
 
         rayon::scope(|s| {
             for entry in entries.flatten() {

@@ -25,16 +25,21 @@ use super::app::VisibleRow;
 use super::constants::BLOCK_BORDER_WIDTH;
 use super::constants::BYTES_PER_GIB;
 use super::constants::BYTES_PER_MIB;
+use super::constants::CONFIRM_DIALOG_HEIGHT;
+use super::constants::DETAIL_PANEL_HEIGHT;
 use super::constants::OFFLINE_PULSE_AMPLITUDE;
 use super::constants::OFFLINE_PULSE_BLUE;
 use super::constants::OFFLINE_PULSE_CYCLE;
 use super::constants::OFFLINE_PULSE_GREEN;
 use super::constants::OFFLINE_PULSE_OFFSET;
 use super::constants::OFFLINE_PULSE_RED;
+use super::constants::SEARCH_BAR_HEIGHT;
 use super::shortcuts::Shortcut;
 use super::types::FocusTarget;
 use super::types::LayoutCache;
 use crate::ci::CiRun;
+use crate::project;
+use crate::project::GitOrigin;
 use crate::project::RustProject;
 
 #[derive(Clone, Copy)]
@@ -268,7 +273,7 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
     let text = format!(" {prompt}  (y/n) ");
     #[allow(clippy::cast_possible_truncation)]
     let width = (text.len() + 4) as u16;
-    let area = centered_rect(width, 3, frame.area());
+    let area = centered_rect(width, CONFIRM_DIALOG_HEIGHT, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -290,7 +295,7 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
 }
 
 fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let search_height = if app.searching { 3 } else { 0 };
+    let search_height = if app.searching { SEARCH_BAR_HEIGHT } else { 0 };
     let left_constraints = if app.scan_complete {
         vec![Constraint::Length(search_height), Constraint::Min(1)]
     } else {
@@ -343,7 +348,10 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let right_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Length(14), Constraint::Min(3)])
+        .constraints(vec![
+            Constraint::Length(DETAIL_PANEL_HEIGHT),
+            Constraint::Min(3),
+        ])
         .split(area);
 
     app.layout_cache.ci_panel = right_layout[1];
@@ -368,8 +376,6 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_empty_ci_panel(frame: &mut Frame, app: &App, project: Option<&RustProject>, area: Rect) {
-    use crate::project::GitOrigin;
-
     let ci_focused = app.focus == FocusTarget::CiRuns;
     let border_style = if ci_focused {
         Style::default().fg(Color::Cyan)
@@ -525,7 +531,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
         .add_modifier(Modifier::BOLD);
 
     let node_count = app.nodes.len();
-    let scan_root = crate::project::home_relative_path(&app.scan_root);
+    let scan_root = project::home_relative_path(&app.scan_root);
     let header_line = Line::from(vec![
         Span::styled(
             format!(

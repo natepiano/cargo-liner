@@ -12,6 +12,7 @@ use ratatui::widgets::Paragraph;
 
 use super::app::App;
 use super::constants::SETTINGS_POPUP_PADDING;
+use super::constants::SETTINGS_POPUP_WIDTH;
 use super::render;
 use crate::config;
 
@@ -52,7 +53,7 @@ fn parse_dir_list(value: &str) -> Vec<String> {
 pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     #[allow(clippy::cast_possible_truncation)]
     let area = render::centered_rect(
-        60,
+        SETTINGS_POPUP_WIDTH,
         SettingOption::count() as u16 + SETTINGS_POPUP_PADDING,
         frame.area(),
     );

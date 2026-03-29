@@ -28,6 +28,7 @@ use super::terminal::ExampleMsg;
 use super::types::FocusTarget;
 use super::types::LayoutCache;
 use super::types::ScrollState;
+use crate::ci;
 use crate::ci::CiRun;
 use crate::config::Config;
 use crate::project::GitInfo;
@@ -163,6 +164,7 @@ pub(super) struct App {
     pub crates_versions:     HashMap<String, String>,
     pub crates_downloads:    HashMap<String, u64>,
     pub stars:               HashMap<String, u64>,
+    pub repo_descriptions:   HashMap<String, String>,
     pub bg_tx:               mpsc::Sender<BackgroundMsg>,
     pub bg_rx:               Receiver<BackgroundMsg>,
     pub fully_loaded:        HashSet<String>,
@@ -294,6 +296,7 @@ impl App {
             crates_versions: HashMap::new(),
             crates_downloads: HashMap::new(),
             stars: HashMap::new(),
+            repo_descriptions: HashMap::new(),
             bg_tx,
             bg_rx,
             fully_loaded: HashSet::new(),
@@ -433,6 +436,7 @@ impl App {
         self.crates_versions.clear();
         self.crates_downloads.clear();
         self.stars.clear();
+        self.repo_descriptions.clear();
         self.scan_log.clear();
         self.scan_log_state = ListState::default();
         self.scan_complete = false;
@@ -565,17 +569,24 @@ impl App {
                 self.crates_downloads.insert(path, downloads);
                 self.network_offline = false;
             },
-            BackgroundMsg::Stars { path, count } => {
+            BackgroundMsg::RepoMeta {
+                path,
+                stars,
+                description,
+            } => {
                 self.network_offline = false;
                 // Propagate to workspace members
                 if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
                     for group in &node.groups {
                         for member in &group.members {
-                            self.stars.entry(member.path.clone()).or_insert(count);
+                            self.stars.entry(member.path.clone()).or_insert(stars);
                         }
                     }
                 }
-                self.stars.insert(path, count);
+                self.stars.insert(path.clone(), stars);
+                if let Some(desc) = description {
+                    self.repo_descriptions.insert(path, desc);
+                }
             },
             BackgroundMsg::ProjectDiscovered { project } => {
                 if !self.all_projects.iter().any(|p| p.path == project.path) {
@@ -617,7 +628,7 @@ impl App {
             .git_info
             .get(&path)
             .and_then(|g| g.url.as_ref())
-            .and_then(|url| crate::ci::parse_owner_repo(url))
+            .and_then(|url| ci::parse_owner_repo(url))
             .is_some_and(|(owner, repo)| scan::is_exhausted(&owner, &repo));
         if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
             for group in &node.groups {
@@ -669,7 +680,7 @@ impl App {
         let exhausted = if merged.len() <= prev_count {
             if let Some(git) = self.git_info.get(&path)
                 && let Some(ref url) = git.url
-                && let Some((owner, repo)) = crate::ci::parse_owner_repo(url)
+                && let Some((owner, repo)) = ci::parse_owner_repo(url)
             {
                 scan::mark_exhausted(&owner, &repo);
             }
@@ -1395,7 +1406,6 @@ impl App {
     /// or `None` if Enter does nothing here. Used by the shortcut bar to
     /// only show Enter when it's actionable.
     pub fn enter_action(&self) -> Option<&'static str> {
-        use super::shortcuts::InputContext;
         match self.input_context() {
             InputContext::ProjectList | InputContext::ScanLog => Some("open"),
             InputContext::DetailTargets => Some("run"),

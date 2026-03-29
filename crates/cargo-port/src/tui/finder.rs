@@ -24,9 +24,11 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
 use super::app::App;
+use super::constants::FINDER_POPUP_HEIGHT;
 use super::constants::MAX_FINDER_RESULTS;
 use super::detail::RunTargetKind;
 use super::render;
+use super::types::FocusTarget;
 use crate::project::GitInfo;
 use crate::project::ProjectType;
 use crate::project::RustProject;
@@ -370,8 +372,6 @@ fn confirm_finder(app: &mut App) {
 /// After selecting the parent project, focus the targets column and scroll
 /// to the matching target entry.
 fn navigate_to_target(app: &mut App, item: &FinderItem) {
-    use super::types::FocusTarget;
-
     // Focus the detail panel targets column
     let (_, targets_col) = super::detail::detail_layout_pub(app);
     if let Some(col) = targets_col {
@@ -415,7 +415,7 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     #[allow(clippy::cast_possible_truncation)]
     let popup_width = (natural_width as u16).clamp(min_popup_width, max_popup_width);
 
-    let area = render::centered_rect(popup_width, 28, frame.area());
+    let area = render::centered_rect(popup_width, FINDER_POPUP_HEIGHT, frame.area());
     frame.render_widget(Clear, area);
 
     let title = if app.finder_query.is_empty() {

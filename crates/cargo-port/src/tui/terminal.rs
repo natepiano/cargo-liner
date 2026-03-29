@@ -1,6 +1,7 @@
 use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::Read;
 use std::io::Stdout;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -28,6 +29,7 @@ use super::detail::PendingExampleRun;
 use super::detail::RunTargetKind;
 use super::input;
 use super::render;
+use crate::ci;
 use crate::config;
 use crate::project::GitInfo;
 use crate::project::RustProject;
@@ -286,7 +288,6 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
 /// Read a stream byte-by-byte, splitting on `\n` (new line) and `\r` (progress update).
 /// `\r`-terminated chunks are sent as `Progress` so the UI replaces the last line.
 fn read_with_progress(tx: &std::sync::mpsc::Sender<ExampleMsg>, stream: impl io::Read) {
-    use std::io::Read;
     let mut reader = BufReader::new(stream);
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
@@ -376,7 +377,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     let Some(repo_url) = &git.url else {
         return;
     };
-    let Some((owner, repo)) = crate::ci::parse_owner_repo(repo_url) else {
+    let Some((owner, repo)) = ci::parse_owner_repo(repo_url) else {
         return;
     };
 
@@ -447,7 +448,7 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
 
     // CI runs from cache — uses local repo URL, never network
     if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
-        && let Some((owner, repo)) = crate::ci::parse_owner_repo(repo_url)
+        && let Some((owner, repo)) = ci::parse_owner_repo(repo_url)
     {
         let tx_ci = tx.clone();
         let path_ci = project_path.clone();

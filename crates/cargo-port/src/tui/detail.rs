@@ -25,13 +25,16 @@ use super::app::App;
 use super::app::CiState;
 use super::app::ConfirmAction;
 use super::constants::CI_EXTRA_ROWS;
+use super::constants::CI_TIMESTAMP_WIDTH;
 use super::render::CiColumn;
 use super::types::FocusTarget;
+use crate::ci;
 use crate::ci::CiRun;
 use crate::project::ExampleGroup;
 use crate::project::GitOrigin;
 use crate::project::ProjectType;
 use crate::project::RustProject;
+use crate::scan;
 
 #[derive(Default)]
 pub(super) struct ProjectCounts {
@@ -293,6 +296,7 @@ pub(super) enum DetailField {
     Owner,
     Repo,
     Stars,
+    RepoDesc,
     Inception,
     LastCommit,
     Worktree,
@@ -318,6 +322,7 @@ impl DetailField {
             Self::Owner => "Owner",
             Self::Repo => "Repo",
             Self::Stars => "Stars",
+            Self::RepoDesc => "About",
             Self::Inception => "Incept",
             Self::LastCommit => "Latest",
             Self::Worktree => "Worktree",
@@ -363,6 +368,7 @@ impl DetailField {
             Self::Stars => info
                 .git_stars
                 .map_or_else(String::new, |c| format!("⭐ {c}")),
+            Self::RepoDesc => info.repo_description.as_deref().unwrap_or("").to_string(),
             Self::Inception => info.git_inception.as_deref().unwrap_or("").to_string(),
             Self::LastCommit => info.git_last_commit.as_deref().unwrap_or("").to_string(),
             Self::Worktree => info.worktree_label.as_deref().unwrap_or("").to_string(),
@@ -441,6 +447,9 @@ pub(super) fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     if info.git_stars.is_some() {
         fields.push(DetailField::Stars);
     }
+    if info.repo_description.is_some() {
+        fields.push(DetailField::RepoDesc);
+    }
     if info.git_inception.is_some() {
         fields.push(DetailField::Inception);
     }
@@ -475,6 +484,7 @@ pub(super) struct DetailInfo {
     pub git_owner:        Option<String>,
     pub git_url:          Option<String>,
     pub git_stars:        Option<u64>,
+    pub repo_description: Option<String>,
     pub git_inception:    Option<String>,
     pub git_last_commit:  Option<String>,
     pub worktree_label:   Option<String>,
@@ -574,6 +584,7 @@ struct GitDetailFields {
     owner:          Option<String>,
     url:            Option<String>,
     stars:          Option<u64>,
+    description:    Option<String>,
     inception:      Option<String>,
     last_commit:    Option<String>,
 }
@@ -602,6 +613,7 @@ fn build_git_detail_fields(app: &App, project: &RustProject) -> GitDetailFields 
     let owner = git.and_then(|g| g.owner.clone());
     let url = git.and_then(|g| g.url.clone());
     let stars = app.stars.get(&project.path).copied();
+    let description = app.repo_descriptions.get(&project.path).cloned();
     let inception = git
         .and_then(|g| g.first_commit.as_deref())
         .map(format_timestamp);
@@ -618,6 +630,7 @@ fn build_git_detail_fields(app: &App, project: &RustProject) -> GitDetailFields 
         owner,
         url,
         stars,
+        description,
         inception,
         last_commit,
     }
@@ -708,6 +721,7 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
         git_owner: git_detail.owner,
         git_url: git_detail.url,
         git_stars: git_detail.stars,
+        repo_description: git_detail.description,
         git_inception: git_detail.inception,
         git_last_commit: git_detail.last_commit,
         worktree_label,
@@ -751,7 +765,11 @@ fn render_column_inner(
         };
 
         // Word-wrap long fields across multiple lines
-        if matches!(*field, DetailField::Description | DetailField::Vendored) && !value.is_empty() {
+        if matches!(
+            *field,
+            DetailField::Description | DetailField::Vendored | DetailField::RepoDesc
+        ) && !value.is_empty()
+        {
             let prefix = format!("  {label:<8} ");
             let prefix_len = prefix.len();
             let col_width = area.width as usize;
@@ -864,13 +882,21 @@ fn render_git_column_inner(
         } else {
             Style::default()
         };
-        if matches!(*field, DetailField::Repo | DetailField::Branch) && !value.is_empty() {
+        if matches!(
+            *field,
+            DetailField::Repo | DetailField::Branch | DetailField::RepoDesc
+        ) && !value.is_empty()
+        {
             let prefix = format!("  {label:<8} ");
             let prefix_len = prefix.len();
             let col_width = area.width as usize;
             let avail = col_width.saturating_sub(prefix_len + 1);
             if avail > 0 && value.len() > avail {
-                let wrapped = hard_wrap(&value, avail);
+                let wrapped = if *field == DetailField::RepoDesc {
+                    word_wrap(&value, avail)
+                } else {
+                    hard_wrap(&value, avail)
+                };
                 for (wi, chunk) in wrapped.iter().enumerate() {
                     if wi == 0 {
                         lines.push(Line::from(vec![
@@ -1294,7 +1320,7 @@ fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn]) -> Row<'static> {
 
     let total_dur = ci_run
         .wall_clock_secs
-        .map_or_else(|| "—".to_string(), crate::ci::format_secs);
+        .map_or_else(|| "—".to_string(), ci::format_secs);
 
     let commit = ci_run.commit_title.as_deref().unwrap_or("");
     let mut cells = vec![
@@ -1350,9 +1376,9 @@ fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn]) -> Vec<Constraint> {
         .unwrap_or("Branch".len())
         .max("Branch".len()) as u16;
     let mut widths = vec![
-        Constraint::Fill(1),              // Commit — absorbs remaining space
-        Constraint::Length(branch_width), // Branch — fit-to-content
-        Constraint::Length(16),           // Timestamp — exact
+        Constraint::Fill(1),                    // Commit — absorbs remaining space
+        Constraint::Length(branch_width),       // Branch — fit-to-content
+        Constraint::Length(CI_TIMESTAMP_WIDTH), // Timestamp — exact
     ];
     for col in cols {
         #[allow(clippy::cast_possible_truncation)]
@@ -1384,7 +1410,7 @@ fn ci_total_min_width(ci_runs: &[CiRun]) -> usize {
     let max_data = ci_runs
         .iter()
         .filter_map(|r| r.wall_clock_secs)
-        .map(|s| crate::ci::format_secs(s).trim().len())
+        .map(|s| ci::format_secs(s).trim().len())
         .max()
         .unwrap_or(0);
     "Total".len().max(max_data)
@@ -1399,10 +1425,8 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun
         .selected_project()
         .and_then(|p| app.git_info.get(&p.path))
         .and_then(|g| g.url.as_ref())
-        .and_then(|url| crate::ci::parse_owner_repo(url))
-        .map_or(0, |(owner, repo)| {
-            crate::scan::count_cached_runs(&owner, &repo)
-        });
+        .and_then(|url| ci::parse_owner_repo(url))
+        .map_or(0, |(owner, repo)| scan::count_cached_runs(&owner, &repo));
 
     let title = if ci_state.is_some_and(CiState::is_fetching) {
         let spinner = spinner_frame(app.spinner_tick);
@@ -1753,8 +1777,8 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
     // Derive (owner, repo) from local git info — no network needed
     if let Some(git) = app.git_info.get(project_path)
         && let Some(url) = &git.url
-        && let Some((owner, repo)) = crate::ci::parse_owner_repo(url)
-        && let Some(dir) = crate::scan::repo_cache_dir_pub(&owner, &repo)
+        && let Some((owner, repo)) = ci::parse_owner_repo(url)
+        && let Some(dir) = scan::repo_cache_dir_pub(&owner, &repo)
     {
         let _ = std::fs::remove_dir_all(dir);
     }
