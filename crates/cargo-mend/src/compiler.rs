@@ -381,8 +381,7 @@ impl ToolchainOverride {
     fn apply(&self, command: &mut Command, target_directory: &Path) {
         command
             .env("RUSTUP_TOOLCHAIN", &self.toolchain_name)
-            .arg("--target-dir")
-            .arg(target_directory.join("mend"));
+            .env("CARGO_TARGET_DIR", target_directory.join("mend"));
     }
 }
 
