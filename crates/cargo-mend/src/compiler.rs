@@ -365,7 +365,7 @@ fn toolchain_override() -> Option<ToolchainOverride> {
             Some(component) if component.as_os_str() == "toolchains" => {
                 break components.next()?.as_os_str().to_str()?.to_string();
             },
-            Some(_) => continue,
+            Some(_) => {},
             None => return None,
         }
     };
