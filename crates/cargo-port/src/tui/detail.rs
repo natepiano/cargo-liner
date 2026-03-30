@@ -746,10 +746,10 @@ fn render_column_inner(
     area: Rect,
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut focused_output_line: u16 = 0;
+    let mut focused_output_line: usize = 0;
     for (i, field) in fields.iter().enumerate() {
         if focus.detail_focused && focus.is_active && i == focus.cursor {
-            focused_output_line = lines.len() as u16;
+            focused_output_line = lines.len();
         }
         let label = field.label();
         let is_focused = focus.detail_focused && focus.is_active && i == focus.cursor;
@@ -835,8 +835,9 @@ fn render_column_inner(
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     let scroll_y = if focus.detail_focused && focus.is_active {
-        focused_output_line.saturating_sub(area.height / 2)
+        focused_output_line.saturating_sub(area.height as usize / 2) as u16
     } else {
         0
     };
@@ -852,11 +853,11 @@ fn render_git_column_inner(
     area: Rect,
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut focused_output_line: u16 = 0;
+    let mut focused_output_line: usize = 0;
 
     for (i, field) in fields.iter().enumerate() {
         if focus.detail_focused && focus.is_active && i == focus.cursor {
-            focused_output_line = lines.len() as u16;
+            focused_output_line = lines.len();
         }
         // Dynamic labels for vs-default fields — show actual branch name.
         let dynamic_label;
@@ -939,25 +940,30 @@ fn render_git_column_inner(
         }
     }
 
-    // Worktree list for worktree parents
-    if !info.worktree_names.is_empty() {
-        lines.push(Line::from(""));
-        let wt_title_style = Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD);
-        lines.push(Line::from(Span::styled("  Worktrees", wt_title_style)));
-        let wt_style = Style::default().fg(Color::DarkGray);
-        for name in &info.worktree_names {
-            lines.push(Line::from(Span::styled(format!("    {name}"), wt_style)));
-        }
-    }
+    append_worktree_lines(&mut lines, info);
 
+    #[allow(clippy::cast_possible_truncation)]
     let scroll_y = if focus.detail_focused && focus.is_active {
-        focused_output_line.saturating_sub(area.height / 2)
+        focused_output_line.saturating_sub(area.height as usize / 2) as u16
     } else {
         0
     };
     frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
+}
+
+fn append_worktree_lines(lines: &mut Vec<Line<'static>>, info: &DetailInfo) {
+    if info.worktree_names.is_empty() {
+        return;
+    }
+    lines.push(Line::from(""));
+    let wt_title_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    lines.push(Line::from(Span::styled("  Worktrees", wt_title_style)));
+    let wt_style = Style::default().fg(Color::DarkGray);
+    for name in &info.worktree_names {
+        lines.push(Line::from(Span::styled(format!("    {name}"), wt_style)));
+    }
 }
 
 pub(super) fn render_detail_panel(
@@ -1619,7 +1625,7 @@ pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
 
 /// Return a mutable reference to the pane that owns the cursor for the
 /// currently active detail column.
-fn active_detail_pane(app: &mut App, on_targets: bool) -> &mut Pane {
+const fn active_detail_pane(app: &mut App, on_targets: bool) -> &mut Pane {
     if on_targets {
         &mut app.targets_pane
     } else if app.detail_column.pos() == 0 {

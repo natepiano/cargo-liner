@@ -181,13 +181,13 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     }
 }
 
-fn handle_finder_click(app: &mut App, pos: Position) {
+const fn handle_finder_click(app: &mut App, pos: Position) {
     if let Some(clicked_row) = app.finder_pane.clicked_row(pos) {
         app.finder_pane.set_pos(clicked_row);
     }
 }
 
-fn handle_settings_click(app: &mut App, pos: Position) {
+const fn handle_settings_click(app: &mut App, pos: Position) {
     if let Some(clicked_row) = app.settings_pane.clicked_row(pos) {
         app.settings_pane.set_pos(clicked_row);
     }
