@@ -215,7 +215,6 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc | KeyCode::Char('s') => {
             app.show_settings = false;
-            app.settings_cursor.jump_home();
         },
         KeyCode::Up => {
             app.settings_cursor.up();

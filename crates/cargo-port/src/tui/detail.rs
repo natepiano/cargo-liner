@@ -745,7 +745,11 @@ fn render_column_inner(
     area: Rect,
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut focused_output_line: u16 = 0;
     for (i, field) in fields.iter().enumerate() {
+        if focus.detail_focused && focus.is_active && i == focus.cursor {
+            focused_output_line = lines.len() as u16;
+        }
         let label = field.label();
         let is_focused = focus.detail_focused && focus.is_active && i == focus.cursor;
 
@@ -829,7 +833,13 @@ fn render_column_inner(
             ]));
         }
     }
-    frame.render_widget(Paragraph::new(lines), area);
+
+    let scroll_y = if focus.detail_focused && focus.is_active {
+        focused_output_line.saturating_sub(area.height / 2)
+    } else {
+        0
+    };
+    frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
 }
 
 fn render_git_column_inner(
@@ -841,8 +851,12 @@ fn render_git_column_inner(
     area: Rect,
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut focused_output_line: u16 = 0;
 
     for (i, field) in fields.iter().enumerate() {
+        if focus.detail_focused && focus.is_active && i == focus.cursor {
+            focused_output_line = lines.len() as u16;
+        }
         // Dynamic labels for vs-default fields — show actual branch name.
         let dynamic_label;
         let label = match *field {
@@ -937,7 +951,12 @@ fn render_git_column_inner(
         }
     }
 
-    frame.render_widget(Paragraph::new(lines), area);
+    let scroll_y = if focus.detail_focused && focus.is_active {
+        focused_output_line.saturating_sub(area.height / 2)
+    } else {
+        0
+    };
+    frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
 }
 
 pub(super) fn render_detail_panel(

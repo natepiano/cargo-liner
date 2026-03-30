@@ -183,8 +183,9 @@ pub(super) struct App {
     pub scan_log:            Vec<String>,
     pub scan_log_state:      ListState,
     pub focus:               FocusTarget,
-    pub detail_column:       ScrollState,
-    pub detail_cursor:       ScrollState,
+    pub detail_column:        ScrollState,
+    pub detail_cursor:        ScrollState,
+    pub detail_saved_cursor:  [usize; 2],
     pub ci_runs_cursor:      ScrollState,
     pub examples_scroll:     ScrollState,
     pub pending_example_run: Option<PendingExampleRun>,
@@ -325,6 +326,7 @@ impl App {
             focus: FocusTarget::ProjectList,
             detail_column: ScrollState::default(),
             detail_cursor: ScrollState::default(),
+            detail_saved_cursor: [0; 2],
             ci_runs_cursor: ScrollState::default(),
             examples_scroll: ScrollState::default(),
             pending_example_run: None,
@@ -455,6 +457,7 @@ impl App {
         self.focus = FocusTarget::ProjectList;
         self.detail_column.jump_home();
         self.detail_cursor.jump_home();
+        self.detail_saved_cursor = [0; 2];
         self.ci_runs_cursor.jump_home();
         self.examples_scroll.jump_home();
         self.pending_ci_fetch = None;

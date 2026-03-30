@@ -362,22 +362,18 @@ pub(super) fn advance_focus(app: &mut App) {
 
     app.focus = match app.focus {
         FocusTarget::ProjectList => {
-            app.detail_column.jump_home();
-            app.detail_cursor.jump_home();
+            app.detail_column.clamp(max_detail_col + 1);
+            clamp_detail_or_targets(app);
             FocusTarget::DetailFields
         },
         FocusTarget::DetailFields => {
             // Advance through detail columns first
             if app.detail_column.pos() < max_detail_col {
                 app.detail_column.down(max_detail_col + 1);
-                app.detail_cursor.jump_home();
-                let (_, targets_col) = detail::detail_layout_pub(app);
-                if Some(app.detail_column.pos()) == targets_col {
-                    app.examples_scroll.jump_home();
-                }
+                clamp_detail_or_targets(app);
                 FocusTarget::DetailFields
             } else if has_ci {
-                app.ci_runs_cursor.jump_home();
+                app.ci_runs_cursor.clamp(ci_total_rows(app));
                 FocusTarget::CiRuns
             } else if app.scan_complete {
                 FocusTarget::ProjectList
@@ -413,21 +409,17 @@ pub(super) fn reverse_focus(app: &mut App) {
     });
 
     let max_detail_col = detail::detail_max_column(app);
-    let (_, targets_col) = detail::detail_layout_pub(app);
 
     app.focus = match app.focus {
         FocusTarget::ProjectList => {
             if !app.scan_complete {
                 FocusTarget::ScanLog
             } else if has_ci {
-                app.ci_runs_cursor.jump_home();
+                app.ci_runs_cursor.clamp(ci_total_rows(app));
                 FocusTarget::CiRuns
             } else {
                 app.detail_column.set(max_detail_col);
-                app.detail_cursor.jump_home();
-                if Some(max_detail_col) == targets_col {
-                    app.examples_scroll.jump_home();
-                }
+                clamp_detail_or_targets(app);
                 FocusTarget::DetailFields
             }
         },
@@ -435,7 +427,7 @@ pub(super) fn reverse_focus(app: &mut App) {
             // Reverse through detail columns first
             if app.detail_column.pos() > 0 {
                 app.detail_column.up();
-                app.detail_cursor.jump_home();
+                clamp_detail_or_targets(app);
                 FocusTarget::DetailFields
             } else {
                 FocusTarget::ProjectList
@@ -443,22 +435,16 @@ pub(super) fn reverse_focus(app: &mut App) {
         },
         FocusTarget::CiRuns => {
             app.detail_column.set(max_detail_col);
-            app.detail_cursor.jump_home();
-            if Some(max_detail_col) == targets_col {
-                app.examples_scroll.jump_home();
-            }
+            clamp_detail_or_targets(app);
             FocusTarget::DetailFields
         },
         FocusTarget::ScanLog => {
             if has_ci {
-                app.ci_runs_cursor.jump_home();
+                app.ci_runs_cursor.clamp(ci_total_rows(app));
                 FocusTarget::CiRuns
             } else {
                 app.detail_column.set(max_detail_col);
-                app.detail_cursor.jump_home();
-                if Some(max_detail_col) == targets_col {
-                    app.examples_scroll.jump_home();
-                }
+                clamp_detail_or_targets(app);
                 FocusTarget::DetailFields
             }
         },
@@ -470,5 +456,23 @@ pub(super) fn reverse_focus(app: &mut App) {
     {
         app.scan_log_state
             .select(Some(app.scan_log.len().saturating_sub(1)));
+    }
+}
+
+fn ci_total_rows(app: &App) -> usize {
+    app.selected_project()
+        .and_then(|p| app.ci_state_for(p))
+        .map_or(0, |s| s.runs().len() + CI_EXTRA_ROWS)
+}
+
+/// Clamp `detail_cursor` or `examples_scroll` based on the current
+/// `detail_column` position so the remembered row stays in bounds.
+fn clamp_detail_or_targets(app: &mut App) {
+    let (_, targets_col) = detail::detail_layout_pub(app);
+    if Some(app.detail_column.pos()) == targets_col {
+        app.examples_scroll.clamp(detail::target_list_len(app));
+    } else {
+        let field_count = detail::detail_column_field_count(app, app.detail_column.pos());
+        app.detail_cursor.clamp(field_count);
     }
 }
