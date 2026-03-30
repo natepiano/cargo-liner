@@ -58,7 +58,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
         frame.area(),
     );
 
-    app.layout_cache.settings_area = Some(area);
+    app.settings_pane.set_len(SettingOption::count());
 
     frame.render_widget(Clear, area);
 
@@ -71,6 +71,8 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         )
         .border_style(Style::default().fg(Color::Cyan));
+
+    app.settings_pane.set_content_area(block.inner(area));
 
     let key_style = Style::default()
         .fg(Color::Cyan)
@@ -136,12 +138,12 @@ pub(super) fn build_settings_lines(
         .unwrap_or(0);
 
     for (i, (name, value)) in settings.iter().enumerate() {
-        let cursor = if app.settings_cursor.pos() == i {
+        let cursor = if app.settings_pane.pos() == i {
             "▶ "
         } else {
             "  "
         };
-        let is_selected = app.settings_cursor.pos() == i;
+        let is_selected = app.settings_pane.pos() == i;
         let setting = SettingOption::from_index(i);
         let label = format!("  {cursor}{name:<max_label$}  ");
 
@@ -210,17 +212,17 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         return;
     }
 
-    let setting = SettingOption::from_index(app.settings_cursor.pos());
+    let setting = SettingOption::from_index(app.settings_pane.pos());
 
     match key {
         KeyCode::Esc | KeyCode::Char('s') => {
             app.show_settings = false;
         },
         KeyCode::Up => {
-            app.settings_cursor.up();
+            app.settings_pane.up();
         },
         KeyCode::Down => {
-            app.settings_cursor.down(SettingOption::count());
+            app.settings_pane.down();
         },
         KeyCode::Left | KeyCode::Right => match setting {
             Some(SettingOption::InvertScroll) => {
@@ -282,7 +284,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
 }
 
 pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
-    let setting = SettingOption::from_index(app.settings_cursor.pos());
+    let setting = SettingOption::from_index(app.settings_pane.pos());
 
     match key {
         KeyCode::Enter => {

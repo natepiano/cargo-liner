@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add `Pane` abstraction to preserve last row position when returning to a pane via Tab, with per-pane cursor, length, content area, and scroll offset
 - Detect new projects added under the scan root while running
 - Strikethrough styling for projects whose directories are deleted from disk
 

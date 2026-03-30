@@ -302,28 +302,28 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
             app.show_finder = false;
             app.finder_query.clear();
             app.finder_results.clear();
-            app.finder_cursor.jump_home();
+            app.finder_pane.home();
         },
         KeyCode::Enter => {
             confirm_finder(app);
         },
         KeyCode::Up => {
-            app.finder_cursor.up();
+            app.finder_pane.up();
         },
         KeyCode::Down => {
-            app.finder_cursor.down(app.finder_results.len());
+            app.finder_pane.down();
         },
         KeyCode::Home => {
-            app.finder_cursor.jump_home();
+            app.finder_pane.home();
         },
         KeyCode::End => {
-            app.finder_cursor.jump_end(app.finder_results.len());
+            app.finder_pane.end();
         },
         KeyCode::Backspace => {
             if app.finder_query.is_empty() {
                 app.show_finder = false;
                 app.finder_results.clear();
-                app.finder_cursor.jump_home();
+                app.finder_pane.home();
             } else {
                 app.finder_query.pop();
                 refresh_finder_results(app);
@@ -341,11 +341,11 @@ fn refresh_finder_results(app: &mut App) {
     let (results, total) = search_finder(&app.finder_index, &app.finder_query, MAX_FINDER_RESULTS);
     app.finder_results = results;
     app.finder_total = total;
-    app.finder_cursor.jump_home();
+    app.finder_pane.home();
 }
 
 fn confirm_finder(app: &mut App) {
-    let Some(&idx) = app.finder_results.get(app.finder_cursor.pos()) else {
+    let Some(&idx) = app.finder_results.get(app.finder_pane.pos()) else {
         return;
     };
     let item = app.finder_index[idx].clone();
@@ -354,7 +354,7 @@ fn confirm_finder(app: &mut App) {
     app.show_finder = false;
     app.finder_query.clear();
     app.finder_results.clear();
-    app.finder_cursor.jump_home();
+    app.finder_pane.home();
 
     // Navigate to the project
     app.select_project_in_tree(&item.project_path);
@@ -377,7 +377,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
     if let Some(col) = targets_col {
         app.focus = FocusTarget::DetailFields;
         app.detail_column.set(col);
-        app.detail_cursor.jump_home();
+        app.package_pane.home();
 
         // Build target list and find the matching entry index
         if let Some(project) = app.selected_project() {
@@ -394,7 +394,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
                 if entry.name == target_name
                     && std::mem::discriminant(&entry.kind) == std::mem::discriminant(&target_kind)
                 {
-                    app.examples_scroll.set(i);
+                    app.targets_pane.set_pos(i);
                     return;
                 }
             }
@@ -489,7 +489,8 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
         height: inner.height.saturating_sub(2),
     };
 
-    app.layout_cache.finder_results_area = Some(results_area);
+    app.finder_pane.set_len(app.finder_results.len());
+    app.finder_pane.set_content_area(results_area);
     render_finder_results(frame, app, col_widths, results_area);
 }
 
@@ -557,7 +558,7 @@ fn render_finder_results(
         .column_spacing(1)
         .row_highlight_style(highlight_style);
 
-    let mut table_state = TableState::default().with_selected(Some(app.finder_cursor.pos()));
+    let mut table_state = TableState::default().with_selected(Some(app.finder_pane.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.layout_cache.finder_table_offset = table_state.offset();
+    app.finder_pane.set_scroll_offset(table_state.offset());
 }

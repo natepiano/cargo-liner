@@ -7,7 +7,6 @@ use ratatui::layout::Position;
 use super::app::App;
 use super::app::CiState;
 use super::app::ConfirmAction;
-use super::constants::CI_EXTRA_ROWS;
 use super::detail;
 use super::finder;
 use super::settings;
@@ -155,76 +154,42 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     }
 
     // Detail columns (project, git, targets)
-    // Clone to release borrow on `app.layout_cache` before mutating `app`.
     let detail_columns = cache.detail_columns.clone();
     let detail_targets_col = cache.detail_targets_col;
-    let targets_offset = cache.targets_table_offset;
     for (col_idx, col_rect) in detail_columns.iter().enumerate() {
         if col_rect.contains(pos) {
             app.focus = FocusTarget::DetailFields;
             app.detail_column.set(col_idx);
-            let inner_y = row.saturating_sub(col_rect.y + 1) as usize;
-
-            if Some(col_idx) == detail_targets_col {
-                let total = detail::target_list_len(app);
-                let clicked_row = targets_offset + inner_y;
-                if clicked_row < total {
-                    app.examples_scroll.set(clicked_row);
-                }
+            let pane = if Some(col_idx) == detail_targets_col {
+                &mut app.targets_pane
+            } else if col_idx == 0 {
+                &mut app.package_pane
             } else {
-                let field_count = detail::detail_column_field_count(app, col_idx);
-                if inner_y < field_count {
-                    app.detail_cursor.set(inner_y);
-                }
+                &mut app.git_pane
+            };
+            if let Some(clicked_row) = pane.clicked_row(pos) {
+                pane.set_pos(clicked_row);
             }
             return;
         }
     }
 
-    // CI panel (header row adds +1 beyond the border)
-    let ci_panel = cache.ci_panel;
-    let ci_offset = cache.ci_table_offset;
-    if ci_panel.contains(pos) {
+    // CI panel
+    if let Some(clicked_row) = app.ci_pane.clicked_row(pos) {
         app.focus = FocusTarget::CiRuns;
-        let inner_y = row.saturating_sub(ci_panel.y + 2) as usize; // +1 border, +1 header
-        let clicked_row = ci_offset + inner_y;
-        let ci_run_count = app
-            .selected_project()
-            .and_then(|p| app.ci_state_for(p))
-            .map_or(0, |s| s.runs().len());
-        let total_rows = ci_run_count + CI_EXTRA_ROWS;
-        if clicked_row < total_rows {
-            app.ci_runs_cursor.set(clicked_row);
-        }
+        app.ci_pane.set_pos(clicked_row);
     }
 }
 
-const fn handle_finder_click(app: &mut App, pos: Position) {
-    let Some(results_area) = app.layout_cache.finder_results_area else {
-        return;
-    };
-    if !results_area.contains(pos) {
-        return;
-    }
-    // +1 for the header row inside the results table
-    let inner_y = pos.y.saturating_sub(results_area.y + 1) as usize;
-    let clicked_index = app.layout_cache.finder_table_offset + inner_y;
-    if clicked_index < app.finder_results.len() {
-        app.finder_cursor.set(clicked_index);
+fn handle_finder_click(app: &mut App, pos: Position) {
+    if let Some(clicked_row) = app.finder_pane.clicked_row(pos) {
+        app.finder_pane.set_pos(clicked_row);
     }
 }
 
-const fn handle_settings_click(app: &mut App, pos: Position) {
-    let Some(area) = app.layout_cache.settings_area else {
-        return;
-    };
-    if !area.contains(pos) {
-        return;
-    }
-    // Settings layout inside border: 1 empty line, then settings rows
-    let inner_y = pos.y.saturating_sub(area.y + 1 + 1) as usize;
-    if inner_y < settings::SettingOption::count() {
-        app.settings_cursor.set(inner_y);
+fn handle_settings_click(app: &mut App, pos: Position) {
+    if let Some(clicked_row) = app.settings_pane.clicked_row(pos) {
+        app.settings_pane.set_pos(clicked_row);
     }
 }
 
@@ -262,7 +227,7 @@ fn open_finder(app: &mut App) {
     app.finder_query.clear();
     app.finder_results.clear();
     app.finder_total = 0;
-    app.finder_cursor.jump_home();
+    app.finder_pane.home();
 }
 
 /// Handle keys that work in every non-text-input context.
@@ -362,18 +327,14 @@ pub(super) fn advance_focus(app: &mut App) {
 
     app.focus = match app.focus {
         FocusTarget::ProjectList => {
-            app.detail_column.clamp(max_detail_col + 1);
-            clamp_detail_or_targets(app);
+            app.detail_column.jump_home();
             FocusTarget::DetailFields
         },
         FocusTarget::DetailFields => {
-            // Advance through detail columns first
             if app.detail_column.pos() < max_detail_col {
                 app.detail_column.down(max_detail_col + 1);
-                clamp_detail_or_targets(app);
                 FocusTarget::DetailFields
             } else if has_ci {
-                app.ci_runs_cursor.clamp(ci_total_rows(app));
                 FocusTarget::CiRuns
             } else if app.scan_complete {
                 FocusTarget::ProjectList
@@ -415,19 +376,15 @@ pub(super) fn reverse_focus(app: &mut App) {
             if !app.scan_complete {
                 FocusTarget::ScanLog
             } else if has_ci {
-                app.ci_runs_cursor.clamp(ci_total_rows(app));
                 FocusTarget::CiRuns
             } else {
                 app.detail_column.set(max_detail_col);
-                clamp_detail_or_targets(app);
                 FocusTarget::DetailFields
             }
         },
         FocusTarget::DetailFields => {
-            // Reverse through detail columns first
             if app.detail_column.pos() > 0 {
                 app.detail_column.up();
-                clamp_detail_or_targets(app);
                 FocusTarget::DetailFields
             } else {
                 FocusTarget::ProjectList
@@ -435,16 +392,13 @@ pub(super) fn reverse_focus(app: &mut App) {
         },
         FocusTarget::CiRuns => {
             app.detail_column.set(max_detail_col);
-            clamp_detail_or_targets(app);
             FocusTarget::DetailFields
         },
         FocusTarget::ScanLog => {
             if has_ci {
-                app.ci_runs_cursor.clamp(ci_total_rows(app));
                 FocusTarget::CiRuns
             } else {
                 app.detail_column.set(max_detail_col);
-                clamp_detail_or_targets(app);
                 FocusTarget::DetailFields
             }
         },
@@ -456,23 +410,5 @@ pub(super) fn reverse_focus(app: &mut App) {
     {
         app.scan_log_state
             .select(Some(app.scan_log.len().saturating_sub(1)));
-    }
-}
-
-fn ci_total_rows(app: &App) -> usize {
-    app.selected_project()
-        .and_then(|p| app.ci_state_for(p))
-        .map_or(0, |s| s.runs().len() + CI_EXTRA_ROWS)
-}
-
-/// Clamp `detail_cursor` or `examples_scroll` based on the current
-/// `detail_column` position so the remembered row stays in bounds.
-fn clamp_detail_or_targets(app: &mut App) {
-    let (_, targets_col) = detail::detail_layout_pub(app);
-    if Some(app.detail_column.pos()) == targets_col {
-        app.examples_scroll.clamp(detail::target_list_len(app));
-    } else {
-        let field_count = detail::detail_column_field_count(app, app.detail_column.pos());
-        app.detail_cursor.clamp(field_count);
     }
 }

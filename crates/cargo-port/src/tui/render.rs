@@ -370,7 +370,7 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    app.layout_cache.ci_panel = right_layout[1];
+    // CI content_area and len are set inside render_ci_panel.
 
     super::detail::render_detail_panel(frame, app, detail_info.as_ref(), right_layout[0]);
 

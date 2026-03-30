@@ -28,6 +28,7 @@ use super::constants::CI_EXTRA_ROWS;
 use super::constants::CI_TIMESTAMP_WIDTH;
 use super::render::CiColumn;
 use super::types::FocusTarget;
+use super::types::Pane;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::project::ExampleGroup;
@@ -1003,12 +1004,25 @@ pub(super) fn render_detail_panel(
         render_project_panel(frame, app, info, detail_focused, &styles, columns[0]);
 
         if let Some(col) = spec.git_col {
+            app.git_pane.set_len(git.len());
             let focus = ColumnFocus {
                 detail_focused,
                 is_active: app.detail_column.pos() == col,
-                cursor: app.detail_cursor.pos(),
+                cursor: app.git_pane.pos(),
             };
-            render_git_panel(frame, info, &git, &focus, &styles, columns[col]);
+            let git_block = Block::default()
+                .borders(Borders::ALL)
+                .title(" Git ")
+                .title_style(styles.title)
+                .border_style(if focus.is_active {
+                    styles.active_border
+                } else {
+                    styles.inactive_border
+                });
+            let git_inner = git_block.inner(columns[col]);
+            app.git_pane.set_content_area(git_inner);
+            frame.render_widget(git_block, columns[col]);
+            render_git_column_inner(frame, info, &git, &focus, &styles, git_inner);
         }
 
         if let Some(col) = spec.targets_col {
@@ -1036,16 +1050,18 @@ pub(super) fn render_detail_panel(
 
 fn render_project_panel(
     frame: &mut Frame,
-    app: &App,
+    app: &mut App,
     info: &DetailInfo,
     detail_focused: bool,
     styles: &RenderStyles,
     area: Rect,
 ) {
+    let fields = package_fields(info);
+    app.package_pane.set_len(fields.len());
     let focus = ColumnFocus {
         detail_focused,
         is_active: app.detail_column.pos() == 0,
-        cursor: app.detail_cursor.pos(),
+        cursor: app.package_pane.pos(),
     };
     let project_block = Block::default()
         .borders(Borders::ALL)
@@ -1057,17 +1073,11 @@ fn render_project_panel(
             styles.inactive_border
         });
     let project_inner = project_block.inner(area);
+    app.package_pane.set_content_area(project_inner);
     frame.render_widget(project_block, area);
 
     if info.stats_rows.is_empty() {
-        render_column_inner(
-            frame,
-            info,
-            &package_fields(info),
-            &focus,
-            styles,
-            project_inner,
-        );
+        render_column_inner(frame, info, &fields, &focus, styles, project_inner);
     } else {
         let (stats_width, digit_width) = stats_column_width(&info.stats_rows);
 
@@ -1077,14 +1087,7 @@ fn render_project_panel(
             .constraints([Constraint::Min(20), Constraint::Length(stats_width)])
             .split(project_inner);
 
-        render_column_inner(
-            frame,
-            info,
-            &package_fields(info),
-            &focus,
-            styles,
-            sub_cols[0],
-        );
+        render_column_inner(frame, info, &fields, &focus, styles, sub_cols[0]);
 
         // Stats column with left border
         let stats_block = Block::default().borders(Borders::LEFT);
@@ -1103,28 +1106,6 @@ fn render_project_panel(
         }
         frame.render_widget(Paragraph::new(stat_lines), stats_inner);
     }
-}
-
-fn render_git_panel(
-    frame: &mut Frame,
-    info: &DetailInfo,
-    git: &[DetailField],
-    focus: &ColumnFocus,
-    styles: &RenderStyles,
-    area: Rect,
-) {
-    let git_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Git ")
-        .title_style(styles.title)
-        .border_style(if focus.is_active {
-            styles.active_border
-        } else {
-            styles.inactive_border
-        });
-    let git_inner = git_block.inner(area);
-    frame.render_widget(git_block, area);
-    render_git_column_inner(frame, info, git, focus, styles, git_inner);
 }
 
 fn render_targets_panel(
@@ -1163,6 +1144,8 @@ fn render_targets_panel(
         });
 
     let entries = build_target_list(info);
+    app.targets_pane.set_len(entries.len());
+    app.targets_pane.set_content_area(targets_block.inner(area));
 
     let rows: Vec<Row> = entries
         .iter()
@@ -1191,13 +1174,13 @@ fn render_targets_panel(
         .row_highlight_style(highlight_style);
 
     let selected = if is_active {
-        Some(app.examples_scroll.pos())
+        Some(app.targets_pane.pos())
     } else {
         None
     };
     let mut table_state = TableState::default().with_selected(selected);
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.layout_cache.targets_table_offset = table_state.offset();
+    app.targets_pane.set_scroll_offset(table_state.offset());
 }
 
 /// Format ISO 8601 timestamp as `yyyy-mm-dd hh:mm`.
@@ -1437,7 +1420,6 @@ fn ci_total_min_width(ci_runs: &[CiRun]) -> usize {
 
 pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun], area: Rect) {
     let ci_focused = app.focus == FocusTarget::CiRuns;
-    let ci_state = app.selected_project().and_then(|p| app.ci_state_for(p));
 
     let total = ci_runs.len();
     let cached = app
@@ -1447,10 +1429,22 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun
         .and_then(|url| ci::parse_owner_repo(url))
         .map_or(0, |(owner, repo)| scan::count_cached_runs(&owner, &repo));
 
-    let title = if ci_state.is_some_and(CiState::is_fetching) {
+    let is_fetching = app
+        .selected_project()
+        .and_then(|p| app.ci_state_for(p))
+        .is_some_and(CiState::is_fetching);
+    let is_exhausted = app
+        .selected_project()
+        .and_then(|p| app.ci_state_for(p))
+        .is_some_and(CiState::is_exhausted);
+    let fetch_count = app
+        .selected_project()
+        .and_then(|p| app.ci_state_for(p))
+        .map_or(0, CiState::fetch_count);
+
+    let title = if is_fetching {
         let spinner = spinner_frame(app.spinner_tick);
-        let count = ci_state.map_or(0, CiState::fetch_count);
-        format!(" CI Runs {spinner} fetching {count} more… ")
+        format!(" CI Runs {spinner} fetching {fetch_count} more… ")
     } else {
         format!(" CI Runs (cached {cached}, total {total}) ")
     };
@@ -1468,6 +1462,9 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun
         } else {
             Style::default()
         });
+
+    app.ci_pane.set_len(ci_runs.len() + CI_EXTRA_ROWS);
+    app.ci_pane.set_content_area(ci_block.inner(area));
 
     let all_columns = [
         CiColumn::Fmt,
@@ -1497,12 +1494,9 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun
     let widths = build_ci_widths(ci_runs, &cols);
 
     // "Fetch more" / "no older runs" as a table row
-    let is_fetching = ci_state.is_some_and(CiState::is_fetching);
-    let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
     let fetch_label = if is_fetching {
         let spinner = spinner_frame(app.spinner_tick);
-        let count = ci_state.map_or(0, CiState::fetch_count);
-        format!("{spinner} fetching {count} more…")
+        format!("{spinner} fetching {fetch_count} more…")
     } else if is_exhausted {
         "— no older runs".to_string()
     } else {
@@ -1533,9 +1527,9 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun
         .column_spacing(1)
         .row_highlight_style(highlight_style);
 
-    let mut table_state = TableState::default().with_selected(Some(app.ci_runs_cursor.pos()));
+    let mut table_state = TableState::default().with_selected(Some(app.ci_pane.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.layout_cache.ci_table_offset = table_state.offset();
+    app.ci_pane.set_scroll_offset(table_state.offset());
 }
 
 /// Returns (`max_column_index`, `targets_column_index` or `None`).
@@ -1565,49 +1559,13 @@ fn detail_layout(app: &App) -> DetailLayoutSpec {
     detail_layout_spec(git, targets)
 }
 
-/// Returns the field count for a given column index.
-/// Returns 0 for the targets column (it uses scroll, not cursor).
-pub(super) fn detail_column_field_count(app: &App, column: usize) -> usize {
-    let spec = detail_layout(app);
-    if Some(column) == spec.targets_col {
-        return 0; // Targets column uses scroll, not cursor
-    }
-    if column == 0 {
-        app.selected_project().map_or(0, |p| {
-            let info = build_detail_info(app, p);
-            package_fields(&info).len()
-        })
-    } else {
-        // Git column
-        app.selected_project().map_or(0, |p| {
-            let info = build_detail_info(app, p);
-            git_fields(&info).len()
-        })
-    }
-}
-
-/// Clamp the detail cursor to the current column's field count.
-fn clamp_detail_cursor(app: &mut App) {
-    let count = detail_column_field_count(app, app.detail_column.pos());
-    app.detail_cursor.clamp(count);
-}
-
-/// Get the total number of target entries for the selected project.
-pub(super) fn target_list_len(app: &App) -> usize {
-    let Some(project) = app.selected_project() else {
-        return 0;
-    };
-    let info = build_detail_info(app, project);
-    build_target_list(&info).len()
-}
-
 fn handle_target_action(app: &mut App, release: bool) {
     let Some(project) = app.selected_project() else {
         return;
     };
     let info = build_detail_info(app, project);
     let entries = build_target_list(&info);
-    if let Some(entry) = entries.get(app.examples_scroll.pos())
+    if let Some(entry) = entries.get(app.targets_pane.pos())
         && let Some(project) = app.selected_project()
     {
         app.pending_example_run = Some(PendingExampleRun {
@@ -1623,56 +1581,23 @@ fn handle_target_action(app: &mut App, release: bool) {
 pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
     let spec = detail_layout(app);
     let on_targets = Some(app.detail_column.pos()) == spec.targets_col;
-    let field_count = detail_column_field_count(app, app.detail_column.pos());
+
+    // Pick the active pane for the current column.
+    let pane = active_detail_pane(app, on_targets);
 
     match key {
-        KeyCode::Up => {
-            if on_targets {
-                app.examples_scroll.up();
-            } else {
-                app.detail_cursor.up();
-            }
-        },
-        KeyCode::Down => {
-            if on_targets {
-                let total = target_list_len(app);
-                app.examples_scroll.down(total);
-            } else {
-                app.detail_cursor.down(field_count);
-            }
-        },
-        KeyCode::Home => {
-            if on_targets {
-                app.examples_scroll.jump_home();
-            } else {
-                app.detail_cursor.jump_home();
-            }
-        },
-        KeyCode::End => {
-            if on_targets {
-                let total = target_list_len(app);
-                app.examples_scroll.jump_end(total);
-            } else {
-                app.detail_cursor.jump_end(field_count);
-            }
-        },
+        KeyCode::Up => pane.up(),
+        KeyCode::Down => pane.down(),
+        KeyCode::Home => pane.home(),
+        KeyCode::End => pane.end(),
         KeyCode::Left => {
             if app.detail_column.pos() > 0 {
                 app.detail_column.up();
-                clamp_detail_cursor(app);
             }
         },
         KeyCode::Right => {
-            if on_targets {
-                // No expand — do nothing
-            } else if app.detail_column.pos() < spec.max_col {
+            if !on_targets && app.detail_column.pos() < spec.max_col {
                 app.detail_column.down(spec.max_col + 1);
-                // If entering the targets column, jump to the first item
-                if Some(app.detail_column.pos()) == spec.targets_col {
-                    app.examples_scroll.jump_home();
-                } else {
-                    clamp_detail_cursor(app);
-                }
             }
         },
         KeyCode::Enter => handle_detail_enter(app, on_targets),
@@ -1692,6 +1617,18 @@ pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
     }
 }
 
+/// Return a mutable reference to the pane that owns the cursor for the
+/// currently active detail column.
+fn active_detail_pane(app: &mut App, on_targets: bool) -> &mut Pane {
+    if on_targets {
+        &mut app.targets_pane
+    } else if app.detail_column.pos() == 0 {
+        &mut app.package_pane
+    } else {
+        &mut app.git_pane
+    }
+}
+
 /// Handle the Enter key in the detail panel.
 fn handle_detail_enter(app: &mut App, on_targets: bool) {
     if on_targets {
@@ -1699,7 +1636,7 @@ fn handle_detail_enter(app: &mut App, on_targets: bool) {
     } else if app.detail_column.pos() == 0 {
         let info = app.selected_project().map(|p| build_detail_info(app, p));
         let fields = info.as_ref().map(package_fields).unwrap_or_default();
-        match fields.get(app.detail_cursor.pos()) {
+        match fields.get(app.package_pane.pos()) {
             Some(DetailField::CratesIo) => {
                 if let Some(ref info) = info {
                     open_url(&format!("https://crates.io/crates/{}", info.name));
@@ -1712,7 +1649,7 @@ fn handle_detail_enter(app: &mut App, on_targets: bool) {
         // Git column — open repo URL in browser
         if let Some(info) = app.selected_project().map(|p| build_detail_info(app, p))
             && matches!(
-                git_fields(&info).get(app.detail_cursor.pos()),
+                git_fields(&info).get(app.git_pane.pos()),
                 Some(DetailField::Repo)
             )
             && let Some(ref url) = info.git_url
@@ -1739,26 +1676,24 @@ fn open_url(url: &str) {
 pub(super) fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
     let ci_state = app.selected_project().and_then(|p| app.ci_state_for(p));
     let run_count = ci_state.map_or(0, |s: &CiState| s.runs().len());
-    // Total rows = run data rows + the "fetch more" action row
-    let total_rows = run_count + CI_EXTRA_ROWS;
     let is_fetching = ci_state.is_some_and(CiState::is_fetching);
     let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
 
     match key {
         KeyCode::Up => {
-            app.ci_runs_cursor.up();
+            app.ci_pane.up();
         },
         KeyCode::Down => {
-            app.ci_runs_cursor.down(total_rows);
+            app.ci_pane.down();
         },
         KeyCode::Home => {
-            app.ci_runs_cursor.jump_home();
+            app.ci_pane.home();
         },
         KeyCode::End => {
-            app.ci_runs_cursor.jump_end(total_rows);
+            app.ci_pane.end();
         },
         KeyCode::Enter => {
-            let cursor_pos = app.ci_runs_cursor.pos();
+            let cursor_pos = app.ci_pane.pos();
             if cursor_pos < run_count {
                 // Open the CI run in the browser
                 if let Some(runs) = ci_state.map(CiState::runs)
@@ -1810,7 +1745,7 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
             exhausted: false,
         },
     );
-    app.ci_runs_cursor.jump_home();
+    app.ci_pane.home();
     app.data_generation += 1;
 }
 

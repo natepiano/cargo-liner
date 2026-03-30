@@ -27,6 +27,7 @@ use super::terminal::CiFetchMsg;
 use super::terminal::ExampleMsg;
 use super::types::FocusTarget;
 use super::types::LayoutCache;
+use super::types::Pane;
 use super::types::ScrollState;
 use crate::ci;
 use crate::ci::CiRun;
@@ -176,18 +177,18 @@ pub(super) struct App {
     pub search_query:        String,
     pub filtered:            Vec<usize>,
     pub show_settings:       bool,
-    pub settings_cursor:     ScrollState,
+    pub settings_pane:       Pane,
     pub settings_editing:    bool,
     pub settings_edit_buf:   String,
     pub scan_complete:       bool,
     pub scan_log:            Vec<String>,
     pub scan_log_state:      ListState,
     pub focus:               FocusTarget,
-    pub detail_column:        ScrollState,
-    pub detail_cursor:        ScrollState,
-    pub detail_saved_cursor:  [usize; 2],
-    pub ci_runs_cursor:      ScrollState,
-    pub examples_scroll:     ScrollState,
+    pub detail_column:       ScrollState,
+    pub package_pane:        Pane,
+    pub git_pane:            Pane,
+    pub targets_pane:        Pane,
+    pub ci_pane:             Pane,
     pub pending_example_run: Option<PendingExampleRun>,
     pub pending_ci_fetch:    Option<PendingCiFetch>,
     pub pending_clean:       Option<String>,
@@ -219,7 +220,7 @@ pub(super) struct App {
     pub finder_query:      String,
     pub finder_results:    Vec<usize>,
     pub finder_total:      usize,
-    pub finder_cursor:     ScrollState,
+    pub finder_pane:       Pane,
     pub finder_index:      Vec<FinderItem>,
     pub finder_col_widths: [usize; FINDER_COLUMN_COUNT],
     pub finder_dirty:      bool,
@@ -317,7 +318,7 @@ impl App {
             search_query: String::new(),
             filtered: Vec::new(),
             show_settings: false,
-            settings_cursor: ScrollState::default(),
+            settings_pane: Pane::new(),
             settings_editing: false,
             settings_edit_buf: String::new(),
             scan_complete: false,
@@ -325,10 +326,10 @@ impl App {
             scan_log_state: ListState::default(),
             focus: FocusTarget::ProjectList,
             detail_column: ScrollState::default(),
-            detail_cursor: ScrollState::default(),
-            detail_saved_cursor: [0; 2],
-            ci_runs_cursor: ScrollState::default(),
-            examples_scroll: ScrollState::default(),
+            package_pane: Pane::new(),
+            git_pane: Pane::new(),
+            targets_pane: Pane::new(),
+            ci_pane: Pane::new(),
             pending_example_run: None,
             pending_ci_fetch: None,
             pending_clean: None,
@@ -356,7 +357,7 @@ impl App {
             finder_query: String::new(),
             finder_results: Vec::new(),
             finder_total: 0,
-            finder_cursor: ScrollState::default(),
+            finder_pane: Pane::new(),
             finder_index: Vec::new(),
             finder_col_widths: [0; super::finder::FINDER_COLUMN_COUNT],
             finder_dirty: true,
@@ -456,10 +457,10 @@ impl App {
         self.priority_fetch_path = None;
         self.focus = FocusTarget::ProjectList;
         self.detail_column.jump_home();
-        self.detail_cursor.jump_home();
-        self.detail_saved_cursor = [0; 2];
-        self.ci_runs_cursor.jump_home();
-        self.examples_scroll.jump_home();
+        self.package_pane.home();
+        self.git_pane.home();
+        self.targets_pane.home();
+        self.ci_pane.home();
         self.pending_ci_fetch = None;
         self.expanded.clear();
         self.list_state = ListState::default();
@@ -749,7 +750,7 @@ impl App {
                 }
             }
         }
-        self.ci_runs_cursor.set(merged.len());
+        self.ci_pane.set_pos(merged.len());
         self.ci_state.insert(path, state);
         self.data_generation += 1;
     }
@@ -1460,7 +1461,7 @@ impl App {
                         .selected_project()
                         .map(|p| super::detail::build_detail_info(self, p))?;
                     let fields = super::detail::package_fields(&info);
-                    let field = *fields.get(self.detail_cursor.pos())?;
+                    let field = *fields.get(self.package_pane.pos())?;
                     if field.is_from_cargo_toml() {
                         Some("open")
                     } else {
@@ -1472,7 +1473,7 @@ impl App {
                         .selected_project()
                         .map(|p| super::detail::build_detail_info(self, p))?;
                     let fields = super::detail::git_fields(&info);
-                    match fields.get(self.detail_cursor.pos()) {
+                    match fields.get(self.git_pane.pos()) {
                         Some(DetailField::Repo) if info.git_url.is_some() => Some("open"),
                         _ => None,
                     }
@@ -1481,7 +1482,7 @@ impl App {
             InputContext::CiRuns => {
                 let ci_state = self.selected_project().and_then(|p| self.ci_state_for(p));
                 let run_count = ci_state.map_or(0, |s| s.runs().len());
-                if self.ci_runs_cursor.pos() == run_count
+                if self.ci_pane.pos() == run_count
                     && !ci_state.is_some_and(CiState::is_fetching)
                     && !ci_state.is_some_and(CiState::is_exhausted)
                 {
