@@ -8,7 +8,7 @@ keywords    = ["cargo", "inspect", "project", "rust", "tui"]
 license     = "MIT OR Apache-2.0"
 name        = "cargo-port"
 repository  = "https://github.com/natepiano/cargo-port"
-version     = "0.0.2-dev"
+version     = "0.0.2"
 
 [lints.clippy]
 # Our strict lints
