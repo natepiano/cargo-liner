@@ -4,8 +4,65 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use serde::Serialize;
 
-const APP_NAME: &str = "cargo-port";
-const CONFIG_FILE: &str = "config.toml";
+use super::constants::APP_NAME;
+use super::constants::CONFIG_FILE;
+use super::constants::DEFAULT_CONFIG_TOML;
+
+/// Whether non-Rust projects (git repos without `Cargo.toml`) are included in scans.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub enum NonRustInclusion {
+    Include,
+    #[default]
+    Exclude,
+}
+
+impl From<bool> for NonRustInclusion {
+    fn from(b: bool) -> Self { if b { Self::Include } else { Self::Exclude } }
+}
+
+impl From<NonRustInclusion> for bool {
+    fn from(val: NonRustInclusion) -> Self { matches!(val, NonRustInclusion::Include) }
+}
+
+impl NonRustInclusion {
+    pub const fn includes_non_rust(self) -> bool { matches!(self, Self::Include) }
+
+    pub const fn toggle(&mut self) {
+        *self = match *self {
+            Self::Include => Self::Exclude,
+            Self::Exclude => Self::Include,
+        };
+    }
+}
+
+/// Scroll direction for mouse wheel events.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub enum ScrollDirection {
+    #[default]
+    Normal,
+    Inverted,
+}
+
+impl From<bool> for ScrollDirection {
+    fn from(b: bool) -> Self { if b { Self::Inverted } else { Self::Normal } }
+}
+
+impl From<ScrollDirection> for bool {
+    fn from(val: ScrollDirection) -> Self { matches!(val, ScrollDirection::Inverted) }
+}
+
+impl ScrollDirection {
+    pub const fn is_inverted(self) -> bool { matches!(self, Self::Inverted) }
+
+    pub const fn toggle(&mut self) {
+        *self = match *self {
+            Self::Normal => Self::Inverted,
+            Self::Inverted => Self::Normal,
+        };
+    }
+}
 
 #[derive(Deserialize, Serialize, Default)]
 pub struct Config {
@@ -33,7 +90,7 @@ pub struct TuiConfig {
 
     /// Whether to include non-Rust projects (git repos without `Cargo.toml`).
     #[serde(default)]
-    pub include_non_rust: bool,
+    pub include_non_rust: NonRustInclusion,
 
     /// Editor application name, opened via `open -a <editor> <path>`.
     #[serde(default = "default_editor")]
@@ -46,7 +103,7 @@ impl Default for TuiConfig {
             inline_dirs:      default_inline_dirs(),
             ci_run_count:     default_ci_run_count(),
             exclude_dirs:     default_exclude_dirs(),
-            include_non_rust: false,
+            include_non_rust: NonRustInclusion::Exclude,
             editor:           default_editor(),
         }
     }
@@ -63,13 +120,13 @@ fn default_editor() -> String { "zed".to_string() }
 #[derive(Deserialize, Serialize)]
 pub struct MouseConfig {
     #[serde(default)]
-    pub invert_scroll: bool,
+    pub invert_scroll: ScrollDirection,
 }
 
 impl Default for MouseConfig {
     fn default() -> Self {
         Self {
-            invert_scroll: true,
+            invert_scroll: ScrollDirection::Inverted,
         }
     }
 }
@@ -99,34 +156,6 @@ pub fn load() -> Config {
 
     toml::from_str(&contents).unwrap_or_default()
 }
-
-/// Default configuration TOML written on first run.
-const DEFAULT_CONFIG_TOML: &str = r#"[mouse]
-invert_scroll = true
-
-[tui]
-inline_dirs = ["crates"]
-ci_run_count = 5
-
-# Directories to skip when scanning. Edit this list for your setup.
-exclude_dirs = [
-    "Library",
-    "Applications",
-    "Downloads",
-    "Documents",
-    "Movies",
-    "Music",
-    "Pictures",
-    "Public",
-    "vendor",
-]
-
-# Include non-Rust projects (git repos without Cargo.toml).
-include_non_rust = false
-
-# Editor application name, opened via `open -a <editor> <path>`.
-editor = "zed"
-"#;
 
 fn create_default_config(path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
@@ -166,9 +195,9 @@ mod tests {
         let result: Result<Config, _> = toml::from_str(DEFAULT_CONFIG_TOML);
         assert!(result.is_ok(), "DEFAULT_CONFIG_TOML should parse");
         let cfg = result.unwrap_or_default();
-        assert!(!cfg.tui.include_non_rust);
+        assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Exclude);
         assert_eq!(cfg.tui.ci_run_count, 5);
         assert_eq!(cfg.tui.inline_dirs, vec!["crates".to_string()]);
-        assert!(cfg.mouse.invert_scroll);
+        assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
     }
 }

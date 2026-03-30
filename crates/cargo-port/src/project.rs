@@ -214,6 +214,51 @@ fn parse_remote_url(raw: &str) -> (Option<String>, Option<String>) {
     (None, None)
 }
 
+/// Whether a project has a `[workspace]` section in `Cargo.toml`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub enum WorkspaceStatus {
+    Workspace,
+    #[default]
+    Standalone,
+}
+
+impl From<bool> for WorkspaceStatus {
+    fn from(b: bool) -> Self { if b { Self::Workspace } else { Self::Standalone } }
+}
+
+impl From<WorkspaceStatus> for bool {
+    fn from(val: WorkspaceStatus) -> Self { matches!(val, WorkspaceStatus::Workspace) }
+}
+
+/// Whether a project is a Rust project (has `Cargo.toml`) or a non-Rust git repo.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub enum ProjectLanguage {
+    #[default]
+    Rust,
+    NonRust,
+}
+
+impl From<bool> for ProjectLanguage {
+    fn from(b: bool) -> Self { if b { Self::Rust } else { Self::NonRust } }
+}
+
+impl From<ProjectLanguage> for bool {
+    fn from(val: ProjectLanguage) -> Self { matches!(val, ProjectLanguage::Rust) }
+}
+
+/// Whether a project directory has a `.git` directory (is git-tracked).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitTracking {
+    Tracked,
+    Untracked,
+}
+
+impl GitTracking {
+    pub const fn is_tracked(self) -> bool { matches!(self, Self::Tracked) }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProjectType {
@@ -242,9 +287,6 @@ pub struct ExampleGroup {
     pub names:    Vec<String>,
 }
 
-/// Serde default helper that returns `true`.
-const fn default_true() -> bool { true }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RustProject {
     /// Display path (e.g. `~/rust/bevy`).
@@ -258,14 +300,14 @@ pub struct RustProject {
     pub worktree_name: Option<String>,
     /// Whether this project has a `[workspace]` section.
     #[serde(default)]
-    pub is_workspace:  bool,
+    pub is_workspace:  WorkspaceStatus,
     pub types:         Vec<ProjectType>,
     pub examples:      Vec<ExampleGroup>,
     pub benches:       Vec<String>,
     pub test_count:    usize,
     /// Whether this project is a Rust project (has `Cargo.toml`).
-    #[serde(default = "default_true")]
-    pub is_rust:       bool,
+    #[serde(default)]
+    pub is_rust:       ProjectLanguage,
 }
 
 impl RustProject {
@@ -273,7 +315,12 @@ impl RustProject {
     pub fn example_count(&self) -> usize { self.examples.iter().map(|g| g.names.len()).sum() }
 
     /// Language icon for the project list.
-    pub const fn lang_icon(&self) -> &'static str { if self.is_rust { "🦀" } else { "  " } }
+    pub const fn lang_icon(&self) -> &'static str {
+        match self.is_rust {
+            ProjectLanguage::Rust => "🦀",
+            ProjectLanguage::NonRust => "  ",
+        }
+    }
 
     /// Display name for the project list.
     /// Shows `name (worktree_dir)` for worktrees, just `name` otherwise.
@@ -344,7 +391,11 @@ impl RustProject {
         // A `.git` file (not directory) indicates a git worktree
         let worktree_name = detect_worktree_name(project_dir);
 
-        let is_workspace = table.get("workspace").is_some();
+        let is_workspace = if table.get("workspace").is_some() {
+            WorkspaceStatus::Workspace
+        } else {
+            WorkspaceStatus::Standalone
+        };
         let types = detect_types(&table, project_dir);
         let examples = collect_examples(&table, project_dir);
         let benches = collect_target_names(&table, project_dir, "bench", "benches");
@@ -364,7 +415,7 @@ impl RustProject {
             examples,
             benches,
             test_count,
-            is_rust: true,
+            is_rust: ProjectLanguage::Rust,
         })
     }
 
@@ -384,16 +435,18 @@ impl RustProject {
             version: None,
             description: None,
             worktree_name,
-            is_workspace: false,
+            is_workspace: WorkspaceStatus::Standalone,
             types: Vec::new(),
             examples: Vec::new(),
             benches: Vec::new(),
             test_count: 0,
-            is_rust: false,
+            is_rust: ProjectLanguage::NonRust,
         }
     }
 
-    pub const fn is_workspace(&self) -> bool { self.is_workspace }
+    pub const fn is_workspace(&self) -> bool {
+        matches!(self.is_workspace, WorkspaceStatus::Workspace)
+    }
 }
 
 fn detect_types(table: &Table, project_dir: &Path) -> Vec<ProjectType> {
@@ -431,7 +484,7 @@ fn detect_types(table: &Table, project_dir: &Path) -> Vec<ProjectType> {
 /// Collect examples grouped by category. Prefers `[[example]]` declarations, falls back to
 /// file discovery.
 fn collect_examples(table: &Table, project_dir: &Path) -> Vec<ExampleGroup> {
-    // Collect from [[example]] entries in Cargo.toml
+    // Collect from `[[example]]` entries in `Cargo.toml`
     if let Some(arr) = table.get("example").and_then(|v| v.as_array())
         && !arr.is_empty()
     {
@@ -518,7 +571,7 @@ fn discover_examples_grouped(examples_dir: &Path) -> Vec<ExampleGroup> {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            // Collect .rs files and main.rs subdirs within this category
+            // Collect `.rs` files and `main.rs` subdirs within this category
             if let Ok(sub_entries) = std::fs::read_dir(&path) {
                 for sub in sub_entries.flatten() {
                     let sub_path = sub.path();
@@ -655,8 +708,8 @@ fn count_rs_files_recursive(dir: &Path) -> usize {
         if path.is_file() && path.extension().is_some_and(|e| e == "rs") {
             count += 1;
         } else if path.is_dir() {
-            // Subdirectories can contain examples too (e.g., examples/foo/main.rs)
-            // Count the directory as one example if it has a main.rs
+            // Subdirectories can contain examples too (e.g., `examples/foo/main.rs`)
+            // Count the directory as one example if it has a `main.rs`
             if path.join("main.rs").exists() {
                 count += 1;
             }

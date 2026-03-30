@@ -32,6 +32,8 @@ use super::types::ScrollState;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::config::Config;
+use crate::config::NonRustInclusion;
+use crate::config::ScrollDirection;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::RustProject;
@@ -42,6 +44,13 @@ use crate::scan::FlatEntry;
 use crate::scan::ProjectNode;
 use crate::watcher;
 use crate::watcher::WatchRequest;
+
+/// Whether the application has network connectivity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NetworkStatus {
+    Online,
+    Offline,
+}
 
 /// An expand key: either a workspace node or a group within a node.
 #[derive(Hash, Eq, PartialEq, Clone)]
@@ -154,7 +163,7 @@ pub(super) struct App {
     pub inline_dirs:         Vec<String>,
     pub exclude_dirs:        Vec<String>,
     pub ci_run_count:        u32,
-    pub include_non_rust:    bool,
+    pub include_non_rust:    NonRustInclusion,
     pub editor:              String,
     pub all_projects:        Vec<RustProject>,
     pub nodes:               Vec<ProjectNode>,
@@ -170,7 +179,7 @@ pub(super) struct App {
     pub bg_rx:               Receiver<BackgroundMsg>,
     pub fully_loaded:        HashSet<String>,
     pub priority_fetch_path: Option<String>,
-    pub invert_scroll:       bool,
+    pub invert_scroll:       ScrollDirection,
     pub expanded:            HashSet<ExpandKey>,
     pub list_state:          ListState,
     pub searching:           bool,
@@ -210,7 +219,7 @@ pub(super) struct App {
     pub watch_tx: mpsc::Sender<WatchRequest>,
 
     // Network state
-    pub network_offline: bool,
+    pub network_status: NetworkStatus,
 
     // Projects whose directories have been deleted from disk.
     pub deleted_projects: HashSet<String>,
@@ -349,7 +358,7 @@ impl App {
 
             watch_tx,
 
-            network_offline: false,
+            network_status: NetworkStatus::Online,
 
             deleted_projects: HashSet::new(),
 
@@ -611,14 +620,14 @@ impl App {
             } => {
                 self.crates_versions.insert(path.clone(), version);
                 self.crates_downloads.insert(path, downloads);
-                self.network_offline = false;
+                self.network_status = NetworkStatus::Online;
             },
             BackgroundMsg::RepoMeta {
                 path,
                 stars,
                 description,
             } => {
-                self.network_offline = false;
+                self.network_status = NetworkStatus::Online;
                 // Propagate to workspace members
                 if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
                     for group in &node.groups {
@@ -660,7 +669,7 @@ impl App {
                 }
             },
             BackgroundMsg::NetworkOffline => {
-                self.network_offline = true;
+                self.network_status = NetworkStatus::Offline;
             },
         }
         false

@@ -85,14 +85,24 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     let settings: Vec<(&str, String)> = vec![
         (
             "Invert scroll",
-            if app.invert_scroll { "ON" } else { "OFF" }.to_string(),
+            if app.invert_scroll.is_inverted() {
+                "ON"
+            } else {
+                "OFF"
+            }
+            .to_string(),
         ),
         ("CI run count", cfg.tui.ci_run_count.to_string()),
         ("Inline dirs", cfg.tui.inline_dirs.join(", ")),
         ("Exclude dirs", cfg.tui.exclude_dirs.join(", ")),
         (
             "Non-Rust projects",
-            if app.include_non_rust { "ON" } else { "OFF" }.to_string(),
+            if app.include_non_rust.includes_non_rust() {
+                "ON"
+            } else {
+                "OFF"
+            }
+            .to_string(),
         ),
         ("Editor", app.editor.clone()),
     ];
@@ -159,8 +169,8 @@ pub(super) fn build_settings_lines(
             || setting == Some(SettingOption::IncludeNonRust)
         {
             let is_on = match setting {
-                Some(SettingOption::InvertScroll) => app.invert_scroll,
-                Some(SettingOption::IncludeNonRust) => app.include_non_rust,
+                Some(SettingOption::InvertScroll) => app.invert_scroll.is_inverted(),
+                Some(SettingOption::IncludeNonRust) => app.include_non_rust.includes_non_rust(),
                 _ => false,
             };
             let toggle_style = if is_on {
@@ -226,7 +236,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         },
         KeyCode::Left | KeyCode::Right => match setting {
             Some(SettingOption::InvertScroll) => {
-                app.invert_scroll = !app.invert_scroll;
+                app.invert_scroll.toggle();
                 save_settings(app);
             },
             Some(SettingOption::CiRunCount) => {
@@ -240,7 +250,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
                 let _ = config::save(&cfg);
             },
             Some(SettingOption::IncludeNonRust) => {
-                app.include_non_rust = !app.include_non_rust;
+                app.include_non_rust.toggle();
                 let mut cfg = config::load();
                 cfg.tui.include_non_rust = app.include_non_rust;
                 let _ = config::save(&cfg);
@@ -250,7 +260,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         },
         KeyCode::Enter | KeyCode::Char(' ') => match setting {
             Some(SettingOption::InvertScroll) => {
-                app.invert_scroll = !app.invert_scroll;
+                app.invert_scroll.toggle();
                 save_settings(app);
             },
             Some(SettingOption::CiRunCount) => {
@@ -267,7 +277,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
                 app.settings_editing = true;
             },
             Some(SettingOption::IncludeNonRust) => {
-                app.include_non_rust = !app.include_non_rust;
+                app.include_non_rust.toggle();
                 let mut cfg = config::load();
                 cfg.tui.include_non_rust = app.include_non_rust;
                 let _ = config::save(&cfg);

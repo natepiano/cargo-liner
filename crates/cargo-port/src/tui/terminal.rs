@@ -32,6 +32,7 @@ use super::render;
 use crate::ci;
 use crate::config;
 use crate::project::GitInfo;
+use crate::project::GitTracking;
 use crate::project::RustProject;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -71,6 +72,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
     Ok(())
 }
 
+#[allow(clippy::needless_pass_by_value)]
 pub fn run(path: PathBuf) -> ExitCode {
     let Ok(scan_root) = path.canonicalize() else {
         eprintln!("Error: cannot resolve path '{}'", path.display());
@@ -433,12 +435,20 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
     let tx = app.bg_tx.clone();
     let project_path = path.to_string();
     let abs = PathBuf::from(abs_path);
-    let has_git = abs.join(".git").exists();
+    let git_tracking = if abs.join(".git").exists() {
+        GitTracking::Tracked
+    } else {
+        GitTracking::Untracked
+    };
     let ci_run_count = app.ci_run_count;
     let project_name = name.cloned();
 
     // Git info is local and instant — also provides the repo URL for CI
-    let git_info = if has_git { GitInfo::detect(&abs) } else { None };
+    let git_info = if git_tracking.is_tracked() {
+        GitInfo::detect(&abs)
+    } else {
+        None
+    };
     if let Some(ref info) = git_info {
         let _ = tx.send(BackgroundMsg::GitInfo {
             path: project_path.clone(),

@@ -7,8 +7,8 @@ use clap::Args;
 use walkdir::DirEntry;
 use walkdir::WalkDir;
 
-use crate::output;
-use crate::project::RustProject;
+use super::output;
+use super::project::RustProject;
 
 #[derive(Args)]
 pub struct ListArgs {
@@ -76,6 +76,7 @@ pub fn filter_workspace_members(projects: &mut Vec<RustProject>) {
     });
 }
 
+#[allow(clippy::needless_pass_by_value)]
 pub fn run(path: PathBuf, args: ListArgs) -> ExitCode {
     let Ok(scan_root) = path.canonicalize() else {
         eprintln!("Error: cannot resolve path '{}'", path.display());

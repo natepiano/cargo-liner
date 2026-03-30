@@ -10,12 +10,19 @@ use std::thread;
 
 use walkdir::WalkDir;
 
-use crate::ci;
-use crate::ci::CiRun;
-use crate::ci::GhRun;
-use crate::list;
-use crate::project::GitInfo;
-use crate::project::RustProject;
+use super::ci;
+use super::ci::CiRun;
+use super::ci::GhRun;
+use super::config::NonRustInclusion;
+use super::constants::CACHE_DIR;
+use super::constants::CONNECTIVITY_TIMEOUT_SECS;
+use super::constants::CRATES_IO_TIMEOUT_SECS;
+use super::constants::NO_MORE_RUNS_MARKER;
+use super::constants::OLDER_RUNS_FETCH_INCREMENT;
+use super::list;
+use super::project::GitInfo;
+use super::project::GitTracking;
+use super::project::RustProject;
 
 /// Members within a workspace are organized into groups by their first subdirectory.
 /// The "inline" group (empty name) contains members directly under the workspace root
@@ -104,8 +111,6 @@ pub enum CiFetchResult {
     CacheOnly(Vec<CiRun>),
 }
 
-pub const CACHE_DIR: &str = "cargo-port/ci-cache";
-
 /// Base cache directory: `$TMPDIR/cargo-port/ci-cache`.
 pub fn cache_dir() -> Option<PathBuf> {
     std::env::var("TMPDIR")
@@ -124,11 +129,6 @@ fn repo_cache_dir(owner: &str, repo: &str) -> Option<PathBuf> {
 pub fn repo_cache_dir_pub(owner: &str, repo: &str) -> Option<PathBuf> {
     repo_cache_dir(owner, repo)
 }
-
-const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";
-const OLDER_RUNS_FETCH_INCREMENT: u32 = 5;
-const CONNECTIVITY_TIMEOUT_SECS: &str = "2";
-const CRATES_IO_TIMEOUT_SECS: &str = "5";
 
 /// Check if the "no more runs" marker exists for a repo.
 pub fn is_exhausted(owner: &str, repo: &str) -> bool {
@@ -358,6 +358,7 @@ pub fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
+#[allow(clippy::needless_pass_by_value)]
 pub fn build_tree(projects: Vec<RustProject>, inline_dirs: &[String]) -> Vec<ProjectNode> {
     let workspace_paths: Vec<String> = projects
         .iter()
@@ -676,11 +677,11 @@ pub fn fetch_project_details(
     project_path: &str,
     abs_path: &Path,
     project_name: Option<&String>,
-    has_git: bool,
+    git_tracking: GitTracking,
     ci_run_count: u32,
 ) {
     // Git info first (local, instant) — also provides the repo URL for CI cache lookup
-    let git_info = if has_git {
+    let git_info = if git_tracking.is_tracked() {
         GitInfo::detect(abs_path)
     } else {
         None
@@ -797,7 +798,7 @@ pub fn spawn_streaming_scan(
     scan_root: &Path,
     ci_run_count: u32,
     exclude_dirs: &[String],
-    include_non_rust: bool,
+    non_rust: NonRustInclusion,
 ) -> (mpsc::Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
     let (tx, rx) = mpsc::channel();
     let root = scan_root.to_path_buf();
@@ -822,8 +823,8 @@ pub fn spawn_streaming_scan(
                         path: if rel.is_empty() { ".".to_string() } else { rel },
                     });
 
-                    // Non-Rust project detection: .git dir present but no Cargo.toml
-                    if include_non_rust
+                    // Non-Rust project detection: `.git` dir present but no `Cargo.toml`
+                    if non_rust.includes_non_rust()
                         && entry.path().join(".git").is_dir()
                         && !entry.path().join("Cargo.toml").exists()
                     {
@@ -843,7 +844,7 @@ pub fn spawn_streaming_scan(
                                 &task_path,
                                 &task_abs,
                                 None,
-                                true,
+                                GitTracking::Tracked,
                                 ci_run_count,
                             );
                         });
@@ -854,7 +855,11 @@ pub fn spawn_streaming_scan(
                     && let Ok(project) = RustProject::from_cargo_toml(entry.path())
                 {
                     let abs_path = PathBuf::from(&project.abs_path);
-                    let has_git = abs_path.join(".git").exists();
+                    let git_tracking = if abs_path.join(".git").exists() {
+                        GitTracking::Tracked
+                    } else {
+                        GitTracking::Untracked
+                    };
 
                     let _ = scan_tx.send(BackgroundMsg::ProjectDiscovered {
                         project: project.clone(),
@@ -871,7 +876,7 @@ pub fn spawn_streaming_scan(
                             &task_path,
                             &task_abs,
                             task_name.as_ref(),
-                            has_git,
+                            git_tracking,
                             ci_run_count,
                         );
                     });
