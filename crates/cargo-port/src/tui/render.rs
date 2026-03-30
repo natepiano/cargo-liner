@@ -547,7 +547,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
 
-    let node_count = app.nodes.len();
+    let node_count = app.live_node_count();
     let scan_root = project::home_relative_path(&app.scan_root);
     let header_line = Line::from(vec![
         Span::styled(
@@ -798,8 +798,9 @@ fn render_root_item(
     let node = &app.nodes[node_index];
     let project = &node.project;
     let mut name = project.display_name();
-    if !node.worktrees.is_empty() {
-        name = format!("{name} wt:{}", node.worktrees.len());
+    let live_wt = app.live_worktree_count(node);
+    if live_wt > 0 {
+        name = format!("{name} wt:{live_wt}");
     }
     let disk = app.formatted_disk_for_node(node);
     let disk_bytes = app.disk_bytes_for_node(node);

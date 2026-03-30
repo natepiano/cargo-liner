@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Detect new projects added to the watch directory at runtime
+
 ## [0.0.2] - 2026-03-30
 
 ### Added

@@ -92,6 +92,8 @@ fn watcher_loop(
 
     // abs_path → project tracking state
     let mut projects: HashMap<PathBuf, ProjectEntry> = HashMap::new();
+    // Directories that contain at least one known project (e.g. `~/rust/`).
+    let mut project_parents: HashSet<PathBuf> = HashSet::new();
     // project_path → (debounce_deadline, max_deadline)
     let mut pending_disk: HashMap<String, (Instant, Instant)> = HashMap::new();
     // Directories that might be new projects → probe deadline
@@ -104,6 +106,9 @@ fn watcher_loop(
         loop {
             match watch_rx.try_recv() {
                 Ok(req) => {
+                    if let Some(parent) = req.abs_path.parent() {
+                        project_parents.insert(parent.to_path_buf());
+                    }
                     projects.insert(
                         req.abs_path.clone(),
                         ProjectEntry {
@@ -127,6 +132,7 @@ fn watcher_loop(
                     event_path,
                     &scan_root,
                     &projects,
+                    &project_parents,
                     &discovered,
                     &mut pending_disk,
                     &mut pending_new,
@@ -154,6 +160,7 @@ fn handle_event(
     event_path: &Path,
     scan_root: &Path,
     projects: &HashMap<PathBuf, ProjectEntry>,
+    project_parents: &HashSet<PathBuf>,
     discovered: &HashSet<PathBuf>,
     pending_disk: &mut HashMap<String, (Instant, Instant)>,
     pending_new: &mut HashMap<PathBuf, Instant>,
@@ -176,18 +183,16 @@ fn handle_event(
         return;
     }
 
-    // Not a known project — check if this is a direct child of the scan
-    // root (potential new project or deleted project).
-    let Some(parent) = event_path.parent() else {
+    // Not a known project — walk up from the event path to find the
+    // directory at the same level as existing projects. A "project parent"
+    // is any directory that already contains a known project (e.g. `~/rust/`).
+    let Some(candidate) = project_level_dir(event_path, scan_root, project_parents) else {
         return;
     };
-    if parent != scan_root {
-        return;
-    }
     // Always enqueue removals (dir gone); for creations, skip already-discovered.
-    if !event_path.is_dir() || !discovered.contains(event_path) {
+    if !candidate.is_dir() || !discovered.contains(&candidate) {
         pending_new
-            .entry(event_path.to_path_buf())
+            .entry(candidate)
             .or_insert_with(|| now + NEW_PROJECT_DEBOUNCE);
     }
 }
@@ -278,6 +283,38 @@ fn probe_new_projects(
     }
 }
 
+/// Walk up from `event_path` toward `scan_root`, returning the first
+/// directory whose parent is a known project-parent directory or the scan
+/// root itself. This finds the directory at the same nesting level as
+/// existing projects regardless of how deep the scan root is.
+///
+/// When the walk-up doesn't find a known project parent, a filesystem
+/// check for `Cargo.toml` or `.git` identifies project roots that
+/// aren't yet registered (new projects added during or after the scan).
+fn project_level_dir(
+    event_path: &Path,
+    scan_root: &Path,
+    project_parents: &HashSet<PathBuf>,
+) -> Option<PathBuf> {
+    let mut path = event_path.to_path_buf();
+    loop {
+        let parent = path.parent()?;
+        if parent == scan_root || project_parents.contains(parent) {
+            // `path` is at the same level as known projects.
+            return Some(path);
+        }
+        // Check for project markers on disk so we resolve to the actual
+        // project root even when its parent isn't in `project_parents`.
+        if path.join("Cargo.toml").exists() || path.join(".git").exists() {
+            return Some(path);
+        }
+        if !path.starts_with(scan_root) {
+            return None;
+        }
+        path = parent.to_path_buf();
+    }
+}
+
 /// Check if a directory is a project (has `Cargo.toml`, or `.git` when
 /// `include_non_rust` is enabled).
 fn probe_project(dir: &Path, include_non_rust: bool) -> Option<RustProject> {
@@ -289,4 +326,293 @@ fn probe_project(dir: &Path, include_non_rust: bool) -> Option<RustProject> {
         return Some(RustProject::from_git_dir(dir));
     }
     None
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    // ── project_level_dir ────────────────────────────────────────────
+
+    #[test]
+    fn sibling_of_known_project() {
+        // scan_root = /home/user, known project at /home/user/rust/bevy
+        // → event inside /home/user/rust/bevy_style_fix/ should yield that dir
+        let scan_root = Path::new("/home/user");
+        let parents = HashSet::from([PathBuf::from("/home/user/rust")]);
+
+        let event = Path::new("/home/user/rust/bevy_style_fix/src/main.rs");
+        let result = project_level_dir(event, scan_root, &parents);
+        assert_eq!(
+            result.as_deref(),
+            Some(Path::new("/home/user/rust/bevy_style_fix"))
+        );
+    }
+
+    #[test]
+    fn direct_child_of_scan_root() {
+        // scan_root = /home/user/rust, no project_parents needed
+        // → event inside /home/user/rust/new_project/ falls back to scan_root
+        let scan_root = Path::new("/home/user/rust");
+        let parents = HashSet::new();
+
+        let event = Path::new("/home/user/rust/new_project/Cargo.toml");
+        let result = project_level_dir(event, scan_root, &parents);
+        assert_eq!(
+            result.as_deref(),
+            Some(Path::new("/home/user/rust/new_project"))
+        );
+    }
+
+    #[test]
+    fn event_is_the_new_directory_itself() {
+        let scan_root = Path::new("/home/user");
+        let parents = HashSet::from([PathBuf::from("/home/user/rust")]);
+
+        let event = Path::new("/home/user/rust/new_wt");
+        let result = project_level_dir(event, scan_root, &parents);
+        assert_eq!(result.as_deref(), Some(Path::new("/home/user/rust/new_wt")));
+    }
+
+    #[test]
+    fn deeply_nested_event_resolves_to_project_dir() {
+        let scan_root = Path::new("/home/user");
+        let parents = HashSet::from([PathBuf::from("/home/user/rust")]);
+
+        let event = Path::new("/home/user/rust/cargo-port_wt/src/tui/render.rs");
+        let result = project_level_dir(event, scan_root, &parents);
+        assert_eq!(
+            result.as_deref(),
+            Some(Path::new("/home/user/rust/cargo-port_wt"))
+        );
+    }
+
+    #[test]
+    fn event_at_scan_root_returns_none() {
+        let scan_root = Path::new("/home/user");
+        let parents = HashSet::from([PathBuf::from("/home/user/rust")]);
+
+        let result = project_level_dir(scan_root, scan_root, &parents);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn event_outside_scan_root_returns_none() {
+        let scan_root = Path::new("/home/user/rust");
+        let parents = HashSet::new();
+
+        let event = Path::new("/tmp/other/file.rs");
+        let result = project_level_dir(event, scan_root, &parents);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn multiple_parent_levels() {
+        // Projects at different depths: ~/code/rust/foo and ~/code/python/bar
+        let scan_root = Path::new("/home/user");
+        let parents = HashSet::from([
+            PathBuf::from("/home/user/code/rust"),
+            PathBuf::from("/home/user/code/python"),
+        ]);
+
+        let rust_event = Path::new("/home/user/code/rust/new_crate/src/lib.rs");
+        assert_eq!(
+            project_level_dir(rust_event, scan_root, &parents).as_deref(),
+            Some(Path::new("/home/user/code/rust/new_crate"))
+        );
+
+        let py_event = Path::new("/home/user/code/python/new_pkg/setup.py");
+        assert_eq!(
+            project_level_dir(py_event, scan_root, &parents).as_deref(),
+            Some(Path::new("/home/user/code/python/new_pkg"))
+        );
+    }
+
+    /// Synthetic paths with no filesystem markers fall back to the
+    /// nearest `scan_root` or `project_parents` boundary.
+    #[test]
+    fn synthetic_paths_resolve_to_scan_root_child() {
+        let scan_root = Path::new("/home/user");
+        let parents = HashSet::new();
+
+        let event = Path::new("/home/user/rust/bevy/src/lib.rs");
+        let result = project_level_dir(event, scan_root, &parents);
+        assert_eq!(result.as_deref(), Some(Path::new("/home/user/rust")));
+    }
+
+    /// Filesystem markers (`Cargo.toml`) are detected regardless of
+    /// whether `project_parents` is empty or populated.
+    #[test]
+    fn filesystem_fallback_finds_cargo_toml() {
+        let tmp = tempfile::tempdir().expect("failed to create tempdir");
+        let scan_root = tmp.path();
+        let project_dir = scan_root.join("rust").join("new_project");
+        std::fs::create_dir_all(&project_dir).expect("create dirs");
+        std::fs::write(project_dir.join("Cargo.toml"), b"[package]").expect("write Cargo.toml");
+
+        let parents = HashSet::new();
+        let event = project_dir.join("src/main.rs");
+        let result = project_level_dir(&event, scan_root, &parents);
+        assert_eq!(result, Some(project_dir));
+    }
+
+    /// A new project under a parent directory that isn't in
+    /// `project_parents` is still found via `Cargo.toml` on disk.
+    /// This covers: scan already passed `~/python/`, `project_parents`
+    /// only has `~/rust/`, new project appears at `~/python/new_thing/`.
+    #[test]
+    fn new_project_in_unknown_parent_found_via_filesystem() {
+        let tmp = tempfile::tempdir().expect("failed to create tempdir");
+        let scan_root = tmp.path();
+
+        // Existing project parent — only ~/rust/ is known
+        let parents = HashSet::from([scan_root.join("rust")]);
+
+        // New project under ~/python/ — not in project_parents
+        let new_project = scan_root.join("python").join("new_thing");
+        std::fs::create_dir_all(&new_project).expect("create dirs");
+        std::fs::write(new_project.join("Cargo.toml"), b"[package]").expect("write Cargo.toml");
+
+        let event = new_project.join("src/lib.rs");
+        let result = project_level_dir(&event, scan_root, &parents);
+        assert_eq!(result, Some(new_project));
+    }
+
+    // ── handle_event ─────────────────────────────────────────────────
+
+    fn make_project_entry(project_path: &str, abs_path: &Path) -> (PathBuf, ProjectEntry) {
+        (
+            abs_path.to_path_buf(),
+            ProjectEntry {
+                project_path: project_path.to_string(),
+                abs_path:     abs_path.to_path_buf(),
+            },
+        )
+    }
+
+    #[test]
+    fn known_project_event_goes_to_pending_disk() {
+        let scan_root = PathBuf::from("/home/user");
+        let mut projects = HashMap::new();
+        let (key, entry) = make_project_entry("~/rust/bevy", Path::new("/home/user/rust/bevy"));
+        projects.insert(key, entry);
+        let project_parents = HashSet::from([PathBuf::from("/home/user/rust")]);
+        let discovered = HashSet::new();
+        let mut pending_disk = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        handle_event(
+            Path::new("/home/user/rust/bevy/src/lib.rs"),
+            &scan_root,
+            &projects,
+            &project_parents,
+            &discovered,
+            &mut pending_disk,
+            &mut pending_new,
+        );
+
+        assert!(pending_disk.contains_key("~/rust/bevy"));
+        assert!(pending_new.is_empty());
+    }
+
+    #[test]
+    fn unknown_sibling_event_goes_to_pending_new() {
+        let tmp = tempfile::tempdir().expect("failed to create tempdir");
+        let scan_root = tmp.path().to_path_buf();
+
+        // Create the new project directory (handle_event checks is_dir)
+        let new_project = scan_root.join("new_project");
+        std::fs::create_dir_all(&new_project).expect("failed to create new_project dir");
+
+        // Register an existing sibling so project_parents is populated
+        let existing = scan_root.join("existing_project");
+        let mut projects = HashMap::new();
+        let (key, entry) = make_project_entry("~/existing_project", &existing);
+        projects.insert(key, entry);
+        let project_parents = HashSet::from([scan_root.clone()]);
+        let discovered = HashSet::new();
+        let mut pending_disk = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        let event_path = new_project.join("src/main.rs");
+        handle_event(
+            &event_path,
+            &scan_root,
+            &projects,
+            &project_parents,
+            &discovered,
+            &mut pending_disk,
+            &mut pending_new,
+        );
+
+        assert!(pending_disk.is_empty());
+        assert!(pending_new.contains_key(&new_project));
+    }
+
+    #[test]
+    fn already_discovered_directory_not_re_enqueued() {
+        let tmp = tempfile::tempdir().expect("failed to create tempdir");
+        let scan_root = tmp.path().to_path_buf();
+
+        let project_dir = scan_root.join("my_project");
+        std::fs::create_dir_all(&project_dir).expect("failed to create project dir");
+
+        let projects = HashMap::new();
+        let project_parents = HashSet::from([scan_root.clone()]);
+        let discovered = HashSet::from([project_dir.clone()]);
+        let mut pending_disk = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        handle_event(
+            &project_dir.join("Cargo.toml"),
+            &scan_root,
+            &projects,
+            &project_parents,
+            &discovered,
+            &mut pending_disk,
+            &mut pending_new,
+        );
+
+        assert!(pending_new.is_empty());
+    }
+
+    /// Simulates the full race: `scan_root` is two levels above projects,
+    /// `project_parents` is empty (early scan), and a new project dir
+    /// appears. The filesystem fallback finds `Cargo.toml` and
+    /// `handle_event` enqueues the correct project directory.
+    #[test]
+    fn new_project_enqueued_during_early_scan() {
+        let tmp = tempfile::tempdir().expect("failed to create tempdir");
+        let scan_root = tmp.path().to_path_buf();
+
+        // ~/rust/new_wt — two levels below scan root, no siblings registered
+        let new_wt = scan_root.join("rust").join("new_wt");
+        std::fs::create_dir_all(&new_wt).expect("create dirs");
+        std::fs::write(new_wt.join("Cargo.toml"), b"[package]").expect("write Cargo.toml");
+
+        let projects = HashMap::new();
+        let project_parents = HashSet::new(); // empty — early scan
+        let discovered = HashSet::new();
+        let mut pending_disk = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        handle_event(
+            &new_wt.join("src/main.rs"),
+            &scan_root,
+            &projects,
+            &project_parents,
+            &discovered,
+            &mut pending_disk,
+            &mut pending_new,
+        );
+
+        // Must enqueue the project dir, not its grandparent
+        assert!(
+            pending_new.contains_key(&new_wt),
+            "expected pending_new to contain {}, got: {:?}",
+            new_wt.display(),
+            pending_new.keys().collect::<Vec<_>>()
+        );
+    }
 }

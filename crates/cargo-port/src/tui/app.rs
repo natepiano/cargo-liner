@@ -834,7 +834,10 @@ impl App {
         let mut sync_width = 0usize;
 
         for node in &self.nodes {
-            name_width = name_width.max(Self::fit_name_for_node(node));
+            name_width = name_width.max(Self::fit_name_for_node(
+                node,
+                self.live_worktree_count(node),
+            ));
             disk_width = disk_width.max(self.formatted_disk_for_node(node).len());
             sync_width = sync_width.max(UnicodeWidthStr::width(
                 self.git_sync(&node.project).as_str(),
@@ -873,10 +876,10 @@ impl App {
         };
     }
 
-    fn fit_name_for_node(node: &ProjectNode) -> usize {
+    fn fit_name_for_node(node: &ProjectNode, live_worktrees: usize) -> usize {
         let mut name = node.project.display_name();
-        if !node.worktrees.is_empty() {
-            name = format!("{name} wt:{}", node.worktrees.len());
+        if live_worktrees > 0 {
+            name = format!("{name} wt:{live_worktrees}");
         }
         2 + name.len()
     }
@@ -1333,6 +1336,20 @@ impl App {
     }
 
     pub fn is_deleted(&self, path: &str) -> bool { self.deleted_projects.contains(path) }
+
+    pub fn live_worktree_count(&self, node: &ProjectNode) -> usize {
+        node.worktrees
+            .iter()
+            .filter(|wt| !self.is_deleted(&wt.project.path))
+            .count()
+    }
+
+    pub fn live_node_count(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter(|n| !self.is_deleted(&n.project.path))
+            .count()
+    }
 
     pub fn formatted_disk(&self, project: &RustProject) -> String {
         match self.disk_usage.get(&project.path) {
