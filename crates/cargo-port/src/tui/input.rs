@@ -11,7 +11,9 @@ use super::detail;
 use super::finder;
 use super::settings;
 use super::types::FocusTarget;
+use crate::project::ProjectLanguage;
 
+#[allow(clippy::needless_pass_by_value)]
 pub(super) fn handle_event(app: &mut App, event: Event) {
     match event {
         Event::Key(key) => {
@@ -71,12 +73,12 @@ pub(super) fn handle_event(app: &mut App, event: Event) {
         Event::Mouse(mouse) => match mouse.kind {
             MouseEventKind::ScrollUp => {
                 if app.focus == FocusTarget::ScanLog {
-                    if app.invert_scroll {
+                    if app.invert_scroll.is_inverted() {
                         app.scan_log_scroll_down();
                     } else {
                         app.scan_log_scroll_up();
                     }
-                } else if app.invert_scroll {
+                } else if app.invert_scroll.is_inverted() {
                     app.move_down();
                 } else {
                     app.move_up();
@@ -84,12 +86,12 @@ pub(super) fn handle_event(app: &mut App, event: Event) {
             },
             MouseEventKind::ScrollDown => {
                 if app.focus == FocusTarget::ScanLog {
-                    if app.invert_scroll {
+                    if app.invert_scroll.is_inverted() {
                         app.scan_log_scroll_up();
                     } else {
                         app.scan_log_scroll_down();
                     }
-                } else if app.invert_scroll {
+                } else if app.invert_scroll.is_inverted() {
                     app.move_up();
                 } else {
                     app.move_down();
@@ -285,7 +287,7 @@ fn handle_normal_key(app: &mut App, key: KeyCode) {
         KeyCode::Char('r') => app.rescan(),
         KeyCode::Char('c') => {
             if let Some(project) = app.selected_project()
-                && project.is_rust
+                && project.is_rust == ProjectLanguage::Rust
             {
                 app.confirm = Some(ConfirmAction::Clean(project.abs_path.clone()));
             }

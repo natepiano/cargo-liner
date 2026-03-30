@@ -8,6 +8,7 @@ use clap::Subcommand;
 
 mod ci;
 mod config;
+mod constants;
 mod list;
 mod output;
 mod project;

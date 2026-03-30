@@ -9,11 +9,11 @@ use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::output;
-
-const CONCLUSION_SUCCESS: &str = "✓";
-const CONCLUSION_FAILURE: &str = "✗";
-const CONCLUSION_CANCELLED: &str = "⊘";
+use super::constants::CONCLUSION_CANCELLED;
+use super::constants::CONCLUSION_FAILURE;
+use super::constants::CONCLUSION_SUCCESS;
+use super::constants::GH_TIMEOUT;
+use super::output;
 
 #[derive(Args)]
 pub struct CiArgs {
@@ -58,6 +58,23 @@ struct GhRepo {
     url: String,
 }
 
+/// Whether a CI run has been fully fetched from the API.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub enum FetchStatus {
+    #[default]
+    Fetched,
+    Pending,
+}
+
+impl From<bool> for FetchStatus {
+    fn from(b: bool) -> Self { if b { Self::Fetched } else { Self::Pending } }
+}
+
+impl From<FetchStatus> for bool {
+    fn from(val: FetchStatus) -> Self { matches!(val, FetchStatus::Fetched) }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CiRun {
     pub run_id:          u64,
@@ -69,11 +86,9 @@ pub struct CiRun {
     pub wall_clock_secs: Option<u64>,
     #[serde(default)]
     pub commit_title:    Option<String>,
-    #[serde(default = "default_fetched")]
-    pub fetched:         bool,
+    #[serde(default)]
+    pub fetched:         FetchStatus,
 }
-
-const fn default_fetched() -> bool { true }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CiJob {
@@ -83,6 +98,7 @@ pub struct CiJob {
     pub duration_secs: Option<u64>,
 }
 
+#[allow(clippy::needless_pass_by_value)]
 pub fn run(path: PathBuf, args: CiArgs) -> ExitCode {
     let Ok(repo_dir) = path.canonicalize() else {
         eprintln!("Error: cannot resolve path '{}'", path.display());
@@ -176,11 +192,9 @@ pub fn process_gh_run(gh_run: &GhRun, repo_dir: &Path, repo_url: &str) -> Option
         wall_clock_secs,
         jobs: ci_jobs,
         commit_title: gh_run.display_title.clone(),
-        fetched: true,
+        fetched: FetchStatus::Fetched,
     })
 }
-
-const GH_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn gh_command_with_timeout(repo_dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
     let mut child = Command::new("gh")

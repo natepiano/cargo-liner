@@ -3,9 +3,9 @@ use comfy_table::CellAlignment;
 use comfy_table::Table;
 use comfy_table::presets::ASCII_MARKDOWN;
 
-use crate::ci;
-use crate::ci::CiRun;
-use crate::project::RustProject;
+use super::ci;
+use super::ci::CiRun;
+use super::project::RustProject;
 
 pub fn render_table(projects: &[RustProject]) {
     let mut table = Table::new();
@@ -112,10 +112,14 @@ fn render_per_job_tables(runs: &[CiRun], job_names: &[String], run_labels: &[Str
 
         for (i, ci_run) in runs.iter().enumerate() {
             let (date, time) = format_datetime(&ci_run.created_at);
-            let is_longest = longest_job_idx == Some(i);
+            let rank = if longest_job_idx == Some(i) {
+                RunRank::Longest
+            } else {
+                RunRank::Other
+            };
             let job = ci_run.jobs.iter().find(|j| j.name == *job_name);
             if let Some(j) = job {
-                let result = format_result(&j.conclusion, is_longest);
+                let result = format_result(&j.conclusion, rank);
                 table.add_row(vec![
                     &run_labels[i],
                     &ci_run.branch,
@@ -125,7 +129,7 @@ fn render_per_job_tables(runs: &[CiRun], job_names: &[String], run_labels: &[Str
                     &j.duration,
                 ]);
             } else {
-                let result = format_result("—", is_longest);
+                let result = format_result("—", rank);
                 table.add_row(vec![
                     &run_labels[i] as &str,
                     &ci_run.branch,
@@ -169,7 +173,12 @@ fn render_total_time_table(runs: &[CiRun], run_labels: &[String]) {
         let duration = ci_run
             .wall_clock_secs
             .map_or_else(|| "—".to_string(), ci::format_secs);
-        let result = format_result(&ci_run.conclusion, longest_idx == Some(i));
+        let rank = if longest_idx == Some(i) {
+            RunRank::Longest
+        } else {
+            RunRank::Other
+        };
+        let result = format_result(&ci_run.conclusion, rank);
         total_table.add_row(vec![
             &run_labels[i],
             &ci_run.branch,
@@ -211,6 +220,13 @@ fn render_runs_reference_table(runs: &[CiRun], run_labels: &[String]) {
     println!("{ref_table}");
 }
 
+/// Whether a CI run/job is the longest in its group.
+#[derive(Clone, Copy)]
+enum RunRank {
+    Longest,
+    Other,
+}
+
 fn colorize_conclusion(conclusion: &str) -> String {
     let padded = format!("  {conclusion}");
     if padded.contains('✓') {
@@ -222,8 +238,11 @@ fn colorize_conclusion(conclusion: &str) -> String {
     }
 }
 
-fn format_result(conclusion: &str, is_longest: bool) -> String {
-    let suffix = if is_longest { " *" } else { "" };
+fn format_result(conclusion: &str, rank: RunRank) -> String {
+    let suffix = match rank {
+        RunRank::Longest => " *",
+        RunRank::Other => "",
+    };
     let label = format!("  {conclusion}{suffix}");
     if label.contains('✓') {
         label.green().to_string()

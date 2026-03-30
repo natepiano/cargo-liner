@@ -21,6 +21,7 @@ use super::app::CiState;
 use super::app::ConfirmAction;
 use super::app::ExpandKey;
 use super::app::FitWidths;
+use super::app::NetworkStatus;
 use super::app::VisibleRow;
 use super::constants::BLOCK_BORDER_WIDTH;
 use super::constants::BYTES_PER_GIB;
@@ -41,6 +42,7 @@ use crate::ci::CiRun;
 use crate::project;
 use crate::project::GitOrigin;
 use crate::project::RustProject;
+use crate::project::ProjectLanguage::Rust;
 
 #[derive(Clone, Copy)]
 pub(super) enum CiColumn {
@@ -379,13 +381,13 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         render_example_output(frame, app, right_layout[1]);
     } else if has_ci {
         super::detail::render_ci_panel(frame, app, &detail_ci_runs, right_layout[1]);
-        if app.network_offline {
+        if app.network_status == NetworkStatus::Offline {
             render_offline_overlay(frame, app, right_layout[1]);
         }
     } else {
         let selected_project_ref = app.selected_project();
         render_empty_ci_panel(frame, app, selected_project_ref, right_layout[1]);
-        if app.network_offline {
+        if app.network_status == NetworkStatus::Offline {
             render_offline_overlay(frame, app, right_layout[1]);
         }
     }
@@ -716,7 +718,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let context = app.input_context();
     let enter_action = app.enter_action();
-    let is_rust = app.selected_project().is_some_and(|p| p.is_rust);
+    let is_rust = app
+        .selected_project()
+        .is_some_and(|p| p.is_rust == Rust);
     let groups = super::shortcuts::for_status_bar(context, enter_action, is_rust);
 
     let mut left_spans = Vec::new();

@@ -25,3 +25,5 @@ pub(super) const CI_TIMESTAMP_WIDTH: u16 = 16;
 pub(super) const MAX_FINDER_RESULTS: usize = 50;
 
 pub(super) const CI_EXTRA_ROWS: usize = 1;
+
+pub(super) const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

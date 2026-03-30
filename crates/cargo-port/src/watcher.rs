@@ -17,28 +17,21 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
 use std::time::Instant;
 
 use notify::RecursiveMode;
 use notify::Watcher;
 
-use crate::project;
-use crate::project::RustProject;
-use crate::scan;
-use crate::scan::BackgroundMsg;
-
-/// Wait for build/clean activity to settle before recalculating.
-const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
-
-/// Maximum time before forcing a recalc even if events keep arriving.
-const MAX_WAIT: Duration = Duration::from_secs(1);
-
-/// Extra settling time for new project directories (e.g. `cargo init`).
-const NEW_PROJECT_DEBOUNCE: Duration = Duration::from_secs(2);
-
-/// How often the watcher thread checks for expired timers.
-const POLL_INTERVAL: Duration = Duration::from_millis(500);
+use super::config::NonRustInclusion;
+use super::constants::DEBOUNCE_DURATION;
+use super::constants::MAX_WAIT;
+use super::constants::NEW_PROJECT_DEBOUNCE;
+use super::constants::POLL_INTERVAL;
+use super::project;
+use super::project::GitTracking;
+use super::project::RustProject;
+use super::scan;
+use super::scan::BackgroundMsg;
 
 /// Request to register an already-known project with the watcher.
 pub struct WatchRequest {
@@ -55,12 +48,12 @@ pub fn spawn_watcher(
     scan_root: PathBuf,
     bg_tx: mpsc::Sender<BackgroundMsg>,
     ci_run_count: u32,
-    include_non_rust: bool,
+    non_rust: NonRustInclusion,
 ) -> mpsc::Sender<WatchRequest> {
     let (watch_tx, watch_rx) = mpsc::channel();
 
     thread::spawn(move || {
-        watcher_loop(scan_root, bg_tx, watch_rx, ci_run_count, include_non_rust);
+        watcher_loop(scan_root, bg_tx, watch_rx, ci_run_count, non_rust);
     });
 
     watch_tx
@@ -72,12 +65,13 @@ struct ProjectEntry {
     abs_path:     PathBuf,
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn watcher_loop(
     scan_root: PathBuf,
     bg_tx: mpsc::Sender<BackgroundMsg>,
     watch_rx: mpsc::Receiver<WatchRequest>,
     ci_run_count: u32,
-    include_non_rust: bool,
+    non_rust: NonRustInclusion,
 ) {
     let (notify_tx, notify_rx) = mpsc::channel();
     let handler = move |res| {
@@ -90,7 +84,7 @@ fn watcher_loop(
         return;
     }
 
-    // abs_path → project tracking state
+    // `abs_path` → project tracking state
     let mut projects: HashMap<PathBuf, ProjectEntry> = HashMap::new();
     // Directories that contain at least one known project (e.g. `~/rust/`).
     let mut project_parents: HashSet<PathBuf> = HashSet::new();
@@ -149,7 +143,7 @@ fn watcher_loop(
             &mut pending_new,
             &mut discovered,
             ci_run_count,
-            include_non_rust,
+            non_rust,
         );
 
         thread::sleep(POLL_INTERVAL);
@@ -232,7 +226,7 @@ fn probe_new_projects(
     pending_new: &mut HashMap<PathBuf, Instant>,
     discovered: &mut HashSet<PathBuf>,
     ci_run_count: u32,
-    include_non_rust: bool,
+    non_rust: NonRustInclusion,
 ) {
     let now = Instant::now();
     let ready: Vec<PathBuf> = pending_new
@@ -259,10 +253,14 @@ fn probe_new_projects(
         if discovered.contains(&dir) {
             continue;
         }
-        if let Some(project) = probe_project(&dir, include_non_rust) {
+        if let Some(project) = probe_project(&dir, non_rust) {
             discovered.insert(dir.clone());
             let abs_path = PathBuf::from(&project.abs_path);
-            let has_git = abs_path.join(".git").exists();
+            let git_tracking = if abs_path.join(".git").exists() {
+                GitTracking::Tracked
+            } else {
+                GitTracking::Untracked
+            };
             let _ = bg_tx.send(BackgroundMsg::ProjectDiscovered {
                 project: project.clone(),
             });
@@ -275,7 +273,7 @@ fn probe_new_projects(
                     &path,
                     &abs_path,
                     name.as_ref(),
-                    has_git,
+                    git_tracking,
                     ci_run_count,
                 );
             });
@@ -317,12 +315,12 @@ fn project_level_dir(
 
 /// Check if a directory is a project (has `Cargo.toml`, or `.git` when
 /// `include_non_rust` is enabled).
-fn probe_project(dir: &Path, include_non_rust: bool) -> Option<RustProject> {
+fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<RustProject> {
     let cargo_toml = dir.join("Cargo.toml");
     if cargo_toml.exists() {
         return RustProject::from_cargo_toml(&cargo_toml).ok();
     }
-    if include_non_rust && dir.join(".git").is_dir() {
+    if non_rust.includes_non_rust() && dir.join(".git").is_dir() {
         return Some(RustProject::from_git_dir(dir));
     }
     None
