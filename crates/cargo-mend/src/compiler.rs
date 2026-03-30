@@ -640,7 +640,7 @@ fn flush_diagnostic_block(
                         eprint!("{line}");
                     }
                 },
-                _ => {},
+                BuildOutputMode::SuppressUnusedImportWarnings => {},
             }
         },
         DiagnosticBlockKind::ForwardedDiagnostic => {
@@ -1604,7 +1604,7 @@ fn parent_facade_export_status(
         }
 
         // Not found at this level — walk up to the next ancestor.
-        current_child = parent_boundary.boundary_file.clone();
+        current_child.clone_from(&parent_boundary.boundary_file);
         let Some(next_boundary) = parent_of_boundary(src_root, &current_child) else {
             return Ok(None);
         };
@@ -1619,6 +1619,26 @@ fn parent_facade_export_status(
         .replace('\\', "/");
     let parent_line = first_line_matching(&parent_source, item_name).unwrap_or(1);
 
+    let usage = scan_facade_usage(settings, src_root, &parent_boundary, &exported_names)?;
+
+    Ok(Some(ParentFacadeExportStatus {
+        usage,
+        fix_supported: exported_names.fix_supported,
+        visibility: exported_names
+            .visibility
+            .unwrap_or(ParentFacadeVisibility::Public),
+        parent_path: parent_boundary.boundary_file,
+        parent_rel_path,
+        parent_line,
+    }))
+}
+
+fn scan_facade_usage(
+    settings: &DriverSettings,
+    src_root: &Path,
+    parent_boundary: &ParentBoundary,
+    exported_names: &ParentFacadeExports,
+) -> Result<ParentFacadeUsage> {
     let mut usage = ParentFacadeUsage::Unused;
     for file in rust_source_files(src_root)? {
         if file == parent_boundary.boundary_file {
@@ -1678,23 +1698,14 @@ fn parent_facade_export_status(
     if !matches!(usage, ParentFacadeUsage::UsedOutsideParentSubtree)
         && workspace_source_mentions_parent_export_literal(
             settings,
-            &parent_boundary,
+            parent_boundary,
             &exported_names.explicit,
         )?
     {
         usage = ParentFacadeUsage::UsedOutsideParentSubtree;
     }
 
-    Ok(Some(ParentFacadeExportStatus {
-        usage,
-        fix_supported: exported_names.fix_supported,
-        visibility: exported_names
-            .visibility
-            .unwrap_or(ParentFacadeVisibility::Public),
-        parent_path: parent_boundary.boundary_file,
-        parent_rel_path,
-        parent_line,
-    }))
+    Ok(usage)
 }
 
 fn workspace_source_mentions_parent_export_literal(
