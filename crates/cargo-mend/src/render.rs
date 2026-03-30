@@ -5,7 +5,19 @@ use super::diagnostics::Finding;
 use super::diagnostics::Report;
 use super::diagnostics::Severity;
 
-pub fn render_human_report(report: &Report, color: bool) -> String {
+const ANSI_BOLD: &str = "1";
+const ANSI_BOLD_RED: &str = "1;31";
+const ANSI_BOLD_YELLOW: &str = "1;33";
+const ANSI_BOLD_BLUE: &str = "1;34";
+const ANSI_DIM: &str = "2";
+
+#[derive(Debug, Clone, Copy)]
+pub enum ColorMode {
+    Enabled,
+    Disabled,
+}
+
+pub fn render_human_report(report: &Report, color: ColorMode) -> String {
     if report.findings.is_empty() {
         return "No findings.\n".to_string();
     }
@@ -29,7 +41,7 @@ pub fn render_human_report(report: &Report, color: bool) -> String {
     output
 }
 
-fn render_finding(output: &mut String, finding: &Finding, color: bool) {
+fn render_finding(output: &mut String, finding: &Finding, color: ColorMode) {
     let severity = severity_label(finding.severity, color);
     let headline = diagnostics::finding_headline(finding);
     let line_label = finding.line.to_string();
@@ -113,7 +125,7 @@ fn summary_line(
     warn_count: usize,
     fixable_with_fix_count: usize,
     fixable_with_fix_pub_use_count: usize,
-    color: bool,
+    color: ColorMode,
 ) -> String {
     let mut parts = vec![
         format!("{} error(s)", error_count),
@@ -133,41 +145,45 @@ fn summary_line(
     format!("{} {}", dim("summary:", color), parts.join(", "))
 }
 
-fn severity_label(severity: Severity, color: bool) -> String {
+fn severity_label(severity: Severity, color: ColorMode) -> String {
     match severity {
-        Severity::Error => paint("error:", "1;31", color),
-        Severity::Warning => paint("warn:", "1;33", color),
+        Severity::Error => paint("error:", ANSI_BOLD_RED, color),
+        Severity::Warning => paint("warn:", ANSI_BOLD_YELLOW, color),
     }
 }
 
-fn dim(text: &str, color: bool) -> String { paint(text, "2", color) }
+fn dim(text: &str, color: ColorMode) -> String { paint(text, ANSI_DIM, color) }
 
-fn blue_bold(text: &str, color: bool) -> String { paint(text, "1;34", color) }
+fn blue_bold(text: &str, color: ColorMode) -> String { paint(text, ANSI_BOLD_BLUE, color) }
 
-fn severity_marker(severity: Severity, column: usize, highlight_len: usize, color: bool) -> String {
+fn severity_marker(
+    severity: Severity,
+    column: usize,
+    highlight_len: usize,
+    color: ColorMode,
+) -> String {
     let indent = " ".repeat(column.saturating_sub(1));
     let carets = "^".repeat(highlight_len.max(1));
     let code = match severity {
-        Severity::Error => "1;31",
-        Severity::Warning => "1;33",
+        Severity::Error => ANSI_BOLD_RED,
+        Severity::Warning => ANSI_BOLD_YELLOW,
     };
     format!("{indent}{}", paint(&carets, code, color))
 }
 
-fn diagnostic_label(kind: &str, color: bool) -> String {
+fn diagnostic_label(kind: &str, color: ColorMode) -> String {
     let prefix = blue_bold("=", color);
     let label = match kind {
-        "help" => paint("help", "1", color),
-        "note" => paint("note", "1", color),
+        "help" => paint("help", ANSI_BOLD, color),
+        "note" => paint("note", ANSI_BOLD, color),
         other => other.to_string(),
     };
     format!("{prefix} {label}:")
 }
 
-fn paint(text: &str, code: &str, color: bool) -> String {
-    if color {
-        format!("\x1b[{code}m{text}\x1b[0m")
-    } else {
-        text.to_string()
+fn paint(text: &str, code: &str, color: ColorMode) -> String {
+    match color {
+        ColorMode::Enabled => format!("\x1b[{code}m{text}\x1b[0m"),
+        ColorMode::Disabled => text.to_string(),
     }
 }

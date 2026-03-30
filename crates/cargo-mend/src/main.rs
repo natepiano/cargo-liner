@@ -83,7 +83,11 @@ fn run() -> Result<ExitCode, MendFailure> {
                 .map_err(|err| MendFailure::Unexpected(err.into()))?
         );
     } else {
-        let color = color_output_enabled();
+        let color = if color_output_enabled() {
+            render::ColorMode::Enabled
+        } else {
+            render::ColorMode::Disabled
+        };
         print!("{}", render::render_human_report(&outcome.report, color));
     }
     if let Some(notice) = outcome.notice {

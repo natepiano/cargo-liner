@@ -478,30 +478,17 @@ fn run_cargo_command(
     output_mode: BuildOutputMode,
 ) -> Result<CommandOutcome> {
     command.stdin(Stdio::inherit());
-    match output_mode {
-        BuildOutputMode::Full => run_cargo_command_with_unused_import_mode(command, false),
-        BuildOutputMode::SuppressUnusedImportWarnings => {
-            run_cargo_command_with_unused_import_mode(command, true)
-        },
-    }
-}
-
-fn run_cargo_command_with_unused_import_mode(
-    command: &mut Command,
-    suppress_unused_imports: bool,
-) -> Result<CommandOutcome> {
     command.stderr(Stdio::piped());
-    if suppress_unused_imports {
-        command.stdout(Stdio::null());
-    } else {
-        command.stdout(Stdio::inherit());
-    }
+    match output_mode {
+        BuildOutputMode::Full => command.stdout(Stdio::inherit()),
+        BuildOutputMode::SuppressUnusedImportWarnings => command.stdout(Stdio::null()),
+    };
     let mut child = command.spawn().context("failed to spawn cargo command")?;
     let stderr = child
         .stderr
         .take()
         .context("failed to capture cargo stderr")?;
-    let stderr_outcome = stream_cargo_stderr(stderr, suppress_unused_imports)?;
+    let stderr_outcome = stream_cargo_stderr(stderr, output_mode)?;
     let status = child.wait().context("failed to wait for cargo command")?;
     Ok(CommandOutcome {
         status,
@@ -516,7 +503,7 @@ struct StderrObservation {
 
 fn stream_cargo_stderr(
     stderr: std::process::ChildStderr,
-    suppress_unused_imports: bool,
+    output_mode: BuildOutputMode,
 ) -> Result<StderrObservation> {
     let mut reader = BufReader::new(stderr);
     let mut line = String::new();
@@ -532,7 +519,7 @@ fn stream_cargo_stderr(
                 &mut block,
                 &mut printed_suppression_notice,
                 &mut saw_unused_import_warning,
-                suppress_unused_imports,
+                output_mode,
             );
             break;
         }
@@ -543,7 +530,7 @@ fn stream_cargo_stderr(
                 &mut block,
                 &mut printed_suppression_notice,
                 &mut saw_unused_import_warning,
-                suppress_unused_imports,
+                output_mode,
             );
             eprint!("{current}");
             continue;
@@ -555,7 +542,7 @@ fn stream_cargo_stderr(
                 &mut block,
                 &mut printed_suppression_notice,
                 &mut saw_unused_import_warning,
-                suppress_unused_imports,
+                output_mode,
             );
         } else {
             block.push(current);
@@ -631,7 +618,7 @@ fn flush_diagnostic_block(
     block: &mut Vec<String>,
     printed_suppression_notice: &mut bool,
     saw_unused_import_warning: &mut bool,
-    suppress_unused_imports: bool,
+    output_mode: BuildOutputMode,
 ) {
     if block.is_empty() {
         return;
@@ -640,15 +627,20 @@ fn flush_diagnostic_block(
     match classify_diagnostic_block(block, *printed_suppression_notice) {
         DiagnosticBlockKind::SuppressedUnusedImport => {
             *saw_unused_import_warning = true;
-            if suppress_unused_imports && !*printed_suppression_notice {
-                eprintln!(
-                    "mend: suppressing `unused import` warning during `--fix-pub-use` discovery"
-                );
-                *printed_suppression_notice = true;
-            } else if !suppress_unused_imports {
-                for line in block.iter() {
-                    eprint!("{line}");
-                }
+            match output_mode {
+                BuildOutputMode::SuppressUnusedImportWarnings if !*printed_suppression_notice => {
+                    eprintln!(
+                        "mend: suppressing `unused import` warning during `--fix-pub-use` \
+                         discovery"
+                    );
+                    *printed_suppression_notice = true;
+                },
+                BuildOutputMode::Full => {
+                    for line in block.iter() {
+                        eprint!("{line}");
+                    }
+                },
+                _ => {},
             }
         },
         DiagnosticBlockKind::ForwardedDiagnostic => {
