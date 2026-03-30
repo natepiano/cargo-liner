@@ -41,8 +41,8 @@ use super::types::LayoutCache;
 use crate::ci::CiRun;
 use crate::project;
 use crate::project::GitOrigin;
-use crate::project::RustProject;
 use crate::project::ProjectLanguage::Rust;
+use crate::project::RustProject;
 
 #[derive(Clone, Copy)]
 pub(super) enum CiColumn {
@@ -711,6 +711,36 @@ fn shortcut_display_width(shortcuts: &[Shortcut]) -> usize {
 }
 
 pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    // Flash message takes over the entire status bar with a contrasting background.
+    let flash_active = app.status_flash.as_ref().is_some_and(|(_, created)| {
+        created.elapsed().as_millis() < u128::from(app.status_flash_millis)
+    });
+
+    if flash_active {
+        if let Some((ref msg, _)) = app.status_flash {
+            let flash_bar_style = Style::default().bg(Color::Yellow).fg(Color::Black);
+            frame.render_widget(Paragraph::new("").style(flash_bar_style), area);
+
+            let flash_text_style = flash_bar_style.add_modifier(Modifier::BOLD);
+            let total_width = area.width as usize;
+            let flash_width = msg.width();
+            let flash_start = total_width.saturating_sub(flash_width) / 2;
+            #[allow(clippy::cast_possible_truncation)]
+            let flash_area = Rect {
+                x:      area.x + flash_start as u16,
+                y:      area.y,
+                width:  (total_width - flash_start).min(flash_width + 1) as u16,
+                height: 1,
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(msg.clone(), flash_text_style)))
+                    .style(flash_bar_style),
+                flash_area,
+            );
+        }
+        return;
+    }
+
     let bar_style = Style::default().bg(Color::DarkGray).fg(Color::White);
 
     // Fill the entire bar with the background color
@@ -718,9 +748,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let context = app.input_context();
     let enter_action = app.enter_action();
-    let is_rust = app
-        .selected_project()
-        .is_some_and(|p| p.is_rust == Rust);
+    let is_rust = app.selected_project().is_some_and(|p| p.is_rust == Rust);
     let groups = super::shortcuts::for_status_bar(context, enter_action, is_rust);
 
     let mut left_spans = Vec::new();

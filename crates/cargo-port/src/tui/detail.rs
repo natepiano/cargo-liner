@@ -300,11 +300,21 @@ pub(super) struct PendingExampleRun {
     pub release:      bool,
 }
 
+/// Whether a CI fetch should look for older runs or just refresh for new ones.
+#[derive(Clone, Copy)]
+pub(super) enum CiFetchKind {
+    /// Increment the limit to discover older history.
+    FetchOlder,
+    /// Re-fetch at the current limit to pick up newly created runs.
+    Refresh,
+}
+
 /// A pending request to fetch more CI runs for a project.
 pub(super) struct PendingCiFetch {
     pub abs_path:      String,
     pub project_path:  String,
     pub current_count: u32,
+    pub kind:          CiFetchKind,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1528,20 +1538,16 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun
 
     let widths = build_ci_widths(ci_runs, &cols);
 
-    // "Fetch more" / "no older runs" as a table row
+    // "Fetch more" / "fetch new runs" as a table row
     let fetch_label = if is_fetching {
         let spinner = spinner_frame(app.spinner_tick);
         format!("{spinner} fetching {fetch_count} more…")
     } else if is_exhausted {
-        "— no older runs".to_string()
+        "↓ fetch new runs".to_string()
     } else {
         "↓ fetch more runs".to_string()
     };
-    let fetch_style = if is_exhausted {
-        Style::default().fg(Color::DarkGray)
-    } else {
-        Style::default().fg(Color::Cyan)
-    };
+    let fetch_style = Style::default().fg(Color::Cyan);
 
     let num_cols = widths.len();
     let mut fetch_cells: Vec<Cell> = vec![Cell::from(fetch_label).style(fetch_style)];
@@ -1745,16 +1751,20 @@ pub(super) fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
                 }
             } else if cursor_pos == run_count
                 && !is_fetching
-                && !is_exhausted
                 && let Some(project) = app.selected_project()
             {
-                // Fetch more runs
                 #[allow(clippy::cast_possible_truncation)]
                 let current_count = run_count as u32;
+                let kind = if is_exhausted {
+                    CiFetchKind::Refresh
+                } else {
+                    CiFetchKind::FetchOlder
+                };
                 app.pending_ci_fetch = Some(PendingCiFetch {
                     abs_path: project.abs_path.clone(),
                     project_path: project.path.clone(),
                     current_count,
+                    kind,
                 });
             }
         },

@@ -24,6 +24,7 @@ use ratatui::backend::CrosstermBackend;
 use super::app::App;
 use super::constants::CI_FETCH_DISPLAY_COUNT;
 use super::constants::FRAME_POLL_MILLIS;
+use super::detail::CiFetchKind;
 use super::detail::PendingCiFetch;
 use super::detail::PendingExampleRun;
 use super::detail::RunTargetKind;
@@ -51,6 +52,7 @@ pub(super) enum CiFetchMsg {
     Complete {
         path:   String,
         result: CiFetchResult,
+        kind:   CiFetchKind,
     },
 }
 
@@ -387,14 +389,23 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     let abs_path = fetch.abs_path.clone();
     let project_path = fetch.project_path.clone();
     let current_count = fetch.current_count;
+    let kind = fetch.kind;
     let url = repo_url.clone();
 
     thread::spawn(move || {
         let repo_dir = PathBuf::from(&abs_path);
-        let result = scan::fetch_older_runs(&repo_dir, &url, &owner, &repo, current_count);
+        let result = match kind {
+            CiFetchKind::FetchOlder => {
+                scan::fetch_older_runs(&repo_dir, &url, &owner, &repo, current_count)
+            },
+            CiFetchKind::Refresh => {
+                scan::fetch_newer_runs(&repo_dir, &url, &owner, &repo, current_count)
+            },
+        };
         let _ = tx.send(CiFetchMsg::Complete {
             path: project_path,
             result,
+            kind,
         });
     });
 }

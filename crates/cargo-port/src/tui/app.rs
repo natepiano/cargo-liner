@@ -15,6 +15,7 @@ use nucleo_matcher::pattern::Normalization;
 use ratatui::widgets::ListState;
 use unicode_width::UnicodeWidthStr;
 
+use super::detail::CiFetchKind;
 use super::detail::DetailField;
 use super::detail::DetailInfo;
 use super::detail::PendingCiFetch;
@@ -165,6 +166,7 @@ pub(super) struct App {
     pub ci_run_count:        u32,
     pub include_non_rust:    NonRustInclusion,
     pub editor:              String,
+    pub status_flash_millis: u64,
     pub all_projects:        Vec<RustProject>,
     pub nodes:               Vec<ProjectNode>,
     pub flat_entries:        Vec<FlatEntry>,
@@ -245,6 +247,9 @@ pub(super) struct App {
     pub(super) cached_detail:     Option<DetailCache>,
     pub(super) selection_changed: bool,
     pub(super) layout_cache:      LayoutCache,
+
+    /// Transient message shown in the status bar, auto-cleared after a timeout.
+    pub(super) status_flash: Option<(String, std::time::Instant)>,
 }
 
 impl App {
@@ -306,6 +311,8 @@ impl App {
             ci_run_count,
             include_non_rust,
             editor,
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            status_flash_millis: (cfg.tui.status_flash_secs * 1000.0) as u64,
             all_projects: projects,
             nodes,
             flat_entries,
@@ -381,6 +388,7 @@ impl App {
             cached_detail: None,
             selection_changed: false,
             layout_cache: LayoutCache::default(),
+            status_flash: None,
         }
     }
 
@@ -508,8 +516,8 @@ impl App {
         // Poll CI fetch results
         while let Ok(msg) = self.ci_fetch_rx.try_recv() {
             match msg {
-                CiFetchMsg::Complete { path, result } => {
-                    self.handle_ci_fetch_complete(path, result);
+                CiFetchMsg::Complete { path, result, kind } => {
+                    self.handle_ci_fetch_complete(path, result, kind);
                 },
             }
         }
@@ -700,7 +708,7 @@ impl App {
     }
 
     /// Process a completed CI fetch: merge runs, detect exhaustion, propagate to members.
-    fn handle_ci_fetch_complete(&mut self, path: String, result: CiFetchResult) {
+    fn handle_ci_fetch_complete(&mut self, path: String, result: CiFetchResult, kind: CiFetchKind) {
         let new_runs = match result {
             CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
         };
@@ -730,16 +738,29 @@ impl App {
         }
         merged.sort_by(|a, b| b.run_id.cmp(&a.run_id));
 
-        let exhausted = if merged.len() <= prev_count {
+        let found_new = merged.len() > prev_count;
+        let exhausted = if found_new {
+            // New runs discovered — clear the exhaustion marker on disk.
+            if let Some(git) = self.git_info.get(&path)
+                && let Some(ref url) = git.url
+                && let Some((owner, repo)) = ci::parse_owner_repo(url)
+            {
+                scan::clear_exhausted(&owner, &repo);
+            }
+            false
+        } else {
+            // No new runs — mark exhausted for both fetch-older and refresh.
             if let Some(git) = self.git_info.get(&path)
                 && let Some(ref url) = git.url
                 && let Some((owner, repo)) = ci::parse_owner_repo(url)
             {
                 scan::mark_exhausted(&owner, &repo);
             }
+            if matches!(kind, CiFetchKind::Refresh) {
+                self.status_flash =
+                    Some(("no new runs found".to_string(), std::time::Instant::now()));
+            }
             true
-        } else {
-            false
         };
 
         let state = CiState::Loaded {

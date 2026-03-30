@@ -60,4 +60,7 @@ include_non_rust = false
 
 # Editor application name, opened via `open -a <editor> <path>`.
 editor = "zed"
+
+# How long (in seconds) the status bar flash is shown (e.g. "no new runs found").
+status_flash_secs = 3.0
 "#;

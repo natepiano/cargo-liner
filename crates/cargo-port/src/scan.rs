@@ -143,6 +143,13 @@ pub fn mark_exhausted(owner: &str, repo: &str) {
     }
 }
 
+/// Remove the "no more runs" marker so fresh runs can be discovered.
+pub fn clear_exhausted(owner: &str, repo: &str) {
+    if let Some(dir) = repo_cache_dir(owner, repo) {
+        let _ = std::fs::remove_file(dir.join(NO_MORE_RUNS_MARKER));
+    }
+}
+
 fn save_cached_run(owner: &str, repo: &str, ci_run: &CiRun) {
     let Some(dir) = repo_cache_dir(owner, repo) else {
         return;
@@ -280,6 +287,26 @@ pub fn fetch_older_runs(
     // Only return the fetched runs — don't merge with the full cache.
     // The caller already has runs in memory; these get merged there.
     let mut result = fetched;
+    result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
+
+    if gh_runs.is_empty() {
+        CiFetchResult::CacheOnly(result)
+    } else {
+        CiFetchResult::Loaded(result)
+    }
+}
+
+/// Re-fetch at the current count to pick up newly created runs without
+/// requesting deeper history.
+pub fn fetch_newer_runs(
+    repo_dir: &Path,
+    repo_url: &str,
+    owner: &str,
+    repo: &str,
+    current_count: u32,
+) -> CiFetchResult {
+    let gh_runs = ci::list_runs(repo_dir, None, current_count).unwrap_or_default();
+    let mut result = fetch_recent_runs(repo_dir, repo_url, owner, repo, &gh_runs);
     result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
 
     if gh_runs.is_empty() {

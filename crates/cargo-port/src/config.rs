@@ -95,16 +95,21 @@ pub struct TuiConfig {
     /// Editor application name, opened via `open -a <editor> <path>`.
     #[serde(default = "default_editor")]
     pub editor: String,
+
+    /// How long (in seconds) the status bar flash is shown (e.g. "no new runs found").
+    #[serde(default = "default_status_flash_secs")]
+    pub status_flash_secs: f64,
 }
 
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            inline_dirs:      default_inline_dirs(),
-            ci_run_count:     default_ci_run_count(),
-            exclude_dirs:     default_exclude_dirs(),
-            include_non_rust: NonRustInclusion::Exclude,
-            editor:           default_editor(),
+            inline_dirs:       default_inline_dirs(),
+            ci_run_count:      default_ci_run_count(),
+            exclude_dirs:      default_exclude_dirs(),
+            include_non_rust:  NonRustInclusion::Exclude,
+            editor:            default_editor(),
+            status_flash_secs: default_status_flash_secs(),
         }
     }
 }
@@ -116,6 +121,8 @@ const fn default_ci_run_count() -> u32 { 5 }
 const fn default_exclude_dirs() -> Vec<String> { Vec::new() }
 
 fn default_editor() -> String { "zed".to_string() }
+
+const fn default_status_flash_secs() -> f64 { 3.0 }
 
 #[derive(Deserialize, Serialize)]
 pub struct MouseConfig {
