@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `suspicious_pub` and `internal_parent_pub_use_facade` now walk ancestor module boundaries when checking for re-exports — previously only checked the immediate parent, causing false positives when the re-export was at a grandparent or higher
+
 ## [0.2.5] - 2026-03-29
 
 ### Fixed
