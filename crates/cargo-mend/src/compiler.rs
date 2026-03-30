@@ -1575,24 +1575,41 @@ fn parent_facade_export_status(
     child_file: &Path,
     item_name: &str,
 ) -> Result<Option<ParentFacadeExportStatus>> {
-    let Some(parent_boundary) = parent_boundary_for_child(src_root, child_file) else {
+    let Some(initial_boundary) = parent_boundary_for_child(src_root, child_file) else {
         return Ok(None);
     };
 
-    let child_module_name = module_paths::module_name_for_child_boundary_file(child_file)
-        .context("failed to resolve child module name for facade check")?;
+    // Walk up from the immediate parent through ancestors until we find a
+    // boundary that re-exports `item_name`, or run out of ancestors.
+    let mut current_child: PathBuf = child_file.to_path_buf();
+    let mut parent_boundary = initial_boundary;
 
-    let parent_source = fs::read_to_string(&parent_boundary.boundary_file).with_context(|| {
-        format!(
-            "failed to read parent boundary file {}",
-            parent_boundary.boundary_file.display()
-        )
-    })?;
-    let exported_names =
-        exported_names_from_parent_boundary(&parent_source, child_module_name, item_name)?;
-    if exported_names.explicit.is_empty() {
-        return Ok(None);
-    }
+    let (exported_names, parent_source) = loop {
+        let Some(child_module_name) =
+            module_paths::module_name_for_child_boundary_file(&current_child)
+        else {
+            return Ok(None);
+        };
+
+        let source = fs::read_to_string(&parent_boundary.boundary_file).with_context(|| {
+            format!(
+                "failed to read parent boundary file {}",
+                parent_boundary.boundary_file.display()
+            )
+        })?;
+        let exports = exported_names_from_parent_boundary(&source, child_module_name, item_name)?;
+
+        if !exports.explicit.is_empty() {
+            break (exports, source);
+        }
+
+        // Not found at this level — walk up to the next ancestor.
+        current_child = parent_boundary.boundary_file.clone();
+        let Some(next_boundary) = parent_of_boundary(src_root, &current_child) else {
+            return Ok(None);
+        };
+        parent_boundary = next_boundary;
+    };
 
     let parent_rel_path = parent_boundary
         .boundary_file
@@ -1742,6 +1759,52 @@ fn parent_boundary_for_child(src_root: &Path, child_file: &Path) -> Option<Paren
     None
 }
 
+/// Find the parent boundary of an existing boundary file itself.
+///
+/// `parent_boundary_for_child` cannot be called on a `mod.rs` file because it
+/// would find itself.  This helper handles both `mod.rs` and named boundary
+/// files (e.g. `tools.rs`).
+fn parent_of_boundary(src_root: &Path, boundary_file: &Path) -> Option<ParentBoundary> {
+    if boundary_file.file_name()?.to_str() != Some("mod.rs") {
+        return parent_boundary_for_child(src_root, boundary_file);
+    }
+
+    // For mod.rs the enclosing directory IS the module, so go up one more
+    // level to reach the parent module's directory.
+    let container_dir = boundary_file.parent()?.parent()?;
+
+    let mod_rs = container_dir.join("mod.rs");
+    if mod_rs.is_file() {
+        return Some(ParentBoundary {
+            boundary_file: mod_rs,
+            subtree_root:  container_dir.to_path_buf(),
+            module_path:   module_path_from_dir(src_root, container_dir)?,
+        });
+    }
+
+    let named_file = container_dir.with_extension("rs");
+    if named_file.is_file() {
+        return Some(ParentBoundary {
+            boundary_file: named_file.clone(),
+            subtree_root:  container_dir.to_path_buf(),
+            module_path:   module_path_from_boundary_file(src_root, &named_file)?,
+        });
+    }
+
+    for name in ["lib.rs", "main.rs"] {
+        let root = container_dir.join(name);
+        if root.is_file() {
+            return Some(ParentBoundary {
+                boundary_file: root,
+                subtree_root:  container_dir.to_path_buf(),
+                module_path:   Vec::new(),
+            });
+        }
+    }
+
+    None
+}
+
 fn module_path_from_boundary_file(src_root: &Path, boundary_file: &Path) -> Option<Vec<String>> {
     let relative = boundary_file.strip_prefix(src_root).ok()?;
     let mut components = relative
@@ -1806,7 +1869,7 @@ fn collect_matching_pub_use_exports(
         };
         if normalized.len() >= 2
             && normalized[0] == child_module_name
-            && normalized[1] == item_name
+            && normalized[1..].iter().any(|segment| segment == item_name)
             && let Some(export_name) = normalized.last()
         {
             exported.explicit.push(export_name.clone());

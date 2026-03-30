@@ -290,6 +290,73 @@ pub struct ClickParams {
 }
 
 #[test]
+fn suspicious_pub_is_suppressed_when_grandparent_reexports_through_pub_super_module() {
+    let temp = tempdir().expect("create temp fixture dir");
+    fs::create_dir_all(temp.path().join("src/brp_tools/tools")).expect("create nested fixture");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "grandparent_reexport_pub_super_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod consumer;
+mod brp_tools;
+
+fn main() {
+    consumer::run();
+}
+"#,
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        r#"use crate::brp_tools::BrpExecute;
+
+pub fn run() {
+    let _ = BrpExecute;
+}
+"#,
+    )
+    .expect("write consumer");
+    fs::write(
+        temp.path().join("src/brp_tools/mod.rs"),
+        r#"mod tools;
+
+pub use tools::brp_execute::BrpExecute;
+"#,
+    )
+    .expect("write grandparent boundary");
+    fs::write(
+        temp.path().join("src/brp_tools/tools/mod.rs"),
+        r#"pub(super) mod brp_execute;
+"#,
+    )
+    .expect("write immediate parent boundary");
+    fs::write(
+        temp.path().join("src/brp_tools/tools/brp_execute.rs"),
+        r#"pub struct BrpExecute;
+"#,
+    )
+    .expect("write leaf module");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "suspicious_pub"
+                && finding.path.contains("brp_execute.rs")),
+        "expected no suspicious_pub when grandparent re-exports through pub(super) module, got: {:#?}",
+        report.findings
+    );
+}
+
+#[test]
 fn suspicious_pub_is_suppressed_for_cross_file_public_field_exposure() {
     let temp = tempdir().expect("create temp fixture dir");
     fs::create_dir_all(temp.path().join("src/guide")).expect("create nested fixture");
