@@ -11,15 +11,15 @@ repository  = "https://github.com/natepiano/cargo-mend"
 version     = "0.3.0-dev"
 
 [lints.clippy]
-all                              = { level = "deny", priority = -1 }
-allow_attributes_without_reason  = "deny"
-cargo                            = { level = "deny", priority = -1 }
-expect_used                      = "deny"
-multiple_crate_versions = "allow"
-nursery                 = { level = "deny", priority = -1 }
-panic                   = "deny"
-pedantic                = { level = "deny", priority = -1 }
-unwrap_used             = "deny"
+all                             = { level = "deny", priority = -1 }
+allow_attributes_without_reason = "deny"
+cargo                           = { level = "deny", priority = -1 }
+expect_used                     = "deny"
+multiple_crate_versions         = "allow"
+nursery                         = { level = "deny", priority = -1 }
+panic                           = "deny"
+pedantic                        = { level = "deny", priority = -1 }
+unwrap_used                     = "deny"
 
 [dependencies]
 anyhow         = "1.0"
