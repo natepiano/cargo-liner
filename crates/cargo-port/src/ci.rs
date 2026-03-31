@@ -1,9 +1,5 @@
-use std::collections::HashMap;
-use std::fmt::Write;
 use std::path::Path;
-use std::process::Command;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use clap::Args;
 use serde::Deserialize;
@@ -11,9 +7,10 @@ use serde::Serialize;
 
 use super::constants::CANCELLED;
 use super::constants::FAILING;
-use super::constants::GH_TIMEOUT;
 use super::constants::PASSING;
+use super::http::HttpClient;
 use super::output;
+use super::project::GitInfo;
 
 #[derive(Args)]
 pub struct CiArgs {
@@ -40,50 +37,14 @@ pub struct GhRun {
     pub display_title: Option<String>,
 }
 
-/// Response wrapper for the REST API runs listing.
-#[derive(Deserialize)]
-struct GhRunsResponse {
-    workflow_runs: Vec<GhRun>,
-}
-
 /// Job from the GraphQL `checkRuns` response (upper-case conclusion).
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GqlCheckRun {
-    name:         String,
-    conclusion:   Option<String>,
-    started_at:   Option<String>,
-    completed_at: Option<String>,
-}
-
-/// GraphQL node response containing a check suite with jobs.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GqlRunNode {
-    database_id: u64,
-    check_suite: Option<GqlCheckSuite>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GqlCheckSuite {
-    check_runs: GqlCheckRunConnection,
-}
-
-#[derive(Deserialize)]
-struct GqlCheckRunConnection {
-    nodes: Vec<GqlCheckRun>,
-}
-
-/// Top-level GraphQL response with aliased run nodes.
-#[derive(Deserialize)]
-struct GqlBatchResponse {
-    data: HashMap<String, GqlRunNode>,
-}
-
-#[derive(Deserialize)]
-struct GhRepo {
-    url: String,
+    pub(super) name:         String,
+    pub(super) conclusion:   Option<String>,
+    pub(super) started_at:   Option<String>,
+    pub(super) completed_at: Option<String>,
 }
 
 /// Whether a CI run has been fully fetched from the API.
@@ -158,12 +119,22 @@ pub fn run(path: &Path, args: &CiArgs) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let Some(repo_url) = get_repo_url(&repo_dir) else {
-        eprintln!("Error: failed to get repo URL — is this a GitHub repo with `gh` installed?");
+    let Some(git_info) = GitInfo::detect(&repo_dir) else {
+        eprintln!("Error: not a git repository");
+        return ExitCode::FAILURE;
+    };
+    let Some(repo_url) = git_info.url.as_ref() else {
+        eprintln!("Error: no GitHub remote found");
+        return ExitCode::FAILURE;
+    };
+    let Some((owner, repo)) = parse_owner_repo(repo_url) else {
+        eprintln!("Error: could not parse GitHub owner/repo from URL");
         return ExitCode::FAILURE;
     };
 
-    let runs = match list_runs(&repo_dir, args.branch.as_ref(), args.count) {
+    let client = HttpClient::new();
+
+    let runs = match client.list_runs(&owner, &repo, args.branch.as_deref(), args.count) {
         Some(runs) if !runs.is_empty() => runs,
         _ => {
             match &args.branch {
@@ -175,12 +146,12 @@ pub fn run(path: &Path, args: &CiArgs) -> ExitCode {
     };
 
     let run_refs: Vec<&GhRun> = runs.iter().collect();
-    let jobs_map = batch_fetch_jobs(&repo_dir, &run_refs);
+    let jobs_map = client.batch_fetch_jobs(&run_refs);
     let ci_runs: Vec<CiRun> = runs
         .iter()
         .filter_map(|gh_run| {
             let check_runs = jobs_map.get(&gh_run.id)?;
-            Some(build_ci_run(gh_run, check_runs.clone(), &repo_url))
+            Some(build_ci_run(gh_run, check_runs.clone(), repo_url))
         })
         .collect();
 
@@ -245,82 +216,6 @@ pub fn build_ci_run(gh_run: &GhRun, check_runs: Vec<GqlCheckRun>, repo_url: &str
     }
 }
 
-/// Fetch jobs for multiple runs in a single GraphQL call using node
-/// ID aliases. Returns a map from `run_id` → check runs.
-pub fn batch_fetch_jobs(repo_dir: &Path, runs: &[&GhRun]) -> HashMap<u64, Vec<GqlCheckRun>> {
-    if runs.is_empty() {
-        return HashMap::new();
-    }
-
-    let fragment = "checkSuite { checkRuns(first: 50) { nodes { \
-                    name conclusion startedAt completedAt } } }";
-
-    let aliases: Vec<String> = runs
-        .iter()
-        .enumerate()
-        .map(|(i, run)| {
-            format!(
-                "run_{i}: node(id: \"{}\") {{ ... on WorkflowRun {{ databaseId {fragment} }} }}",
-                run.node_id
-            )
-        })
-        .collect();
-
-    let query = format!("{{ {} }}", aliases.join(" "));
-    let stdout = gh_command_with_timeout(
-        repo_dir,
-        &["api", "graphql", "-f", &format!("query={query}")],
-    );
-
-    let Some(stdout) = stdout else {
-        return HashMap::new();
-    };
-    let Ok(response) = serde_json::from_slice::<GqlBatchResponse>(&stdout) else {
-        return HashMap::new();
-    };
-
-    response
-        .data
-        .into_values()
-        .filter_map(|node| {
-            let check_runs = node.check_suite?.check_runs.nodes;
-            Some((node.database_id, check_runs))
-        })
-        .collect()
-}
-
-fn gh_command_with_timeout(repo_dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let mut child = Command::new("gh")
-        .current_dir(repo_dir)
-        .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return None;
-                }
-                let output = child.wait_with_output().ok()?;
-                return Some(output.stdout);
-            },
-            Ok(None) => {
-                if start.elapsed() > GH_TIMEOUT {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            },
-            Err(_) => return None,
-        }
-    }
-}
-
 /// Extract `(owner, repo)` from a GitHub URL like `https://github.com/owner/repo`.
 pub fn parse_owner_repo(url: &str) -> Option<(String, String)> {
     let stripped = url.strip_prefix("https://github.com/")?;
@@ -331,23 +226,6 @@ pub fn parse_owner_repo(url: &str) -> Option<(String, String)> {
         return None;
     }
     Some((owner, repo))
-}
-
-pub fn get_repo_url(repo_dir: &Path) -> Option<String> {
-    let stdout = gh_command_with_timeout(repo_dir, &["repo", "view", "--json", "url"])?;
-    let repo: GhRepo = serde_json::from_slice(&stdout).ok()?;
-    Some(repo.url)
-}
-
-pub fn list_runs(repo_dir: &Path, branch: Option<&String>, count: u32) -> Option<Vec<GhRun>> {
-    let mut endpoint =
-        format!("repos/{{owner}}/{{repo}}/actions/runs?per_page={count}&status=completed");
-    if let Some(branch) = branch {
-        let _ = write!(endpoint, "&branch={branch}");
-    }
-    let stdout = gh_command_with_timeout(repo_dir, &["api", &endpoint])?;
-    let response: GhRunsResponse = serde_json::from_slice(&stdout).ok()?;
-    Some(response.workflow_runs)
 }
 
 fn run_conclusion(jobs: &[CiJob]) -> Conclusion {

@@ -15,10 +15,9 @@ use super::ci::CiRun;
 use super::ci::GhRun;
 use super::config::NonRustInclusion;
 use super::constants::CACHE_DIR;
-use super::constants::CONNECTIVITY_TIMEOUT_SECS;
-use super::constants::CRATES_IO_TIMEOUT_SECS;
 use super::constants::NO_MORE_RUNS_MARKER;
 use super::constants::OLDER_RUNS_FETCH_INCREMENT;
+use super::http::HttpClient;
 use super::project::GitInfo;
 use super::project::GitTracking;
 use super::project::RustProject;
@@ -202,7 +201,7 @@ pub fn load_all_cached_runs(owner: &str, repo: &str) -> Vec<CiRun> {
 /// Fetch recent CI runs: serve from cache when possible, batch-fetch
 /// jobs for uncached runs via a single GraphQL call.
 fn fetch_recent_runs(
-    repo_dir: &Path,
+    client: &HttpClient,
     repo_url: &str,
     owner: &str,
     repo: &str,
@@ -222,7 +221,7 @@ fn fetch_recent_runs(
 
     // Batch-fetch jobs for all uncached runs in one GraphQL call.
     if !uncached.is_empty() {
-        let jobs_map = ci::batch_fetch_jobs(repo_dir, &uncached);
+        let jobs_map = client.batch_fetch_jobs(&uncached);
         for gh_run in &uncached {
             if let Some(check_runs) = jobs_map.get(&gh_run.id) {
                 let ci_run = ci::build_ci_run(gh_run, check_runs.clone(), repo_url);
@@ -262,14 +261,16 @@ fn merge_runs(fetched: Vec<CiRun>, cached: Vec<CiRun>) -> Vec<CiRun> {
 /// Accepts `(repo_url, owner, repo)` derived from the *local* git remote so that
 /// cache loading never depends on network availability.
 pub fn fetch_ci_runs_cached(
-    repo_dir: &Path,
+    client: &HttpClient,
     repo_url: &str,
     owner: &str,
     repo: &str,
     count: u32,
 ) -> CiFetchResult {
-    let gh_runs = ci::list_runs(repo_dir, None, count).unwrap_or_default();
-    let fetched = fetch_recent_runs(repo_dir, repo_url, owner, repo, &gh_runs);
+    let gh_runs = client
+        .list_runs(owner, repo, None, count)
+        .unwrap_or_default();
+    let fetched = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
     let cached = load_all_cached_runs(owner, repo);
     let merged = merge_runs(fetched, cached);
 
@@ -280,23 +281,21 @@ pub fn fetch_ci_runs_cached(
     }
 }
 
-/// Fetch older CI runs beyond what we currently have, by requesting a larger
-/// `--limit` from `gh run list` and returning any newly discovered runs.
-///
-/// Accepts `(repo_url, owner, repo)` derived from the *local* git remote.
+/// Fetch older CI runs beyond what we currently have, by requesting a
+/// larger limit and returning any newly discovered runs.
 pub fn fetch_older_runs(
-    repo_dir: &Path,
+    client: &HttpClient,
     repo_url: &str,
     owner: &str,
     repo: &str,
     current_count: u32,
 ) -> CiFetchResult {
     let fetch_count = current_count + OLDER_RUNS_FETCH_INCREMENT;
-    let gh_runs = ci::list_runs(repo_dir, None, fetch_count).unwrap_or_default();
-    let fetched = fetch_recent_runs(repo_dir, repo_url, owner, repo, &gh_runs);
+    let gh_runs = client
+        .list_runs(owner, repo, None, fetch_count)
+        .unwrap_or_default();
+    let fetched = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
 
-    // Only return the fetched runs — don't merge with the full cache.
-    // The caller already has runs in memory; these get merged there.
     let mut result = fetched;
     result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
 
@@ -310,14 +309,16 @@ pub fn fetch_older_runs(
 /// Re-fetch at the current count to pick up newly created runs without
 /// requesting deeper history.
 pub fn fetch_newer_runs(
-    repo_dir: &Path,
+    client: &HttpClient,
     repo_url: &str,
     owner: &str,
     repo: &str,
     current_count: u32,
 ) -> CiFetchResult {
-    let gh_runs = ci::list_runs(repo_dir, None, current_count).unwrap_or_default();
-    let mut result = fetch_recent_runs(repo_dir, repo_url, owner, repo, &gh_runs);
+    let gh_runs = client
+        .list_runs(owner, repo, None, current_count)
+        .unwrap_or_default();
+    let mut result = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
     result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
 
     if gh_runs.is_empty() {
@@ -330,24 +331,6 @@ pub fn fetch_newer_runs(
 /// Sent once per session when the first network operation fails.
 static OFFLINE_NOTIFIED: AtomicBool = AtomicBool::new(false);
 
-/// Quick connectivity probe — tries `gh auth status` with a 2-second timeout.
-/// Returns `true` if we appear to be online.
-fn check_online() -> bool {
-    std::process::Command::new("curl")
-        .args([
-            "-sf",
-            "--max-time",
-            CONNECTIVITY_TIMEOUT_SECS,
-            "-o",
-            "/dev/null",
-            "https://crates.io",
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
 /// Send a one-shot offline notification if we haven't already.
 fn notify_offline_once(tx: &mpsc::Sender<BackgroundMsg>) {
     if !OFFLINE_NOTIFIED.swap(true, Ordering::Relaxed) {
@@ -358,32 +341,6 @@ fn notify_offline_once(tx: &mpsc::Sender<BackgroundMsg>) {
 pub struct CratesIoInfo {
     pub version:   String,
     pub downloads: u64,
-}
-
-pub fn fetch_crates_io_info(crate_name: &str) -> Option<CratesIoInfo> {
-    let url = format!("https://crates.io/api/v1/crates/{crate_name}");
-    let output = std::process::Command::new("curl")
-        .args([
-            "-sf",
-            "--max-time",
-            CRATES_IO_TIMEOUT_SECS,
-            "-H",
-            "User-Agent: cargo-port",
-            &url,
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let krate = json.get("crate")?;
-    let version = krate
-        .get("max_stable_version")?
-        .as_str()
-        .map(std::string::ToString::to_string)?;
-    let downloads = krate.get("downloads")?.as_u64().unwrap_or(0);
-    Some(CratesIoInfo { version, downloads })
 }
 
 pub fn dir_size(path: &Path) -> u64 {
@@ -722,6 +679,7 @@ pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
 /// results through the provided channel. Used by both the main scan and priority fetch.
 pub fn fetch_project_details(
     tx: &mpsc::Sender<BackgroundMsg>,
+    client: &HttpClient,
     project_path: &str,
     abs_path: &Path,
     project_name: Option<&String>,
@@ -750,10 +708,9 @@ pub fn fetch_project_details(
 
     // Network operations — check connectivity once before attempting
     let online = if OFFLINE_NOTIFIED.load(Ordering::Relaxed) {
-        // Already notified offline — skip the check, still try
         true
     } else {
-        let is_online = check_online();
+        let is_online = client.check_online();
         if !is_online {
             notify_offline_once(tx);
         }
@@ -767,7 +724,7 @@ pub fn fetch_project_details(
         let _ = tx.send(BackgroundMsg::ScanActivity {
             path: format!("CI: {project_path}"),
         });
-        let result = fetch_ci_runs_cached(abs_path, repo_url, &owner, &repo, ci_run_count);
+        let result = fetch_ci_runs_cached(client, repo_url, &owner, &repo, ci_run_count);
         let is_cache_only = matches!(result, CiFetchResult::CacheOnly(_));
         let runs = match result {
             CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
@@ -783,7 +740,7 @@ pub fn fetch_project_details(
 
     // Crates.io version + downloads (network)
     if let Some(name) = project_name
-        && let Some(info) = fetch_crates_io_info(name)
+        && let Some(info) = client.fetch_crates_io_info(name)
     {
         let _ = tx.send(BackgroundMsg::CratesIoVersion {
             path:      project_path.to_string(),
@@ -792,10 +749,10 @@ pub fn fetch_project_details(
         });
     }
 
-    // GitHub repo metadata (network) — use local URL, only the API call needs network
+    // GitHub repo metadata (network)
     if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
         && let Some((owner, repo)) = ci::parse_owner_repo(repo_url)
-        && let Some(meta) = fetch_repo_meta(&owner, &repo)
+        && let Some(meta) = client.fetch_repo_meta(&owner, &repo)
     {
         let _ = tx.send(BackgroundMsg::RepoMeta {
             path:        project_path.to_string(),
@@ -805,35 +762,9 @@ pub fn fetch_project_details(
     }
 }
 
-struct RepoMetaInfo {
-    stars:       u64,
-    description: Option<String>,
-}
-
-/// Fetch stars and description for a GitHub repo in a single API call.
-fn fetch_repo_meta(owner: &str, repo: &str) -> Option<RepoMetaInfo> {
-    let output = std::process::Command::new("gh")
-        .args([
-            "api",
-            &format!("repos/{owner}/{repo}"),
-            "--jq",
-            "[.stargazers_count, .description] | @tsv",
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut parts = text.trim().splitn(2, '\t');
-    let stars = parts.next()?.parse().ok()?;
-    let description = parts
-        .next()
-        .map(String::from)
-        .filter(|s| s != "null" && !s.is_empty());
-    Some(RepoMetaInfo { stars, description })
+pub struct RepoMetaInfo {
+    pub stars:       u64,
+    pub description: Option<String>,
 }
 
 /// Resolve include-dir entries to absolute paths. Relative entries are
@@ -867,6 +798,7 @@ pub fn spawn_streaming_scan(
     ci_run_count: u32,
     include_dirs: &[String],
     non_rust: NonRustInclusion,
+    client: HttpClient,
 ) -> (mpsc::Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
     let (tx, rx) = mpsc::channel();
     let root = scan_root.to_path_buf();
@@ -915,11 +847,13 @@ pub fn spawn_streaming_scan(
                             });
 
                             let task_tx = scan_tx.clone();
+                            let task_client = client.clone();
                             let task_path = project.path.clone();
                             let task_abs = abs_path;
                             s.spawn(move |_| {
                                 fetch_project_details(
                                     &task_tx,
+                                    &task_client,
                                     &task_path,
                                     &task_abs,
                                     None,
@@ -946,12 +880,14 @@ pub fn spawn_streaming_scan(
                         });
 
                         let task_tx = scan_tx.clone();
+                        let task_client = client.clone();
                         let task_path = project.path.clone();
                         let task_name = project.name.clone();
                         let task_abs = abs_path;
                         s.spawn(move |_| {
                             fetch_project_details(
                                 &task_tx,
+                                &task_client,
                                 &task_path,
                                 &task_abs,
                                 task_name.as_ref(),

@@ -9,6 +9,7 @@ use clap::Subcommand;
 mod ci;
 mod config;
 mod constants;
+mod http;
 mod list;
 mod output;
 mod project;

@@ -27,6 +27,7 @@ use super::constants::DEBOUNCE_DURATION;
 use super::constants::MAX_WAIT;
 use super::constants::NEW_PROJECT_DEBOUNCE;
 use super::constants::POLL_INTERVAL;
+use super::http::HttpClient;
 use super::project;
 use super::project::GitInfo;
 use super::project::GitTracking;
@@ -53,6 +54,7 @@ pub fn spawn_watcher(
     ci_run_count: u32,
     non_rust: NonRustInclusion,
     include_dirs: Vec<String>,
+    client: HttpClient,
 ) -> mpsc::Sender<WatchRequest> {
     let (watch_tx, watch_rx) = mpsc::channel();
 
@@ -64,6 +66,7 @@ pub fn spawn_watcher(
             ci_run_count,
             non_rust,
             &include_dirs,
+            &client,
         );
     });
 
@@ -84,6 +87,7 @@ fn watcher_loop(
     ci_run_count: u32,
     non_rust: NonRustInclusion,
     include_dirs: &[String],
+    client: &HttpClient,
 ) {
     let watch_dirs = scan::resolve_include_dirs(scan_root, include_dirs);
     let (notify_tx, notify_rx) = mpsc::channel();
@@ -158,6 +162,7 @@ fn watcher_loop(
             &mut discovered,
             ci_run_count,
             non_rust,
+            client,
         );
 
         thread::sleep(POLL_INTERVAL);
@@ -258,6 +263,7 @@ fn probe_new_projects(
     discovered: &mut HashSet<PathBuf>,
     ci_run_count: u32,
     non_rust: NonRustInclusion,
+    client: &HttpClient,
 ) {
     let now = Instant::now();
     let ready: Vec<PathBuf> = pending_new
@@ -296,11 +302,13 @@ fn probe_new_projects(
                 project: project.clone(),
             });
             let tx = bg_tx.clone();
+            let task_client = client.clone();
             let path = project.path.clone();
             let name = project.name.clone();
             rayon::spawn(move || {
                 scan::fetch_project_details(
                     &tx,
+                    &task_client,
                     &path,
                     &abs_path,
                     name.as_ref(),

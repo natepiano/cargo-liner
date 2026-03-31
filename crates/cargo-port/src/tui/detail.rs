@@ -316,7 +316,6 @@ pub(super) enum CiFetchKind {
 
 /// A pending request to fetch more CI runs for a project.
 pub(super) struct PendingCiFetch {
-    pub abs_path:      String,
     pub project_path:  String,
     pub current_count: u32,
     pub kind:          CiFetchKind,
@@ -1772,7 +1771,6 @@ pub(super) fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
                     CiFetchKind::FetchOlder
                 };
                 app.pending_ci_fetch = Some(PendingCiFetch {
-                    abs_path: project.abs_path.clone(),
                     project_path: project.path.clone(),
                     current_count,
                     kind,

@@ -49,6 +49,7 @@ use crate::constants::IN_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::constants::WORKTREE;
+use crate::http::HttpClient;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitTracking;
@@ -196,6 +197,7 @@ pub(super) struct App {
     pub scan_root:           PathBuf,
     pub inline_dirs:         Vec<String>,
     pub include_dirs:        Vec<String>,
+    pub http_client:         HttpClient,
     pub ci_run_count:        u32,
     pub include_non_rust:    NonRustInclusion,
     pub editor:              String,
@@ -402,6 +404,7 @@ impl App {
         bg_tx: mpsc::Sender<BackgroundMsg>,
         bg_rx: Receiver<BackgroundMsg>,
         cfg: &Config,
+        http_client: HttpClient,
     ) -> Self {
         let (example_tx, example_rx) = mpsc::channel();
         let (ci_fetch_tx, ci_fetch_rx) = mpsc::channel();
@@ -415,6 +418,7 @@ impl App {
             ci_run_count,
             include_non_rust,
             include_dirs.clone(),
+            http_client.clone(),
         );
         let editor = cfg.tui.editor.clone();
         let nodes = scan::build_tree(&projects, &inline_dirs);
@@ -424,6 +428,7 @@ impl App {
             scan_root,
             inline_dirs,
             include_dirs,
+            http_client,
             ci_run_count,
             include_non_rust,
             editor,
@@ -603,6 +608,7 @@ impl App {
             self.ci_run_count,
             &self.include_dirs,
             self.include_non_rust,
+            self.http_client.clone(),
         );
         self.bg_tx = tx;
         self.bg_rx = rx;
@@ -612,6 +618,7 @@ impl App {
             self.ci_run_count,
             self.include_non_rust,
             self.include_dirs.clone(),
+            self.http_client.clone(),
         );
     }
 

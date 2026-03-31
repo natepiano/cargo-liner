@@ -25,8 +25,13 @@ pub const GH_TIMEOUT: Duration = Duration::from_secs(5);
 pub const CACHE_DIR: &str = "cargo-port/ci-cache";
 pub const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";
 pub const OLDER_RUNS_FETCH_INCREMENT: u32 = 5;
-pub const CONNECTIVITY_TIMEOUT_SECS: &str = "2";
-pub const CRATES_IO_TIMEOUT_SECS: &str = "5";
+// ── HTTP constants ───────────────────────────────────────────────────
+
+pub const GITHUB_API_BASE: &str = "https://api.github.com";
+pub const GITHUB_GRAPHQL_URL: &str = "https://api.github.com/graphql";
+pub const CRATES_IO_API_BASE: &str = "https://crates.io/api/v1";
+pub const CONNECTIVITY_CHECK_URL: &str = "https://crates.io";
+pub const CRATES_IO_USER_AGENT: &str = "cargo-port";
 
 // ── Watcher constants ─────────────────────────────────────────────────
 

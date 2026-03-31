@@ -33,6 +33,7 @@ use super::input;
 use super::render;
 use crate::ci;
 use crate::config;
+use crate::http::HttpClient;
 use crate::project::GitInfo;
 use crate::project::GitTracking;
 use crate::project::RustProject;
@@ -82,11 +83,13 @@ pub fn run(path: &Path) -> ExitCode {
     };
 
     let cfg = config::load();
+    let http_client = HttpClient::new();
     let (bg_tx, bg_rx) = scan::spawn_streaming_scan(
         &scan_root,
         cfg.tui.ci_run_count,
         &cfg.tui.include_dirs,
         cfg.tui.include_non_rust,
+        http_client.clone(),
     );
     let projects: Vec<RustProject> = Vec::new();
 
@@ -105,7 +108,7 @@ pub fn run(path: &Path) -> ExitCode {
         },
     };
 
-    let mut app = App::new(scan_root, projects, bg_tx, bg_rx, &cfg);
+    let mut app = App::new(scan_root, projects, bg_tx, bg_rx, &cfg, http_client);
 
     let result = event_loop(&mut terminal, &mut app);
 
@@ -386,20 +389,19 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     };
 
     let tx = app.ci_fetch_tx.clone();
-    let abs_path = fetch.abs_path.clone();
+    let client = app.http_client.clone();
     let project_path = fetch.project_path.clone();
     let current_count = fetch.current_count;
     let kind = fetch.kind;
     let url = repo_url.clone();
 
     thread::spawn(move || {
-        let repo_dir = PathBuf::from(&abs_path);
         let result = match kind {
             CiFetchKind::FetchOlder => {
-                scan::fetch_older_runs(&repo_dir, &url, &owner, &repo, current_count)
+                scan::fetch_older_runs(&client, &url, &owner, &repo, current_count)
             },
             CiFetchKind::Refresh => {
-                scan::fetch_newer_runs(&repo_dir, &url, &owner, &repo, current_count)
+                scan::fetch_newer_runs(&client, &url, &owner, &repo, current_count)
             },
         };
         let _ = tx.send(CiFetchMsg::Complete {
@@ -444,6 +446,7 @@ pub(super) fn track_selection(app: &mut App) {
 /// Spawn a background thread to fetch details for a single project ahead of the main scan.
 pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: Option<&String>) {
     let tx = app.bg_tx.clone();
+    let client = app.http_client.clone();
     let project_path = path.to_string();
     let abs = PathBuf::from(abs_path);
     let git_tracking = if abs.join(".git").exists() {
@@ -473,10 +476,10 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
     {
         let tx_ci = tx.clone();
         let path_ci = project_path.clone();
-        let abs_ci = abs.clone();
+        let client_ci = client.clone();
         let url = repo_url.clone();
         thread::spawn(move || {
-            let result = scan::fetch_ci_runs_cached(&abs_ci, &url, &owner, &repo, ci_run_count);
+            let result = scan::fetch_ci_runs_cached(&client_ci, &url, &owner, &repo, ci_run_count);
             let runs = match result {
                 CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
             };
@@ -496,7 +499,7 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
         });
 
         if let Some(name) = project_name.as_ref()
-            && let Some(info) = scan::fetch_crates_io_info(name)
+            && let Some(info) = client.fetch_crates_io_info(name)
         {
             let _ = tx.send(BackgroundMsg::CratesIoVersion {
                 path:      project_path,
