@@ -472,59 +472,69 @@ pub fn build_tree(projects: Vec<RustProject>, inline_dirs: &[String]) -> Vec<Pro
 }
 
 /// Group worktree nodes under their primary (non-worktree) project.
-/// Projects match when they share the same package name.
+/// Projects match when they share the same `worktree_primary_abs_path` (git repo identity).
 /// The primary itself is also listed as a worktree entry (using its directory name).
 fn merge_worktrees(nodes: &mut Vec<ProjectNode>) {
     let mut primary_indices: HashMap<String, usize> = HashMap::new();
     let mut worktree_indices: Vec<usize> = Vec::new();
 
     for (i, node) in nodes.iter().enumerate() {
-        let Some(name) = &node.project.name else {
+        let Some(identity) = &node.project.worktree_primary_abs_path else {
             continue;
         };
         if node.project.worktree_name.is_some() {
             worktree_indices.push(i);
         } else {
-            primary_indices.insert(name.clone(), i);
+            primary_indices.insert(identity.clone(), i);
         }
     }
 
-    // Only process package names that actually have worktrees
-    let names_with_worktrees: HashSet<String> = worktree_indices
+    // Identities that actually have worktrees
+    let identities_with_worktrees: HashSet<String> = worktree_indices
         .iter()
-        .filter_map(|&wi| nodes[wi].project.name.clone())
+        .filter_map(|&wi| nodes[wi].project.worktree_primary_abs_path.clone())
+        .filter(|id| primary_indices.contains_key(id))
         .collect();
 
     // Collect worktree nodes to move (highest index first to preserve lower indices)
     let mut moves: Vec<(usize, String)> = worktree_indices
         .iter()
         .filter_map(|&wi| {
-            let name = nodes[wi].project.name.clone()?;
-            primary_indices.get(&name)?;
-            Some((wi, name))
+            let id = nodes[wi].project.worktree_primary_abs_path.clone()?;
+            primary_indices.get(&id)?;
+            Some((wi, id))
         })
         .collect();
     moves.sort_by(|a, b| b.0.cmp(&a.0));
 
     let mut extracted: Vec<(ProjectNode, String)> = Vec::new();
-    for (wi, name) in moves {
+    for (wi, id) in moves {
         let wt_node = nodes.remove(wi);
-        extracted.push((wt_node, name));
+        extracted.push((wt_node, id));
     }
 
-    // Insert worktree nodes into their primaries, and add the primary itself as a worktree entry
-    for (wt_node, name) in extracted {
+    // Insert worktree nodes into their primaries
+    for (wt_node, id) in extracted {
         if let Some(primary) = nodes.iter_mut().find(|n| {
-            n.project.name.as_ref().is_some_and(|n| *n == name) && n.project.worktree_name.is_none()
+            n.project
+                .worktree_primary_abs_path
+                .as_ref()
+                .is_some_and(|p| *p == id)
+                && n.project.worktree_name.is_none()
         }) {
             primary.worktrees.push(wt_node);
         }
     }
 
-    // Add the primary directory itself as the first worktree entry
-    for name in &names_with_worktrees {
+    // Add the primary directory itself as the first worktree entry,
+    // transferring the primary's groups so they appear under the worktree entry.
+    for id in &identities_with_worktrees {
         if let Some(primary) = nodes.iter_mut().find(|n| {
-            n.project.name.as_ref().is_some_and(|n| n == name) && n.project.worktree_name.is_none()
+            n.project
+                .worktree_primary_abs_path
+                .as_ref()
+                .is_some_and(|p| p == id)
+                && n.project.worktree_name.is_none()
         }) {
             let dir_name = primary
                 .project
@@ -535,11 +545,12 @@ fn merge_worktrees(nodes: &mut Vec<ProjectNode>) {
                 .to_string();
             let mut primary_as_wt = primary.project.clone();
             primary_as_wt.worktree_name = Some(dir_name);
+            let primary_groups = std::mem::take(&mut primary.groups);
             primary.worktrees.insert(
                 0,
                 ProjectNode {
                     project:   primary_as_wt,
-                    groups:    Vec::new(),
+                    groups:    primary_groups,
                     worktrees: Vec::new(),
                     vendored:  Vec::new(),
                 },
@@ -946,4 +957,249 @@ pub fn spawn_streaming_scan(
     });
 
     (tx, rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::ProjectLanguage;
+    use crate::project::WorkspaceStatus;
+
+    fn make_project(
+        name: Option<&str>,
+        path: &str,
+        abs_path: &str,
+        worktree_name: Option<&str>,
+        primary_abs: Option<&str>,
+        is_workspace: WorkspaceStatus,
+    ) -> RustProject {
+        RustProject {
+            path: path.to_string(),
+            abs_path: abs_path.to_string(),
+            name: name.map(String::from),
+            version: None,
+            description: None,
+            worktree_name: worktree_name.map(String::from),
+            worktree_primary_abs_path: primary_abs.map(String::from),
+            is_workspace,
+            types: Vec::new(),
+            examples: Vec::new(),
+            benches: Vec::new(),
+            test_count: 0,
+            is_rust: ProjectLanguage::Rust,
+        }
+    }
+
+    fn make_node(project: RustProject) -> ProjectNode {
+        ProjectNode {
+            project,
+            groups: Vec::new(),
+            worktrees: Vec::new(),
+            vendored: Vec::new(),
+        }
+    }
+
+    fn make_node_with_groups(project: RustProject, groups: Vec<MemberGroup>) -> ProjectNode {
+        ProjectNode {
+            project,
+            groups,
+            worktrees: Vec::new(),
+            vendored: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn merge_virtual_workspace() {
+        let primary = make_project(
+            None,
+            "~/rust/ws",
+            "/home/ws",
+            None,
+            Some("/home/ws"),
+            WorkspaceStatus::Workspace,
+        );
+        let worktree = make_project(
+            None,
+            "~/rust/ws_feat",
+            "/home/ws_feat",
+            Some("ws_feat"),
+            Some("/home/ws"),
+            WorkspaceStatus::Workspace,
+        );
+        let mut nodes = vec![make_node(primary), make_node(worktree)];
+        merge_worktrees(&mut nodes);
+
+        assert_eq!(nodes.len(), 1, "worktree should be merged into primary");
+        assert_eq!(nodes[0].worktrees.len(), 2, "primary-as-wt + worktree");
+        assert_eq!(
+            nodes[0].worktrees[0].project.worktree_name.as_deref(),
+            Some("ws"),
+            "first entry is primary-as-worktree"
+        );
+        assert_eq!(
+            nodes[0].worktrees[1].project.worktree_name.as_deref(),
+            Some("ws_feat"),
+        );
+    }
+
+    #[test]
+    fn merge_named_workspace() {
+        let primary = make_project(
+            Some("my-ws"),
+            "~/rust/ws",
+            "/home/ws",
+            None,
+            Some("/home/ws"),
+            WorkspaceStatus::Workspace,
+        );
+        let worktree = make_project(
+            Some("my-ws"),
+            "~/rust/ws_feat",
+            "/home/ws_feat",
+            Some("ws_feat"),
+            Some("/home/ws"),
+            WorkspaceStatus::Workspace,
+        );
+        let mut nodes = vec![make_node(primary), make_node(worktree)];
+        merge_worktrees(&mut nodes);
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].worktrees.len(), 2);
+    }
+
+    #[test]
+    fn merge_groups_transfer() {
+        let primary = make_project(
+            None,
+            "~/rust/ws",
+            "/home/ws",
+            None,
+            Some("/home/ws"),
+            WorkspaceStatus::Workspace,
+        );
+        let member_a = make_project(
+            Some("crate-a"),
+            "~/rust/ws/crates/a",
+            "/home/ws/crates/a",
+            None,
+            Some("/home/ws"),
+            WorkspaceStatus::Standalone,
+        );
+        let member_b = make_project(
+            Some("crate-b"),
+            "~/rust/ws/crates/b",
+            "/home/ws/crates/b",
+            None,
+            Some("/home/ws"),
+            WorkspaceStatus::Standalone,
+        );
+        let groups = vec![MemberGroup {
+            name:    String::new(),
+            members: vec![member_a, member_b],
+        }];
+
+        let worktree = make_project(
+            None,
+            "~/rust/ws_feat",
+            "/home/ws_feat",
+            Some("ws_feat"),
+            Some("/home/ws"),
+            WorkspaceStatus::Workspace,
+        );
+
+        let mut nodes = vec![make_node_with_groups(primary, groups), make_node(worktree)];
+        merge_worktrees(&mut nodes);
+
+        assert!(
+            nodes[0].groups.is_empty(),
+            "primary's groups should be moved to worktrees[0]"
+        );
+        assert_eq!(
+            nodes[0].worktrees[0].groups.len(),
+            1,
+            "primary-as-wt should have the groups"
+        );
+        assert_eq!(nodes[0].worktrees[0].groups[0].members.len(), 2);
+    }
+
+    #[test]
+    fn merge_standalone_project() {
+        let primary = make_project(
+            Some("app"),
+            "~/rust/app",
+            "/home/app",
+            None,
+            Some("/home/app"),
+            WorkspaceStatus::Standalone,
+        );
+        let worktree = make_project(
+            Some("app"),
+            "~/rust/app_feat",
+            "/home/app_feat",
+            Some("app_feat"),
+            Some("/home/app"),
+            WorkspaceStatus::Standalone,
+        );
+        let mut nodes = vec![make_node(primary), make_node(worktree)];
+        merge_worktrees(&mut nodes);
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].worktrees.len(), 2);
+        assert!(
+            !nodes[0].worktrees[0].has_members(),
+            "standalone worktrees have no groups"
+        );
+    }
+
+    #[test]
+    fn no_merge_different_repos() {
+        let a = make_project(
+            Some("a"),
+            "~/rust/a",
+            "/home/a",
+            None,
+            Some("/home/a"),
+            WorkspaceStatus::Standalone,
+        );
+        let b = make_project(
+            Some("b"),
+            "~/rust/b",
+            "/home/b",
+            Some("b"),
+            Some("/home/b"),
+            WorkspaceStatus::Standalone,
+        );
+        let mut nodes = vec![make_node(a), make_node(b)];
+        merge_worktrees(&mut nodes);
+
+        assert_eq!(nodes.len(), 2, "different repos should remain separate");
+    }
+
+    #[test]
+    fn no_merge_none_identity() {
+        let a = make_project(
+            Some("x"),
+            "~/rust/x",
+            "/home/x",
+            None,
+            None,
+            WorkspaceStatus::Standalone,
+        );
+        let b = make_project(
+            Some("x"),
+            "~/rust/x2",
+            "/home/x2",
+            Some("x2"),
+            None,
+            WorkspaceStatus::Standalone,
+        );
+        let mut nodes = vec![make_node(a), make_node(b)];
+        merge_worktrees(&mut nodes);
+
+        assert_eq!(
+            nodes.len(),
+            2,
+            "nodes without identity should not be merged"
+        );
+    }
 }

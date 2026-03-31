@@ -57,11 +57,13 @@ pub(super) enum NetworkStatus {
     Offline,
 }
 
-/// An expand key: either a workspace node or a group within a node.
+/// An expand key: a node, group, worktree entry, or group within a worktree.
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub(super) enum ExpandKey {
     Node(usize),
     Group(usize, usize),
+    Worktree(usize, usize),
+    WorktreeGroup(usize, usize, usize),
 }
 
 /// An action waiting for user confirmation (y/n).
@@ -90,7 +92,7 @@ impl Default for FitWidths {
 }
 
 /// What a visible row represents.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum VisibleRow {
     /// A top-level project/workspace root.
     Root { node_index: usize },
@@ -109,6 +111,19 @@ pub(super) enum VisibleRow {
     WorktreeEntry {
         node_index:     usize,
         worktree_index: usize,
+    },
+    /// A group header inside an expanded worktree entry.
+    WorktreeGroupHeader {
+        node_index:     usize,
+        worktree_index: usize,
+        group_index:    usize,
+    },
+    /// A member inside an expanded worktree entry.
+    WorktreeMember {
+        node_index:     usize,
+        worktree_index: usize,
+        group_index:    usize,
+        member_index:   usize,
     },
 }
 
@@ -254,6 +269,79 @@ pub(super) struct App {
 
     /// Transient message shown in the status bar, auto-cleared after a timeout.
     pub(super) status_flash: Option<(String, std::time::Instant)>,
+}
+
+/// Build the flat list of visible rows from the node tree and expansion state.
+fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> Vec<VisibleRow> {
+    let mut rows = Vec::new();
+    for (ni, node) in nodes.iter().enumerate() {
+        rows.push(VisibleRow::Root { node_index: ni });
+        if expanded.contains(&ExpandKey::Node(ni)) {
+            for (gi, group) in node.groups.iter().enumerate() {
+                if group.name.is_empty() {
+                    for (mi, _) in group.members.iter().enumerate() {
+                        rows.push(VisibleRow::Member {
+                            node_index:   ni,
+                            group_index:  gi,
+                            member_index: mi,
+                        });
+                    }
+                } else {
+                    rows.push(VisibleRow::GroupHeader {
+                        node_index:  ni,
+                        group_index: gi,
+                    });
+                    if expanded.contains(&ExpandKey::Group(ni, gi)) {
+                        for (mi, _) in group.members.iter().enumerate() {
+                            rows.push(VisibleRow::Member {
+                                node_index:   ni,
+                                group_index:  gi,
+                                member_index: mi,
+                            });
+                        }
+                    }
+                }
+            }
+
+            for (wi, wt) in node.worktrees.iter().enumerate() {
+                rows.push(VisibleRow::WorktreeEntry {
+                    node_index:     ni,
+                    worktree_index: wi,
+                });
+                if wt.has_members() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
+                    for (gi, group) in wt.groups.iter().enumerate() {
+                        if group.name.is_empty() {
+                            for (mi, _) in group.members.iter().enumerate() {
+                                rows.push(VisibleRow::WorktreeMember {
+                                    node_index:     ni,
+                                    worktree_index: wi,
+                                    group_index:    gi,
+                                    member_index:   mi,
+                                });
+                            }
+                        } else {
+                            rows.push(VisibleRow::WorktreeGroupHeader {
+                                node_index:     ni,
+                                worktree_index: wi,
+                                group_index:    gi,
+                            });
+                            if expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
+                                for (mi, _) in group.members.iter().enumerate() {
+                                    rows.push(VisibleRow::WorktreeMember {
+                                        node_index:     ni,
+                                        worktree_index: wi,
+                                        group_index:    gi,
+                                        member_index:   mi,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    rows
 }
 
 fn initial_list_state(nodes: &[ProjectNode]) -> ListState {
@@ -429,31 +517,25 @@ impl App {
                 .get(&node.project.path)
                 .map(|s| s.runs().to_vec())
             {
-                for group in &node.groups {
-                    for member in &group.members {
-                        self.ci_state.entry(member.path.clone()).or_insert_with(|| {
-                            CiState::Loaded {
-                                runs:      runs.clone(),
-                                exhausted: false,
-                            }
+                for member in Self::all_group_members(node) {
+                    self.ci_state
+                        .entry(member.path.clone())
+                        .or_insert_with(|| CiState::Loaded {
+                            runs:      runs.clone(),
+                            exhausted: false,
                         });
-                    }
                 }
             }
             if let Some(info) = self.git_info.get(&node.project.path).cloned() {
-                for group in &node.groups {
-                    for member in &group.members {
-                        self.git_info
-                            .entry(member.path.clone())
-                            .or_insert_with(|| info.clone());
-                    }
+                for member in Self::all_group_members(node) {
+                    self.git_info
+                        .entry(member.path.clone())
+                        .or_insert_with(|| info.clone());
                 }
             }
             if let Some(&stars) = self.stars.get(&node.project.path) {
-                for group in &node.groups {
-                    for member in &group.members {
-                        self.stars.entry(member.path.clone()).or_insert(stars);
-                    }
+                for member in Self::all_group_members(node) {
+                    self.stars.entry(member.path.clone()).or_insert(stars);
                 }
             }
         }
@@ -616,12 +698,10 @@ impl App {
                                 .find(|wt| wt.project.path == path)
                         });
                 if let Some(node) = matching_node {
-                    for group in &node.groups {
-                        for member in &group.members {
-                            // Always overwrite — the correct branch comes from
-                            // the workspace root, not from a stale propagation.
-                            self.git_info.insert(member.path.clone(), info.clone());
-                        }
+                    for member in Self::all_group_members(node) {
+                        // Always overwrite — the correct branch comes from
+                        // the workspace root, not from a stale propagation.
+                        self.git_info.insert(member.path.clone(), info.clone());
                     }
                     for wt in &node.worktrees {
                         self.git_info
@@ -649,10 +729,8 @@ impl App {
                 self.network_status = NetworkStatus::Online;
                 // Propagate to workspace members
                 if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
-                    for group in &node.groups {
-                        for member in &group.members {
-                            self.stars.entry(member.path.clone()).or_insert(stars);
-                        }
+                    for member in Self::all_group_members(node) {
+                        self.stars.entry(member.path.clone()).or_insert(stars);
                     }
                 }
                 self.stars.insert(path.clone(), stars);
@@ -708,15 +786,13 @@ impl App {
             .and_then(|url| ci::parse_owner_repo(url))
             .is_some_and(|(owner, repo)| scan::is_exhausted(&owner, &repo));
         if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
-            for group in &node.groups {
-                for member in &group.members {
-                    self.ci_state
-                        .entry(member.path.clone())
-                        .or_insert_with(|| CiState::Loaded {
-                            runs: runs.clone(),
-                            exhausted,
-                        });
-                }
+            for member in Self::all_group_members(node) {
+                self.ci_state
+                    .entry(member.path.clone())
+                    .or_insert_with(|| CiState::Loaded {
+                        runs: runs.clone(),
+                        exhausted,
+                    });
             }
         }
         self.ci_state
@@ -785,15 +861,13 @@ impl App {
         };
 
         if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
-            for group in &node.groups {
-                for member in &group.members {
-                    self.ci_state
-                        .entry(member.path.clone())
-                        .or_insert_with(|| CiState::Loaded {
-                            runs: merged.clone(),
-                            exhausted,
-                        });
-                }
+            for member in Self::all_group_members(node) {
+                self.ci_state
+                    .entry(member.path.clone())
+                    .or_insert_with(|| CiState::Loaded {
+                        runs: merged.clone(),
+                        exhausted,
+                    });
             }
         }
         self.ci_pane.set_pos(merged.len());
@@ -824,46 +898,7 @@ impl App {
             return;
         }
         self.rows_dirty = false;
-        self.cached_visible_rows.clear();
-        for (ni, node) in self.nodes.iter().enumerate() {
-            self.cached_visible_rows
-                .push(VisibleRow::Root { node_index: ni });
-            if self.expanded.contains(&ExpandKey::Node(ni)) {
-                for (gi, group) in node.groups.iter().enumerate() {
-                    if group.name.is_empty() {
-                        for (mi, _) in group.members.iter().enumerate() {
-                            self.cached_visible_rows.push(VisibleRow::Member {
-                                node_index:   ni,
-                                group_index:  gi,
-                                member_index: mi,
-                            });
-                        }
-                    } else {
-                        self.cached_visible_rows.push(VisibleRow::GroupHeader {
-                            node_index:  ni,
-                            group_index: gi,
-                        });
-                        if self.expanded.contains(&ExpandKey::Group(ni, gi)) {
-                            for (mi, _) in group.members.iter().enumerate() {
-                                self.cached_visible_rows.push(VisibleRow::Member {
-                                    node_index:   ni,
-                                    group_index:  gi,
-                                    member_index: mi,
-                                });
-                            }
-                        }
-                    }
-                }
-
-                // Worktree entries shown directly under the node
-                for (wi, _wt) in node.worktrees.iter().enumerate() {
-                    self.cached_visible_rows.push(VisibleRow::WorktreeEntry {
-                        node_index:     ni,
-                        worktree_index: wi,
-                    });
-                }
-            }
-        }
+        self.cached_visible_rows = build_visible_rows(&self.nodes, &self.expanded);
     }
 
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
@@ -907,10 +942,24 @@ impl App {
                     .worktree_name
                     .as_deref()
                     .unwrap_or(&wt.project.path);
-                name_width = name_width.max(4 + wt_name.len());
+                let wt_prefix = if wt.has_members() { 6 } else { 4 };
+                name_width = name_width.max(wt_prefix + wt_name.len());
                 disk_width = disk_width.max(self.formatted_disk(&wt.project).len());
                 sync_width =
                     sync_width.max(UnicodeWidthStr::width(self.git_sync(&wt.project).as_str()));
+                for group in &wt.groups {
+                    for member in &group.members {
+                        let prefix = if group.name.is_empty() { 8 } else { 12 };
+                        name_width = name_width.max(prefix + member.display_name().len());
+                        disk_width = disk_width.max(self.formatted_disk(member).len());
+                        sync_width =
+                            sync_width.max(UnicodeWidthStr::width(self.git_sync(member).as_str()));
+                    }
+                    if !group.name.is_empty() {
+                        // "        ▼ " (10 chars) + group name + " (N)"
+                        name_width = name_width.max(10 + group.name.len() + 4);
+                    }
+                }
             }
         }
 
@@ -920,6 +969,16 @@ impl App {
             sync:       sync_width,
             generation: self.data_generation,
         };
+    }
+
+    /// Iterate all group members in a node, including those nested under worktree entries.
+    fn all_group_members(node: &ProjectNode) -> impl Iterator<Item = &RustProject> {
+        let direct = node.groups.iter().flat_map(|g| g.members.iter());
+        let wt = node
+            .worktrees
+            .iter()
+            .flat_map(|wt| wt.groups.iter().flat_map(|g| g.members.iter()));
+        direct.chain(wt)
     }
 
     fn fit_name_for_node(node: &ProjectNode, live_worktrees: usize) -> usize {
@@ -950,11 +1009,9 @@ impl App {
         self.cached_child_sorted.clear();
         for (ni, node) in self.nodes.iter().enumerate() {
             let mut values: Vec<u64> = Vec::new();
-            for group in &node.groups {
-                for member in &group.members {
-                    if let Some(&bytes) = self.disk_usage.get(&member.path) {
-                        values.push(bytes);
-                    }
+            for member in Self::all_group_members(node) {
+                if let Some(&bytes) = self.disk_usage.get(&member.path) {
+                    values.push(bytes);
                 }
             }
             for wt in &node.worktrees {
@@ -1035,10 +1092,29 @@ impl App {
                 VisibleRow::WorktreeEntry {
                     node_index,
                     worktree_index,
+                }
+                | VisibleRow::WorktreeGroupHeader {
+                    node_index,
+                    worktree_index,
+                    ..
                 } => {
                     let node = self.nodes.get(*node_index)?;
                     let wt = node.worktrees.get(*worktree_index)?;
                     Some(&wt.project)
+                },
+                VisibleRow::WorktreeMember {
+                    node_index,
+                    worktree_index,
+                    group_index,
+                    member_index,
+                } => {
+                    let wt = self
+                        .nodes
+                        .get(*node_index)?
+                        .worktrees
+                        .get(*worktree_index)?;
+                    let group = wt.groups.get(*group_index)?;
+                    group.members.get(*member_index)
                 },
             }
         }
@@ -1054,7 +1130,11 @@ impl App {
         };
         match rows.get(selected) {
             Some(VisibleRow::Root { node_index }) => self.nodes[*node_index].has_children(),
-            Some(VisibleRow::GroupHeader { .. }) => true,
+            Some(VisibleRow::GroupHeader { .. } | VisibleRow::WorktreeGroupHeader { .. }) => true,
+            Some(VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
+            }) => self.nodes[*node_index].worktrees[*worktree_index].has_members(),
             _ => false,
         }
     }
@@ -1080,9 +1160,48 @@ impl App {
                 self.expanded
                     .insert(ExpandKey::Group(node_index, group_index));
             },
+            VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
+            } => {
+                self.expanded
+                    .insert(ExpandKey::Worktree(node_index, worktree_index));
+            },
+            VisibleRow::WorktreeGroupHeader {
+                node_index,
+                worktree_index,
+                group_index,
+            } => {
+                self.expanded.insert(ExpandKey::WorktreeGroup(
+                    node_index,
+                    worktree_index,
+                    group_index,
+                ));
+            },
             _ => {},
         }
         self.rows_dirty = true;
+    }
+
+    /// Remove `key` from expanded, recompute rows, and move cursor to `target`.
+    fn collapse_to(&mut self, key: &ExpandKey, target: VisibleRow) {
+        self.expanded.remove(key);
+        self.rows_dirty = true;
+        self.ensure_visible_rows_cached();
+        if let Some(pos) = self.visible_rows().iter().position(|r| *r == target) {
+            self.list_state.select(Some(pos));
+        }
+    }
+
+    /// Try to remove `key` from expanded. If present, mark dirty and return `true`.
+    /// Otherwise return `false` (caller should cascade to parent).
+    fn try_collapse(&mut self, key: &ExpandKey) -> bool {
+        if self.expanded.remove(key) {
+            self.rows_dirty = true;
+            true
+        } else {
+            false
+        }
     }
 
     pub(super) fn collapse(&mut self) {
@@ -1092,71 +1211,85 @@ impl App {
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return;
         };
+        self.collapse_row(row);
+    }
 
+    fn collapse_row(&mut self, row: VisibleRow) {
         match row {
-            VisibleRow::Root { node_index } => {
-                self.expanded.remove(&ExpandKey::Node(node_index));
-                self.rows_dirty = true;
+            VisibleRow::Root { node_index: ni } => {
+                self.try_collapse(&ExpandKey::Node(ni));
             },
             VisibleRow::GroupHeader {
-                node_index,
-                group_index,
+                node_index: ni,
+                group_index: gi,
             } => {
-                if self
-                    .expanded
-                    .remove(&ExpandKey::Group(node_index, group_index))
-                {
-                    // Group was expanded, now collapsed — done
-                    self.rows_dirty = true;
-                } else {
-                    // Already collapsed group — collapse parent node
-                    self.expanded.remove(&ExpandKey::Node(node_index));
-                    self.rows_dirty = true;
-                    // Recompute rows and move cursor to the node root
-                    self.ensure_visible_rows_cached();
-                    if let Some(pos) = self.visible_rows().iter().position(
-                        |r| matches!(r, VisibleRow::Root { node_index: ni } if *ni == node_index),
-                    ) {
-                        self.list_state.select(Some(pos));
-                    }
+                if !self.try_collapse(&ExpandKey::Group(ni, gi)) {
+                    self.collapse_to(&ExpandKey::Node(ni), VisibleRow::Root { node_index: ni });
                 }
             },
             VisibleRow::Member {
-                node_index,
-                group_index,
+                node_index: ni,
+                group_index: gi,
                 ..
             } => {
-                let group_name = &self.nodes[node_index].groups[group_index].name;
-                if group_name.is_empty() {
-                    self.expanded.remove(&ExpandKey::Node(node_index));
-                    self.rows_dirty = true;
-                    self.ensure_visible_rows_cached();
-                    if let Some(pos) = self.visible_rows().iter().position(
-                        |r| matches!(r, VisibleRow::Root { node_index: ni } if *ni == node_index),
-                    ) {
-                        self.list_state.select(Some(pos));
-                    }
+                if self.nodes[ni].groups[gi].name.is_empty() {
+                    self.collapse_to(&ExpandKey::Node(ni), VisibleRow::Root { node_index: ni });
                 } else {
-                    self.expanded
-                        .remove(&ExpandKey::Group(node_index, group_index));
-                    self.rows_dirty = true;
-                    self.ensure_visible_rows_cached();
-                    if let Some(pos) = self.visible_rows().iter().position(|r| {
-                        matches!(r, VisibleRow::GroupHeader { node_index: ni, group_index: gi }
-                            if *ni == node_index && *gi == group_index)
-                    }) {
-                        self.list_state.select(Some(pos));
-                    }
+                    self.collapse_to(
+                        &ExpandKey::Group(ni, gi),
+                        VisibleRow::GroupHeader {
+                            node_index:  ni,
+                            group_index: gi,
+                        },
+                    );
                 }
             },
-            VisibleRow::WorktreeEntry { node_index, .. } => {
-                self.expanded.remove(&ExpandKey::Node(node_index));
-                self.rows_dirty = true;
-                self.ensure_visible_rows_cached();
-                if let Some(pos) = self.visible_rows().iter().position(
-                    |r| matches!(r, VisibleRow::Root { node_index: ni } if *ni == node_index),
-                ) {
-                    self.list_state.select(Some(pos));
+            VisibleRow::WorktreeEntry {
+                node_index: ni,
+                worktree_index: wi,
+            } => {
+                if !self.try_collapse(&ExpandKey::Worktree(ni, wi)) {
+                    self.collapse_to(&ExpandKey::Node(ni), VisibleRow::Root { node_index: ni });
+                }
+            },
+            VisibleRow::WorktreeGroupHeader {
+                node_index: ni,
+                worktree_index: wi,
+                group_index: gi,
+            } => {
+                if !self.try_collapse(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
+                    self.collapse_to(
+                        &ExpandKey::Worktree(ni, wi),
+                        VisibleRow::WorktreeEntry {
+                            node_index:     ni,
+                            worktree_index: wi,
+                        },
+                    );
+                }
+            },
+            VisibleRow::WorktreeMember {
+                node_index: ni,
+                worktree_index: wi,
+                group_index: gi,
+                ..
+            } => {
+                if self.nodes[ni].worktrees[wi].groups[gi].name.is_empty() {
+                    self.collapse_to(
+                        &ExpandKey::Worktree(ni, wi),
+                        VisibleRow::WorktreeEntry {
+                            node_index:     ni,
+                            worktree_index: wi,
+                        },
+                    );
+                } else {
+                    self.collapse_to(
+                        &ExpandKey::WorktreeGroup(ni, wi, gi),
+                        VisibleRow::WorktreeGroupHeader {
+                            node_index:     ni,
+                            worktree_index: wi,
+                            group_index:    gi,
+                        },
+                    );
                 }
             },
         }
@@ -1275,14 +1408,18 @@ impl App {
                 }
             }
             // Worktree entries
-            for wt in &node.worktrees {
+            for (wi, wt) in node.worktrees.iter().enumerate() {
                 if wt.project.path == target_path {
                     self.expanded.insert(ExpandKey::Node(ni));
                 }
-                for group in &wt.groups {
+                for (gi, group) in wt.groups.iter().enumerate() {
                     for member in &group.members {
                         if member.path == target_path {
                             self.expanded.insert(ExpandKey::Node(ni));
+                            self.expanded.insert(ExpandKey::Worktree(ni, wi));
+                            if !group.name.is_empty() {
+                                self.expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                            }
                         }
                     }
                 }
@@ -1322,7 +1459,20 @@ impl App {
                         return;
                     }
                 },
-                VisibleRow::GroupHeader { .. } => {},
+                VisibleRow::WorktreeMember {
+                    node_index,
+                    worktree_index,
+                    group_index,
+                    member_index,
+                } => {
+                    let wt = &self.nodes[*node_index].worktrees[*worktree_index];
+                    let member = &wt.groups[*group_index].members[*member_index];
+                    if member.path == target_path {
+                        self.list_state.select(Some(i));
+                        return;
+                    }
+                },
+                VisibleRow::GroupHeader { .. } | VisibleRow::WorktreeGroupHeader { .. } => {},
             }
         }
     }
@@ -1367,18 +1517,33 @@ impl App {
     }
 
     pub fn workspace_counts(&self, project: &RustProject) -> Option<ProjectCounts> {
-        let node = self.nodes.iter().find(|n| n.project.path == project.path)?;
-        if !node.has_members() {
-            return None;
-        }
-        let mut counts = ProjectCounts::default();
-        counts.add_project(&node.project);
-        for group in &node.groups {
-            for member in &group.members {
+        // Check top-level nodes first
+        if let Some(node) = self.nodes.iter().find(|n| n.project.path == project.path)
+            && node.has_members()
+        {
+            let mut counts = ProjectCounts::default();
+            counts.add_project(&node.project);
+            for member in Self::all_group_members(node) {
                 counts.add_project(member);
             }
+            return Some(counts);
         }
-        Some(counts)
+        // Check worktree entries (workspace worktrees have their own groups)
+        for node in &self.nodes {
+            for wt in &node.worktrees {
+                if wt.project.path == project.path && wt.has_members() {
+                    let mut counts = ProjectCounts::default();
+                    counts.add_project(&wt.project);
+                    for group in &wt.groups {
+                        for member in &group.members {
+                            counts.add_project(member);
+                        }
+                    }
+                    return Some(counts);
+                }
+            }
+        }
+        None
     }
 
     pub fn is_deleted(&self, path: &str) -> bool { self.deleted_projects.contains(path) }
@@ -1556,5 +1721,194 @@ impl App {
             },
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+    use crate::project::ProjectLanguage;
+    use crate::project::RustProject;
+    use crate::project::WorkspaceStatus;
+    use crate::scan::MemberGroup;
+    use crate::scan::ProjectNode;
+
+    fn make_project(name: Option<&str>, path: &str) -> RustProject {
+        RustProject {
+            path:                      path.to_string(),
+            abs_path:                  path.to_string(),
+            name:                      name.map(String::from),
+            version:                   None,
+            description:               None,
+            worktree_name:             None,
+            worktree_primary_abs_path: None,
+            is_workspace:              WorkspaceStatus::Standalone,
+            types:                     Vec::new(),
+            examples:                  Vec::new(),
+            benches:                   Vec::new(),
+            test_count:                0,
+            is_rust:                   ProjectLanguage::Rust,
+        }
+    }
+
+    fn make_node(project: RustProject) -> ProjectNode {
+        ProjectNode {
+            project,
+            groups: Vec::new(),
+            worktrees: Vec::new(),
+            vendored: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn visible_rows_workspace_with_worktrees() {
+        // A workspace whose groups have been moved to worktree entries
+        let mut root = make_node(make_project(None, "~/ws"));
+        let member_a = make_project(Some("a"), "~/ws/a");
+        let member_b = make_project(Some("b"), "~/ws/b");
+
+        // Primary-as-worktree with inline members
+        let mut wt0 = make_node(make_project(None, "~/ws"));
+        wt0.project.worktree_name = Some("ws".to_string());
+        wt0.groups = vec![MemberGroup {
+            name:    String::new(),
+            members: vec![member_a.clone(), member_b.clone()],
+        }];
+
+        // Actual worktree with a named group
+        let mut wt1 = make_node(make_project(None, "~/ws_feat"));
+        wt1.project.worktree_name = Some("ws_feat".to_string());
+        wt1.groups = vec![MemberGroup {
+            name:    "crates".to_string(),
+            members: vec![member_a, member_b],
+        }];
+
+        root.worktrees = vec![wt0, wt1];
+
+        // Expand everything: node, both worktrees, and the named group
+        let expanded: HashSet<ExpandKey> = [
+            ExpandKey::Node(0),
+            ExpandKey::Worktree(0, 0),
+            ExpandKey::Worktree(0, 1),
+            ExpandKey::WorktreeGroup(0, 1, 0),
+        ]
+        .into();
+
+        let rows = build_visible_rows(&[root], &expanded);
+
+        // Expected:
+        // 0: Root(0)
+        // 1: WorktreeEntry(0, 0)
+        // 2: WorktreeMember(0, 0, 0, 0)  — inline member a
+        // 3: WorktreeMember(0, 0, 0, 1)  — inline member b
+        // 4: WorktreeEntry(0, 1)
+        // 5: WorktreeGroupHeader(0, 1, 0) — "crates"
+        // 6: WorktreeMember(0, 1, 0, 0)
+        // 7: WorktreeMember(0, 1, 0, 1)
+        assert_eq!(rows.len(), 8, "expected 8 rows, got: {rows:?}");
+        assert!(matches!(rows[0], VisibleRow::Root { node_index: 0 }));
+        assert!(matches!(
+            rows[1],
+            VisibleRow::WorktreeEntry {
+                node_index:     0,
+                worktree_index: 0,
+            }
+        ));
+        assert!(matches!(
+            rows[2],
+            VisibleRow::WorktreeMember {
+                node_index:     0,
+                worktree_index: 0,
+                group_index:    0,
+                member_index:   0,
+            }
+        ));
+        assert!(matches!(
+            rows[4],
+            VisibleRow::WorktreeEntry {
+                node_index:     0,
+                worktree_index: 1,
+            }
+        ));
+        assert!(matches!(
+            rows[5],
+            VisibleRow::WorktreeGroupHeader {
+                node_index:     0,
+                worktree_index: 1,
+                group_index:    0,
+            }
+        ));
+        assert!(matches!(
+            rows[7],
+            VisibleRow::WorktreeMember {
+                node_index:     0,
+                worktree_index: 1,
+                group_index:    0,
+                member_index:   1,
+            }
+        ));
+    }
+
+    #[test]
+    fn visible_rows_non_workspace_worktrees() {
+        let build_root = || {
+            let mut root = make_node(make_project(Some("app"), "~/app"));
+            let mut wt0 = make_node(make_project(Some("app"), "~/app"));
+            wt0.project.worktree_name = Some("app".to_string());
+            let mut wt1 = make_node(make_project(Some("app"), "~/app_feat"));
+            wt1.project.worktree_name = Some("app_feat".to_string());
+            root.worktrees = vec![wt0, wt1];
+            root
+        };
+
+        // Standalone project with worktrees — flat, not expandable
+        let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
+        let rows = build_visible_rows(&[build_root()], &expanded);
+
+        // Root + 2 flat worktree entries
+        assert_eq!(rows.len(), 3, "got: {rows:?}");
+        assert!(matches!(rows[0], VisibleRow::Root { .. }));
+        assert!(matches!(rows[1], VisibleRow::WorktreeEntry { .. }));
+        assert!(matches!(rows[2], VisibleRow::WorktreeEntry { .. }));
+
+        // Expanding a worktree with no groups produces no additional rows
+        let expanded2: HashSet<ExpandKey> = [ExpandKey::Node(0), ExpandKey::Worktree(0, 0)].into();
+        let rows2 = build_visible_rows(&[build_root()], &expanded2);
+        assert_eq!(rows2.len(), 3, "no extra rows for non-workspace worktree");
+    }
+
+    #[test]
+    fn visible_rows_workspace_no_worktrees() {
+        // Workspace with groups, no worktrees — regression test
+        let member_a = make_project(Some("a"), "~/ws/a");
+        let member_b = make_project(Some("b"), "~/ws/b");
+        let mut root = make_node(make_project(None, "~/ws"));
+        root.groups = vec![MemberGroup {
+            name:    String::new(),
+            members: vec![member_a, member_b],
+        }];
+
+        let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
+        let rows = build_visible_rows(&[root], &expanded);
+
+        // Root + 2 inline members
+        assert_eq!(rows.len(), 3, "got: {rows:?}");
+        assert!(matches!(rows[0], VisibleRow::Root { .. }));
+        assert!(matches!(
+            rows[1],
+            VisibleRow::Member {
+                member_index: 0,
+                ..
+            }
+        ));
+        assert!(matches!(
+            rows[2],
+            VisibleRow::Member {
+                member_index: 1,
+                ..
+            }
+        ));
     }
 }

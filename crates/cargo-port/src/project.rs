@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
 use serde::Deserialize;
@@ -294,24 +295,28 @@ pub struct ExampleGroup {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RustProject {
     /// Display path (e.g. `~/rust/bevy`).
-    pub path:          String,
+    pub path:                      String,
     /// Absolute filesystem path for operations that need to access the project on disk.
     #[serde(skip)]
-    pub abs_path:      String,
-    pub name:          Option<String>,
-    pub version:       Option<String>,
-    pub description:   Option<String>,
-    pub worktree_name: Option<String>,
+    pub abs_path:                  String,
+    pub name:                      Option<String>,
+    pub version:                   Option<String>,
+    pub description:               Option<String>,
+    pub worktree_name:             Option<String>,
+    /// Absolute path of the primary git repo root. Shared by primaries and their
+    /// worktrees, used as the identity key for grouping worktrees together.
+    #[serde(skip)]
+    pub worktree_primary_abs_path: Option<String>,
     /// Whether this project has a `[workspace]` section.
     #[serde(default)]
-    pub is_workspace:  WorkspaceStatus,
-    pub types:         Vec<ProjectType>,
-    pub examples:      Vec<ExampleGroup>,
-    pub benches:       Vec<String>,
-    pub test_count:    usize,
+    pub is_workspace:              WorkspaceStatus,
+    pub types:                     Vec<ProjectType>,
+    pub examples:                  Vec<ExampleGroup>,
+    pub benches:                   Vec<String>,
+    pub test_count:                usize,
     /// Whether this project is a Rust project (has `Cargo.toml`).
     #[serde(default)]
-    pub is_rust:       ProjectLanguage,
+    pub is_rust:                   ProjectLanguage,
 }
 
 impl RustProject {
@@ -394,6 +399,7 @@ impl RustProject {
 
         // A `.git` file (not directory) indicates a git worktree
         let worktree_name = detect_worktree_name(project_dir);
+        let worktree_primary_abs_path = detect_worktree_primary(project_dir);
 
         let is_workspace = if table.get("workspace").is_some() {
             WorkspaceStatus::Workspace
@@ -414,6 +420,7 @@ impl RustProject {
             version,
             description,
             worktree_name,
+            worktree_primary_abs_path,
             is_workspace,
             types,
             examples,
@@ -431,6 +438,7 @@ impl RustProject {
         let path = home_relative_path(project_dir);
         let abs_path = project_dir.display().to_string();
         let worktree_name = detect_worktree_name(project_dir);
+        let worktree_primary_abs_path = detect_worktree_primary(project_dir);
 
         Self {
             path,
@@ -439,6 +447,7 @@ impl RustProject {
             version: None,
             description: None,
             worktree_name,
+            worktree_primary_abs_path,
             is_workspace: WorkspaceStatus::Standalone,
             types: Vec::new(),
             examples: Vec::new(),
@@ -696,6 +705,39 @@ fn detect_worktree_name(project_dir: &Path) -> Option<String> {
         if git_path.is_dir() {
             // Found a real .git directory — not a worktree
             return None;
+        }
+        dir = dir.parent()?;
+    }
+}
+
+/// Resolve the primary git repo root for a project directory.
+///
+/// For worktrees (`.git` is a file containing `gitdir: ...`), parse the gitdir
+/// path and strip the `.git/worktrees/<name>` suffix to find the primary root.
+/// For primary repos (`.git` is a directory), return the canonicalized directory.
+fn detect_worktree_primary(project_dir: &Path) -> Option<String> {
+    let mut dir = project_dir;
+    loop {
+        let git_path = dir.join(".git");
+        if git_path.is_file() {
+            let contents = std::fs::read_to_string(&git_path).ok()?;
+            let gitdir_str = contents.strip_prefix("gitdir: ")?.trim();
+            let gitdir = if Path::new(gitdir_str).is_absolute() {
+                PathBuf::from(gitdir_str)
+            } else {
+                dir.join(gitdir_str)
+            };
+            // gitdir is `<primary>/.git/worktrees/<name>` — go up 3 levels
+            let canonical = gitdir.canonicalize().ok()?;
+            let primary_root = canonical.parent()?.parent()?.parent()?;
+            return Some(primary_root.to_string_lossy().to_string());
+        }
+        if git_path.is_dir() {
+            // This IS the primary — canonicalize for consistent comparison
+            return dir
+                .canonicalize()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string());
         }
         dir = dir.parent()?;
     }

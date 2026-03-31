@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
@@ -949,6 +951,75 @@ fn render_child_item(
     }))
 }
 
+fn render_worktree_entry<'a>(
+    app: &App,
+    ni: usize,
+    wi: usize,
+    child_sorted: &HashMap<usize, Vec<u64>>,
+    widths: &FitWidths,
+) -> ListItem<'a> {
+    let wt = &app.nodes[ni].worktrees[wi];
+    let empty = Vec::new();
+    let sorted = child_sorted.get(&ni).unwrap_or(&empty);
+    let name = wt
+        .project
+        .worktree_name
+        .as_deref()
+        .unwrap_or(&wt.project.path)
+        .to_string();
+    let prefix = if wt.has_members() {
+        if app.expanded.contains(&ExpandKey::Worktree(ni, wi)) {
+            "    ▼ "
+        } else {
+            "    ▶ "
+        }
+    } else {
+        "    "
+    };
+    render_child_item(app, &wt.project, &name, sorted, prefix, widths)
+}
+
+fn render_wt_group_header<'a>(
+    app: &App,
+    ni: usize,
+    wi: usize,
+    gi: usize,
+    name_width: usize,
+) -> ListItem<'a> {
+    let group = &app.nodes[ni].worktrees[wi].groups[gi];
+    let arrow = if app.expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
+        "▼ "
+    } else {
+        "▶ "
+    };
+    let prefix = format!("        {arrow}");
+    let label = format!("{} ({})", group.name, group.members.len());
+    ListItem::new(group_header_spans(&prefix, &label, name_width))
+}
+
+fn render_wt_member<'a>(
+    app: &App,
+    ni: usize,
+    wi: usize,
+    gi: usize,
+    mi: usize,
+    child_sorted: &HashMap<usize, Vec<u64>>,
+    widths: &FitWidths,
+) -> ListItem<'a> {
+    let wt = &app.nodes[ni].worktrees[wi];
+    let group = &wt.groups[gi];
+    let member = &group.members[mi];
+    let empty = Vec::new();
+    let sorted = child_sorted.get(&ni).unwrap_or(&empty);
+    let indent = if group.name.is_empty() {
+        "        "
+    } else {
+        "            "
+    };
+    let name = member.display_name();
+    render_child_item(app, member, &name, sorted, indent, widths)
+}
+
 pub(super) fn render_tree_items(app: &App, widths: &FitWidths) -> Vec<ListItem<'static>> {
     let root_sorted = &app.cached_root_sorted;
     let child_sorted = &app.cached_child_sorted;
@@ -1001,18 +1072,28 @@ pub(super) fn render_tree_items(app: &App, widths: &FitWidths) -> Vec<ListItem<'
             VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
+            } => render_worktree_entry(app, *node_index, *worktree_index, child_sorted, widths),
+            VisibleRow::WorktreeGroupHeader {
+                node_index,
+                worktree_index,
+                group_index,
             } => {
-                let wt = &app.nodes[*node_index].worktrees[*worktree_index];
-                let empty = Vec::new();
-                let sorted = child_sorted.get(node_index).unwrap_or(&empty);
-                let name = wt
-                    .project
-                    .worktree_name
-                    .as_deref()
-                    .unwrap_or(&wt.project.path)
-                    .to_string();
-                render_child_item(app, &wt.project, &name, sorted, "    ", widths)
+                render_wt_group_header(app, *node_index, *worktree_index, *group_index, widths.name)
             },
+            VisibleRow::WorktreeMember {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+            } => render_wt_member(
+                app,
+                *node_index,
+                *worktree_index,
+                *group_index,
+                *member_index,
+                child_sorted,
+                widths,
+            ),
         })
         .collect()
 }
