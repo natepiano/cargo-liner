@@ -479,7 +479,8 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
         let client_ci = client.clone();
         let url = repo_url.clone();
         thread::spawn(move || {
-            let result = scan::fetch_ci_runs_cached(&client_ci, &url, &owner, &repo, ci_run_count);
+            let (result, _meta) =
+                scan::fetch_ci_runs_cached(&client_ci, &url, &owner, &repo, ci_run_count);
             let runs = match result {
                 CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
             };

@@ -198,15 +198,16 @@ pub fn load_all_cached_runs(owner: &str, repo: &str) -> Vec<CiRun> {
         .collect()
 }
 
-/// Fetch recent CI runs: serve from cache when possible, batch-fetch
-/// jobs for uncached runs via a single GraphQL call.
+/// Fetch recent CI runs and repo metadata: serve cached runs when
+/// possible, batch-fetch jobs for uncached runs + repo stars/description
+/// in a single GraphQL call.
 fn fetch_recent_runs(
     client: &HttpClient,
     repo_url: &str,
     owner: &str,
     repo: &str,
     gh_runs: &[GhRun],
-) -> Vec<CiRun> {
+) -> (Vec<CiRun>, Option<RepoMetaInfo>) {
     let mut result: Vec<CiRun> = Vec::with_capacity(gh_runs.len());
 
     // Partition into cached hits and misses.
@@ -219,19 +220,17 @@ fn fetch_recent_runs(
         }
     }
 
-    // Batch-fetch jobs for all uncached runs in one GraphQL call.
-    if !uncached.is_empty() {
-        let jobs_map = client.batch_fetch_jobs(&uncached);
-        for gh_run in &uncached {
-            if let Some(check_runs) = jobs_map.get(&gh_run.id) {
-                let ci_run = ci::build_ci_run(gh_run, check_runs.clone(), repo_url);
-                save_cached_run(owner, repo, &ci_run);
-                result.push(ci_run);
-            }
+    // Single GraphQL call: jobs for uncached runs + repo metadata.
+    let (jobs_map, meta) = client.batch_fetch_jobs_and_meta(owner, repo, &uncached);
+    for gh_run in &uncached {
+        if let Some(check_runs) = jobs_map.get(&gh_run.id) {
+            let ci_run = ci::build_ci_run(gh_run, check_runs.clone(), repo_url);
+            save_cached_run(owner, repo, &ci_run);
+            result.push(ci_run);
         }
     }
 
-    result
+    (result, meta)
 }
 
 /// Merge fetched + cached runs, deduplicated by `run_id`, sorted descending.
@@ -266,19 +265,20 @@ pub fn fetch_ci_runs_cached(
     owner: &str,
     repo: &str,
     count: u32,
-) -> CiFetchResult {
+) -> (CiFetchResult, Option<RepoMetaInfo>) {
     let gh_runs = client
         .list_runs(owner, repo, None, count)
         .unwrap_or_default();
-    let fetched = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
+    let (fetched, meta) = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
     let cached = load_all_cached_runs(owner, repo);
     let merged = merge_runs(fetched, cached);
 
-    if gh_runs.is_empty() {
+    let result = if gh_runs.is_empty() {
         CiFetchResult::CacheOnly(merged)
     } else {
         CiFetchResult::Loaded(merged)
-    }
+    };
+    (result, meta)
 }
 
 /// Fetch older CI runs beyond what we currently have, by requesting a
@@ -294,7 +294,7 @@ pub fn fetch_older_runs(
     let gh_runs = client
         .list_runs(owner, repo, None, fetch_count)
         .unwrap_or_default();
-    let fetched = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
+    let (fetched, _meta) = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
 
     let mut result = fetched;
     result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
@@ -318,7 +318,7 @@ pub fn fetch_newer_runs(
     let gh_runs = client
         .list_runs(owner, repo, None, current_count)
         .unwrap_or_default();
-    let mut result = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
+    let (mut result, _meta) = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
     result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
 
     if gh_runs.is_empty() {
@@ -330,6 +330,7 @@ pub fn fetch_newer_runs(
 
 /// Sent once per session when the first network operation fails.
 static OFFLINE_NOTIFIED: AtomicBool = AtomicBool::new(false);
+static ONLINE_CHECKED: AtomicBool = AtomicBool::new(false);
 
 /// Send a one-shot offline notification if we haven't already.
 fn notify_offline_once(tx: &mpsc::Sender<BackgroundMsg>) {
@@ -699,32 +700,29 @@ pub fn fetch_project_details(
         });
     }
 
-    // Disk usage (local but slow for large projects)
-    let bytes = dir_size(abs_path);
-    let _ = tx.send(BackgroundMsg::DiskUsage {
-        path: project_path.to_string(),
-        bytes,
-    });
+    // Network operations — check connectivity once per session.
+    let online =
+        if ONLINE_CHECKED.load(Ordering::Relaxed) || OFFLINE_NOTIFIED.load(Ordering::Relaxed) {
+            !OFFLINE_NOTIFIED.load(Ordering::Relaxed)
+        } else {
+            let is_online = client.check_online();
+            ONLINE_CHECKED.store(true, Ordering::Relaxed);
+            if !is_online {
+                notify_offline_once(tx);
+            }
+            is_online
+        };
 
-    // Network operations — check connectivity once before attempting
-    let online = if OFFLINE_NOTIFIED.load(Ordering::Relaxed) {
-        true
-    } else {
-        let is_online = client.check_online();
-        if !is_online {
-            notify_offline_once(tx);
-        }
-        is_online
-    };
-
-    // CI runs — repo identity from *local* git remote, never from network
+    // CI runs + repo metadata — combined in a single GraphQL call.
+    // Done before disk usage so network I/O overlaps with other
+    // projects' disk walks on the rayon pool.
     if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
         && let Some((owner, repo)) = ci::parse_owner_repo(repo_url)
     {
         let _ = tx.send(BackgroundMsg::ScanActivity {
             path: format!("CI: {project_path}"),
         });
-        let result = fetch_ci_runs_cached(client, repo_url, &owner, &repo, ci_run_count);
+        let (result, meta) = fetch_ci_runs_cached(client, repo_url, &owner, &repo, ci_run_count);
         let is_cache_only = matches!(result, CiFetchResult::CacheOnly(_));
         let runs = match result {
             CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
@@ -736,6 +734,13 @@ pub fn fetch_project_details(
             path: project_path.to_string(),
             runs,
         });
+        if let Some(meta) = meta {
+            let _ = tx.send(BackgroundMsg::RepoMeta {
+                path:        project_path.to_string(),
+                stars:       meta.stars,
+                description: meta.description,
+            });
+        }
     }
 
     // Crates.io version + downloads (network)
@@ -749,17 +754,13 @@ pub fn fetch_project_details(
         });
     }
 
-    // GitHub repo metadata (network)
-    if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
-        && let Some((owner, repo)) = ci::parse_owner_repo(repo_url)
-        && let Some(meta) = client.fetch_repo_meta(&owner, &repo)
-    {
-        let _ = tx.send(BackgroundMsg::RepoMeta {
-            path:        project_path.to_string(),
-            stars:       meta.stars,
-            description: meta.description,
-        });
-    }
+    // Disk usage last — walking large `target/` dirs is the slowest
+    // local operation and doesn't block anything else.
+    let bytes = dir_size(abs_path);
+    let _ = tx.send(BackgroundMsg::DiskUsage {
+        path: project_path.to_string(),
+        bytes,
+    });
 }
 
 pub struct RepoMetaInfo {

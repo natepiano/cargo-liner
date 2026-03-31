@@ -146,7 +146,7 @@ pub fn run(path: &Path, args: &CiArgs) -> ExitCode {
     };
 
     let run_refs: Vec<&GhRun> = runs.iter().collect();
-    let jobs_map = client.batch_fetch_jobs(&run_refs);
+    let (jobs_map, _meta) = client.batch_fetch_jobs_and_meta(&owner, &repo, &run_refs);
     let ci_runs: Vec<CiRun> = runs
         .iter()
         .filter_map(|gh_run| {

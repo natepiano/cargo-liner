@@ -45,11 +45,6 @@ struct GqlCheckRunConnection {
     nodes: Vec<GqlCheckRun>,
 }
 
-#[derive(Deserialize)]
-struct GqlBatchResponse {
-    data: HashMap<String, GqlRunNode>,
-}
-
 // ── Client ───────────────────────────────────────────────────────────
 
 /// Shared HTTP client backed by `ureq::Agent` for connection pooling.
@@ -134,58 +129,68 @@ impl HttpClient {
         Some(response.workflow_runs)
     }
 
-    /// Batch-fetch job details for multiple runs in a single GraphQL
-    /// call. Returns a map from `run_id` → check runs.
-    pub fn batch_fetch_jobs(&self, runs: &[&GhRun]) -> HashMap<u64, Vec<GqlCheckRun>> {
-        if runs.is_empty() {
-            return HashMap::new();
+    /// Batch-fetch job details for uncached runs AND repo metadata in
+    /// a single GraphQL call. Returns jobs map + optional repo metadata.
+    pub fn batch_fetch_jobs_and_meta(
+        &self,
+        owner: &str,
+        repo: &str,
+        runs: &[&GhRun],
+    ) -> (HashMap<u64, Vec<GqlCheckRun>>, Option<RepoMetaInfo>) {
+        let repo_fragment = format!(
+            "repo: repository(owner: \"{owner}\", name: \"{repo}\") {{ stargazerCount description }}"
+        );
+
+        let run_fragment = "checkSuite { checkRuns(first: 50) { nodes { \
+                            name conclusion startedAt completedAt } } }";
+
+        let mut parts = vec![repo_fragment];
+        for (i, run) in runs.iter().enumerate() {
+            parts.push(format!(
+                "run_{i}: node(id: \"{}\") \
+                 {{ ... on WorkflowRun {{ databaseId {run_fragment} }} }}",
+                run.node_id
+            ));
         }
 
-        let fragment = "checkSuite { checkRuns(first: 50) { nodes { \
-                        name conclusion startedAt completedAt } } }";
-
-        let aliases: Vec<String> = runs
-            .iter()
-            .enumerate()
-            .map(|(i, run)| {
-                format!(
-                    "run_{i}: node(id: \"{}\") \
-                     {{ ... on WorkflowRun {{ databaseId {fragment} }} }}",
-                    run.node_id
-                )
-            })
-            .collect();
-
-        let query = format!("{{ {} }}", aliases.join(" "));
+        let query = format!("{{ {} }}", parts.join(" "));
         let Some(body) = self.github_graphql(&query) else {
-            return HashMap::new();
+            return (HashMap::new(), None);
         };
-        let Ok(response) = serde_json::from_slice::<GqlBatchResponse>(&body) else {
-            return HashMap::new();
+        let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) else {
+            return (HashMap::new(), None);
+        };
+        let Some(data) = json.get("data") else {
+            return (HashMap::new(), None);
         };
 
-        response
-            .data
-            .into_values()
-            .filter_map(|node| {
-                let check_runs = node.check_suite?.check_runs.nodes;
+        // Parse repo metadata.
+        let meta = data.get("repo").and_then(|r| {
+            let stars = r.get("stargazerCount")?.as_u64()?;
+            let description = r
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            Some(RepoMetaInfo { stars, description })
+        });
 
-                Some((node.database_id, check_runs))
+        // Parse run nodes.
+        let jobs = data
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .filter(|(key, _)| key.starts_with("run_"))
+                    .filter_map(|(_, val)| {
+                        let node: GqlRunNode = serde_json::from_value(val.clone()).ok()?;
+                        let check_runs = node.check_suite?.check_runs.nodes;
+                        Some((node.database_id, check_runs))
+                    })
+                    .collect()
             })
-            .collect()
-    }
+            .unwrap_or_default();
 
-    /// Fetch stars and description for a GitHub repo.
-    pub fn fetch_repo_meta(&self, owner: &str, repo: &str) -> Option<RepoMetaInfo> {
-        let body = self.github_get(&format!("repos/{owner}/{repo}"))?;
-        let json: serde_json::Value = serde_json::from_slice(&body).ok()?;
-        let stars = json.get("stargazers_count")?.as_u64()?;
-        let description = json
-            .get("description")
-            .and_then(serde_json::Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(String::from);
-        Some(RepoMetaInfo { stars, description })
+        (jobs, meta)
     }
 
     // ── Crates.io ────────────────────────────────────────────────────
