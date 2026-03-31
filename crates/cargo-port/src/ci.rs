@@ -1,11 +1,11 @@
+use std::collections::HashMap;
+use std::fmt::Write;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::Command;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Args;
-use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -30,27 +30,55 @@ pub struct CiArgs {
     json: bool,
 }
 
+/// Workflow run from the GitHub REST API (`/actions/runs`).
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct GhRun {
-    pub database_id:   u64,
+    pub id:            u64,
+    pub node_id:       String,
     pub created_at:    String,
     pub head_branch:   String,
     pub display_title: Option<String>,
 }
 
+/// Response wrapper for the REST API runs listing.
 #[derive(Deserialize)]
+struct GhRunsResponse {
+    workflow_runs: Vec<GhRun>,
+}
+
+/// Job from the GraphQL `checkRuns` response (upper-case conclusion).
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GhJob {
+pub struct GqlCheckRun {
     name:         String,
     conclusion:   Option<String>,
     started_at:   Option<String>,
     completed_at: Option<String>,
 }
 
+/// GraphQL node response containing a check suite with jobs.
 #[derive(Deserialize)]
-struct GhJobsResponse {
-    jobs: Vec<GhJob>,
+#[serde(rename_all = "camelCase")]
+struct GqlRunNode {
+    database_id: u64,
+    check_suite: Option<GqlCheckSuite>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlCheckSuite {
+    check_runs: GqlCheckRunConnection,
+}
+
+#[derive(Deserialize)]
+struct GqlCheckRunConnection {
+    nodes: Vec<GqlCheckRun>,
+}
+
+/// Top-level GraphQL response with aliased run nodes.
+#[derive(Deserialize)]
+struct GqlBatchResponse {
+    data: HashMap<String, GqlRunNode>,
 }
 
 #[derive(Deserialize)]
@@ -124,8 +152,7 @@ pub struct CiJob {
     pub duration_secs: Option<u64>,
 }
 
-#[allow(clippy::needless_pass_by_value)]
-pub fn run(path: PathBuf, args: CiArgs) -> ExitCode {
+pub fn run(path: &Path, args: &CiArgs) -> ExitCode {
     let Ok(repo_dir) = path.canonicalize() else {
         eprintln!("Error: cannot resolve path '{}'", path.display());
         return ExitCode::FAILURE;
@@ -147,17 +174,13 @@ pub fn run(path: PathBuf, args: CiArgs) -> ExitCode {
         },
     };
 
+    let run_refs: Vec<&GhRun> = runs.iter().collect();
+    let jobs_map = batch_fetch_jobs(&repo_dir, &run_refs);
     let ci_runs: Vec<CiRun> = runs
-        .par_iter()
+        .iter()
         .filter_map(|gh_run| {
-            let ci_run = process_gh_run(gh_run, &repo_dir, &repo_url);
-            if ci_run.is_none() {
-                eprintln!(
-                    "Warning: failed to fetch jobs for run {}",
-                    gh_run.database_id
-                );
-            }
-            ci_run
+            let check_runs = jobs_map.get(&gh_run.id)?;
+            Some(build_ci_run(gh_run, check_runs.clone(), &repo_url))
         })
         .collect();
 
@@ -170,12 +193,12 @@ pub fn run(path: PathBuf, args: CiArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-pub fn process_gh_run(gh_run: &GhRun, repo_dir: &Path, repo_url: &str) -> Option<CiRun> {
-    let jobs = get_jobs(repo_dir, gh_run.database_id)?;
+/// Build a `CiRun` from a `GhRun` and pre-fetched check run data.
+pub fn build_ci_run(gh_run: &GhRun, check_runs: Vec<GqlCheckRun>, repo_url: &str) -> CiRun {
     let mut earliest_start: Option<u64> = None;
     let mut latest_completion: Option<u64> = None;
 
-    let ci_jobs: Vec<CiJob> = jobs
+    let ci_jobs: Vec<CiJob> = check_runs
         .into_iter()
         .map(|job| {
             if let Some(start) = job.started_at.as_ref().and_then(|s| parse_iso8601(s).ok()) {
@@ -190,7 +213,7 @@ pub fn process_gh_run(gh_run: &GhRun, repo_dir: &Path, repo_url: &str) -> Option
                 latest_completion =
                     Some(latest_completion.map_or(end, |current: u64| current.max(end)));
             }
-            let conclusion = parse_conclusion(job.conclusion.as_deref());
+            let conclusion = parse_gql_conclusion(job.conclusion.as_deref());
             let duration_secs =
                 compute_duration_secs(job.started_at.as_ref(), job.completed_at.as_ref());
             let duration = duration_secs.map_or_else(|| "—".to_string(), format_secs);
@@ -209,17 +232,61 @@ pub fn process_gh_run(gh_run: &GhRun, repo_dir: &Path, repo_url: &str) -> Option
 
     let conclusion = run_conclusion(&ci_jobs);
 
-    Some(CiRun {
-        run_id: gh_run.database_id,
+    CiRun {
+        run_id: gh_run.id,
         created_at: gh_run.created_at.clone(),
         branch: gh_run.head_branch.clone(),
-        url: format!("{repo_url}/actions/runs/{}", gh_run.database_id),
+        url: format!("{repo_url}/actions/runs/{}", gh_run.id),
         conclusion,
         wall_clock_secs,
         jobs: ci_jobs,
         commit_title: gh_run.display_title.clone(),
         fetched: FetchStatus::Fetched,
-    })
+    }
+}
+
+/// Fetch jobs for multiple runs in a single GraphQL call using node
+/// ID aliases. Returns a map from `run_id` → check runs.
+pub fn batch_fetch_jobs(repo_dir: &Path, runs: &[&GhRun]) -> HashMap<u64, Vec<GqlCheckRun>> {
+    if runs.is_empty() {
+        return HashMap::new();
+    }
+
+    let fragment = "checkSuite { checkRuns(first: 50) { nodes { \
+                    name conclusion startedAt completedAt } } }";
+
+    let aliases: Vec<String> = runs
+        .iter()
+        .enumerate()
+        .map(|(i, run)| {
+            format!(
+                "run_{i}: node(id: \"{}\") {{ ... on WorkflowRun {{ databaseId {fragment} }} }}",
+                run.node_id
+            )
+        })
+        .collect();
+
+    let query = format!("{{ {} }}", aliases.join(" "));
+    let stdout = gh_command_with_timeout(
+        repo_dir,
+        &["api", "graphql", "-f", &format!("query={query}")],
+    );
+
+    let Some(stdout) = stdout else {
+        return HashMap::new();
+    };
+    let Ok(response) = serde_json::from_slice::<GqlBatchResponse>(&stdout) else {
+        return HashMap::new();
+    };
+
+    response
+        .data
+        .into_values()
+        .filter_map(|node| {
+            let check_runs = node.check_suite?.check_runs.nodes;
+            Some((node.database_id, check_runs))
+        })
+        .collect()
 }
 
 fn gh_command_with_timeout(repo_dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
@@ -273,33 +340,14 @@ pub fn get_repo_url(repo_dir: &Path) -> Option<String> {
 }
 
 pub fn list_runs(repo_dir: &Path, branch: Option<&String>, count: u32) -> Option<Vec<GhRun>> {
-    let count_str = count.to_string();
-    let mut args = vec![
-        "run",
-        "list",
-        "--limit",
-        &count_str,
-        "--status",
-        "completed",
-        "--json",
-        "databaseId,createdAt,headBranch,displayTitle",
-    ];
-
+    let mut endpoint =
+        format!("repos/{{owner}}/{{repo}}/actions/runs?per_page={count}&status=completed");
     if let Some(branch) = branch {
-        args.push("--branch");
-        args.push(branch);
+        let _ = write!(endpoint, "&branch={branch}");
     }
-
-    let stdout = gh_command_with_timeout(repo_dir, &args)?;
-    serde_json::from_slice(&stdout).ok()
-}
-
-fn get_jobs(repo_dir: &Path, run_id: u64) -> Option<Vec<GhJob>> {
-    let run_id_str = run_id.to_string();
-    let stdout =
-        gh_command_with_timeout(repo_dir, &["run", "view", &run_id_str, "--json", "jobs"])?;
-    let response: GhJobsResponse = serde_json::from_slice(&stdout).ok()?;
-    Some(response.jobs)
+    let stdout = gh_command_with_timeout(repo_dir, &["api", &endpoint])?;
+    let response: GhRunsResponse = serde_json::from_slice(&stdout).ok()?;
+    Some(response.workflow_runs)
 }
 
 fn run_conclusion(jobs: &[CiJob]) -> Conclusion {
@@ -312,10 +360,12 @@ fn run_conclusion(jobs: &[CiJob]) -> Conclusion {
     Conclusion::Success
 }
 
-fn parse_conclusion(conclusion: Option<&str>) -> Conclusion {
+/// Parse conclusion from GraphQL `CheckRun` (`SUCCESS`, `FAILURE`,
+/// `CANCELLED`).
+fn parse_gql_conclusion(conclusion: Option<&str>) -> Conclusion {
     match conclusion {
-        Some("success") => Conclusion::Success,
-        Some("failure") => Conclusion::Failure,
+        Some("SUCCESS") => Conclusion::Success,
+        Some("FAILURE") => Conclusion::Failure,
         _ => Conclusion::Cancelled,
     }
 }

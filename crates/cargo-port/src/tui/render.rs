@@ -46,6 +46,7 @@ use crate::constants::GIT_CLONE;
 use crate::constants::GIT_FORK;
 use crate::constants::GIT_LOCAL;
 use crate::constants::IN_SYNC;
+use crate::constants::WORKTREE;
 use crate::project;
 use crate::project::GitOrigin;
 use crate::project::ProjectLanguage::Rust;
@@ -90,7 +91,10 @@ impl CiColumn {
 }
 
 pub(super) fn format_bytes(bytes: u64) -> String {
-    #[allow(clippy::cast_precision_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "display-only — sub-byte precision is irrelevant"
+    )]
     if bytes >= BYTES_PER_GIB {
         format!("{:.1} GiB", bytes as f64 / BYTES_PER_GIB as f64)
     } else {
@@ -98,7 +102,27 @@ pub(super) fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// Terminal display width of a string, accounting for multi-byte and wide characters.
+/// Use this for ALL layout calculations — never `.len()` for column sizing.
 pub(super) fn display_width(s: &str) -> usize { UnicodeWidthStr::width(s) }
+
+// ── Row prefix strings ───────────────────────────────────────────────
+// Single source of truth: width calc and render both reference these.
+
+pub(super) const PREFIX_ROOT_EXPANDED: &str = "▼ ";
+pub(super) const PREFIX_ROOT_COLLAPSED: &str = "▶ ";
+pub(super) const PREFIX_ROOT_LEAF: &str = "  ";
+pub(super) const PREFIX_MEMBER_INLINE: &str = "    ";
+pub(super) const PREFIX_MEMBER_NAMED: &str = "        ";
+pub(super) const PREFIX_GROUP_EXPANDED: &str = "    ▼ ";
+pub(super) const PREFIX_GROUP_COLLAPSED: &str = "    ▶ ";
+pub(super) const PREFIX_WT_EXPANDED: &str = "    ▼ ";
+pub(super) const PREFIX_WT_COLLAPSED: &str = "    ▶ ";
+pub(super) const PREFIX_WT_FLAT: &str = "    ";
+pub(super) const PREFIX_WT_GROUP_EXPANDED: &str = "        ▼ ";
+pub(super) const PREFIX_WT_GROUP_COLLAPSED: &str = "        ▶ ";
+pub(super) const PREFIX_WT_MEMBER_INLINE: &str = "        ";
+pub(super) const PREFIX_WT_MEMBER_NAMED: &str = "            ";
 
 pub(super) fn conclusion_style(conclusion: Option<Conclusion>) -> Style {
     match conclusion {
@@ -117,8 +141,7 @@ pub(super) fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 /// Compute a color for a disk value: green (smallest) → white (middle) → red (largest).
 #[allow(
     clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    reason = "display-only — index-to-float ratio for color interpolation"
 )]
 /// Compute the percentile rank of `bytes` within `sorted_values` (0.0 to 1.0).
 pub(super) fn disk_percentile(bytes: Option<u64>, sorted_values: &[u64]) -> Option<f64> {
@@ -133,7 +156,11 @@ pub(super) fn disk_percentile(bytes: Option<u64>, sorted_values: &[u64]) -> Opti
     Some(rank as f64 / (sorted_values.len() - 1) as f64)
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "values are clamped to 0.0..=255.0 before cast"
+)]
 pub(super) fn disk_color(percentile: Option<f64>) -> Style {
     let Some(pos) = percentile else {
         return Style::default().fg(Color::DarkGray);
@@ -144,14 +171,14 @@ pub(super) fn disk_color(percentile: Option<f64>) -> Style {
         // Green to white: increase R and B
         let t = pos * 2.0;
         (
-            155.0f64.mul_add(t, 100.0) as u8,
-            35.0f64.mul_add(t, 220.0) as u8,
-            155.0f64.mul_add(t, 100.0) as u8,
+            155.0f64.mul_add(t, 100.0).clamp(0.0, 255.0) as u8,
+            35.0f64.mul_add(t, 220.0).clamp(0.0, 255.0) as u8,
+            155.0f64.mul_add(t, 100.0).clamp(0.0, 255.0) as u8,
         )
     } else {
         // White to red: decrease G and B
         let t = (pos - 0.5) * 2.0;
-        let gb = 155.0f64.mul_add(-t, 255.0) as u8;
+        let gb = 155.0f64.mul_add(-t, 255.0).clamp(0.0, 255.0) as u8;
         (255, gb, gb)
     };
 
@@ -212,7 +239,7 @@ fn ci_icon_width() -> usize {
 pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
     let prefix_width = display_width(row.prefix);
     let available = row.name_width.saturating_sub(prefix_width);
-    let padded_name = format!("{}{:<available$}", row.prefix, row.name);
+    let padded_name = format!("{}{}", row.prefix, pad_right(row.name, available));
     let disk_width = row.disk_width;
     let sync_width = row.sync_width;
     let sync_cell = if row.git_sync == IN_SYNC {
@@ -293,7 +320,7 @@ pub(super) fn probe_row_width(name_width: usize, disk_width: usize, sync_width: 
 pub(super) fn group_header_spans(prefix: &str, name: &str, name_width: usize) -> Line<'static> {
     let prefix_width = display_width(prefix);
     let available = name_width.saturating_sub(prefix_width);
-    let padded = format!("{prefix}{name:<available$}");
+    let padded = format!("{prefix}{}", pad_right(name, available));
     Line::from(vec![Span::styled(
         padded,
         Style::default().fg(Color::Yellow),
@@ -308,12 +335,14 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
 
-    #[allow(clippy::cast_possible_truncation)]
-    let left_width = (probe_row_width(
-        app.cached_fit_widths.name,
-        app.cached_fit_widths.disk,
-        app.cached_fit_widths.sync,
-    ) + BLOCK_BORDER_WIDTH) as u16;
+    let left_width = u16::try_from(
+        probe_row_width(
+            app.cached_fit_widths.name,
+            app.cached_fit_widths.disk,
+            app.cached_fit_widths.sync,
+        ) + BLOCK_BORDER_WIDTH,
+    )
+    .unwrap_or(u16::MAX);
 
     let main_layout = Layout::default()
         .direction(Direction::Horizontal)
@@ -342,8 +371,7 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
     };
 
     let text = format!(" {prompt}  (y/n) ");
-    #[allow(clippy::cast_possible_truncation)]
-    let width = (text.len() + 4) as u16;
+    let width = u16::try_from(text.len() + 4).unwrap_or(u16::MAX);
     let area = centered_rect(width, CONFIRM_DIALOG_HEIGHT, frame.area());
     frame.render_widget(Clear, area);
 
@@ -370,8 +398,7 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let left_constraints = if app.scan_complete {
         vec![Constraint::Length(search_height), Constraint::Min(1)]
     } else {
-        #[allow(clippy::cast_possible_truncation)]
-        let project_rows = app.visible_rows().len() as u16;
+        let project_rows = u16::try_from(app.visible_rows().len()).unwrap_or(u16::MAX);
         let project_height = (project_rows + 2).max(3);
         vec![
             Constraint::Length(search_height),
@@ -492,24 +519,29 @@ fn render_empty_ci_panel(frame: &mut Frame, app: &App, project: Option<&RustProj
     }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "values are clamped to 0.0..=255.0 before cast"
+)]
 fn render_offline_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let msg = "  No internet connection  ";
 
     // Pulsing color wash using spinner_tick (~60fps)
-    #[allow(clippy::cast_precision_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "display-only — animation phase from small counter"
+    )]
     let phase = (app.spinner_tick % OFFLINE_PULSE_CYCLE) as f64 / OFFLINE_PULSE_CYCLE as f64;
     let pulse = (phase * std::f64::consts::TAU)
         .sin()
         .mul_add(OFFLINE_PULSE_AMPLITUDE, OFFLINE_PULSE_OFFSET);
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let r = (OFFLINE_PULSE_RED * pulse) as u8;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let g = (OFFLINE_PULSE_GREEN * pulse) as u8;
+    let r = (OFFLINE_PULSE_RED * pulse).clamp(0.0, 255.0) as u8;
+    let g = (OFFLINE_PULSE_GREEN * pulse).clamp(0.0, 255.0) as u8;
     let fg = Color::Rgb(r, g, OFFLINE_PULSE_BLUE);
 
-    #[allow(clippy::cast_possible_truncation)]
-    let msg_width = msg.len() as u16;
+    let msg_width = u16::try_from(msg.len()).unwrap_or(u16::MAX);
     let x = area.x + area.width.saturating_sub(msg_width) / 2;
     let y = area.y + area.height / 2;
 
@@ -725,8 +757,7 @@ fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let inner_height = area.height.saturating_sub(2);
-    #[allow(clippy::cast_possible_truncation)]
-    let total_lines = lines.len() as u16;
+    let total_lines = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let scroll_offset = total_lines.saturating_sub(inner_height);
 
     let paragraph = Paragraph::new(lines)
@@ -778,11 +809,11 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             let total_width = area.width as usize;
             let flash_width = msg.width();
             let flash_start = total_width.saturating_sub(flash_width) / 2;
-            #[allow(clippy::cast_possible_truncation)]
             let flash_area = Rect {
-                x:      area.x + flash_start as u16,
+                x:      area.x + u16::try_from(flash_start).unwrap_or(u16::MAX),
                 y:      area.y,
-                width:  (total_width - flash_start).min(flash_width + 1) as u16,
+                width:  u16::try_from((total_width - flash_start).min(flash_width + 1))
+                    .unwrap_or(u16::MAX),
                 height: 1,
             };
             frame.render_widget(
@@ -840,11 +871,11 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         let center_start = total_width.saturating_sub(center_width) / 2;
         // Only render if it doesn't overlap with the left section
         if center_start >= left_width {
-            #[allow(clippy::cast_possible_truncation)]
             let center_area = Rect {
-                x:      area.x + center_start as u16,
+                x:      area.x + u16::try_from(center_start).unwrap_or(u16::MAX),
                 y:      area.y,
-                width:  (total_width - center_start).min(center_width + 1) as u16,
+                width:  u16::try_from((total_width - center_start).min(center_width + 1))
+                    .unwrap_or(u16::MAX),
                 height: 1,
             };
             frame.render_widget(
@@ -857,11 +888,10 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Right section
     if !right_spans.is_empty() {
         let right_start = total_width.saturating_sub(right_width + 1);
-        #[allow(clippy::cast_possible_truncation)]
         let right_area = Rect {
-            x:      area.x + right_start as u16,
+            x:      area.x + u16::try_from(right_start).unwrap_or(u16::MAX),
             y:      area.y,
-            width:  (right_width + 1) as u16,
+            width:  u16::try_from(right_width + 1).unwrap_or(u16::MAX),
             height: 1,
         };
         frame.render_widget(
@@ -885,7 +915,7 @@ fn render_root_item(
     let mut name = project.display_name();
     let live_wt = app.live_worktree_count(node);
     if live_wt > 0 {
-        name = format!("{name} wt:{live_wt}");
+        name = format!("{name} {WORKTREE}:{live_wt}");
     }
     let disk = app.formatted_disk_for_node(node);
     let disk_bytes = app.disk_bytes_for_node(node);
@@ -896,12 +926,12 @@ fn render_root_item(
     let sync = app.git_sync(project);
     let prefix = if node.has_children() {
         if app.expanded.contains(&ExpandKey::Node(node_index)) {
-            "▼ "
+            PREFIX_ROOT_EXPANDED
         } else {
-            "▶ "
+            PREFIX_ROOT_COLLAPSED
         }
     } else {
-        "  "
+        PREFIX_ROOT_LEAF
     };
     ListItem::new(project_row_spans(&RowData {
         prefix,
@@ -969,12 +999,12 @@ fn render_worktree_entry<'a>(
         .to_string();
     let prefix = if wt.has_members() {
         if app.expanded.contains(&ExpandKey::Worktree(ni, wi)) {
-            "    ▼ "
+            PREFIX_WT_EXPANDED
         } else {
-            "    ▶ "
+            PREFIX_WT_COLLAPSED
         }
     } else {
-        "    "
+        PREFIX_WT_FLAT
     };
     render_child_item(app, &wt.project, &name, sorted, prefix, widths)
 }
@@ -987,14 +1017,13 @@ fn render_wt_group_header<'a>(
     name_width: usize,
 ) -> ListItem<'a> {
     let group = &app.nodes[ni].worktrees[wi].groups[gi];
-    let arrow = if app.expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
-        "▼ "
+    let prefix = if app.expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
+        PREFIX_WT_GROUP_EXPANDED
     } else {
-        "▶ "
+        PREFIX_WT_GROUP_COLLAPSED
     };
-    let prefix = format!("        {arrow}");
     let label = format!("{} ({})", group.name, group.members.len());
-    ListItem::new(group_header_spans(&prefix, &label, name_width))
+    ListItem::new(group_header_spans(prefix, &label, name_width))
 }
 
 fn render_wt_member<'a>(
@@ -1012,9 +1041,9 @@ fn render_wt_member<'a>(
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
     let indent = if group.name.is_empty() {
-        "        "
+        PREFIX_WT_MEMBER_INLINE
     } else {
-        "            "
+        PREFIX_WT_MEMBER_NAMED
     };
     let name = member.display_name();
     render_child_item(app, member, &name, sorted, indent, widths)
@@ -1040,17 +1069,16 @@ pub(super) fn render_tree_items(app: &App, widths: &FitWidths) -> Vec<ListItem<'
                 group_index,
             } => {
                 let group = &app.nodes[*node_index].groups[*group_index];
-                let arrow = if app
+                let prefix = if app
                     .expanded
                     .contains(&ExpandKey::Group(*node_index, *group_index))
                 {
-                    "▼ "
+                    PREFIX_GROUP_EXPANDED
                 } else {
-                    "▶ "
+                    PREFIX_GROUP_COLLAPSED
                 };
-                let prefix = format!("    {arrow}");
                 let label = format!("{} ({})", group.name, group.members.len());
-                ListItem::new(group_header_spans(&prefix, &label, widths.name))
+                ListItem::new(group_header_spans(prefix, &label, widths.name))
             },
             VisibleRow::Member {
                 node_index,
@@ -1062,9 +1090,9 @@ pub(super) fn render_tree_items(app: &App, widths: &FitWidths) -> Vec<ListItem<'
                 let empty = Vec::new();
                 let sorted = child_sorted.get(node_index).unwrap_or(&empty);
                 let indent = if group.name.is_empty() {
-                    "    "
+                    PREFIX_MEMBER_INLINE
                 } else {
-                    "        "
+                    PREFIX_MEMBER_NAMED
                 };
                 let name = member.display_name();
                 render_child_item(app, member, &name, sorted, indent, widths)
@@ -1133,4 +1161,81 @@ pub(super) fn render_filtered_items(app: &App, widths: &FitWidths) -> Vec<ListIt
             })))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emoji_display_widths() {
+        assert_eq!(display_width("🌲"), 2);
+        assert_eq!(display_width("🦀"), 2);
+        assert_eq!(display_width("bevy_brp"), 8);
+        assert_eq!(display_width("bevy_brp 🌲:2"), 13);
+
+        // pad_right should add correct spaces
+        let padded = pad_right("bevy_brp 🌲:2", 27);
+        assert_eq!(display_width(&padded), 27, "padded display width");
+
+        let padded_ascii = pad_right("bevy_brp", 27);
+        assert_eq!(
+            display_width(&padded_ascii),
+            27,
+            "ascii padded display width"
+        );
+    }
+
+    #[test]
+    fn row_spans_same_width_with_and_without_emoji() {
+        let name_width = 30;
+        let disk_width = 8;
+        let sync_width = 2;
+
+        let row_emoji = project_row_spans(&RowData {
+            prefix: "▶ ",
+            name: "bevy_brp 🌲:2",
+            lang_icon: "🦀",
+            disk: "36.3 GiB",
+            disk_style: Style::default(),
+            ci: Some(Conclusion::Success),
+            git_icon: GIT_CLONE,
+            git_sync: "↑2",
+            name_width,
+            disk_width,
+            sync_width,
+            deleted: false,
+        });
+
+        let row_ascii = project_row_spans(&RowData {
+            prefix: "▶ ",
+            name: "bevy_mesh_outline_benchmark",
+            lang_icon: "🦀",
+            disk: "36.3 GiB",
+            disk_style: Style::default(),
+            ci: Some(Conclusion::Success),
+            git_icon: GIT_CLONE,
+            git_sync: "↑2",
+            name_width,
+            disk_width,
+            sync_width,
+            deleted: false,
+        });
+
+        // Debug: check each span
+        let emoji_spans: Vec<usize> = row_emoji
+            .spans
+            .iter()
+            .map(|s| display_width(s.content.as_ref()))
+            .collect();
+        let ascii_spans: Vec<usize> = row_ascii
+            .spans
+            .iter()
+            .map(|s| display_width(s.content.as_ref()))
+            .collect();
+        assert_eq!(
+            emoji_spans, ascii_spans,
+            "per-span widths should match\nemoji spans: {emoji_spans:?}\nascii spans: {ascii_spans:?}"
+        );
+    }
 }

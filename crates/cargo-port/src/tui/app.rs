@@ -13,7 +13,6 @@ use nucleo_matcher::pattern::AtomKind;
 use nucleo_matcher::pattern::CaseMatching;
 use nucleo_matcher::pattern::Normalization;
 use ratatui::widgets::ListState;
-use unicode_width::UnicodeWidthStr;
 
 use super::detail::CiFetchKind;
 use super::detail::DetailField;
@@ -23,6 +22,16 @@ use super::detail::PendingExampleRun;
 use super::detail::ProjectCounts;
 use super::finder::FINDER_COLUMN_COUNT;
 use super::finder::FinderItem;
+use super::render;
+use super::render::PREFIX_GROUP_COLLAPSED;
+use super::render::PREFIX_MEMBER_INLINE;
+use super::render::PREFIX_MEMBER_NAMED;
+use super::render::PREFIX_ROOT_COLLAPSED;
+use super::render::PREFIX_WT_COLLAPSED;
+use super::render::PREFIX_WT_FLAT;
+use super::render::PREFIX_WT_GROUP_COLLAPSED;
+use super::render::PREFIX_WT_MEMBER_INLINE;
+use super::render::PREFIX_WT_MEMBER_NAMED;
 use super::shortcuts::InputContext;
 use super::terminal::CiFetchMsg;
 use super::terminal::ExampleMsg;
@@ -39,8 +48,10 @@ use crate::config::ScrollDirection;
 use crate::constants::IN_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
+use crate::constants::WORKTREE;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
+use crate::project::GitTracking;
 use crate::project::RustProject;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -177,7 +188,10 @@ pub(super) struct DetailCache {
     pub info:   DetailInfo,
 }
 
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent UI state toggles"
+)]
 pub(super) struct App {
     pub scan_root:           PathBuf,
     pub inline_dirs:         Vec<String>,
@@ -378,6 +392,10 @@ impl App {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "struct constructor — all fields must be initialized"
+    )]
     pub(super) fn new(
         scan_root: PathBuf,
         projects: Vec<RustProject>,
@@ -399,7 +417,7 @@ impl App {
             include_dirs.clone(),
         );
         let editor = cfg.tui.editor.clone();
-        let nodes = scan::build_tree(projects.clone(), &inline_dirs);
+        let nodes = scan::build_tree(&projects, &inline_dirs);
         let flat_entries = scan::build_flat_entries(&nodes);
         let list_state = initial_list_state(&nodes);
         Self {
@@ -409,7 +427,11 @@ impl App {
             ci_run_count,
             include_non_rust,
             editor,
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "config value is always positive; sub-millisecond truncation is intentional"
+            )]
             status_flash_millis: (cfg.tui.status_flash_secs * 1000.0) as u64,
             all_projects: projects,
             nodes,
@@ -495,7 +517,7 @@ impl App {
             .selected_project()
             .map(|p| p.path.clone())
             .or_else(|| self.last_selected_path.clone());
-        self.nodes = scan::build_tree(self.all_projects.clone(), &self.inline_dirs);
+        self.nodes = scan::build_tree(&self.all_projects, &self.inline_dirs);
         self.flat_entries = scan::build_flat_entries(&self.nodes);
         self.finder_dirty = true;
         self.rows_dirty = true;
@@ -740,9 +762,16 @@ impl App {
             },
             BackgroundMsg::ProjectDiscovered { project } => {
                 if !self.all_projects.iter().any(|p| p.path == project.path) {
+                    let abs_path = PathBuf::from(&project.abs_path);
+                    let git_tracking = if abs_path.join(".git").exists() {
+                        GitTracking::Tracked
+                    } else {
+                        GitTracking::Untracked
+                    };
                     let _ = self.watch_tx.send(WatchRequest {
                         project_path: project.path.clone(),
-                        abs_path:     PathBuf::from(&project.abs_path),
+                        abs_path,
+                        git_tracking,
                     });
                     self.all_projects.push(project);
                     return true;
@@ -764,11 +793,6 @@ impl App {
                 if self.focus == FocusTarget::ScanLog {
                     self.focus = FocusTarget::ProjectList;
                 }
-                // Dump scan log for debugging.
-                let _ = std::fs::write(
-                    "/tmp/claude/cargo-port-scan-log.txt",
-                    self.scan_log.join("\n"),
-                );
             },
             BackgroundMsg::NetworkOffline => {
                 self.network_status = NetworkStatus::Offline;
@@ -910,8 +934,9 @@ impl App {
         if self.cached_fit_widths.generation == self.data_generation {
             return;
         }
+        let dw = render::display_width;
         let mut name_width = 0usize;
-        let mut disk_width = "Disk".len();
+        let mut disk_width = dw("Disk");
         let mut sync_width = 0usize;
 
         for node in &self.nodes {
@@ -919,21 +944,23 @@ impl App {
                 node,
                 self.live_worktree_count(node),
             ));
-            disk_width = disk_width.max(self.formatted_disk_for_node(node).len());
-            sync_width = sync_width.max(UnicodeWidthStr::width(
-                self.git_sync(&node.project).as_str(),
-            ));
+            disk_width = disk_width.max(dw(&self.formatted_disk_for_node(node)));
+            sync_width = sync_width.max(dw(&self.git_sync(&node.project)));
 
             for group in &node.groups {
                 for member in &group.members {
-                    let prefix = if group.name.is_empty() { 4 } else { 8 };
-                    name_width = name_width.max(prefix + member.display_name().len());
-                    disk_width = disk_width.max(self.formatted_disk(member).len());
-                    sync_width =
-                        sync_width.max(UnicodeWidthStr::width(self.git_sync(member).as_str()));
+                    let prefix = if group.name.is_empty() {
+                        PREFIX_MEMBER_INLINE
+                    } else {
+                        PREFIX_MEMBER_NAMED
+                    };
+                    name_width = name_width.max(dw(prefix) + dw(&member.display_name()));
+                    disk_width = disk_width.max(dw(&self.formatted_disk(member)));
+                    sync_width = sync_width.max(dw(&self.git_sync(member)));
                 }
                 if !group.name.is_empty() {
-                    name_width = name_width.max(6 + group.name.len() + 4);
+                    let label = format!("{} ({})", group.name, group.members.len());
+                    name_width = name_width.max(dw(PREFIX_GROUP_COLLAPSED) + dw(&label));
                 }
             }
             for wt in &node.worktrees {
@@ -942,22 +969,28 @@ impl App {
                     .worktree_name
                     .as_deref()
                     .unwrap_or(&wt.project.path);
-                let wt_prefix = if wt.has_members() { 6 } else { 4 };
-                name_width = name_width.max(wt_prefix + wt_name.len());
-                disk_width = disk_width.max(self.formatted_disk(&wt.project).len());
-                sync_width =
-                    sync_width.max(UnicodeWidthStr::width(self.git_sync(&wt.project).as_str()));
+                let wt_prefix = if wt.has_members() {
+                    PREFIX_WT_COLLAPSED
+                } else {
+                    PREFIX_WT_FLAT
+                };
+                name_width = name_width.max(dw(wt_prefix) + dw(wt_name));
+                disk_width = disk_width.max(dw(&self.formatted_disk(&wt.project)));
+                sync_width = sync_width.max(dw(&self.git_sync(&wt.project)));
                 for group in &wt.groups {
                     for member in &group.members {
-                        let prefix = if group.name.is_empty() { 8 } else { 12 };
-                        name_width = name_width.max(prefix + member.display_name().len());
-                        disk_width = disk_width.max(self.formatted_disk(member).len());
-                        sync_width =
-                            sync_width.max(UnicodeWidthStr::width(self.git_sync(member).as_str()));
+                        let prefix = if group.name.is_empty() {
+                            PREFIX_WT_MEMBER_INLINE
+                        } else {
+                            PREFIX_WT_MEMBER_NAMED
+                        };
+                        name_width = name_width.max(dw(prefix) + dw(&member.display_name()));
+                        disk_width = disk_width.max(dw(&self.formatted_disk(member)));
+                        sync_width = sync_width.max(dw(&self.git_sync(member)));
                     }
                     if !group.name.is_empty() {
-                        // "        ▼ " (10 chars) + group name + " (N)"
-                        name_width = name_width.max(10 + group.name.len() + 4);
+                        let label = format!("{} ({})", group.name, group.members.len());
+                        name_width = name_width.max(dw(PREFIX_WT_GROUP_COLLAPSED) + dw(&label));
                     }
                 }
             }
@@ -982,11 +1015,12 @@ impl App {
     }
 
     fn fit_name_for_node(node: &ProjectNode, live_worktrees: usize) -> usize {
+        let dw = render::display_width;
         let mut name = node.project.display_name();
         if live_worktrees > 0 {
-            name = format!("{name} wt:{live_worktrees}");
+            name = format!("{name} {WORKTREE}:{live_worktrees}");
         }
-        2 + name.len()
+        dw(PREFIX_ROOT_COLLAPSED) + dw(&name)
     }
 
     /// Ensure the cached disk sort data is up to date, recomputing only when dirty.

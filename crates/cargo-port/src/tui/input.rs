@@ -13,8 +13,7 @@ use super::settings;
 use super::types::FocusTarget;
 use crate::project::ProjectLanguage;
 
-#[allow(clippy::needless_pass_by_value)]
-pub(super) fn handle_event(app: &mut App, event: Event) {
+pub(super) fn handle_event(app: &mut App, event: &Event) {
     match event {
         Event::Key(key) => {
             // Esc: if running, kill process (keep output). If not running, clear output.

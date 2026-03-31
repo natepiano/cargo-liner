@@ -3,6 +3,7 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
 use std::io::Stdout;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::process::Stdio;
@@ -74,8 +75,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
     Ok(())
 }
 
-#[allow(clippy::needless_pass_by_value)]
-pub fn run(path: PathBuf) -> ExitCode {
+pub fn run(path: &Path) -> ExitCode {
     let Ok(scan_root) = path.canonicalize() else {
         eprintln!("Error: cannot resolve path '{}'", path.display());
         return ExitCode::FAILURE;
@@ -155,11 +155,11 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
 
         // Wait for at least one event (up to 16ms for ~60fps)
         if crossterm::event::poll(Duration::from_millis(FRAME_POLL_MILLIS))? {
-            input::handle_event(app, crossterm::event::read()?);
+            input::handle_event(app, &crossterm::event::read()?);
 
             // Drain any additional queued events without waiting
             while crossterm::event::poll(Duration::ZERO)? {
-                input::handle_event(app, crossterm::event::read()?);
+                input::handle_event(app, &crossterm::event::read()?);
                 if app.should_quit {
                     return Ok(());
                 }

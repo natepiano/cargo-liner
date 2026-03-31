@@ -49,8 +49,8 @@ fn normalized_args() -> Vec<String> {
 fn main() -> ExitCode {
     let cli = Cli::parse_from(normalized_args());
     match cli.command {
-        Some(Commands::List(args)) => list::run(cli.path, args),
-        Some(Commands::Ci(args)) => ci::run(cli.path, args),
-        None => tui::run(cli.path),
+        Some(Commands::List(args)) => list::run(&cli.path, &args),
+        Some(Commands::Ci(args)) => ci::run(&cli.path, &args),
+        None => tui::run(&cli.path),
     }
 }

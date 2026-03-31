@@ -51,10 +51,9 @@ fn parse_dir_list(value: &str) -> Vec<String> {
 }
 
 pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
-    #[allow(clippy::cast_possible_truncation)]
     let area = render::centered_rect(
         SETTINGS_POPUP_WIDTH,
-        SettingOption::count() as u16 + SETTINGS_POPUP_PADDING,
+        u16::try_from(SettingOption::count()).unwrap_or(u16::MAX) + SETTINGS_POPUP_PADDING,
         frame.area(),
     );
 

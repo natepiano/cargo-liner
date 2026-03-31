@@ -11,8 +11,10 @@ repository  = "https://github.com/natepiano/cargo-port"
 version     = "0.0.2"
 
 [lints.clippy]
-# Our strict lints
-expect_used = "deny"
+# Our strict lints — test modules use:
+#   #[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]
+allow_attributes_without_reason = "deny"
+expect_used                     = "deny"
 panic       = "deny"
 unwrap_used = "deny"
 
@@ -43,6 +45,7 @@ serde          = { version = "1", features = ["derive"] }
 serde_json     = "1"
 toml           = "1.1.0"
 unicode-width  = "0.2.2"
+ureq = "3.3.0"
 walkdir        = "2"
 
 [dev-dependencies]

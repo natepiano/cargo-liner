@@ -1,10 +1,10 @@
 //! Watches the scan root recursively for filesystem changes and maps
-//! events to discovered projects for disk-usage recalculation.
+//! events to discovered projects for disk-usage and git-sync updates.
 //!
 //! A single `notify` subscription covers the entire scan root. Events are
-//! matched to projects by prefix, debounced, and result in a
-//! `BackgroundMsg::DiskUsage` update. New project directories are detected
-//! automatically; removed directories trigger a zero-byte update so the
+//! matched to projects by prefix, debounced, and result in both
+//! `BackgroundMsg::DiskUsage` and `BackgroundMsg::GitInfo` updates. New project directories are
+//! detected automatically; removed directories trigger a zero-byte update so the
 //! app can mark them as deleted.
 //!
 //! On macOS (`FSEvents`) this is a single kernel subscription regardless of
@@ -28,6 +28,7 @@ use super::constants::MAX_WAIT;
 use super::constants::NEW_PROJECT_DEBOUNCE;
 use super::constants::POLL_INTERVAL;
 use super::project;
+use super::project::GitInfo;
 use super::project::GitTracking;
 use super::project::RustProject;
 use super::scan;
@@ -39,6 +40,8 @@ pub struct WatchRequest {
     pub project_path: String,
     /// Absolute filesystem path to the project root.
     pub abs_path:     PathBuf,
+    /// Whether this project has git tracking.
+    pub git_tracking: GitTracking,
 }
 
 /// Spawn a unified background watcher thread. Watches the include
@@ -55,12 +58,12 @@ pub fn spawn_watcher(
 
     thread::spawn(move || {
         watcher_loop(
-            scan_root,
-            bg_tx,
-            watch_rx,
+            &scan_root,
+            &bg_tx,
+            &watch_rx,
             ci_run_count,
             non_rust,
-            include_dirs,
+            &include_dirs,
         );
     });
 
@@ -71,18 +74,18 @@ pub fn spawn_watcher(
 struct ProjectEntry {
     project_path: String,
     abs_path:     PathBuf,
+    git_tracking: GitTracking,
 }
 
-#[allow(clippy::needless_pass_by_value)]
 fn watcher_loop(
-    scan_root: PathBuf,
-    bg_tx: mpsc::Sender<BackgroundMsg>,
-    watch_rx: mpsc::Receiver<WatchRequest>,
+    scan_root: &Path,
+    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    watch_rx: &mpsc::Receiver<WatchRequest>,
     ci_run_count: u32,
     non_rust: NonRustInclusion,
-    include_dirs: Vec<String>,
+    include_dirs: &[String],
 ) {
-    let watch_dirs = scan::resolve_include_dirs(&scan_root, &include_dirs);
+    let watch_dirs = scan::resolve_include_dirs(scan_root, include_dirs);
     let (notify_tx, notify_rx) = mpsc::channel();
     let handler = move |res| {
         let _ = notify_tx.send(res);
@@ -120,6 +123,7 @@ fn watcher_loop(
                         ProjectEntry {
                             project_path: req.project_path,
                             abs_path:     req.abs_path,
+                            git_tracking: req.git_tracking,
                         },
                     );
                 },
@@ -134,10 +138,10 @@ fn watcher_loop(
                 continue;
             };
             let ctx = EventContext {
-                scan_root:       &scan_root,
-                projects:        &projects,
+                scan_root,
+                projects: &projects,
                 project_parents: &project_parents,
-                discovered:      &discovered,
+                discovered: &discovered,
             };
             for event_path in &event.paths {
                 handle_event(event_path, &ctx, &mut pending_disk, &mut pending_new);
@@ -145,11 +149,11 @@ fn watcher_loop(
         }
 
         // Fire disk recalculations whose debounce has expired.
-        fire_disk_updates(&bg_tx, &projects, &mut pending_disk);
+        fire_disk_updates(bg_tx, &projects, &mut pending_disk);
 
         // Probe new-project candidates whose debounce has expired.
         probe_new_projects(
-            &bg_tx,
+            bg_tx,
             &mut pending_new,
             &mut discovered,
             ci_run_count,
@@ -227,12 +231,23 @@ fn fire_disk_updates(
         let bytes = scan::dir_size(&entry.abs_path);
         if bg_tx
             .send(BackgroundMsg::DiskUsage {
-                path: project_path,
+                path: project_path.clone(),
                 bytes,
             })
             .is_err()
         {
             return;
+        }
+
+        // Re-detect git sync status so the project list and git panel
+        // reflect commits, pulls, branch switches, etc.
+        if entry.git_tracking.is_tracked()
+            && let Some(info) = GitInfo::detect(&entry.abs_path)
+        {
+            let _ = bg_tx.send(BackgroundMsg::GitInfo {
+                path: project_path,
+                info,
+            });
         }
     }
 }
@@ -343,8 +358,13 @@ fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<RustProject> 
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
+    use std::process::Command;
+
     use super::*;
 
     // ── project_level_dir ────────────────────────────────────────────
@@ -501,6 +521,7 @@ mod tests {
             ProjectEntry {
                 project_path: project_path.to_string(),
                 abs_path:     abs_path.to_path_buf(),
+                git_tracking: GitTracking::Untracked,
             },
         )
     }
@@ -665,5 +686,99 @@ mod tests {
         let dirs =
             scan::resolve_include_dirs(Path::new("/home/user"), &["/opt/projects".to_string()]);
         assert_eq!(dirs, vec![PathBuf::from("/opt/projects")]);
+    }
+
+    // ── fire_disk_updates ───────────────────────────────────────────
+
+    /// Helper: create a git repo in `dir` with one commit so
+    /// `GitInfo::detect` returns `Some`.
+    fn init_git_repo(dir: &Path) {
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .expect("git init");
+        Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .expect("git commit");
+    }
+
+    #[test]
+    fn disk_update_sends_git_info_for_tracked_project() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("my_project");
+        std::fs::create_dir_all(&project_dir).expect("create dir");
+        init_git_repo(&project_dir);
+
+        let (tx, rx) = mpsc::channel();
+        let mut projects = HashMap::new();
+        projects.insert(
+            project_dir.clone(),
+            ProjectEntry {
+                project_path: "~/my_project".to_string(),
+                abs_path:     project_dir,
+                git_tracking: GitTracking::Tracked,
+            },
+        );
+
+        // Deadline already expired → fires immediately.
+        let past = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("1s subtraction should not underflow");
+        let mut pending = HashMap::from([("~/my_project".to_string(), (past, past))]);
+
+        fire_disk_updates(&tx, &projects, &mut pending);
+
+        let mut got_disk = false;
+        let mut got_git = false;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                BackgroundMsg::DiskUsage { path, .. } if path == "~/my_project" => got_disk = true,
+                BackgroundMsg::GitInfo { path, .. } if path == "~/my_project" => got_git = true,
+                _ => {},
+            }
+        }
+        assert!(got_disk, "expected DiskUsage message");
+        assert!(got_git, "expected GitInfo message for tracked project");
+        assert!(pending.is_empty(), "pending entry should be consumed");
+    }
+
+    #[test]
+    fn disk_update_skips_git_info_for_untracked_project() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("no_git");
+        std::fs::create_dir_all(&project_dir).expect("create dir");
+
+        let (tx, rx) = mpsc::channel();
+        let mut projects = HashMap::new();
+        projects.insert(
+            project_dir.clone(),
+            ProjectEntry {
+                project_path: "~/no_git".to_string(),
+                abs_path:     project_dir,
+                git_tracking: GitTracking::Untracked,
+            },
+        );
+
+        let past = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("1s subtraction should not underflow");
+        let mut pending = HashMap::from([("~/no_git".to_string(), (past, past))]);
+
+        fire_disk_updates(&tx, &projects, &mut pending);
+
+        let mut got_disk = false;
+        let mut got_git = false;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                BackgroundMsg::DiskUsage { path, .. } if path == "~/no_git" => got_disk = true,
+                BackgroundMsg::GitInfo { .. } => got_git = true,
+                _ => {},
+            }
+        }
+        assert!(got_disk, "expected DiskUsage message");
+        assert!(!got_git, "should not send GitInfo for untracked project");
     }
 }

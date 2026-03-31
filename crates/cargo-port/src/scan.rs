@@ -199,8 +199,8 @@ pub fn load_all_cached_runs(owner: &str, repo: &str) -> Vec<CiRun> {
         .collect()
 }
 
-/// Fetch recent CI runs from `gh run list`, then process each one (cache-first).
-/// Returns the fetched/cached runs for the requested `count`.
+/// Fetch recent CI runs: serve from cache when possible, batch-fetch
+/// jobs for uncached runs via a single GraphQL call.
 fn fetch_recent_runs(
     repo_dir: &Path,
     repo_url: &str,
@@ -208,19 +208,31 @@ fn fetch_recent_runs(
     repo: &str,
     gh_runs: &[GhRun],
 ) -> Vec<CiRun> {
-    gh_runs
-        .iter()
-        .filter_map(|gh_run| {
-            // Try cache first
-            if let Some(cached) = load_cached_run(owner, repo, gh_run.database_id) {
-                return Some(cached);
+    let mut result: Vec<CiRun> = Vec::with_capacity(gh_runs.len());
+
+    // Partition into cached hits and misses.
+    let mut uncached: Vec<&GhRun> = Vec::new();
+    for gh_run in gh_runs {
+        if let Some(cached) = load_cached_run(owner, repo, gh_run.id) {
+            result.push(cached);
+        } else {
+            uncached.push(gh_run);
+        }
+    }
+
+    // Batch-fetch jobs for all uncached runs in one GraphQL call.
+    if !uncached.is_empty() {
+        let jobs_map = ci::batch_fetch_jobs(repo_dir, &uncached);
+        for gh_run in &uncached {
+            if let Some(check_runs) = jobs_map.get(&gh_run.id) {
+                let ci_run = ci::build_ci_run(gh_run, check_runs.clone(), repo_url);
+                save_cached_run(owner, repo, &ci_run);
+                result.push(ci_run);
             }
-            // Cache miss — fetch from `gh` and save
-            let ci_run = ci::process_gh_run(gh_run, repo_dir, repo_url)?;
-            save_cached_run(owner, repo, &ci_run);
-            Some(ci_run)
-        })
-        .collect()
+        }
+    }
+
+    result
 }
 
 /// Merge fetched + cached runs, deduplicated by `run_id`, sorted descending.
@@ -384,8 +396,7 @@ pub fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
-#[allow(clippy::needless_pass_by_value)]
-pub fn build_tree(projects: Vec<RustProject>, inline_dirs: &[String]) -> Vec<ProjectNode> {
+pub fn build_tree(projects: &[RustProject], inline_dirs: &[String]) -> Vec<ProjectNode> {
     let workspace_paths: Vec<String> = projects
         .iter()
         .filter(|p| p.is_workspace())

@@ -412,8 +412,9 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     let natural_width: usize = col_widths.iter().sum::<usize>() + 4 + 2;
     let min_popup_width: u16 = 60;
     let max_popup_width = frame.area().width;
-    #[allow(clippy::cast_possible_truncation)]
-    let popup_width = (natural_width as u16).clamp(min_popup_width, max_popup_width);
+    let popup_width = u16::try_from(natural_width)
+        .unwrap_or(u16::MAX)
+        .clamp(min_popup_width, max_popup_width);
 
     let area = render::centered_rect(popup_width, FINDER_POPUP_HEIGHT, frame.area());
     frame.render_widget(Clear, area);
@@ -540,8 +541,7 @@ fn render_finder_results(
         })
         .collect();
 
-    #[allow(clippy::cast_possible_truncation)]
-    let widths = col_widths.map(|w| Constraint::Length(w as u16));
+    let widths = col_widths.map(|w| Constraint::Length(u16::try_from(w).unwrap_or(u16::MAX)));
 
     let header_style = Style::default()
         .fg(Color::DarkGray)

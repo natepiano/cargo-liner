@@ -14,6 +14,7 @@ pub const SYNC_DOWN: &str = "↓";
 pub const GIT_LOCAL: &str = "📁";
 pub const GIT_CLONE: &str = "📥";
 pub const GIT_FORK: &str = "🔱";
+pub const WORKTREE: &str = "🌲";
 
 // ── CI constants ──────────────────────────────────────────────────────
 

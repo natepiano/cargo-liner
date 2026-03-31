@@ -173,7 +173,10 @@ pub fn save(config: &Config) -> Result<(), String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::*;
 

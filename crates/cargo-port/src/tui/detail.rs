@@ -876,9 +876,9 @@ fn render_column_inner(
         }
     }
 
-    #[allow(clippy::cast_possible_truncation)]
     let scroll_y = if focus.detail_focus == DetailFocus::Focused && focus.is_active {
-        focused_output_line.saturating_sub(area.height as usize / 2) as u16
+        let offset = focused_output_line.saturating_sub(area.height as usize / 2);
+        u16::try_from(offset).unwrap_or(u16::MAX)
     } else {
         0
     };
@@ -984,9 +984,9 @@ fn render_git_column_inner(
 
     append_worktree_lines(&mut lines, info);
 
-    #[allow(clippy::cast_possible_truncation)]
     let scroll_y = if focus.detail_focus == DetailFocus::Focused && focus.is_active {
-        focused_output_line.saturating_sub(area.height as usize / 2) as u16
+        let offset = focused_output_line.saturating_sub(area.height as usize / 2);
+        u16::try_from(offset).unwrap_or(u16::MAX)
     } else {
         0
     };
@@ -1420,31 +1420,33 @@ fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn]) -> Row<'static> {
 /// Duration, timestamp, branch, and glyph columns use `Length` (exact
 /// fit-to-content). Commit uses `Fill` to absorb all remaining space.
 fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn]) -> Vec<Constraint> {
-    #[allow(clippy::cast_possible_truncation)]
-    let branch_width = ci_runs
-        .iter()
-        .map(|r| r.branch.len())
-        .max()
-        .unwrap_or("Branch".len())
-        .max("Branch".len()) as u16;
-    #[allow(clippy::cast_possible_truncation)]
-    let glyph_width = Conclusion::Success
-        .icon()
-        .width()
-        .max(Conclusion::Failure.icon().width()) as u16;
+    let branch_width = u16::try_from(
+        ci_runs
+            .iter()
+            .map(|r| r.branch.len())
+            .max()
+            .unwrap_or("Branch".len())
+            .max("Branch".len()),
+    )
+    .unwrap_or(u16::MAX);
+    let glyph_width = u16::try_from(
+        Conclusion::Success
+            .icon()
+            .width()
+            .max(Conclusion::Failure.icon().width()),
+    )
+    .unwrap_or(u16::MAX);
     let mut widths = vec![
         Constraint::Fill(1),                    // Commit — absorbs remaining space
         Constraint::Length(branch_width),       // Branch — fit-to-content
         Constraint::Length(CI_TIMESTAMP_WIDTH), // Timestamp — exact
     ];
     for col in cols {
-        #[allow(clippy::cast_possible_truncation)]
-        let width = ci_duration_min_width(ci_runs, *col) as u16;
+        let width = u16::try_from(ci_duration_min_width(ci_runs, *col)).unwrap_or(u16::MAX);
         widths.push(Constraint::Length(width)); // duration — exact
         widths.push(Constraint::Length(glyph_width)); // glyph
     }
-    #[allow(clippy::cast_possible_truncation)]
-    let total_width = ci_total_min_width(ci_runs) as u16;
+    let total_width = u16::try_from(ci_total_min_width(ci_runs)).unwrap_or(u16::MAX);
     widths.push(Constraint::Length(total_width)); // Total duration — exact
     widths.push(Constraint::Length(glyph_width)); // Total glyph
     widths
@@ -1763,8 +1765,7 @@ pub(super) fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
                 && !is_fetching
                 && let Some(project) = app.selected_project()
             {
-                #[allow(clippy::cast_possible_truncation)]
-                let current_count = run_count as u32;
+                let current_count = u32::try_from(run_count).unwrap_or(u32::MAX);
                 let kind = if is_exhausted {
                     CiFetchKind::Refresh
                 } else {

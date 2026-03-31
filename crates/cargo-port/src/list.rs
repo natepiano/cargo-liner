@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Args;
@@ -71,8 +70,7 @@ pub fn filter_workspace_members(projects: &mut Vec<RustProject>) {
     });
 }
 
-#[allow(clippy::needless_pass_by_value)]
-pub fn run(path: PathBuf, args: ListArgs) -> ExitCode {
+pub fn run(path: &Path, args: &ListArgs) -> ExitCode {
     let Ok(scan_root) = path.canonicalize() else {
         eprintln!("Error: cannot resolve path '{}'", path.display());
         return ExitCode::FAILURE;
