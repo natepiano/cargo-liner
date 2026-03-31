@@ -18,7 +18,7 @@ Mapping between `nate_style/rust/` entries and `cargo-mend` as of 2026-03-29.
 | `import-types-directly` | `inline_path_qualified_type` | warning | `--fix` |
 | `prefer-local-relative-imports` | `shorten_local_crate_import` | warning | `--fix` |
 
-## Good candidates (6)
+## Good candidates (5)
 
 Mechanical, clear signal, low false-positive rate. Natural fit for cargo-mend's AST visitors.
 
@@ -26,7 +26,6 @@ Mechanical, clear signal, low false-positive rate. Natural fit for cargo-mend's 
 |---|---|---|
 | `imports-go-at-the-top-of-the-file` | `use` inside fn/impl bodies | detect+fix (hoist to top) |
 | `import-constants-at-the-top` | Inline `SCREAMING_SNAKE` paths (`super::constants::FOO`) | detect+fix (extend `inline_path_qualified_type`) |
-| `never-bare-allowdeadcode` | `#[allow(dead_code)]` missing `reason` field | detect |
 | `never-allowclippytoomanylines` | `#[allow(clippy::too_many_lines)]` | detect |
 | `usedunderscorebinding-module-level-allow-only` | `#[allow(clippy::used_underscore_binding)]` not on a `mod` item | detect |
 | `never-prefix-unused-fields-or-variables-with` | Struct fields / let bindings starting with `_` | detect (caveat: `_guard` RAII is legitimate) |
@@ -43,12 +42,13 @@ Different domain (config files, not Rust source) but natural `cargo mend` extens
 | `edition-2024` | `Cargo.toml` `edition = "2024"` |
 | `workspace-dependencies` | Member `Cargo.toml` deps use `.workspace = true` |
 
-## Already covered by clippy / rustfmt (10)
+## Already covered by clippy / rustfmt (11)
 
 Standard lint profile + rustfmt config already enforce these. No cargo-mend work needed.
 
 | Style entry | Covered by |
 |---|---|
+| `never-bare-allowdeadcode` | `clippy::allow_attributes_without_reason` (restriction) — no auto-fix, requires human evaluation |
 | `avoid-redundant-closures` | `clippy::redundant_closure` / `redundant_closure_for_method_calls` |
 | `borrow-the-slice-not-the-container` | `clippy::ptr_arg` (pedantic) |
 | `collapse-if-let-with-inner-conditions` | `clippy::collapsible_if` / `collapsible_match` |
@@ -112,9 +112,9 @@ Process guidance, philosophy, or informational entries.
 | Category | Count |
 |---|---|
 | Currently enforced | 9 |
-| Good candidates | 6 |
+| Good candidates | 5 |
 | TOML config checks | 5 |
-| Already covered (clippy/rustfmt) | 10 |
+| Already covered (clippy/rustfmt) | 11 |
 | Possible but noisy | 5 |
 | Bevy-specific | 9 |
 | Not automatable | 6 |
