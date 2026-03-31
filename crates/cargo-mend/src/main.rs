@@ -9,6 +9,7 @@ extern crate rustc_span;
 mod cli;
 mod compiler;
 mod config;
+mod constants;
 mod diagnostics;
 mod fix_support;
 mod imports;
@@ -27,6 +28,8 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use config::DiagnosticsConfig;
+use constants::EXIT_CODE_ERROR;
+use constants::EXIT_CODE_WARNING;
 use outcome::MendFailure;
 use run_mode::OperationMode;
 use runner::MendRunner;
@@ -95,11 +98,11 @@ fn run() -> Result<ExitCode, MendFailure> {
     }
 
     if outcome.report.has_errors() {
-        return Ok(ExitCode::from(1));
+        return Ok(ExitCode::from(EXIT_CODE_ERROR));
     }
 
     if cli.fail_on_warn && outcome.report.has_warnings() {
-        return Ok(ExitCode::from(2));
+        return Ok(ExitCode::from(EXIT_CODE_WARNING));
     }
 
     Ok(ExitCode::SUCCESS)
@@ -134,6 +137,7 @@ fn color_output_enabled() -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::used_underscore_binding)] // RAII guards use _ prefix but are held for Drop
 mod tests {
     use std::ffi::OsString;
 

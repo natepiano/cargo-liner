@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use anyhow::Error;
 
+use super::constants::EXIT_CODE_WARNING;
 use super::diagnostics::Report;
 use super::run_mode::OperationIntent;
 
@@ -80,7 +81,7 @@ pub struct FixValidationFailure {
 }
 
 impl MendFailure {
-    pub fn exit_code() -> ExitCode { ExitCode::from(2) }
+    pub fn exit_code() -> ExitCode { ExitCode::from(EXIT_CODE_WARNING) }
 }
 
 impl fmt::Display for MendFailure {

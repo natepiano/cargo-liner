@@ -36,6 +36,7 @@ use syn::visit::Visit;
 
 use super::config::LoadedConfig;
 use super::config::VisibilityConfig;
+use super::constants::EXIT_CODE_ERROR;
 use super::diagnostics::CompilerWarningFacts;
 use super::diagnostics::Finding;
 use super::diagnostics::PubUseFixFact;
@@ -51,6 +52,7 @@ use super::outcome::CompilerFailureCause;
 use super::outcome::MendFailure;
 use super::selection::SelectedPackage;
 use super::selection::Selection;
+use super::selection::SelectionScope;
 
 const DRIVER_ENV: &str = "MEND_DRIVER";
 const CONFIG_ROOT_ENV: &str = "MEND_CONFIG_ROOT";
@@ -395,12 +397,15 @@ fn run_cargo_check(
     let mut command = Command::new("cargo");
     command.arg("check");
 
-    if selection.workspace_selected {
-        command.arg("--workspace");
-    } else {
-        command
-            .arg("--manifest-path")
-            .arg(selection.manifest_path.as_os_str());
+    match selection.scope {
+        SelectionScope::Workspace => {
+            command.arg("--workspace");
+        },
+        SelectionScope::SinglePackage => {
+            command
+                .arg("--manifest-path")
+                .arg(selection.manifest_path.as_os_str());
+        },
     }
 
     let tc_override = toolchain_override();
@@ -874,7 +879,9 @@ trait IntoExitCode {
 }
 
 impl IntoExitCode for i32 {
-    fn into_exit_code(self) -> ExitCode { ExitCode::from(u8::try_from(self).unwrap_or(1)) }
+    fn into_exit_code(self) -> ExitCode {
+        ExitCode::from(u8::try_from(self).unwrap_or(EXIT_CODE_ERROR))
+    }
 }
 
 impl IntoExitCode for ExitCode {
@@ -882,7 +889,7 @@ impl IntoExitCode for ExitCode {
 }
 
 fn exit_code_from_i32(code: i32) -> ExitCode {
-    let normalized_code = u8::try_from(code).unwrap_or(1);
+    let normalized_code = u8::try_from(code).unwrap_or(EXIT_CODE_ERROR);
     ExitCode::from(normalized_code)
 }
 

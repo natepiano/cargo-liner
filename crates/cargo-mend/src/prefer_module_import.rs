@@ -444,7 +444,7 @@ struct ReferenceCollector<'a> {
 }
 
 impl Visit<'_> for ReferenceCollector<'_> {
-    fn visit_item_use(&mut self, _node: &ItemUse) {
+    fn visit_item_use(&mut self, _: &ItemUse) {
         // Skip use statements — don't qualify references inside them
     }
 

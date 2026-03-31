@@ -147,7 +147,7 @@ impl<'a> MendRunner<'a> {
         }
 
         let snapshots = imports::snapshot_files(&fixes).map_err(MendFailure::Unexpected)?;
-        let _applied = imports::apply_fixes(&fixes).map_err(MendFailure::Unexpected)?;
+        imports::apply_fixes(&fixes).map_err(MendFailure::Unexpected)?;
         match self.build_report(BuildOutputMode::Full) {
             Ok(report) => {
                 let notice = Self::build_fix_notice(

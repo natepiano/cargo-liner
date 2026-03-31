@@ -10,16 +10,22 @@ use cargo_metadata::Package;
 use cargo_metadata::Target;
 use cargo_metadata::TargetKind;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionScope {
+    Workspace,
+    SinglePackage,
+}
+
 #[derive(Debug)]
 pub struct Selection {
-    pub manifest_path:      PathBuf,
-    pub manifest_dir:       PathBuf,
-    pub workspace_root:     PathBuf,
-    pub target_directory:   PathBuf,
-    pub analysis_root:      PathBuf,
-    pub workspace_selected: bool,
-    pub package_roots:      Vec<PathBuf>,
-    pub packages:           Vec<SelectedPackage>,
+    pub manifest_path:    PathBuf,
+    pub manifest_dir:     PathBuf,
+    pub workspace_root:   PathBuf,
+    pub target_directory: PathBuf,
+    pub analysis_root:    PathBuf,
+    pub scope:            SelectionScope,
+    pub package_roots:    Vec<PathBuf>,
+    pub packages:         Vec<SelectedPackage>,
 }
 
 #[derive(Debug, Clone)]
@@ -74,38 +80,43 @@ pub fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<
         .packages
         .iter()
         .any(|pkg| pkg.manifest_path.as_std_path() == manifest_path);
-    let workspace_selected = manifest_is_workspace_root
-        && (!manifest_matches_package || metadata.workspace_members.len() > 1);
+    let scope = if manifest_is_workspace_root
+        && (!manifest_matches_package || metadata.workspace_members.len() > 1)
+    {
+        SelectionScope::Workspace
+    } else {
+        SelectionScope::SinglePackage
+    };
 
-    let packages: Vec<SelectedPackage> = if workspace_selected {
-        metadata
+    let packages: Vec<SelectedPackage> = match scope {
+        SelectionScope::Workspace => metadata
             .workspace_members
             .iter()
             .filter_map(|id| metadata.packages.iter().find(|pkg| &pkg.id == id))
             .map(selected_package_from_metadata)
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        let package = metadata
-            .packages
-            .iter()
-            .find(|pkg| pkg.manifest_path.as_std_path() == manifest_path)
-            .with_context(|| {
-                format!(
-                    "manifest {} not found in cargo metadata",
-                    manifest_path.display()
-                )
-            })?;
-        vec![selected_package_from_metadata(package)?]
+            .collect::<Result<Vec<_>>>()?,
+        SelectionScope::SinglePackage => {
+            let package = metadata
+                .packages
+                .iter()
+                .find(|pkg| pkg.manifest_path.as_std_path() == manifest_path)
+                .with_context(|| {
+                    format!(
+                        "manifest {} not found in cargo metadata",
+                        manifest_path.display()
+                    )
+                })?;
+            vec![selected_package_from_metadata(package)?]
+        },
     };
     let package_roots = packages
         .iter()
         .map(|package| package.root.clone())
         .collect();
 
-    let analysis_root = if workspace_selected {
-        workspace_root.clone()
-    } else {
-        manifest_dir.clone()
+    let analysis_root = match scope {
+        SelectionScope::Workspace => workspace_root.clone(),
+        SelectionScope::SinglePackage => manifest_dir.clone(),
     };
 
     Ok(Selection {
@@ -114,7 +125,7 @@ pub fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<
         workspace_root,
         target_directory,
         analysis_root,
-        workspace_selected,
+        scope,
         package_roots,
         packages,
     })
@@ -208,6 +219,7 @@ fn find_nearest_manifest(start: &Path) -> Result<PathBuf> {
 mod tests {
     use std::fs;
 
+    use super::SelectionScope;
     use super::TargetSelector;
     use super::resolve_cargo_selection;
 
@@ -322,7 +334,7 @@ edition = "2024"
         let selection = resolve_cargo_selection(Some(&temp.path().join("Cargo.toml")))
             .unwrap_or_else(|error| panic!("resolve workspace selection: {error}"));
 
-        assert!(selection.workspace_selected);
+        assert_eq!(selection.scope, SelectionScope::Workspace);
         assert_eq!(selection.packages.len(), 1);
         assert_eq!(selection.packages[0].name, "member_fixture");
     }

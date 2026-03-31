@@ -13,7 +13,6 @@ version     = "0.3.0-dev"
 [lints.clippy]
 all                     = { level = "deny", priority = -1 }
 cargo                   = { level = "deny", priority = -1 }
-cargo_common_metadata   = "deny"
 expect_used             = "deny"
 multiple_crate_versions = "allow"
 nursery                 = { level = "deny", priority = -1 }

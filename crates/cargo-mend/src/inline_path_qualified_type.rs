@@ -248,7 +248,7 @@ impl InlinePathVisitor {
 }
 
 impl Visit<'_> for InlinePathVisitor {
-    fn visit_item_use(&mut self, _node: &ItemUse) {
+    fn visit_item_use(&mut self, _: &ItemUse) {
         // Skip use statements — they are imports, not inline code
     }
 
