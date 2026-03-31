@@ -1,5 +1,11 @@
-#![allow(clippy::expect_used, reason = "tests should panic on unexpected values")]
-#![allow(clippy::needless_raw_string_hashes, reason = "test fixtures use raw strings with varying hash counts for readability")]
+#![allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+#![allow(
+    clippy::needless_raw_string_hashes,
+    reason = "test fixtures use raw strings with varying hash counts for readability"
+)]
 
 pub use std::collections::BTreeSet;
 pub use std::fs;
@@ -61,11 +67,11 @@ pub struct Report {
 #[derive(Debug, Deserialize)]
 pub struct Summary {
     #[serde(rename = "error_count")]
-    pub errors:               usize,
+    pub errors:                   usize,
     #[serde(rename = "warning_count")]
-    pub warnings:             usize,
+    pub warnings:                 usize,
     #[serde(rename = "fixable_with_fix_count")]
-    pub fixable_with_fix:     usize,
+    pub fixable_with_fix:         usize,
     #[serde(rename = "fixable_with_fix_pub_use_count")]
     pub fixable_with_fix_pub_use: usize,
 }
@@ -85,9 +91,9 @@ pub fn severity_for_code(code: &str) -> &'static str {
 
 pub fn expected_summary(report: &Report) -> Summary {
     let mut summary = Summary {
-        errors:               0,
-        warnings:             0,
-        fixable_with_fix:     0,
+        errors:                   0,
+        warnings:                 0,
+        fixable_with_fix:         0,
         fixable_with_fix_pub_use: 0,
     };
 
@@ -120,10 +126,7 @@ pub fn assert_summary_matches_findings(report: &Report) {
     let expected = expected_summary(report);
     assert_eq!(report.summary.errors, expected.errors);
     assert_eq!(report.summary.warnings, expected.warnings);
-    assert_eq!(
-        report.summary.fixable_with_fix,
-        expected.fixable_with_fix
-    );
+    assert_eq!(report.summary.fixable_with_fix, expected.fixable_with_fix);
     assert_eq!(
         report.summary.fixable_with_fix_pub_use,
         expected.fixable_with_fix_pub_use
@@ -144,9 +147,9 @@ pub fn fix_support_for(code: &str, fix_support: FixSupport) -> FixSupport {
 
 pub fn expected_summary_from_findings(expected_findings: &[ExpectedFinding<'_>]) -> Summary {
     let mut summary = Summary {
-        errors:               0,
-        warnings:             0,
-        fixable_with_fix:     0,
+        errors:                   0,
+        warnings:                 0,
+        fixable_with_fix:         0,
         fixable_with_fix_pub_use: 0,
     };
 
