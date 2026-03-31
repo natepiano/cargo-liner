@@ -89,10 +89,10 @@ edition = "2024"
     .expect("write sibling");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.error_count, 0);
-    assert_eq!(report.summary.warning_count, 1);
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.errors, 0);
+    assert_eq!(report.summary.warnings, 1);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
     let codes = report
         .findings
         .iter()
@@ -250,10 +250,10 @@ edition = "2024"
     .expect("write deeper");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.error_count, 0);
-    assert_eq!(report.summary.warning_count, 1);
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.errors, 0);
+    assert_eq!(report.summary.warnings, 1);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
     let codes = report
         .findings
         .iter()
@@ -587,8 +587,8 @@ edition = "2024"
     ];
     let expected_summary = expected_summary_from_findings(&expected_findings);
     assert_eq!(
-        report.summary.fixable_with_fix_pub_use_count,
-        expected_summary.fixable_with_fix_pub_use_count
+        report.summary.fixable_with_fix_pub_use,
+        expected_summary.fixable_with_fix_pub_use
     );
 }
 
@@ -768,8 +768,8 @@ pub fn touch(_: CacheEntryStatus) {}
         .collect::<BTreeSet<_>>();
     assert!(codes.contains("internal_parent_pub_use_facade"));
     assert!(codes.contains("suspicious_pub"));
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 4);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 4);
 }
 
 #[test]
@@ -814,8 +814,8 @@ edition = "2024"
         .map(|finding| finding.code.as_str())
         .collect::<BTreeSet<_>>();
     assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 
 #[test]
@@ -860,8 +860,8 @@ edition = "2024"
         .map(|finding| finding.code.as_str())
         .collect::<BTreeSet<_>>();
     assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 
 #[test]
@@ -901,8 +901,8 @@ edition = "2024"
         .map(|finding| finding.code.as_str())
         .collect::<BTreeSet<_>>();
     assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 
 fn create_preserve_exports_fixture() -> tempfile::TempDir {
@@ -1023,8 +1023,8 @@ fn fix_pub_use_preserves_exports_used_outside_parent_via_normal_paths() {
     ];
     let expected_summary = expected_summary_from_findings(&expected_findings);
     assert_eq!(
-        report.summary.fixable_with_fix_pub_use_count,
-        expected_summary.fixable_with_fix_pub_use_count
+        report.summary.fixable_with_fix_pub_use,
+        expected_summary.fixable_with_fix_pub_use
     );
 }
 
@@ -1075,8 +1075,8 @@ edition = "2024"
         .map(|finding| finding.code.as_str())
         .collect::<BTreeSet<_>>();
     assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 
 #[test]
@@ -1133,7 +1133,7 @@ edition = "2024"
     }];
     let expected_summary = expected_summary_from_findings(&expected_findings);
     assert_eq!(
-        report.summary.fixable_with_fix_pub_use_count,
-        expected_summary.fixable_with_fix_pub_use_count
+        report.summary.fixable_with_fix_pub_use,
+        expected_summary.fixable_with_fix_pub_use
     );
 }

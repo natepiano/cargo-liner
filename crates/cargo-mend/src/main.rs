@@ -137,7 +137,7 @@ fn color_output_enabled() -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::used_underscore_binding)] // RAII guards use _ prefix but are held for Drop
+#[allow(clippy::used_underscore_binding, reason = "RAII guards use _ prefix but are held for Drop")]
 mod tests {
     use std::ffi::OsString;
 

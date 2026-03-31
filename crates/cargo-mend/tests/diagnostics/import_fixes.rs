@@ -471,12 +471,12 @@ edition = "2024"
     let expected_findings: [ExpectedFinding<'_>; 0] = [];
     let expected_summary = expected_summary_from_findings(&expected_findings);
     assert_eq!(
-        report.summary.fixable_with_fix_count,
-        expected_summary.fixable_with_fix_count
+        report.summary.fixable_with_fix,
+        expected_summary.fixable_with_fix
     );
     assert_eq!(
-        report.summary.fixable_with_fix_pub_use_count,
-        expected_summary.fixable_with_fix_pub_use_count
+        report.summary.fixable_with_fix_pub_use,
+        expected_summary.fixable_with_fix_pub_use
     );
     assert!(
         !report
@@ -556,12 +556,12 @@ edition = "2024"
     let expected_findings: [ExpectedFinding<'_>; 0] = [];
     let expected_summary = expected_summary_from_findings(&expected_findings);
     assert_eq!(
-        report.summary.fixable_with_fix_count,
-        expected_summary.fixable_with_fix_count
+        report.summary.fixable_with_fix,
+        expected_summary.fixable_with_fix
     );
     assert_eq!(
-        report.summary.fixable_with_fix_pub_use_count,
-        expected_summary.fixable_with_fix_pub_use_count
+        report.summary.fixable_with_fix_pub_use,
+        expected_summary.fixable_with_fix_pub_use
     );
     assert!(
         !report

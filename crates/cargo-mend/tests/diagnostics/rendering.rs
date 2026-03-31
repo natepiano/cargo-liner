@@ -433,5 +433,5 @@ edition = "2024"
         "literal workspace sibling crate paths should preserve the parent facade: {:#?}",
         report.findings
     );
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }

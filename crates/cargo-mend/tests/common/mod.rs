@@ -1,6 +1,5 @@
-#![allow(clippy::expect_used)]
-#![allow(clippy::needless_raw_string_hashes)]
-#![allow(clippy::struct_field_names)]
+#![allow(clippy::expect_used, reason = "tests should panic on unexpected values")]
+#![allow(clippy::needless_raw_string_hashes, reason = "test fixtures use raw strings with varying hash counts for readability")]
 
 pub use std::collections::BTreeSet;
 pub use std::fs;
@@ -61,10 +60,14 @@ pub struct Report {
 
 #[derive(Debug, Deserialize)]
 pub struct Summary {
-    pub error_count:                    usize,
-    pub warning_count:                  usize,
-    pub fixable_with_fix_count:         usize,
-    pub fixable_with_fix_pub_use_count: usize,
+    #[serde(rename = "error_count")]
+    pub errors:               usize,
+    #[serde(rename = "warning_count")]
+    pub warnings:             usize,
+    #[serde(rename = "fixable_with_fix_count")]
+    pub fixable_with_fix:     usize,
+    #[serde(rename = "fixable_with_fix_pub_use_count")]
+    pub fixable_with_fix_pub_use: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -82,16 +85,16 @@ pub fn severity_for_code(code: &str) -> &'static str {
 
 pub fn expected_summary(report: &Report) -> Summary {
     let mut summary = Summary {
-        error_count:                    0,
-        warning_count:                  0,
-        fixable_with_fix_count:         0,
-        fixable_with_fix_pub_use_count: 0,
+        errors:               0,
+        warnings:             0,
+        fixable_with_fix:     0,
+        fixable_with_fix_pub_use: 0,
     };
 
     for finding in &report.findings {
         match severity_for_code(&finding.code) {
-            "error" => summary.error_count += 1,
-            _ => summary.warning_count += 1,
+            "error" => summary.errors += 1,
+            _ => summary.warnings += 1,
         }
 
         let fix_support = if matches!(finding.fix_support, FixSupport::None) {
@@ -104,8 +107,8 @@ pub fn expected_summary(report: &Report) -> Summary {
             finding.fix_support
         };
         match fix_support.summary_bucket() {
-            Some(FixSummaryBucket::Fix) => summary.fixable_with_fix_count += 1,
-            Some(FixSummaryBucket::FixPubUse) => summary.fixable_with_fix_pub_use_count += 1,
+            Some(FixSummaryBucket::Fix) => summary.fixable_with_fix += 1,
+            Some(FixSummaryBucket::FixPubUse) => summary.fixable_with_fix_pub_use += 1,
             None => {},
         }
     }
@@ -115,15 +118,15 @@ pub fn expected_summary(report: &Report) -> Summary {
 
 pub fn assert_summary_matches_findings(report: &Report) {
     let expected = expected_summary(report);
-    assert_eq!(report.summary.error_count, expected.error_count);
-    assert_eq!(report.summary.warning_count, expected.warning_count);
+    assert_eq!(report.summary.errors, expected.errors);
+    assert_eq!(report.summary.warnings, expected.warnings);
     assert_eq!(
-        report.summary.fixable_with_fix_count,
-        expected.fixable_with_fix_count
+        report.summary.fixable_with_fix,
+        expected.fixable_with_fix
     );
     assert_eq!(
-        report.summary.fixable_with_fix_pub_use_count,
-        expected.fixable_with_fix_pub_use_count
+        report.summary.fixable_with_fix_pub_use,
+        expected.fixable_with_fix_pub_use
     );
 }
 
@@ -141,23 +144,23 @@ pub fn fix_support_for(code: &str, fix_support: FixSupport) -> FixSupport {
 
 pub fn expected_summary_from_findings(expected_findings: &[ExpectedFinding<'_>]) -> Summary {
     let mut summary = Summary {
-        error_count:                    0,
-        warning_count:                  0,
-        fixable_with_fix_count:         0,
-        fixable_with_fix_pub_use_count: 0,
+        errors:               0,
+        warnings:             0,
+        fixable_with_fix:     0,
+        fixable_with_fix_pub_use: 0,
     };
 
     for finding in expected_findings {
         match severity_for_code(finding.code) {
-            "error" => summary.error_count += 1,
-            _ => summary.warning_count += 1,
+            "error" => summary.errors += 1,
+            _ => summary.warnings += 1,
         }
 
         let fix_support = fix_support_for(finding.code, finding.fix_support);
 
         match fix_support.summary_bucket() {
-            Some(FixSummaryBucket::Fix) => summary.fixable_with_fix_count += 1,
-            Some(FixSummaryBucket::FixPubUse) => summary.fixable_with_fix_pub_use_count += 1,
+            Some(FixSummaryBucket::Fix) => summary.fixable_with_fix += 1,
+            Some(FixSummaryBucket::FixPubUse) => summary.fixable_with_fix_pub_use += 1,
             None => {},
         }
     }
@@ -167,21 +170,21 @@ pub fn expected_summary_from_findings(expected_findings: &[ExpectedFinding<'_>])
 
 pub fn expected_summary_text(report: &Report) -> String {
     let mut parts = vec![
-        format!("{} error(s)", report.summary.error_count),
-        format!("{} warning(s)", report.summary.warning_count),
+        format!("{} error(s)", report.summary.errors),
+        format!("{} warning(s)", report.summary.warnings),
     ];
 
-    if report.summary.fixable_with_fix_count > 0 {
+    if report.summary.fixable_with_fix > 0 {
         parts.push(format!(
             "{} fixable with `--fix`",
-            report.summary.fixable_with_fix_count
+            report.summary.fixable_with_fix
         ));
     }
 
-    if report.summary.fixable_with_fix_pub_use_count > 0 {
+    if report.summary.fixable_with_fix_pub_use > 0 {
         parts.push(format!(
             "{} fixable with `--fix-pub-use`",
-            report.summary.fixable_with_fix_pub_use_count
+            report.summary.fixable_with_fix_pub_use
         ));
     }
 

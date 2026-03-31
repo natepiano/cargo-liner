@@ -60,7 +60,7 @@ pub fn collect_repository_files() -> RepositoryFiles {
         "expected no suspicious_pub for child type exposed by another crate-visible signature, got: {:#?}",
         report.findings
     );
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 
 #[test]
@@ -129,7 +129,7 @@ pub struct LaunchParams {
         "expected no suspicious_pub for child type exposed by sibling boundary field, got: {:#?}",
         report.findings
     );
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 
 #[test]
@@ -208,7 +208,7 @@ pub struct ClickParams {
         "expected no suspicious_pub for child type exposed by sibling boundary field through ancestor re-export, got: {:#?}",
         report.findings
     );
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 
 #[test]
@@ -286,7 +286,7 @@ pub struct ClickParams {
         "expected no suspicious_pub for child type exposed by sibling boundary field through ancestor re-export without immediate parent pub use, got: {:#?}",
         report.findings
     );
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 
 #[test]
@@ -417,7 +417,7 @@ pub struct TypeGuideSummary {
         "expected no suspicious_pub for child type exposed by cross-file public field, got: {:#?}",
         report.findings
     );
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 
 #[test]
@@ -501,7 +501,7 @@ impl Sha256Cache {
         "expected no suspicious_pub for child types exposed by exported method signatures, got: {:#?}",
         report.findings
     );
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 
 #[test]
@@ -571,7 +571,7 @@ pub struct ParsedInvalidWikilink;
         "expected no suspicious_pub for child types exposed by parent boundary signatures, got: {:#?}",
         report.findings
     );
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 
 #[test]
@@ -612,10 +612,10 @@ fn main() {
     .expect("write child");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.error_count, 0);
-    assert_eq!(report.summary.warning_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.errors, 0);
+    assert_eq!(report.summary.warnings, 0);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
     assert!(report.findings.is_empty());
 }
 
@@ -650,10 +650,10 @@ edition = "2024"
     .expect("write child");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.error_count, 0);
-    assert_eq!(report.summary.warning_count, 1);
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 1);
+    assert_eq!(report.summary.errors, 0);
+    assert_eq!(report.summary.warnings, 1);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
     assert_eq!(report.findings.len(), 1);
     let codes = report
         .findings
@@ -699,10 +699,10 @@ edition = "2024"
     .expect("write sibling");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.error_count, 0);
-    assert_eq!(report.summary.warning_count, 1);
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.errors, 0);
+    assert_eq!(report.summary.warnings, 1);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
     let codes = report
         .findings
         .iter()
@@ -747,10 +747,10 @@ edition = "2024"
     .expect("write sibling");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.error_count, 0);
-    assert_eq!(report.summary.warning_count, 1);
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.errors, 0);
+    assert_eq!(report.summary.warnings, 1);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
     let codes = report
         .findings
         .iter()
@@ -796,10 +796,10 @@ edition = "2024"
     .expect("write consumer");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.error_count, 0);
-    assert_eq!(report.summary.warning_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.errors, 0);
+    assert_eq!(report.summary.warnings, 0);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
     assert!(report.findings.is_empty());
 }
 
@@ -839,10 +839,10 @@ edition = "2024"
     .expect("write sibling");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.error_count, 0);
-    assert_eq!(report.summary.warning_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.errors, 0);
+    assert_eq!(report.summary.warnings, 0);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
     assert!(report.findings.is_empty());
 }
 
@@ -877,10 +877,10 @@ edition = "2024"
     .expect("write child boundary");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.error_count, 0);
-    assert_eq!(report.summary.warning_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.errors, 0);
+    assert_eq!(report.summary.warnings, 0);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
     assert!(report.findings.is_empty());
 }
 
@@ -920,10 +920,10 @@ edition = "2024"
     .expect("write sibling");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.error_count, 0);
-    assert_eq!(report.summary.warning_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.errors, 0);
+    assert_eq!(report.summary.warnings, 0);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
     assert!(report.findings.is_empty());
 }
 
@@ -963,10 +963,10 @@ edition = "2024"
     .expect("write sibling");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.error_count, 0);
-    assert_eq!(report.summary.warning_count, 2);
-    assert_eq!(report.summary.fixable_with_fix_count, 1);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.errors, 0);
+    assert_eq!(report.summary.warnings, 2);
+    assert_eq!(report.summary.fixable_with_fix, 1);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
     let codes = report
         .findings
         .iter()
@@ -1019,10 +1019,10 @@ fn main() {
     .expect("write child");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.error_count, 0);
-    assert_eq!(report.summary.warning_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 0);
+    assert_eq!(report.summary.errors, 0);
+    assert_eq!(report.summary.warnings, 0);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
     assert!(report.findings.is_empty());
 }
 
@@ -1263,10 +1263,10 @@ edition = "2024"
     .expect("write child");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.error_count, 0);
-    assert_eq!(report.summary.warning_count, 1);
-    assert_eq!(report.summary.fixable_with_fix_count, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use_count, 1);
+    assert_eq!(report.summary.errors, 0);
+    assert_eq!(report.summary.warnings, 1);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
     assert_eq!(report.findings.len(), 1);
     let codes = report
         .findings
