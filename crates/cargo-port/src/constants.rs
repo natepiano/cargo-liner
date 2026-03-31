@@ -33,34 +33,3 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 pub const APP_NAME: &str = "cargo-port";
 pub const CONFIG_FILE: &str = "config.toml";
-
-/// Default configuration TOML written on first run.
-pub const DEFAULT_CONFIG_TOML: &str = r#"[mouse]
-invert_scroll = true
-
-[tui]
-inline_dirs = ["crates"]
-ci_run_count = 5
-
-# Directories to skip when scanning. Edit this list for your setup.
-exclude_dirs = [
-    "Library",
-    "Applications",
-    "Downloads",
-    "Documents",
-    "Movies",
-    "Music",
-    "Pictures",
-    "Public",
-    "vendor",
-]
-
-# Include non-Rust projects (git repos without Cargo.toml).
-include_non_rust = false
-
-# Editor application name, opened via `open -a <editor> <path>`.
-editor = "zed"
-
-# How long (in seconds) the status bar flash is shown (e.g. "no new runs found").
-status_flash_secs = 3.0
-"#;

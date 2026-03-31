@@ -1,12 +1,12 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use confique::Config as _;
 use serde::Deserialize;
 use serde::Serialize;
 
 use super::constants::APP_NAME;
 use super::constants::CONFIG_FILE;
-use super::constants::DEFAULT_CONFIG_TOML;
 
 /// Whether non-Rust projects (git repos without `Cargo.toml`) are included in scans.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,78 +64,65 @@ impl ScrollDirection {
     }
 }
 
-#[derive(Deserialize, Serialize, Default)]
+/// Top-level application configuration.
+#[derive(confique::Config, Serialize)]
 pub struct Config {
-    #[serde(default)]
+    #[config(nested)]
     pub mouse: MouseConfig,
-    #[serde(default)]
+    #[config(nested)]
     pub tui:   TuiConfig,
 }
 
-#[derive(Deserialize, Serialize)]
+impl Default for Config {
+    #[allow(
+        clippy::expect_used,
+        reason = "infallible — every field has a #[config(default)]"
+    )]
+    fn default() -> Self {
+        Self::builder()
+            .load()
+            .expect("all config fields have defaults")
+    }
+}
+
+/// TUI display and behaviour settings.
+#[derive(confique::Config, Serialize)]
 pub struct TuiConfig {
-    /// Directory names whose members are shown inline (pulled up to the workspace level).
-    /// For example, `["crates"]` means projects under `workspace/crates/` appear
-    /// directly under the workspace rather than in a "crates" folder.
-    #[serde(default = "default_inline_dirs")]
+    /// Directory names whose members are shown inline (pulled up to the
+    /// workspace level). For example, `["crates"]` means projects under
+    /// `workspace/crates/` appear directly under the workspace rather than
+    /// in a "crates" folder.
+    #[config(default = ["crates"])]
     pub inline_dirs: Vec<String>,
 
     /// Number of recent CI runs to fetch per project.
-    #[serde(default = "default_ci_run_count")]
+    #[config(default = 5)]
     pub ci_run_count: u32,
 
-    /// Directory names to skip during scanning.
-    #[serde(default = "default_exclude_dirs")]
+    /// Directory names to skip during scanning. Edit this list for your setup.
+    #[config(default = ["Library", "Applications", "Downloads", "Documents", "Movies", "Music", "Pictures", "Public", "vendor"])]
     pub exclude_dirs: Vec<String>,
 
-    /// Whether to include non-Rust projects (git repos without `Cargo.toml`).
-    #[serde(default)]
+    /// Whether to include non-Rust projects (git repos without Cargo.toml).
+    #[config(default = false)]
     pub include_non_rust: NonRustInclusion,
 
     /// Editor application name, opened via `open -a <editor> <path>`.
-    #[serde(default = "default_editor")]
+    #[config(default = "zed")]
     pub editor: String,
 
-    /// How long (in seconds) the status bar flash is shown (e.g. "no new runs found").
-    #[serde(default = "default_status_flash_secs")]
+    /// How long (in seconds) the status bar flash is shown (e.g. "no new
+    /// runs found").
+    #[config(default = 3.0)]
     pub status_flash_secs: f64,
 }
 
-impl Default for TuiConfig {
-    fn default() -> Self {
-        Self {
-            inline_dirs:       default_inline_dirs(),
-            ci_run_count:      default_ci_run_count(),
-            exclude_dirs:      default_exclude_dirs(),
-            include_non_rust:  NonRustInclusion::Exclude,
-            editor:            default_editor(),
-            status_flash_secs: default_status_flash_secs(),
-        }
-    }
-}
-
-fn default_inline_dirs() -> Vec<String> { vec!["crates".to_string()] }
-
-const fn default_ci_run_count() -> u32 { 5 }
-
-const fn default_exclude_dirs() -> Vec<String> { Vec::new() }
-
-fn default_editor() -> String { "zed".to_string() }
-
-const fn default_status_flash_secs() -> f64 { 3.0 }
-
-#[derive(Deserialize, Serialize)]
+/// Mouse input settings.
+#[derive(confique::Config, Serialize)]
 pub struct MouseConfig {
-    #[serde(default)]
+    /// Whether to invert mouse scroll direction.
+    #[config(default = true)]
     pub invert_scroll: ScrollDirection,
-}
-
-impl Default for MouseConfig {
-    fn default() -> Self {
-        Self {
-            invert_scroll: ScrollDirection::Inverted,
-        }
-    }
 }
 
 pub fn config_path() -> Option<PathBuf> {
@@ -148,20 +135,10 @@ pub fn load() -> Config {
     };
 
     if !path.exists() {
-        // Create default config on first run with recommended settings
         let _ = create_default_config(&path);
-        // Now read it back so the toml is authoritative
-        let Ok(contents) = std::fs::read_to_string(&path) else {
-            return Config::default();
-        };
-        return toml::from_str(&contents).unwrap_or_default();
     }
 
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        return Config::default();
-    };
-
-    toml::from_str(&contents).unwrap_or_default()
+    Config::builder().file(&path).load().unwrap_or_default()
 }
 
 fn create_default_config(path: &Path) -> Result<(), String> {
@@ -170,8 +147,9 @@ fn create_default_config(path: &Path) -> Result<(), String> {
             .map_err(|e| format!("Failed to create config directory: {e}"))?;
     }
 
-    std::fs::write(path, DEFAULT_CONFIG_TOML)
-        .map_err(|e| format!("Failed to write config: {e}"))?;
+    let template = confique::toml::template::<Config>(confique::toml::FormatOptions::default());
+
+    std::fs::write(path, template).map_err(|e| format!("Failed to write config: {e}"))?;
     Ok(())
 }
 
@@ -194,17 +172,114 @@ pub fn save(config: &Config) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
+    /// `Config::default()` returns correct values for every field.
     #[test]
-    fn default_config_toml_parses_correctly() {
-        let result: Result<Config, _> = toml::from_str(DEFAULT_CONFIG_TOML);
-        assert!(result.is_ok(), "DEFAULT_CONFIG_TOML should parse");
-        let cfg = result.unwrap_or_default();
-        assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Exclude);
-        assert_eq!(cfg.tui.ci_run_count, 5);
+    fn defaults_are_correct() {
+        let cfg = Config::default();
         assert_eq!(cfg.tui.inline_dirs, vec!["crates".to_string()]);
+        assert_eq!(cfg.tui.ci_run_count, 5);
+        assert!(!cfg.tui.exclude_dirs.is_empty());
+        assert!(cfg.tui.exclude_dirs.contains(&"Library".to_string()));
+        assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Exclude);
+        assert_eq!(cfg.tui.editor, "zed");
+        assert!((cfg.tui.status_flash_secs - 3.0).abs() < f64::EPSILON);
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
+    }
+
+    /// Generated template parses back into a valid `Config` via confique.
+    #[test]
+    fn template_round_trips() {
+        let template = confique::toml::template::<Config>(confique::toml::FormatOptions::default());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, &template).expect("write template");
+
+        // Template has all fields commented out, so loading it should
+        // succeed with defaults filling every field.
+        let cfg = Config::builder()
+            .file(&path)
+            .load()
+            .expect("template should parse");
+        assert_eq!(cfg.tui.ci_run_count, 5);
+    }
+
+    /// A partial config file gets defaults for missing fields.
+    #[test]
+    fn partial_config_fills_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[tui]\nci_run_count = 10\n").expect("write");
+
+        let cfg = Config::builder()
+            .file(&path)
+            .load()
+            .expect("partial config should load");
+        assert_eq!(cfg.tui.ci_run_count, 10);
+        assert_eq!(cfg.tui.editor, "zed");
+        assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
+    }
+
+    /// An empty config file gets all defaults.
+    #[test]
+    fn empty_config_gets_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").expect("write");
+
+        let cfg = Config::builder()
+            .file(&path)
+            .load()
+            .expect("empty config should load");
+        assert_eq!(cfg.tui.ci_run_count, 5);
+        assert_eq!(cfg.tui.editor, "zed");
+    }
+
+    /// Saving and reloading preserves all values.
+    #[test]
+    fn save_and_reload_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+
+        let mut cfg = Config::default();
+        cfg.tui.ci_run_count = 42;
+        cfg.tui.editor = "vim".to_string();
+        cfg.tui.status_flash_secs = 5.0;
+        cfg.mouse.invert_scroll = ScrollDirection::Normal;
+
+        let contents = toml::to_string_pretty(&cfg).expect("serialize");
+        std::fs::write(&path, &contents).expect("write");
+
+        let reloaded = Config::builder()
+            .file(&path)
+            .load()
+            .expect("reloaded config");
+        assert_eq!(reloaded.tui.ci_run_count, 42);
+        assert_eq!(reloaded.tui.editor, "vim");
+        assert!((reloaded.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
+        assert_eq!(reloaded.mouse.invert_scroll, ScrollDirection::Normal);
+    }
+
+    /// Bool-based enums deserialize correctly from TOML booleans.
+    #[test]
+    fn bool_enums_from_toml() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[mouse]\ninvert_scroll = false\n\n[tui]\ninclude_non_rust = true\n",
+        )
+        .expect("write");
+
+        let cfg = Config::builder()
+            .file(&path)
+            .load()
+            .expect("bool enums should parse");
+        assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Normal);
+        assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Include);
     }
 }

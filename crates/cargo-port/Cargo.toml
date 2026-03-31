@@ -32,6 +32,7 @@ missing_docs = "deny"
 clap           = { version = "4", features = ["derive"] }
 colored        = "3.1.1"
 comfy-table    = { version = "7", features = ["custom_styling"] }
+confique       = { version = "0.4", features = ["toml"] }
 crossterm      = "0.29.0"
 dirs           = "6.0.0"
 notify         = "9.0.0-rc.2"

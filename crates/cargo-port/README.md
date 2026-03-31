@@ -31,17 +31,6 @@ cargo-port creates a config file on first run at:
 - **macOS**: `~/Library/Application Support/cargo-port/config.toml`
 - **Linux**: `~/.config/cargo-port/config.toml`
 
-### Owned Owners
-
-To edit Version and Description fields directly from the TUI, add your GitHub username and/or organization names to `owned_owners`:
-
-```toml
-[tui]
-owned_owners = ["your-username", "your-org"]
-```
-
-Only projects whose GitHub owner matches one of these entries will have editable fields. This prevents accidental edits to forked or third-party projects.
-
 ### Include Non-Rust Projects
 
 To also show non-Rust git repositories in the project tree:
