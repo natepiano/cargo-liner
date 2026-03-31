@@ -188,6 +188,7 @@ pub(super) fn disk_color(percentile: Option<f64>) -> Style {
 pub(super) struct RowData<'a> {
     pub prefix:     &'a str,
     pub name:       &'a str,
+    pub lint_icon:  &'a str,
     pub lang_icon:  &'a str,
     pub disk:       &'a str,
     pub disk_style: Style,
@@ -236,10 +237,15 @@ fn ci_icon_width() -> usize {
     .unwrap_or(1)
 }
 
+/// Display width of the lint icon column (widest lint icon).
+fn lint_icon_width() -> usize { display_width(crate::constants::LINT_PASSED) }
+
 pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
     let prefix_width = display_width(row.prefix);
-    let available = row.name_width.saturating_sub(prefix_width);
+    let lint_w = lint_icon_width();
+    let available = row.name_width.saturating_sub(prefix_width + lint_w);
     let padded_name = format!("{}{}", row.prefix, pad_right(row.name, available));
+    let lint_cell = pad_right(row.lint_icon, lint_w);
     let disk_width = row.disk_width;
     let sync_width = row.sync_width;
     let sync_cell = if row.git_sync == IN_SYNC {
@@ -261,6 +267,7 @@ pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
             .add_modifier(Modifier::CROSSED_OUT);
         return Line::from(vec![
             Span::styled(padded_name, strike),
+            Span::styled(lint_cell.clone(), strike),
             Span::styled(format!(" {:>disk_width$}", row.disk), strike),
             Span::styled(format!(" {lang_cell}"), strike),
             Span::styled(sync_cell, strike),
@@ -286,6 +293,7 @@ pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
 
     Line::from(vec![
         Span::raw(padded_name),
+        Span::raw(lint_cell),
         Span::styled(format!(" {:>disk_width$}", row.disk), row.disk_style),
         Span::raw(format!(" {lang_cell}")),
         Span::styled(sync_cell, sync_style),
@@ -303,6 +311,7 @@ pub(super) fn probe_row_width(name_width: usize, disk_width: usize, sync_width: 
     let row = project_row_spans(&RowData {
         prefix: "",
         name: &name_pad,
+        lint_icon: crate::constants::LINT_PASSED,
         lang_icon: "🦀",
         disk: &disk_pad,
         disk_style: Style::default(),
@@ -613,6 +622,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
         let mut row_line = project_row_spans(&RowData {
             prefix:     "",
             name:       &format!("{:>width$}", "Σ", width = widths.name),
+            lint_icon:  crate::constants::LINT_NO_LOG,
             lang_icon:  "  ",
             disk:       &total_str,
             disk_style: total_style,
@@ -636,17 +646,25 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
 
     let node_count = app.live_node_count();
     let scan_root = project::home_relative_path(&app.scan_root);
+    // "Lint" right-aligns with the lint icon column: "Li" bleeds into
+    // name padding, "nt" sits over the icon.  The header word "Lint" is
+    // 4 chars; the icon column is `lint_icon_width()` (2).  So the name
+    // span shrinks by 2 ("Li") and "Lint" is appended.
+    let lint_w = lint_icon_width();
+    let lint_header = format!("{:>width$}", "Lint", width = lint_w + 2);
+    let name_header_pad = widths
+        .name
+        .saturating_sub(scan_root.len() + 3 + node_count.to_string().len() + 2);
     let header_line = Line::from(vec![
         Span::styled(
             format!(
                 "{scan_root} ({node_count}){:<pad$}",
                 "",
-                pad = widths
-                    .name
-                    .saturating_sub(scan_root.len() + 3 + node_count.to_string().len()),
+                pad = name_header_pad
             ),
             header_style,
         ),
+        Span::styled(lint_header, header_style),
         Span::styled(
             format!(" {:>width$}", "Disk", width = widths.disk),
             header_style,
@@ -922,6 +940,7 @@ fn render_root_item(
     let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
     let ci = app.ci_for_node(node);
     let lang = project.lang_icon();
+    let lint = app.lint_icon(project);
     let git = app.git_icon(project);
     let sync = app.git_sync(project);
     let prefix = if node.has_children() {
@@ -936,6 +955,7 @@ fn render_root_item(
     ListItem::new(project_row_spans(&RowData {
         prefix,
         name: &name,
+        lint_icon: lint,
         lang_icon: lang,
         disk: &disk,
         disk_style: ds,
@@ -962,12 +982,14 @@ fn render_child_item(
     let disk_bytes = app.disk_usage.get(&project.path).copied();
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
     let lang = project.lang_icon();
+    let lint = app.lint_icon(project);
     let ci = app.ci_for(project);
     let git = app.git_icon(project);
     let sync = app.git_sync(project);
     ListItem::new(project_row_spans(&RowData {
         prefix,
         name,
+        lint_icon: lint,
         lang_icon: lang,
         disk: &disk,
         disk_style: ds,
@@ -1142,12 +1164,14 @@ pub(super) fn render_filtered_items(app: &App, widths: &FitWidths) -> Vec<ListIt
             let disk_bytes = app.disk_usage.get(&project.path).copied();
             let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
             let lang = project.lang_icon();
+            let lint = app.lint_icon(project);
             let ci = app.ci_for(project);
             let git = app.git_icon(project);
             let sync = app.git_sync(project);
             Some(ListItem::new(project_row_spans(&RowData {
                 prefix: "  ",
                 name: &entry.name,
+                lint_icon: lint,
                 lang_icon: lang,
                 disk: &disk,
                 disk_style: ds,
@@ -1188,13 +1212,14 @@ mod tests {
 
     #[test]
     fn row_spans_same_width_with_and_without_emoji() {
-        let name_width = 30;
+        let name_width = 32;
         let disk_width = 8;
         let sync_width = 2;
 
         let row_emoji = project_row_spans(&RowData {
             prefix: "▶ ",
             name: "bevy_brp 🌲:2",
+            lint_icon: crate::constants::LINT_PASSED,
             lang_icon: "🦀",
             disk: "36.3 GiB",
             disk_style: Style::default(),
@@ -1210,6 +1235,7 @@ mod tests {
         let row_ascii = project_row_spans(&RowData {
             prefix: "▶ ",
             name: "bevy_mesh_outline_benchmark",
+            lint_icon: crate::constants::LINT_PASSED,
             lang_icon: "🦀",
             disk: "36.3 GiB",
             disk_style: Style::default(),

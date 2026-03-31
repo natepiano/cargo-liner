@@ -27,7 +27,9 @@ use super::constants::DEBOUNCE_DURATION;
 use super::constants::MAX_WAIT;
 use super::constants::NEW_PROJECT_DEBOUNCE;
 use super::constants::POLL_INTERVAL;
+use super::constants::PORT_REPORT_LOG;
 use super::http::HttpClient;
+use super::port_report;
 use super::project;
 use super::project::GitInfo;
 use super::project::GitTracking;
@@ -148,7 +150,7 @@ fn watcher_loop(
                 discovered: &discovered,
             };
             for event_path in &event.paths {
-                handle_event(event_path, &ctx, &mut pending_disk, &mut pending_new);
+                handle_event(event_path, &ctx, bg_tx, &mut pending_disk, &mut pending_new);
             }
         }
 
@@ -180,6 +182,7 @@ struct EventContext<'a> {
 fn handle_event(
     event_path: &Path,
     ctx: &EventContext<'_>,
+    bg_tx: &mpsc::Sender<BackgroundMsg>,
     pending_disk: &mut HashMap<String, (Instant, Instant)>,
     pending_new: &mut HashMap<PathBuf, Instant>,
 ) {
@@ -191,6 +194,15 @@ fn handle_event(
         .iter()
         .find(|(root, _)| event_path.starts_with(root))
     {
+        // Lint status: respond immediately to port-report.log changes.
+        if event_path.file_name().is_some_and(|f| f == PORT_REPORT_LOG) {
+            let status = port_report::read_status(&entry.abs_path);
+            let _ = bg_tx.send(BackgroundMsg::LintStatus {
+                path: entry.project_path.clone(),
+                status,
+            });
+        }
+
         let debounce_deadline = now + DEBOUNCE_DURATION;
         let max_deadline = pending_disk
             .get(&entry.project_path)
@@ -302,13 +314,16 @@ fn probe_new_projects(
                 project: project.clone(),
             });
             let tx = bg_tx.clone();
-            let task_client = client.clone();
+            let task_ctx = scan::FetchContext {
+                client:     client.clone(),
+                repo_cache: scan::new_repo_cache(),
+            };
             let path = project.path.clone();
             let name = project.name.clone();
             rayon::spawn(move || {
                 scan::fetch_project_details(
                     &tx,
-                    &task_client,
+                    &task_ctx,
                     &path,
                     &abs_path,
                     name.as_ref(),
@@ -548,12 +563,14 @@ mod tests {
             project_parents: &project_parents,
             discovered:      &discovered,
         };
+        let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
         let mut pending_new = HashMap::new();
 
         handle_event(
             Path::new("/home/user/rust/bevy/src/lib.rs"),
             &ctx,
+            &bg_tx,
             &mut pending_disk,
             &mut pending_new,
         );
@@ -587,8 +604,15 @@ mod tests {
         let mut pending_disk = HashMap::new();
         let mut pending_new = HashMap::new();
 
+        let (bg_tx, _bg_rx) = mpsc::channel();
         let event_path = new_project.join("src/main.rs");
-        handle_event(&event_path, &ctx, &mut pending_disk, &mut pending_new);
+        handle_event(
+            &event_path,
+            &ctx,
+            &bg_tx,
+            &mut pending_disk,
+            &mut pending_new,
+        );
 
         assert!(pending_disk.is_empty());
         assert!(pending_new.contains_key(&new_project));
@@ -614,9 +638,11 @@ mod tests {
         let mut pending_disk = HashMap::new();
         let mut pending_new = HashMap::new();
 
+        let (bg_tx, _bg_rx) = mpsc::channel();
         handle_event(
             &project_dir.join("Cargo.toml"),
             &ctx,
+            &bg_tx,
             &mut pending_disk,
             &mut pending_new,
         );
@@ -647,12 +673,14 @@ mod tests {
             project_parents: &project_parents,
             discovered:      &discovered,
         };
+        let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
         let mut pending_new = HashMap::new();
 
         handle_event(
             &new_wt.join("src/main.rs"),
             &ctx,
+            &bg_tx,
             &mut pending_disk,
             &mut pending_new,
         );

@@ -12,6 +12,7 @@ mod constants;
 mod http;
 mod list;
 mod output;
+mod port_report;
 mod project;
 mod scan;
 mod tui;

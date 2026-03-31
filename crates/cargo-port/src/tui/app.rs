@@ -50,6 +50,7 @@ use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::constants::WORKTREE;
 use crate::http::HttpClient;
+use crate::port_report::LintStatus;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitTracking;
@@ -207,6 +208,8 @@ pub(super) struct App {
     pub flat_entries:        Vec<FlatEntry>,
     pub disk_usage:          HashMap<String, u64>,
     pub ci_state:            HashMap<String, CiState>,
+    pub lint_status:         HashMap<String, LintStatus>,
+    pub lint_enabled:        bool,
     pub git_info:            HashMap<String, GitInfo>,
     pub crates_versions:     HashMap<String, String>,
     pub crates_downloads:    HashMap<String, u64>,
@@ -443,6 +446,8 @@ impl App {
             flat_entries,
             disk_usage: HashMap::new(),
             ci_state: HashMap::new(),
+            lint_status: HashMap::new(),
+            lint_enabled: cfg.lint.enabled,
             git_info: HashMap::new(),
             crates_versions: HashMap::new(),
             crates_downloads: HashMap::new(),
@@ -794,6 +799,9 @@ impl App {
                 {
                     self.scan_log_state.select(Some(len.saturating_sub(1)));
                 }
+            },
+            BackgroundMsg::LintStatus { path, status } => {
+                self.lint_status.insert(path, status);
             },
             BackgroundMsg::ScanComplete => {
                 self.scan_complete = true;
@@ -1693,6 +1701,24 @@ impl App {
 
     pub fn ci_state_for(&self, project: &RustProject) -> Option<&CiState> {
         self.ci_state.get(&project.path)
+    }
+
+    /// Lint icon frame for the current tick, or a blank space if lint is
+    /// disabled or no log exists.
+    pub fn lint_icon(&self, project: &RustProject) -> &'static str {
+        use crate::constants::LINT_NO_LOG;
+        use crate::constants::SPINNER_DOTS;
+
+        if !self.lint_enabled {
+            return LINT_NO_LOG;
+        }
+        let Some(status) = self.lint_status.get(&project.path) else {
+            return LINT_NO_LOG;
+        };
+        match status {
+            LintStatus::Running(_) => SPINNER_DOTS[self.spinner_tick % SPINNER_DOTS.len()],
+            _ => status.icon().frame(0),
+        }
     }
 
     pub fn git_icon(&self, project: &RustProject) -> &'static str {

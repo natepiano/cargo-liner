@@ -327,6 +327,7 @@ pub(super) enum DetailField {
     Path,
     Targets,
     Disk,
+    Lint,
     Ci,
     Branch,
     Sync,
@@ -353,6 +354,7 @@ impl DetailField {
             Self::Path => "Path",
             Self::Targets => "Targets",
             Self::Disk => "Disk",
+            Self::Lint => "Lint",
             Self::Ci => "CI",
             Self::Branch => "Branch",
             Self::Sync => "Sync",
@@ -386,6 +388,7 @@ impl DetailField {
             Self::Path => info.path.clone(),
             Self::Targets => info.types.clone(),
             Self::Disk => info.disk.clone(),
+            Self::Lint => info.lint_label.clone(),
             Self::Ci => info.ci.map_or_else(String::new, |c| c.icon().to_string()),
             Self::Branch => {
                 let branch = info.git_branch.as_deref().unwrap_or("");
@@ -430,20 +433,23 @@ impl DetailField {
 /// Non-Rust projects show only name, path, disk, and CI.
 pub(super) fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
     if info.is_rust == ProjectLanguage::NonRust {
-        return vec![
-            DetailField::Name,
-            DetailField::Path,
-            DetailField::Disk,
-            DetailField::Ci,
-        ];
+        let mut fields = vec![DetailField::Name, DetailField::Path, DetailField::Disk];
+        if !info.lint_label.is_empty() {
+            fields.push(DetailField::Lint);
+        }
+        fields.push(DetailField::Ci);
+        return fields;
     }
     let mut fields = vec![
         DetailField::Name,
         DetailField::Path,
         DetailField::Targets,
         DetailField::Disk,
-        DetailField::Ci,
     ];
+    if !info.lint_label.is_empty() {
+        fields.push(DetailField::Lint);
+    }
+    fields.push(DetailField::Ci);
     if !info.vendored_names.is_empty() {
         fields.push(DetailField::Vendored);
     }
@@ -510,6 +516,7 @@ pub(super) struct DetailInfo {
     pub crates_downloads: Option<u64>,
     pub types:            String,
     pub disk:             String,
+    pub lint_label:       String,
     pub ci:               Option<Conclusion>,
     pub stats_rows:       Vec<(&'static str, usize)>,
     pub git_branch:       Option<String>,
@@ -748,6 +755,19 @@ pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo 
             .collect::<Vec<_>>()
             .join(", "),
         disk,
+        lint_label: if app.lint_enabled {
+            app.lint_status
+                .get(&project.path)
+                .map_or_else(String::new, |s| {
+                    let label = s.label();
+                    s.timestamp().map_or_else(
+                        || label.to_string(),
+                        |ts| format!("{label} ({})", ts.format("%H:%M:%S")),
+                    )
+                })
+        } else {
+            String::new()
+        },
         ci,
         stats_rows,
         crates_version,

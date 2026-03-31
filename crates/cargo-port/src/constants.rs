@@ -1,5 +1,38 @@
 use std::time::Duration;
 
+// ── Icon type ────────────────────────────────────────────────────────
+
+/// A sequence of animation frames. Single-element slices are static icons.
+pub type Frames = &'static [&'static str];
+
+/// Unifies static icons (`&str`) and animated spinners (`Frames`).
+pub enum Icon {
+    Static(&'static str),
+    Animated(Frames),
+}
+
+impl Icon {
+    /// Returns the frame to display at the given tick.
+    pub fn frame(&self, tick: usize) -> &'static str {
+        match self {
+            Self::Static(s) => s,
+            Self::Animated(frames) => frames[tick % frames.len()],
+        }
+    }
+}
+
+impl From<&'static str> for Icon {
+    fn from(s: &'static str) -> Self { Self::Static(s) }
+}
+
+impl From<Frames> for Icon {
+    fn from(frames: Frames) -> Self { Self::Animated(frames) }
+}
+
+// ── Spinner palette ──────────────────────────────────────────────────
+
+pub const SPINNER_DOTS: Frames = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 // ── Shared icons ─────────────────────────────────────────────────────
 
 pub const PASSING: &str = "🟢";
@@ -8,6 +41,14 @@ pub const CANCELLED: &str = "⛔";
 pub const IN_SYNC: &str = "☑️";
 pub const SYNC_UP: &str = "↑";
 pub const SYNC_DOWN: &str = "↓";
+
+// ── Lint status icons ────────────────────────────────────────────────
+
+pub const LINT_PASSED: &str = "🟢";
+pub const LINT_FAILED: &str = "🔴";
+pub const LINT_STALE: &str = "⚫";
+pub const LINT_NO_LOG: &str = " ";
+pub const LINT_RUNNING: Frames = SPINNER_DOTS;
 
 // ── Git origin icons ─────────────────────────────────────────────────
 
@@ -46,6 +87,13 @@ pub const NEW_PROJECT_DEBOUNCE: Duration = Duration::from_secs(2);
 
 /// How often the watcher thread checks for expired timers.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+// ── Port-report constants ────────────────────────────────────────────
+
+pub const PORT_REPORT_LOG: &str = "port-report.log";
+
+/// A `started` entry older than this is considered stale (crashed watcher).
+pub const STALE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 // ── Config constants ──────────────────────────────────────────────────
 

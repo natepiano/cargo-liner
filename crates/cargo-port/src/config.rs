@@ -64,6 +64,15 @@ impl ScrollDirection {
     }
 }
 
+/// Lint status indicator settings.
+#[derive(confique::Config, Serialize)]
+pub struct LintConfig {
+    /// Show a lint status indicator per project by reading
+    /// `target/port-report.log`. Any external tool can produce this log.
+    #[config(default = false)]
+    pub enabled: bool,
+}
+
 /// Top-level application configuration.
 #[derive(confique::Config, Serialize)]
 pub struct Config {
@@ -71,6 +80,8 @@ pub struct Config {
     pub mouse: MouseConfig,
     #[config(nested)]
     pub tui:   TuiConfig,
+    #[config(nested)]
+    pub lint:  LintConfig,
 }
 
 impl Default for Config {

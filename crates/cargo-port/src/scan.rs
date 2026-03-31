@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -18,6 +20,8 @@ use super::constants::CACHE_DIR;
 use super::constants::NO_MORE_RUNS_MARKER;
 use super::constants::OLDER_RUNS_FETCH_INCREMENT;
 use super::http::HttpClient;
+use super::port_report;
+use super::port_report::LintStatus;
 use super::project::GitInfo;
 use super::project::GitTracking;
 use super::project::RustProject;
@@ -80,6 +84,10 @@ pub enum BackgroundMsg {
     ScanActivity {
         path: String,
     },
+    LintStatus {
+        path:   String,
+        status: LintStatus,
+    },
     ScanComplete,
     NetworkOffline,
 }
@@ -92,7 +100,8 @@ impl BackgroundMsg {
             | Self::CiRuns { path, .. }
             | Self::GitInfo { path, .. }
             | Self::CratesIoVersion { path, .. }
-            | Self::RepoMeta { path, .. } => Some(path),
+            | Self::RepoMeta { path, .. }
+            | Self::LintStatus { path, .. } => Some(path),
             Self::ProjectDiscovered { project } => Some(&project.path),
             Self::ScanActivity { .. } | Self::ScanComplete | Self::NetworkOffline => None,
         }
@@ -676,17 +685,25 @@ pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
     entries
 }
 
+/// Shared network context passed to `fetch_project_details`.
+pub struct FetchContext {
+    pub client:     HttpClient,
+    pub repo_cache: RepoCache,
+}
+
 /// Fetch all details (disk, git, crates.io, CI) for a single project and send
 /// results through the provided channel. Used by both the main scan and priority fetch.
 pub fn fetch_project_details(
     tx: &mpsc::Sender<BackgroundMsg>,
-    client: &HttpClient,
+    ctx: &FetchContext,
     project_path: &str,
     abs_path: &Path,
     project_name: Option<&String>,
     git_tracking: GitTracking,
     ci_run_count: u32,
 ) {
+    let client = &ctx.client;
+    let repo_cache = &ctx.repo_cache;
     // Git info first (local, instant) — also provides the repo URL for CI cache lookup
     let git_info = if git_tracking.is_tracked() {
         GitInfo::detect(abs_path)
@@ -713,28 +730,47 @@ pub fn fetch_project_details(
             is_online
         };
 
-    // CI runs + repo metadata — combined in a single GraphQL call.
-    // Done before disk usage so network I/O overlaps with other
-    // projects' disk walks on the rayon pool.
+    // CI runs + repo metadata — deduplicated across worktrees of the
+    // same repo. First thread to reach a given `owner/repo` does the
+    // HTTP calls; subsequent threads reuse the cached result.
     if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
         && let Some((owner, repo)) = ci::parse_owner_repo(repo_url)
     {
-        let _ = tx.send(BackgroundMsg::ScanActivity {
-            path: format!("CI: {project_path}"),
+        let cache_key = format!("{owner}/{repo}");
+        let cached = repo_cache
+            .lock()
+            .ok()
+            .and_then(|c| c.get(&cache_key).cloned());
+
+        let data = cached.unwrap_or_else(|| {
+            let _ = tx.send(BackgroundMsg::ScanActivity {
+                path: format!("CI: {project_path}"),
+            });
+            let (result, meta) =
+                fetch_ci_runs_cached(client, repo_url, &owner, &repo, ci_run_count);
+            let cache_only = matches!(result, CiFetchResult::CacheOnly(_));
+            let runs = match result {
+                CiFetchResult::Loaded(r) | CiFetchResult::CacheOnly(r) => r,
+            };
+            let data = CachedRepoData {
+                runs,
+                meta,
+                cache_only,
+            };
+            if let Ok(mut c) = repo_cache.lock() {
+                c.insert(cache_key, data.clone());
+            }
+            data
         });
-        let (result, meta) = fetch_ci_runs_cached(client, repo_url, &owner, &repo, ci_run_count);
-        let is_cache_only = matches!(result, CiFetchResult::CacheOnly(_));
-        let runs = match result {
-            CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
-        };
-        if runs.is_empty() && is_cache_only && !online {
+
+        if data.runs.is_empty() && data.cache_only && !online {
             notify_offline_once(tx);
         }
         let _ = tx.send(BackgroundMsg::CiRuns {
             path: project_path.to_string(),
-            runs,
+            runs: data.runs,
         });
-        if let Some(meta) = meta {
+        if let Some(meta) = data.meta {
             let _ = tx.send(BackgroundMsg::RepoMeta {
                 path:        project_path.to_string(),
                 stars:       meta.stars,
@@ -754,6 +790,15 @@ pub fn fetch_project_details(
         });
     }
 
+    // Lint status (cheap local file read).
+    let lint = port_report::read_status(abs_path);
+    if !matches!(lint, LintStatus::NoLog) {
+        let _ = tx.send(BackgroundMsg::LintStatus {
+            path:   project_path.to_string(),
+            status: lint,
+        });
+    }
+
     // Disk usage last — walking large `target/` dirs is the slowest
     // local operation and doesn't block anything else.
     let bytes = dir_size(abs_path);
@@ -763,10 +808,25 @@ pub fn fetch_project_details(
     });
 }
 
+#[derive(Clone)]
 pub struct RepoMetaInfo {
     pub stars:       u64,
     pub description: Option<String>,
 }
+
+/// Cached CI + metadata results keyed by `"owner/repo"`. Shared across
+/// rayon threads so worktrees of the same repo don't make duplicate
+/// HTTP calls.
+#[derive(Clone)]
+pub struct CachedRepoData {
+    runs:       Vec<CiRun>,
+    meta:       Option<RepoMetaInfo>,
+    cache_only: bool,
+}
+
+pub type RepoCache = Arc<Mutex<HashMap<String, CachedRepoData>>>;
+
+pub fn new_repo_cache() -> RepoCache { Arc::new(Mutex::new(HashMap::new())) }
 
 /// Resolve include-dir entries to absolute paths. Relative entries are
 /// joined to `scan_root`; absolute entries are used as-is. An empty
@@ -807,6 +867,7 @@ pub fn spawn_streaming_scan(
 
     let scan_tx = tx.clone();
     thread::spawn(move || {
+        let repo_cache: RepoCache = Arc::new(Mutex::new(HashMap::new()));
         rayon::scope(|s| {
             for dir in &scan_dirs {
                 if !dir.is_dir() {
@@ -848,13 +909,16 @@ pub fn spawn_streaming_scan(
                             });
 
                             let task_tx = scan_tx.clone();
-                            let task_client = client.clone();
+                            let task_ctx = FetchContext {
+                                client:     client.clone(),
+                                repo_cache: Arc::clone(&repo_cache),
+                            };
                             let task_path = project.path.clone();
                             let task_abs = abs_path;
                             s.spawn(move |_| {
                                 fetch_project_details(
                                     &task_tx,
-                                    &task_client,
+                                    &task_ctx,
                                     &task_path,
                                     &task_abs,
                                     None,
@@ -881,14 +945,17 @@ pub fn spawn_streaming_scan(
                         });
 
                         let task_tx = scan_tx.clone();
-                        let task_client = client.clone();
+                        let task_ctx = FetchContext {
+                            client:     client.clone(),
+                            repo_cache: Arc::clone(&repo_cache),
+                        };
                         let task_path = project.path.clone();
                         let task_name = project.name.clone();
                         let task_abs = abs_path;
                         s.spawn(move |_| {
                             fetch_project_details(
                                 &task_tx,
-                                &task_client,
+                                &task_ctx,
                                 &task_path,
                                 &task_abs,
                                 task_name.as_ref(),
