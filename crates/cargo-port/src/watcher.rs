@@ -41,19 +41,27 @@ pub struct WatchRequest {
     pub abs_path:     PathBuf,
 }
 
-/// Spawn a unified background watcher thread. Watches the scan root
-/// recursively and handles disk-usage updates, new-project detection,
-/// and deleted-project detection through a single `notify` subscription.
+/// Spawn a unified background watcher thread. Watches the include
+/// directories recursively and handles disk-usage updates,
+/// new-project detection, and deleted-project detection.
 pub fn spawn_watcher(
     scan_root: PathBuf,
     bg_tx: mpsc::Sender<BackgroundMsg>,
     ci_run_count: u32,
     non_rust: NonRustInclusion,
+    include_dirs: Vec<String>,
 ) -> mpsc::Sender<WatchRequest> {
     let (watch_tx, watch_rx) = mpsc::channel();
 
     thread::spawn(move || {
-        watcher_loop(scan_root, bg_tx, watch_rx, ci_run_count, non_rust);
+        watcher_loop(
+            scan_root,
+            bg_tx,
+            watch_rx,
+            ci_run_count,
+            non_rust,
+            include_dirs,
+        );
     });
 
     watch_tx
@@ -72,7 +80,9 @@ fn watcher_loop(
     watch_rx: mpsc::Receiver<WatchRequest>,
     ci_run_count: u32,
     non_rust: NonRustInclusion,
+    include_dirs: Vec<String>,
 ) {
+    let watch_dirs = scan::resolve_include_dirs(&scan_root, &include_dirs);
     let (notify_tx, notify_rx) = mpsc::channel();
     let handler = move |res| {
         let _ = notify_tx.send(res);
@@ -80,8 +90,10 @@ fn watcher_loop(
     let Ok(mut watcher) = notify::recommended_watcher(handler) else {
         return;
     };
-    if watcher.watch(&scan_root, RecursiveMode::Recursive).is_err() {
-        return;
+    for dir in &watch_dirs {
+        if dir.is_dir() {
+            let _ = watcher.watch(dir, RecursiveMode::Recursive);
+        }
     }
 
     // `abs_path` → project tracking state
@@ -121,16 +133,14 @@ fn watcher_loop(
             let Ok(event) = result else {
                 continue;
             };
+            let ctx = EventContext {
+                scan_root:       &scan_root,
+                projects:        &projects,
+                project_parents: &project_parents,
+                discovered:      &discovered,
+            };
             for event_path in &event.paths {
-                handle_event(
-                    event_path,
-                    &scan_root,
-                    &projects,
-                    &project_parents,
-                    &discovered,
-                    &mut pending_disk,
-                    &mut pending_new,
-                );
+                handle_event(event_path, &ctx, &mut pending_disk, &mut pending_new);
             }
         }
 
@@ -150,19 +160,25 @@ fn watcher_loop(
     }
 }
 
+/// Immutable state needed to classify a filesystem event.
+struct EventContext<'a> {
+    scan_root:       &'a Path,
+    projects:        &'a HashMap<PathBuf, ProjectEntry>,
+    project_parents: &'a HashSet<PathBuf>,
+    discovered:      &'a HashSet<PathBuf>,
+}
+
 fn handle_event(
     event_path: &Path,
-    scan_root: &Path,
-    projects: &HashMap<PathBuf, ProjectEntry>,
-    project_parents: &HashSet<PathBuf>,
-    discovered: &HashSet<PathBuf>,
+    ctx: &EventContext<'_>,
     pending_disk: &mut HashMap<String, (Instant, Instant)>,
     pending_new: &mut HashMap<PathBuf, Instant>,
 ) {
     let now = Instant::now();
 
     // Try to match the event to a known project.
-    if let Some((_, entry)) = projects
+    if let Some((_, entry)) = ctx
+        .projects
         .iter()
         .find(|(root, _)| event_path.starts_with(root))
     {
@@ -180,11 +196,11 @@ fn handle_event(
     // Not a known project — walk up from the event path to find the
     // directory at the same level as existing projects. A "project parent"
     // is any directory that already contains a known project (e.g. `~/rust/`).
-    let Some(candidate) = project_level_dir(event_path, scan_root, project_parents) else {
+    let Some(candidate) = project_level_dir(event_path, ctx.scan_root, ctx.project_parents) else {
         return;
     };
     // Always enqueue removals (dir gone); for creations, skip already-discovered.
-    if !candidate.is_dir() || !discovered.contains(&candidate) {
+    if !candidate.is_dir() || !ctx.discovered.contains(&candidate) {
         pending_new
             .entry(candidate)
             .or_insert_with(|| now + NEW_PROJECT_DEBOUNCE);
@@ -497,15 +513,18 @@ mod tests {
         projects.insert(key, entry);
         let project_parents = HashSet::from([PathBuf::from("/home/user/rust")]);
         let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
         let mut pending_disk = HashMap::new();
         let mut pending_new = HashMap::new();
 
         handle_event(
             Path::new("/home/user/rust/bevy/src/lib.rs"),
-            &scan_root,
-            &projects,
-            &project_parents,
-            &discovered,
+            &ctx,
             &mut pending_disk,
             &mut pending_new,
         );
@@ -530,19 +549,17 @@ mod tests {
         projects.insert(key, entry);
         let project_parents = HashSet::from([scan_root.clone()]);
         let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
         let mut pending_disk = HashMap::new();
         let mut pending_new = HashMap::new();
 
         let event_path = new_project.join("src/main.rs");
-        handle_event(
-            &event_path,
-            &scan_root,
-            &projects,
-            &project_parents,
-            &discovered,
-            &mut pending_disk,
-            &mut pending_new,
-        );
+        handle_event(&event_path, &ctx, &mut pending_disk, &mut pending_new);
 
         assert!(pending_disk.is_empty());
         assert!(pending_new.contains_key(&new_project));
@@ -559,15 +576,18 @@ mod tests {
         let projects = HashMap::new();
         let project_parents = HashSet::from([scan_root.clone()]);
         let discovered = HashSet::from([project_dir.clone()]);
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
         let mut pending_disk = HashMap::new();
         let mut pending_new = HashMap::new();
 
         handle_event(
             &project_dir.join("Cargo.toml"),
-            &scan_root,
-            &projects,
-            &project_parents,
-            &discovered,
+            &ctx,
             &mut pending_disk,
             &mut pending_new,
         );
@@ -592,15 +612,18 @@ mod tests {
         let projects = HashMap::new();
         let project_parents = HashSet::new(); // empty — early scan
         let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
         let mut pending_disk = HashMap::new();
         let mut pending_new = HashMap::new();
 
         handle_event(
             &new_wt.join("src/main.rs"),
-            &scan_root,
-            &projects,
-            &project_parents,
-            &discovered,
+            &ctx,
             &mut pending_disk,
             &mut pending_new,
         );
@@ -612,5 +635,35 @@ mod tests {
             new_wt.display(),
             pending_new.keys().collect::<Vec<_>>()
         );
+    }
+
+    // ── resolve_include_dirs ────────────────────────────────────────
+
+    #[test]
+    fn empty_include_dirs_falls_back_to_scan_root() {
+        let dirs = scan::resolve_include_dirs(Path::new("/home/user"), &[]);
+        assert_eq!(dirs, vec![PathBuf::from("/home/user")]);
+    }
+
+    #[test]
+    fn relative_include_dirs_resolve_to_scan_root() {
+        let dirs = scan::resolve_include_dirs(
+            Path::new("/home/user"),
+            &["rust".to_string(), ".claude".to_string()],
+        );
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/home/user/rust"),
+                PathBuf::from("/home/user/.claude"),
+            ]
+        );
+    }
+
+    #[test]
+    fn absolute_include_dirs_used_as_is() {
+        let dirs =
+            scan::resolve_include_dirs(Path::new("/home/user"), &["/opt/projects".to_string()]);
+        assert_eq!(dirs, vec![PathBuf::from("/opt/projects")]);
     }
 }

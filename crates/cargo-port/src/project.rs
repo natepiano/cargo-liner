@@ -9,6 +9,10 @@ use serde::Serialize;
 use toml::Table;
 use toml::Value;
 
+use crate::constants::GIT_CLONE;
+use crate::constants::GIT_FORK;
+use crate::constants::GIT_LOCAL;
+
 /// Whether a project is a plain clone or a fork (has an "upstream" remote).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -24,9 +28,9 @@ pub enum GitOrigin {
 impl GitOrigin {
     pub const fn icon(self) -> &'static str {
         match self {
-            Self::Local => "●",
-            Self::Clone => "⊙",
-            Self::Fork => "⑂",
+            Self::Local => GIT_LOCAL,
+            Self::Clone => GIT_CLONE,
+            Self::Fork => GIT_FORK,
         }
     }
 

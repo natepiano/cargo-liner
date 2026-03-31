@@ -21,7 +21,7 @@ pub(super) enum SettingOption {
     InvertScroll,
     CiRunCount,
     InlineDirs,
-    ExcludeDirs,
+    IncludeDirs,
     IncludeNonRust,
     Editor,
 }
@@ -32,7 +32,7 @@ impl SettingOption {
             0 => Some(Self::InvertScroll),
             1 => Some(Self::CiRunCount),
             2 => Some(Self::InlineDirs),
-            3 => Some(Self::ExcludeDirs),
+            3 => Some(Self::IncludeDirs),
             4 => Some(Self::IncludeNonRust),
             5 => Some(Self::Editor),
             _ => None,
@@ -94,7 +94,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
         ),
         ("CI run count", cfg.tui.ci_run_count.to_string()),
         ("Inline dirs", cfg.tui.inline_dirs.join(", ")),
-        ("Exclude dirs", cfg.tui.exclude_dirs.join(", ")),
+        ("Include dirs", cfg.tui.include_dirs.join(", ")),
         (
             "Non-Rust projects",
             if app.include_non_rust.includes_non_rust() {
@@ -272,8 +272,8 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
                 app.settings_edit_buf = app.inline_dirs.join(", ");
                 app.settings_editing = true;
             },
-            Some(SettingOption::ExcludeDirs) => {
-                app.settings_edit_buf = app.exclude_dirs.join(", ");
+            Some(SettingOption::IncludeDirs) => {
+                app.settings_edit_buf = app.include_dirs.join(", ");
                 app.settings_editing = true;
             },
             Some(SettingOption::IncludeNonRust) => {
@@ -317,12 +317,13 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                     let _ = config::save(&cfg);
                     app.rebuild_tree();
                 },
-                Some(SettingOption::ExcludeDirs) => {
+                Some(SettingOption::IncludeDirs) => {
                     let dirs = parse_dir_list(&value);
-                    app.exclude_dirs.clone_from(&dirs);
+                    app.include_dirs.clone_from(&dirs);
                     let mut cfg = config::load();
-                    cfg.tui.exclude_dirs = dirs;
+                    cfg.tui.include_dirs = dirs;
                     let _ = config::save(&cfg);
+                    app.rescan();
                 },
                 Some(SettingOption::Editor) => {
                     let editor = value.trim().to_string();

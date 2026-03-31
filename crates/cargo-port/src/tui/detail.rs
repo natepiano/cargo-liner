@@ -20,6 +20,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
 use super::app::CiState;
@@ -32,6 +33,10 @@ use super::types::FocusTarget;
 use super::types::Pane;
 use crate::ci;
 use crate::ci::CiRun;
+use crate::ci::Conclusion;
+use crate::constants::IN_SYNC;
+use crate::constants::SYNC_DOWN;
+use crate::constants::SYNC_UP;
 use crate::project::ExampleGroup;
 use crate::project::GitOrigin;
 use crate::project::ProjectLanguage;
@@ -382,7 +387,7 @@ impl DetailField {
             Self::Path => info.path.clone(),
             Self::Targets => info.types.clone(),
             Self::Disk => info.disk.clone(),
-            Self::Ci => info.ci.clone(),
+            Self::Ci => info.ci.map_or_else(String::new, |c| c.icon().to_string()),
             Self::Branch => {
                 let branch = info.git_branch.as_deref().unwrap_or("");
                 let is_default = info
@@ -506,7 +511,7 @@ pub(super) struct DetailInfo {
     pub crates_downloads: Option<u64>,
     pub types:            String,
     pub disk:             String,
-    pub ci:               String,
+    pub ci:               Option<Conclusion>,
     pub stats_rows:       Vec<(&'static str, usize)>,
     pub git_branch:       Option<String>,
     pub git_sync:         Option<String>,
@@ -590,10 +595,10 @@ fn resolve_package_title(app: &App, project: &RustProject) -> String {
 
 fn format_ahead_behind((ahead, behind): (usize, usize)) -> String {
     match (ahead, behind) {
-        (0, 0) => "✓".to_string(),
-        (a, 0) => format!("↑{a} ahead"),
-        (0, b) => format!("↓{b} behind"),
-        (a, b) => format!("↑{a} ↓{b}"),
+        (0, 0) => IN_SYNC.to_string(),
+        (a, 0) => format!("{SYNC_UP}{a} ahead"),
+        (0, b) => format!("{SYNC_DOWN}{b} behind"),
+        (a, b) => format!("{SYNC_UP}{a} {SYNC_DOWN}{b}"),
     }
 }
 
@@ -630,10 +635,10 @@ fn build_git_detail_fields(app: &App, project: &RustProject) -> GitDetailFields 
     let branch = git.and_then(|g| g.branch.clone());
     let sync = git
         .map(|g| match g.ahead_behind {
-            Some((0, 0)) => "✓".to_string(),
-            Some((a, 0)) => format!("↑{a} ahead"),
-            Some((0, b)) => format!("↓{b} behind"),
-            Some((a, b)) => format!("↑{a} ↓{b}"),
+            Some((0, 0)) => IN_SYNC.to_string(),
+            Some((a, 0)) => format!("{SYNC_UP}{a} ahead"),
+            Some((0, b)) => format!("{SYNC_DOWN}{b} behind"),
+            Some((a, b)) => format!("{SYNC_UP}{a} {SYNC_DOWN}{b}"),
             None if g.origin != GitOrigin::Local => "not published".to_string(),
             None => String::new(),
         })
@@ -800,7 +805,7 @@ fn render_column_inner(
         let vs = if is_focused {
             styles.highlight
         } else if *field == DetailField::Ci {
-            super::render::conclusion_style(&info.ci)
+            super::render::conclusion_style(info.ci)
         } else {
             Style::default()
         };
@@ -927,7 +932,7 @@ fn render_git_column_inner(
         } else if matches!(
             *field,
             DetailField::Sync | DetailField::VsOrigin | DetailField::VsLocal
-        ) && value == "✓"
+        ) && value == IN_SYNC
         {
             Style::default().fg(Color::Green)
         } else if *field == DetailField::Sync && value == "not published" {
@@ -1379,7 +1384,7 @@ fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn]) -> Row<'static> {
     for col in cols {
         let job = ci_run.jobs.iter().find(|j| col.matches(&j.name));
         if let Some(j) = job {
-            let style = super::render::conclusion_style(&j.conclusion);
+            let style = super::render::conclusion_style(Some(j.conclusion));
             cells.push(
                 Cell::from(
                     Line::from(j.duration.trim().to_string())
@@ -1387,7 +1392,7 @@ fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn]) -> Row<'static> {
                 )
                 .style(style),
             );
-            cells.push(Cell::from(j.conclusion.clone()).style(style));
+            cells.push(Cell::from(j.conclusion.icon().to_string()).style(style));
         } else {
             cells.push(
                 Cell::from(Line::from("—").alignment(ratatui::layout::Alignment::Right))
@@ -1398,14 +1403,14 @@ fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn]) -> Row<'static> {
     }
 
     // Total column
-    let total_style = super::render::conclusion_style(&ci_run.conclusion);
+    let total_style = super::render::conclusion_style(Some(ci_run.conclusion));
     cells.push(
         Cell::from(
             Line::from(total_dur.trim().to_string()).alignment(ratatui::layout::Alignment::Right),
         )
         .style(total_style),
     );
-    cells.push(Cell::from(ci_run.conclusion.clone()).style(total_style));
+    cells.push(Cell::from(ci_run.conclusion.icon().to_string()).style(total_style));
 
     Row::new(cells)
 }
@@ -1422,6 +1427,11 @@ fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn]) -> Vec<Constraint> {
         .max()
         .unwrap_or("Branch".len())
         .max("Branch".len()) as u16;
+    #[allow(clippy::cast_possible_truncation)]
+    let glyph_width = Conclusion::Success
+        .icon()
+        .width()
+        .max(Conclusion::Failure.icon().width()) as u16;
     let mut widths = vec![
         Constraint::Fill(1),                    // Commit — absorbs remaining space
         Constraint::Length(branch_width),       // Branch — fit-to-content
@@ -1431,12 +1441,12 @@ fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn]) -> Vec<Constraint> {
         #[allow(clippy::cast_possible_truncation)]
         let width = ci_duration_min_width(ci_runs, *col) as u16;
         widths.push(Constraint::Length(width)); // duration — exact
-        widths.push(Constraint::Length(1)); // glyph
+        widths.push(Constraint::Length(glyph_width)); // glyph
     }
     #[allow(clippy::cast_possible_truncation)]
     let total_width = ci_total_min_width(ci_runs) as u16;
     widths.push(Constraint::Length(total_width)); // Total duration — exact
-    widths.push(Constraint::Length(1)); // Total glyph
+    widths.push(Constraint::Length(glyph_width)); // Total glyph
     widths
 }
 

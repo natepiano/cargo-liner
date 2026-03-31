@@ -31,6 +31,19 @@ cargo-port creates a config file on first run at:
 - **macOS**: `~/Library/Application Support/cargo-port/config.toml`
 - **Linux**: `~/.config/cargo-port/config.toml`
 
+### Scan directories
+
+By default, cargo-port scans the entire scan root (defaults to `~`). To limit scanning to specific directories, set `include_dirs` in the config file or via the in-app settings editor (press `s`).
+
+Paths can be relative to the scan root or absolute:
+
+```toml
+[tui]
+include_dirs = ["rust", "projects", "/opt/work"]
+```
+
+An empty list (the default) scans the entire scan root. Changes to `include_dirs` in the settings editor trigger an automatic rescan.
+
 ### Include Non-Rust Projects
 
 To also show non-Rust git repositories in the project tree:

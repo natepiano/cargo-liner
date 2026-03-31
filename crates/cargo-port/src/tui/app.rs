@@ -32,9 +32,13 @@ use super::types::Pane;
 use super::types::ScrollState;
 use crate::ci;
 use crate::ci::CiRun;
+use crate::ci::Conclusion;
 use crate::config::Config;
 use crate::config::NonRustInclusion;
 use crate::config::ScrollDirection;
+use crate::constants::IN_SYNC;
+use crate::constants::SYNC_DOWN;
+use crate::constants::SYNC_UP;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::RustProject;
@@ -162,7 +166,7 @@ pub(super) struct DetailCache {
 pub(super) struct App {
     pub scan_root:           PathBuf,
     pub inline_dirs:         Vec<String>,
-    pub exclude_dirs:        Vec<String>,
+    pub include_dirs:        Vec<String>,
     pub ci_run_count:        u32,
     pub include_non_rust:    NonRustInclusion,
     pub editor:              String,
@@ -252,6 +256,14 @@ pub(super) struct App {
     pub(super) status_flash: Option<(String, std::time::Instant)>,
 }
 
+fn initial_list_state(nodes: &[ProjectNode]) -> ListState {
+    let mut state = ListState::default();
+    if !nodes.is_empty() {
+        state.select(Some(0));
+    }
+    state
+}
+
 impl App {
     /// Derive the current input context from app state.
     pub fn input_context(&self) -> InputContext {
@@ -288,7 +300,7 @@ impl App {
         let (example_tx, example_rx) = mpsc::channel();
         let (ci_fetch_tx, ci_fetch_rx) = mpsc::channel();
         let inline_dirs = cfg.tui.inline_dirs.clone();
-        let exclude_dirs = cfg.tui.exclude_dirs.clone();
+        let include_dirs = cfg.tui.include_dirs.clone();
         let ci_run_count = cfg.tui.ci_run_count;
         let include_non_rust = cfg.tui.include_non_rust;
         let watch_tx = watcher::spawn_watcher(
@@ -296,18 +308,16 @@ impl App {
             bg_tx.clone(),
             ci_run_count,
             include_non_rust,
+            include_dirs.clone(),
         );
         let editor = cfg.tui.editor.clone();
         let nodes = scan::build_tree(projects.clone(), &inline_dirs);
         let flat_entries = scan::build_flat_entries(&nodes);
-        let mut list_state = ListState::default();
-        if !nodes.is_empty() {
-            list_state.select(Some(0));
-        }
+        let list_state = initial_list_state(&nodes);
         Self {
             scan_root,
             inline_dirs,
-            exclude_dirs,
+            include_dirs,
             ci_run_count,
             include_non_rust,
             editor,
@@ -487,7 +497,7 @@ impl App {
         let (tx, rx) = scan::spawn_streaming_scan(
             &self.scan_root,
             self.ci_run_count,
-            &self.exclude_dirs,
+            &self.include_dirs,
             self.include_non_rust,
         );
         self.bg_tx = tx;
@@ -497,6 +507,7 @@ impl App {
             self.bg_tx.clone(),
             self.ci_run_count,
             self.include_non_rust,
+            self.include_dirs.clone(),
         );
     }
 
@@ -675,6 +686,11 @@ impl App {
                 if self.focus == FocusTarget::ScanLog {
                     self.focus = FocusTarget::ProjectList;
                 }
+                // Dump scan log for debugging.
+                let _ = std::fs::write(
+                    "/tmp/claude/cargo-port-scan-log.txt",
+                    self.scan_log.join("\n"),
+                );
             },
             BackgroundMsg::NetworkOffline => {
                 self.network_status = NetworkStatus::Offline;
@@ -1388,11 +1404,11 @@ impl App {
         }
     }
 
-    pub fn ci_for(&self, project: &RustProject) -> String {
+    pub fn ci_for(&self, project: &RustProject) -> Option<Conclusion> {
         self.ci_state
             .get(&project.path)
             .and_then(|s| s.runs().first())
-            .map_or_else(|| "—".to_string(), |run| run.conclusion.clone())
+            .map(|run| run.conclusion)
     }
 
     /// Aggregate disk usage for a node: sums the root and all worktrees.
@@ -1435,8 +1451,8 @@ impl App {
         if any_data { Some(total) } else { None }
     }
 
-    /// Aggregate CI for a node: ✓ if all green, ✗ if any red, — otherwise.
-    pub fn ci_for_node(&self, node: &ProjectNode) -> String {
+    /// Aggregate CI for a node: `Success` if all green, `Failure` if any red, `None` if no data.
+    pub fn ci_for_node(&self, node: &ProjectNode) -> Option<Conclusion> {
         if node.worktrees.is_empty() {
             return self.ci_for(&node.project);
         }
@@ -1450,22 +1466,22 @@ impl App {
                 && let Some(run) = state.runs().first()
             {
                 any_data = true;
-                if run.conclusion.contains('✗') {
+                if run.conclusion.is_failure() {
                     any_red = true;
                     all_green = false;
-                } else if !run.conclusion.contains('✓') {
+                } else if !run.conclusion.is_success() {
                     all_green = false;
                 }
             }
         }
         if !any_data {
-            "—".to_string()
+            None
         } else if any_red {
-            "✗".to_string()
+            Some(Conclusion::Failure)
         } else if all_green {
-            "✓".to_string()
+            Some(Conclusion::Success)
         } else {
-            "—".to_string()
+            None
         }
     }
 
@@ -1485,10 +1501,10 @@ impl App {
             return String::new();
         };
         match info.ahead_behind {
-            Some((0, 0)) => "✓".to_string(),
-            Some((a, 0)) => format!("↑{a}"),
-            Some((0, b)) => format!("↓{b}"),
-            Some((a, b)) => format!("↑{a}↓{b}"),
+            Some((0, 0)) => IN_SYNC.to_string(),
+            Some((a, 0)) => format!("{SYNC_UP}{a}"),
+            Some((0, b)) => format!("{SYNC_DOWN}{b}"),
+            Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
             // No upstream but has a remote — branch not published.
             None if info.origin != GitOrigin::Local => "-".to_string(),
             None => String::new(),

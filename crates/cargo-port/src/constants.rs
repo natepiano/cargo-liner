@@ -1,10 +1,22 @@
 use std::time::Duration;
 
+// ── Shared icons ─────────────────────────────────────────────────────
+
+pub const PASSING: &str = "🟢";
+pub const FAILING: &str = "🔴";
+pub const CANCELLED: &str = "⛔";
+pub const IN_SYNC: &str = "☑️";
+pub const SYNC_UP: &str = "↑";
+pub const SYNC_DOWN: &str = "↓";
+
+// ── Git origin icons ─────────────────────────────────────────────────
+
+pub const GIT_LOCAL: &str = "📁";
+pub const GIT_CLONE: &str = "📥";
+pub const GIT_FORK: &str = "🔱";
+
 // ── CI constants ──────────────────────────────────────────────────────
 
-pub const CONCLUSION_SUCCESS: &str = "✓";
-pub const CONCLUSION_FAILURE: &str = "✗";
-pub const CONCLUSION_CANCELLED: &str = "⊘";
 pub const GH_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ── Scan constants ────────────────────────────────────────────────────

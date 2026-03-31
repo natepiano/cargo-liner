@@ -19,7 +19,6 @@ use super::constants::CONNECTIVITY_TIMEOUT_SECS;
 use super::constants::CRATES_IO_TIMEOUT_SECS;
 use super::constants::NO_MORE_RUNS_MARKER;
 use super::constants::OLDER_RUNS_FETCH_INCREMENT;
-use super::list;
 use super::project::GitInfo;
 use super::project::GitTracking;
 use super::project::RustProject;
@@ -815,6 +814,26 @@ fn fetch_repo_meta(owner: &str, repo: &str) -> Option<RepoMetaInfo> {
     Some(RepoMetaInfo { stars, description })
 }
 
+/// Resolve include-dir entries to absolute paths. Relative entries are
+/// joined to `scan_root`; absolute entries are used as-is. An empty
+/// list falls back to `[scan_root]` so the whole tree is walked.
+pub fn resolve_include_dirs(scan_root: &Path, include_dirs: &[String]) -> Vec<PathBuf> {
+    if include_dirs.is_empty() {
+        return vec![scan_root.to_path_buf()];
+    }
+    include_dirs
+        .iter()
+        .map(|dir| {
+            let path = Path::new(dir);
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                scan_root.join(path)
+            }
+        })
+        .collect()
+}
+
 /// Spawn a streaming scan: walk the directory tree, and for each project discovered
 /// do disk + CI together on rayon so progress fills in visibly.
 /// Returns `(Sender, Receiver)` — the sender is retained by the caller for priority fetches.
@@ -824,39 +843,81 @@ fn fetch_repo_meta(owner: &str, repo: &str) -> Option<RepoMetaInfo> {
 pub fn spawn_streaming_scan(
     scan_root: &Path,
     ci_run_count: u32,
-    exclude_dirs: &[String],
+    include_dirs: &[String],
     non_rust: NonRustInclusion,
 ) -> (mpsc::Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
     let (tx, rx) = mpsc::channel();
     let root = scan_root.to_path_buf();
-    let excludes: HashSet<String> = exclude_dirs.iter().cloned().collect();
+    let scan_dirs = resolve_include_dirs(&root, include_dirs);
 
     let scan_tx = tx.clone();
     thread::spawn(move || {
-        let entries = WalkDir::new(&root)
-            .into_iter()
-            .filter_entry(|entry| list::should_visit_entry(entry, Some(&excludes)));
-
         rayon::scope(|s| {
-            for entry in entries.flatten() {
-                if entry.file_type().is_dir() {
-                    let rel = entry
-                        .path()
-                        .strip_prefix(&root)
-                        .unwrap_or_else(|_| entry.path())
-                        .display()
-                        .to_string();
-                    let _ = scan_tx.send(BackgroundMsg::ScanActivity {
-                        path: if rel.is_empty() { ".".to_string() } else { rel },
-                    });
+            for dir in &scan_dirs {
+                if !dir.is_dir() {
+                    continue;
+                }
+                let mut iter = WalkDir::new(dir).into_iter();
+                while let Some(Ok(entry)) = iter.next() {
+                    if entry.file_type().is_dir() {
+                        let name = entry.file_name();
+                        if name == "target" || name == ".git" {
+                            iter.skip_current_dir();
+                            continue;
+                        }
 
-                    // Non-Rust project detection: `.git` dir present but no `Cargo.toml`
-                    if non_rust.includes_non_rust()
-                        && entry.path().join(".git").is_dir()
-                        && !entry.path().join("Cargo.toml").exists()
+                        let rel = entry
+                            .path()
+                            .strip_prefix(&root)
+                            .unwrap_or_else(|_| entry.path())
+                            .display()
+                            .to_string();
+                        let _ = scan_tx.send(BackgroundMsg::ScanActivity {
+                            path: if rel.is_empty() { ".".to_string() } else { rel },
+                        });
+
+                        // Non-Rust project detection: `.git` dir present but
+                        // no `Cargo.toml`. Don't recurse — non-Rust repos
+                        // have no nested Rust projects to discover.
+                        if non_rust.includes_non_rust()
+                            && entry.path().join(".git").is_dir()
+                            && !entry.path().join("Cargo.toml").exists()
+                        {
+                            iter.skip_current_dir();
+
+                            let project = RustProject::from_git_dir(entry.path());
+                            let abs_path = PathBuf::from(&project.abs_path);
+
+                            let _ = scan_tx.send(BackgroundMsg::ProjectDiscovered {
+                                project: project.clone(),
+                            });
+
+                            let task_tx = scan_tx.clone();
+                            let task_path = project.path.clone();
+                            let task_abs = abs_path;
+                            s.spawn(move |_| {
+                                fetch_project_details(
+                                    &task_tx,
+                                    &task_path,
+                                    &task_abs,
+                                    None,
+                                    GitTracking::Tracked,
+                                    ci_run_count,
+                                );
+                            });
+                            continue;
+                        }
+                    }
+                    if entry.file_type().is_file()
+                        && entry.file_name() == "Cargo.toml"
+                        && let Ok(project) = RustProject::from_cargo_toml(entry.path())
                     {
-                        let project = RustProject::from_git_dir(entry.path());
                         let abs_path = PathBuf::from(&project.abs_path);
+                        let git_tracking = if abs_path.join(".git").exists() {
+                            GitTracking::Tracked
+                        } else {
+                            GitTracking::Untracked
+                        };
 
                         let _ = scan_tx.send(BackgroundMsg::ProjectDiscovered {
                             project: project.clone(),
@@ -864,49 +925,19 @@ pub fn spawn_streaming_scan(
 
                         let task_tx = scan_tx.clone();
                         let task_path = project.path.clone();
+                        let task_name = project.name.clone();
                         let task_abs = abs_path;
                         s.spawn(move |_| {
                             fetch_project_details(
                                 &task_tx,
                                 &task_path,
                                 &task_abs,
-                                None,
-                                GitTracking::Tracked,
+                                task_name.as_ref(),
+                                git_tracking,
                                 ci_run_count,
                             );
                         });
                     }
-                }
-                if entry.file_type().is_file()
-                    && entry.file_name() == "Cargo.toml"
-                    && let Ok(project) = RustProject::from_cargo_toml(entry.path())
-                {
-                    let abs_path = PathBuf::from(&project.abs_path);
-                    let git_tracking = if abs_path.join(".git").exists() {
-                        GitTracking::Tracked
-                    } else {
-                        GitTracking::Untracked
-                    };
-
-                    let _ = scan_tx.send(BackgroundMsg::ProjectDiscovered {
-                        project: project.clone(),
-                    });
-
-                    // Spawn one rayon task per project that does disk + CI together
-                    let task_tx = scan_tx.clone();
-                    let task_path = project.path.clone();
-                    let task_name = project.name.clone();
-                    let task_abs = abs_path;
-                    s.spawn(move |_| {
-                        fetch_project_details(
-                            &task_tx,
-                            &task_path,
-                            &task_abs,
-                            task_name.as_ref(),
-                            git_tracking,
-                            ci_run_count,
-                        );
-                    });
                 }
             }
         });

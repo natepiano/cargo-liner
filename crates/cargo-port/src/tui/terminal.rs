@@ -85,7 +85,7 @@ pub fn run(path: PathBuf) -> ExitCode {
     let (bg_tx, bg_rx) = scan::spawn_streaming_scan(
         &scan_root,
         cfg.tui.ci_run_count,
-        &cfg.tui.exclude_dirs,
+        &cfg.tui.include_dirs,
         cfg.tui.include_non_rust,
     );
     let projects: Vec<RustProject> = Vec::new();

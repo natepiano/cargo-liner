@@ -39,6 +39,11 @@ use super::shortcuts::Shortcut;
 use super::types::FocusTarget;
 use super::types::LayoutCache;
 use crate::ci::CiRun;
+use crate::ci::Conclusion;
+use crate::constants::GIT_CLONE;
+use crate::constants::GIT_FORK;
+use crate::constants::GIT_LOCAL;
+use crate::constants::IN_SYNC;
 use crate::project;
 use crate::project::GitOrigin;
 use crate::project::ProjectLanguage::Rust;
@@ -93,13 +98,11 @@ pub(super) fn format_bytes(bytes: u64) -> String {
 
 pub(super) fn display_width(s: &str) -> usize { UnicodeWidthStr::width(s) }
 
-pub(super) fn conclusion_style(conclusion: &str) -> Style {
-    if conclusion.contains('✓') {
-        Style::default().fg(Color::Green)
-    } else if conclusion.contains('✗') {
-        Style::default().fg(Color::Red)
-    } else {
-        Style::default().fg(Color::DarkGray)
+pub(super) fn conclusion_style(conclusion: Option<Conclusion>) -> Style {
+    match conclusion {
+        Some(Conclusion::Success) => Style::default().fg(Color::Green),
+        Some(Conclusion::Failure) => Style::default().fg(Color::Red),
+        _ => Style::default(),
     }
 }
 
@@ -159,7 +162,7 @@ pub(super) struct RowData<'a> {
     pub lang_icon:  &'a str,
     pub disk:       &'a str,
     pub disk_style: Style,
-    pub ci:         &'a str,
+    pub ci:         Option<Conclusion>,
     pub git_icon:   &'a str,
     pub git_sync:   &'a str,
     pub name_width: usize,
@@ -168,12 +171,60 @@ pub(super) struct RowData<'a> {
     pub deleted:    bool,
 }
 
+/// Pad a string to a target display width using trailing spaces (left-aligned).
+fn pad_right(s: &str, target: usize) -> String {
+    let w = display_width(s);
+    let pad = target.saturating_sub(w);
+    format!("{s}{}", " ".repeat(pad))
+}
+
+/// Pad a string to a target display width using leading spaces (right-aligned).
+fn pad_left(s: &str, target: usize) -> String {
+    let w = display_width(s);
+    let pad = target.saturating_sub(w);
+    format!("{}{s}", " ".repeat(pad))
+}
+
+/// Pad a string to a target display width, centered.
+fn pad_center(s: &str, target: usize) -> String {
+    let w = display_width(s);
+    let total_pad = target.saturating_sub(w);
+    let left = total_pad / 2;
+    let right = total_pad - left;
+    format!("{}{s}{}", " ".repeat(left), " ".repeat(right))
+}
+
+/// Max display width across all CI conclusion icons.
+fn ci_icon_width() -> usize {
+    [
+        Conclusion::Success,
+        Conclusion::Failure,
+        Conclusion::Cancelled,
+    ]
+    .iter()
+    .map(|c| display_width(c.icon()))
+    .max()
+    .unwrap_or(1)
+}
+
 pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
     let prefix_width = display_width(row.prefix);
     let available = row.name_width.saturating_sub(prefix_width);
     let padded_name = format!("{}{:<available$}", row.prefix, row.name);
     let disk_width = row.disk_width;
     let sync_width = row.sync_width;
+    let sync_cell = if row.git_sync == IN_SYNC {
+        if sync_width <= 2 {
+            format!(" {}", pad_left(row.git_sync, sync_width))
+        } else {
+            format!(" {}", pad_center(row.git_sync, sync_width))
+        }
+    } else {
+        format!(" {}", pad_right(row.git_sync, sync_width))
+    };
+    let ci_icon = pad_right(row.ci.map_or("", Conclusion::icon), ci_icon_width());
+    let lang_cell = pad_right(row.lang_icon, display_width("🦀"));
+    let git_cell = pad_right(row.git_icon, display_width(GIT_CLONE));
 
     if row.deleted {
         let strike = Style::default()
@@ -182,35 +233,35 @@ pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
         return Line::from(vec![
             Span::styled(padded_name, strike),
             Span::styled(format!(" {:>disk_width$}", row.disk), strike),
-            Span::styled(format!(" {}", row.lang_icon), strike),
-            Span::styled(format!(" {}", row.git_icon), strike),
-            Span::styled(format!(" {:<sync_width$}", row.git_sync), strike),
-            Span::styled(row.ci.to_string(), strike),
+            Span::styled(format!(" {lang_cell}"), strike),
+            Span::styled(sync_cell, strike),
+            Span::styled(format!(" {git_cell}"), strike),
+            Span::styled(format!(" {ci_icon}"), strike),
         ]);
     }
 
     let ci_style = conclusion_style(row.ci);
     let origin_style = match row.git_icon {
-        "⑂" => Style::default()
+        GIT_FORK => Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
-        "⊙" => Style::default().fg(Color::White),
-        "●" => Style::default().fg(Color::DarkGray),
+        GIT_CLONE => Style::default().fg(Color::White),
+        GIT_LOCAL => Style::default().fg(Color::DarkGray),
         _ => Style::default(),
     };
-    let sync_style = if row.git_sync == "✓" {
+    let sync_style = if row.git_sync == IN_SYNC {
         Style::default().fg(Color::Green)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(Color::White)
     };
 
     Line::from(vec![
         Span::raw(padded_name),
         Span::styled(format!(" {:>disk_width$}", row.disk), row.disk_style),
-        Span::raw(format!(" {}", row.lang_icon)),
-        Span::styled(format!(" {}", row.git_icon), origin_style),
-        Span::styled(format!(" {:<sync_width$}", row.git_sync), sync_style),
-        Span::styled(format!(" {}", row.ci), ci_style),
+        Span::raw(format!(" {lang_cell}")),
+        Span::styled(sync_cell, sync_style),
+        Span::styled(format!(" {git_cell}"), origin_style),
+        Span::styled(format!(" {ci_icon}"), ci_style),
     ])
 }
 
@@ -226,8 +277,8 @@ pub(super) fn probe_row_width(name_width: usize, disk_width: usize, sync_width: 
         lang_icon: "🦀",
         disk: &disk_pad,
         disk_style: Style::default(),
-        ci: "✓",
-        git_icon: "⊙",
+        ci: Some(Conclusion::Success),
+        git_icon: GIT_CLONE,
         git_sync: &sync_pad,
         name_width,
         disk_width,
@@ -531,7 +582,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
             lang_icon:  "  ",
             disk:       &total_str,
             disk_style: total_style,
-            ci:         " ",
+            ci:         None,
             git_icon:   " ",
             git_sync:   "",
             name_width: widths.name,
@@ -856,7 +907,7 @@ fn render_root_item(
         lang_icon: lang,
         disk: &disk,
         disk_style: ds,
-        ci: &ci,
+        ci,
         git_icon: git,
         git_sync: &sync,
         name_width,
@@ -888,7 +939,7 @@ fn render_child_item(
         lang_icon: lang,
         disk: &disk,
         disk_style: ds,
-        ci: &ci,
+        ci,
         git_icon: git,
         git_sync: &sync,
         name_width: widths.name,
@@ -986,18 +1037,18 @@ pub(super) fn render_filtered_items(app: &App, widths: &FitWidths) -> Vec<ListIt
             let git = app.git_icon(project);
             let sync = app.git_sync(project);
             Some(ListItem::new(project_row_spans(&RowData {
-                prefix:     "  ",
-                name:       &entry.name,
-                lang_icon:  lang,
-                disk:       &disk,
+                prefix: "  ",
+                name: &entry.name,
+                lang_icon: lang,
+                disk: &disk,
                 disk_style: ds,
-                ci:         &ci,
-                git_icon:   git,
-                git_sync:   &sync,
+                ci,
+                git_icon: git,
+                git_sync: &sync,
                 name_width: widths.name,
                 disk_width: widths.disk,
                 sync_width: widths.sync,
-                deleted:    app.is_deleted(&project.path),
+                deleted: app.is_deleted(&project.path),
             })))
         })
         .collect()

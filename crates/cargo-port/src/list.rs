@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -22,17 +21,13 @@ pub struct ListArgs {
 }
 
 /// Returns `true` if a directory entry should be visited during a walk.
-/// Hidden directories (starting with `.`) and `target` are always skipped.
-/// Additional directory names can be excluded via the `excludes` set.
-pub fn should_visit_entry(entry: &DirEntry, excludes: Option<&HashSet<String>>) -> bool {
+/// Skips `target` (build artifacts) and `.git` (repository internals).
+/// The `.git` directory is detected for project discovery but never
+/// recursed into — its contents are irrelevant to scanning.
+pub fn should_visit_entry(entry: &DirEntry) -> bool {
     if entry.file_type().is_dir() {
-        let name = entry.file_name().to_string_lossy();
-        if name.starts_with('.') || name == "target" {
-            return false;
-        }
-        if let Some(set) = excludes {
-            return !set.contains(name.as_ref());
-        }
+        let name = entry.file_name();
+        return name != "target" && name != ".git";
     }
     true
 }
@@ -42,7 +37,7 @@ pub fn scan_projects(scan_root: &Path) -> Vec<RustProject> {
 
     let entries = WalkDir::new(scan_root)
         .into_iter()
-        .filter_entry(|entry| should_visit_entry(entry, None));
+        .filter_entry(should_visit_entry);
 
     for entry in entries.flatten() {
         if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {

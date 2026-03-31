@@ -5,6 +5,7 @@ use comfy_table::presets::ASCII_MARKDOWN;
 
 use super::ci;
 use super::ci::CiRun;
+use super::ci::Conclusion;
 use super::project::RustProject;
 
 pub fn render_table(projects: &[RustProject]) {
@@ -54,12 +55,12 @@ fn render_ci_single(ci_run: &CiRun) {
     right_align_column(&mut table, 2);
 
     for job in &ci_run.jobs {
-        let result = colorize_conclusion(&job.conclusion);
+        let result = colorize_conclusion(job.conclusion);
         table.add_row(vec![&job.name, &result, &job.duration]);
     }
 
     if let Some(secs) = ci_run.wall_clock_secs {
-        let result = colorize_conclusion(&ci_run.conclusion);
+        let result = colorize_conclusion(ci_run.conclusion);
         table.add_row(vec!["Total".to_string(), result, ci::format_secs(secs)]);
     }
 
@@ -119,7 +120,7 @@ fn render_per_job_tables(runs: &[CiRun], job_names: &[String], run_labels: &[Str
             };
             let job = ci_run.jobs.iter().find(|j| j.name == *job_name);
             if let Some(j) = job {
-                let result = format_result(&j.conclusion, rank);
+                let result = format_result(j.conclusion, rank);
                 table.add_row(vec![
                     &run_labels[i],
                     &ci_run.branch,
@@ -129,13 +130,12 @@ fn render_per_job_tables(runs: &[CiRun], job_names: &[String], run_labels: &[Str
                     &j.duration,
                 ]);
             } else {
-                let result = format_result("—", rank);
                 table.add_row(vec![
                     &run_labels[i] as &str,
                     &ci_run.branch,
                     &date,
                     &time,
-                    &result,
+                    "",
                     "—",
                 ]);
             }
@@ -178,7 +178,7 @@ fn render_total_time_table(runs: &[CiRun], run_labels: &[String]) {
         } else {
             RunRank::Other
         };
-        let result = format_result(&ci_run.conclusion, rank);
+        let result = format_result(ci_run.conclusion, rank);
         total_table.add_row(vec![
             &run_labels[i],
             &ci_run.branch,
@@ -206,7 +206,7 @@ fn render_runs_reference_table(runs: &[CiRun], run_labels: &[String]) {
 
     for (i, ci_run) in runs.iter().enumerate() {
         let (date, time) = format_datetime(&ci_run.created_at);
-        let result = colorize_conclusion(&ci_run.conclusion);
+        let result = colorize_conclusion(ci_run.conclusion);
         ref_table.add_row(vec![
             &run_labels[i],
             &ci_run.branch,
@@ -227,29 +227,25 @@ enum RunRank {
     Other,
 }
 
-fn colorize_conclusion(conclusion: &str) -> String {
-    let padded = format!("  {conclusion}");
-    if padded.contains('✓') {
-        padded.green().to_string()
-    } else if padded.contains('✗') {
-        padded.red().to_string()
-    } else {
-        padded
+fn colorize_conclusion(conclusion: Conclusion) -> String {
+    let label = format!("  {conclusion}");
+    match conclusion {
+        Conclusion::Success => label.green().to_string(),
+        Conclusion::Failure => label.red().to_string(),
+        Conclusion::Cancelled => label,
     }
 }
 
-fn format_result(conclusion: &str, rank: RunRank) -> String {
+fn format_result(conclusion: Conclusion, rank: RunRank) -> String {
     let suffix = match rank {
         RunRank::Longest => " *",
         RunRank::Other => "",
     };
     let label = format!("  {conclusion}{suffix}");
-    if label.contains('✓') {
-        label.green().to_string()
-    } else if label.contains('✗') {
-        label.red().to_string()
-    } else {
-        label
+    match conclusion {
+        Conclusion::Success => label.green().to_string(),
+        Conclusion::Failure => label.red().to_string(),
+        Conclusion::Cancelled => label,
     }
 }
 

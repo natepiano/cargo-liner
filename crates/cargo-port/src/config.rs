@@ -99,9 +99,10 @@ pub struct TuiConfig {
     #[config(default = 5)]
     pub ci_run_count: u32,
 
-    /// Directory names to skip during scanning. Edit this list for your setup.
-    #[config(default = ["Library", "Applications", "Downloads", "Documents", "Movies", "Music", "Pictures", "Public", "vendor"])]
-    pub exclude_dirs: Vec<String>,
+    /// Directories to scan for projects (relative to the scan root, or
+    /// absolute paths). When empty, the entire scan root is walked.
+    #[config(default = [])]
+    pub include_dirs: Vec<String>,
 
     /// Whether to include non-Rust projects (git repos without Cargo.toml).
     #[config(default = false)]
@@ -182,8 +183,7 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(cfg.tui.inline_dirs, vec!["crates".to_string()]);
         assert_eq!(cfg.tui.ci_run_count, 5);
-        assert!(!cfg.tui.exclude_dirs.is_empty());
-        assert!(cfg.tui.exclude_dirs.contains(&"Library".to_string()));
+        assert!(cfg.tui.include_dirs.is_empty());
         assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Exclude);
         assert_eq!(cfg.tui.editor, "zed");
         assert!((cfg.tui.status_flash_secs - 3.0).abs() < f64::EPSILON);
