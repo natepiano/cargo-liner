@@ -34,7 +34,7 @@ pub enum LintStatus {
 
 impl LintStatus {
     /// Returns the `Icon` for this lint status.
-    pub fn icon(&self) -> Icon {
+    pub const fn icon(&self) -> Icon {
         match self {
             Self::Running(_) => Icon::Animated(super::constants::LINT_RUNNING),
             Self::Passed(_) => Icon::Static(LINT_PASSED),
@@ -45,7 +45,7 @@ impl LintStatus {
     }
 
     /// Human-readable label for the detail panel.
-    pub fn label(&self) -> &'static str {
+    pub const fn label(&self) -> &'static str {
         match self {
             Self::Running(_) => "running",
             Self::Passed(_) => "passed",
@@ -55,7 +55,7 @@ impl LintStatus {
         }
     }
 
-    pub fn timestamp(&self) -> Option<&DateTime<FixedOffset>> {
+    pub const fn timestamp(&self) -> Option<&DateTime<FixedOffset>> {
         match self {
             Self::Running(ts) | Self::Passed(ts) | Self::Failed(ts) => Some(ts),
             Self::Stale | Self::NoLog => None,

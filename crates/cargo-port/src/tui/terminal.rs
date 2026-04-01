@@ -83,7 +83,14 @@ pub fn run(path: &Path) -> ExitCode {
     };
 
     let cfg = config::load();
-    let http_client = HttpClient::new();
+    let Ok(rt) = tokio::runtime::Runtime::new() else {
+        eprintln!("Error: failed to create async runtime");
+        return ExitCode::FAILURE;
+    };
+    let Some(http_client) = HttpClient::new(rt.handle().clone()) else {
+        eprintln!("Error: failed to create HTTP client");
+        return ExitCode::FAILURE;
+    };
     let (bg_tx, bg_rx) = scan::spawn_streaming_scan(
         &scan_root,
         cfg.tui.ci_run_count,

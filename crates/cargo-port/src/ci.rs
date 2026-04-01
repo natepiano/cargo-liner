@@ -132,7 +132,14 @@ pub fn run(path: &Path, args: &CiArgs) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let client = HttpClient::new();
+    let Ok(rt) = tokio::runtime::Runtime::new() else {
+        eprintln!("Error: failed to create async runtime");
+        return ExitCode::FAILURE;
+    };
+    let Some(client) = HttpClient::new(rt.handle().clone()) else {
+        eprintln!("Error: failed to create HTTP client");
+        return ExitCode::FAILURE;
+    };
 
     let runs = match client.list_runs(&owner, &repo, args.branch.as_deref(), args.count) {
         Some(runs) if !runs.is_empty() => runs,

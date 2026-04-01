@@ -267,7 +267,7 @@ pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
             .add_modifier(Modifier::CROSSED_OUT);
         return Line::from(vec![
             Span::styled(padded_name, strike),
-            Span::styled(lint_cell.clone(), strike),
+            Span::styled(lint_cell, strike),
             Span::styled(format!(" {:>disk_width$}", row.disk), strike),
             Span::styled(format!(" {lang_cell}"), strike),
             Span::styled(sync_cell, strike),

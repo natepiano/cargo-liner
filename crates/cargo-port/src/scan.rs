@@ -19,6 +19,7 @@ use super::config::NonRustInclusion;
 use super::constants::CACHE_DIR;
 use super::constants::NO_MORE_RUNS_MARKER;
 use super::constants::OLDER_RUNS_FETCH_INCREMENT;
+use super::constants::SCAN_HTTP_CONCURRENCY;
 use super::http::HttpClient;
 use super::port_report;
 use super::port_report::LintStatus;
@@ -239,6 +240,63 @@ fn fetch_recent_runs(
         }
     }
 
+    (result, meta)
+}
+
+/// Async version of `fetch_recent_runs` for the concurrent scan phase.
+async fn fetch_recent_runs_async(
+    client: &HttpClient,
+    repo_url: &str,
+    owner: &str,
+    repo: &str,
+    gh_runs: &[GhRun],
+) -> (Vec<CiRun>, Option<RepoMetaInfo>) {
+    let mut result: Vec<CiRun> = Vec::with_capacity(gh_runs.len());
+
+    let mut uncached: Vec<&GhRun> = Vec::new();
+    for gh_run in gh_runs {
+        if let Some(cached) = load_cached_run(owner, repo, gh_run.id) {
+            result.push(cached);
+        } else {
+            uncached.push(gh_run);
+        }
+    }
+
+    let (jobs_map, meta) = client
+        .batch_fetch_jobs_and_meta_async(owner, repo, &uncached)
+        .await;
+    for gh_run in &uncached {
+        if let Some(check_runs) = jobs_map.get(&gh_run.id) {
+            let ci_run = ci::build_ci_run(gh_run, check_runs.clone(), repo_url);
+            save_cached_run(owner, repo, &ci_run);
+            result.push(ci_run);
+        }
+    }
+
+    (result, meta)
+}
+
+/// Async version of `fetch_ci_runs_cached` for the concurrent scan phase.
+async fn fetch_ci_runs_cached_async(
+    client: &HttpClient,
+    repo_url: &str,
+    owner: &str,
+    repo: &str,
+    count: u32,
+) -> (CiFetchResult, Option<RepoMetaInfo>) {
+    let gh_runs = client
+        .list_runs_async(owner, repo, None, count)
+        .await
+        .unwrap_or_default();
+    let (fetched, meta) = fetch_recent_runs_async(client, repo_url, owner, repo, &gh_runs).await;
+    let cached = load_all_cached_runs(owner, repo);
+    let merged = merge_runs(fetched, cached);
+
+    let result = if gh_runs.is_empty() {
+        CiFetchResult::CacheOnly(merged)
+    } else {
+        CiFetchResult::Loaded(merged)
+    };
     (result, meta)
 }
 
@@ -848,12 +906,55 @@ pub fn resolve_include_dirs(scan_root: &Path, include_dirs: &[String]) -> Vec<Pa
         .collect()
 }
 
-/// Spawn a streaming scan: walk the directory tree, and for each project discovered
-/// do disk + CI together on rayon so progress fills in visibly.
-/// Returns `(Sender, Receiver)` — the sender is retained by the caller for priority fetches.
+/// Information collected in phase 1 (local work) for a single project,
+/// used to drive async HTTP dispatch and disk usage.
+struct DiscoveredProject {
+    path:       String,
+    abs_path:   PathBuf,
+    name:       Option<String>,
+    repo_url:   Option<String>,
+    owner_repo: Option<(String, String)>,
+}
+
+enum RepoDispatchState {
+    Pending(Vec<String>),
+    Ready(CachedRepoData),
+}
+
+enum RepoDispatchRegistration {
+    Cached(CachedRepoData),
+    SpawnFetch,
+    Pending,
+}
+
+type RepoDispatchMap = Arc<Mutex<HashMap<String, RepoDispatchState>>>;
+
+#[derive(Clone)]
+struct StreamingScanContext {
+    client:        HttpClient,
+    tx:            mpsc::Sender<BackgroundMsg>,
+    ci_run_count:  u32,
+    http_limit:    Arc<tokio::sync::Semaphore>,
+    repo_dispatch: RepoDispatchMap,
+}
+
+struct RepoFetchRequest {
+    key:          String,
+    project_path: String,
+    repo_url:     String,
+    owner:        String,
+    repo:         String,
+}
+
+/// Spawn a streaming scan using a hybrid approach:
 ///
-/// When `include_non_rust` is true, directories containing `.git` (directory, not file)
-/// but no `Cargo.toml` are also discovered as non-Rust projects.
+/// - **Discovery + local work (rayon):** Walk the directory tree, discover projects, collect git
+///   info and lint status, dispatch bounded async HTTP, and compute disk usage.
+/// - **HTTP (tokio):** CI runs, repo metadata, crates.io info, and connectivity checks run on the
+///   async runtime behind a shared semaphore.
+///
+/// `ScanComplete` is sent only after all rayon-side work has finished. Async HTTP results may
+/// continue to stream in afterward.
 pub fn spawn_streaming_scan(
     scan_root: &Path,
     ci_run_count: u32,
@@ -867,111 +968,353 @@ pub fn spawn_streaming_scan(
 
     let scan_tx = tx.clone();
     thread::spawn(move || {
-        let repo_cache: RepoCache = Arc::new(Mutex::new(HashMap::new()));
-        rayon::scope(|s| {
-            for dir in &scan_dirs {
-                if !dir.is_dir() {
-                    continue;
-                }
-                let mut iter = WalkDir::new(dir).into_iter();
-                while let Some(Ok(entry)) = iter.next() {
-                    if entry.file_type().is_dir() {
-                        let name = entry.file_name();
-                        if name == "target" || name == ".git" {
-                            iter.skip_current_dir();
-                            continue;
-                        }
+        let scan_context = StreamingScanContext {
+            client,
+            tx: scan_tx.clone(),
+            ci_run_count,
+            http_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_HTTP_CONCURRENCY)),
+            repo_dispatch: Arc::new(Mutex::new(HashMap::new())),
+        };
 
-                        let rel = entry
-                            .path()
-                            .strip_prefix(&root)
-                            .unwrap_or_else(|_| entry.path())
-                            .display()
-                            .to_string();
-                        let _ = scan_tx.send(BackgroundMsg::ScanActivity {
-                            path: if rel.is_empty() { ".".to_string() } else { rel },
-                        });
-
-                        // Non-Rust project detection: `.git` dir present but
-                        // no `Cargo.toml`. Don't recurse — non-Rust repos
-                        // have no nested Rust projects to discover.
-                        if non_rust.includes_non_rust()
-                            && entry.path().join(".git").is_dir()
-                            && !entry.path().join("Cargo.toml").exists()
-                        {
-                            iter.skip_current_dir();
-
-                            let project = RustProject::from_git_dir(entry.path());
-                            let abs_path = PathBuf::from(&project.abs_path);
-
-                            let _ = scan_tx.send(BackgroundMsg::ProjectDiscovered {
-                                project: project.clone(),
-                            });
-
-                            let task_tx = scan_tx.clone();
-                            let task_ctx = FetchContext {
-                                client:     client.clone(),
-                                repo_cache: Arc::clone(&repo_cache),
-                            };
-                            let task_path = project.path.clone();
-                            let task_abs = abs_path;
-                            s.spawn(move |_| {
-                                fetch_project_details(
-                                    &task_tx,
-                                    &task_ctx,
-                                    &task_path,
-                                    &task_abs,
-                                    None,
-                                    GitTracking::Tracked,
-                                    ci_run_count,
-                                );
-                            });
-                            continue;
-                        }
-                    }
-                    if entry.file_type().is_file()
-                        && entry.file_name() == "Cargo.toml"
-                        && let Ok(project) = RustProject::from_cargo_toml(entry.path())
-                    {
-                        let abs_path = PathBuf::from(&project.abs_path);
-                        let git_tracking = if abs_path.join(".git").exists() {
-                            GitTracking::Tracked
-                        } else {
-                            GitTracking::Untracked
-                        };
-
-                        let _ = scan_tx.send(BackgroundMsg::ProjectDiscovered {
-                            project: project.clone(),
-                        });
-
-                        let task_tx = scan_tx.clone();
-                        let task_ctx = FetchContext {
-                            client:     client.clone(),
-                            repo_cache: Arc::clone(&repo_cache),
-                        };
-                        let task_path = project.path.clone();
-                        let task_name = project.name.clone();
-                        let task_abs = abs_path;
-                        s.spawn(move |_| {
-                            fetch_project_details(
-                                &task_tx,
-                                &task_ctx,
-                                &task_path,
-                                &task_abs,
-                                task_name.as_ref(),
-                                git_tracking,
-                                ci_run_count,
-                            );
-                        });
-                    }
-                }
-            }
-        });
-
+        spawn_connectivity_check(&scan_context);
+        phase1_discover(&root, &scan_dirs, non_rust, &scan_context);
         let _ = scan_tx.send(BackgroundMsg::ScanComplete);
     });
 
     (tx, rx)
+}
+
+/// Walk `scan_dirs`, discover projects, and stream per-project work immediately. Local work runs
+/// on rayon, while network work is dispatched onto tokio behind a shared semaphore.
+fn phase1_discover(
+    root: &Path,
+    scan_dirs: &[PathBuf],
+    non_rust: NonRustInclusion,
+    scan_context: &StreamingScanContext,
+) {
+    rayon::scope(|s| {
+        for dir in scan_dirs {
+            if !dir.is_dir() {
+                continue;
+            }
+            let mut iter = WalkDir::new(dir).into_iter();
+            while let Some(Ok(entry)) = iter.next() {
+                if entry.file_type().is_dir() {
+                    let name = entry.file_name();
+                    if name == "target" || name == ".git" {
+                        iter.skip_current_dir();
+                        continue;
+                    }
+
+                    let rel = entry
+                        .path()
+                        .strip_prefix(root)
+                        .unwrap_or_else(|_| entry.path())
+                        .display()
+                        .to_string();
+                    let _ = scan_context.tx.send(BackgroundMsg::ScanActivity {
+                        path: if rel.is_empty() { ".".to_string() } else { rel },
+                    });
+
+                    // Non-Rust project detection
+                    if non_rust.includes_non_rust()
+                        && entry.path().join(".git").is_dir()
+                        && !entry.path().join("Cargo.toml").exists()
+                    {
+                        iter.skip_current_dir();
+
+                        let project = RustProject::from_git_dir(entry.path());
+                        let abs_path = PathBuf::from(&project.abs_path);
+
+                        let _ = scan_context.tx.send(BackgroundMsg::ProjectDiscovered {
+                            project: project.clone(),
+                        });
+
+                        let task_context = scan_context.clone();
+                        let task_project = DiscoveredProject {
+                            path:       project.path.clone(),
+                            abs_path:   abs_path.clone(),
+                            name:       None,
+                            repo_url:   None,
+                            owner_repo: None,
+                        };
+                        s.spawn(move |_| {
+                            let discovered = phase1_local_work(
+                                &task_context.tx,
+                                task_project,
+                                GitTracking::Tracked,
+                            );
+                            spawn_project_http(&task_context, &discovered);
+                            send_disk_usage(
+                                &task_context.tx,
+                                &discovered.abs_path,
+                                &discovered.path,
+                            );
+                        });
+                        continue;
+                    }
+                }
+                if entry.file_type().is_file()
+                    && entry.file_name() == "Cargo.toml"
+                    && let Ok(project) = RustProject::from_cargo_toml(entry.path())
+                {
+                    let abs_path = PathBuf::from(&project.abs_path);
+                    let git_tracking = if abs_path.join(".git").exists() {
+                        GitTracking::Tracked
+                    } else {
+                        GitTracking::Untracked
+                    };
+
+                    let _ = scan_context.tx.send(BackgroundMsg::ProjectDiscovered {
+                        project: project.clone(),
+                    });
+
+                    let task_context = scan_context.clone();
+                    let task_project = DiscoveredProject {
+                        path:       project.path.clone(),
+                        abs_path:   abs_path.clone(),
+                        name:       project.name.clone(),
+                        repo_url:   None,
+                        owner_repo: None,
+                    };
+                    s.spawn(move |_| {
+                        let discovered =
+                            phase1_local_work(&task_context.tx, task_project, git_tracking);
+                        spawn_project_http(&task_context, &discovered);
+                        send_disk_usage(&task_context.tx, &discovered.abs_path, &discovered.path);
+                    });
+                }
+            }
+        }
+    });
+}
+
+fn spawn_project_http(scan_context: &StreamingScanContext, project: &DiscoveredProject) {
+    if let Some((owner, repo)) = &project.owner_repo {
+        let key = format!("{owner}/{repo}");
+        match register_repo_path(&scan_context.repo_dispatch, &key, &project.path) {
+            RepoDispatchRegistration::Cached(data) => {
+                send_repo_data(&scan_context.tx, std::slice::from_ref(&project.path), &data);
+            },
+            RepoDispatchRegistration::SpawnFetch => {
+                spawn_repo_fetch(
+                    scan_context,
+                    RepoFetchRequest {
+                        key,
+                        project_path: project.path.clone(),
+                        repo_url: project.repo_url.clone().unwrap_or_default(),
+                        owner: owner.clone(),
+                        repo: repo.clone(),
+                    },
+                );
+            },
+            RepoDispatchRegistration::Pending => {},
+        }
+    }
+
+    if let Some(name) = &project.name {
+        spawn_crates_fetch(
+            &scan_context.client,
+            &scan_context.tx,
+            &scan_context.http_limit,
+            &project.path,
+            name,
+        );
+    }
+}
+
+fn send_disk_usage(tx: &mpsc::Sender<BackgroundMsg>, abs_path: &Path, project_path: &str) {
+    let bytes = dir_size(abs_path);
+    let _ = tx.send(BackgroundMsg::DiskUsage {
+        path: project_path.to_string(),
+        bytes,
+    });
+}
+
+fn register_repo_path(
+    repo_dispatch: &RepoDispatchMap,
+    key: &str,
+    path: &str,
+) -> RepoDispatchRegistration {
+    let Ok(mut dispatch) = repo_dispatch.lock() else {
+        return RepoDispatchRegistration::SpawnFetch;
+    };
+    let state = dispatch
+        .entry(key.to_string())
+        .or_insert_with(|| RepoDispatchState::Pending(vec![path.to_string()]));
+
+    match state {
+        RepoDispatchState::Pending(paths) => {
+            if paths.iter().all(|known_path| known_path != path) {
+                paths.push(path.to_string());
+            }
+            if paths.len() == 1 {
+                RepoDispatchRegistration::SpawnFetch
+            } else {
+                RepoDispatchRegistration::Pending
+            }
+        },
+        RepoDispatchState::Ready(data) => RepoDispatchRegistration::Cached(data.clone()),
+    }
+}
+
+fn finish_repo_fetch(
+    repo_dispatch: &RepoDispatchMap,
+    key: &str,
+    data: CachedRepoData,
+) -> Vec<String> {
+    let Ok(mut dispatch) = repo_dispatch.lock() else {
+        return Vec::new();
+    };
+    let previous = dispatch.insert(key.to_string(), RepoDispatchState::Ready(data));
+    match previous {
+        Some(RepoDispatchState::Pending(paths)) => paths,
+        Some(RepoDispatchState::Ready(_)) | None => Vec::new(),
+    }
+}
+
+fn send_repo_data(tx: &mpsc::Sender<BackgroundMsg>, paths: &[String], data: &CachedRepoData) {
+    if data.runs.is_empty() && data.cache_only {
+        notify_offline_once(tx);
+    }
+
+    for path in paths {
+        let _ = tx.send(BackgroundMsg::CiRuns {
+            path: path.clone(),
+            runs: data.runs.clone(),
+        });
+        if let Some(meta) = &data.meta {
+            let _ = tx.send(BackgroundMsg::RepoMeta {
+                path:        path.clone(),
+                stars:       meta.stars,
+                description: meta.description.clone(),
+            });
+        }
+    }
+}
+
+fn spawn_connectivity_check(scan_context: &StreamingScanContext) {
+    let client = scan_context.client.clone();
+    let handle = client.handle.clone();
+    let tx = scan_context.tx.clone();
+    let http_limit = Arc::clone(&scan_context.http_limit);
+
+    handle.spawn(async move {
+        if ONLINE_CHECKED.load(Ordering::Relaxed) || OFFLINE_NOTIFIED.load(Ordering::Relaxed) {
+            return;
+        }
+        let Ok(_permit) = http_limit.acquire_owned().await else {
+            return;
+        };
+        if ONLINE_CHECKED.load(Ordering::Relaxed) || OFFLINE_NOTIFIED.load(Ordering::Relaxed) {
+            return;
+        }
+        let is_online = client.check_online_async().await;
+        ONLINE_CHECKED.store(true, Ordering::Relaxed);
+        if !is_online {
+            notify_offline_once(&tx);
+        }
+    });
+}
+
+fn spawn_repo_fetch(scan_context: &StreamingScanContext, request: RepoFetchRequest) {
+    let client = scan_context.client.clone();
+    let handle = client.handle.clone();
+    let tx = scan_context.tx.clone();
+    let http_limit = Arc::clone(&scan_context.http_limit);
+    let repo_dispatch = Arc::clone(&scan_context.repo_dispatch);
+    let ci_run_count = scan_context.ci_run_count;
+
+    handle.spawn(async move {
+        let Ok(_permit) = http_limit.acquire_owned().await else {
+            return;
+        };
+        let _ = tx.send(BackgroundMsg::ScanActivity {
+            path: format!("CI: {}", request.project_path),
+        });
+        let (result, meta) = fetch_ci_runs_cached_async(
+            &client,
+            &request.repo_url,
+            &request.owner,
+            &request.repo,
+            ci_run_count,
+        )
+        .await;
+        let cache_only = matches!(&result, CiFetchResult::CacheOnly(_));
+        let data = CachedRepoData {
+            runs: match result {
+                CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
+            },
+            meta,
+            cache_only,
+        };
+        let paths = finish_repo_fetch(&repo_dispatch, &request.key, data.clone());
+        send_repo_data(&tx, &paths, &data);
+    });
+}
+
+fn spawn_crates_fetch(
+    client: &HttpClient,
+    tx: &mpsc::Sender<BackgroundMsg>,
+    http_limit: &Arc<tokio::sync::Semaphore>,
+    project_path: &str,
+    crate_name: &str,
+) {
+    let client = client.clone();
+    let handle = client.handle.clone();
+    let tx = tx.clone();
+    let http_limit = Arc::clone(http_limit);
+    let project_path = project_path.to_string();
+    let crate_name = crate_name.to_string();
+
+    handle.spawn(async move {
+        let Ok(_permit) = http_limit.acquire_owned().await else {
+            return;
+        };
+        if let Some(info) = client.fetch_crates_io_info_async(&crate_name).await {
+            let _ = tx.send(BackgroundMsg::CratesIoVersion {
+                path:      project_path,
+                version:   info.version,
+                downloads: info.downloads,
+            });
+        }
+    });
+}
+
+/// Phase 1 local work: git info + lint status for a single project.
+/// Returns the discovered repo metadata needed for async HTTP dispatch.
+fn phase1_local_work(
+    tx: &mpsc::Sender<BackgroundMsg>,
+    mut project: DiscoveredProject,
+    git_tracking: GitTracking,
+) -> DiscoveredProject {
+    let git_info = if git_tracking.is_tracked() {
+        GitInfo::detect(&project.abs_path)
+    } else {
+        None
+    };
+    if let Some(ref info) = git_info {
+        let _ = tx.send(BackgroundMsg::GitInfo {
+            path: project.path.clone(),
+            info: info.clone(),
+        });
+    }
+
+    // Lint status (cheap local file read).
+    let lint = port_report::read_status(&project.abs_path);
+    if !matches!(lint, LintStatus::NoLog) {
+        let _ = tx.send(BackgroundMsg::LintStatus {
+            path:   project.path.clone(),
+            status: lint,
+        });
+    }
+
+    project.repo_url = git_info.as_ref().and_then(|g| g.url.clone());
+    project.owner_repo = project
+        .repo_url
+        .as_ref()
+        .and_then(|url| ci::parse_owner_repo(url));
+    project
 }
 
 #[cfg(test)]

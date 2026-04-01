@@ -1,7 +1,8 @@
 //! Direct HTTP client for GitHub and crates.io APIs.
 //!
-//! Replaces `gh` and `curl` subprocess calls with `ureq` for lower
-//! latency (no process-spawn overhead) and connection reuse.
+//! Uses `reqwest` (async) backed by a `tokio` runtime for concurrent
+//! HTTP. Sync wrappers (`handle.block_on`) are provided for callers
+//! that run on std/rayon threads (watcher, priority fetch, CLI).
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -47,23 +48,26 @@ struct GqlCheckRunConnection {
 
 // ── Client ───────────────────────────────────────────────────────────
 
-/// Shared HTTP client backed by `ureq::Agent` for connection pooling.
-/// Clone is cheap — the underlying agent uses `Arc`.
+/// Shared HTTP client backed by `reqwest::Client` for connection
+/// pooling and async I/O. Clone is cheap — the underlying client uses
+/// `Arc`. A `tokio::runtime::Handle` is stored so sync callers can
+/// dispatch async work via `block_on`.
 #[derive(Clone)]
 pub struct HttpClient {
-    agent:        ureq::Agent,
-    github_token: Option<String>,
+    client:            reqwest::Client,
+    github_token:      Option<String>,
+    pub(crate) handle: tokio::runtime::Handle,
 }
 
 impl HttpClient {
     /// Build a new client. Obtains the GitHub auth token from `gh auth
     /// token` (single subprocess call). If `gh` is unavailable or not
     /// authenticated, GitHub API methods degrade gracefully.
-    pub fn new() -> Self {
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(GH_TIMEOUT))
+    pub fn new(handle: tokio::runtime::Handle) -> Option<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(GH_TIMEOUT)
             .build()
-            .new_agent();
+            .ok()?;
         let github_token = Command::new("gh")
             .args(["auth", "token"])
             .output()
@@ -71,48 +75,50 @@ impl HttpClient {
             .filter(|o| o.status.success())
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string());
-        Self {
-            agent,
+        Some(Self {
+            client,
             github_token,
-        }
+            handle,
+        })
     }
 
-    // ── GitHub REST ──────────────────────────────────────────────────
+    // ── Async internals ─────────────────────────────────────────────
 
-    fn github_get(&self, path: &str) -> Option<Vec<u8>> {
+    async fn github_get_async(&self, path: &str) -> Option<Vec<u8>> {
         let token = self.github_token.as_ref()?;
         let url = format!("{GITHUB_API_BASE}/{path}");
         let response = self
-            .agent
+            .client
             .get(&url)
-            .header("Authorization", &format!("Bearer {token}"))
+            .header("Authorization", format!("Bearer {token}"))
             .header("Accept", "application/vnd.github+json")
-            .call()
+            .send()
+            .await
             .ok()?;
-        let body = response.into_body().read_to_vec().ok()?;
-        Some(body)
+        let body = response.bytes().await.ok()?;
+        Some(body.to_vec())
     }
 
-    // ── GitHub GraphQL ───────────────────────────────────────────────
-
-    fn github_graphql(&self, query: &str) -> Option<Vec<u8>> {
+    async fn github_graphql_async(&self, query: &str) -> Option<Vec<u8>> {
         let token = self.github_token.as_ref()?;
         let payload = serde_json::json!({ "query": query });
         let response = self
-            .agent
+            .client
             .post(GITHUB_GRAPHQL_URL)
-            .header("Authorization", &format!("Bearer {token}"))
+            .header("Authorization", format!("Bearer {token}"))
             .header("Content-Type", "application/json")
-            .send(payload.to_string().as_bytes())
+            .body(payload.to_string())
+            .send()
+            .await
             .ok()?;
-        let body = response.into_body().read_to_vec().ok()?;
-        Some(body)
+        let body = response.bytes().await.ok()?;
+        Some(body.to_vec())
     }
 
-    // ── Public API ───────────────────────────────────────────────────
+    // ── Async public API ────────────────────────────────────────────
 
-    /// List recent completed workflow runs for a repo.
-    pub fn list_runs(
+    /// List recent completed workflow runs for a repo (async).
+    pub async fn list_runs_async(
         &self,
         owner: &str,
         repo: &str,
@@ -124,14 +130,15 @@ impl HttpClient {
         if let Some(branch) = branch {
             let _ = write!(path, "&branch={branch}");
         }
-        let body = self.github_get(&path)?;
+        let body = self.github_get_async(&path).await?;
         let response: GhRunsResponse = serde_json::from_slice(&body).ok()?;
         Some(response.workflow_runs)
     }
 
-    /// Batch-fetch job details for uncached runs AND repo metadata in
-    /// a single GraphQL call. Returns jobs map + optional repo metadata.
-    pub fn batch_fetch_jobs_and_meta(
+    /// Batch-fetch job details for uncached runs AND repo metadata in a
+    /// single GraphQL call (async). Returns jobs map + optional repo
+    /// metadata.
+    pub async fn batch_fetch_jobs_and_meta_async(
         &self,
         owner: &str,
         repo: &str,
@@ -154,7 +161,7 @@ impl HttpClient {
         }
 
         let query = format!("{{ {} }}", parts.join(" "));
-        let Some(body) = self.github_graphql(&query) else {
+        let Some(body) = self.github_graphql_async(&query).await else {
             return (HashMap::new(), None);
         };
         let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) else {
@@ -193,21 +200,27 @@ impl HttpClient {
         (jobs, meta)
     }
 
-    // ── Crates.io ────────────────────────────────────────────────────
+    /// Lightweight connectivity probe — HEAD request to crates.io
+    /// (async).
+    pub async fn check_online_async(&self) -> bool {
+        self.client
+            .head(CONNECTIVITY_CHECK_URL)
+            .send()
+            .await
+            .is_ok()
+    }
 
-    /// Lightweight connectivity probe (HEAD request to crates.io).
-    pub fn check_online(&self) -> bool { self.agent.head(CONNECTIVITY_CHECK_URL).call().is_ok() }
-
-    /// Fetch version and download count from the crates.io API.
-    pub fn fetch_crates_io_info(&self, crate_name: &str) -> Option<CratesIoInfo> {
+    /// Fetch version and download count from the crates.io API (async).
+    pub async fn fetch_crates_io_info_async(&self, crate_name: &str) -> Option<CratesIoInfo> {
         let url = format!("{CRATES_IO_API_BASE}/crates/{crate_name}");
         let response = self
-            .agent
+            .client
             .get(&url)
             .header("User-Agent", CRATES_IO_USER_AGENT)
-            .call()
+            .send()
+            .await
             .ok()?;
-        let body = response.into_body().read_to_vec().ok()?;
+        let body = response.bytes().await.ok()?;
         let json: serde_json::Value = serde_json::from_slice(&body).ok()?;
         let krate = json.get("crate")?;
         let version = krate
@@ -216,5 +229,39 @@ impl HttpClient {
             .map(String::from)?;
         let downloads = krate.get("downloads")?.as_u64().unwrap_or(0);
         Some(CratesIoInfo { version, downloads })
+    }
+
+    // ── Sync wrappers (for std/rayon thread callers) ────────────────
+
+    /// List recent completed workflow runs (sync wrapper).
+    pub fn list_runs(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: Option<&str>,
+        count: u32,
+    ) -> Option<Vec<GhRun>> {
+        self.handle
+            .block_on(self.list_runs_async(owner, repo, branch, count))
+    }
+
+    /// Batch-fetch job details + repo metadata (sync wrapper).
+    pub fn batch_fetch_jobs_and_meta(
+        &self,
+        owner: &str,
+        repo: &str,
+        runs: &[&GhRun],
+    ) -> (HashMap<u64, Vec<GqlCheckRun>>, Option<RepoMetaInfo>) {
+        self.handle
+            .block_on(self.batch_fetch_jobs_and_meta_async(owner, repo, runs))
+    }
+
+    /// Lightweight connectivity probe (sync wrapper).
+    pub fn check_online(&self) -> bool { self.handle.block_on(self.check_online_async()) }
+
+    /// Fetch crates.io info (sync wrapper).
+    pub fn fetch_crates_io_info(&self, crate_name: &str) -> Option<CratesIoInfo> {
+        self.handle
+            .block_on(self.fetch_crates_io_info_async(crate_name))
     }
 }

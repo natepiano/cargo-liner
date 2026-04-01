@@ -705,6 +705,7 @@ impl App {
     }
 
     /// Handle a single `BackgroundMsg`. Returns `true` if the tree needs rebuilding.
+    #[allow(clippy::too_many_lines, reason = "match arms are simple dispatches")]
     fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
         // Bump generation for any message that carries project data, so the
         // detail cache auto-invalidates without a separate dirty flag.
@@ -916,9 +917,6 @@ impl App {
 
     /// Spawn a priority fetch for the selected project if it hasn't been loaded yet.
     pub(super) fn maybe_priority_fetch(&mut self) {
-        if self.scan_complete {
-            return;
-        }
         let Some(project) = self.selected_project() else {
             return;
         };
