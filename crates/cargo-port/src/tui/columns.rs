@@ -231,7 +231,9 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'stat
         let col_width = widths.get(i);
         let align = cell.align_override.unwrap_or(defs[i].align);
 
-        let content = if i == COL_NAME {
+        let content = if col_width == 0 {
+            String::new()
+        } else if i == COL_NAME {
             let prefix_w = display_width(&row.prefix);
             let available = col_width.saturating_sub(prefix_w);
             format!("{}{}", row.prefix, pad_right(&cell.text, available))
@@ -623,6 +625,38 @@ mod tests {
         assert_eq!(defs[COL_LINT].header, "");
         assert_eq!(widths.get(COL_LINT), 0);
         assert_eq!(display_width(header.spans[COL_LINT].content.as_ref()), 0);
+        assert_eq!(defs[COL_CI].header, "CI");
+        assert_eq!(widths.get(COL_CI), 2);
+        assert!(header.spans[COL_CI].content.as_ref().ends_with("CI"));
         assert!(line.spans[COL_NAME].content.as_ref().ends_with('Σ'));
+    }
+
+    #[test]
+    fn hidden_lint_column_does_not_shift_ci_cells() {
+        let mut widths = ResolvedWidths::new(false);
+        widths.observe(COL_NAME, 24);
+        widths.observe(COL_DISK, 8);
+        widths.observe(COL_SYNC, 2);
+
+        let row = build_row_cells(ProjectRow {
+            prefix:     "▶ ",
+            name:       "demo",
+            lint_icon:  crate::constants::LINT_PASSED,
+            disk:       "36.3 GiB",
+            disk_style: Style::default(),
+            lang_icon:  "🦀",
+            git_sync:   "↑2",
+            git_icon:   crate::constants::GIT_CLONE,
+            ci:         Some(Conclusion::Success),
+            deleted:    false,
+        });
+        let line = row_to_line(&row, &widths);
+
+        assert_eq!(display_width(line.spans[COL_LINT].content.as_ref()), 0);
+        assert_eq!(
+            line.spans[COL_CI].content.as_ref(),
+            &format!(" {}", Conclusion::Success.icon())
+        );
+        assert_eq!(line.width(), widths.total_width());
     }
 }

@@ -52,6 +52,7 @@ use crate::constants::WORKTREE;
 use crate::http::HttpClient;
 use crate::lint_runtime;
 use crate::lint_runtime::RegisterProjectRequest;
+use crate::lint_runtime::RuntimeHandle;
 use crate::port_report::LintStatus;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
@@ -272,7 +273,7 @@ pub(super) struct App {
 
     // Disk watcher
     pub watch_tx: mpsc::Sender<WatchRequest>,
-    pub lint_watch_tx: Option<mpsc::Sender<RegisterProjectRequest>>,
+    pub lint_runtime: Option<RuntimeHandle>,
 
     // Network state
     pub network_status: NetworkStatus,
@@ -848,7 +849,7 @@ impl App {
             should_restart: false,
 
             watch_tx,
-            lint_watch_tx: lint_spawn.register_tx,
+            lint_runtime: lint_spawn.handle,
 
             network_status: NetworkStatus::Online,
 
@@ -893,6 +894,8 @@ impl App {
             app.scan_log.push(warning);
             app.scan_log_state.select(Some(0));
         }
+        app.register_existing_projects();
+        app.sync_lint_runtime_projects();
         app
     }
 
@@ -962,7 +965,7 @@ impl App {
     pub(super) fn apply_lint_runtime_setting(&mut self, cfg: &Config) {
         self.lint_enabled = cfg.lint.enabled;
         let lint_spawn = lint_runtime::spawn(cfg);
-        self.lint_watch_tx = lint_spawn.register_tx;
+        self.lint_runtime = lint_spawn.handle;
         self.watch_tx = watcher::spawn_watcher(
             self.scan_root.clone(),
             self.bg_tx.clone(),
@@ -973,7 +976,9 @@ impl App {
             self.http_client.clone(),
         );
         self.register_existing_projects();
+        self.sync_lint_runtime_projects();
         self.refresh_lint_statuses_from_disk();
+        self.cached_fit_widths = ResolvedWidths::new(self.lint_enabled);
         self.rows_dirty = true;
         self.fit_widths_dirty = true;
         self.data_generation += 1;
@@ -983,6 +988,12 @@ impl App {
             self.scan_log.push(warning);
             self.scan_log_state
                 .select(Some(self.scan_log.len().saturating_sub(1)));
+        }
+    }
+
+    fn register_existing_projects(&self) {
+        for project in &self.all_projects {
+            self.register_project_background_services(project);
         }
     }
 
@@ -999,12 +1010,6 @@ impl App {
         }
     }
 
-    fn register_existing_projects(&self) {
-        for project in &self.all_projects {
-            self.register_project_background_services(project);
-        }
-    }
-
     fn register_project_background_services(&self, project: &RustProject) {
         let abs_path = PathBuf::from(&project.abs_path);
         let git_tracking = if abs_path.join(".git").exists() {
@@ -1014,16 +1019,26 @@ impl App {
         };
         let _ = self.watch_tx.send(WatchRequest {
             project_path: project.path.clone(),
-            abs_path: abs_path.clone(),
+            abs_path,
             git_tracking,
         });
-        if let Some(tx) = &self.lint_watch_tx {
-            let _ = tx.send(RegisterProjectRequest {
+    }
+
+    fn sync_lint_runtime_projects(&self) {
+        let Some(runtime) = &self.lint_runtime else {
+            return;
+        };
+        let projects = self
+            .all_projects
+            .iter()
+            .filter(|project| !self.deleted_projects.contains(&project.path))
+            .map(|project| RegisterProjectRequest {
                 project_path: project.path.clone(),
-                abs_path,
+                abs_path: PathBuf::from(&project.abs_path),
                 is_rust: project.is_rust == crate::project::ProjectLanguage::Rust,
-            });
-        }
+            })
+            .collect();
+        runtime.sync_projects(projects);
     }
 
     fn request_tree_rebuild(&mut self) {
@@ -1234,6 +1249,7 @@ impl App {
         self.fit_build_latest = 0;
         self.disk_build_active = None;
         self.disk_build_latest = 0;
+        self.sync_lint_runtime_projects();
         self.data_generation += 1;
         self.detail_generation += 1;
         let (tx, rx) = scan::spawn_streaming_scan(
@@ -1342,6 +1358,7 @@ impl App {
         self.disk_usage.insert(path.clone(), bytes);
         self.disk_cache_dirty = true;
         self.fit_widths_dirty = true;
+        let mut lint_runtime_changed = false;
         if bytes == 0 {
             let abs = self
                 .nodes
@@ -1358,10 +1375,13 @@ impl App {
             if let Some(abs) = abs
                 && !std::path::Path::new(abs).exists()
             {
-                self.deleted_projects.insert(path);
+                lint_runtime_changed |= self.deleted_projects.insert(path);
             }
         } else {
-            self.deleted_projects.remove(&path);
+            lint_runtime_changed |= self.deleted_projects.remove(&path);
+        }
+        if lint_runtime_changed {
+            self.sync_lint_runtime_projects();
         }
     }
 
@@ -1417,6 +1437,7 @@ impl App {
 
         self.register_project_background_services(&project);
         self.all_projects.push(project);
+        self.sync_lint_runtime_projects();
         true
     }
 
@@ -2712,5 +2733,21 @@ mod tests {
         assert!(!app.remembers_selection(PaneId::Targets));
         assert!(!app.remembers_selection(PaneId::CiRuns));
         assert_eq!(app.selected_project_path.as_deref(), Some("~/b"));
+    }
+
+    #[test]
+    fn apply_lint_runtime_setting_resets_column_layout_flag() {
+        let mut app = make_app(vec![make_project(Some("demo"), "~/demo")]);
+        let mut cfg = Config::default();
+
+        assert!(!app.cached_fit_widths.lint_enabled());
+
+        cfg.lint.enabled = true;
+        app.apply_lint_runtime_setting(&cfg);
+        assert!(app.cached_fit_widths.lint_enabled());
+
+        cfg.lint.enabled = false;
+        app.apply_lint_runtime_setting(&cfg);
+        assert!(!app.cached_fit_widths.lint_enabled());
     }
 }

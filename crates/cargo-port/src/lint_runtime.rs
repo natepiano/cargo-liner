@@ -1,10 +1,14 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -18,8 +22,7 @@ use crate::config::LintConfig;
 use crate::port_report;
 
 const LINT_DEBOUNCE: Duration = Duration::from_millis(750);
-const IDLE_POLL: Duration = Duration::from_secs(3600);
-const LEGACY_LINT_WATCHER_PATH: &str = ".claude/scripts/lint-watcher/";
+const STOP_POLL: Duration = Duration::from_millis(250);
 
 pub struct RegisterProjectRequest {
     pub project_path: String,
@@ -27,25 +30,42 @@ pub struct RegisterProjectRequest {
     pub is_rust:      bool,
 }
 
+pub struct RuntimeHandle {
+    tx: mpsc::Sender<SupervisorMsg>,
+}
+
+impl RuntimeHandle {
+    pub fn sync_projects(&self, projects: Vec<RegisterProjectRequest>) {
+        let _ = self.tx.send(SupervisorMsg::SyncProjects(projects));
+    }
+}
+
+impl Drop for RuntimeHandle {
+    fn drop(&mut self) {
+        let _ = self.tx.send(SupervisorMsg::Shutdown);
+    }
+}
+
 pub struct SpawnResult {
-    pub register_tx: Option<mpsc::Sender<RegisterProjectRequest>>,
-    pub warning:     Option<String>,
+    pub handle:  Option<RuntimeHandle>,
+    pub warning: Option<String>,
+}
+
+enum SupervisorMsg {
+    SyncProjects(Vec<RegisterProjectRequest>),
+    Shutdown,
+}
+
+struct ProjectWorker {
+    stop:   Arc<AtomicBool>,
+    handle: JoinHandle<()>,
 }
 
 pub fn spawn(config: &Config) -> SpawnResult {
     if !config.lint.enabled {
         return SpawnResult {
-            register_tx: None,
+            handle: None,
             warning: None,
-        };
-    }
-
-    if legacy_watcher_active() {
-        return SpawnResult {
-            register_tx: None,
-            warning: Some(
-                "external lint watcher detected; internal lint runtime disabled".to_string(),
-            ),
         };
     }
 
@@ -54,35 +74,90 @@ pub fn spawn(config: &Config) -> SpawnResult {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || supervisor_loop(rx, cache_root, lint));
     SpawnResult {
-        register_tx: Some(tx),
+        handle: Some(RuntimeHandle { tx }),
         warning: None,
     }
 }
 
 #[allow(
     clippy::needless_pass_by_value,
-    reason = "supervisor owns its channel and config for the lifetime of the thread"
+    reason = "supervisor owns its queue and worker map for the lifetime of the runtime"
 )]
 fn supervisor_loop(
-    register_rx: mpsc::Receiver<RegisterProjectRequest>,
+    rx: mpsc::Receiver<SupervisorMsg>,
     cache_root: PathBuf,
     lint: LintConfig,
 ) {
-    let mut watched = HashSet::new();
     let commands = lint.resolved_commands();
-    while let Ok(request) = register_rx.recv() {
-        if !should_watch_project(&lint, &request) {
-            continue;
+    let mut workers: HashMap<PathBuf, ProjectWorker> = HashMap::new();
+
+    loop {
+        match rx.recv() {
+            Ok(SupervisorMsg::SyncProjects(projects)) => {
+                let desired = desired_projects(&lint, projects);
+                reconcile_workers(&mut workers, desired, &cache_root, &commands);
+            },
+            Ok(SupervisorMsg::Shutdown) | Err(_) => {
+                for (_, worker) in workers.drain() {
+                    stop_worker(worker);
+                }
+                return;
+            },
         }
-        if !watched.insert(request.abs_path.clone()) {
-            continue;
-        }
-        spawn_project_worker(request.abs_path, cache_root.clone(), commands.clone());
     }
 }
 
-fn spawn_project_worker(project_root: PathBuf, cache_root: PathBuf, commands: Vec<LintCommandConfig>) {
-    thread::spawn(move || {
+fn desired_projects(
+    lint: &LintConfig,
+    projects: Vec<RegisterProjectRequest>,
+) -> HashMap<PathBuf, RegisterProjectRequest> {
+    projects
+        .into_iter()
+        .filter(|request| should_watch_project(lint, request))
+        .map(|request| (request.abs_path.clone(), request))
+        .collect()
+}
+
+fn reconcile_workers(
+    workers: &mut HashMap<PathBuf, ProjectWorker>,
+    desired: HashMap<PathBuf, RegisterProjectRequest>,
+    cache_root: &Path,
+    commands: &[LintCommandConfig],
+) {
+    let stale: Vec<PathBuf> = workers
+        .keys()
+        .filter(|path| !desired.contains_key(*path))
+        .cloned()
+        .collect();
+    for path in stale {
+        if let Some(worker) = workers.remove(&path) {
+            stop_worker(worker);
+        }
+    }
+    for (path, request) in desired {
+        workers.entry(path).or_insert_with(|| {
+            spawn_project_worker(
+                request.abs_path,
+                cache_root.to_path_buf(),
+                commands.to_vec(),
+            )
+        });
+    }
+}
+
+fn stop_worker(worker: ProjectWorker) {
+    worker.stop.store(true, Ordering::Relaxed);
+    let _ = worker.handle.join();
+}
+
+fn spawn_project_worker(
+    project_root: PathBuf,
+    cache_root: PathBuf,
+    commands: Vec<LintCommandConfig>,
+) -> ProjectWorker {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_flag = Arc::clone(&stop);
+    let handle = thread::spawn(move || {
         let (event_tx, event_rx) = mpsc::channel();
         let handler = move |res| {
             let _ = event_tx.send(res);
@@ -96,9 +171,16 @@ fn spawn_project_worker(project_root: PathBuf, cache_root: PathBuf, commands: Ve
 
         let mut next_run_at = None;
         loop {
-            let timeout = next_run_at.map_or(IDLE_POLL, |deadline: Instant| {
-                deadline.saturating_duration_since(Instant::now())
+            if stop_flag.load(Ordering::Relaxed) {
+                return;
+            }
+
+            let timeout = next_run_at.map_or(STOP_POLL, |deadline: Instant| {
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(STOP_POLL)
             });
+
             match event_rx.recv_timeout(timeout) {
                 Ok(Ok(event)) => {
                     if event.paths.iter().any(|path| is_relevant_change(&project_root, path)) {
@@ -107,14 +189,18 @@ fn spawn_project_worker(project_root: PathBuf, cache_root: PathBuf, commands: Ve
                 },
                 Ok(Err(_)) => {},
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if next_run_at.take().is_some() {
+                    if let Some(deadline) = next_run_at
+                        && Instant::now() >= deadline
+                    {
                         let _ = run_commands_for_project(&project_root, &cache_root, &commands);
+                        next_run_at = None;
                     }
                 },
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
         }
     });
+    ProjectWorker { stop, handle }
 }
 
 fn should_watch_project(lint: &LintConfig, request: &RegisterProjectRequest) -> bool {
@@ -250,29 +336,12 @@ fn sanitize_name(name: &str) -> String {
     sanitized.trim_matches('-').to_string()
 }
 
-fn legacy_watcher_active() -> bool {
-    let Ok(output) = Command::new("ps").args(["ax", "-o", "command="]).output() else {
-        return false;
-    };
-    if !output.status.success() {
-        return false;
-    }
-    String::from_utf8(output.stdout)
-        .ok()
-        .is_some_and(|stdout| contains_legacy_watcher(&stdout))
-}
-
-fn contains_legacy_watcher(ps_output: &str) -> bool {
-    ps_output
-        .lines()
-        .any(|line| line.contains(LEGACY_LINT_WATCHER_PATH))
-}
-
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
     reason = "tests should panic on unexpected values"
 )]
+#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use super::*;
     use crate::config::Config;
@@ -288,8 +357,11 @@ mod tests {
     #[test]
     fn include_and_exclude_filters_match_display_or_absolute_paths() {
         let project_dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(project_dir.path().join("Cargo.toml"), "[package]\nname='demo'\nversion='0.1.0'\n")
-            .expect("write manifest");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
         let lint = LintConfig {
             enabled: true,
             include: vec!["~/rust/demo".to_string()],
@@ -319,15 +391,14 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("tempdir");
         assert!(is_relevant_change(project_dir.path(), &project_dir.path().join("src/main.rs")));
         assert!(is_relevant_change(project_dir.path(), &project_dir.path().join("Cargo.toml")));
-        assert!(!is_relevant_change(project_dir.path(), &project_dir.path().join("target/debug/app")));
-        assert!(!is_relevant_change(project_dir.path(), &project_dir.path().join(".git/index")));
-    }
-
-    #[test]
-    fn detects_legacy_watcher_from_ps_output() {
-        let ps = "/bin/bash /Users/natemccoy/.claude/scripts/lint-watcher/lint-watcher.sh\n";
-        assert!(contains_legacy_watcher(ps));
-        assert!(!contains_legacy_watcher("cargo-port .\n"));
+        assert!(!is_relevant_change(
+            project_dir.path(),
+            &project_dir.path().join("target/debug/app")
+        ));
+        assert!(!is_relevant_change(
+            project_dir.path(),
+            &project_dir.path().join(".git/index")
+        ));
     }
 
     #[test]
@@ -359,5 +430,65 @@ mod tests {
         assert!(protocol.contains("\tstarted\n"));
         assert!(protocol.contains("\tpassed\n"));
         assert_eq!(report, "lint ok\n");
+    }
+
+    #[test]
+    fn desired_projects_removes_unwanted_entries() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+        let lint = LintConfig {
+            enabled: true,
+            include: vec!["~/rust/demo".to_string()],
+            exclude: vec!["~/rust/demo/excluded".to_string()],
+            commands: Vec::new(),
+        };
+
+        let desired = desired_projects(
+            &lint,
+            vec![
+                request("~/rust/demo", project_dir.path(), true),
+                request("~/rust/demo/excluded", project_dir.path(), true),
+                request("~/rust/not-rust", project_dir.path(), false),
+            ],
+        );
+
+        assert_eq!(desired.len(), 1);
+        assert!(desired.contains_key(project_dir.path()));
+    }
+
+    #[test]
+    fn reconcile_workers_stops_stale_threads() {
+        let path = PathBuf::from("/tmp/demo");
+        let mut workers = HashMap::new();
+        let (worker, exited) = dummy_worker();
+        workers.insert(path, worker);
+
+        reconcile_workers(
+            &mut workers,
+            HashMap::new(),
+            Path::new("/tmp/cache"),
+            &Vec::new(),
+        );
+
+        assert!(workers.is_empty());
+        assert!(exited.load(Ordering::Relaxed));
+    }
+
+    fn dummy_worker() -> (ProjectWorker, Arc<AtomicBool>) {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = Arc::clone(&stop);
+        let exited = Arc::new(AtomicBool::new(false));
+        let exited_flag = Arc::clone(&exited);
+        let handle = thread::spawn(move || {
+            while !stop_flag.load(Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(10));
+            }
+            exited_flag.store(true, Ordering::Relaxed);
+        });
+        (ProjectWorker { stop, handle }, exited)
     }
 }
