@@ -10,6 +10,7 @@ mod cache_paths;
 mod config;
 mod constants;
 mod http;
+mod lint_runtime;
 mod port_report;
 mod project;
 mod scan;

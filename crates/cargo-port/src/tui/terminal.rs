@@ -100,6 +100,7 @@ pub fn run(path: &Path) -> ExitCode {
         cfg.tui.ci_run_count,
         &cfg.tui.include_dirs,
         cfg.tui.include_non_rust,
+        cfg.lint.enabled,
         http_client.clone(),
     );
     let projects: Vec<RustProject> = Vec::new();

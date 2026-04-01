@@ -736,6 +736,10 @@ pub struct FetchContext {
 
 /// Fetch all details (disk, git, crates.io, CI) for a single project and send
 /// results through the provided channel. Used by both the main scan and priority fetch.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "priority fetch shares the same fully-expanded project detail path as discovery"
+)]
 pub fn fetch_project_details(
     tx: &mpsc::Sender<BackgroundMsg>,
     ctx: &FetchContext,
@@ -744,6 +748,7 @@ pub fn fetch_project_details(
     project_name: Option<&String>,
     git_tracking: GitTracking,
     ci_run_count: u32,
+    lint_enabled: bool,
 ) {
     let client = &ctx.client;
     let repo_cache = &ctx.repo_cache;
@@ -833,13 +838,15 @@ pub fn fetch_project_details(
         });
     }
 
-    // Lint status (cheap local file read).
-    let lint = port_report::read_status(abs_path);
-    if !matches!(lint, LintStatus::NoLog) {
-        let _ = tx.send(BackgroundMsg::LintStatus {
-            path:   project_path.to_string(),
-            status: lint,
-        });
+    if lint_enabled {
+        // Lint status (cheap local file read).
+        let lint = port_report::read_status(abs_path);
+        if !matches!(lint, LintStatus::NoLog) {
+            let _ = tx.send(BackgroundMsg::LintStatus {
+                path:   project_path.to_string(),
+                status: lint,
+            });
+        }
     }
 
     // Disk usage last — walking large `target/` dirs is the slowest
@@ -899,6 +906,7 @@ struct DiscoveredProject {
     name:       Option<String>,
     repo_url:   Option<String>,
     owner_repo: Option<(String, String)>,
+    lint_enabled: bool,
 }
 
 enum RepoDispatchState {
@@ -919,6 +927,7 @@ struct StreamingScanContext {
     client:        HttpClient,
     tx:            mpsc::Sender<BackgroundMsg>,
     ci_run_count:  u32,
+    lint_enabled:  bool,
     disk_limit:    Arc<tokio::sync::Semaphore>,
     http_limit:    Arc<tokio::sync::Semaphore>,
     repo_dispatch: RepoDispatchMap,
@@ -948,6 +957,7 @@ pub fn spawn_streaming_scan(
     ci_run_count: u32,
     include_dirs: &[String],
     non_rust: NonRustInclusion,
+    lint_enabled: bool,
     client: HttpClient,
 ) -> (mpsc::Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
     let (tx, rx) = mpsc::channel();
@@ -960,6 +970,7 @@ pub fn spawn_streaming_scan(
             client,
             tx: scan_tx.clone(),
             ci_run_count,
+            lint_enabled,
             disk_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_DISK_CONCURRENCY)),
             http_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_HTTP_CONCURRENCY)),
             repo_dispatch: Arc::new(Mutex::new(HashMap::new())),
@@ -1026,6 +1037,7 @@ fn phase1_discover(
                             name: None,
                             repo_url: None,
                             owner_repo: None,
+                            lint_enabled: scan_context.lint_enabled,
                         },
                         GitTracking::Tracked,
                     );
@@ -1057,6 +1069,7 @@ fn phase1_discover(
                         name: project.name.clone(),
                         repo_url: None,
                         owner_repo: None,
+                        lint_enabled: scan_context.lint_enabled,
                     },
                     git_tracking,
                 );
@@ -1291,13 +1304,15 @@ fn phase1_local_work(
         });
     }
 
-    // Lint status (cheap local file read).
-    let lint = port_report::read_status(&project.abs_path);
-    if !matches!(lint, LintStatus::NoLog) {
-        let _ = tx.send(BackgroundMsg::LintStatus {
-            path:   project.path.clone(),
-            status: lint,
-        });
+    if project.lint_enabled {
+        // Lint status (cheap local file read).
+        let lint = port_report::read_status(&project.abs_path);
+        if !matches!(lint, LintStatus::NoLog) {
+            let _ = tx.send(BackgroundMsg::LintStatus {
+                path:   project.path.clone(),
+                status: lint,
+            });
+        }
     }
 
     project.repo_url = git_info.as_ref().and_then(|g| g.url.clone());

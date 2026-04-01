@@ -448,7 +448,11 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     let total_bytes: u64 = app.disk_usage.values().sum();
     if total_bytes > 0 {
         let total_str = format_bytes(total_bytes);
-        let summary = super::columns::build_summary_cells(widths.get(COL_NAME), &total_str);
+        let summary = super::columns::build_summary_cells(
+            widths.get(COL_NAME),
+            &total_str,
+            app.lint_enabled,
+        );
         items.push(ListItem::new(super::columns::row_to_line(&summary, widths)));
     }
 

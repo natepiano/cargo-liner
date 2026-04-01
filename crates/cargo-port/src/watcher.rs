@@ -55,6 +55,7 @@ pub fn spawn_watcher(
     bg_tx: mpsc::Sender<BackgroundMsg>,
     ci_run_count: u32,
     non_rust: NonRustInclusion,
+    lint_enabled: bool,
     include_dirs: Vec<String>,
     client: HttpClient,
 ) -> mpsc::Sender<WatchRequest> {
@@ -67,6 +68,7 @@ pub fn spawn_watcher(
             &watch_rx,
             ci_run_count,
             non_rust,
+            lint_enabled,
             &include_dirs,
             &client,
         );
@@ -83,12 +85,17 @@ struct ProjectEntry {
     port_report_dir_path: PathBuf,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "watcher loop owns the full set of shared scan services and config flags"
+)]
 fn watcher_loop(
     scan_root: &Path,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     watch_rx: &mpsc::Receiver<WatchRequest>,
     ci_run_count: u32,
     non_rust: NonRustInclusion,
+    lint_enabled: bool,
     include_dirs: &[String],
     client: &HttpClient,
 ) {
@@ -105,9 +112,11 @@ fn watcher_loop(
             let _ = watcher.watch(dir, RecursiveMode::Recursive);
         }
     }
-    let lint_root = port_report::cache_root();
-    let _ = std::fs::create_dir_all(&lint_root);
-    let _ = watcher.watch(&lint_root, RecursiveMode::Recursive);
+    if lint_enabled {
+        let lint_root = port_report::cache_root();
+        let _ = std::fs::create_dir_all(&lint_root);
+        let _ = watcher.watch(&lint_root, RecursiveMode::Recursive);
+    }
 
     // `abs_path` → project tracking state
     let mut projects: HashMap<PathBuf, ProjectEntry> = HashMap::new();
@@ -169,6 +178,7 @@ fn watcher_loop(
             &mut discovered,
             ci_run_count,
             non_rust,
+            lint_enabled,
             client,
         );
 
@@ -284,6 +294,7 @@ fn probe_new_projects(
     discovered: &mut HashSet<PathBuf>,
     ci_run_count: u32,
     non_rust: NonRustInclusion,
+    lint_enabled: bool,
     client: &HttpClient,
 ) {
     let now = Instant::now();
@@ -338,6 +349,7 @@ fn probe_new_projects(
                     name.as_ref(),
                     git_tracking,
                     ci_run_count,
+                    lint_enabled,
                 );
             });
         }

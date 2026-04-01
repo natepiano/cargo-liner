@@ -1,11 +1,13 @@
 //! Reads per-project lint status from a cache-rooted protocol file.
 //!
-//! The log is an append-only, tab-delimited file produced by an external
-//! lint watcher. Format: `{ISO-8601}\t{status}` where status is
-//! `started`, `passed`, or `failed`. cargo-port is a pure reader.
+//! The log is an append-only, tab-delimited file produced by either the
+//! in-process lint runtime or an external watcher. Format:
+//! `{ISO-8601}\t{status}` where status is `started`, `passed`, or `failed`.
 
 use std::fs::File;
+use std::io;
 use std::io::Read;
+use std::io::Write;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::path::Path;
@@ -13,6 +15,7 @@ use std::path::PathBuf;
 
 use chrono::DateTime;
 use chrono::FixedOffset;
+use chrono::Local;
 use chrono::Utc;
 
 use super::cache_paths;
@@ -82,8 +85,39 @@ pub fn project_key(project_root: &Path) -> String {
 /// Cache-rooted directory for the project's lint watcher protocol files.
 pub fn project_dir(project_root: &Path) -> PathBuf { cache_root().join(project_key(project_root)) }
 
+/// Cache-rooted directory for the project's lint watcher protocol files under
+/// an explicit cache root.
+pub fn project_dir_under(cache_root: &Path, project_root: &Path) -> PathBuf {
+    cache_root.join(project_key(project_root))
+}
+
 /// Cache-rooted lint status file for the project.
 pub fn log_path(project_root: &Path) -> PathBuf { project_dir(project_root).join(PORT_REPORT_LOG) }
+
+/// Cache-rooted lint status file for the project under an explicit cache root.
+pub fn log_path_under(cache_root: &Path, project_root: &Path) -> PathBuf {
+    project_dir_under(cache_root, project_root).join(PORT_REPORT_LOG)
+}
+
+/// Cache-rooted raw command output directory for the project under an explicit
+/// cache root.
+pub fn output_dir_under(cache_root: &Path, project_root: &Path) -> PathBuf {
+    project_dir_under(cache_root, project_root).join("port-report")
+}
+
+/// Append a status event to the project's protocol file under an explicit
+/// cache root.
+pub fn append_status_under(cache_root: &Path, project_root: &Path, status: &str) -> io::Result<()> {
+    let path = log_path_under(cache_root, project_root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{}\t{status}", Local::now().to_rfc3339())
+}
 
 /// Read the last line of the project's lint status log and parse it.
 pub fn read_status(project_root: &Path) -> LintStatus {

@@ -46,7 +46,7 @@ pub(super) struct ColumnDef {
 }
 
 /// The canonical column layout — single source of truth.
-pub(super) const fn column_defs() -> [ColumnDef; NUM_COLS] {
+pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
     [
         // 0: Name
         ColumnDef {
@@ -58,11 +58,11 @@ pub(super) const fn column_defs() -> [ColumnDef; NUM_COLS] {
         },
         // 1: Lint — borrows "Li" from Name padding
         ColumnDef {
-            header:              "Lint",
-            width:               ColumnWidth::Fixed(2),
+            header:              if lint_enabled { "Lint" } else { "" },
+            width:               ColumnWidth::Fixed(if lint_enabled { 2 } else { 0 }),
             align:               Align::Left,
             gap:                 0,
-            header_borrows_left: true,
+            header_borrows_left: lint_enabled,
         },
         // 2: Disk
         ColumnDef {
@@ -140,17 +140,19 @@ pub(super) struct RowCells {
 
 pub(super) struct ResolvedWidths {
     widths:         [usize; NUM_COLS],
+    lint_enabled:   bool,
     pub generation: u64,
 }
 
 impl Default for ResolvedWidths {
-    fn default() -> Self { Self::new(&column_defs()) }
+    fn default() -> Self { Self::new(true) }
 }
 
 impl ResolvedWidths {
     /// Seed from column definitions: Fixed columns get their width, Fit columns
     /// get their minimum.
-    pub(super) fn new(defs: &[ColumnDef; NUM_COLS]) -> Self {
+    pub(super) fn new(lint_enabled: bool) -> Self {
+        let defs = column_defs(lint_enabled);
         let mut widths = [0usize; NUM_COLS];
         for (i, def) in defs.iter().enumerate() {
             widths[i] = match def.width {
@@ -160,13 +162,14 @@ impl ResolvedWidths {
         }
         Self {
             widths,
+            lint_enabled,
             generation: u64::MAX,
         }
     }
 
     /// Update a Fit column with observed content width. No-op for Fixed columns.
     pub(super) fn observe(&mut self, col: usize, width: usize) {
-        if let ColumnWidth::Fit { .. } = column_defs()[col].width {
+        if let ColumnWidth::Fit { .. } = column_defs(self.lint_enabled)[col].width {
             self.widths[col] = self.widths[col].max(width);
         }
     }
@@ -176,13 +179,15 @@ impl ResolvedWidths {
 
     /// Total display width of all columns including gaps.
     pub(super) fn total_width(&self) -> usize {
-        let defs = column_defs();
+        let defs = column_defs(self.lint_enabled);
         let mut total = 0;
         for (i, def) in defs.iter().enumerate() {
             total += def.gap + self.widths[i];
         }
         total
     }
+
+    pub(super) const fn lint_enabled(&self) -> bool { self.lint_enabled }
 }
 
 // ── Display-width helpers ───────────────────────────────────────────
@@ -219,7 +224,7 @@ fn pad_center(s: &str, target: usize) -> String {
 /// Render a `RowCells` into a styled `Line` using the column definitions and
 /// resolved widths. Replaces `project_row_spans`.
 pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'static> {
-    let defs = column_defs();
+    let defs = column_defs(widths.lint_enabled());
     let mut spans = Vec::with_capacity(NUM_COLS);
 
     for (i, cell) in row.cells.iter().enumerate() {
@@ -265,7 +270,7 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'stat
 /// Build the header `Line` from column definitions and resolved widths.
 /// `name_text` is the dynamic header for the Name column (e.g. "~/rust (42)").
 pub(super) fn header_line(widths: &ResolvedWidths, name_text: &str) -> Line<'static> {
-    let defs = column_defs();
+    let defs = column_defs(widths.lint_enabled());
     let header_style = Style::default()
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
@@ -408,17 +413,25 @@ pub(super) fn build_group_header_cells(prefix: &str, label: &str) -> RowCells {
 }
 
 /// Build a `RowCells` for the summary (Σ) row.
-pub(super) fn build_summary_cells(name_width: usize, disk: &str) -> RowCells {
+pub(super) fn build_summary_cells(name_width: usize, disk: &str, lint_enabled: bool) -> RowCells {
     let total_style = Style::default()
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
 
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
-    cells[COL_LINT] = CellContent {
-        text:           String::from("Σ"),
-        style:          total_style,
-        align_override: Some(Align::Right),
-    };
+    if lint_enabled {
+        cells[COL_LINT] = CellContent {
+            text:           String::from("Σ"),
+            style:          total_style,
+            align_override: Some(Align::Right),
+        };
+    } else {
+        cells[COL_NAME] = CellContent {
+            text:           String::from("Σ"),
+            style:          total_style,
+            align_override: None,
+        };
+    }
     cells[COL_DISK] = CellContent {
         text:           String::from(disk),
         style:          total_style,
@@ -437,7 +450,11 @@ pub(super) fn build_summary_cells(name_width: usize, disk: &str) -> RowCells {
 
     RowCells {
         cells,
-        prefix: " ".repeat(name_width),
+        prefix: if lint_enabled {
+            " ".repeat(name_width)
+        } else {
+            " ".repeat(name_width.saturating_sub(1))
+        },
         deleted: false,
     }
 }
@@ -453,8 +470,7 @@ mod tests {
 
     #[test]
     fn resolved_widths_seeds_from_defs() {
-        let defs = column_defs();
-        let widths = ResolvedWidths::new(&defs);
+        let widths = ResolvedWidths::new(true);
         // Fixed columns get their fixed width
         assert_eq!(widths.get(COL_LINT), 2);
         assert_eq!(widths.get(COL_LANG), 2);
@@ -468,8 +484,7 @@ mod tests {
 
     #[test]
     fn observe_grows_fit_columns() {
-        let defs = column_defs();
-        let mut widths = ResolvedWidths::new(&defs);
+        let mut widths = ResolvedWidths::new(true);
         widths.observe(COL_NAME, 25);
         assert_eq!(widths.get(COL_NAME), 25);
         // Fixed column ignores observe
@@ -479,8 +494,8 @@ mod tests {
 
     #[test]
     fn total_width_sums_gaps_and_widths() {
-        let defs = column_defs();
-        let widths = ResolvedWidths::new(&defs);
+        let defs = column_defs(true);
+        let widths = ResolvedWidths::new(true);
         let total = widths.total_width();
         let expected: usize = defs
             .iter()
@@ -492,8 +507,7 @@ mod tests {
 
     #[test]
     fn header_line_borrows_only_overflow_from_name() {
-        let defs = column_defs();
-        let mut widths = ResolvedWidths::new(&defs);
+        let mut widths = ResolvedWidths::new(true);
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
@@ -527,8 +541,7 @@ mod tests {
 
     #[test]
     fn row_to_line_same_width_with_and_without_emoji() {
-        let defs = column_defs();
-        let mut widths = ResolvedWidths::new(&defs);
+        let mut widths = ResolvedWidths::new(true);
         widths.observe(COL_NAME, 32);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
@@ -579,13 +592,12 @@ mod tests {
 
     #[test]
     fn summary_row_places_sigma_next_to_disk_total() {
-        let defs = column_defs();
-        let mut widths = ResolvedWidths::new(&defs);
+        let mut widths = ResolvedWidths::new(true);
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
 
-        let row = build_summary_cells(widths.get(COL_NAME), "36.3 GiB");
+        let row = build_summary_cells(widths.get(COL_NAME), "36.3 GiB", true);
         let line = row_to_line(&row, &widths);
 
         assert_eq!(
@@ -594,5 +606,23 @@ mod tests {
         );
         assert_eq!(line.spans[COL_LINT].content.as_ref(), " Σ");
         assert_eq!(line.spans[COL_DISK].content.as_ref(), " 36.3 GiB");
+    }
+
+    #[test]
+    fn lint_column_collapses_when_disabled() {
+        let defs = column_defs(false);
+        let mut widths = ResolvedWidths::new(false);
+        widths.observe(COL_NAME, 30);
+        widths.observe(COL_DISK, 8);
+        widths.observe(COL_SYNC, 2);
+
+        let header = header_line(&widths, "Projects");
+        let row = build_summary_cells(widths.get(COL_NAME), "36.3 GiB", false);
+        let line = row_to_line(&row, &widths);
+
+        assert_eq!(defs[COL_LINT].header, "");
+        assert_eq!(widths.get(COL_LINT), 0);
+        assert_eq!(display_width(header.spans[COL_LINT].content.as_ref()), 0);
+        assert!(line.spans[COL_NAME].content.as_ref().ends_with('Σ'));
     }
 }

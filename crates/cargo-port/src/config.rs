@@ -65,7 +65,7 @@ impl ScrollDirection {
 }
 
 /// Cache storage settings shared by CI and port-report data.
-#[derive(confique::Config, Default, Serialize)]
+#[derive(Clone, confique::Config, Default, Serialize)]
 pub struct CacheConfig {
     /// Override the app cache root. Empty uses the system cache directory.
     #[config(default = "")]
@@ -73,16 +73,59 @@ pub struct CacheConfig {
 }
 
 /// Lint status indicator settings.
-#[derive(confique::Config, Default, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LintCommandConfig {
+    #[serde(default)]
+    pub name:    String,
+    #[serde(default)]
+    pub command: String,
+}
+
+#[derive(Clone, confique::Config, Default, Serialize)]
 pub struct LintConfig {
     /// Show a lint status indicator per project by reading a cache-rooted
     /// `port-report.log` protocol file. Any external tool can produce it.
     #[config(default = false)]
     pub enabled: bool,
+
+    /// Limit lint execution to projects whose display or absolute path starts
+    /// with one of these prefixes. Empty means every Rust project is eligible.
+    #[config(default = [])]
+    pub include: Vec<String>,
+
+    /// Skip lint execution for projects whose display or absolute path starts
+    /// with one of these prefixes.
+    #[config(default = [])]
+    pub exclude: Vec<String>,
+
+    /// Commands to run when a watched project changes. Empty falls back to the
+    /// built-in `cargo mend` + `cargo clippy` pair.
+    #[config(default = [])]
+    pub commands: Vec<LintCommandConfig>,
+}
+
+impl LintConfig {
+    pub fn resolved_commands(&self) -> Vec<LintCommandConfig> {
+        if self.commands.is_empty() {
+            return vec![
+                LintCommandConfig {
+                    name:    "mend".to_string(),
+                    command: "cargo mend --manifest-path \"$MANIFEST_PATH\"".to_string(),
+                },
+                LintCommandConfig {
+                    name:    "clippy".to_string(),
+                    command:
+                        "cargo clippy --workspace --all-targets --all-features --manifest-path \"$MANIFEST_PATH\" -- -D warnings"
+                            .to_string(),
+                },
+            ];
+        }
+        self.commands.clone()
+    }
 }
 
 /// Top-level application configuration.
-#[derive(confique::Config, Default, Serialize)]
+#[derive(Clone, confique::Config, Default, Serialize)]
 pub struct Config {
     #[config(nested)]
     pub cache: CacheConfig,
@@ -95,7 +138,7 @@ pub struct Config {
 }
 
 /// TUI display and behaviour settings.
-#[derive(confique::Config, Serialize)]
+#[derive(Clone, confique::Config, Serialize)]
 pub struct TuiConfig {
     /// Directory names whose members are shown inline (pulled up to the
     /// workspace level). For example, `["crates"]` means projects under
@@ -141,7 +184,7 @@ impl Default for TuiConfig {
 }
 
 /// Mouse input settings.
-#[derive(confique::Config, Serialize)]
+#[derive(Clone, confique::Config, Serialize)]
 pub struct MouseConfig {
     /// Whether to invert mouse scroll direction.
     #[config(default = true)]
@@ -223,6 +266,9 @@ mod tests {
         assert!((cfg.tui.status_flash_secs - 3.0).abs() < f64::EPSILON);
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
         assert!(!cfg.lint.enabled);
+        assert!(cfg.lint.include.is_empty());
+        assert!(cfg.lint.exclude.is_empty());
+        assert!(cfg.lint.commands.is_empty());
     }
 
     /// Generated template parses back into a valid `Config` via confique.
@@ -242,6 +288,7 @@ mod tests {
             .expect("template should parse");
         assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.tui.ci_run_count, 5);
+        assert!(cfg.lint.commands.is_empty());
     }
 
     /// A partial config file gets defaults for missing fields.
@@ -259,6 +306,7 @@ mod tests {
         assert_eq!(cfg.tui.ci_run_count, 10);
         assert_eq!(cfg.tui.editor, "zed");
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
+        assert!(cfg.lint.commands.is_empty());
     }
 
     /// An empty config file gets all defaults.
@@ -275,6 +323,7 @@ mod tests {
         assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.tui.ci_run_count, 5);
         assert_eq!(cfg.tui.editor, "zed");
+        assert!(cfg.lint.commands.is_empty());
     }
 
     /// Saving and reloading preserves all values.
@@ -302,6 +351,7 @@ mod tests {
         assert_eq!(reloaded.tui.editor, "vim");
         assert!((reloaded.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
         assert_eq!(reloaded.mouse.invert_scroll, ScrollDirection::Normal);
+        assert!(reloaded.lint.commands.is_empty());
     }
 
     /// Bool-based enums deserialize correctly from TOML booleans.
@@ -337,5 +387,50 @@ mod tests {
             .expect("cache root should parse");
         assert_eq!(cfg.cache.root, "/tmp/cargo-port");
         assert!(!cfg.lint.enabled);
+    }
+
+    /// Lint command arrays parse from TOML and preserve ordering.
+    #[test]
+    fn lint_commands_parse() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[lint]\n\
+             enabled = true\n\
+             include = [\"~/rust/cargo-port_report\"]\n\
+             exclude = [\"~/rust/archive\"]\n\
+             [[lint.commands]]\n\
+             name = \"fmt\"\n\
+             command = \"cargo fmt --check\"\n\
+             [[lint.commands]]\n\
+             name = \"clippy\"\n\
+             command = \"cargo clippy -- -D warnings\"\n",
+        )
+        .expect("write");
+
+        let cfg = Config::builder()
+            .file(&path)
+            .load()
+            .expect("lint commands should parse");
+        assert!(cfg.lint.enabled);
+        assert_eq!(cfg.lint.include, vec!["~/rust/cargo-port_report"]);
+        assert_eq!(cfg.lint.exclude, vec!["~/rust/archive"]);
+        assert_eq!(cfg.lint.commands.len(), 2);
+        assert_eq!(cfg.lint.commands[0].name, "fmt");
+        assert_eq!(cfg.lint.commands[0].command, "cargo fmt --check");
+        assert_eq!(cfg.lint.commands[1].name, "clippy");
+    }
+
+    /// Empty lint command config falls back to the built-in command pair.
+    #[test]
+    fn resolved_lint_commands_default_to_builtins() {
+        let cfg = Config::default();
+        let commands = cfg.lint.resolved_commands();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].name, "mend");
+        assert!(commands[0].command.contains("cargo mend"));
+        assert_eq!(commands[1].name, "clippy");
+        assert!(commands[1].command.contains("cargo clippy"));
     }
 }

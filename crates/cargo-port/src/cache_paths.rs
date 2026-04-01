@@ -36,6 +36,11 @@ pub fn app_cache_root() -> PathBuf {
 /// Cache root for repo-keyed CI data.
 pub fn ci_cache_root() -> PathBuf { app_cache_root().join(CI_CACHE_DIR) }
 
+/// Cache root for project-keyed port reports under a specific config.
+pub fn port_report_root_for(cfg: &Config) -> PathBuf {
+    configured_app_cache_root_for(cfg).join(PORT_REPORT_CACHE_DIR)
+}
+
 /// Cache root for project-keyed port reports.
 pub fn port_report_root() -> PathBuf { app_cache_root().join(PORT_REPORT_CACHE_DIR) }
 

@@ -50,6 +50,8 @@ use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::constants::WORKTREE;
 use crate::http::HttpClient;
+use crate::lint_runtime;
+use crate::lint_runtime::RegisterProjectRequest;
 use crate::port_report::LintStatus;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
@@ -270,6 +272,7 @@ pub(super) struct App {
 
     // Disk watcher
     pub watch_tx: mpsc::Sender<WatchRequest>,
+    pub lint_watch_tx: Option<mpsc::Sender<RegisterProjectRequest>>,
 
     // Network state
     pub network_status: NetworkStatus,
@@ -451,13 +454,14 @@ fn build_fit_widths_snapshot(
     disk_usage: &HashMap<String, u64>,
     git_info: &HashMap<String, GitInfo>,
     deleted_projects: &HashSet<String>,
+    lint_enabled: bool,
     generation: u64,
 ) -> ResolvedWidths {
     use super::columns::COL_DISK;
     use super::columns::COL_SYNC;
 
     let dw = super::columns::display_width;
-    let mut widths = ResolvedWidths::default();
+    let mut widths = ResolvedWidths::new(lint_enabled);
 
     for node in nodes {
         App::observe_name_width(
@@ -757,11 +761,14 @@ impl App {
         let include_dirs = cfg.tui.include_dirs.clone();
         let ci_run_count = cfg.tui.ci_run_count;
         let include_non_rust = cfg.tui.include_non_rust;
+        let lint_spawn = lint_runtime::spawn(cfg);
+        let lint_warning = lint_spawn.warning.clone();
         let watch_tx = watcher::spawn_watcher(
             scan_root.clone(),
             bg_tx.clone(),
             ci_run_count,
             include_non_rust,
+            cfg.lint.enabled,
             include_dirs.clone(),
             http_client.clone(),
         );
@@ -772,7 +779,7 @@ impl App {
         let (tree_build_tx, tree_build_rx) = mpsc::channel();
         let (fit_build_tx, fit_build_rx) = mpsc::channel();
         let (disk_build_tx, disk_build_rx) = mpsc::channel();
-        Self {
+        let mut app = Self {
             scan_root,
             inline_dirs,
             include_dirs,
@@ -841,6 +848,7 @@ impl App {
             should_restart: false,
 
             watch_tx,
+            lint_watch_tx: lint_spawn.register_tx,
 
             network_status: NetworkStatus::Online,
 
@@ -860,7 +868,7 @@ impl App {
             cached_root_sorted: Vec::new(),
             cached_child_sorted: HashMap::new(),
             disk_cache_dirty: true,
-            cached_fit_widths: ResolvedWidths::default(),
+            cached_fit_widths: ResolvedWidths::new(cfg.lint.enabled),
             fit_widths_dirty: true,
             tree_build_tx,
             tree_build_rx,
@@ -879,8 +887,13 @@ impl App {
             cached_detail: None,
             selection_changed: false,
             layout_cache: LayoutCache::default(),
-            status_flash: None,
+            status_flash: lint_warning.clone().map(|warning| (warning, Instant::now())),
+        };
+        if let Some(warning) = lint_warning {
+            app.scan_log.push(warning);
+            app.scan_log_state.select(Some(0));
         }
+        app
     }
 
     fn apply_tree_build(&mut self, nodes: Vec<ProjectNode>, flat_entries: Vec<FlatEntry>) {
@@ -945,6 +958,73 @@ impl App {
     }
 
     pub fn rebuild_tree(&mut self) { self.request_tree_rebuild(); }
+
+    pub(super) fn apply_lint_runtime_setting(&mut self, cfg: &Config) {
+        self.lint_enabled = cfg.lint.enabled;
+        let lint_spawn = lint_runtime::spawn(cfg);
+        self.lint_watch_tx = lint_spawn.register_tx;
+        self.watch_tx = watcher::spawn_watcher(
+            self.scan_root.clone(),
+            self.bg_tx.clone(),
+            self.ci_run_count,
+            self.include_non_rust,
+            self.lint_enabled,
+            self.include_dirs.clone(),
+            self.http_client.clone(),
+        );
+        self.register_existing_projects();
+        self.refresh_lint_statuses_from_disk();
+        self.rows_dirty = true;
+        self.fit_widths_dirty = true;
+        self.data_generation += 1;
+        self.detail_generation += 1;
+        if let Some(warning) = lint_spawn.warning {
+            self.status_flash = Some((warning.clone(), Instant::now()));
+            self.scan_log.push(warning);
+            self.scan_log_state
+                .select(Some(self.scan_log.len().saturating_sub(1)));
+        }
+    }
+
+    fn refresh_lint_statuses_from_disk(&mut self) {
+        self.lint_status.clear();
+        if !self.lint_enabled {
+            return;
+        }
+        for project in &self.all_projects {
+            let status = crate::port_report::read_status(&PathBuf::from(&project.abs_path));
+            if !matches!(status, LintStatus::NoLog) {
+                self.lint_status.insert(project.path.clone(), status);
+            }
+        }
+    }
+
+    fn register_existing_projects(&self) {
+        for project in &self.all_projects {
+            self.register_project_background_services(project);
+        }
+    }
+
+    fn register_project_background_services(&self, project: &RustProject) {
+        let abs_path = PathBuf::from(&project.abs_path);
+        let git_tracking = if abs_path.join(".git").exists() {
+            GitTracking::Tracked
+        } else {
+            GitTracking::Untracked
+        };
+        let _ = self.watch_tx.send(WatchRequest {
+            project_path: project.path.clone(),
+            abs_path: abs_path.clone(),
+            git_tracking,
+        });
+        if let Some(tx) = &self.lint_watch_tx {
+            let _ = tx.send(RegisterProjectRequest {
+                project_path: project.path.clone(),
+                abs_path,
+                is_rust: project.is_rust == crate::project::ProjectLanguage::Rust,
+            });
+        }
+    }
 
     fn request_tree_rebuild(&mut self) {
         self.tree_build_latest = self.tree_build_latest.wrapping_add(1);
@@ -1016,6 +1096,7 @@ impl App {
         let disk_usage = self.disk_usage.clone();
         let git_info = self.git_info.clone();
         let deleted_projects = self.deleted_projects.clone();
+        let lint_enabled = self.lint_enabled;
         self.fit_build_active = Some(build_id);
         std::thread::spawn(move || {
             let started = Instant::now();
@@ -1024,6 +1105,7 @@ impl App {
                 &disk_usage,
                 &git_info,
                 &deleted_projects,
+                lint_enabled,
                 build_id,
             );
             super::perf::log_duration(
@@ -1123,6 +1205,7 @@ impl App {
         self.flat_entries.clear();
         self.disk_usage.clear();
         self.ci_state.clear();
+        self.lint_status.clear();
         self.git_info.clear();
         self.crates_versions.clear();
         self.crates_downloads.clear();
@@ -1158,6 +1241,7 @@ impl App {
             self.ci_run_count,
             &self.include_dirs,
             self.include_non_rust,
+            self.lint_enabled,
             self.http_client.clone(),
         );
         self.bg_tx = tx;
@@ -1167,6 +1251,7 @@ impl App {
             self.bg_tx.clone(),
             self.ci_run_count,
             self.include_non_rust,
+            self.lint_enabled,
             self.include_dirs.clone(),
             self.http_client.clone(),
         );
@@ -1330,17 +1415,7 @@ impl App {
             return false;
         }
 
-        let abs_path = PathBuf::from(&project.abs_path);
-        let git_tracking = if abs_path.join(".git").exists() {
-            GitTracking::Tracked
-        } else {
-            GitTracking::Untracked
-        };
-        let _ = self.watch_tx.send(WatchRequest {
-            project_path: project.path.clone(),
-            abs_path,
-            git_tracking,
-        });
+        self.register_project_background_services(&project);
         self.all_projects.push(project);
         true
     }

@@ -16,30 +16,32 @@ use super::constants::SETTINGS_POPUP_WIDTH;
 use super::render;
 use crate::config;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingOption {
     InvertScroll,
-    CiRunCount,
-    InlineDirs,
-    IncludeDirs,
     IncludeNonRust,
+    PortReport,
+    CiRunCount,
     Editor,
+    IncludeDirs,
+    InlineDirs,
 }
 
 impl SettingOption {
     pub(super) const fn from_index(i: usize) -> Option<Self> {
         match i {
             0 => Some(Self::InvertScroll),
-            1 => Some(Self::CiRunCount),
-            2 => Some(Self::InlineDirs),
-            3 => Some(Self::IncludeDirs),
-            4 => Some(Self::IncludeNonRust),
-            5 => Some(Self::Editor),
+            1 => Some(Self::IncludeNonRust),
+            2 => Some(Self::PortReport),
+            3 => Some(Self::CiRunCount),
+            4 => Some(Self::Editor),
+            5 => Some(Self::IncludeDirs),
+            6 => Some(Self::InlineDirs),
             _ => None,
         }
     }
 
-    pub(super) const fn count() -> usize { 6 }
+    pub(super) const fn count() -> usize { 7 }
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
@@ -91,9 +93,6 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
             }
             .to_string(),
         ),
-        ("CI run count", cfg.tui.ci_run_count.to_string()),
-        ("Inline dirs", cfg.tui.inline_dirs.join(", ")),
-        ("Include dirs", cfg.tui.include_dirs.join(", ")),
         (
             "Non-Rust projects",
             if app.include_non_rust.includes_non_rust() {
@@ -103,7 +102,11 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
             }
             .to_string(),
         ),
+        ("Port Report", if app.lint_enabled { "ON" } else { "OFF" }.to_string()),
+        ("CI run count", cfg.tui.ci_run_count.to_string()),
         ("Editor", app.editor.clone()),
+        ("Include dirs", cfg.tui.include_dirs.join(", ")),
+        ("Inline dirs", cfg.tui.inline_dirs.join(", ")),
     ];
 
     let mut lines: Vec<Line<'static>> = vec![Line::from("")];
@@ -166,10 +169,12 @@ pub(super) fn build_settings_lines(
             ]));
         } else if setting == Some(SettingOption::InvertScroll)
             || setting == Some(SettingOption::IncludeNonRust)
+            || setting == Some(SettingOption::PortReport)
         {
             let is_on = match setting {
                 Some(SettingOption::InvertScroll) => app.invert_scroll.is_inverted(),
                 Some(SettingOption::IncludeNonRust) => app.include_non_rust.includes_non_rust(),
+                Some(SettingOption::PortReport) => app.lint_enabled,
                 _ => false,
             };
             let toggle_style = if is_on {
@@ -256,6 +261,9 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
                 let _ = config::save(&cfg);
                 app.rescan();
             },
+            Some(SettingOption::PortReport) => {
+                toggle_port_report(app);
+            },
             _ => {},
         },
         KeyCode::Enter | KeyCode::Char(' ') => match setting {
@@ -282,6 +290,9 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
                 cfg.tui.include_non_rust = app.include_non_rust;
                 let _ = config::save(&cfg);
                 app.rescan();
+            },
+            Some(SettingOption::PortReport) => {
+                toggle_port_report(app);
             },
             Some(SettingOption::Editor) => {
                 app.settings_edit_buf.clone_from(&app.editor);
@@ -357,4 +368,33 @@ pub(super) fn save_settings(app: &App) {
     let mut cfg = config::load();
     cfg.mouse.invert_scroll = app.invert_scroll;
     let _ = config::save(&cfg);
+}
+
+fn toggle_port_report(app: &mut App) {
+    let mut cfg = config::load();
+    cfg.lint.enabled = !cfg.lint.enabled;
+    let _ = config::save(&cfg);
+    app.apply_lint_runtime_setting(&cfg);
+    app.status_flash = Some((
+        format!(
+            "Port Report {}",
+            if cfg.lint.enabled { "enabled" } else { "disabled" }
+        ),
+        std::time::Instant::now(),
+    ));
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn port_report_setting_has_stable_index() {
+        assert_eq!(SettingOption::from_index(2), Some(SettingOption::PortReport));
+        assert_eq!(SettingOption::count(), 7);
+    }
 }
