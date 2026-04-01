@@ -332,16 +332,12 @@ impl RustProject {
     }
 
     /// Display name for the project list.
-    /// Shows `name (worktree_dir)` for worktrees, just `name` otherwise.
     /// Falls back to the last path component for workspace-only projects.
     pub fn display_name(&self) -> String {
-        let name = self
-            .name
+        self.name
             .as_deref()
-            .unwrap_or_else(|| self.path.rsplit('/').next().unwrap_or(&self.path));
-        self.worktree_name
-            .as_ref()
-            .map_or_else(|| name.to_string(), |wt| format!("{name} ({wt})"))
+            .unwrap_or_else(|| self.path.rsplit('/').next().unwrap_or(&self.path))
+            .to_string()
     }
 }
 

@@ -1,38 +1,5 @@
 use std::time::Duration;
 
-// ── Icon type ────────────────────────────────────────────────────────
-
-/// A sequence of animation frames. Single-element slices are static icons.
-pub type Frames = &'static [&'static str];
-
-/// Unifies static icons (`&str`) and animated spinners (`Frames`).
-pub enum Icon {
-    Static(&'static str),
-    Animated(Frames),
-}
-
-impl Icon {
-    /// Returns the frame to display at the given tick.
-    pub fn frame(&self, tick: usize) -> &'static str {
-        match self {
-            Self::Static(s) => s,
-            Self::Animated(frames) => frames[tick % frames.len()],
-        }
-    }
-}
-
-impl From<&'static str> for Icon {
-    fn from(s: &'static str) -> Self { Self::Static(s) }
-}
-
-impl From<Frames> for Icon {
-    fn from(frames: Frames) -> Self { Self::Animated(frames) }
-}
-
-// ── Spinner palette ──────────────────────────────────────────────────
-
-pub const SPINNER_DOTS: Frames = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
 // ── Shared icons ─────────────────────────────────────────────────────
 
 pub const PASSING: &str = "🟢";
@@ -48,7 +15,6 @@ pub const LINT_PASSED: &str = "🟢";
 pub const LINT_FAILED: &str = "🔴";
 pub const LINT_STALE: &str = "⚫";
 pub const LINT_NO_LOG: &str = " ";
-pub const LINT_RUNNING: Frames = SPINNER_DOTS;
 
 // ── Git origin icons ─────────────────────────────────────────────────
 

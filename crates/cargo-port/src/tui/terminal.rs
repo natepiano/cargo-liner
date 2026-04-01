@@ -156,7 +156,6 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
             terminal.clear()?;
         }
 
-        app.spinner_tick = app.spinner_tick.wrapping_add(1);
         app.ensure_visible_rows_cached();
         app.ensure_disk_cache();
         app.ensure_fit_widths_cached();

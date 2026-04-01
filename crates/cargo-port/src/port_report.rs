@@ -14,13 +14,14 @@ use chrono::DateTime;
 use chrono::FixedOffset;
 use chrono::Utc;
 
-use super::constants::Icon;
 use super::constants::LINT_FAILED;
 use super::constants::LINT_NO_LOG;
 use super::constants::LINT_PASSED;
 use super::constants::LINT_STALE;
 use super::constants::PORT_REPORT_LOG;
 use super::constants::STALE_TIMEOUT;
+use super::tui::Icon;
+use super::tui::LINT_SPINNER;
 
 /// Lint status derived from the last line of `port-report.log`.
 #[derive(Debug, Clone)]
@@ -36,7 +37,7 @@ impl LintStatus {
     /// Returns the `Icon` for this lint status.
     pub const fn icon(&self) -> Icon {
         match self {
-            Self::Running(_) => Icon::Animated(super::constants::LINT_RUNNING),
+            Self::Running(_) => Icon::Animated(LINT_SPINNER),
             Self::Passed(_) => Icon::Static(LINT_PASSED),
             Self::Failed(_) => Icon::Static(LINT_FAILED),
             Self::Stale => Icon::Static(LINT_STALE),

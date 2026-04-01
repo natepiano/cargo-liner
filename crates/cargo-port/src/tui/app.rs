@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
+use std::time::Duration;
+use std::time::Instant;
 
 use nucleo_matcher::Matcher;
 use nucleo_matcher::Utf32Str;
@@ -22,7 +24,6 @@ use super::detail::PendingExampleRun;
 use super::detail::ProjectCounts;
 use super::finder::FINDER_COLUMN_COUNT;
 use super::finder::FinderItem;
-use super::render;
 use super::render::PREFIX_GROUP_COLLAPSED;
 use super::render::PREFIX_MEMBER_INLINE;
 use super::render::PREFIX_MEMBER_NAMED;
@@ -85,24 +86,7 @@ pub(super) enum ConfirmAction {
     Clean(String),
 }
 
-/// Cached column widths for fit-to-content columns in the project list.
-pub(super) struct FitWidths {
-    pub name:       usize,
-    pub disk:       usize,
-    pub sync:       usize,
-    pub generation: u64,
-}
-
-impl Default for FitWidths {
-    fn default() -> Self {
-        Self {
-            name:       0,
-            disk:       "Disk".len(),
-            sync:       0,
-            generation: u64::MAX,
-        }
-    }
-}
+pub(super) use super::columns::ResolvedWidths;
 
 /// What a visible row represents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,7 +226,7 @@ pub(super) struct App {
     pub pending_ci_fetch:    Option<PendingCiFetch>,
     pub pending_clean:       Option<String>,
     pub confirm:             Option<ConfirmAction>,
-    pub spinner_tick:        usize,
+    pub animation_started:   Instant,
     pub ci_fetch_tx:         mpsc::Sender<CiFetchMsg>,
     pub ci_fetch_rx:         mpsc::Receiver<CiFetchMsg>,
     pub example_running:     Option<String>,
@@ -280,7 +264,7 @@ pub(super) struct App {
     pub cached_root_sorted:       Vec<u64>,
     pub cached_child_sorted:      HashMap<usize, Vec<u64>>,
     pub disk_cache_dirty:         bool,
-    pub cached_fit_widths:        FitWidths,
+    pub cached_fit_widths:        ResolvedWidths,
     pub(super) data_generation:   u64,
     pub(super) cached_detail:     Option<DetailCache>,
     pub(super) selection_changed: bool,
@@ -480,7 +464,7 @@ impl App {
             pending_ci_fetch: None,
             pending_clean: None,
             confirm: None,
-            spinner_tick: 0,
+            animation_started: Instant::now(),
             ci_fetch_tx,
             ci_fetch_rx,
             example_running: None,
@@ -513,7 +497,7 @@ impl App {
             cached_root_sorted: Vec::new(),
             cached_child_sorted: HashMap::new(),
             disk_cache_dirty: true,
-            cached_fit_widths: FitWidths::default(),
+            cached_fit_widths: ResolvedWidths::default(),
             data_generation: 0,
             cached_detail: None,
             selection_changed: false,
@@ -704,6 +688,70 @@ impl App {
         }
     }
 
+    fn handle_git_info(&mut self, path: String, info: GitInfo) {
+        let matching_node = self
+            .nodes
+            .iter()
+            .find(|node| node.project.path == path)
+            .or_else(|| {
+                self.nodes
+                    .iter()
+                    .flat_map(|node| node.worktrees.iter())
+                    .find(|worktree| worktree.project.path == path)
+            });
+        if let Some(node) = matching_node {
+            for member in Self::all_group_members(node) {
+                // Always overwrite: the correct branch comes from the
+                // workspace root, not from a stale propagation.
+                self.git_info.insert(member.path.clone(), info.clone());
+            }
+            for worktree in &node.worktrees {
+                self.git_info
+                    .entry(worktree.project.path.clone())
+                    .or_insert_with(|| info.clone());
+            }
+        }
+        self.git_info.insert(path, info);
+        self.finder_dirty = true;
+    }
+
+    fn handle_repo_meta(&mut self, path: String, stars: u64, description: Option<String>) {
+        self.network_status = NetworkStatus::Online;
+        if let Some(node) = self.nodes.iter().find(|node| node.project.path == path) {
+            for member in Self::all_group_members(node) {
+                self.stars.entry(member.path.clone()).or_insert(stars);
+            }
+        }
+        self.stars.insert(path.clone(), stars);
+        if let Some(desc) = description {
+            self.repo_descriptions.insert(path, desc);
+        }
+    }
+
+    fn handle_project_discovered(&mut self, project: RustProject) -> bool {
+        if self
+            .all_projects
+            .iter()
+            .any(|existing| existing.path == project.path)
+        {
+            return false;
+        }
+
+        let abs_path = PathBuf::from(&project.abs_path);
+        let git_tracking = if abs_path.join(".git").exists() {
+            GitTracking::Tracked
+        } else {
+            GitTracking::Untracked
+        };
+        let _ = self.watch_tx.send(WatchRequest {
+            project_path: project.path.clone(),
+            abs_path,
+            git_tracking,
+        });
+        self.all_projects.push(project);
+        true
+    }
+
     /// Handle a single `BackgroundMsg`. Returns `true` if the tree needs rebuilding.
     #[allow(clippy::too_many_lines, reason = "match arms are simple dispatches")]
     fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
@@ -720,32 +768,7 @@ impl App {
                 self.insert_ci_runs(path, runs);
             },
             BackgroundMsg::GitInfo { path, info } => {
-                // Propagate to workspace members and worktrees.
-                // Search both top-level nodes and worktree sub-nodes.
-                let matching_node =
-                    self.nodes
-                        .iter()
-                        .find(|n| n.project.path == path)
-                        .or_else(|| {
-                            self.nodes
-                                .iter()
-                                .flat_map(|n| n.worktrees.iter())
-                                .find(|wt| wt.project.path == path)
-                        });
-                if let Some(node) = matching_node {
-                    for member in Self::all_group_members(node) {
-                        // Always overwrite — the correct branch comes from
-                        // the workspace root, not from a stale propagation.
-                        self.git_info.insert(member.path.clone(), info.clone());
-                    }
-                    for wt in &node.worktrees {
-                        self.git_info
-                            .entry(wt.project.path.clone())
-                            .or_insert_with(|| info.clone());
-                    }
-                }
-                self.git_info.insert(path, info);
-                self.finder_dirty = true;
+                self.handle_git_info(path, info);
             },
             BackgroundMsg::CratesIoVersion {
                 path,
@@ -761,32 +784,10 @@ impl App {
                 stars,
                 description,
             } => {
-                self.network_status = NetworkStatus::Online;
-                // Propagate to workspace members
-                if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
-                    for member in Self::all_group_members(node) {
-                        self.stars.entry(member.path.clone()).or_insert(stars);
-                    }
-                }
-                self.stars.insert(path.clone(), stars);
-                if let Some(desc) = description {
-                    self.repo_descriptions.insert(path, desc);
-                }
+                self.handle_repo_meta(path, stars, description);
             },
             BackgroundMsg::ProjectDiscovered { project } => {
-                if !self.all_projects.iter().any(|p| p.path == project.path) {
-                    let abs_path = PathBuf::from(&project.abs_path);
-                    let git_tracking = if abs_path.join(".git").exists() {
-                        GitTracking::Tracked
-                    } else {
-                        GitTracking::Untracked
-                    };
-                    let _ = self.watch_tx.send(WatchRequest {
-                        project_path: project.path.clone(),
-                        abs_path,
-                        git_tracking,
-                    });
-                    self.all_projects.push(project);
+                if self.handle_project_discovered(project) {
                     return true;
                 }
             },
@@ -944,21 +945,22 @@ impl App {
     /// Recompute fit-to-content column widths across all projects.
     /// Called alongside other cache refreshes in the render loop.
     pub fn ensure_fit_widths_cached(&mut self) {
+        use super::columns::COL_DISK;
+        use super::columns::COL_SYNC;
+
         if self.cached_fit_widths.generation == self.data_generation {
             return;
         }
-        let dw = render::display_width;
-        let mut name_width = 0usize;
-        let mut disk_width = dw("Disk");
-        let mut sync_width = 0usize;
+        let dw = super::columns::display_width;
+        let mut widths = ResolvedWidths::default();
 
         for node in &self.nodes {
-            name_width = name_width.max(Self::fit_name_for_node(
-                node,
-                self.live_worktree_count(node),
-            ));
-            disk_width = disk_width.max(dw(&self.formatted_disk_for_node(node)));
-            sync_width = sync_width.max(dw(&self.git_sync(&node.project)));
+            Self::observe_name_width(
+                &mut widths,
+                Self::fit_name_for_node(node, self.live_worktree_count(node)),
+            );
+            widths.observe(COL_DISK, dw(&self.formatted_disk_for_node(node)));
+            widths.observe(COL_SYNC, dw(&self.git_sync(&node.project)));
 
             for group in &node.groups {
                 for member in &group.members {
@@ -967,13 +969,13 @@ impl App {
                     } else {
                         PREFIX_MEMBER_NAMED
                     };
-                    name_width = name_width.max(dw(prefix) + dw(&member.display_name()));
-                    disk_width = disk_width.max(dw(&self.formatted_disk(member)));
-                    sync_width = sync_width.max(dw(&self.git_sync(member)));
+                    Self::observe_name_width(&mut widths, dw(prefix) + dw(&member.display_name()));
+                    widths.observe(COL_DISK, dw(&self.formatted_disk(member)));
+                    widths.observe(COL_SYNC, dw(&self.git_sync(member)));
                 }
                 if !group.name.is_empty() {
                     let label = format!("{} ({})", group.name, group.members.len());
-                    name_width = name_width.max(dw(PREFIX_GROUP_COLLAPSED) + dw(&label));
+                    Self::observe_name_width(&mut widths, dw(PREFIX_GROUP_COLLAPSED) + dw(&label));
                 }
             }
             for wt in &node.worktrees {
@@ -987,9 +989,9 @@ impl App {
                 } else {
                     PREFIX_WT_FLAT
                 };
-                name_width = name_width.max(dw(wt_prefix) + dw(wt_name));
-                disk_width = disk_width.max(dw(&self.formatted_disk(&wt.project)));
-                sync_width = sync_width.max(dw(&self.git_sync(&wt.project)));
+                Self::observe_name_width(&mut widths, dw(wt_prefix) + dw(wt_name));
+                widths.observe(COL_DISK, dw(&self.formatted_disk(&wt.project)));
+                widths.observe(COL_SYNC, dw(&self.git_sync(&wt.project)));
                 for group in &wt.groups {
                     for member in &group.members {
                         let prefix = if group.name.is_empty() {
@@ -997,24 +999,26 @@ impl App {
                         } else {
                             PREFIX_WT_MEMBER_NAMED
                         };
-                        name_width = name_width.max(dw(prefix) + dw(&member.display_name()));
-                        disk_width = disk_width.max(dw(&self.formatted_disk(member)));
-                        sync_width = sync_width.max(dw(&self.git_sync(member)));
+                        Self::observe_name_width(
+                            &mut widths,
+                            dw(prefix) + dw(&member.display_name()),
+                        );
+                        widths.observe(COL_DISK, dw(&self.formatted_disk(member)));
+                        widths.observe(COL_SYNC, dw(&self.git_sync(member)));
                     }
                     if !group.name.is_empty() {
                         let label = format!("{} ({})", group.name, group.members.len());
-                        name_width = name_width.max(dw(PREFIX_WT_GROUP_COLLAPSED) + dw(&label));
+                        Self::observe_name_width(
+                            &mut widths,
+                            dw(PREFIX_WT_GROUP_COLLAPSED) + dw(&label),
+                        );
                     }
                 }
             }
         }
 
-        self.cached_fit_widths = FitWidths {
-            name:       name_width,
-            disk:       disk_width,
-            sync:       sync_width,
-            generation: self.data_generation,
-        };
+        widths.generation = self.data_generation;
+        self.cached_fit_widths = widths;
     }
 
     /// Iterate all group members in a node, including those nested under worktree entries.
@@ -1027,8 +1031,18 @@ impl App {
         direct.chain(wt)
     }
 
+    fn observe_name_width(widths: &mut ResolvedWidths, content_width: usize) {
+        use super::columns::COL_NAME;
+
+        widths.observe(COL_NAME, Self::name_width_with_gutter(content_width));
+    }
+
+    const fn name_width_with_gutter(content_width: usize) -> usize {
+        content_width.saturating_add(1)
+    }
+
     fn fit_name_for_node(node: &ProjectNode, live_worktrees: usize) -> usize {
-        let dw = render::display_width;
+        let dw = super::columns::display_width;
         let mut name = node.project.display_name();
         if live_worktrees > 0 {
             name = format!("{name} {WORKTREE}:{live_worktrees}");
@@ -1701,11 +1715,12 @@ impl App {
         self.ci_state.get(&project.path)
     }
 
-    /// Lint icon frame for the current tick, or a blank space if lint is
+    pub fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
+
+    /// Lint icon frame for the current animation state, or a blank space if lint is
     /// disabled or no log exists.
     pub fn lint_icon(&self, project: &RustProject) -> &'static str {
         use crate::constants::LINT_NO_LOG;
-        use crate::constants::SPINNER_DOTS;
 
         if !self.lint_enabled {
             return LINT_NO_LOG;
@@ -1713,10 +1728,7 @@ impl App {
         let Some(status) = self.lint_status.get(&project.path) else {
             return LINT_NO_LOG;
         };
-        match status {
-            LintStatus::Running(_) => SPINNER_DOTS[self.spinner_tick % SPINNER_DOTS.len()],
-            _ => status.icon().frame(0),
-        }
+        status.icon().frame_at(self.animation_elapsed())
     }
 
     pub fn git_icon(&self, project: &RustProject) -> &'static str {
@@ -1975,5 +1987,11 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn name_width_with_gutter_reserves_space_before_lint() {
+        assert_eq!(App::name_width_with_gutter(0), 1);
+        assert_eq!(App::name_width_with_gutter(42), 43);
     }
 }
