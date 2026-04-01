@@ -226,6 +226,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc | KeyCode::Char('s') => {
             app.show_settings = false;
+            app.close_overlay();
         },
         KeyCode::Up => {
             app.settings_pane.up();

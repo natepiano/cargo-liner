@@ -105,13 +105,24 @@ impl Pane {
     }
 }
 
-#[derive(Default, PartialEq, Eq, Clone, Copy)]
-pub(super) enum FocusTarget {
+#[derive(Default, PartialEq, Eq, Clone, Copy, Debug, Hash)]
+pub(super) enum PaneId {
     #[default]
     ProjectList,
-    DetailFields,
+    Package,
+    Git,
+    Targets,
     CiRuns,
     ScanLog,
+    Search,
+    Settings,
+    Finder,
+}
+
+impl PaneId {
+    pub const fn is_overlay(self) -> bool {
+        matches!(self, Self::Search | Self::Settings | Self::Finder)
+    }
 }
 
 /// Cached layout rectangles from the last render frame, used for mouse

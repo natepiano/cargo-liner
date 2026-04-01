@@ -28,7 +28,7 @@ use super::constants::FINDER_POPUP_HEIGHT;
 use super::constants::MAX_FINDER_RESULTS;
 use super::detail::RunTargetKind;
 use super::render;
-use super::types::FocusTarget;
+use super::types::PaneId;
 use crate::project::GitInfo;
 use crate::project::ProjectType;
 use crate::project::RustProject;
@@ -303,6 +303,7 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
             app.finder_query.clear();
             app.finder_results.clear();
             app.finder_pane.home();
+            app.close_overlay();
         },
         KeyCode::Enter => {
             confirm_finder(app);
@@ -324,6 +325,7 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
                 app.show_finder = false;
                 app.finder_results.clear();
                 app.finder_pane.home();
+                app.close_overlay();
             } else {
                 app.finder_query.pop();
                 refresh_finder_results(app);
@@ -355,6 +357,7 @@ fn confirm_finder(app: &mut App) {
     app.finder_query.clear();
     app.finder_results.clear();
     app.finder_pane.home();
+    app.close_overlay();
 
     // Navigate to the project
     app.select_project_in_tree(&item.project_path);
@@ -374,10 +377,8 @@ fn confirm_finder(app: &mut App) {
 fn navigate_to_target(app: &mut App, item: &FinderItem) {
     // Focus the detail panel targets column
     let (_, targets_col) = super::detail::detail_layout_pub(app);
-    if let Some(col) = targets_col {
-        app.focus = FocusTarget::DetailFields;
-        app.detail_column.set(col);
-        app.package_pane.home();
+    if targets_col.is_some() {
+        app.focus_pane(PaneId::Targets);
 
         // Build target list and find the matching entry index
         if let Some(project) = app.selected_project() {

@@ -7,9 +7,10 @@
 //! detected automatically; removed directories trigger a zero-byte update so the
 //! app can mark them as deleted.
 //!
-//! On macOS (`FSEvents`) this is a single kernel subscription regardless of
-//! tree size. Linux / Windows may want a per-project approach in the
-//! future to avoid inotify watch limits.
+//! On macOS (`FSEvents`) this is a small fixed set of kernel subscriptions
+//! regardless of tree size: one for the scan roots plus one for the shared
+//! cache-rooted lint status directory. Linux / Windows may want a different
+//! approach in the future to avoid inotify watch limits.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -27,7 +28,6 @@ use super::constants::DEBOUNCE_DURATION;
 use super::constants::MAX_WAIT;
 use super::constants::NEW_PROJECT_DEBOUNCE;
 use super::constants::POLL_INTERVAL;
-use super::constants::PORT_REPORT_LOG;
 use super::http::HttpClient;
 use super::port_report;
 use super::project;
@@ -77,9 +77,10 @@ pub fn spawn_watcher(
 
 /// Per-project tracking state.
 struct ProjectEntry {
-    project_path: String,
-    abs_path:     PathBuf,
-    git_tracking: GitTracking,
+    project_path:         String,
+    abs_path:             PathBuf,
+    git_tracking:         GitTracking,
+    port_report_dir_path: PathBuf,
 }
 
 fn watcher_loop(
@@ -104,6 +105,9 @@ fn watcher_loop(
             let _ = watcher.watch(dir, RecursiveMode::Recursive);
         }
     }
+    let lint_root = port_report::cache_root();
+    let _ = std::fs::create_dir_all(&lint_root);
+    let _ = watcher.watch(&lint_root, RecursiveMode::Recursive);
 
     // `abs_path` → project tracking state
     let mut projects: HashMap<PathBuf, ProjectEntry> = HashMap::new();
@@ -127,9 +131,10 @@ fn watcher_loop(
                     projects.insert(
                         req.abs_path.clone(),
                         ProjectEntry {
-                            project_path: req.project_path,
-                            abs_path:     req.abs_path,
-                            git_tracking: req.git_tracking,
+                            project_path:         req.project_path,
+                            abs_path:             req.abs_path.clone(),
+                            git_tracking:         req.git_tracking,
+                            port_report_dir_path: port_report::project_dir(&req.abs_path),
                         },
                     );
                 },
@@ -188,21 +193,25 @@ fn handle_event(
 ) {
     let now = Instant::now();
 
+    if let Some(entry) = ctx
+        .projects
+        .values()
+        .find(|entry| event_path.starts_with(&entry.port_report_dir_path))
+    {
+        let status = port_report::read_status(&entry.abs_path);
+        let _ = bg_tx.send(BackgroundMsg::LintStatus {
+            path: entry.project_path.clone(),
+            status,
+        });
+        return;
+    }
+
     // Try to match the event to a known project.
     if let Some((_, entry)) = ctx
         .projects
         .iter()
         .find(|(root, _)| event_path.starts_with(root))
     {
-        // Lint status: respond immediately to port-report.log changes.
-        if event_path.file_name().is_some_and(|f| f == PORT_REPORT_LOG) {
-            let status = port_report::read_status(&entry.abs_path);
-            let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                path: entry.project_path.clone(),
-                status,
-            });
-        }
-
         let debounce_deadline = now + DEBOUNCE_DURATION;
         let max_deadline = pending_disk
             .get(&entry.project_path)
@@ -542,9 +551,10 @@ mod tests {
         (
             abs_path.to_path_buf(),
             ProjectEntry {
-                project_path: project_path.to_string(),
-                abs_path:     abs_path.to_path_buf(),
-                git_tracking: GitTracking::Untracked,
+                project_path:         project_path.to_string(),
+                abs_path:             abs_path.to_path_buf(),
+                git_tracking:         GitTracking::Untracked,
+                port_report_dir_path: port_report::project_dir(abs_path),
             },
         )
     }
@@ -576,6 +586,100 @@ mod tests {
         );
 
         assert!(pending_disk.contains_key("~/rust/bevy"));
+        assert!(pending_new.is_empty());
+    }
+
+    #[test]
+    fn cache_port_report_event_updates_lint_without_recreating_project_activity() {
+        let project_root = tempfile::tempdir().expect("tempdir");
+        let project_path = "~/rust/demo";
+        let mut projects = HashMap::new();
+        let (key, entry) = make_project_entry(project_path, project_root.path());
+        let log_path = port_report::log_path(project_root.path());
+        projects.insert(key, entry);
+
+        std::fs::create_dir_all(log_path.parent().expect("log file has parent"))
+            .expect("create cache port-report dir");
+        std::fs::write(&log_path, "2026-03-30T14:22:18-05:00\tpassed\n").expect("write log");
+
+        let scan_root = project_root.path().to_path_buf();
+        let project_parents = HashSet::new();
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let mut pending_disk = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        handle_event(&log_path, &ctx, &bg_tx, &mut pending_disk, &mut pending_new);
+
+        let message = bg_rx.try_recv().expect("lint status message");
+        assert!(matches!(message, BackgroundMsg::LintStatus { .. }));
+        let BackgroundMsg::LintStatus { path, status } = message else {
+            return;
+        };
+        assert_eq!(path, project_path);
+        assert!(matches!(
+            status,
+            super::super::port_report::LintStatus::Passed(_)
+        ));
+        assert!(pending_disk.is_empty());
+        assert!(pending_new.is_empty());
+    }
+
+    #[test]
+    fn cache_port_report_child_event_updates_lint_without_recreating_project_activity() {
+        let project_root = tempfile::tempdir().expect("tempdir");
+        let project_path = "~/rust/demo";
+        let mut projects = HashMap::new();
+        let (key, entry) = make_project_entry(project_path, project_root.path());
+        let log_path = port_report::log_path(project_root.path());
+        let child_path = entry
+            .port_report_dir_path
+            .join("port-report/clippy-latest.log");
+        projects.insert(key, entry);
+
+        std::fs::create_dir_all(child_path.parent().expect("child file has parent"))
+            .expect("create cache port-report child dir");
+        std::fs::write(&log_path, "2026-03-30T14:22:18-05:00\tfailed\n").expect("write log");
+        std::fs::write(&child_path, "warning: example\n").expect("write child file");
+
+        let scan_root = project_root.path().to_path_buf();
+        let project_parents = HashSet::new();
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let mut pending_disk = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        handle_event(
+            &child_path,
+            &ctx,
+            &bg_tx,
+            &mut pending_disk,
+            &mut pending_new,
+        );
+
+        let message = bg_rx.try_recv().expect("lint status message");
+        assert!(matches!(message, BackgroundMsg::LintStatus { .. }));
+        let BackgroundMsg::LintStatus { path, status } = message else {
+            return;
+        };
+        assert_eq!(path, project_path);
+        assert!(matches!(
+            status,
+            super::super::port_report::LintStatus::Failed(_)
+        ));
+        assert!(pending_disk.is_empty());
         assert!(pending_new.is_empty());
     }
 
@@ -753,9 +857,10 @@ mod tests {
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path: "~/my_project".to_string(),
-                abs_path:     project_dir,
-                git_tracking: GitTracking::Tracked,
+                project_path:         "~/my_project".to_string(),
+                abs_path:             project_dir.clone(),
+                git_tracking:         GitTracking::Tracked,
+                port_report_dir_path: port_report::project_dir(&project_dir),
             },
         );
 
@@ -792,9 +897,10 @@ mod tests {
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path: "~/no_git".to_string(),
-                abs_path:     project_dir,
-                git_tracking: GitTracking::Untracked,
+                project_path:         "~/no_git".to_string(),
+                abs_path:             project_dir.clone(),
+                git_tracking:         GitTracking::Untracked,
+                port_report_dir_path: port_report::project_dir(&project_dir),
             },
         );
 

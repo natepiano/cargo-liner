@@ -39,8 +39,8 @@ use super::constants::OFFLINE_PULSE_OFFSET;
 use super::constants::OFFLINE_PULSE_RED;
 use super::constants::SEARCH_BAR_HEIGHT;
 use super::shortcuts::Shortcut;
-use super::types::FocusTarget;
 use super::types::LayoutCache;
+use super::types::PaneId;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::constants::WORKTREE;
@@ -319,7 +319,7 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_empty_ci_panel(frame: &mut Frame, app: &App, project: Option<&RustProject>, area: Rect) {
-    let ci_focused = app.focus == FocusTarget::CiRuns;
+    let ci_focused = app.is_focused(PaneId::CiRuns);
     let border_style = if ci_focused {
         Style::default().fg(Color::Cyan)
     } else {
@@ -401,13 +401,14 @@ fn render_offline_overlay(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let search_style = if app.searching {
+    let search_focused = app.is_focused(PaneId::Search);
+    let search_style = if search_focused {
         Style::default().fg(Color::White)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    let search_text = if app.searching {
+    let search_text = if search_focused {
         if app.search_query.is_empty() {
             "…".to_string()
         } else {
@@ -424,7 +425,7 @@ pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(if app.searching {
+            .border_style(if search_focused {
                 Style::default().fg(Color::Cyan)
             } else {
                 Style::default().fg(Color::DarkGray)
@@ -461,19 +462,26 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
             Block::default()
                 .borders(Borders::ALL)
                 .title(header_line)
+                .border_style(if app.is_focused(PaneId::ProjectList) {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default()
+                })
                 .title_style(
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ),
         )
-        .highlight_style(if app.focus == FocusTarget::ProjectList {
+        .highlight_style(if app.is_focused(PaneId::ProjectList) {
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Cyan)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         });
 
     frame.render_stateful_widget(project_list, area, &mut app.list_state);
@@ -491,7 +499,7 @@ pub(super) fn render_scan_log(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
-    let scan_focused = app.focus == FocusTarget::ScanLog;
+    let scan_focused = app.is_focused(PaneId::ScanLog);
     let scan_title = if scan_focused {
         " Scanning (focused) "
     } else {
@@ -517,12 +525,14 @@ pub(super) fn render_scan_log(frame: &mut Frame, app: &mut App, area: Rect) {
                     Style::default().fg(Color::DarkGray)
                 }),
         )
-        .highlight_style(
+        .highlight_style(if scan_focused {
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Cyan)
+        });
 
     frame.render_stateful_widget(scan_log, area, &mut app.scan_log_state);
 }

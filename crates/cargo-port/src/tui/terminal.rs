@@ -509,23 +509,6 @@ fn save_last_selected(project_path: &str) {
     }
 }
 
-/// Update the last selected path when the user navigates.
-/// If the scan is still running and the selected project doesn't have details yet,
-/// spawn a priority fetch to load its data immediately.
-pub(super) fn track_selection(app: &mut App) {
-    if let Some(project) = app.selected_project() {
-        let path = project.path.clone();
-        if app.last_selected_path.as_ref() != Some(&path) {
-            app.data_generation += 1;
-            app.detail_generation += 1;
-            app.last_selected_path = Some(path);
-            // Disk write deferred to save_selection_on_idle / quit
-            app.selection_changed = true;
-            app.maybe_priority_fetch();
-        }
-    }
-}
-
 /// Spawn a background thread to fetch details for a single project ahead of the main scan.
 pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: Option<&String>) {
     let tx = app.bg_tx.clone();

@@ -7,12 +7,11 @@ use crossterm::event::MouseEventKind;
 use ratatui::layout::Position;
 
 use super::app::App;
-use super::app::CiState;
 use super::app::ConfirmAction;
 use super::detail;
 use super::finder;
 use super::settings;
-use super::types::FocusTarget;
+use super::types::PaneId;
 use crate::project::ProjectLanguage;
 
 pub(super) fn handle_event(app: &mut App, event: &Event) {
@@ -65,16 +64,18 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
                 handle_search_key(app, key.code);
             } else if !handle_global_key(app, key.code) {
                 // Global key not consumed — fall through to context handler
-                match app.focus {
-                    FocusTarget::DetailFields => detail::handle_detail_key(app, key.code),
-                    FocusTarget::CiRuns => detail::handle_ci_runs_key(app, key.code),
+                match app.focused_pane {
+                    PaneId::Package | PaneId::Git | PaneId::Targets => {
+                        detail::handle_detail_key(app, key.code);
+                    },
+                    PaneId::CiRuns => detail::handle_ci_runs_key(app, key.code),
                     _ => handle_normal_key(app, key.code),
                 }
             }
         },
         Event::Mouse(mouse) => match mouse.kind {
             MouseEventKind::ScrollUp => {
-                if app.focus == FocusTarget::ScanLog {
+                if app.focused_pane == PaneId::ScanLog {
                     if app.invert_scroll.is_inverted() {
                         app.scan_log_scroll_down();
                     } else {
@@ -87,7 +88,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
                 }
             },
             MouseEventKind::ScrollDown => {
-                if app.focus == FocusTarget::ScanLog {
+                if app.focused_pane == PaneId::ScanLog {
                     if app.invert_scroll.is_inverted() {
                         app.scan_log_scroll_up();
                     } else {
@@ -107,10 +108,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
         _ => {},
     }
 
-    // Track project selection changes for session persistence
-    if app.focus == FocusTarget::ProjectList {
-        super::terminal::track_selection(app);
-    }
+    app.sync_selected_project();
 
     super::perf::log_duration(
         "input_event",
@@ -118,7 +116,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
         &format!(
             "kind={} focus={} scan_complete={} selected={}",
             event_label(event),
-            focus_label(app.focus),
+            pane_label(app.focused_pane),
             app.scan_complete,
             app.selected_project().map_or("-", |p| p.path.as_str())
         ),
@@ -126,12 +124,17 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
     );
 }
 
-const fn focus_label(focus: FocusTarget) -> &'static str {
-    match focus {
-        FocusTarget::ProjectList => "project_list",
-        FocusTarget::DetailFields => "detail_fields",
-        FocusTarget::CiRuns => "ci_runs",
-        FocusTarget::ScanLog => "scan_log",
+const fn pane_label(pane: PaneId) -> &'static str {
+    match pane {
+        PaneId::ProjectList => "project_list",
+        PaneId::Package => "package",
+        PaneId::Git => "git",
+        PaneId::Targets => "targets",
+        PaneId::CiRuns => "ci_runs",
+        PaneId::ScanLog => "scan_log",
+        PaneId::Search => "search",
+        PaneId::Settings => "settings",
+        PaneId::Finder => "finder",
     }
 }
 
@@ -162,12 +165,15 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    let cache = &app.layout_cache;
+    let project_list = app.layout_cache.project_list;
+    let scan_log = app.layout_cache.scan_log;
+    let detail_columns = app.layout_cache.detail_columns.clone();
+    let detail_targets_col = app.layout_cache.detail_targets_col;
 
     // Project list
-    if cache.project_list.contains(pos) {
-        app.focus = FocusTarget::ProjectList;
-        let inner_y = row.saturating_sub(cache.project_list.y + 1);
+    if project_list.contains(pos) {
+        app.focus_pane(PaneId::ProjectList);
+        let inner_y = row.saturating_sub(project_list.y + 1);
         let scroll_offset = app.list_state.offset();
         let clicked_index = scroll_offset + inner_y as usize;
         if clicked_index < app.row_count() {
@@ -177,10 +183,10 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     }
 
     // Scan log
-    if let Some(scan_rect) = cache.scan_log
+    if let Some(scan_rect) = scan_log
         && scan_rect.contains(pos)
     {
-        app.focus = FocusTarget::ScanLog;
+        app.focus_pane(PaneId::ScanLog);
         let inner_y = row.saturating_sub(scan_rect.y + 1);
         let scroll_offset = app.scan_log_state.offset();
         let clicked_index = scroll_offset + inner_y as usize;
@@ -191,18 +197,21 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     }
 
     // Detail columns (project, git, targets)
-    let detail_columns = cache.detail_columns.clone();
-    let detail_targets_col = cache.detail_targets_col;
     for (col_idx, col_rect) in detail_columns.iter().enumerate() {
         if col_rect.contains(pos) {
-            app.focus = FocusTarget::DetailFields;
-            app.detail_column.set(col_idx);
-            let pane = if Some(col_idx) == detail_targets_col {
-                &mut app.targets_pane
+            let pane_id = if Some(col_idx) == detail_targets_col {
+                PaneId::Targets
             } else if col_idx == 0 {
-                &mut app.package_pane
+                PaneId::Package
             } else {
-                &mut app.git_pane
+                PaneId::Git
+            };
+            app.focus_pane(pane_id);
+            let pane = match pane_id {
+                PaneId::Targets => &mut app.targets_pane,
+                PaneId::Package => &mut app.package_pane,
+                PaneId::Git => &mut app.git_pane,
+                _ => unreachable!(),
             };
             if let Some(clicked_row) = pane.clicked_row(pos) {
                 pane.set_pos(clicked_row);
@@ -213,7 +222,7 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
 
     // CI panel
     if let Some(clicked_row) = app.ci_pane.clicked_row(pos) {
-        app.focus = FocusTarget::CiRuns;
+        app.focus_pane(PaneId::CiRuns);
         app.ci_pane.set_pos(clicked_row);
     }
 }
@@ -260,6 +269,7 @@ fn open_finder(app: &mut App) {
         app.finder_col_widths = col_widths;
         app.finder_dirty = false;
     }
+    app.open_overlay(PaneId::Finder);
     app.show_finder = true;
     app.finder_query.clear();
     app.finder_results.clear();
@@ -277,10 +287,13 @@ fn handle_global_key(app: &mut App, key: KeyCode) -> bool {
             app.should_restart = true;
         },
         KeyCode::Char('/') => open_finder(app),
-        KeyCode::Char('s') => app.show_settings = true,
-        KeyCode::Tab => advance_focus(app),
-        KeyCode::BackTab => reverse_focus(app),
-        KeyCode::Esc => app.focus = FocusTarget::ProjectList,
+        KeyCode::Char('s') => {
+            app.open_overlay(PaneId::Settings);
+            app.show_settings = true;
+        },
+        KeyCode::Tab => app.focus_next_pane(),
+        KeyCode::BackTab => app.focus_previous_pane(),
+        KeyCode::Esc => app.focus_pane(PaneId::ProjectList),
         _ => return false,
     }
     true
@@ -289,28 +302,28 @@ fn handle_global_key(app: &mut App, key: KeyCode) -> bool {
 fn handle_normal_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Up => {
-            if app.focus == FocusTarget::ScanLog {
+            if app.focused_pane == PaneId::ScanLog {
                 app.scan_log_scroll_up();
             } else {
                 app.move_up();
             }
         },
         KeyCode::Down => {
-            if app.focus == FocusTarget::ScanLog {
+            if app.focused_pane == PaneId::ScanLog {
                 app.scan_log_scroll_down();
             } else {
                 app.move_down();
             }
         },
         KeyCode::Home => {
-            if app.focus == FocusTarget::ScanLog {
+            if app.focused_pane == PaneId::ScanLog {
                 app.scan_log_to_top();
             } else {
                 app.move_to_top();
             }
         },
         KeyCode::End => {
-            if app.focus == FocusTarget::ScanLog {
+            if app.focused_pane == PaneId::ScanLog {
                 app.scan_log_to_bottom();
             } else {
                 app.move_to_bottom();
@@ -335,8 +348,6 @@ fn handle_search_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc => app.cancel_search(),
         KeyCode::Enter => app.confirm_search(),
-        KeyCode::Tab => advance_focus(app),
-        KeyCode::BackTab => reverse_focus(app),
         KeyCode::Up => app.move_up(),
         KeyCode::Down => app.move_down(),
         KeyCode::Backspace => {
@@ -349,103 +360,5 @@ fn handle_search_key(app: &mut App, key: KeyCode) {
             app.update_search(&query);
         },
         _ => {},
-    }
-}
-
-pub(super) fn advance_focus(app: &mut App) {
-    let has_ci = app.selected_project().is_some_and(|p| {
-        app.ci_state
-            .get(&p.path)
-            .is_some_and(|s: &CiState| !s.runs().is_empty())
-            || app.git_info.get(&p.path).is_some_and(|g| g.url.is_some())
-    });
-
-    let max_detail_col = detail::detail_max_column(app);
-
-    app.focus = match app.focus {
-        FocusTarget::ProjectList => {
-            app.detail_column.jump_home();
-            FocusTarget::DetailFields
-        },
-        FocusTarget::DetailFields => {
-            if app.detail_column.pos() < max_detail_col {
-                app.detail_column.down(max_detail_col + 1);
-                FocusTarget::DetailFields
-            } else if has_ci {
-                FocusTarget::CiRuns
-            } else if app.scan_complete {
-                FocusTarget::ProjectList
-            } else {
-                FocusTarget::ScanLog
-            }
-        },
-        FocusTarget::CiRuns => {
-            if app.scan_complete {
-                FocusTarget::ProjectList
-            } else {
-                FocusTarget::ScanLog
-            }
-        },
-        FocusTarget::ScanLog => FocusTarget::ProjectList,
-    };
-
-    if app.focus == FocusTarget::ScanLog
-        && !app.scan_log.is_empty()
-        && app.scan_log_state.selected().is_none()
-    {
-        app.scan_log_state
-            .select(Some(app.scan_log.len().saturating_sub(1)));
-    }
-}
-
-pub(super) fn reverse_focus(app: &mut App) {
-    let has_ci = app.selected_project().is_some_and(|p| {
-        app.ci_state
-            .get(&p.path)
-            .is_some_and(|s: &CiState| !s.runs().is_empty())
-            || app.git_info.get(&p.path).is_some_and(|g| g.url.is_some())
-    });
-
-    let max_detail_col = detail::detail_max_column(app);
-
-    app.focus = match app.focus {
-        FocusTarget::ProjectList => {
-            if !app.scan_complete {
-                FocusTarget::ScanLog
-            } else if has_ci {
-                FocusTarget::CiRuns
-            } else {
-                app.detail_column.set(max_detail_col);
-                FocusTarget::DetailFields
-            }
-        },
-        FocusTarget::DetailFields => {
-            if app.detail_column.pos() > 0 {
-                app.detail_column.up();
-                FocusTarget::DetailFields
-            } else {
-                FocusTarget::ProjectList
-            }
-        },
-        FocusTarget::CiRuns => {
-            app.detail_column.set(max_detail_col);
-            FocusTarget::DetailFields
-        },
-        FocusTarget::ScanLog => {
-            if has_ci {
-                FocusTarget::CiRuns
-            } else {
-                app.detail_column.set(max_detail_col);
-                FocusTarget::DetailFields
-            }
-        },
-    };
-
-    if app.focus == FocusTarget::ScanLog
-        && !app.scan_log.is_empty()
-        && app.scan_log_state.selected().is_none()
-    {
-        app.scan_log_state
-            .select(Some(app.scan_log.len().saturating_sub(1)));
     }
 }
