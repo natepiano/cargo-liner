@@ -15,11 +15,11 @@ use chrono::DateTime;
 use chrono::FixedOffset;
 use chrono::Utc;
 
+use super::constants::APP_NAME;
 use super::constants::LINT_FAILED;
 use super::constants::LINT_NO_LOG;
 use super::constants::LINT_PASSED;
 use super::constants::LINT_STALE;
-use super::constants::APP_NAME;
 use super::constants::PORT_REPORT_LOG;
 use super::constants::STALE_TIMEOUT;
 use super::tui::Icon;
@@ -91,7 +91,9 @@ pub fn project_dir(project_root: &Path) -> PathBuf { cache_root().join(project_k
 pub fn log_path(project_root: &Path) -> PathBuf { project_dir(project_root).join(PORT_REPORT_LOG) }
 
 /// Read the last line of the project's lint status log and parse it.
-pub fn read_status(project_root: &Path) -> LintStatus { read_status_from_path(&log_path(project_root)) }
+pub fn read_status(project_root: &Path) -> LintStatus {
+    read_status_from_path(&log_path(project_root))
+}
 
 fn read_status_from_path(path: &Path) -> LintStatus {
     let Ok(mut file) = File::open(path) else {

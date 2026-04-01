@@ -623,7 +623,10 @@ mod tests {
             return;
         };
         assert_eq!(path, project_path);
-        assert!(matches!(status, super::super::port_report::LintStatus::Passed(_)));
+        assert!(matches!(
+            status,
+            super::super::port_report::LintStatus::Passed(_)
+        ));
         assert!(pending_disk.is_empty());
         assert!(pending_new.is_empty());
     }
@@ -635,7 +638,9 @@ mod tests {
         let mut projects = HashMap::new();
         let (key, entry) = make_project_entry(project_path, project_root.path());
         let log_path = port_report::log_path(project_root.path());
-        let child_path = entry.port_report_dir_path.join("port-report/clippy-latest.log");
+        let child_path = entry
+            .port_report_dir_path
+            .join("port-report/clippy-latest.log");
         projects.insert(key, entry);
 
         std::fs::create_dir_all(child_path.parent().expect("child file has parent"))
@@ -670,7 +675,10 @@ mod tests {
             return;
         };
         assert_eq!(path, project_path);
-        assert!(matches!(status, super::super::port_report::LintStatus::Failed(_)));
+        assert!(matches!(
+            status,
+            super::super::port_report::LintStatus::Failed(_)
+        ));
         assert!(pending_disk.is_empty());
         assert!(pending_new.is_empty());
     }

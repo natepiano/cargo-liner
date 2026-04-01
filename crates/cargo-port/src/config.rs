@@ -120,11 +120,11 @@ pub struct TuiConfig {
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            inline_dirs: vec!["crates".to_string()],
-            ci_run_count: 5,
-            include_dirs: Vec::new(),
-            include_non_rust: NonRustInclusion::Exclude,
-            editor: "zed".to_string(),
+            inline_dirs:       vec!["crates".to_string()],
+            ci_run_count:      5,
+            include_dirs:      Vec::new(),
+            include_non_rust:  NonRustInclusion::Exclude,
+            editor:            "zed".to_string(),
             status_flash_secs: 3.0,
         }
     }
