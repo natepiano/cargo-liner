@@ -22,7 +22,6 @@ use super::detail::PendingExampleRun;
 use super::detail::ProjectCounts;
 use super::finder::FINDER_COLUMN_COUNT;
 use super::finder::FinderItem;
-use super::render;
 use super::render::PREFIX_GROUP_COLLAPSED;
 use super::render::PREFIX_MEMBER_INLINE;
 use super::render::PREFIX_MEMBER_NAMED;
@@ -85,24 +84,7 @@ pub(super) enum ConfirmAction {
     Clean(String),
 }
 
-/// Cached column widths for fit-to-content columns in the project list.
-pub(super) struct FitWidths {
-    pub name:       usize,
-    pub disk:       usize,
-    pub sync:       usize,
-    pub generation: u64,
-}
-
-impl Default for FitWidths {
-    fn default() -> Self {
-        Self {
-            name:       0,
-            disk:       "Disk".len(),
-            sync:       0,
-            generation: u64::MAX,
-        }
-    }
-}
+pub(super) use super::columns::ResolvedWidths;
 
 /// What a visible row represents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -280,7 +262,7 @@ pub(super) struct App {
     pub cached_root_sorted:       Vec<u64>,
     pub cached_child_sorted:      HashMap<usize, Vec<u64>>,
     pub disk_cache_dirty:         bool,
-    pub cached_fit_widths:        FitWidths,
+    pub cached_fit_widths:        ResolvedWidths,
     pub(super) data_generation:   u64,
     pub(super) cached_detail:     Option<DetailCache>,
     pub(super) selection_changed: bool,
@@ -513,7 +495,7 @@ impl App {
             cached_root_sorted: Vec::new(),
             cached_child_sorted: HashMap::new(),
             disk_cache_dirty: true,
-            cached_fit_widths: FitWidths::default(),
+            cached_fit_widths: ResolvedWidths::default(),
             data_generation: 0,
             cached_detail: None,
             selection_changed: false,
@@ -946,21 +928,22 @@ impl App {
     /// Recompute fit-to-content column widths across all projects.
     /// Called alongside other cache refreshes in the render loop.
     pub fn ensure_fit_widths_cached(&mut self) {
+        use super::columns::COL_DISK;
+        use super::columns::COL_SYNC;
+
         if self.cached_fit_widths.generation == self.data_generation {
             return;
         }
-        let dw = render::display_width;
-        let mut name_width = 0usize;
-        let mut disk_width = dw("Disk");
-        let mut sync_width = 0usize;
+        let dw = super::columns::display_width;
+        let mut widths = ResolvedWidths::default();
 
         for node in &self.nodes {
-            name_width = name_width.max(Self::fit_name_for_node(
-                node,
-                self.live_worktree_count(node),
-            ));
-            disk_width = disk_width.max(dw(&self.formatted_disk_for_node(node)));
-            sync_width = sync_width.max(dw(&self.git_sync(&node.project)));
+            Self::observe_name_width(
+                &mut widths,
+                Self::fit_name_for_node(node, self.live_worktree_count(node)),
+            );
+            widths.observe(COL_DISK, dw(&self.formatted_disk_for_node(node)));
+            widths.observe(COL_SYNC, dw(&self.git_sync(&node.project)));
 
             for group in &node.groups {
                 for member in &group.members {
@@ -969,13 +952,13 @@ impl App {
                     } else {
                         PREFIX_MEMBER_NAMED
                     };
-                    name_width = name_width.max(dw(prefix) + dw(&member.display_name()));
-                    disk_width = disk_width.max(dw(&self.formatted_disk(member)));
-                    sync_width = sync_width.max(dw(&self.git_sync(member)));
+                    Self::observe_name_width(&mut widths, dw(prefix) + dw(&member.display_name()));
+                    widths.observe(COL_DISK, dw(&self.formatted_disk(member)));
+                    widths.observe(COL_SYNC, dw(&self.git_sync(member)));
                 }
                 if !group.name.is_empty() {
                     let label = format!("{} ({})", group.name, group.members.len());
-                    name_width = name_width.max(dw(PREFIX_GROUP_COLLAPSED) + dw(&label));
+                    Self::observe_name_width(&mut widths, dw(PREFIX_GROUP_COLLAPSED) + dw(&label));
                 }
             }
             for wt in &node.worktrees {
@@ -989,9 +972,9 @@ impl App {
                 } else {
                     PREFIX_WT_FLAT
                 };
-                name_width = name_width.max(dw(wt_prefix) + dw(wt_name));
-                disk_width = disk_width.max(dw(&self.formatted_disk(&wt.project)));
-                sync_width = sync_width.max(dw(&self.git_sync(&wt.project)));
+                Self::observe_name_width(&mut widths, dw(wt_prefix) + dw(wt_name));
+                widths.observe(COL_DISK, dw(&self.formatted_disk(&wt.project)));
+                widths.observe(COL_SYNC, dw(&self.git_sync(&wt.project)));
                 for group in &wt.groups {
                     for member in &group.members {
                         let prefix = if group.name.is_empty() {
@@ -999,24 +982,26 @@ impl App {
                         } else {
                             PREFIX_WT_MEMBER_NAMED
                         };
-                        name_width = name_width.max(dw(prefix) + dw(&member.display_name()));
-                        disk_width = disk_width.max(dw(&self.formatted_disk(member)));
-                        sync_width = sync_width.max(dw(&self.git_sync(member)));
+                        Self::observe_name_width(
+                            &mut widths,
+                            dw(prefix) + dw(&member.display_name()),
+                        );
+                        widths.observe(COL_DISK, dw(&self.formatted_disk(member)));
+                        widths.observe(COL_SYNC, dw(&self.git_sync(member)));
                     }
                     if !group.name.is_empty() {
                         let label = format!("{} ({})", group.name, group.members.len());
-                        name_width = name_width.max(dw(PREFIX_WT_GROUP_COLLAPSED) + dw(&label));
+                        Self::observe_name_width(
+                            &mut widths,
+                            dw(PREFIX_WT_GROUP_COLLAPSED) + dw(&label),
+                        );
                     }
                 }
             }
         }
 
-        self.cached_fit_widths = FitWidths {
-            name:       name_width,
-            disk:       disk_width,
-            sync:       sync_width,
-            generation: self.data_generation,
-        };
+        widths.generation = self.data_generation;
+        self.cached_fit_widths = widths;
     }
 
     /// Iterate all group members in a node, including those nested under worktree entries.
@@ -1029,8 +1014,18 @@ impl App {
         direct.chain(wt)
     }
 
+    fn observe_name_width(widths: &mut ResolvedWidths, content_width: usize) {
+        use super::columns::COL_NAME;
+
+        widths.observe(COL_NAME, Self::name_width_with_gutter(content_width));
+    }
+
+    const fn name_width_with_gutter(content_width: usize) -> usize {
+        content_width.saturating_add(1)
+    }
+
     fn fit_name_for_node(node: &ProjectNode, live_worktrees: usize) -> usize {
-        let dw = render::display_width;
+        let dw = super::columns::display_width;
         let mut name = node.project.display_name();
         if live_worktrees > 0 {
             name = format!("{name} {WORKTREE}:{live_worktrees}");
@@ -1977,5 +1972,11 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn name_width_with_gutter_reserves_space_before_lint() {
+        assert_eq!(App::name_width_with_gutter(0), 1);
+        assert_eq!(App::name_width_with_gutter(42), 43);
     }
 }

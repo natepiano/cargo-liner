@@ -1,4 +1,5 @@
 mod app;
+mod columns;
 mod constants;
 mod detail;
 mod finder;

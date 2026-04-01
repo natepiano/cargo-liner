@@ -22,9 +22,10 @@ use super::app::App;
 use super::app::CiState;
 use super::app::ConfirmAction;
 use super::app::ExpandKey;
-use super::app::FitWidths;
 use super::app::NetworkStatus;
+use super::app::ResolvedWidths;
 use super::app::VisibleRow;
+use super::columns::COL_NAME;
 use super::constants::BLOCK_BORDER_WIDTH;
 use super::constants::BYTES_PER_GIB;
 use super::constants::BYTES_PER_MIB;
@@ -42,10 +43,6 @@ use super::types::FocusTarget;
 use super::types::LayoutCache;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
-use crate::constants::GIT_CLONE;
-use crate::constants::GIT_FORK;
-use crate::constants::GIT_LOCAL;
-use crate::constants::IN_SYNC;
 use crate::constants::WORKTREE;
 use crate::project;
 use crate::project::GitOrigin;
@@ -101,10 +98,6 @@ pub(super) fn format_bytes(bytes: u64) -> String {
         format!("{:.1} MiB", bytes as f64 / BYTES_PER_MIB as f64)
     }
 }
-
-/// Terminal display width of a string, accounting for multi-byte and wide characters.
-/// Use this for ALL layout calculations — never `.len()` for column sizing.
-pub(super) fn display_width(s: &str) -> usize { UnicodeWidthStr::width(s) }
 
 // ── Row prefix strings ───────────────────────────────────────────────
 // Single source of truth: width calc and render both reference these.
@@ -185,157 +178,6 @@ pub(super) fn disk_color(percentile: Option<f64>) -> Style {
     Style::default().fg(Color::Rgb(r, g, b))
 }
 
-pub(super) struct RowData<'a> {
-    pub prefix:     &'a str,
-    pub name:       &'a str,
-    pub lint_icon:  &'a str,
-    pub lang_icon:  &'a str,
-    pub disk:       &'a str,
-    pub disk_style: Style,
-    pub ci:         Option<Conclusion>,
-    pub git_icon:   &'a str,
-    pub git_sync:   &'a str,
-    pub name_width: usize,
-    pub disk_width: usize,
-    pub sync_width: usize,
-    pub deleted:    bool,
-}
-
-/// Pad a string to a target display width using trailing spaces (left-aligned).
-fn pad_right(s: &str, target: usize) -> String {
-    let w = display_width(s);
-    let pad = target.saturating_sub(w);
-    format!("{s}{}", " ".repeat(pad))
-}
-
-/// Pad a string to a target display width using leading spaces (right-aligned).
-fn pad_left(s: &str, target: usize) -> String {
-    let w = display_width(s);
-    let pad = target.saturating_sub(w);
-    format!("{}{s}", " ".repeat(pad))
-}
-
-/// Pad a string to a target display width, centered.
-fn pad_center(s: &str, target: usize) -> String {
-    let w = display_width(s);
-    let total_pad = target.saturating_sub(w);
-    let left = total_pad / 2;
-    let right = total_pad - left;
-    format!("{}{s}{}", " ".repeat(left), " ".repeat(right))
-}
-
-/// Max display width across all CI conclusion icons.
-fn ci_icon_width() -> usize {
-    [
-        Conclusion::Success,
-        Conclusion::Failure,
-        Conclusion::Cancelled,
-    ]
-    .iter()
-    .map(|c| display_width(c.icon()))
-    .max()
-    .unwrap_or(1)
-}
-
-/// Display width of the lint icon column (widest lint icon).
-fn lint_icon_width() -> usize { display_width(crate::constants::LINT_PASSED) }
-
-pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
-    let prefix_width = display_width(row.prefix);
-    let lint_w = lint_icon_width();
-    let available = row.name_width.saturating_sub(prefix_width + lint_w);
-    let padded_name = format!("{}{}", row.prefix, pad_right(row.name, available));
-    let lint_cell = pad_right(row.lint_icon, lint_w);
-    let disk_width = row.disk_width;
-    let sync_width = row.sync_width;
-    let sync_cell = if row.git_sync == IN_SYNC {
-        if sync_width <= 2 {
-            format!(" {}", pad_left(row.git_sync, sync_width))
-        } else {
-            format!(" {}", pad_center(row.git_sync, sync_width))
-        }
-    } else {
-        format!(" {}", pad_right(row.git_sync, sync_width))
-    };
-    let ci_icon = pad_right(row.ci.map_or("", Conclusion::icon), ci_icon_width());
-    let lang_cell = pad_right(row.lang_icon, display_width("🦀"));
-    let git_cell = pad_right(row.git_icon, display_width(GIT_CLONE));
-
-    if row.deleted {
-        let strike = Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::CROSSED_OUT);
-        return Line::from(vec![
-            Span::styled(padded_name, strike),
-            Span::styled(lint_cell.clone(), strike),
-            Span::styled(format!(" {:>disk_width$}", row.disk), strike),
-            Span::styled(format!(" {lang_cell}"), strike),
-            Span::styled(sync_cell, strike),
-            Span::styled(format!(" {git_cell}"), strike),
-            Span::styled(format!(" {ci_icon}"), strike),
-        ]);
-    }
-
-    let ci_style = conclusion_style(row.ci);
-    let origin_style = match row.git_icon {
-        GIT_FORK => Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-        GIT_CLONE => Style::default().fg(Color::White),
-        GIT_LOCAL => Style::default().fg(Color::DarkGray),
-        _ => Style::default(),
-    };
-    let sync_style = if row.git_sync == IN_SYNC {
-        Style::default().fg(Color::Green)
-    } else {
-        Style::default().fg(Color::White)
-    };
-
-    Line::from(vec![
-        Span::raw(padded_name),
-        Span::raw(lint_cell),
-        Span::styled(format!(" {:>disk_width$}", row.disk), row.disk_style),
-        Span::raw(format!(" {lang_cell}")),
-        Span::styled(sync_cell, sync_style),
-        Span::styled(format!(" {git_cell}"), origin_style),
-        Span::styled(format!(" {ci_icon}"), ci_style),
-    ])
-}
-
-/// Build a probe row using max-width placeholders and measure its display width.
-/// This is the single source of truth for panel width — no hand-counted arithmetic.
-pub(super) fn probe_row_width(name_width: usize, disk_width: usize, sync_width: usize) -> usize {
-    let name_pad = "X".repeat(name_width);
-    let disk_pad = "X".repeat(disk_width);
-    let sync_pad = "X".repeat(sync_width);
-    let row = project_row_spans(&RowData {
-        prefix: "",
-        name: &name_pad,
-        lint_icon: crate::constants::LINT_PASSED,
-        lang_icon: "🦀",
-        disk: &disk_pad,
-        disk_style: Style::default(),
-        ci: Some(Conclusion::Success),
-        git_icon: GIT_CLONE,
-        git_sync: &sync_pad,
-        name_width,
-        disk_width,
-        sync_width,
-        deleted: false,
-    });
-    row.width()
-}
-
-pub(super) fn group_header_spans(prefix: &str, name: &str, name_width: usize) -> Line<'static> {
-    let prefix_width = display_width(prefix);
-    let available = name_width.saturating_sub(prefix_width);
-    let padded = format!("{prefix}{}", pad_right(name, available));
-    Line::from(vec![Span::styled(
-        padded,
-        Style::default().fg(Color::Yellow),
-    )])
-}
-
 pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     app.layout_cache = LayoutCache::default();
 
@@ -344,14 +186,8 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
 
-    let left_width = u16::try_from(
-        probe_row_width(
-            app.cached_fit_widths.name,
-            app.cached_fit_widths.disk,
-            app.cached_fit_widths.sync,
-        ) + BLOCK_BORDER_WIDTH,
-    )
-    .unwrap_or(u16::MAX);
+    let left_width =
+        u16::try_from(app.cached_fit_widths.total_width() + BLOCK_BORDER_WIDTH).unwrap_or(u16::MAX);
 
     let main_layout = Layout::default()
         .direction(Direction::Horizontal)
@@ -616,61 +452,14 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     let total_bytes: u64 = app.disk_usage.values().sum();
     if total_bytes > 0 {
         let total_str = format_bytes(total_bytes);
-        let total_style = Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD);
-        let mut row_line = project_row_spans(&RowData {
-            prefix:     "",
-            name:       &format!("{:>width$}", "Σ", width = widths.name),
-            lint_icon:  crate::constants::LINT_NO_LOG,
-            lang_icon:  "  ",
-            disk:       &total_str,
-            disk_style: total_style,
-            ci:         None,
-            git_icon:   " ",
-            git_sync:   "",
-            name_width: widths.name,
-            disk_width: widths.disk,
-            sync_width: widths.sync,
-            deleted:    false,
-        });
-        if let Some(span) = row_line.spans.first_mut() {
-            span.style = total_style;
-        }
-        items.push(ListItem::new(row_line));
+        let summary = super::columns::build_summary_cells(widths.get(COL_NAME), &total_str);
+        items.push(ListItem::new(super::columns::row_to_line(&summary, widths)));
     }
-
-    let header_style = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
 
     let node_count = app.live_node_count();
     let scan_root = project::home_relative_path(&app.scan_root);
-    // "Lint" right-aligns with the lint icon column: "Li" bleeds into
-    // name padding, "nt" sits over the icon.  The header word "Lint" is
-    // 4 chars; the icon column is `lint_icon_width()` (2).  So the name
-    // span shrinks by 2 ("Li") and "Lint" is appended.
-    let lint_w = lint_icon_width();
-    let lint_header = format!("{:>width$}", "Lint", width = lint_w + 2);
-    let name_header_pad = widths
-        .name
-        .saturating_sub(scan_root.len() + 3 + node_count.to_string().len() + 2);
-    let header_line = Line::from(vec![
-        Span::styled(
-            format!(
-                "{scan_root} ({node_count}){:<pad$}",
-                "",
-                pad = name_header_pad
-            ),
-            header_style,
-        ),
-        Span::styled(lint_header, header_style),
-        Span::styled(
-            format!(" {:>width$}", "Disk", width = widths.disk),
-            header_style,
-        ),
-        Span::styled("  R Git CI", header_style),
-    ]);
+    let name_text = format!("{scan_root} ({node_count})");
+    let header_line = super::columns::header_line(widths, &name_text);
 
     let project_list = List::new(items)
         .block(
@@ -924,9 +713,7 @@ fn render_root_item(
     app: &App,
     node_index: usize,
     root_sorted: &[u64],
-    name_width: usize,
-    disk_width: usize,
-    sync_width: usize,
+    widths: &ResolvedWidths,
 ) -> ListItem<'static> {
     let node = &app.nodes[node_index];
     let project = &node.project;
@@ -952,21 +739,19 @@ fn render_root_item(
     } else {
         PREFIX_ROOT_LEAF
     };
-    ListItem::new(project_row_spans(&RowData {
+    let row = super::columns::build_row_cells(
         prefix,
-        name: &name,
-        lint_icon: lint,
-        lang_icon: lang,
-        disk: &disk,
-        disk_style: ds,
+        &name,
+        lint,
+        &disk,
+        ds,
+        lang,
+        &sync,
+        git,
         ci,
-        git_icon: git,
-        git_sync: &sync,
-        name_width,
-        disk_width,
-        sync_width,
-        deleted: app.is_deleted(&project.path),
-    }))
+        app.is_deleted(&project.path),
+    );
+    ListItem::new(super::columns::row_to_line(&row, widths))
 }
 
 /// Build a `ListItem` for a child project (workspace member or worktree).
@@ -976,7 +761,7 @@ fn render_child_item(
     name: &str,
     child_sorted: &[u64],
     prefix: &'static str,
-    widths: &FitWidths,
+    widths: &ResolvedWidths,
 ) -> ListItem<'static> {
     let disk = app.formatted_disk(project);
     let disk_bytes = app.disk_usage.get(&project.path).copied();
@@ -986,21 +771,19 @@ fn render_child_item(
     let ci = app.ci_for(project);
     let git = app.git_icon(project);
     let sync = app.git_sync(project);
-    ListItem::new(project_row_spans(&RowData {
+    let row = super::columns::build_row_cells(
         prefix,
         name,
-        lint_icon: lint,
-        lang_icon: lang,
-        disk: &disk,
-        disk_style: ds,
+        lint,
+        &disk,
+        ds,
+        lang,
+        &sync,
+        git,
         ci,
-        git_icon: git,
-        git_sync: &sync,
-        name_width: widths.name,
-        disk_width: widths.disk,
-        sync_width: widths.sync,
-        deleted: app.is_deleted(&project.path),
-    }))
+        app.is_deleted(&project.path),
+    );
+    ListItem::new(super::columns::row_to_line(&row, widths))
 }
 
 fn render_worktree_entry<'a>(
@@ -1008,7 +791,7 @@ fn render_worktree_entry<'a>(
     ni: usize,
     wi: usize,
     child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &FitWidths,
+    widths: &ResolvedWidths,
 ) -> ListItem<'a> {
     let wt = &app.nodes[ni].worktrees[wi];
     let empty = Vec::new();
@@ -1036,7 +819,7 @@ fn render_wt_group_header<'a>(
     ni: usize,
     wi: usize,
     gi: usize,
-    name_width: usize,
+    widths: &ResolvedWidths,
 ) -> ListItem<'a> {
     let group = &app.nodes[ni].worktrees[wi].groups[gi];
     let prefix = if app.expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
@@ -1045,7 +828,8 @@ fn render_wt_group_header<'a>(
         PREFIX_WT_GROUP_COLLAPSED
     };
     let label = format!("{} ({})", group.name, group.members.len());
-    ListItem::new(group_header_spans(prefix, &label, name_width))
+    let row = super::columns::build_group_header_cells(prefix, &label);
+    ListItem::new(super::columns::row_to_line(&row, widths))
 }
 
 fn render_wt_member<'a>(
@@ -1055,7 +839,7 @@ fn render_wt_member<'a>(
     gi: usize,
     mi: usize,
     child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &FitWidths,
+    widths: &ResolvedWidths,
 ) -> ListItem<'a> {
     let wt = &app.nodes[ni].worktrees[wi];
     let group = &wt.groups[gi];
@@ -1071,21 +855,16 @@ fn render_wt_member<'a>(
     render_child_item(app, member, &name, sorted, indent, widths)
 }
 
-pub(super) fn render_tree_items(app: &App, widths: &FitWidths) -> Vec<ListItem<'static>> {
+pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListItem<'static>> {
     let root_sorted = &app.cached_root_sorted;
     let child_sorted = &app.cached_child_sorted;
 
     let rows = app.visible_rows();
     rows.iter()
         .map(|row| match row {
-            VisibleRow::Root { node_index } => render_root_item(
-                app,
-                *node_index,
-                root_sorted,
-                widths.name,
-                widths.disk,
-                widths.sync,
-            ),
+            VisibleRow::Root { node_index } => {
+                render_root_item(app, *node_index, root_sorted, widths)
+            },
             VisibleRow::GroupHeader {
                 node_index,
                 group_index,
@@ -1100,7 +879,8 @@ pub(super) fn render_tree_items(app: &App, widths: &FitWidths) -> Vec<ListItem<'
                     PREFIX_GROUP_COLLAPSED
                 };
                 let label = format!("{} ({})", group.name, group.members.len());
-                ListItem::new(group_header_spans(prefix, &label, widths.name))
+                let row = super::columns::build_group_header_cells(prefix, &label);
+                ListItem::new(super::columns::row_to_line(&row, widths))
             },
             VisibleRow::Member {
                 node_index,
@@ -1127,9 +907,7 @@ pub(super) fn render_tree_items(app: &App, widths: &FitWidths) -> Vec<ListItem<'
                 node_index,
                 worktree_index,
                 group_index,
-            } => {
-                render_wt_group_header(app, *node_index, *worktree_index, *group_index, widths.name)
-            },
+            } => render_wt_group_header(app, *node_index, *worktree_index, *group_index, widths),
             VisibleRow::WorktreeMember {
                 node_index,
                 worktree_index,
@@ -1148,7 +926,7 @@ pub(super) fn render_tree_items(app: &App, widths: &FitWidths) -> Vec<ListItem<'
         .collect()
 }
 
-pub(super) fn render_filtered_items(app: &App, widths: &FitWidths) -> Vec<ListItem<'static>> {
+pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<ListItem<'static>> {
     let root_sorted = &app.cached_root_sorted;
     app.filtered
         .iter()
@@ -1168,100 +946,19 @@ pub(super) fn render_filtered_items(app: &App, widths: &FitWidths) -> Vec<ListIt
             let ci = app.ci_for(project);
             let git = app.git_icon(project);
             let sync = app.git_sync(project);
-            Some(ListItem::new(project_row_spans(&RowData {
-                prefix: "  ",
-                name: &entry.name,
-                lint_icon: lint,
-                lang_icon: lang,
-                disk: &disk,
-                disk_style: ds,
+            let row = super::columns::build_row_cells(
+                "  ",
+                &entry.name,
+                lint,
+                &disk,
+                ds,
+                lang,
+                &sync,
+                git,
                 ci,
-                git_icon: git,
-                git_sync: &sync,
-                name_width: widths.name,
-                disk_width: widths.disk,
-                sync_width: widths.sync,
-                deleted: app.is_deleted(&project.path),
-            })))
+                app.is_deleted(&project.path),
+            );
+            Some(ListItem::new(super::columns::row_to_line(&row, widths)))
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn emoji_display_widths() {
-        assert_eq!(display_width("🌲"), 2);
-        assert_eq!(display_width("🦀"), 2);
-        assert_eq!(display_width("bevy_brp"), 8);
-        assert_eq!(display_width("bevy_brp 🌲:2"), 13);
-
-        // pad_right should add correct spaces
-        let padded = pad_right("bevy_brp 🌲:2", 27);
-        assert_eq!(display_width(&padded), 27, "padded display width");
-
-        let padded_ascii = pad_right("bevy_brp", 27);
-        assert_eq!(
-            display_width(&padded_ascii),
-            27,
-            "ascii padded display width"
-        );
-    }
-
-    #[test]
-    fn row_spans_same_width_with_and_without_emoji() {
-        let name_width = 32;
-        let disk_width = 8;
-        let sync_width = 2;
-
-        let row_emoji = project_row_spans(&RowData {
-            prefix: "▶ ",
-            name: "bevy_brp 🌲:2",
-            lint_icon: crate::constants::LINT_PASSED,
-            lang_icon: "🦀",
-            disk: "36.3 GiB",
-            disk_style: Style::default(),
-            ci: Some(Conclusion::Success),
-            git_icon: GIT_CLONE,
-            git_sync: "↑2",
-            name_width,
-            disk_width,
-            sync_width,
-            deleted: false,
-        });
-
-        let row_ascii = project_row_spans(&RowData {
-            prefix: "▶ ",
-            name: "bevy_mesh_outline_benchmark",
-            lint_icon: crate::constants::LINT_PASSED,
-            lang_icon: "🦀",
-            disk: "36.3 GiB",
-            disk_style: Style::default(),
-            ci: Some(Conclusion::Success),
-            git_icon: GIT_CLONE,
-            git_sync: "↑2",
-            name_width,
-            disk_width,
-            sync_width,
-            deleted: false,
-        });
-
-        // Debug: check each span
-        let emoji_spans: Vec<usize> = row_emoji
-            .spans
-            .iter()
-            .map(|s| display_width(s.content.as_ref()))
-            .collect();
-        let ascii_spans: Vec<usize> = row_ascii
-            .spans
-            .iter()
-            .map(|s| display_width(s.content.as_ref()))
-            .collect();
-        assert_eq!(
-            emoji_spans, ascii_spans,
-            "per-span widths should match\nemoji spans: {emoji_spans:?}\nascii spans: {ascii_spans:?}"
-        );
-    }
 }
