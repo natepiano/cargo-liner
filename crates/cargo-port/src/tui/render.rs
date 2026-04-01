@@ -16,6 +16,7 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
 
 use super::animation::OFFLINE_PULSE;
 use super::app::App;
