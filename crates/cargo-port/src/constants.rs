@@ -32,6 +32,7 @@ pub const GH_TIMEOUT: Duration = Duration::from_secs(5);
 pub const CACHE_DIR: &str = "cargo-port/ci-cache";
 pub const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";
 pub const OLDER_RUNS_FETCH_INCREMENT: u32 = 5;
+pub const SCAN_DISK_CONCURRENCY: usize = 2;
 pub const SCAN_HTTP_CONCURRENCY: usize = 8;
 // ── HTTP constants ───────────────────────────────────────────────────
 

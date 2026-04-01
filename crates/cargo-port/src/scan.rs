@@ -19,6 +19,7 @@ use super::config::NonRustInclusion;
 use super::constants::CACHE_DIR;
 use super::constants::NO_MORE_RUNS_MARKER;
 use super::constants::OLDER_RUNS_FETCH_INCREMENT;
+use super::constants::SCAN_DISK_CONCURRENCY;
 use super::constants::SCAN_HTTP_CONCURRENCY;
 use super::http::HttpClient;
 use super::port_report;
@@ -30,11 +31,13 @@ use super::project::RustProject;
 /// Members within a workspace are organized into groups by their first subdirectory.
 /// The "inline" group (empty name) contains members directly under the workspace root
 /// or under the primary `crates/` directory -- these are shown without a folder header.
+#[derive(Clone)]
 pub struct MemberGroup {
     pub name:    String,
     pub members: Vec<RustProject>,
 }
 
+#[derive(Clone)]
 pub struct ProjectNode {
     pub project:   RustProject,
     pub groups:    Vec<MemberGroup>,
@@ -934,6 +937,7 @@ struct StreamingScanContext {
     client:        HttpClient,
     tx:            mpsc::Sender<BackgroundMsg>,
     ci_run_count:  u32,
+    disk_limit:    Arc<tokio::sync::Semaphore>,
     http_limit:    Arc<tokio::sync::Semaphore>,
     repo_dispatch: RepoDispatchMap,
 }
@@ -949,11 +953,13 @@ struct RepoFetchRequest {
 /// Spawn a streaming scan using a hybrid approach:
 ///
 /// - **Discovery + local work (rayon):** Walk the directory tree, discover projects, collect git
-///   info and lint status, dispatch bounded async HTTP, and compute disk usage.
+///   info and lint status, and dispatch background work.
+/// - **Disk usage (tokio blocking pool):** `dir_size()` runs behind its own semaphore so disk walks
+///   cannot monopolize startup.
 /// - **HTTP (tokio):** CI runs, repo metadata, crates.io info, and connectivity checks run on the
 ///   async runtime behind a shared semaphore.
 ///
-/// `ScanComplete` is sent only after all rayon-side work has finished. Async HTTP results may
+/// `ScanComplete` is sent after discovery/local work has finished. Disk and HTTP results may
 /// continue to stream in afterward.
 pub fn spawn_streaming_scan(
     scan_root: &Path,
@@ -972,6 +978,7 @@ pub fn spawn_streaming_scan(
             client,
             tx: scan_tx.clone(),
             ci_run_count,
+            disk_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_DISK_CONCURRENCY)),
             http_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_HTTP_CONCURRENCY)),
             repo_dispatch: Arc::new(Mutex::new(HashMap::new())),
         };
@@ -984,109 +991,98 @@ pub fn spawn_streaming_scan(
     (tx, rx)
 }
 
-/// Walk `scan_dirs`, discover projects, and stream per-project work immediately. Local work runs
-/// on rayon, while network work is dispatched onto tokio behind a shared semaphore.
+/// Walk `scan_dirs`, discover projects, and stream per-project work immediately. Discovery and
+/// local metadata collection stay on the dedicated scan thread, while disk and network work are
+/// dispatched onto bounded background queues.
 fn phase1_discover(
     root: &Path,
     scan_dirs: &[PathBuf],
     non_rust: NonRustInclusion,
     scan_context: &StreamingScanContext,
 ) {
-    rayon::scope(|s| {
-        for dir in scan_dirs {
-            if !dir.is_dir() {
-                continue;
-            }
-            let mut iter = WalkDir::new(dir).into_iter();
-            while let Some(Ok(entry)) = iter.next() {
-                if entry.file_type().is_dir() {
-                    let name = entry.file_name();
-                    if name == "target" || name == ".git" {
-                        iter.skip_current_dir();
-                        continue;
-                    }
-
-                    let rel = entry
-                        .path()
-                        .strip_prefix(root)
-                        .unwrap_or_else(|_| entry.path())
-                        .display()
-                        .to_string();
-                    let _ = scan_context.tx.send(BackgroundMsg::ScanActivity {
-                        path: if rel.is_empty() { ".".to_string() } else { rel },
-                    });
-
-                    // Non-Rust project detection
-                    if non_rust.includes_non_rust()
-                        && entry.path().join(".git").is_dir()
-                        && !entry.path().join("Cargo.toml").exists()
-                    {
-                        iter.skip_current_dir();
-
-                        let project = RustProject::from_git_dir(entry.path());
-                        let abs_path = PathBuf::from(&project.abs_path);
-
-                        let _ = scan_context.tx.send(BackgroundMsg::ProjectDiscovered {
-                            project: project.clone(),
-                        });
-
-                        let task_context = scan_context.clone();
-                        let task_project = DiscoveredProject {
-                            path:       project.path.clone(),
-                            abs_path:   abs_path.clone(),
-                            name:       None,
-                            repo_url:   None,
-                            owner_repo: None,
-                        };
-                        s.spawn(move |_| {
-                            let discovered = phase1_local_work(
-                                &task_context.tx,
-                                task_project,
-                                GitTracking::Tracked,
-                            );
-                            spawn_project_http(&task_context, &discovered);
-                            send_disk_usage(
-                                &task_context.tx,
-                                &discovered.abs_path,
-                                &discovered.path,
-                            );
-                        });
-                        continue;
-                    }
+    for dir in scan_dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        let mut iter = WalkDir::new(dir).into_iter();
+        while let Some(Ok(entry)) = iter.next() {
+            if entry.file_type().is_dir() {
+                let name = entry.file_name();
+                if name == "target" || name == ".git" {
+                    iter.skip_current_dir();
+                    continue;
                 }
-                if entry.file_type().is_file()
-                    && entry.file_name() == "Cargo.toml"
-                    && let Ok(project) = RustProject::from_cargo_toml(entry.path())
+
+                let rel = entry
+                    .path()
+                    .strip_prefix(root)
+                    .unwrap_or_else(|_| entry.path())
+                    .display()
+                    .to_string();
+                let _ = scan_context.tx.send(BackgroundMsg::ScanActivity {
+                    path: if rel.is_empty() { ".".to_string() } else { rel },
+                });
+
+                if non_rust.includes_non_rust()
+                    && entry.path().join(".git").is_dir()
+                    && !entry.path().join("Cargo.toml").exists()
                 {
+                    iter.skip_current_dir();
+
+                    let project = RustProject::from_git_dir(entry.path());
                     let abs_path = PathBuf::from(&project.abs_path);
-                    let git_tracking = if abs_path.join(".git").exists() {
-                        GitTracking::Tracked
-                    } else {
-                        GitTracking::Untracked
-                    };
 
                     let _ = scan_context.tx.send(BackgroundMsg::ProjectDiscovered {
                         project: project.clone(),
                     });
 
-                    let task_context = scan_context.clone();
-                    let task_project = DiscoveredProject {
-                        path:       project.path.clone(),
-                        abs_path:   abs_path.clone(),
-                        name:       project.name.clone(),
-                        repo_url:   None,
-                        owner_repo: None,
-                    };
-                    s.spawn(move |_| {
-                        let discovered =
-                            phase1_local_work(&task_context.tx, task_project, git_tracking);
-                        spawn_project_http(&task_context, &discovered);
-                        send_disk_usage(&task_context.tx, &discovered.abs_path, &discovered.path);
-                    });
+                    let discovered = phase1_local_work(
+                        &scan_context.tx,
+                        DiscoveredProject {
+                            path: project.path.clone(),
+                            abs_path,
+                            name: None,
+                            repo_url: None,
+                            owner_repo: None,
+                        },
+                        GitTracking::Tracked,
+                    );
+                    spawn_project_http(scan_context, &discovered);
+                    spawn_disk_usage(scan_context, &discovered.abs_path, &discovered.path);
+                    continue;
                 }
             }
+            if entry.file_type().is_file()
+                && entry.file_name() == "Cargo.toml"
+                && let Ok(project) = RustProject::from_cargo_toml(entry.path())
+            {
+                let abs_path = PathBuf::from(&project.abs_path);
+                let git_tracking = if abs_path.join(".git").exists() {
+                    GitTracking::Tracked
+                } else {
+                    GitTracking::Untracked
+                };
+
+                let _ = scan_context.tx.send(BackgroundMsg::ProjectDiscovered {
+                    project: project.clone(),
+                });
+
+                let discovered = phase1_local_work(
+                    &scan_context.tx,
+                    DiscoveredProject {
+                        path: project.path.clone(),
+                        abs_path,
+                        name: project.name.clone(),
+                        repo_url: None,
+                        owner_repo: None,
+                    },
+                    git_tracking,
+                );
+                spawn_project_http(scan_context, &discovered);
+                spawn_disk_usage(scan_context, &discovered.abs_path, &discovered.path);
+            }
         }
-    });
+    }
 }
 
 fn spawn_project_http(scan_context: &StreamingScanContext, project: &DiscoveredProject) {
@@ -1123,11 +1119,24 @@ fn spawn_project_http(scan_context: &StreamingScanContext, project: &DiscoveredP
     }
 }
 
-fn send_disk_usage(tx: &mpsc::Sender<BackgroundMsg>, abs_path: &Path, project_path: &str) {
-    let bytes = dir_size(abs_path);
-    let _ = tx.send(BackgroundMsg::DiskUsage {
-        path: project_path.to_string(),
-        bytes,
+fn spawn_disk_usage(scan_context: &StreamingScanContext, abs_path: &Path, project_path: &str) {
+    let handle = scan_context.client.handle.clone();
+    let tx = scan_context.tx.clone();
+    let disk_limit = Arc::clone(&scan_context.disk_limit);
+    let abs_path = abs_path.to_path_buf();
+    let project_path = project_path.to_string();
+
+    handle.spawn(async move {
+        let Ok(_permit) = disk_limit.acquire_owned().await else {
+            return;
+        };
+        let Ok(bytes) = tokio::task::spawn_blocking(move || dir_size(&abs_path)).await else {
+            return;
+        };
+        let _ = tx.send(BackgroundMsg::DiskUsage {
+            path: project_path,
+            bytes,
+        });
     });
 }
 

@@ -88,6 +88,34 @@ pub(super) enum ConfirmAction {
 
 pub(super) use super::columns::ResolvedWidths;
 
+struct TreeBuildResult {
+    build_id:     u64,
+    nodes:        Vec<ProjectNode>,
+    flat_entries: Vec<FlatEntry>,
+}
+
+struct FitWidthsBuildResult {
+    build_id: u64,
+    widths:   ResolvedWidths,
+}
+
+struct DiskCacheBuildResult {
+    build_id:     u64,
+    root_sorted:  Vec<u64>,
+    child_sorted: HashMap<usize, Vec<u64>>,
+}
+
+#[derive(Default)]
+pub(super) struct PollBackgroundStats {
+    pub bg_msgs:       usize,
+    pub ci_msgs:       usize,
+    pub example_msgs:  usize,
+    pub tree_results:  usize,
+    pub fit_results:   usize,
+    pub disk_results:  usize,
+    pub needs_rebuild: bool,
+}
+
 /// What a visible row represents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum VisibleRow {
@@ -166,7 +194,7 @@ impl CiState {
     }
 }
 
-/// Generation-stamped detail cache. Automatically stale when `data_generation`
+/// Generation-stamped detail cache. Automatically stale when `detail_generation`
 /// on `App` has advanced past the generation stored here.
 pub(super) struct DetailCache {
     generation: u64,
@@ -265,7 +293,21 @@ pub(super) struct App {
     pub cached_child_sorted:      HashMap<usize, Vec<u64>>,
     pub disk_cache_dirty:         bool,
     pub cached_fit_widths:        ResolvedWidths,
+    fit_widths_dirty:             bool,
+    tree_build_tx:                mpsc::Sender<TreeBuildResult>,
+    tree_build_rx:                Receiver<TreeBuildResult>,
+    tree_build_active:            Option<u64>,
+    tree_build_latest:            u64,
+    fit_build_tx:                 mpsc::Sender<FitWidthsBuildResult>,
+    fit_build_rx:                 Receiver<FitWidthsBuildResult>,
+    fit_build_active:             Option<u64>,
+    fit_build_latest:             u64,
+    disk_build_tx:                mpsc::Sender<DiskCacheBuildResult>,
+    disk_build_rx:                Receiver<DiskCacheBuildResult>,
+    disk_build_active:            Option<u64>,
+    disk_build_latest:            u64,
     pub(super) data_generation:   u64,
+    pub(super) detail_generation: u64,
     pub(super) cached_detail:     Option<DetailCache>,
     pub(super) selection_changed: bool,
     pub(super) layout_cache:      LayoutCache,
@@ -347,6 +389,188 @@ fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> V
     rows
 }
 
+fn live_worktree_count_for_node(node: &ProjectNode, deleted_projects: &HashSet<String>) -> usize {
+    node.worktrees
+        .iter()
+        .filter(|wt| !deleted_projects.contains(&wt.project.path))
+        .count()
+}
+
+fn disk_bytes_for_node_snapshot(
+    node: &ProjectNode,
+    disk_usage: &HashMap<String, u64>,
+) -> Option<u64> {
+    if node.worktrees.is_empty() {
+        return disk_usage.get(&node.project.path).copied();
+    }
+    let mut total = 0;
+    let mut any_data = false;
+    for path in
+        std::iter::once(&node.project.path).chain(node.worktrees.iter().map(|wt| &wt.project.path))
+    {
+        if let Some(&bytes) = disk_usage.get(path) {
+            total += bytes;
+            any_data = true;
+        }
+    }
+    if any_data { Some(total) } else { None }
+}
+
+fn formatted_disk_snapshot(disk_usage: &HashMap<String, u64>, path: &str) -> String {
+    disk_usage
+        .get(path)
+        .copied()
+        .map_or_else(|| "—".to_string(), super::render::format_bytes)
+}
+
+fn formatted_disk_for_node_snapshot(
+    node: &ProjectNode,
+    disk_usage: &HashMap<String, u64>,
+) -> String {
+    disk_bytes_for_node_snapshot(node, disk_usage)
+        .map_or_else(|| "—".to_string(), super::render::format_bytes)
+}
+
+fn git_sync_snapshot(git_info: &HashMap<String, GitInfo>, path: &str) -> String {
+    let Some(info) = git_info.get(path) else {
+        return String::new();
+    };
+    match info.ahead_behind {
+        Some((0, 0)) => IN_SYNC.to_string(),
+        Some((a, 0)) => format!("{SYNC_UP}{a}"),
+        Some((0, b)) => format!("{SYNC_DOWN}{b}"),
+        Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
+        None if info.origin != GitOrigin::Local => "-".to_string(),
+        None => String::new(),
+    }
+}
+
+fn build_fit_widths_snapshot(
+    nodes: &[ProjectNode],
+    disk_usage: &HashMap<String, u64>,
+    git_info: &HashMap<String, GitInfo>,
+    deleted_projects: &HashSet<String>,
+    generation: u64,
+) -> ResolvedWidths {
+    use super::columns::COL_DISK;
+    use super::columns::COL_SYNC;
+
+    let dw = super::columns::display_width;
+    let mut widths = ResolvedWidths::default();
+
+    for node in nodes {
+        App::observe_name_width(
+            &mut widths,
+            App::fit_name_for_node(node, live_worktree_count_for_node(node, deleted_projects)),
+        );
+        widths.observe(
+            COL_DISK,
+            dw(&formatted_disk_for_node_snapshot(node, disk_usage)),
+        );
+        widths.observe(
+            COL_SYNC,
+            dw(&git_sync_snapshot(git_info, &node.project.path)),
+        );
+
+        for group in &node.groups {
+            for member in &group.members {
+                let prefix = if group.name.is_empty() {
+                    PREFIX_MEMBER_INLINE
+                } else {
+                    PREFIX_MEMBER_NAMED
+                };
+                App::observe_name_width(&mut widths, dw(prefix) + dw(&member.display_name()));
+                widths.observe(
+                    COL_DISK,
+                    dw(&formatted_disk_snapshot(disk_usage, &member.path)),
+                );
+                widths.observe(COL_SYNC, dw(&git_sync_snapshot(git_info, &member.path)));
+            }
+            if !group.name.is_empty() {
+                let label = format!("{} ({})", group.name, group.members.len());
+                App::observe_name_width(&mut widths, dw(PREFIX_GROUP_COLLAPSED) + dw(&label));
+            }
+        }
+        for wt in &node.worktrees {
+            let wt_name = wt
+                .project
+                .worktree_name
+                .as_deref()
+                .unwrap_or(&wt.project.path);
+            let wt_prefix = if wt.has_members() {
+                PREFIX_WT_COLLAPSED
+            } else {
+                PREFIX_WT_FLAT
+            };
+            App::observe_name_width(&mut widths, dw(wt_prefix) + dw(wt_name));
+            widths.observe(
+                COL_DISK,
+                dw(&formatted_disk_snapshot(disk_usage, &wt.project.path)),
+            );
+            widths.observe(COL_SYNC, dw(&git_sync_snapshot(git_info, &wt.project.path)));
+            for group in &wt.groups {
+                for member in &group.members {
+                    let prefix = if group.name.is_empty() {
+                        PREFIX_WT_MEMBER_INLINE
+                    } else {
+                        PREFIX_WT_MEMBER_NAMED
+                    };
+                    App::observe_name_width(&mut widths, dw(prefix) + dw(&member.display_name()));
+                    widths.observe(
+                        COL_DISK,
+                        dw(&formatted_disk_snapshot(disk_usage, &member.path)),
+                    );
+                    widths.observe(COL_SYNC, dw(&git_sync_snapshot(git_info, &member.path)));
+                }
+                if !group.name.is_empty() {
+                    let label = format!("{} ({})", group.name, group.members.len());
+                    App::observe_name_width(
+                        &mut widths,
+                        dw(PREFIX_WT_GROUP_COLLAPSED) + dw(&label),
+                    );
+                }
+            }
+        }
+    }
+
+    widths.generation = generation;
+    widths
+}
+
+fn build_disk_cache_snapshot(
+    nodes: &[ProjectNode],
+    disk_usage: &HashMap<String, u64>,
+) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
+    let mut root_sorted = Vec::new();
+    for node in nodes {
+        if let Some(bytes) = disk_bytes_for_node_snapshot(node, disk_usage) {
+            root_sorted.push(bytes);
+        }
+    }
+    root_sorted.sort_unstable();
+
+    let mut child_sorted = HashMap::new();
+    for (ni, node) in nodes.iter().enumerate() {
+        let mut values = Vec::new();
+        for member in App::all_group_members(node) {
+            if let Some(&bytes) = disk_usage.get(&member.path) {
+                values.push(bytes);
+            }
+        }
+        for wt in &node.worktrees {
+            if let Some(&bytes) = disk_usage.get(&wt.project.path) {
+                values.push(bytes);
+            }
+        }
+        if !values.is_empty() {
+            values.sort_unstable();
+            child_sorted.insert(ni, values);
+        }
+    }
+
+    (root_sorted, child_sorted)
+}
+
 fn initial_list_state(nodes: &[ProjectNode]) -> ListState {
     let mut state = ListState::default();
     if !nodes.is_empty() {
@@ -411,6 +635,9 @@ impl App {
         let nodes = scan::build_tree(&projects, &inline_dirs);
         let flat_entries = scan::build_flat_entries(&nodes);
         let list_state = initial_list_state(&nodes);
+        let (tree_build_tx, tree_build_rx) = mpsc::channel();
+        let (fit_build_tx, fit_build_rx) = mpsc::channel();
+        let (disk_build_tx, disk_build_rx) = mpsc::channel();
         Self {
             scan_root,
             inline_dirs,
@@ -498,7 +725,21 @@ impl App {
             cached_child_sorted: HashMap::new(),
             disk_cache_dirty: true,
             cached_fit_widths: ResolvedWidths::default(),
+            fit_widths_dirty: true,
+            tree_build_tx,
+            tree_build_rx,
+            tree_build_active: None,
+            tree_build_latest: 0,
+            fit_build_tx,
+            fit_build_rx,
+            fit_build_active: None,
+            fit_build_latest: 0,
+            disk_build_tx,
+            disk_build_rx,
+            disk_build_active: None,
+            disk_build_latest: 0,
             data_generation: 0,
+            detail_generation: 0,
             cached_detail: None,
             selection_changed: false,
             layout_cache: LayoutCache::default(),
@@ -506,17 +747,19 @@ impl App {
         }
     }
 
-    pub fn rebuild_tree(&mut self) {
+    fn apply_tree_build(&mut self, nodes: Vec<ProjectNode>, flat_entries: Vec<FlatEntry>) {
         let selected_path = self
             .selected_project()
             .map(|p| p.path.clone())
             .or_else(|| self.last_selected_path.clone());
-        self.nodes = scan::build_tree(&self.all_projects, &self.inline_dirs);
-        self.flat_entries = scan::build_flat_entries(&self.nodes);
+        self.nodes = nodes;
+        self.flat_entries = flat_entries;
         self.finder_dirty = true;
         self.rows_dirty = true;
         self.disk_cache_dirty = true;
+        self.fit_widths_dirty = true;
         self.data_generation += 1;
+        self.detail_generation += 1;
 
         // Re-run search if active so filtered indices match new flat_entries
         if self.searching && !self.search_query.is_empty() {
@@ -564,6 +807,179 @@ impl App {
         }
     }
 
+    pub fn rebuild_tree(&mut self) { self.request_tree_rebuild(); }
+
+    fn request_tree_rebuild(&mut self) {
+        self.tree_build_latest = self.tree_build_latest.wrapping_add(1);
+        if self.tree_build_active.is_some() {
+            return;
+        }
+        self.spawn_tree_build(self.tree_build_latest);
+    }
+
+    fn spawn_tree_build(&mut self, build_id: u64) {
+        let tx = self.tree_build_tx.clone();
+        let projects = self.all_projects.clone();
+        let inline_dirs = self.inline_dirs.clone();
+        self.tree_build_active = Some(build_id);
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let nodes = scan::build_tree(&projects, &inline_dirs);
+            let flat_entries = scan::build_flat_entries(&nodes);
+            super::perf::log_duration(
+                "tree_build",
+                started.elapsed(),
+                &format!(
+                    "build_id={} projects={} nodes={} flat_entries={}",
+                    build_id,
+                    projects.len(),
+                    nodes.len(),
+                    flat_entries.len()
+                ),
+                super::perf::slow_worker_threshold_ms(),
+            );
+            let _ = tx.send(TreeBuildResult {
+                build_id,
+                nodes,
+                flat_entries,
+            });
+        });
+    }
+
+    fn poll_tree_builds(&mut self) -> usize {
+        let mut applied = 0;
+        while let Ok(result) = self.tree_build_rx.try_recv() {
+            if self.tree_build_active != Some(result.build_id) {
+                continue;
+            }
+            self.tree_build_active = None;
+            self.apply_tree_build(result.nodes, result.flat_entries);
+            applied += 1;
+            if result.build_id != self.tree_build_latest {
+                self.spawn_tree_build(self.tree_build_latest);
+            }
+        }
+        applied
+    }
+
+    fn request_fit_widths_build(&mut self) {
+        if !self.fit_widths_dirty {
+            return;
+        }
+        self.fit_build_latest = self.fit_build_latest.wrapping_add(1);
+        if self.fit_build_active.is_some() {
+            return;
+        }
+        self.spawn_fit_widths_build(self.fit_build_latest);
+    }
+
+    fn spawn_fit_widths_build(&mut self, build_id: u64) {
+        let tx = self.fit_build_tx.clone();
+        let nodes = self.nodes.clone();
+        let disk_usage = self.disk_usage.clone();
+        let git_info = self.git_info.clone();
+        let deleted_projects = self.deleted_projects.clone();
+        self.fit_build_active = Some(build_id);
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let widths = build_fit_widths_snapshot(
+                &nodes,
+                &disk_usage,
+                &git_info,
+                &deleted_projects,
+                build_id,
+            );
+            super::perf::log_duration(
+                "fit_widths_build",
+                started.elapsed(),
+                &format!("build_id={} nodes={}", build_id, nodes.len()),
+                super::perf::slow_worker_threshold_ms(),
+            );
+            let _ = tx.send(FitWidthsBuildResult { build_id, widths });
+        });
+    }
+
+    fn poll_fit_width_builds(&mut self) -> usize {
+        let mut applied = 0;
+        while let Ok(result) = self.fit_build_rx.try_recv() {
+            if self.fit_build_active != Some(result.build_id) {
+                continue;
+            }
+            self.fit_build_active = None;
+            self.cached_fit_widths = result.widths;
+            applied += 1;
+            if result.build_id == self.fit_build_latest {
+                self.fit_widths_dirty = false;
+            } else {
+                self.spawn_fit_widths_build(self.fit_build_latest);
+            }
+        }
+        applied
+    }
+
+    fn request_disk_cache_build(&mut self) {
+        if !self.disk_cache_dirty {
+            return;
+        }
+        self.disk_build_latest = self.disk_build_latest.wrapping_add(1);
+        if self.disk_build_active.is_some() {
+            return;
+        }
+        self.spawn_disk_cache_build(self.disk_build_latest);
+    }
+
+    fn spawn_disk_cache_build(&mut self, build_id: u64) {
+        let tx = self.disk_build_tx.clone();
+        let nodes = self.nodes.clone();
+        let disk_usage = self.disk_usage.clone();
+        self.disk_build_active = Some(build_id);
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let (root_sorted, child_sorted) = build_disk_cache_snapshot(&nodes, &disk_usage);
+            super::perf::log_duration(
+                "disk_cache_build",
+                started.elapsed(),
+                &format!(
+                    "build_id={} nodes={} root_values={} child_sets={}",
+                    build_id,
+                    nodes.len(),
+                    root_sorted.len(),
+                    child_sorted.len()
+                ),
+                super::perf::slow_worker_threshold_ms(),
+            );
+            let _ = tx.send(DiskCacheBuildResult {
+                build_id,
+                root_sorted,
+                child_sorted,
+            });
+        });
+    }
+
+    fn poll_disk_cache_builds(&mut self) -> usize {
+        let mut applied = 0;
+        while let Ok(result) = self.disk_build_rx.try_recv() {
+            if self.disk_build_active != Some(result.build_id) {
+                continue;
+            }
+            self.disk_build_active = None;
+            self.cached_root_sorted = result.root_sorted;
+            self.cached_child_sorted = result.child_sorted;
+            applied += 1;
+            if result.build_id == self.disk_build_latest {
+                self.disk_cache_dirty = false;
+            } else {
+                self.spawn_disk_cache_build(self.disk_build_latest);
+            }
+        }
+        applied
+    }
+
+    pub fn refresh_async_caches(&mut self) {
+        self.request_disk_cache_build();
+        self.request_fit_widths_build();
+    }
+
     pub(super) fn rescan(&mut self) {
         self.all_projects.clear();
         self.nodes.clear();
@@ -591,7 +1007,15 @@ impl App {
         self.list_state = ListState::default();
         self.rows_dirty = true;
         self.disk_cache_dirty = true;
+        self.fit_widths_dirty = true;
+        self.tree_build_active = None;
+        self.tree_build_latest = 0;
+        self.fit_build_active = None;
+        self.fit_build_latest = 0;
+        self.disk_build_active = None;
+        self.disk_build_latest = 0;
         self.data_generation += 1;
+        self.detail_generation += 1;
         let (tx, rx) = scan::spawn_streaming_scan(
             &self.scan_root,
             self.ci_run_count,
@@ -611,10 +1035,12 @@ impl App {
         );
     }
 
-    pub(super) fn poll_background(&mut self) {
+    pub(super) fn poll_background(&mut self) -> PollBackgroundStats {
         const MAX_MSGS_PER_FRAME: usize = 50;
         let mut needs_rebuild = false;
         let mut msg_count = 0;
+        let started = Instant::now();
+        let mut stats = PollBackgroundStats::default();
 
         while msg_count < MAX_MSGS_PER_FRAME {
             let Ok(msg) = self.bg_rx.try_recv() else {
@@ -623,6 +1049,7 @@ impl App {
             msg_count += 1;
             needs_rebuild |= self.handle_bg_msg(msg);
         }
+        stats.bg_msgs = msg_count;
 
         // Poll CI fetch results
         while let Ok(msg) = self.ci_fetch_rx.try_recv() {
@@ -631,6 +1058,7 @@ impl App {
                     self.handle_ci_fetch_complete(path, result, kind);
                 },
             }
+            stats.ci_msgs += 1;
         }
 
         // Poll example process output
@@ -653,18 +1081,45 @@ impl App {
                     self.terminal_dirty = true;
                 },
             }
+            stats.example_msgs += 1;
         }
 
+        stats.tree_results = self.poll_tree_builds();
+        stats.fit_results = self.poll_fit_width_builds();
+        stats.disk_results = self.poll_disk_cache_builds();
+
         if needs_rebuild {
-            self.rebuild_tree();
+            self.request_tree_rebuild();
             self.maybe_priority_fetch();
         }
+        stats.needs_rebuild = needs_rebuild;
+
+        self.refresh_async_caches();
+        super::perf::log_duration(
+            "poll_background",
+            started.elapsed(),
+            &format!(
+                "bg_msgs={} ci_msgs={} example_msgs={} tree_results={} fit_results={} disk_results={} needs_rebuild={} projects={} nodes={}",
+                stats.bg_msgs,
+                stats.ci_msgs,
+                stats.example_msgs,
+                stats.tree_results,
+                stats.fit_results,
+                stats.disk_results,
+                stats.needs_rebuild,
+                self.all_projects.len(),
+                self.nodes.len()
+            ),
+            super::perf::slow_bg_batch_threshold_ms(),
+        );
+        stats
     }
 
     fn handle_disk_usage(&mut self, path: String, bytes: u64) {
         self.fully_loaded.insert(path.clone());
         self.disk_usage.insert(path.clone(), bytes);
         self.disk_cache_dirty = true;
+        self.fit_widths_dirty = true;
         if bytes == 0 {
             let abs = self
                 .nodes
@@ -689,6 +1144,7 @@ impl App {
     }
 
     fn handle_git_info(&mut self, path: String, info: GitInfo) {
+        self.fit_widths_dirty = true;
         let matching_node = self
             .nodes
             .iter()
@@ -756,9 +1212,14 @@ impl App {
     #[allow(clippy::too_many_lines, reason = "match arms are simple dispatches")]
     fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
         // Bump generation for any message that carries project data, so the
-        // detail cache auto-invalidates without a separate dirty flag.
+        // visible caches auto-invalidate without separate dirty flags.
         if msg.path().is_some() {
             self.data_generation += 1;
+        }
+        if let Some(path) = msg.path()
+            && self.detail_path_is_affected(path)
+        {
+            self.detail_generation += 1;
         }
         match msg {
             BackgroundMsg::DiskUsage { path, bytes } => {
@@ -816,6 +1277,22 @@ impl App {
             },
         }
         false
+    }
+
+    fn detail_path_is_affected(&self, path: &str) -> bool {
+        let Some(project) = self.selected_project() else {
+            return false;
+        };
+        if project.path == path {
+            return true;
+        }
+        let Some(node) = self.selected_node() else {
+            return false;
+        };
+        if node.project.path != project.path || node.worktrees.is_empty() {
+            return false;
+        }
+        node.worktrees.iter().any(|wt| wt.project.path == path)
     }
 
     /// Insert CI runs from the initial scan, propagating to workspace members.
@@ -942,84 +1419,8 @@ impl App {
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
     pub fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
 
-    /// Recompute fit-to-content column widths across all projects.
-    /// Called alongside other cache refreshes in the render loop.
-    pub fn ensure_fit_widths_cached(&mut self) {
-        use super::columns::COL_DISK;
-        use super::columns::COL_SYNC;
-
-        if self.cached_fit_widths.generation == self.data_generation {
-            return;
-        }
-        let dw = super::columns::display_width;
-        let mut widths = ResolvedWidths::default();
-
-        for node in &self.nodes {
-            Self::observe_name_width(
-                &mut widths,
-                Self::fit_name_for_node(node, self.live_worktree_count(node)),
-            );
-            widths.observe(COL_DISK, dw(&self.formatted_disk_for_node(node)));
-            widths.observe(COL_SYNC, dw(&self.git_sync(&node.project)));
-
-            for group in &node.groups {
-                for member in &group.members {
-                    let prefix = if group.name.is_empty() {
-                        PREFIX_MEMBER_INLINE
-                    } else {
-                        PREFIX_MEMBER_NAMED
-                    };
-                    Self::observe_name_width(&mut widths, dw(prefix) + dw(&member.display_name()));
-                    widths.observe(COL_DISK, dw(&self.formatted_disk(member)));
-                    widths.observe(COL_SYNC, dw(&self.git_sync(member)));
-                }
-                if !group.name.is_empty() {
-                    let label = format!("{} ({})", group.name, group.members.len());
-                    Self::observe_name_width(&mut widths, dw(PREFIX_GROUP_COLLAPSED) + dw(&label));
-                }
-            }
-            for wt in &node.worktrees {
-                let wt_name = wt
-                    .project
-                    .worktree_name
-                    .as_deref()
-                    .unwrap_or(&wt.project.path);
-                let wt_prefix = if wt.has_members() {
-                    PREFIX_WT_COLLAPSED
-                } else {
-                    PREFIX_WT_FLAT
-                };
-                Self::observe_name_width(&mut widths, dw(wt_prefix) + dw(wt_name));
-                widths.observe(COL_DISK, dw(&self.formatted_disk(&wt.project)));
-                widths.observe(COL_SYNC, dw(&self.git_sync(&wt.project)));
-                for group in &wt.groups {
-                    for member in &group.members {
-                        let prefix = if group.name.is_empty() {
-                            PREFIX_WT_MEMBER_INLINE
-                        } else {
-                            PREFIX_WT_MEMBER_NAMED
-                        };
-                        Self::observe_name_width(
-                            &mut widths,
-                            dw(prefix) + dw(&member.display_name()),
-                        );
-                        widths.observe(COL_DISK, dw(&self.formatted_disk(member)));
-                        widths.observe(COL_SYNC, dw(&self.git_sync(member)));
-                    }
-                    if !group.name.is_empty() {
-                        let label = format!("{} ({})", group.name, group.members.len());
-                        Self::observe_name_width(
-                            &mut widths,
-                            dw(PREFIX_WT_GROUP_COLLAPSED) + dw(&label),
-                        );
-                    }
-                }
-            }
-        }
-
-        widths.generation = self.data_generation;
-        self.cached_fit_widths = widths;
-    }
+    /// Keep fit-to-content widths rebuilding in the background, never inline on the UI thread.
+    pub fn ensure_fit_widths_cached(&mut self) { self.request_fit_widths_build(); }
 
     /// Iterate all group members in a node, including those nested under worktree entries.
     fn all_group_members(node: &ProjectNode) -> impl Iterator<Item = &RustProject> {
@@ -1050,42 +1451,8 @@ impl App {
         dw(PREFIX_ROOT_COLLAPSED) + dw(&name)
     }
 
-    /// Ensure the cached disk sort data is up to date, recomputing only when dirty.
-    pub fn ensure_disk_cache(&mut self) {
-        if !self.disk_cache_dirty {
-            return;
-        }
-        self.disk_cache_dirty = false;
-
-        // Root-level sorted disk values
-        self.cached_root_sorted.clear();
-        for node in &self.nodes {
-            if let Some(bytes) = self.disk_bytes_for_node(node) {
-                self.cached_root_sorted.push(bytes);
-            }
-        }
-        self.cached_root_sorted.sort_unstable();
-
-        // Per-node child sorted disk values
-        self.cached_child_sorted.clear();
-        for (ni, node) in self.nodes.iter().enumerate() {
-            let mut values: Vec<u64> = Vec::new();
-            for member in Self::all_group_members(node) {
-                if let Some(&bytes) = self.disk_usage.get(&member.path) {
-                    values.push(bytes);
-                }
-            }
-            for wt in &node.worktrees {
-                if let Some(&bytes) = self.disk_usage.get(&wt.project.path) {
-                    values.push(bytes);
-                }
-            }
-            if !values.is_empty() {
-                values.sort_unstable();
-                self.cached_child_sorted.insert(ni, values);
-            }
-        }
-    }
+    /// Keep disk sort caches rebuilding in the background, never inline on the UI thread.
+    pub fn ensure_disk_cache(&mut self) { self.request_disk_cache_build(); }
 
     /// Ensure the cached `DetailInfo` is up to date for the selected project.
     /// The cache is valid only when the generation AND path both match.
@@ -1096,14 +1463,14 @@ impl App {
             .unwrap_or_default();
 
         if let Some(ref cache) = self.cached_detail
-            && cache.generation == self.data_generation
+            && cache.generation == self.detail_generation
             && cache.path == current_path
         {
             return;
         }
 
         self.cached_detail = self.selected_project().map(|p| DetailCache {
-            generation: self.data_generation,
+            generation: self.detail_generation,
             path:       current_path,
             info:       super::detail::build_detail_info(self, p),
         });

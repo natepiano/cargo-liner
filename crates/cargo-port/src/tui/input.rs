@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
 use crossterm::event::MouseButton;
@@ -14,6 +16,7 @@ use super::types::FocusTarget;
 use crate::project::ProjectLanguage;
 
 pub(super) fn handle_event(app: &mut App, event: &Event) {
+    let started = Instant::now();
     match event {
         Event::Key(key) => {
             // Esc: if running, kill process (keep output). If not running, clear output.
@@ -107,6 +110,39 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
     // Track project selection changes for session persistence
     if app.focus == FocusTarget::ProjectList {
         super::terminal::track_selection(app);
+    }
+
+    super::perf::log_duration(
+        "input_event",
+        started.elapsed(),
+        &format!(
+            "kind={} focus={} scan_complete={} selected={}",
+            event_label(event),
+            focus_label(app.focus),
+            app.scan_complete,
+            app.selected_project().map_or("-", |p| p.path.as_str())
+        ),
+        super::perf::slow_input_event_threshold_ms(),
+    );
+}
+
+const fn focus_label(focus: FocusTarget) -> &'static str {
+    match focus {
+        FocusTarget::ProjectList => "project_list",
+        FocusTarget::DetailFields => "detail_fields",
+        FocusTarget::CiRuns => "ci_runs",
+        FocusTarget::ScanLog => "scan_log",
+    }
+}
+
+fn event_label(event: &Event) -> String {
+    match event {
+        Event::Key(key) => format!("key:{:?}:{:?}", key.kind, key.code),
+        Event::Mouse(mouse) => format!("mouse:{:?}", mouse.kind),
+        Event::Resize(width, height) => format!("resize:{width}x{height}"),
+        Event::FocusGained => "focus_gained".to_string(),
+        Event::FocusLost => "focus_lost".to_string(),
+        Event::Paste(text) => format!("paste:{}", text.len()),
     }
 }
 

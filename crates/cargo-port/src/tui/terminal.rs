@@ -7,11 +7,14 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::process::Stdio;
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableMouseCapture;
+use crossterm::event::Event;
 use crossterm::execute;
 use crossterm::terminal::Clear;
 use crossterm::terminal::ClearType;
@@ -83,6 +86,7 @@ pub fn run(path: &Path) -> ExitCode {
     };
 
     let cfg = config::load();
+    let perf_log_path = super::perf::init();
     let Ok(rt) = tokio::runtime::Runtime::new() else {
         eprintln!("Error: failed to create async runtime");
         return ExitCode::FAILURE;
@@ -116,8 +120,10 @@ pub fn run(path: &Path) -> ExitCode {
     };
 
     let mut app = App::new(scan_root, projects, bg_tx, bg_rx, &cfg, http_client);
+    super::perf::log_event(&format!("tui_ready perf_log={}", perf_log_path.display()));
+    let input_rx = spawn_input_thread();
 
-    let result = event_loop(&mut terminal, &mut app);
+    let result = event_loop(&mut terminal, &mut app, &input_rx);
 
     let should_restart = app.should_restart;
     let _ = restore_terminal(&mut terminal);
@@ -144,9 +150,51 @@ fn restart_self() {
     eprintln!("Failed to restart: {err}");
 }
 
-fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
+fn spawn_input_thread() -> mpsc::Receiver<Event> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        while let Ok(event) = crossterm::event::read() {
+            if tx.send(event).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "central TUI loop with timing instrumentation"
+)]
+fn event_loop(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut App,
+    input_rx: &mpsc::Receiver<Event>,
+) -> io::Result<()> {
     loop {
-        app.poll_background();
+        let frame_started = Instant::now();
+
+        let input_started = Instant::now();
+        let mut input_count = 0usize;
+        while let Ok(event) = input_rx.try_recv() {
+            input_count += 1;
+            input::handle_event(app, &event);
+            if app.should_quit {
+                return Ok(());
+            }
+        }
+        if input_count == 0 && app.selection_changed {
+            // No events this frame — flush deferred selection save to disk
+            if let Some(path) = &app.last_selected_path {
+                save_last_selected(path);
+            }
+            app.selection_changed = false;
+        }
+        let input_elapsed = input_started.elapsed();
+
+        let bg_started = Instant::now();
+        let bg_stats = app.poll_background();
+        let bg_elapsed = bg_started.elapsed();
 
         // A child process may have written to /dev/tty, clobbering the screen.
         // Clear the actual terminal, then reset ratatui's buffer so it repaints.
@@ -156,30 +204,25 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
             terminal.clear()?;
         }
 
+        let rows_started = Instant::now();
         app.ensure_visible_rows_cached();
+        let rows_elapsed = rows_started.elapsed();
+
+        let disk_started = Instant::now();
         app.ensure_disk_cache();
+        let disk_elapsed = disk_started.elapsed();
+
+        let fit_started = Instant::now();
         app.ensure_fit_widths_cached();
+        let fit_elapsed = fit_started.elapsed();
+
+        let detail_started = Instant::now();
         app.ensure_detail_cached();
+        let detail_elapsed = detail_started.elapsed();
+
+        let draw_started = Instant::now();
         terminal.draw(|frame| render::ui(frame, app))?;
-
-        // Wait for at least one event (up to 16ms for ~60fps)
-        if crossterm::event::poll(Duration::from_millis(FRAME_POLL_MILLIS))? {
-            input::handle_event(app, &crossterm::event::read()?);
-
-            // Drain any additional queued events without waiting
-            while crossterm::event::poll(Duration::ZERO)? {
-                input::handle_event(app, &crossterm::event::read()?);
-                if app.should_quit {
-                    return Ok(());
-                }
-            }
-        } else if app.selection_changed {
-            // No events this frame — flush deferred selection save to disk
-            if let Some(path) = &app.last_selected_path {
-                save_last_selected(path);
-            }
-            app.selection_changed = false;
-        }
+        let draw_elapsed = draw_started.elapsed();
 
         if app.should_quit {
             // Flush any pending selection save
@@ -221,6 +264,39 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
             );
             app.data_generation += 1;
             spawn_ci_fetch(app, &fetch);
+        }
+
+        let idle_started = Instant::now();
+        if input_count == 0 {
+            thread::sleep(Duration::from_millis(FRAME_POLL_MILLIS));
+        }
+        let idle_elapsed = idle_started.elapsed();
+
+        let frame_elapsed = frame_started.elapsed();
+        if frame_elapsed.as_millis() >= super::perf::slow_frame_threshold_ms() {
+            super::perf::log_event(&format!(
+                "slow_frame elapsed_ms={} input_ms={} bg_ms={} rows_ms={} disk_ms={} fit_ms={} detail_ms={} draw_ms={} idle_ms={} input_count={} bg_msgs={} ci_msgs={} example_msgs={} tree_results={} fit_results={} disk_results={} needs_rebuild={} projects={} nodes={} scan_complete={}",
+                frame_elapsed.as_millis(),
+                input_elapsed.as_millis(),
+                bg_elapsed.as_millis(),
+                rows_elapsed.as_millis(),
+                disk_elapsed.as_millis(),
+                fit_elapsed.as_millis(),
+                detail_elapsed.as_millis(),
+                draw_elapsed.as_millis(),
+                idle_elapsed.as_millis(),
+                input_count,
+                bg_stats.bg_msgs,
+                bg_stats.ci_msgs,
+                bg_stats.example_msgs,
+                bg_stats.tree_results,
+                bg_stats.fit_results,
+                bg_stats.disk_results,
+                bg_stats.needs_rebuild,
+                app.all_projects.len(),
+                app.nodes.len(),
+                app.scan_complete
+            ));
         }
     }
     Ok(())
@@ -441,6 +517,7 @@ pub(super) fn track_selection(app: &mut App) {
         let path = project.path.clone();
         if app.last_selected_path.as_ref() != Some(&path) {
             app.data_generation += 1;
+            app.detail_generation += 1;
             app.last_selected_path = Some(path);
             // Disk write deferred to save_selection_on_idle / quit
             app.selection_changed = true;
@@ -463,42 +540,35 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
     let ci_run_count = app.ci_run_count;
     let project_name = name.cloned();
 
-    // Git info is local and instant — also provides the repo URL for CI
-    let git_info = if git_tracking.is_tracked() {
-        GitInfo::detect(&abs)
-    } else {
-        None
-    };
-    if let Some(ref info) = git_info {
-        let _ = tx.send(BackgroundMsg::GitInfo {
-            path: project_path.clone(),
-            info: info.clone(),
-        });
-    }
+    thread::spawn(move || {
+        // Git detection can be expensive on some repos; keep it off the UI thread.
+        let git_info = if git_tracking.is_tracked() {
+            GitInfo::detect(&abs)
+        } else {
+            None
+        };
+        if let Some(ref info) = git_info {
+            let _ = tx.send(BackgroundMsg::GitInfo {
+                path: project_path.clone(),
+                info: info.clone(),
+            });
+        }
 
-    // CI runs from cache — uses local repo URL, never network
-    if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
-        && let Some((owner, repo)) = ci::parse_owner_repo(repo_url)
-    {
-        let tx_ci = tx.clone();
-        let path_ci = project_path.clone();
-        let client_ci = client.clone();
-        let url = repo_url.clone();
-        thread::spawn(move || {
+        // CI runs from cache — uses local repo URL, never network.
+        if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
+            && let Some((owner, repo)) = ci::parse_owner_repo(repo_url)
+        {
             let (result, _meta) =
-                scan::fetch_ci_runs_cached(&client_ci, &url, &owner, &repo, ci_run_count);
+                scan::fetch_ci_runs_cached(&client, repo_url, &owner, &repo, ci_run_count);
             let runs = match result {
                 CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
             };
-            let _ = tx_ci.send(BackgroundMsg::CiRuns {
-                path: path_ci,
+            let _ = tx.send(BackgroundMsg::CiRuns {
+                path: project_path.clone(),
                 runs,
             });
-        });
-    }
+        }
 
-    // Disk + crates.io on another thread (slower)
-    thread::spawn(move || {
         let bytes = scan::dir_size(&abs);
         let _ = tx.send(BackgroundMsg::DiskUsage {
             path: project_path.clone(),
