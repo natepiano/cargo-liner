@@ -118,16 +118,14 @@ pub enum CiFetchResult {
     CacheOnly(Vec<CiRun>),
 }
 
-/// Base cache directory: `$TMPDIR/cargo-port/ci-cache`.
+/// Base cache directory for CI metadata.
 pub fn cache_dir() -> Option<PathBuf> {
-    std::env::var("TMPDIR")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| Some(PathBuf::from("/tmp")))
+    dirs::cache_dir()
+        .or_else(|| Some(std::env::temp_dir()))
         .map(|d| d.join(CACHE_DIR))
 }
 
-/// Repo-keyed cache directory: `$TMPDIR/cargo-port/ci-cache/{owner}/{repo}`.
+/// Repo-keyed cache directory: `{cache_dir}/cargo-port/ci-cache/{owner}/{repo}`.
 fn repo_cache_dir(owner: &str, repo: &str) -> Option<PathBuf> {
     cache_dir().map(|d| d.join(owner).join(repo))
 }

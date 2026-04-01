@@ -65,16 +65,16 @@ impl ScrollDirection {
 }
 
 /// Lint status indicator settings.
-#[derive(confique::Config, Serialize)]
+#[derive(confique::Config, Default, Serialize)]
 pub struct LintConfig {
-    /// Show a lint status indicator per project by reading
-    /// `target/port-report.log`. Any external tool can produce this log.
+    /// Show a lint status indicator per project by reading a cache-rooted
+    /// `port-report.log` protocol file. Any external tool can produce it.
     #[config(default = false)]
     pub enabled: bool,
 }
 
 /// Top-level application configuration.
-#[derive(confique::Config, Serialize)]
+#[derive(confique::Config, Default, Serialize)]
 pub struct Config {
     #[config(nested)]
     pub mouse: MouseConfig,
@@ -82,18 +82,6 @@ pub struct Config {
     pub tui:   TuiConfig,
     #[config(nested)]
     pub lint:  LintConfig,
-}
-
-impl Default for Config {
-    #[allow(
-        clippy::expect_used,
-        reason = "infallible — every field has a #[config(default)]"
-    )]
-    fn default() -> Self {
-        Self::builder()
-            .load()
-            .expect("all config fields have defaults")
-    }
 }
 
 /// TUI display and behaviour settings.
@@ -129,12 +117,33 @@ pub struct TuiConfig {
     pub status_flash_secs: f64,
 }
 
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            inline_dirs: vec!["crates".to_string()],
+            ci_run_count: 5,
+            include_dirs: Vec::new(),
+            include_non_rust: NonRustInclusion::Exclude,
+            editor: "zed".to_string(),
+            status_flash_secs: 3.0,
+        }
+    }
+}
+
 /// Mouse input settings.
 #[derive(confique::Config, Serialize)]
 pub struct MouseConfig {
     /// Whether to invert mouse scroll direction.
     #[config(default = true)]
     pub invert_scroll: ScrollDirection,
+}
+
+impl Default for MouseConfig {
+    fn default() -> Self {
+        Self {
+            invert_scroll: ScrollDirection::Inverted,
+        }
+    }
 }
 
 pub fn config_path() -> Option<PathBuf> {
