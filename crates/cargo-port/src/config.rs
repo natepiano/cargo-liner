@@ -88,8 +88,8 @@ pub struct LintConfig {
     #[config(default = false)]
     pub enabled: bool,
 
-    /// Limit lint execution to projects whose display or absolute path starts
-    /// with one of these prefixes. Empty means every Rust project is eligible.
+    /// Allow-list lint execution to projects whose display or absolute path
+    /// starts with one of these prefixes. Empty means no projects are eligible.
     #[config(default = [])]
     pub include: Vec<String>,
 
@@ -107,20 +107,30 @@ pub struct LintConfig {
 impl LintConfig {
     pub fn resolved_commands(&self) -> Vec<LintCommandConfig> {
         if self.commands.is_empty() {
-            return vec![
-                LintCommandConfig {
-                    name:    "mend".to_string(),
-                    command: "cargo mend --manifest-path \"$MANIFEST_PATH\"".to_string(),
-                },
-                LintCommandConfig {
-                    name:    "clippy".to_string(),
-                    command:
-                        "cargo clippy --workspace --all-targets --all-features --manifest-path \"$MANIFEST_PATH\" -- -D warnings"
-                            .to_string(),
-                },
-            ];
+            return vec![LintCommandConfig {
+                name:    "clippy".to_string(),
+                command:
+                    "cargo clippy --workspace --all-targets --all-features --manifest-path \"$MANIFEST_PATH\" -- -D warnings"
+                        .to_string(),
+            }];
         }
         self.commands.clone()
+    }
+}
+
+pub fn builtin_lint_command(name: &str) -> Option<LintCommandConfig> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "mend" => Some(LintCommandConfig {
+            name:    "mend".to_string(),
+            command: "cargo mend --manifest-path \"$MANIFEST_PATH\"".to_string(),
+        }),
+        "clippy" => Some(LintCommandConfig {
+            name:    "clippy".to_string(),
+            command:
+                "cargo clippy --workspace --all-targets --all-features --manifest-path \"$MANIFEST_PATH\" -- -D warnings"
+                    .to_string(),
+        }),
+        _ => None,
     }
 }
 
@@ -422,15 +432,13 @@ mod tests {
         assert_eq!(cfg.lint.commands[1].name, "clippy");
     }
 
-    /// Empty lint command config falls back to the built-in command pair.
+    /// Empty lint command config falls back to the built-in clippy command.
     #[test]
     fn resolved_lint_commands_default_to_builtins() {
         let cfg = Config::default();
         let commands = cfg.lint.resolved_commands();
-        assert_eq!(commands.len(), 2);
-        assert_eq!(commands[0].name, "mend");
-        assert!(commands[0].command.contains("cargo mend"));
-        assert_eq!(commands[1].name, "clippy");
-        assert!(commands[1].command.contains("cargo clippy"));
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "clippy");
+        assert!(commands[0].command.contains("cargo clippy"));
     }
 }

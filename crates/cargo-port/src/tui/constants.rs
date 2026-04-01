@@ -16,8 +16,7 @@ pub(super) const CI_FETCH_DISPLAY_COUNT: u32 = 5;
 pub(super) const SEARCH_BAR_HEIGHT: u16 = 3;
 pub(super) const DETAIL_PANEL_HEIGHT: u16 = 14;
 pub(super) const FINDER_POPUP_HEIGHT: u16 = 28;
-pub(super) const SETTINGS_POPUP_WIDTH: u16 = 60;
-pub(super) const SETTINGS_POPUP_PADDING: u16 = 6;
+pub(super) const SETTINGS_POPUP_WIDTH: u16 = 90;
 pub(super) const CONFIRM_DIALOG_HEIGHT: u16 = 3;
 pub(super) const CI_TIMESTAMP_WIDTH: u16 = 16;
 

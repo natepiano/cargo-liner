@@ -22,12 +22,29 @@ use crate::config::LintConfig;
 use crate::port_report;
 
 const LINT_DEBOUNCE: Duration = Duration::from_millis(750);
+const DELETE_LINT_DEBOUNCE: Duration = Duration::from_millis(1500);
 const STOP_POLL: Duration = Duration::from_millis(250);
 
 pub struct RegisterProjectRequest {
     pub project_path: String,
     pub abs_path:     PathBuf,
     pub is_rust:      bool,
+}
+
+pub fn project_is_eligible(
+    lint: &LintConfig,
+    project_path: &str,
+    abs_path: &Path,
+    is_rust: bool,
+) -> bool {
+    should_watch_project(
+        lint,
+        &RegisterProjectRequest {
+            project_path: project_path.to_string(),
+            abs_path: abs_path.to_path_buf(),
+            is_rust,
+        },
+    )
 }
 
 pub struct RuntimeHandle {
@@ -90,12 +107,20 @@ fn supervisor_loop(
 ) {
     let commands = lint.resolved_commands();
     let mut workers: HashMap<PathBuf, ProjectWorker> = HashMap::new();
+    let mut initialized = false;
 
     loop {
         match rx.recv() {
             Ok(SupervisorMsg::SyncProjects(projects)) => {
                 let desired = desired_projects(&lint, projects);
-                reconcile_workers(&mut workers, desired, &cache_root, &commands);
+                reconcile_workers(
+                    &mut workers,
+                    desired,
+                    &cache_root,
+                    &commands,
+                    initialized,
+                );
+                initialized = true;
             },
             Ok(SupervisorMsg::Shutdown) | Err(_) => {
                 for (_, worker) in workers.drain() {
@@ -123,6 +148,7 @@ fn reconcile_workers(
     desired: HashMap<PathBuf, RegisterProjectRequest>,
     cache_root: &Path,
     commands: &[LintCommandConfig],
+    trigger_new_runs: bool,
 ) {
     let stale: Vec<PathBuf> = workers
         .keys()
@@ -140,6 +166,7 @@ fn reconcile_workers(
                 request.abs_path,
                 cache_root.to_path_buf(),
                 commands.to_vec(),
+                trigger_new_runs,
             )
         });
     }
@@ -154,6 +181,7 @@ fn spawn_project_worker(
     project_root: PathBuf,
     cache_root: PathBuf,
     commands: Vec<LintCommandConfig>,
+    run_immediately: bool,
 ) -> ProjectWorker {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::clone(&stop);
@@ -169,7 +197,7 @@ fn spawn_project_worker(
             return;
         }
 
-        let mut next_run_at = None;
+        let mut next_run_at = run_immediately.then(Instant::now);
         loop {
             if stop_flag.load(Ordering::Relaxed) {
                 return;
@@ -183,8 +211,11 @@ fn spawn_project_worker(
 
             match event_rx.recv_timeout(timeout) {
                 Ok(Ok(event)) => {
-                    if event.paths.iter().any(|path| is_relevant_change(&project_root, path)) {
-                        next_run_at = Some(Instant::now() + LINT_DEBOUNCE);
+                    if let Some(debounce) = event_debounce(&project_root, &event) {
+                        next_run_at = Some(next_run_at.map_or_else(
+                            || Instant::now() + debounce,
+                            |current| current.max(Instant::now() + debounce),
+                        ));
                     }
                 },
                 Ok(Err(_)) => {},
@@ -192,7 +223,9 @@ fn spawn_project_worker(
                     if let Some(deadline) = next_run_at
                         && Instant::now() >= deadline
                     {
-                        let _ = run_commands_for_project(&project_root, &cache_root, &commands);
+                        if project_still_runnable(&project_root) {
+                            let _ = run_commands_for_project(&project_root, &cache_root, &commands);
+                        }
                         next_run_at = None;
                     }
                 },
@@ -207,7 +240,7 @@ fn should_watch_project(lint: &LintConfig, request: &RegisterProjectRequest) -> 
     if !request.is_rust || !request.abs_path.join("Cargo.toml").is_file() {
         return false;
     }
-    if !matches_prefixes(&lint.include, &request.project_path, &request.abs_path, true) {
+    if !matches_prefixes(&lint.include, &request.project_path, &request.abs_path, false) {
         return false;
     }
     !matches_prefixes(&lint.exclude, &request.project_path, &request.abs_path, false)
@@ -223,9 +256,17 @@ fn matches_prefixes(
         return empty_means_match;
     }
     let abs = abs_path.to_string_lossy();
-    prefixes
-        .iter()
-        .any(|prefix| project_path.starts_with(prefix) || abs.starts_with(prefix))
+    prefixes.iter().any(|prefix| {
+        project_path.starts_with(prefix)
+            || abs.starts_with(prefix)
+            || project_path
+                .split('/')
+                .any(|part| !part.is_empty() && part.starts_with(prefix))
+            || abs_path
+                .components()
+                .filter_map(|component| component.as_os_str().to_str())
+                .any(|part| !part.is_empty() && part.starts_with(prefix))
+    })
 }
 
 fn is_relevant_change(project_root: &Path, path: &Path) -> bool {
@@ -246,11 +287,30 @@ fn is_relevant_change(project_root: &Path, path: &Path) -> bool {
         || path.extension().is_some_and(|ext| ext == "rs")
 }
 
+fn event_debounce(project_root: &Path, event: &notify::Event) -> Option<Duration> {
+    if !event.paths.iter().any(|path| is_relevant_change(project_root, path)) {
+        return None;
+    }
+    if matches!(event.kind, notify::event::EventKind::Remove(_)) {
+        Some(DELETE_LINT_DEBOUNCE)
+    } else {
+        Some(LINT_DEBOUNCE)
+    }
+}
+
+fn project_still_runnable(project_root: &Path) -> bool {
+    project_root.is_dir() && project_root.join("Cargo.toml").is_file()
+}
+
 pub fn run_commands_for_project(
     project_root: &Path,
     cache_root: &Path,
     commands: &[LintCommandConfig],
 ) -> io::Result<()> {
+    if !project_still_runnable(project_root) {
+        return Ok(());
+    }
+
     let output_dir = port_report::output_dir_under(cache_root, project_root);
     std::fs::create_dir_all(&output_dir)?;
     port_report::append_status_under(cache_root, project_root, "started")?;
@@ -258,9 +318,16 @@ pub fn run_commands_for_project(
     let manifest_path = project_root.join("Cargo.toml");
     let mut failed = false;
     for (index, command) in commands.iter().enumerate() {
+        if !project_still_runnable(project_root) {
+            return Ok(());
+        }
         if !run_command(project_root, &manifest_path, &output_dir, command, index)? {
             failed = true;
         }
+    }
+
+    if !project_still_runnable(project_root) {
+        return Ok(());
     }
 
     port_report::append_status_under(
@@ -380,9 +447,44 @@ mod tests {
     }
 
     #[test]
+    fn include_filters_match_project_name_prefixes() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+
+        let lint = LintConfig {
+            enabled: true,
+            include: vec!["bevy_lagrange".to_string()],
+            exclude: Vec::new(),
+            commands: Vec::new(),
+        };
+
+        let direct = request("~/rust/bevy_lagrange", project_dir.path(), true);
+        let worktree = request("~/rust/bevy_lagrange_style_fix", project_dir.path(), true);
+
+        assert!(should_watch_project(&lint, &direct));
+        assert!(should_watch_project(&lint, &worktree));
+    }
+
+    #[test]
     fn non_rust_projects_are_never_watched() {
         let project_dir = tempfile::tempdir().expect("tempdir");
         let req = request("~/rust/not-rust", project_dir.path(), false);
+        assert!(!should_watch_project(&LintConfig::default(), &req));
+    }
+
+    #[test]
+    fn empty_allow_list_watches_no_projects() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+        let req = request("~/rust/demo", project_dir.path(), true);
         assert!(!should_watch_project(&LintConfig::default(), &req));
     }
 
@@ -461,6 +563,49 @@ mod tests {
     }
 
     #[test]
+    fn remove_events_use_longer_debounce() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        let source_path = project_dir.path().join("src/lib.rs");
+        let remove_event = notify::Event {
+            kind: notify::event::EventKind::Remove(notify::event::RemoveKind::File),
+            paths: vec![source_path.clone()],
+            attrs: notify::event::EventAttributes::default(),
+        };
+        let modify_event = notify::Event {
+            kind: notify::event::EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Any,
+            )),
+            paths: vec![source_path],
+            attrs: notify::event::EventAttributes::default(),
+        };
+
+        assert_eq!(
+            event_debounce(project_dir.path(), &remove_event),
+            Some(DELETE_LINT_DEBOUNCE)
+        );
+        assert_eq!(
+            event_debounce(project_dir.path(), &modify_event),
+            Some(LINT_DEBOUNCE)
+        );
+    }
+
+    #[test]
+    fn run_commands_skips_non_projects_before_writing_status() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        let commands = vec![LintCommandConfig {
+            name:    "echo".to_string(),
+            command: "printf 'lint ok\\n'".to_string(),
+        }];
+
+        run_commands_for_project(project_dir.path(), cache_dir.path(), &commands)
+            .expect("run commands");
+
+        let log_path = port_report::log_path_under(cache_dir.path(), project_dir.path());
+        assert!(!log_path.exists());
+    }
+
+    #[test]
     fn reconcile_workers_stops_stale_threads() {
         let path = PathBuf::from("/tmp/demo");
         let mut workers = HashMap::new();
@@ -472,10 +617,37 @@ mod tests {
             HashMap::new(),
             Path::new("/tmp/cache"),
             &Vec::new(),
+            false,
         );
 
         assert!(workers.is_empty());
         assert!(exited.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn later_syncs_mark_new_workers_for_immediate_run() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+        let request = request("~/rust/demo", project_dir.path(), true);
+        let desired = HashMap::from([(project_dir.path().to_path_buf(), request)]);
+
+        let mut workers = HashMap::new();
+        reconcile_workers(
+            &mut workers,
+            desired,
+            Path::new("/tmp/cache"),
+            &Vec::new(),
+            true,
+        );
+
+        assert_eq!(workers.len(), 1);
+        for (_, worker) in workers.drain() {
+            stop_worker(worker);
+        }
     }
 
     fn dummy_worker() -> (ProjectWorker, Arc<AtomicBool>) {

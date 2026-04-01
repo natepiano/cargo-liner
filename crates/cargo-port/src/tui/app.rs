@@ -998,11 +998,20 @@ impl App {
     }
 
     fn refresh_lint_statuses_from_disk(&mut self) {
+        let cfg = crate::config::load();
         self.lint_status.clear();
         if !self.lint_enabled {
             return;
         }
         for project in &self.all_projects {
+            if !crate::lint_runtime::project_is_eligible(
+                &cfg.lint,
+                &project.path,
+                &PathBuf::from(&project.abs_path),
+                project.is_rust == crate::project::ProjectLanguage::Rust,
+            ) {
+                continue;
+            }
             let status = crate::port_report::read_status(&PathBuf::from(&project.abs_path));
             if !matches!(status, LintStatus::NoLog) {
                 self.lint_status.insert(project.path.clone(), status);
@@ -1497,7 +1506,24 @@ impl App {
                 }
             },
             BackgroundMsg::LintStatus { path, status } => {
-                self.lint_status.insert(path, status);
+                let eligible = self
+                    .all_projects
+                    .iter()
+                    .find(|project| project.path == path)
+                    .is_some_and(|project| {
+                        let cfg = crate::config::load();
+                        crate::lint_runtime::project_is_eligible(
+                            &cfg.lint,
+                            &project.path,
+                            &PathBuf::from(&project.abs_path),
+                            project.is_rust == crate::project::ProjectLanguage::Rust,
+                        )
+                    });
+                if eligible {
+                    self.lint_status.insert(path, status);
+                } else {
+                    self.lint_status.remove(&path);
+                }
             },
             BackgroundMsg::ScanComplete => {
                 self.scan_complete = true;

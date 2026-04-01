@@ -74,7 +74,7 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
         },
         // 3: Lang
         ColumnDef {
-            header:              "R",
+            header:              "",
             width:               ColumnWidth::Fixed(2),
             align:               Align::Left,
             gap:                 1,
