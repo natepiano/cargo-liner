@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use ratatui::Frame;
 use ratatui::layout::Constraint;
@@ -18,6 +19,8 @@ use ratatui::widgets::ListItem;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+use super::LINT_SPINNER;
+use super::animation::OFFLINE_PULSE;
 use super::app::App;
 use super::app::CiState;
 use super::app::ConfirmAction;
@@ -32,7 +35,6 @@ use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::constants::DETAIL_PANEL_HEIGHT;
 use super::constants::OFFLINE_PULSE_AMPLITUDE;
 use super::constants::OFFLINE_PULSE_BLUE;
-use super::constants::OFFLINE_PULSE_CYCLE;
 use super::constants::OFFLINE_PULSE_GREEN;
 use super::constants::OFFLINE_PULSE_OFFSET;
 use super::constants::OFFLINE_PULSE_RED;
@@ -238,7 +240,10 @@ fn ci_icon_width() -> usize {
 }
 
 /// Display width of the lint icon column (widest lint icon).
-fn lint_icon_width() -> usize { display_width(crate::constants::LINT_PASSED) }
+fn lint_icon_width() -> usize {
+    display_width(crate::constants::LINT_PASSED)
+        .max(display_width(LINT_SPINNER.frame_at(Duration::ZERO)))
+}
 
 pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
     let prefix_width = display_width(row.prefix);
@@ -267,7 +272,7 @@ pub(super) fn project_row_spans(row: &RowData<'_>) -> Line<'static> {
             .add_modifier(Modifier::CROSSED_OUT);
         return Line::from(vec![
             Span::styled(padded_name, strike),
-            Span::styled(lint_cell.clone(), strike),
+            Span::styled(lint_cell, strike),
             Span::styled(format!(" {:>disk_width$}", row.disk), strike),
             Span::styled(format!(" {lang_cell}"), strike),
             Span::styled(sync_cell, strike),
@@ -536,13 +541,8 @@ fn render_empty_ci_panel(frame: &mut Frame, app: &App, project: Option<&RustProj
 fn render_offline_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let msg = "  No internet connection  ";
 
-    // Pulsing color wash using spinner_tick (~60fps)
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "display-only — animation phase from small counter"
-    )]
-    let phase = (app.spinner_tick % OFFLINE_PULSE_CYCLE) as f64 / OFFLINE_PULSE_CYCLE as f64;
-    let pulse = (phase * std::f64::consts::TAU)
+    let progress = OFFLINE_PULSE.progress_at(app.animation_elapsed());
+    let pulse = (progress * std::f64::consts::TAU)
         .sin()
         .mul_add(OFFLINE_PULSE_AMPLITUDE, OFFLINE_PULSE_OFFSET);
 

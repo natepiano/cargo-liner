@@ -14,13 +14,14 @@ use chrono::DateTime;
 use chrono::FixedOffset;
 use chrono::Utc;
 
-use super::constants::Icon;
 use super::constants::LINT_FAILED;
 use super::constants::LINT_NO_LOG;
 use super::constants::LINT_PASSED;
 use super::constants::LINT_STALE;
 use super::constants::PORT_REPORT_LOG;
 use super::constants::STALE_TIMEOUT;
+use super::tui::Icon;
+use super::tui::LINT_SPINNER;
 
 /// Lint status derived from the last line of `port-report.log`.
 #[derive(Debug, Clone)]
@@ -34,9 +35,9 @@ pub enum LintStatus {
 
 impl LintStatus {
     /// Returns the `Icon` for this lint status.
-    pub fn icon(&self) -> Icon {
+    pub const fn icon(&self) -> Icon {
         match self {
-            Self::Running(_) => Icon::Animated(super::constants::LINT_RUNNING),
+            Self::Running(_) => Icon::Animated(LINT_SPINNER),
             Self::Passed(_) => Icon::Static(LINT_PASSED),
             Self::Failed(_) => Icon::Static(LINT_FAILED),
             Self::Stale => Icon::Static(LINT_STALE),
@@ -45,7 +46,7 @@ impl LintStatus {
     }
 
     /// Human-readable label for the detail panel.
-    pub fn label(&self) -> &'static str {
+    pub const fn label(&self) -> &'static str {
         match self {
             Self::Running(_) => "running",
             Self::Passed(_) => "passed",
@@ -55,7 +56,7 @@ impl LintStatus {
         }
     }
 
-    pub fn timestamp(&self) -> Option<&DateTime<FixedOffset>> {
+    pub const fn timestamp(&self) -> Option<&DateTime<FixedOffset>> {
         match self {
             Self::Running(ts) | Self::Passed(ts) | Self::Failed(ts) => Some(ts),
             Self::Stale | Self::NoLog => None,

@@ -22,12 +22,12 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
+use super::animation::BRAILLE_SPINNER;
 use super::app::App;
 use super::app::CiState;
 use super::app::ConfirmAction;
 use super::constants::CI_EXTRA_ROWS;
 use super::constants::CI_TIMESTAMP_WIDTH;
-use super::constants::SPINNER_FRAMES;
 use super::render::CiColumn;
 use super::types::FocusTarget;
 use super::types::Pane;
@@ -1292,11 +1292,6 @@ const fn days_in_month(year: i64, month: i64) -> i64 {
     }
 }
 
-fn spinner_frame(tick: usize) -> &'static str {
-    // Divide tick to slow down the spinner (renders at ~60fps, we want ~10fps spin)
-    SPINNER_FRAMES[(tick / 6) % SPINNER_FRAMES.len()]
-}
-
 /// Convert a UTC ISO 8601 timestamp to local time, formatted as `yyyy-mm-dd hh:mm`.
 fn format_timestamp(iso: &str) -> String {
     // Get local UTC offset using libc (macOS/Linux)
@@ -1519,7 +1514,7 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun
         .map_or(0, CiState::fetch_count);
 
     let title = if is_fetching {
-        let spinner = spinner_frame(app.spinner_tick);
+        let spinner = BRAILLE_SPINNER.frame_at(app.animation_elapsed());
         format!(" CI Runs {spinner} fetching {fetch_count} more… ")
     } else {
         format!(" CI Runs (cached {cached}, total {total}) ")
@@ -1571,7 +1566,7 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun
 
     // "Fetch more" / "fetch new runs" as a table row
     let fetch_label = if is_fetching {
-        let spinner = spinner_frame(app.spinner_tick);
+        let spinner = BRAILLE_SPINNER.frame_at(app.animation_elapsed());
         format!("{spinner} fetching {fetch_count} more…")
     } else if is_exhausted {
         "↓ fetch new runs".to_string()
