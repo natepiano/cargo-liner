@@ -57,13 +57,7 @@ pub enum FetchStatus {
 }
 
 impl From<bool> for FetchStatus {
-    fn from(b: bool) -> Self {
-        if b {
-            Self::Fetched
-        } else {
-            Self::Pending
-        }
-    }
+    fn from(b: bool) -> Self { if b { Self::Fetched } else { Self::Pending } }
 }
 
 impl From<FetchStatus> for bool {
