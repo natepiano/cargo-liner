@@ -276,8 +276,7 @@ pub(super) fn header_line(widths: &ResolvedWidths, name_text: &str) -> Line<'sta
     // actual column width. For "Lint" over a 2-char column, only 2 chars
     // borrow from Name.
     let borrow_overflow = if defs[COL_LINT].header_borrows_left {
-        display_width(defs[COL_LINT].header)
-            .saturating_sub(widths.get(COL_LINT))
+        display_width(defs[COL_LINT].header).saturating_sub(widths.get(COL_LINT))
     } else {
         0
     };
@@ -324,7 +323,9 @@ pub(super) fn header_line(widths: &ResolvedWidths, name_text: &str) -> Line<'sta
 /// Build a `RowCells` for a project row. Single construction site replaces all
 /// scattered project row literals.
 pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
-    let ci_text = row.ci.map_or(String::new(), |conclusion| String::from(conclusion.icon()));
+    let ci_text = row
+        .ci
+        .map_or(String::new(), |conclusion| String::from(conclusion.icon()));
 
     let ci_style = super::render::conclusion_style(row.ci);
     let origin_style = match row.git_icon {
@@ -533,28 +534,28 @@ mod tests {
         widths.observe(COL_SYNC, 2);
 
         let row_emoji = build_row_cells(ProjectRow {
-            prefix: "▶ ",
-            name: "bevy_brp 🌲:2",
-            lint_icon: crate::constants::LINT_PASSED,
-            disk: "36.3 GiB",
+            prefix:     "▶ ",
+            name:       "bevy_brp 🌲:2",
+            lint_icon:  crate::constants::LINT_PASSED,
+            disk:       "36.3 GiB",
             disk_style: Style::default(),
-            lang_icon: "🦀",
-            git_sync: "↑2",
-            git_icon: crate::constants::GIT_CLONE,
-            ci: Some(Conclusion::Success),
-            deleted: false,
+            lang_icon:  "🦀",
+            git_sync:   "↑2",
+            git_icon:   crate::constants::GIT_CLONE,
+            ci:         Some(Conclusion::Success),
+            deleted:    false,
         });
         let row_ascii = build_row_cells(ProjectRow {
-            prefix: "▶ ",
-            name: "bevy_mesh_outline_benchmark",
-            lint_icon: crate::constants::LINT_PASSED,
-            disk: "36.3 GiB",
+            prefix:     "▶ ",
+            name:       "bevy_mesh_outline_benchmark",
+            lint_icon:  crate::constants::LINT_PASSED,
+            disk:       "36.3 GiB",
             disk_style: Style::default(),
-            lang_icon: "🦀",
-            git_sync: "↑2",
-            git_icon: crate::constants::GIT_CLONE,
-            ci: Some(Conclusion::Success),
-            deleted: false,
+            lang_icon:  "🦀",
+            git_sync:   "↑2",
+            git_icon:   crate::constants::GIT_CLONE,
+            ci:         Some(Conclusion::Success),
+            deleted:    false,
         });
 
         let line_emoji = row_to_line(&row_emoji, &widths);
@@ -587,7 +588,10 @@ mod tests {
         let row = build_summary_cells(widths.get(COL_NAME), "36.3 GiB");
         let line = row_to_line(&row, &widths);
 
-        assert_eq!(line.spans[COL_NAME].content.as_ref(), " ".repeat(widths.get(COL_NAME)));
+        assert_eq!(
+            line.spans[COL_NAME].content.as_ref(),
+            " ".repeat(widths.get(COL_NAME))
+        );
         assert_eq!(line.spans[COL_LINT].content.as_ref(), " Σ");
         assert_eq!(line.spans[COL_DISK].content.as_ref(), " 36.3 GiB");
     }

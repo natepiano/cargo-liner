@@ -334,8 +334,7 @@ impl RustProject {
     /// Display name for the project list.
     /// Falls back to the last path component for workspace-only projects.
     pub fn display_name(&self) -> String {
-        self
-            .name
+        self.name
             .as_deref()
             .unwrap_or_else(|| self.path.rsplit('/').next().unwrap_or(&self.path))
             .to_string()
