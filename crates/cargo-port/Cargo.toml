@@ -15,8 +15,8 @@ version     = "0.0.2"
 #   #[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]
 allow_attributes_without_reason = "deny"
 expect_used                     = "deny"
-panic       = "deny"
-unwrap_used = "deny"
+panic                           = "deny"
+unwrap_used                     = "deny"
 
 # Enable lint groups as errors (with lower priority so allows can override)
 all      = { level = "deny", priority = -1 }
@@ -31,7 +31,7 @@ multiple_crate_versions = "allow"
 missing_docs = "deny"
 
 [dependencies]
-chrono = "0.4.44"
+chrono         = "0.4.44"
 clap           = { version = "4", features = ["derive"] }
 colored        = "3.1.1"
 comfy-table    = { version = "7", features = ["custom_styling"] }
@@ -46,7 +46,7 @@ serde          = { version = "1", features = ["derive"] }
 serde_json     = "1"
 toml           = "1.1.0"
 unicode-width  = "0.2.2"
-ureq = "3.3.0"
+ureq           = "3.3.0"
 walkdir        = "2"
 
 [dev-dependencies]
