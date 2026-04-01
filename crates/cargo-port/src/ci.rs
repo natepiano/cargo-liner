@@ -49,19 +49,11 @@ pub struct GqlCheckRun {
 
 /// Whether a CI run has been fully fetched from the API.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "bool", into = "bool")]
+#[serde(rename_all = "lowercase")]
 pub enum FetchStatus {
     #[default]
     Fetched,
     Pending,
-}
-
-impl From<bool> for FetchStatus {
-    fn from(b: bool) -> Self { if b { Self::Fetched } else { Self::Pending } }
-}
-
-impl From<FetchStatus> for bool {
-    fn from(val: FetchStatus) -> Self { matches!(val, FetchStatus::Fetched) }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

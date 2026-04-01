@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
+use std::time::Duration;
+use std::time::Instant;
 
 use nucleo_matcher::Matcher;
 use nucleo_matcher::Utf32Str;
@@ -224,7 +226,7 @@ pub(super) struct App {
     pub pending_ci_fetch:    Option<PendingCiFetch>,
     pub pending_clean:       Option<String>,
     pub confirm:             Option<ConfirmAction>,
-    pub spinner_tick:        usize,
+    pub animation_started:   Instant,
     pub ci_fetch_tx:         mpsc::Sender<CiFetchMsg>,
     pub ci_fetch_rx:         mpsc::Receiver<CiFetchMsg>,
     pub example_running:     Option<String>,
@@ -462,7 +464,7 @@ impl App {
             pending_ci_fetch: None,
             pending_clean: None,
             confirm: None,
-            spinner_tick: 0,
+            animation_started: Instant::now(),
             ci_fetch_tx,
             ci_fetch_rx,
             example_running: None,
@@ -686,6 +688,70 @@ impl App {
         }
     }
 
+    fn handle_git_info(&mut self, path: String, info: GitInfo) {
+        let matching_node = self
+            .nodes
+            .iter()
+            .find(|node| node.project.path == path)
+            .or_else(|| {
+                self.nodes
+                    .iter()
+                    .flat_map(|node| node.worktrees.iter())
+                    .find(|worktree| worktree.project.path == path)
+            });
+        if let Some(node) = matching_node {
+            for member in Self::all_group_members(node) {
+                // Always overwrite: the correct branch comes from the
+                // workspace root, not from a stale propagation.
+                self.git_info.insert(member.path.clone(), info.clone());
+            }
+            for worktree in &node.worktrees {
+                self.git_info
+                    .entry(worktree.project.path.clone())
+                    .or_insert_with(|| info.clone());
+            }
+        }
+        self.git_info.insert(path, info);
+        self.finder_dirty = true;
+    }
+
+    fn handle_repo_meta(&mut self, path: String, stars: u64, description: Option<String>) {
+        self.network_status = NetworkStatus::Online;
+        if let Some(node) = self.nodes.iter().find(|node| node.project.path == path) {
+            for member in Self::all_group_members(node) {
+                self.stars.entry(member.path.clone()).or_insert(stars);
+            }
+        }
+        self.stars.insert(path.clone(), stars);
+        if let Some(desc) = description {
+            self.repo_descriptions.insert(path, desc);
+        }
+    }
+
+    fn handle_project_discovered(&mut self, project: RustProject) -> bool {
+        if self
+            .all_projects
+            .iter()
+            .any(|existing| existing.path == project.path)
+        {
+            return false;
+        }
+
+        let abs_path = PathBuf::from(&project.abs_path);
+        let git_tracking = if abs_path.join(".git").exists() {
+            GitTracking::Tracked
+        } else {
+            GitTracking::Untracked
+        };
+        let _ = self.watch_tx.send(WatchRequest {
+            project_path: project.path.clone(),
+            abs_path,
+            git_tracking,
+        });
+        self.all_projects.push(project);
+        true
+    }
+
     /// Handle a single `BackgroundMsg`. Returns `true` if the tree needs rebuilding.
     fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
         // Bump generation for any message that carries project data, so the
@@ -701,32 +767,7 @@ impl App {
                 self.insert_ci_runs(path, runs);
             },
             BackgroundMsg::GitInfo { path, info } => {
-                // Propagate to workspace members and worktrees.
-                // Search both top-level nodes and worktree sub-nodes.
-                let matching_node =
-                    self.nodes
-                        .iter()
-                        .find(|n| n.project.path == path)
-                        .or_else(|| {
-                            self.nodes
-                                .iter()
-                                .flat_map(|n| n.worktrees.iter())
-                                .find(|wt| wt.project.path == path)
-                        });
-                if let Some(node) = matching_node {
-                    for member in Self::all_group_members(node) {
-                        // Always overwrite — the correct branch comes from
-                        // the workspace root, not from a stale propagation.
-                        self.git_info.insert(member.path.clone(), info.clone());
-                    }
-                    for wt in &node.worktrees {
-                        self.git_info
-                            .entry(wt.project.path.clone())
-                            .or_insert_with(|| info.clone());
-                    }
-                }
-                self.git_info.insert(path, info);
-                self.finder_dirty = true;
+                self.handle_git_info(path, info);
             },
             BackgroundMsg::CratesIoVersion {
                 path,
@@ -742,32 +783,10 @@ impl App {
                 stars,
                 description,
             } => {
-                self.network_status = NetworkStatus::Online;
-                // Propagate to workspace members
-                if let Some(node) = self.nodes.iter().find(|n| n.project.path == path) {
-                    for member in Self::all_group_members(node) {
-                        self.stars.entry(member.path.clone()).or_insert(stars);
-                    }
-                }
-                self.stars.insert(path.clone(), stars);
-                if let Some(desc) = description {
-                    self.repo_descriptions.insert(path, desc);
-                }
+                self.handle_repo_meta(path, stars, description);
             },
             BackgroundMsg::ProjectDiscovered { project } => {
-                if !self.all_projects.iter().any(|p| p.path == project.path) {
-                    let abs_path = PathBuf::from(&project.abs_path);
-                    let git_tracking = if abs_path.join(".git").exists() {
-                        GitTracking::Tracked
-                    } else {
-                        GitTracking::Untracked
-                    };
-                    let _ = self.watch_tx.send(WatchRequest {
-                        project_path: project.path.clone(),
-                        abs_path,
-                        git_tracking,
-                    });
-                    self.all_projects.push(project);
+                if self.handle_project_discovered(project) {
                     return true;
                 }
             },
@@ -1698,11 +1717,12 @@ impl App {
         self.ci_state.get(&project.path)
     }
 
-    /// Lint icon frame for the current tick, or a blank space if lint is
+    pub fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
+
+    /// Lint icon frame for the current animation state, or a blank space if lint is
     /// disabled or no log exists.
     pub fn lint_icon(&self, project: &RustProject) -> &'static str {
         use crate::constants::LINT_NO_LOG;
-        use crate::constants::SPINNER_DOTS;
 
         if !self.lint_enabled {
             return LINT_NO_LOG;
@@ -1710,10 +1730,7 @@ impl App {
         let Some(status) = self.lint_status.get(&project.path) else {
             return LINT_NO_LOG;
         };
-        match status {
-            LintStatus::Running(_) => SPINNER_DOTS[self.spinner_tick % SPINNER_DOTS.len()],
-            _ => status.icon().frame(0),
-        }
+        status.icon().frame_at(self.animation_elapsed())
     }
 
     pub fn git_icon(&self, project: &RustProject) -> &'static str {

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-
 use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
@@ -18,6 +17,7 @@ use ratatui::widgets::ListItem;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+use super::animation::OFFLINE_PULSE;
 use super::app::App;
 use super::app::CiState;
 use super::app::ConfirmAction;
@@ -33,7 +33,6 @@ use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::constants::DETAIL_PANEL_HEIGHT;
 use super::constants::OFFLINE_PULSE_AMPLITUDE;
 use super::constants::OFFLINE_PULSE_BLUE;
-use super::constants::OFFLINE_PULSE_CYCLE;
 use super::constants::OFFLINE_PULSE_GREEN;
 use super::constants::OFFLINE_PULSE_OFFSET;
 use super::constants::OFFLINE_PULSE_RED;
@@ -372,13 +371,8 @@ fn render_empty_ci_panel(frame: &mut Frame, app: &App, project: Option<&RustProj
 fn render_offline_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let msg = "  No internet connection  ";
 
-    // Pulsing color wash using spinner_tick (~60fps)
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "display-only — animation phase from small counter"
-    )]
-    let phase = (app.spinner_tick % OFFLINE_PULSE_CYCLE) as f64 / OFFLINE_PULSE_CYCLE as f64;
-    let pulse = (phase * std::f64::consts::TAU)
+    let progress = OFFLINE_PULSE.progress_at(app.animation_elapsed());
+    let pulse = (progress * std::f64::consts::TAU)
         .sin()
         .mul_add(OFFLINE_PULSE_AMPLITUDE, OFFLINE_PULSE_OFFSET);
 
@@ -739,18 +733,18 @@ fn render_root_item(
     } else {
         PREFIX_ROOT_LEAF
     };
-    let row = super::columns::build_row_cells(
+    let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
-        &name,
-        lint,
-        &disk,
-        ds,
-        lang,
-        &sync,
-        git,
+        name: &name,
+        lint_icon: lint,
+        disk: &disk,
+        disk_style: ds,
+        lang_icon: lang,
+        git_sync: &sync,
+        git_icon: git,
         ci,
-        app.is_deleted(&project.path),
-    );
+        deleted: app.is_deleted(&project.path),
+    });
     ListItem::new(super::columns::row_to_line(&row, widths))
 }
 
@@ -771,18 +765,18 @@ fn render_child_item(
     let ci = app.ci_for(project);
     let git = app.git_icon(project);
     let sync = app.git_sync(project);
-    let row = super::columns::build_row_cells(
+    let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name,
-        lint,
-        &disk,
-        ds,
-        lang,
-        &sync,
-        git,
+        lint_icon: lint,
+        disk: &disk,
+        disk_style: ds,
+        lang_icon: lang,
+        git_sync: &sync,
+        git_icon: git,
         ci,
-        app.is_deleted(&project.path),
-    );
+        deleted: app.is_deleted(&project.path),
+    });
     ListItem::new(super::columns::row_to_line(&row, widths))
 }
 
@@ -946,18 +940,18 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             let ci = app.ci_for(project);
             let git = app.git_icon(project);
             let sync = app.git_sync(project);
-            let row = super::columns::build_row_cells(
-                "  ",
-                &entry.name,
-                lint,
-                &disk,
-                ds,
-                lang,
-                &sync,
-                git,
+            let row = super::columns::build_row_cells(super::columns::ProjectRow {
+                prefix: "  ",
+                name: &entry.name,
+                lint_icon: lint,
+                disk: &disk,
+                disk_style: ds,
+                lang_icon: lang,
+                git_sync: &sync,
+                git_icon: git,
                 ci,
-                app.is_deleted(&project.path),
-            );
+                deleted: app.is_deleted(&project.path),
+            });
             Some(ListItem::new(super::columns::row_to_line(&row, widths)))
         })
         .collect()

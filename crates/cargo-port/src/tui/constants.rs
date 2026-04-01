@@ -4,7 +4,6 @@ pub(super) const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 /// Block border costs 2 horizontal characters (left + right).
 pub(super) const BLOCK_BORDER_WIDTH: usize = 2;
 
-pub(super) const OFFLINE_PULSE_CYCLE: usize = 120;
 pub(super) const OFFLINE_PULSE_AMPLITUDE: f64 = 0.3;
 pub(super) const OFFLINE_PULSE_OFFSET: f64 = 0.7;
 pub(super) const OFFLINE_PULSE_RED: f64 = 200.0;
@@ -25,5 +24,3 @@ pub(super) const CI_TIMESTAMP_WIDTH: u16 = 16;
 pub(super) const MAX_FINDER_RESULTS: usize = 50;
 
 pub(super) const CI_EXTRA_ROWS: usize = 1;
-
-pub(super) const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

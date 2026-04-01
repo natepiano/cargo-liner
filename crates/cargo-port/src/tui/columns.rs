@@ -109,20 +109,25 @@ pub(super) const fn column_defs() -> [ColumnDef; NUM_COLS] {
 
 // ── Cell / row types ────────────────────────────────────────────────
 
+#[derive(Default)]
 pub(super) struct CellContent {
     pub text:           String,
     pub style:          Style,
     pub align_override: Option<Align>,
 }
 
-impl Default for CellContent {
-    fn default() -> Self {
-        Self {
-            text:           String::new(),
-            style:          Style::default(),
-            align_override: None,
-        }
-    }
+#[derive(Clone, Copy)]
+pub(super) struct ProjectRow<'a> {
+    pub prefix:     &'a str,
+    pub name:       &'a str,
+    pub lint_icon:  &'a str,
+    pub disk:       &'a str,
+    pub disk_style: Style,
+    pub lang_icon:  &'a str,
+    pub git_sync:   &'a str,
+    pub git_icon:   &'a str,
+    pub ci:         Option<Conclusion>,
+    pub deleted:    bool,
 }
 
 pub(super) struct RowCells {
@@ -217,8 +222,7 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'stat
     let defs = column_defs();
     let mut spans = Vec::with_capacity(NUM_COLS);
 
-    for i in 0..NUM_COLS {
-        let cell = &row.cells[i];
+    for (i, cell) in row.cells.iter().enumerate() {
         let col_width = widths.get(i);
         let align = cell.align_override.unwrap_or(defs[i].align);
 
@@ -318,23 +322,12 @@ pub(super) fn header_line(widths: &ResolvedWidths, name_text: &str) -> Line<'sta
 // ── Row construction helpers ────────────────────────────────────────
 
 /// Build a `RowCells` for a project row. Single construction site replaces all
-/// scattered `RowData { ... }` literals.
-pub(super) fn build_row_cells(
-    prefix: &str,
-    name: &str,
-    lint_icon: &str,
-    disk: &str,
-    disk_style: Style,
-    lang_icon: &str,
-    git_sync: &str,
-    git_icon: &str,
-    ci: Option<Conclusion>,
-    deleted: bool,
-) -> RowCells {
-    let ci_text = ci.map_or(String::new(), |c| String::from(c.icon()));
+/// scattered project row literals.
+pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
+    let ci_text = row.ci.map_or(String::new(), |conclusion| String::from(conclusion.icon()));
 
-    let ci_style = super::render::conclusion_style(ci);
-    let origin_style = match git_icon {
+    let ci_style = super::render::conclusion_style(row.ci);
+    let origin_style = match row.git_icon {
         GIT_FORK => Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
@@ -342,58 +335,59 @@ pub(super) fn build_row_cells(
         GIT_LOCAL => Style::default().fg(Color::DarkGray),
         _ => Style::default(),
     };
-    let sync_style = if git_sync == IN_SYNC {
+    let sync_style = if row.git_sync == IN_SYNC {
         Style::default().fg(Color::Green)
     } else {
         Style::default().fg(Color::White)
     };
 
-    let sync_align = if git_sync == IN_SYNC {
+    let sync_align = if row.git_sync == IN_SYNC {
         Some(Align::Center)
     } else {
         None
     };
 
+    let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
+    cells[COL_NAME] = CellContent {
+        text:           String::from(row.name),
+        style:          Style::default(),
+        align_override: None,
+    };
+    cells[COL_LINT] = CellContent {
+        text:           String::from(row.lint_icon),
+        style:          Style::default(),
+        align_override: None,
+    };
+    cells[COL_DISK] = CellContent {
+        text:           String::from(row.disk),
+        style:          row.disk_style,
+        align_override: None,
+    };
+    cells[COL_LANG] = CellContent {
+        text:           String::from(row.lang_icon),
+        style:          Style::default(),
+        align_override: None,
+    };
+    cells[COL_SYNC] = CellContent {
+        text:           String::from(row.git_sync),
+        style:          sync_style,
+        align_override: sync_align,
+    };
+    cells[COL_GIT] = CellContent {
+        text:           String::from(row.git_icon),
+        style:          origin_style,
+        align_override: None,
+    };
+    cells[COL_CI] = CellContent {
+        text:           ci_text,
+        style:          ci_style,
+        align_override: None,
+    };
+
     RowCells {
-        cells: [
-            CellContent {
-                text:           String::from(name),
-                style:          Style::default(),
-                align_override: None,
-            },
-            CellContent {
-                text:           String::from(lint_icon),
-                style:          Style::default(),
-                align_override: None,
-            },
-            CellContent {
-                text:           String::from(disk),
-                style:          disk_style,
-                align_override: None,
-            },
-            CellContent {
-                text:           String::from(lang_icon),
-                style:          Style::default(),
-                align_override: None,
-            },
-            CellContent {
-                text:           String::from(git_sync),
-                style:          sync_style,
-                align_override: sync_align,
-            },
-            CellContent {
-                text:           String::from(git_icon),
-                style:          origin_style,
-                align_override: None,
-            },
-            CellContent {
-                text:           ci_text,
-                style:          ci_style,
-                align_override: None,
-            },
-        ],
-        prefix: String::from(prefix),
-        deleted,
+        cells,
+        prefix: String::from(row.prefix),
+        deleted: row.deleted,
     }
 }
 
@@ -538,30 +532,30 @@ mod tests {
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
 
-        let row_emoji = build_row_cells(
-            "▶ ",
-            "bevy_brp 🌲:2",
-            crate::constants::LINT_PASSED,
-            "36.3 GiB",
-            Style::default(),
-            "🦀",
-            "↑2",
-            crate::constants::GIT_CLONE,
-            Some(Conclusion::Success),
-            false,
-        );
-        let row_ascii = build_row_cells(
-            "▶ ",
-            "bevy_mesh_outline_benchmark",
-            crate::constants::LINT_PASSED,
-            "36.3 GiB",
-            Style::default(),
-            "🦀",
-            "↑2",
-            crate::constants::GIT_CLONE,
-            Some(Conclusion::Success),
-            false,
-        );
+        let row_emoji = build_row_cells(ProjectRow {
+            prefix: "▶ ",
+            name: "bevy_brp 🌲:2",
+            lint_icon: crate::constants::LINT_PASSED,
+            disk: "36.3 GiB",
+            disk_style: Style::default(),
+            lang_icon: "🦀",
+            git_sync: "↑2",
+            git_icon: crate::constants::GIT_CLONE,
+            ci: Some(Conclusion::Success),
+            deleted: false,
+        });
+        let row_ascii = build_row_cells(ProjectRow {
+            prefix: "▶ ",
+            name: "bevy_mesh_outline_benchmark",
+            lint_icon: crate::constants::LINT_PASSED,
+            disk: "36.3 GiB",
+            disk_style: Style::default(),
+            lang_icon: "🦀",
+            git_sync: "↑2",
+            git_icon: crate::constants::GIT_CLONE,
+            ci: Some(Conclusion::Success),
+            deleted: false,
+        });
 
         let line_emoji = row_to_line(&row_emoji, &widths);
         let line_ascii = row_to_line(&row_ascii, &widths);

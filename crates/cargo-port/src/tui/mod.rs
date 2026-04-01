@@ -1,3 +1,4 @@
+mod animation;
 mod app;
 mod columns;
 mod constants;
@@ -10,4 +11,6 @@ mod shortcuts;
 mod terminal;
 mod types;
 
+pub use animation::Icon;
+pub use animation::LINT_SPINNER;
 pub use terminal::run;
