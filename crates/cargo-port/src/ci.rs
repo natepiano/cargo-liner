@@ -1,31 +1,9 @@
-use std::path::Path;
-use std::process::ExitCode;
-
-use clap::Args;
 use serde::Deserialize;
 use serde::Serialize;
 
 use super::constants::CANCELLED;
 use super::constants::FAILING;
 use super::constants::PASSING;
-use super::http::HttpClient;
-use super::output;
-use super::project::GitInfo;
-
-#[derive(Args)]
-pub struct CiArgs {
-    /// Filter to a specific branch
-    #[arg(long, short)]
-    branch: Option<String>,
-
-    /// Number of recent runs to show
-    #[arg(long, short = 'n', default_value = "1")]
-    count: u32,
-
-    /// Output as JSON instead of a table
-    #[arg(long)]
-    json: bool,
-}
 
 /// Workflow run from the GitHub REST API (`/actions/runs`).
 #[derive(Deserialize)]
@@ -103,64 +81,6 @@ pub struct CiJob {
     pub conclusion:    Conclusion,
     pub duration:      String,
     pub duration_secs: Option<u64>,
-}
-
-pub fn run(path: &Path, args: &CiArgs) -> ExitCode {
-    let Ok(repo_dir) = path.canonicalize() else {
-        eprintln!("Error: cannot resolve path '{}'", path.display());
-        return ExitCode::FAILURE;
-    };
-
-    let Some(git_info) = GitInfo::detect(&repo_dir) else {
-        eprintln!("Error: not a git repository");
-        return ExitCode::FAILURE;
-    };
-    let Some(repo_url) = git_info.url.as_ref() else {
-        eprintln!("Error: no GitHub remote found");
-        return ExitCode::FAILURE;
-    };
-    let Some((owner, repo)) = parse_owner_repo(repo_url) else {
-        eprintln!("Error: could not parse GitHub owner/repo from URL");
-        return ExitCode::FAILURE;
-    };
-
-    let Ok(rt) = tokio::runtime::Runtime::new() else {
-        eprintln!("Error: failed to create async runtime");
-        return ExitCode::FAILURE;
-    };
-    let Some(client) = HttpClient::new(rt.handle().clone()) else {
-        eprintln!("Error: failed to create HTTP client");
-        return ExitCode::FAILURE;
-    };
-
-    let runs = match client.list_runs(&owner, &repo, args.branch.as_deref(), args.count) {
-        Some(runs) if !runs.is_empty() => runs,
-        _ => {
-            match &args.branch {
-                Some(branch) => eprintln!("No completed runs found on branch: {branch}"),
-                None => eprintln!("No completed runs found"),
-            }
-            return ExitCode::FAILURE;
-        },
-    };
-
-    let run_refs: Vec<&GhRun> = runs.iter().collect();
-    let (jobs_map, _meta) = client.batch_fetch_jobs_and_meta(&owner, &repo, &run_refs);
-    let ci_runs: Vec<CiRun> = runs
-        .iter()
-        .filter_map(|gh_run| {
-            let check_runs = jobs_map.get(&gh_run.id)?;
-            Some(build_ci_run(gh_run, check_runs.clone(), repo_url))
-        })
-        .collect();
-
-    if args.json {
-        output::render_ci_json(&ci_runs);
-    } else {
-        output::render_ci_table(&ci_runs);
-    }
-
-    ExitCode::SUCCESS
 }
 
 /// Build a `CiRun` from a `GhRun` and pre-fetched check run data.

@@ -4,23 +4,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use clap::Subcommand;
 
 mod ci;
 mod cache_paths;
 mod config;
 mod constants;
 mod http;
-mod list;
-mod output;
 mod port_report;
 mod project;
 mod scan;
 mod tui;
 mod watcher;
-
-use ci::CiArgs;
-use list::ListArgs;
 
 #[derive(Parser)]
 #[command(name = "cargo-port", about = "Inspect Rust project structures")]
@@ -28,17 +22,6 @@ struct Cli {
     /// Path to the project or directory to operate on
     #[arg(default_value = ".")]
     path: PathBuf,
-
-    #[command(subcommand)]
-    command: Option<Commands>,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Recursively find and list all Rust projects under a path
-    List(ListArgs),
-    /// Show CI job durations for recent GitHub Actions runs
-    Ci(CiArgs),
 }
 
 fn normalized_args() -> Vec<String> {
@@ -51,9 +34,5 @@ fn normalized_args() -> Vec<String> {
 
 fn main() -> ExitCode {
     let cli = Cli::parse_from(normalized_args());
-    match cli.command {
-        Some(Commands::List(args)) => list::run(&cli.path, &args),
-        Some(Commands::Ci(args)) => ci::run(&cli.path, &args),
-        None => tui::run(&cli.path),
-    }
+    tui::run(&cli.path)
 }

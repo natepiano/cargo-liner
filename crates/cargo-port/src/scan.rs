@@ -123,42 +123,34 @@ pub enum CiFetchResult {
 }
 
 /// Base cache directory for CI metadata.
-pub fn cache_dir() -> Option<PathBuf> { Some(cache_paths::ci_cache_root()) }
+pub fn cache_dir() -> PathBuf { cache_paths::ci_cache_root() }
 
 /// Repo-keyed cache directory: `{cache_dir}/{owner}/{repo}`.
-fn repo_cache_dir(owner: &str, repo: &str) -> Option<PathBuf> {
-    cache_dir().map(|d| d.join(owner).join(repo))
-}
+fn repo_cache_dir(owner: &str, repo: &str) -> PathBuf { cache_dir().join(owner).join(repo) }
 
 /// Public accessor for clearing the cache directory.
-pub fn repo_cache_dir_pub(owner: &str, repo: &str) -> Option<PathBuf> {
-    repo_cache_dir(owner, repo)
-}
+pub fn repo_cache_dir_pub(owner: &str, repo: &str) -> PathBuf { repo_cache_dir(owner, repo) }
 
 /// Check if the "no more runs" marker exists for a repo.
 pub fn is_exhausted(owner: &str, repo: &str) -> bool {
-    repo_cache_dir(owner, repo).is_some_and(|d| d.join(NO_MORE_RUNS_MARKER).exists())
+    repo_cache_dir(owner, repo).join(NO_MORE_RUNS_MARKER).exists()
 }
 
 /// Save the "no more runs" marker for a repo.
 pub fn mark_exhausted(owner: &str, repo: &str) {
-    if let Some(dir) = repo_cache_dir(owner, repo) {
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join(NO_MORE_RUNS_MARKER), "");
-    }
+    let dir = repo_cache_dir(owner, repo);
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join(NO_MORE_RUNS_MARKER), "");
 }
 
 /// Remove the "no more runs" marker so fresh runs can be discovered.
 pub fn clear_exhausted(owner: &str, repo: &str) {
-    if let Some(dir) = repo_cache_dir(owner, repo) {
-        let _ = std::fs::remove_file(dir.join(NO_MORE_RUNS_MARKER));
-    }
+    let dir = repo_cache_dir(owner, repo);
+    let _ = std::fs::remove_file(dir.join(NO_MORE_RUNS_MARKER));
 }
 
 fn save_cached_run(owner: &str, repo: &str, ci_run: &CiRun) {
-    let Some(dir) = repo_cache_dir(owner, repo) else {
-        return;
-    };
+    let dir = repo_cache_dir(owner, repo);
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(format!("{}.json", ci_run.run_id));
     if let Ok(json) = serde_json::to_string(ci_run) {
@@ -167,7 +159,7 @@ fn save_cached_run(owner: &str, repo: &str, ci_run: &CiRun) {
 }
 
 fn load_cached_run(owner: &str, repo: &str, run_id: u64) -> Option<CiRun> {
-    let dir = repo_cache_dir(owner, repo)?;
+    let dir = repo_cache_dir(owner, repo);
     let path = dir.join(format!("{run_id}.json"));
     let contents = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&contents).ok()
@@ -175,9 +167,7 @@ fn load_cached_run(owner: &str, repo: &str, run_id: u64) -> Option<CiRun> {
 
 /// Count the number of cached CI run files on disk for a given repo.
 pub fn count_cached_runs(owner: &str, repo: &str) -> usize {
-    let Some(dir) = repo_cache_dir(owner, repo) else {
-        return 0;
-    };
+    let dir = repo_cache_dir(owner, repo);
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
     };
@@ -189,9 +179,7 @@ pub fn count_cached_runs(owner: &str, repo: &str) -> usize {
 
 /// Load all cached CI runs for a given repo.
 pub fn load_all_cached_runs(owner: &str, repo: &str) -> Vec<CiRun> {
-    let Some(dir) = repo_cache_dir(owner, repo) else {
-        return Vec::new();
-    };
+    let dir = repo_cache_dir(owner, repo);
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };

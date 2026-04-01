@@ -2,7 +2,7 @@
 //!
 //! Uses `reqwest` (async) backed by a `tokio` runtime for concurrent
 //! HTTP. Sync wrappers (`handle.block_on`) are provided for callers
-//! that run on std/rayon threads (watcher, priority fetch, CLI).
+//! that run on std/rayon threads during TUI startup and background work.
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -65,11 +65,7 @@ impl HttpClient {
     /// token` (single subprocess call). If `gh` is unavailable or not
     /// authenticated, GitHub API methods degrade gracefully.
     pub fn new(handle: tokio::runtime::Handle) -> Option<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(GH_TIMEOUT)
-            .user_agent(APP_NAME)
-            .build()
-            .ok()?;
+        let client = build_client().ok()?;
         let github_token = Command::new("gh")
             .args(["auth", "token"])
             .output()
@@ -265,5 +261,54 @@ impl HttpClient {
     pub fn fetch_crates_io_info(&self, crate_name: &str) -> Option<CratesIoInfo> {
         self.handle
             .block_on(self.fetch_crates_io_info_async(crate_name))
+    }
+}
+
+fn build_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .timeout(GH_TIMEOUT)
+        .user_agent(APP_NAME)
+        .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+    use std::io::Write as _;
+    use std::net::TcpListener;
+    use std::thread;
+
+    use super::*;
+
+    #[test]
+    #[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]
+    fn client_sends_app_user_agent_header() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("read listener address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut buffer = [0_u8; 4096];
+            let size = stream.read(&mut buffer).expect("read request bytes");
+            let request = String::from_utf8_lossy(&buffer[..size]).into_owned();
+            let response =
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+            stream.write_all(response).expect("write response");
+            request
+        });
+
+        let runtime = tokio::runtime::Runtime::new().expect("create runtime");
+        let client = build_client().expect("build http client");
+        let url = format!("http://{addr}/");
+        let response = runtime
+            .block_on(async { client.get(url).send().await })
+            .expect("send request");
+        assert!(response.status().is_success());
+
+        let request = server.join().expect("join server thread");
+        assert!(
+            request.contains(&format!("user-agent: {APP_NAME}\r\n"))
+                || request.contains(&format!("User-Agent: {APP_NAME}\r\n")),
+            "expected request to include User-Agent header, got:\n{request}"
+        );
     }
 }

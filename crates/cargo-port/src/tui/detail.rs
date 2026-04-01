@@ -1844,9 +1844,8 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
     if let Some(git) = app.git_info.get(project_path)
         && let Some(url) = &git.url
         && let Some((owner, repo)) = ci::parse_owner_repo(url)
-        && let Some(dir) = scan::repo_cache_dir_pub(&owner, &repo)
     {
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(scan::repo_cache_dir_pub(&owner, &repo));
     }
 
     // Insert empty Loaded so the CI panel stays visible with the "fetch more" row
