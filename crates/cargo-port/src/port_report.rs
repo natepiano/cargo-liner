@@ -1,4 +1,4 @@
-//! Reads `target/port-report.log` to determine per-project lint status.
+//! Reads per-project lint status from a cache-rooted protocol file.
 //!
 //! The log is an append-only, tab-delimited file produced by an external
 //! lint watcher. Format: `{ISO-8601}\t{status}` where status is
@@ -9,11 +9,13 @@ use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::path::Path;
+use std::path::PathBuf;
 
 use chrono::DateTime;
 use chrono::FixedOffset;
 use chrono::Utc;
 
+use super::constants::APP_NAME;
 use super::constants::LINT_FAILED;
 use super::constants::LINT_NO_LOG;
 use super::constants::LINT_PASSED;
@@ -64,10 +66,41 @@ impl LintStatus {
     }
 }
 
-/// Read the last line of `{project_root}/target/port-report.log` and parse it.
+/// Canonical cache directory for all per-project lint status files.
+pub fn cache_root() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(APP_NAME)
+        .join("port-report")
+}
+
+/// Stable per-project cache key used by both cargo-port and external scripts.
+pub fn project_key(project_root: &Path) -> String {
+    let mut encoded = String::new();
+    for byte in project_root.to_string_lossy().as_bytes() {
+        use std::fmt::Write as _;
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+/// Cache-rooted directory for the project's lint watcher protocol files.
+pub fn project_dir(project_root: &Path) -> PathBuf {
+    cache_root().join(project_key(project_root))
+}
+
+/// Cache-rooted lint status file for the project.
+pub fn log_path(project_root: &Path) -> PathBuf {
+    project_dir(project_root).join(PORT_REPORT_LOG)
+}
+
+/// Read the last line of the project's lint status log and parse it.
 pub fn read_status(project_root: &Path) -> LintStatus {
-    let path = project_root.join("target").join(PORT_REPORT_LOG);
-    let Ok(mut file) = File::open(&path) else {
+    read_status_from_path(&log_path(project_root))
+}
+
+fn read_status_from_path(path: &Path) -> LintStatus {
+    let Ok(mut file) = File::open(path) else {
         return LintStatus::NoLog;
     };
 
@@ -215,9 +248,10 @@ mod tests {
     // ── read_status (end-to-end) ────────────────────────────────────
 
     fn write_log(root: &Path, content: &str) {
-        let target = root.join("target");
-        std::fs::create_dir_all(&target).expect("create target dir");
-        let mut f = File::create(target.join(PORT_REPORT_LOG)).expect("create log");
+        let path = log_path(root);
+        std::fs::create_dir_all(path.parent().expect("log file has parent"))
+            .expect("create cache port-report dir");
+        let mut f = File::create(path).expect("create log");
         f.write_all(content.as_bytes()).expect("write log");
     }
 
@@ -272,6 +306,16 @@ mod tests {
         assert!(
             matches!(read_status(dir.path()), LintStatus::Passed(_)),
             "should read the last line (passed), not the first (failed)"
+        );
+    }
+
+    #[test]
+    fn cache_log_path_does_not_live_under_project_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = log_path(dir.path());
+        assert!(
+            !path.starts_with(dir.path()),
+            "cache log path should not recreate project directories"
         );
     }
 }
