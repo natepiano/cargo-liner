@@ -622,9 +622,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             let flash_width = msg.width();
             let flash_start = total_width.saturating_sub(flash_width) / 2;
             let flash_area = Rect {
-                x: area.x + u16::try_from(flash_start).unwrap_or(u16::MAX),
-                y: area.y,
-                width: u16::try_from((total_width - flash_start).min(flash_width + 1))
+                x:      area.x + u16::try_from(flash_start).unwrap_or(u16::MAX),
+                y:      area.y,
+                width:  u16::try_from((total_width - flash_start).min(flash_width + 1))
                     .unwrap_or(u16::MAX),
                 height: 1,
             };
@@ -667,9 +667,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Left section
     if !left_spans.is_empty() {
         let left_area = Rect {
-            x: area.x,
-            y: area.y,
-            width: area.width,
+            x:      area.x,
+            y:      area.y,
+            width:  area.width,
             height: 1,
         };
         frame.render_widget(
@@ -684,9 +684,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         // Only render if it doesn't overlap with the left section
         if center_start >= left_width {
             let center_area = Rect {
-                x: area.x + u16::try_from(center_start).unwrap_or(u16::MAX),
-                y: area.y,
-                width: u16::try_from((total_width - center_start).min(center_width + 1))
+                x:      area.x + u16::try_from(center_start).unwrap_or(u16::MAX),
+                y:      area.y,
+                width:  u16::try_from((total_width - center_start).min(center_width + 1))
                     .unwrap_or(u16::MAX),
                 height: 1,
             };
@@ -701,9 +701,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     if !right_spans.is_empty() {
         let right_start = total_width.saturating_sub(right_width + 1);
         let right_area = Rect {
-            x: area.x + u16::try_from(right_start).unwrap_or(u16::MAX),
-            y: area.y,
-            width: u16::try_from(right_width + 1).unwrap_or(u16::MAX),
+            x:      area.x + u16::try_from(right_start).unwrap_or(u16::MAX),
+            y:      area.y,
+            width:  u16::try_from(right_width + 1).unwrap_or(u16::MAX),
             height: 1,
         };
         frame.render_widget(

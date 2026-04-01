@@ -30,38 +30,34 @@ use super::project::RustProject;
 /// The "inline" group (empty name) contains members directly under the workspace root
 /// or under the primary `crates/` directory -- these are shown without a folder header.
 pub struct MemberGroup {
-    pub name: String,
+    pub name:    String,
     pub members: Vec<RustProject>,
 }
 
 pub struct ProjectNode {
-    pub project: RustProject,
-    pub groups: Vec<MemberGroup>,
+    pub project:   RustProject,
+    pub groups:    Vec<MemberGroup>,
     pub worktrees: Vec<Self>,
-    pub vendored: Vec<RustProject>,
+    pub vendored:  Vec<RustProject>,
 }
 
 impl ProjectNode {
-    pub fn has_members(&self) -> bool {
-        self.groups.iter().any(|g| !g.members.is_empty())
-    }
+    pub fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members.is_empty()) }
 
-    pub fn has_children(&self) -> bool {
-        self.has_members() || !self.worktrees.is_empty()
-    }
+    pub fn has_children(&self) -> bool { self.has_members() || !self.worktrees.is_empty() }
 }
 
 /// A flattened entry for fuzzy search.
 pub struct FlatEntry {
-    pub node_index: usize,
-    pub group_index: usize,
+    pub node_index:   usize,
+    pub group_index:  usize,
     pub member_index: usize,
-    pub name: String,
+    pub name:         String,
 }
 
 pub enum BackgroundMsg {
     DiskUsage {
-        path: String,
+        path:  String,
         bytes: u64,
     },
     CiRuns {
@@ -73,13 +69,13 @@ pub enum BackgroundMsg {
         info: GitInfo,
     },
     CratesIoVersion {
-        path: String,
-        version: String,
+        path:      String,
+        version:   String,
         downloads: u64,
     },
     RepoMeta {
-        path: String,
-        stars: u64,
+        path:        String,
+        stars:       u64,
         description: Option<String>,
     },
     ProjectDiscovered {
@@ -89,7 +85,7 @@ pub enum BackgroundMsg {
         path: String,
     },
     LintStatus {
-        path: String,
+        path:   String,
         status: LintStatus,
     },
     ScanComplete,
@@ -351,7 +347,7 @@ fn notify_offline_once(tx: &mpsc::Sender<BackgroundMsg>) {
 }
 
 pub struct CratesIoInfo {
-    pub version: String,
+    pub version:   String,
     pub downloads: u64,
 }
 
@@ -430,10 +426,10 @@ pub fn build_tree(projects: &[RustProject], inline_dirs: &[String]) -> Vec<Proje
             .any(|ws| project.path.starts_with(&format!("{ws}/")));
         if !under_workspace {
             nodes.push(ProjectNode {
-                project: project.clone(),
-                groups: Vec::new(),
+                project:   project.clone(),
+                groups:    Vec::new(),
                 worktrees: Vec::new(),
-                vendored: Vec::new(),
+                vendored:  Vec::new(),
             });
         }
     }
@@ -529,10 +525,10 @@ fn merge_worktrees(nodes: &mut Vec<ProjectNode>) {
             primary.worktrees.insert(
                 0,
                 ProjectNode {
-                    project: primary_as_wt,
-                    groups: primary_groups,
+                    project:   primary_as_wt,
+                    groups:    primary_groups,
                     worktrees: Vec::new(),
-                    vendored: Vec::new(),
+                    vendored:  Vec::new(),
                 },
             );
         }
@@ -666,20 +662,20 @@ pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
         // Add workspace root itself
         let name = node.project.name.as_deref().unwrap_or(&node.project.path);
         entries.push(FlatEntry {
-            node_index: ni,
-            group_index: 0,
+            node_index:   ni,
+            group_index:  0,
             member_index: 0,
-            name: name.to_string(),
+            name:         name.to_string(),
         });
         // Add all members
         for (gi, group) in node.groups.iter().enumerate() {
             for (mi, member) in group.members.iter().enumerate() {
                 let name = member.name.as_deref().unwrap_or(&member.path);
                 entries.push(FlatEntry {
-                    node_index: ni,
-                    group_index: gi,
+                    node_index:   ni,
+                    group_index:  gi,
                     member_index: mi,
-                    name: name.to_string(),
+                    name:         name.to_string(),
                 });
             }
         }
@@ -689,7 +685,7 @@ pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
 
 /// Shared network context passed to `fetch_project_details`.
 pub struct FetchContext {
-    pub client: HttpClient,
+    pub client:     HttpClient,
     pub repo_cache: RepoCache,
 }
 
@@ -774,8 +770,8 @@ pub fn fetch_project_details(
         });
         if let Some(meta) = data.meta {
             let _ = tx.send(BackgroundMsg::RepoMeta {
-                path: project_path.to_string(),
-                stars: meta.stars,
+                path:        project_path.to_string(),
+                stars:       meta.stars,
                 description: meta.description,
             });
         }
@@ -786,8 +782,8 @@ pub fn fetch_project_details(
         && let Some(info) = client.fetch_crates_io_info(name)
     {
         let _ = tx.send(BackgroundMsg::CratesIoVersion {
-            path: project_path.to_string(),
-            version: info.version,
+            path:      project_path.to_string(),
+            version:   info.version,
             downloads: info.downloads,
         });
     }
@@ -796,7 +792,7 @@ pub fn fetch_project_details(
     let lint = port_report::read_status(abs_path);
     if !matches!(lint, LintStatus::NoLog) {
         let _ = tx.send(BackgroundMsg::LintStatus {
-            path: project_path.to_string(),
+            path:   project_path.to_string(),
             status: lint,
         });
     }
@@ -812,7 +808,7 @@ pub fn fetch_project_details(
 
 #[derive(Clone)]
 pub struct RepoMetaInfo {
-    pub stars: u64,
+    pub stars:       u64,
     pub description: Option<String>,
 }
 
@@ -821,16 +817,14 @@ pub struct RepoMetaInfo {
 /// HTTP calls.
 #[derive(Clone)]
 pub struct CachedRepoData {
-    runs: Vec<CiRun>,
-    meta: Option<RepoMetaInfo>,
+    runs:       Vec<CiRun>,
+    meta:       Option<RepoMetaInfo>,
     cache_only: bool,
 }
 
 pub type RepoCache = Arc<Mutex<HashMap<String, CachedRepoData>>>;
 
-pub fn new_repo_cache() -> RepoCache {
-    Arc::new(Mutex::new(HashMap::new()))
-}
+pub fn new_repo_cache() -> RepoCache { Arc::new(Mutex::new(HashMap::new())) }
 
 /// Resolve include-dir entries to absolute paths. Relative entries are
 /// joined to `scan_root`; absolute entries are used as-is. An empty
@@ -914,7 +908,7 @@ pub fn spawn_streaming_scan(
 
                             let task_tx = scan_tx.clone();
                             let task_ctx = FetchContext {
-                                client: client.clone(),
+                                client:     client.clone(),
                                 repo_cache: Arc::clone(&repo_cache),
                             };
                             let task_path = project.path.clone();
@@ -950,7 +944,7 @@ pub fn spawn_streaming_scan(
 
                         let task_tx = scan_tx.clone();
                         let task_ctx = FetchContext {
-                            client: client.clone(),
+                            client:     client.clone(),
                             repo_cache: Arc::clone(&repo_cache),
                         };
                         let task_path = project.path.clone();
@@ -1113,7 +1107,7 @@ mod tests {
             WorkspaceStatus::Standalone,
         );
         let groups = vec![MemberGroup {
-            name: String::new(),
+            name:    String::new(),
             members: vec![member_a, member_b],
         }];
 

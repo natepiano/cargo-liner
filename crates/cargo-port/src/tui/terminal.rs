@@ -52,9 +52,9 @@ pub(super) enum ExampleMsg {
 pub(super) enum CiFetchMsg {
     /// The fetch completed with updated runs for the given project path.
     Complete {
-        path: String,
+        path:   String,
         result: CiFetchResult,
-        kind: CiFetchKind,
+        kind:   CiFetchKind,
     },
 }
 
@@ -208,7 +208,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
             app.ci_state.insert(
                 fetch.project_path.clone(),
                 super::app::CiState::Fetching {
-                    runs: existing_runs,
+                    runs:  existing_runs,
                     count: CI_FETCH_DISPLAY_COUNT,
                 },
             );
@@ -486,8 +486,8 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
             && let Some(info) = client.fetch_crates_io_info(name)
         {
             let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                path: project_path,
-                version: info.version,
+                path:      project_path,
+                version:   info.version,
                 downloads: info.downloads,
             });
         }
