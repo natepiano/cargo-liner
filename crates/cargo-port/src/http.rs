@@ -51,7 +51,7 @@ struct GqlCheckRunConnection {
 /// Clone is cheap — the underlying agent uses `Arc`.
 #[derive(Clone)]
 pub struct HttpClient {
-    agent:        ureq::Agent,
+    agent: ureq::Agent,
     github_token: Option<String>,
 }
 
@@ -196,7 +196,9 @@ impl HttpClient {
     // ── Crates.io ────────────────────────────────────────────────────
 
     /// Lightweight connectivity probe (HEAD request to crates.io).
-    pub fn check_online(&self) -> bool { self.agent.head(CONNECTIVITY_CHECK_URL).call().is_ok() }
+    pub fn check_online(&self) -> bool {
+        self.agent.head(CONNECTIVITY_CHECK_URL).call().is_ok()
+    }
 
     /// Fetch version and download count from the crates.io API.
     pub fn fetch_crates_io_info(&self, crate_name: &str) -> Option<CratesIoInfo> {

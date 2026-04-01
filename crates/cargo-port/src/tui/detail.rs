@@ -29,8 +29,8 @@ use super::app::ConfirmAction;
 use super::constants::CI_EXTRA_ROWS;
 use super::constants::CI_TIMESTAMP_WIDTH;
 use super::render::CiColumn;
-use super::types::FocusTarget;
 use super::types::Pane;
+use super::types::PaneId;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
@@ -46,13 +46,13 @@ use crate::scan;
 
 #[derive(Default)]
 pub(super) struct ProjectCounts {
-    pub workspaces:  usize,
-    pub libs:        usize,
-    pub bins:        usize,
+    pub workspaces: usize,
+    pub libs: usize,
+    pub bins: usize,
     pub proc_macros: usize,
-    pub examples:    usize,
-    pub benches:     usize,
-    pub tests:       usize,
+    pub examples: usize,
+    pub benches: usize,
+    pub tests: usize,
 }
 
 impl ProjectCounts {
@@ -149,32 +149,18 @@ impl RunTargetKind {
 }
 
 pub(super) struct TargetEntry {
-    pub name:         String,
+    pub name: String,
     pub display_name: String,
-    pub kind:         RunTargetKind,
+    pub kind: RunTargetKind,
 }
 
 /// Shared style constants for detail panel rendering.
 struct RenderStyles {
-    highlight:       Style,
-    readonly_label:  Style,
-    active_border:   Style,
+    highlight: Style,
+    readonly_label: Style,
+    active_border: Style,
     inactive_border: Style,
-    title:           Style,
-}
-
-/// Whether the detail panel has keyboard focus.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DetailFocus {
-    Focused,
-    Unfocused,
-}
-
-/// Whether the targets column is the active detail column.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TargetsActive {
-    Active,
-    Inactive,
+    title: Style,
 }
 
 /// Whether to build in release or debug mode.
@@ -184,11 +170,31 @@ enum BuildMode {
     Release,
 }
 
-/// Focus state passed to column renderers to avoid per-function argument bloat.
 struct ColumnFocus {
-    detail_focus: DetailFocus,
-    is_active:    bool,
-    cursor:       usize,
+    active: bool,
+    remembered: bool,
+    cursor: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SelectionState {
+    Focused,
+    Remembered,
+    Unselected,
+}
+
+impl ColumnFocus {
+    const fn selection_state(&self, row: usize) -> SelectionState {
+        if row != self.cursor {
+            SelectionState::Unselected
+        } else if self.active {
+            SelectionState::Focused
+        } else if self.remembered {
+            SelectionState::Remembered
+        } else {
+            SelectionState::Unselected
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -205,9 +211,9 @@ enum TargetPresence {
 
 struct DetailLayoutSpec {
     constraints: Vec<Constraint>,
-    git_col:     Option<usize>,
+    git_col: Option<usize>,
     targets_col: Option<usize>,
-    max_col:     usize,
+    max_col: usize,
 }
 
 fn detail_layout_spec(git: GitPresence, targets: TargetPresence) -> DetailLayoutSpec {
@@ -219,15 +225,15 @@ fn detail_layout_spec(git: GitPresence, targets: TargetPresence) -> DetailLayout
                 Constraint::Percentage(37),
                 Constraint::Percentage(26),
             ],
-            git_col:     Some(1),
+            git_col: Some(1),
             targets_col: Some(2),
-            max_col:     1 + usize::from(has_targets),
+            max_col: 1 + usize::from(has_targets),
         },
         GitPresence::Missing => DetailLayoutSpec {
             constraints: vec![Constraint::Percentage(74), Constraint::Percentage(26)],
-            git_col:     None,
+            git_col: None,
             targets_col: Some(1),
-            max_col:     usize::from(has_targets),
+            max_col: usize::from(has_targets),
         },
     }
 }
@@ -246,8 +252,8 @@ pub(super) fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
     {
         entries.push(TargetEntry {
             display_name: name.clone(),
-            name:         name.clone(),
-            kind:         RunTargetKind::Binary,
+            name: name.clone(),
+            kind: RunTargetKind::Binary,
         });
     }
 
@@ -298,11 +304,11 @@ pub(super) fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
 }
 
 pub(super) struct PendingExampleRun {
-    pub abs_path:     String,
-    pub target_name:  String,
+    pub abs_path: String,
+    pub target_name: String,
     pub package_name: Option<String>,
-    pub kind:         RunTargetKind,
-    pub release:      bool,
+    pub kind: RunTargetKind,
+    pub release: bool,
 }
 
 /// Whether a CI fetch should look for older runs or just refresh for new ones.
@@ -316,9 +322,9 @@ pub(super) enum CiFetchKind {
 
 /// A pending request to fetch more CI runs for a project.
 pub(super) struct PendingCiFetch {
-    pub project_path:  String,
+    pub project_path: String,
     pub current_count: u32,
-    pub kind:          CiFetchKind,
+    pub kind: CiFetchKind,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -507,44 +513,44 @@ pub(super) fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
 
 #[derive(Clone)]
 pub(super) struct DetailInfo {
-    pub package_title:    String,
-    pub name:             String,
-    pub path:             String,
-    pub version:          String,
-    pub description:      Option<String>,
-    pub crates_version:   Option<String>,
+    pub package_title: String,
+    pub name: String,
+    pub path: String,
+    pub version: String,
+    pub description: Option<String>,
+    pub crates_version: Option<String>,
     pub crates_downloads: Option<u64>,
-    pub types:            String,
-    pub disk:             String,
-    pub lint_label:       String,
-    pub ci:               Option<Conclusion>,
-    pub stats_rows:       Vec<(&'static str, usize)>,
-    pub git_branch:       Option<String>,
-    pub git_sync:         Option<String>,
+    pub types: String,
+    pub disk: String,
+    pub lint_label: String,
+    pub ci: Option<Conclusion>,
+    pub stats_rows: Vec<(&'static str, usize)>,
+    pub git_branch: Option<String>,
+    pub git_sync: Option<String>,
     /// Ahead/behind vs `origin/{default_branch}`.
-    pub git_vs_origin:    Option<String>,
+    pub git_vs_origin: Option<String>,
     /// Ahead/behind vs local `{default_branch}`.
-    pub git_vs_local:     Option<String>,
+    pub git_vs_local: Option<String>,
     /// The repo's default branch name (e.g. "main", "master").
-    pub default_branch:   Option<String>,
-    pub git_origin:       Option<String>,
-    pub git_owner:        Option<String>,
-    pub git_url:          Option<String>,
-    pub git_stars:        Option<u64>,
+    pub default_branch: Option<String>,
+    pub git_origin: Option<String>,
+    pub git_owner: Option<String>,
+    pub git_url: Option<String>,
+    pub git_stars: Option<u64>,
     pub repo_description: Option<String>,
-    pub git_inception:    Option<String>,
-    pub git_last_commit:  Option<String>,
-    pub worktree_label:   Option<String>,
-    pub worktree_names:   Vec<String>,
-    pub vendored_names:   String,
-    pub is_binary:        bool,
-    pub binary_name:      Option<String>,
-    pub examples:         Vec<ExampleGroup>,
-    pub benches:          Vec<String>,
+    pub git_inception: Option<String>,
+    pub git_last_commit: Option<String>,
+    pub worktree_label: Option<String>,
+    pub worktree_names: Vec<String>,
+    pub vendored_names: String,
+    pub is_binary: bool,
+    pub binary_name: Option<String>,
+    pub examples: Vec<ExampleGroup>,
+    pub benches: Vec<String>,
     /// Whether this is a Rust project (has `Cargo.toml`).
-    pub is_rust:          ProjectLanguage,
+    pub is_rust: ProjectLanguage,
     /// Whether this project declares `[package]` (has version/description fields).
-    pub has_package:      bool,
+    pub has_package: bool,
 }
 
 /// Collect vendored crate names for a project from the node tree.
@@ -622,18 +628,18 @@ fn format_downloads(n: u64) -> String {
 }
 
 struct GitDetailFields {
-    branch:         Option<String>,
-    sync:           Option<String>,
-    vs_origin:      Option<String>,
-    vs_local:       Option<String>,
+    branch: Option<String>,
+    sync: Option<String>,
+    vs_origin: Option<String>,
+    vs_local: Option<String>,
     default_branch: Option<String>,
-    origin:         Option<String>,
-    owner:          Option<String>,
-    url:            Option<String>,
-    stars:          Option<u64>,
-    description:    Option<String>,
-    inception:      Option<String>,
-    last_commit:    Option<String>,
+    origin: Option<String>,
+    owner: Option<String>,
+    url: Option<String>,
+    stars: Option<u64>,
+    description: Option<String>,
+    inception: Option<String>,
+    last_commit: Option<String>,
 }
 
 fn build_git_detail_fields(app: &App, project: &RustProject) -> GitDetailFields {
@@ -807,26 +813,29 @@ fn render_column_inner(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut focused_output_line: usize = 0;
     for (i, field) in fields.iter().enumerate() {
-        if focus.detail_focus == DetailFocus::Focused && focus.is_active && i == focus.cursor {
+        if focus.active && i == focus.cursor {
             focused_output_line = lines.len();
         }
         let label = field.label();
-        let is_focused =
-            focus.detail_focus == DetailFocus::Focused && focus.is_active && i == focus.cursor;
-
+        let selection = focus.selection_state(i);
         let value = field.value(info);
         let base_label_style = styles.readonly_label;
-        let ls = if is_focused {
-            styles.highlight
-        } else {
-            base_label_style
+        let ls = match selection {
+            SelectionState::Focused => styles.highlight,
+            SelectionState::Remembered | SelectionState::Unselected => base_label_style,
         };
-        let vs = if is_focused {
-            styles.highlight
-        } else if *field == DetailField::Ci {
-            super::render::conclusion_style(info.ci)
-        } else {
-            Style::default()
+        let vs = match selection {
+            SelectionState::Focused => styles.highlight,
+            SelectionState::Remembered => Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+            SelectionState::Unselected => {
+                if *field == DetailField::Ci {
+                    super::render::conclusion_style(info.ci)
+                } else {
+                    Style::default()
+                }
+            },
         };
 
         // Word-wrap long fields across multiple lines
@@ -895,7 +904,7 @@ fn render_column_inner(
         }
     }
 
-    let scroll_y = if focus.detail_focus == DetailFocus::Focused && focus.is_active {
+    let scroll_y = if focus.active {
         let offset = focused_output_line.saturating_sub(area.height as usize / 2);
         u16::try_from(offset).unwrap_or(u16::MAX)
     } else {
@@ -916,7 +925,7 @@ fn render_git_column_inner(
     let mut focused_output_line: usize = 0;
 
     for (i, field) in fields.iter().enumerate() {
-        if focus.detail_focus == DetailFocus::Focused && focus.is_active && i == focus.cursor {
+        if focus.active && i == focus.cursor {
             focused_output_line = lines.len();
         }
         // Dynamic labels for vs-default fields — show actual branch name.
@@ -935,29 +944,33 @@ fn render_git_column_inner(
             _ => field.label(),
         };
         let value = field.value(info);
-        let is_focused =
-            focus.detail_focus == DetailFocus::Focused && focus.is_active && i == focus.cursor;
-        let ls = if is_focused {
-            styles.highlight
-        } else {
-            styles.readonly_label
+        let selection = focus.selection_state(i);
+        let ls = match selection {
+            SelectionState::Focused => styles.highlight,
+            SelectionState::Remembered | SelectionState::Unselected => styles.readonly_label,
         };
-        let vs = if is_focused {
-            styles.highlight
-        } else if *field == DetailField::Origin && value.starts_with('⑂') {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else if matches!(
-            *field,
-            DetailField::Sync | DetailField::VsOrigin | DetailField::VsLocal
-        ) && value == IN_SYNC
-        {
-            Style::default().fg(Color::Green)
-        } else if *field == DetailField::Sync && value == "not published" {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default()
+        let vs = match selection {
+            SelectionState::Focused => styles.highlight,
+            SelectionState::Remembered => Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+            SelectionState::Unselected => {
+                if *field == DetailField::Origin && value.starts_with('⑂') {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else if matches!(
+                    *field,
+                    DetailField::Sync | DetailField::VsOrigin | DetailField::VsLocal
+                ) && value == IN_SYNC
+                {
+                    Style::default().fg(Color::Green)
+                } else if *field == DetailField::Sync && value == "not published" {
+                    Style::default().fg(Color::DarkGray)
+                } else {
+                    Style::default()
+                }
+            },
         };
         if matches!(
             *field,
@@ -1003,7 +1016,7 @@ fn render_git_column_inner(
 
     append_worktree_lines(&mut lines, info);
 
-    let scroll_y = if focus.detail_focus == DetailFocus::Focused && focus.is_active {
+    let scroll_y = if focus.active {
         let offset = focused_output_line.saturating_sub(area.height as usize / 2);
         u16::try_from(offset).unwrap_or(u16::MAX)
     } else {
@@ -1033,11 +1046,6 @@ pub(super) fn render_detail_panel(
     detail_info: Option<&DetailInfo>,
     area: Rect,
 ) {
-    let detail_focus = if app.focus == FocusTarget::DetailFields {
-        DetailFocus::Focused
-    } else {
-        DetailFocus::Unfocused
-    };
     let title_style = Style::default()
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
@@ -1065,27 +1073,27 @@ pub(super) fn render_detail_panel(
         app.layout_cache.detail_targets_col = spec.targets_col;
 
         let styles = RenderStyles {
-            highlight:       Style::default().fg(Color::Black).bg(Color::Cyan),
-            readonly_label:  Style::default().fg(Color::DarkGray),
-            active_border:   Style::default().fg(Color::Cyan),
+            highlight: Style::default().fg(Color::Black).bg(Color::Cyan),
+            readonly_label: Style::default().fg(Color::DarkGray),
+            active_border: Style::default().fg(Color::Cyan),
             inactive_border: Style::default(),
-            title:           title_style,
+            title: title_style,
         };
 
-        render_project_panel(frame, app, info, detail_focus, &styles, columns[0]);
+        render_project_panel(frame, app, info, &styles, columns[0]);
 
         if let Some(col) = spec.git_col {
             app.git_pane.set_len(git.len());
             let focus = ColumnFocus {
-                detail_focus,
-                is_active: app.detail_column.pos() == col,
+                active: app.is_focused(PaneId::Git),
+                remembered: app.remembers_selection(PaneId::Git),
                 cursor: app.git_pane.pos(),
             };
             let git_block = Block::default()
                 .borders(Borders::ALL)
                 .title(" Git ")
                 .title_style(styles.title)
-                .border_style(if focus.is_active {
+                .border_style(if focus.active {
                     styles.active_border
                 } else {
                     styles.inactive_border
@@ -1098,7 +1106,7 @@ pub(super) fn render_detail_panel(
 
         if let Some(col) = spec.targets_col {
             if has_targets(info) {
-                render_targets_panel(frame, app, info, detail_focus, col, &styles, columns[col]);
+                render_targets_panel(frame, app, info, &styles, columns[col]);
             } else {
                 let empty_targets = Block::default()
                     .borders(Borders::ALL)
@@ -1123,22 +1131,21 @@ fn render_project_panel(
     frame: &mut Frame,
     app: &mut App,
     info: &DetailInfo,
-    detail_focus: DetailFocus,
     styles: &RenderStyles,
     area: Rect,
 ) {
     let fields = package_fields(info);
     app.package_pane.set_len(fields.len());
     let focus = ColumnFocus {
-        detail_focus,
-        is_active: app.detail_column.pos() == 0,
+        active: app.is_focused(PaneId::Package),
+        remembered: app.remembers_selection(PaneId::Package),
         cursor: app.package_pane.pos(),
     };
     let project_block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {} ", info.package_title))
         .title_style(styles.title)
-        .border_style(if focus.is_active {
+        .border_style(if focus.active {
             styles.active_border
         } else {
             styles.inactive_border
@@ -1183,8 +1190,6 @@ fn render_targets_panel(
     frame: &mut Frame,
     app: &mut App,
     info: &DetailInfo,
-    detail_focus: DetailFocus,
-    col: usize,
     styles: &RenderStyles,
     area: Rect,
 ) {
@@ -1203,7 +1208,7 @@ fn render_targets_panel(
     }
     let targets_title = format!(" {} ", title_parts.join(" / "));
 
-    let is_active = detail_focus == DetailFocus::Focused && app.detail_column.pos() == col;
+    let is_active = app.is_focused(PaneId::Targets);
     let targets_block = Block::default()
         .borders(Borders::ALL)
         .title(targets_title)
@@ -1220,9 +1225,20 @@ fn render_targets_panel(
 
     let rows: Vec<Row> = entries
         .iter()
-        .map(|entry| {
+        .enumerate()
+        .map(|(i, entry)| {
+            let name_style = if i == app.targets_pane.pos()
+                && !is_active
+                && app.remembers_selection(PaneId::Targets)
+            {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
             Row::new(vec![
-                Cell::from(entry.display_name.clone()),
+                Cell::from(entry.display_name.clone()).style(name_style),
                 Cell::from(
                     Line::from(entry.kind.label()).alignment(ratatui::layout::Alignment::Right),
                 )
@@ -1380,7 +1396,7 @@ fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
 }
 
 /// Build one data `Row` for a single `CiRun`.
-fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn]) -> Row<'static> {
+fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn], remembered: bool) -> Row<'static> {
     let timestamp = format_timestamp(&ci_run.created_at);
     let branch = &ci_run.branch;
 
@@ -1389,8 +1405,15 @@ fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn]) -> Row<'static> {
         .map_or_else(|| "—".to_string(), ci::format_secs);
 
     let commit = ci_run.commit_title.as_deref().unwrap_or("");
+    let commit_style = if remembered {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
     let mut cells = vec![
-        Cell::from(commit.to_string()),
+        Cell::from(commit.to_string()).style(commit_style),
         Cell::from(branch.clone()),
         Cell::from(timestamp),
     ];
@@ -1490,7 +1513,7 @@ fn ci_total_min_width(ci_runs: &[CiRun]) -> usize {
 }
 
 pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun], area: Rect) {
-    let ci_focused = app.focus == FocusTarget::CiRuns;
+    let ci_focused = app.is_focused(PaneId::CiRuns);
 
     let total = ci_runs.len();
     let cached = app
@@ -1559,7 +1582,14 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun
 
     let mut rows: Vec<Row> = ci_runs
         .iter()
-        .map(|ci_run| build_ci_data_row(ci_run, &cols))
+        .enumerate()
+        .map(|(i, ci_run)| {
+            build_ci_data_row(
+                ci_run,
+                &cols,
+                !ci_focused && i == app.ci_pane.pos() && app.remembers_selection(PaneId::CiRuns),
+            )
+        })
         .collect();
 
     let widths = build_ci_widths(ci_runs, &cols);
@@ -1605,9 +1635,6 @@ pub(super) fn detail_layout_pub(app: &App) -> (usize, Option<usize>) {
     (spec.max_col, spec.targets_col)
 }
 
-/// Returns the maximum detail column index for the selected project.
-pub(super) fn detail_max_column(app: &App) -> usize { detail_layout(app).max_col }
-
 fn detail_layout(app: &App) -> DetailLayoutSpec {
     let Some(project) = app.selected_project() else {
         return detail_layout_spec(GitPresence::Missing, TargetPresence::Missing);
@@ -1636,44 +1663,28 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
         && let Some(project) = app.selected_project()
     {
         app.pending_example_run = Some(PendingExampleRun {
-            abs_path:     project.abs_path.clone(),
-            target_name:  entry.name.clone(),
+            abs_path: project.abs_path.clone(),
+            target_name: entry.name.clone(),
             package_name: project.name.clone(),
-            kind:         entry.kind,
-            release:      matches!(mode, BuildMode::Release),
+            kind: entry.kind,
+            release: matches!(mode, BuildMode::Release),
         });
     }
 }
 
 pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
-    let spec = detail_layout(app);
-    let targets_active = if Some(app.detail_column.pos()) == spec.targets_col {
-        TargetsActive::Active
-    } else {
-        TargetsActive::Inactive
-    };
-
-    // Pick the active pane for the current column.
-    let pane = active_detail_pane(app, targets_active);
+    let pane = active_detail_pane(app);
 
     match key {
         KeyCode::Up => pane.up(),
         KeyCode::Down => pane.down(),
         KeyCode::Home => pane.home(),
         KeyCode::End => pane.end(),
-        KeyCode::Left => {
-            if app.detail_column.pos() > 0 {
-                app.detail_column.up();
-            }
-        },
-        KeyCode::Right => {
-            if targets_active == TargetsActive::Inactive && app.detail_column.pos() < spec.max_col {
-                app.detail_column.down(spec.max_col + 1);
-            }
-        },
-        KeyCode::Enter => handle_detail_enter(app, targets_active),
+        KeyCode::Left => focus_adjacent_detail_pane(app, false),
+        KeyCode::Right => focus_adjacent_detail_pane(app, true),
+        KeyCode::Enter => handle_detail_enter(app),
         KeyCode::Char('r') => {
-            if targets_active == TargetsActive::Active {
+            if app.is_focused(PaneId::Targets) {
                 handle_target_action(app, BuildMode::Release);
             }
         },
@@ -1690,24 +1701,49 @@ pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
 
 /// Return a mutable reference to the pane that owns the cursor for the
 /// currently active detail column.
-const fn active_detail_pane(app: &mut App, targets_active: TargetsActive) -> &mut Pane {
-    match targets_active {
-        TargetsActive::Active => &mut app.targets_pane,
-        TargetsActive::Inactive => {
-            if app.detail_column.pos() == 0 {
-                &mut app.package_pane
-            } else {
-                &mut app.git_pane
-            }
+fn active_detail_pane(app: &mut App) -> &mut Pane {
+    match app.base_focus() {
+        PaneId::Targets => &mut app.targets_pane,
+        PaneId::Git => &mut app.git_pane,
+        PaneId::Package | PaneId::ProjectList | PaneId::CiRuns | PaneId::ScanLog => {
+            &mut app.package_pane
         },
+        PaneId::Search | PaneId::Settings | PaneId::Finder => &mut app.package_pane,
+    }
+}
+
+fn detail_panes(app: &App) -> Vec<PaneId> {
+    app.tabbable_panes()
+        .into_iter()
+        .filter(|pane| matches!(pane, PaneId::Package | PaneId::Git | PaneId::Targets))
+        .collect()
+}
+
+fn focus_adjacent_detail_pane(app: &mut App, forward: bool) {
+    let panes = detail_panes(app);
+    let current = app.base_focus();
+    let Some(index) = panes.iter().position(|pane| *pane == current) else {
+        return;
+    };
+
+    let next = if forward {
+        panes.get(index + 1).copied()
+    } else {
+        index
+            .checked_sub(1)
+            .and_then(|prev| panes.get(prev).copied())
+    };
+
+    if let Some(pane) = next {
+        app.focus_pane(pane);
     }
 }
 
 /// Handle the Enter key in the detail panel.
-fn handle_detail_enter(app: &mut App, targets_active: TargetsActive) {
-    if targets_active == TargetsActive::Active {
+fn handle_detail_enter(app: &mut App) {
+    if app.is_focused(PaneId::Targets) {
         handle_target_action(app, BuildMode::Debug);
-    } else if app.detail_column.pos() == 0 {
+    } else if app.base_focus() == PaneId::Package {
         let info = app.selected_project().map(|p| build_detail_info(app, p));
         let fields = info.as_ref().map(package_fields).unwrap_or_default();
         match fields.get(app.package_pane.pos()) {
@@ -1817,7 +1853,7 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
     app.ci_state.insert(
         project_path.to_string(),
         CiState::Loaded {
-            runs:      Vec::new(),
+            runs: Vec::new(),
             exhausted: false,
         },
     );

@@ -36,10 +36,9 @@ use super::render::PREFIX_WT_MEMBER_NAMED;
 use super::shortcuts::InputContext;
 use super::terminal::CiFetchMsg;
 use super::terminal::ExampleMsg;
-use super::types::FocusTarget;
 use super::types::LayoutCache;
 use super::types::Pane;
-use super::types::ScrollState;
+use super::types::PaneId;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
@@ -95,32 +94,32 @@ pub(super) enum VisibleRow {
     Root { node_index: usize },
     /// A group header (e.g., "examples").
     GroupHeader {
-        node_index:  usize,
+        node_index: usize,
         group_index: usize,
     },
     /// An actual project member.
     Member {
-        node_index:   usize,
-        group_index:  usize,
+        node_index: usize,
+        group_index: usize,
         member_index: usize,
     },
     /// A worktree entry shown directly under the parent node.
     WorktreeEntry {
-        node_index:     usize,
+        node_index: usize,
         worktree_index: usize,
     },
     /// A group header inside an expanded worktree entry.
     WorktreeGroupHeader {
-        node_index:     usize,
+        node_index: usize,
         worktree_index: usize,
-        group_index:    usize,
+        group_index: usize,
     },
     /// A member inside an expanded worktree entry.
     WorktreeMember {
-        node_index:     usize,
+        node_index: usize,
         worktree_index: usize,
-        group_index:    usize,
-        member_index:   usize,
+        group_index: usize,
+        member_index: usize,
     },
 }
 
@@ -132,10 +131,7 @@ pub(super) enum CiState {
     /// so the UI never flashes empty during pagination.
     Fetching { runs: Vec<CiRun>, count: u32 },
     /// Runs are available (possibly empty when the repo genuinely has no CI).
-    Loaded {
-        runs:      Vec<CiRun>,
-        exhausted: bool,
-    },
+    Loaded { runs: Vec<CiRun>, exhausted: bool },
 }
 
 impl CiState {
@@ -146,7 +142,9 @@ impl CiState {
         }
     }
 
-    pub const fn is_fetching(&self) -> bool { matches!(self, Self::Fetching { .. }) }
+    pub const fn is_fetching(&self) -> bool {
+        matches!(self, Self::Fetching { .. })
+    }
 
     pub const fn is_exhausted(&self) -> bool {
         matches!(
@@ -170,8 +168,8 @@ impl CiState {
 /// on `App` has advanced past the generation stored here.
 pub(super) struct DetailCache {
     generation: u64,
-    path:       String,
-    pub info:   DetailInfo,
+    path: String,
+    pub info: DetailInfo,
 }
 
 #[allow(
@@ -179,65 +177,67 @@ pub(super) struct DetailCache {
     reason = "independent UI state toggles"
 )]
 pub(super) struct App {
-    pub scan_root:           PathBuf,
-    pub inline_dirs:         Vec<String>,
-    pub include_dirs:        Vec<String>,
-    pub http_client:         HttpClient,
-    pub ci_run_count:        u32,
-    pub include_non_rust:    NonRustInclusion,
-    pub editor:              String,
+    pub scan_root: PathBuf,
+    pub inline_dirs: Vec<String>,
+    pub include_dirs: Vec<String>,
+    pub http_client: HttpClient,
+    pub ci_run_count: u32,
+    pub include_non_rust: NonRustInclusion,
+    pub editor: String,
     pub status_flash_millis: u64,
-    pub all_projects:        Vec<RustProject>,
-    pub nodes:               Vec<ProjectNode>,
-    pub flat_entries:        Vec<FlatEntry>,
-    pub disk_usage:          HashMap<String, u64>,
-    pub ci_state:            HashMap<String, CiState>,
-    pub lint_status:         HashMap<String, LintStatus>,
-    pub lint_enabled:        bool,
-    pub git_info:            HashMap<String, GitInfo>,
-    pub crates_versions:     HashMap<String, String>,
-    pub crates_downloads:    HashMap<String, u64>,
-    pub stars:               HashMap<String, u64>,
-    pub repo_descriptions:   HashMap<String, String>,
-    pub bg_tx:               mpsc::Sender<BackgroundMsg>,
-    pub bg_rx:               Receiver<BackgroundMsg>,
-    pub fully_loaded:        HashSet<String>,
+    pub all_projects: Vec<RustProject>,
+    pub nodes: Vec<ProjectNode>,
+    pub flat_entries: Vec<FlatEntry>,
+    pub disk_usage: HashMap<String, u64>,
+    pub ci_state: HashMap<String, CiState>,
+    pub lint_status: HashMap<String, LintStatus>,
+    pub lint_enabled: bool,
+    pub git_info: HashMap<String, GitInfo>,
+    pub crates_versions: HashMap<String, String>,
+    pub crates_downloads: HashMap<String, u64>,
+    pub stars: HashMap<String, u64>,
+    pub repo_descriptions: HashMap<String, String>,
+    pub bg_tx: mpsc::Sender<BackgroundMsg>,
+    pub bg_rx: Receiver<BackgroundMsg>,
+    pub fully_loaded: HashSet<String>,
     pub priority_fetch_path: Option<String>,
-    pub invert_scroll:       ScrollDirection,
-    pub expanded:            HashSet<ExpandKey>,
-    pub list_state:          ListState,
-    pub searching:           bool,
-    pub search_query:        String,
-    pub filtered:            Vec<usize>,
-    pub show_settings:       bool,
-    pub settings_pane:       Pane,
-    pub settings_editing:    bool,
-    pub settings_edit_buf:   String,
-    pub scan_complete:       bool,
-    pub scan_log:            Vec<String>,
-    pub scan_log_state:      ListState,
-    pub focus:               FocusTarget,
-    pub detail_column:       ScrollState,
-    pub package_pane:        Pane,
-    pub git_pane:            Pane,
-    pub targets_pane:        Pane,
-    pub ci_pane:             Pane,
+    pub invert_scroll: ScrollDirection,
+    pub expanded: HashSet<ExpandKey>,
+    pub list_state: ListState,
+    pub searching: bool,
+    pub search_query: String,
+    pub filtered: Vec<usize>,
+    pub show_settings: bool,
+    pub settings_pane: Pane,
+    pub settings_editing: bool,
+    pub settings_edit_buf: String,
+    pub scan_complete: bool,
+    pub scan_log: Vec<String>,
+    pub scan_log_state: ListState,
+    pub focused_pane: PaneId,
+    pub return_focus: Option<PaneId>,
+    pub visited_panes: HashSet<PaneId>,
+    pub package_pane: Pane,
+    pub git_pane: Pane,
+    pub targets_pane: Pane,
+    pub ci_pane: Pane,
     pub pending_example_run: Option<PendingExampleRun>,
-    pub pending_ci_fetch:    Option<PendingCiFetch>,
-    pub pending_clean:       Option<String>,
-    pub confirm:             Option<ConfirmAction>,
-    pub animation_started:   Instant,
-    pub ci_fetch_tx:         mpsc::Sender<CiFetchMsg>,
-    pub ci_fetch_rx:         mpsc::Receiver<CiFetchMsg>,
-    pub example_running:     Option<String>,
-    pub example_child:       Arc<Mutex<Option<u32>>>,
-    pub example_output:      Vec<String>,
-    pub example_tx:          mpsc::Sender<ExampleMsg>,
-    pub example_rx:          mpsc::Receiver<ExampleMsg>,
-    pub last_selected_path:  Option<String>,
-    pub terminal_dirty:      bool,
-    pub should_quit:         bool,
-    pub should_restart:      bool,
+    pub pending_ci_fetch: Option<PendingCiFetch>,
+    pub pending_clean: Option<String>,
+    pub confirm: Option<ConfirmAction>,
+    pub animation_started: Instant,
+    pub ci_fetch_tx: mpsc::Sender<CiFetchMsg>,
+    pub ci_fetch_rx: mpsc::Receiver<CiFetchMsg>,
+    pub example_running: Option<String>,
+    pub example_child: Arc<Mutex<Option<u32>>>,
+    pub example_output: Vec<String>,
+    pub example_tx: mpsc::Sender<ExampleMsg>,
+    pub example_rx: mpsc::Receiver<ExampleMsg>,
+    pub last_selected_path: Option<String>,
+    pub selected_project_path: Option<String>,
+    pub terminal_dirty: bool,
+    pub should_quit: bool,
+    pub should_restart: bool,
 
     // Disk watcher
     pub watch_tx: mpsc::Sender<WatchRequest>,
@@ -249,26 +249,26 @@ pub(super) struct App {
     pub deleted_projects: HashSet<String>,
 
     // Universal finder
-    pub show_finder:       bool,
-    pub finder_query:      String,
-    pub finder_results:    Vec<usize>,
-    pub finder_total:      usize,
-    pub finder_pane:       Pane,
-    pub finder_index:      Vec<FinderItem>,
+    pub show_finder: bool,
+    pub finder_query: String,
+    pub finder_results: Vec<usize>,
+    pub finder_total: usize,
+    pub finder_pane: Pane,
+    pub finder_index: Vec<FinderItem>,
     pub finder_col_widths: [usize; FINDER_COLUMN_COUNT],
-    pub finder_dirty:      bool,
+    pub finder_dirty: bool,
 
     // Caches for per-frame hot paths
-    pub cached_visible_rows:      Vec<VisibleRow>,
-    pub rows_dirty:               bool,
-    pub cached_root_sorted:       Vec<u64>,
-    pub cached_child_sorted:      HashMap<usize, Vec<u64>>,
-    pub disk_cache_dirty:         bool,
-    pub cached_fit_widths:        ResolvedWidths,
-    pub(super) data_generation:   u64,
-    pub(super) cached_detail:     Option<DetailCache>,
+    pub cached_visible_rows: Vec<VisibleRow>,
+    pub rows_dirty: bool,
+    pub cached_root_sorted: Vec<u64>,
+    pub cached_child_sorted: HashMap<usize, Vec<u64>>,
+    pub disk_cache_dirty: bool,
+    pub cached_fit_widths: ResolvedWidths,
+    pub(super) data_generation: u64,
+    pub(super) cached_detail: Option<DetailCache>,
     pub(super) selection_changed: bool,
-    pub(super) layout_cache:      LayoutCache,
+    pub(super) layout_cache: LayoutCache,
 
     /// Transient message shown in the status bar, auto-cleared after a timeout.
     pub(super) status_flash: Option<(String, std::time::Instant)>,
@@ -284,21 +284,21 @@ fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> V
                 if group.name.is_empty() {
                     for (mi, _) in group.members.iter().enumerate() {
                         rows.push(VisibleRow::Member {
-                            node_index:   ni,
-                            group_index:  gi,
+                            node_index: ni,
+                            group_index: gi,
                             member_index: mi,
                         });
                     }
                 } else {
                     rows.push(VisibleRow::GroupHeader {
-                        node_index:  ni,
+                        node_index: ni,
                         group_index: gi,
                     });
                     if expanded.contains(&ExpandKey::Group(ni, gi)) {
                         for (mi, _) in group.members.iter().enumerate() {
                             rows.push(VisibleRow::Member {
-                                node_index:   ni,
-                                group_index:  gi,
+                                node_index: ni,
+                                group_index: gi,
                                 member_index: mi,
                             });
                         }
@@ -308,7 +308,7 @@ fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> V
 
             for (wi, wt) in node.worktrees.iter().enumerate() {
                 rows.push(VisibleRow::WorktreeEntry {
-                    node_index:     ni,
+                    node_index: ni,
                     worktree_index: wi,
                 });
                 if wt.has_members() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
@@ -316,25 +316,25 @@ fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> V
                         if group.name.is_empty() {
                             for (mi, _) in group.members.iter().enumerate() {
                                 rows.push(VisibleRow::WorktreeMember {
-                                    node_index:     ni,
+                                    node_index: ni,
                                     worktree_index: wi,
-                                    group_index:    gi,
-                                    member_index:   mi,
+                                    group_index: gi,
+                                    member_index: mi,
                                 });
                             }
                         } else {
                             rows.push(VisibleRow::WorktreeGroupHeader {
-                                node_index:     ni,
+                                node_index: ni,
                                 worktree_index: wi,
-                                group_index:    gi,
+                                group_index: gi,
                             });
                             if expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
                                 for (mi, _) in group.members.iter().enumerate() {
                                     rows.push(VisibleRow::WorktreeMember {
-                                        node_index:     ni,
+                                        node_index: ni,
                                         worktree_index: wi,
-                                        group_index:    gi,
-                                        member_index:   mi,
+                                        group_index: gi,
+                                        member_index: mi,
                                     });
                                 }
                             }
@@ -356,8 +356,17 @@ fn initial_list_state(nodes: &[ProjectNode]) -> ListState {
 }
 
 impl App {
+    const TAB_ORDER: [PaneId; 6] = [
+        PaneId::ProjectList,
+        PaneId::Package,
+        PaneId::Git,
+        PaneId::Targets,
+        PaneId::CiRuns,
+        PaneId::ScanLog,
+    ];
+
     /// Derive the current input context from app state.
-    pub fn input_context(&self) -> InputContext {
+    pub const fn input_context(&self) -> InputContext {
         if self.show_finder {
             InputContext::Finder
         } else if self.show_settings {
@@ -365,19 +374,146 @@ impl App {
         } else if self.searching {
             InputContext::Searching
         } else {
-            match self.focus {
-                FocusTarget::DetailFields => {
-                    let (_, targets_col) = super::detail::detail_layout_pub(self);
-                    if Some(self.detail_column.pos()) == targets_col {
-                        InputContext::DetailTargets
-                    } else {
-                        InputContext::DetailFields
-                    }
-                },
-                FocusTarget::CiRuns => InputContext::CiRuns,
-                FocusTarget::ScanLog => InputContext::ScanLog,
-                FocusTarget::ProjectList => InputContext::ProjectList,
+            match self.focused_pane {
+                PaneId::Package | PaneId::Git => InputContext::DetailFields,
+                PaneId::Targets => InputContext::DetailTargets,
+                PaneId::CiRuns => InputContext::CiRuns,
+                PaneId::ScanLog => InputContext::ScanLog,
+                PaneId::Search => InputContext::Searching,
+                PaneId::Settings => InputContext::Settings,
+                PaneId::Finder => InputContext::Finder,
+                PaneId::ProjectList => InputContext::ProjectList,
             }
+        }
+    }
+
+    pub fn is_focused(&self, pane: PaneId) -> bool {
+        self.focused_pane == pane
+    }
+
+    pub fn base_focus(&self) -> PaneId {
+        if self.focused_pane.is_overlay() {
+            self.return_focus.unwrap_or(PaneId::ProjectList)
+        } else {
+            self.focused_pane
+        }
+    }
+
+    pub fn focus_pane(&mut self, pane: PaneId) {
+        self.focused_pane = pane;
+        if !pane.is_overlay() {
+            self.visited_panes.insert(pane);
+            self.return_focus = None;
+        }
+    }
+
+    pub fn open_overlay(&mut self, pane: PaneId) {
+        if !pane.is_overlay() {
+            self.focus_pane(pane);
+            return;
+        }
+        self.return_focus = Some(self.base_focus());
+        self.focused_pane = pane;
+    }
+
+    pub fn close_overlay(&mut self) {
+        self.focused_pane = self.return_focus.unwrap_or(PaneId::ProjectList);
+        self.return_focus = None;
+    }
+
+    pub fn tabbable_panes(&self) -> Vec<PaneId> {
+        Self::TAB_ORDER
+            .into_iter()
+            .filter(|pane| match pane {
+                PaneId::ProjectList => true,
+                PaneId::Package => self.selected_project().is_some(),
+                PaneId::Git => self.selected_project().is_some_and(|project| {
+                    self.git_info
+                        .get(&project.path)
+                        .is_some_and(|info| info.url.is_some())
+                }),
+                PaneId::Targets => self.selected_project().is_some_and(|project| {
+                    let info = super::detail::build_detail_info(self, project);
+                    info.is_binary || !info.examples.is_empty() || !info.benches.is_empty()
+                }),
+                PaneId::CiRuns => self.selected_project().is_some_and(|project| {
+                    self.ci_state
+                        .get(&project.path)
+                        .is_some_and(|state| !state.runs().is_empty())
+                        || self
+                            .git_info
+                            .get(&project.path)
+                            .is_some_and(|info| info.url.is_some())
+                }),
+                PaneId::ScanLog => !self.scan_complete,
+                PaneId::Search | PaneId::Settings | PaneId::Finder => false,
+            })
+            .collect()
+    }
+
+    pub fn focus_next_pane(&mut self) {
+        let panes = self.tabbable_panes();
+        if panes.is_empty() {
+            return;
+        }
+        let current = self.base_focus();
+        let index = panes.iter().position(|pane| *pane == current).unwrap_or(0);
+        let next = panes[(index + 1) % panes.len()];
+        self.focus_pane(next);
+    }
+
+    pub fn focus_previous_pane(&mut self) {
+        let panes = self.tabbable_panes();
+        if panes.is_empty() {
+            return;
+        }
+        let current = self.base_focus();
+        let index = panes.iter().position(|pane| *pane == current).unwrap_or(0);
+        let prev = panes[(index + panes.len() - 1) % panes.len()];
+        self.focus_pane(prev);
+    }
+
+    pub fn reset_project_panes(&mut self) {
+        self.package_pane.home();
+        self.git_pane.home();
+        self.targets_pane.home();
+        self.ci_pane.home();
+        self.visited_panes.remove(&PaneId::Package);
+        self.visited_panes.remove(&PaneId::Git);
+        self.visited_panes.remove(&PaneId::Targets);
+        self.visited_panes.remove(&PaneId::CiRuns);
+    }
+
+    pub fn remembers_selection(&self, pane: PaneId) -> bool {
+        self.visited_panes.contains(&pane)
+    }
+
+    pub fn sync_selected_project(&mut self) {
+        self.ensure_visible_rows_cached();
+        let current = self.selected_project().map(|project| project.path.clone());
+        if self.selected_project_path == current {
+            return;
+        }
+
+        self.selected_project_path.clone_from(&current);
+        self.reset_project_panes();
+
+        let panes = self.tabbable_panes();
+        if !panes.contains(&self.base_focus()) {
+            self.focus_pane(PaneId::ProjectList);
+        }
+
+        if self.return_focus.is_some() && !panes.contains(&self.return_focus.unwrap_or_default()) {
+            self.return_focus = Some(PaneId::ProjectList);
+        }
+
+        if let Some(path) = current
+            && self.last_selected_path.as_ref() != Some(&path)
+        {
+            self.data_generation += 1;
+            self.last_selected_path = Some(path);
+            self.selection_changed = true;
+            self.maybe_priority_fetch();
         }
     }
 
@@ -454,8 +590,9 @@ impl App {
             scan_complete: false,
             scan_log: Vec::new(),
             scan_log_state: ListState::default(),
-            focus: FocusTarget::ProjectList,
-            detail_column: ScrollState::default(),
+            focused_pane: PaneId::ProjectList,
+            return_focus: None,
+            visited_panes: std::iter::once(PaneId::ProjectList).collect(),
             package_pane: Pane::new(),
             git_pane: Pane::new(),
             targets_pane: Pane::new(),
@@ -473,6 +610,7 @@ impl App {
             example_tx,
             example_rx,
             last_selected_path: super::terminal::load_last_selected(),
+            selected_project_path: None,
             terminal_dirty: false,
             should_quit: false,
             should_restart: false,
@@ -537,7 +675,7 @@ impl App {
                     self.ci_state
                         .entry(member.path.clone())
                         .or_insert_with(|| CiState::Loaded {
-                            runs:      runs.clone(),
+                            runs: runs.clone(),
                             exhausted: false,
                         });
                 }
@@ -562,6 +700,7 @@ impl App {
         } else if !self.nodes.is_empty() {
             self.list_state.select(Some(0));
         }
+        self.sync_selected_project();
     }
 
     pub(super) fn rescan(&mut self) {
@@ -580,12 +719,12 @@ impl App {
         self.scan_complete = false;
         self.fully_loaded.clear();
         self.priority_fetch_path = None;
-        self.focus = FocusTarget::ProjectList;
-        self.detail_column.jump_home();
-        self.package_pane.home();
-        self.git_pane.home();
-        self.targets_pane.home();
-        self.ci_pane.home();
+        self.focus_pane(PaneId::ProjectList);
+        self.show_settings = false;
+        self.show_finder = false;
+        self.searching = false;
+        self.reset_project_panes();
+        self.selected_project_path = None;
         self.pending_ci_fetch = None;
         self.expanded.clear();
         self.list_state = ListState::default();
@@ -806,8 +945,8 @@ impl App {
             },
             BackgroundMsg::ScanComplete => {
                 self.scan_complete = true;
-                if self.focus == FocusTarget::ScanLog {
-                    self.focus = FocusTarget::ProjectList;
+                if self.focused_pane == PaneId::ScanLog {
+                    self.focus_pane(PaneId::ProjectList);
                 }
             },
             BackgroundMsg::NetworkOffline => {
@@ -942,7 +1081,9 @@ impl App {
     }
 
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
-    pub fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
+    pub fn visible_rows(&self) -> &[VisibleRow] {
+        &self.cached_visible_rows
+    }
 
     /// Recompute fit-to-content column widths across all projects.
     /// Called alongside other cache refreshes in the render loop.
@@ -1106,8 +1247,8 @@ impl App {
 
         self.cached_detail = self.selected_project().map(|p| DetailCache {
             generation: self.data_generation,
-            path:       current_path,
-            info:       super::detail::build_detail_info(self, p),
+            path: current_path,
+            info: super::detail::build_detail_info(self, p),
         });
     }
 
@@ -1301,7 +1442,7 @@ impl App {
                     self.collapse_to(
                         &ExpandKey::Group(ni, gi),
                         VisibleRow::GroupHeader {
-                            node_index:  ni,
+                            node_index: ni,
                             group_index: gi,
                         },
                     );
@@ -1324,7 +1465,7 @@ impl App {
                     self.collapse_to(
                         &ExpandKey::Worktree(ni, wi),
                         VisibleRow::WorktreeEntry {
-                            node_index:     ni,
+                            node_index: ni,
                             worktree_index: wi,
                         },
                     );
@@ -1340,7 +1481,7 @@ impl App {
                     self.collapse_to(
                         &ExpandKey::Worktree(ni, wi),
                         VisibleRow::WorktreeEntry {
-                            node_index:     ni,
+                            node_index: ni,
                             worktree_index: wi,
                         },
                     );
@@ -1348,9 +1489,9 @@ impl App {
                     self.collapse_to(
                         &ExpandKey::WorktreeGroup(ni, wi, gi),
                         VisibleRow::WorktreeGroupHeader {
-                            node_index:     ni,
+                            node_index: ni,
                             worktree_index: wi,
-                            group_index:    gi,
+                            group_index: gi,
                         },
                     );
                 }
@@ -1439,6 +1580,7 @@ impl App {
         self.search_query.clear();
         self.filtered.clear();
         self.rows_dirty = true;
+        self.close_overlay();
         if !self.nodes.is_empty() {
             self.list_state.select(Some(0));
         }
@@ -1450,6 +1592,7 @@ impl App {
         self.search_query.clear();
         self.filtered.clear();
         self.rows_dirty = true;
+        self.close_overlay();
 
         if let Some(target_path) = project_path {
             self.select_project_in_tree(&target_path);
@@ -1609,7 +1752,9 @@ impl App {
         None
     }
 
-    pub fn is_deleted(&self, path: &str) -> bool { self.deleted_projects.contains(path) }
+    pub fn is_deleted(&self, path: &str) -> bool {
+        self.deleted_projects.contains(path)
+    }
 
     pub fn live_worktree_count(&self, node: &ProjectNode) -> usize {
         node.worktrees
@@ -1717,7 +1862,9 @@ impl App {
         self.ci_state.get(&project.path)
     }
 
-    pub fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
+    pub fn animation_elapsed(&self) -> Duration {
+        self.animation_started.elapsed()
+    }
 
     /// Lint icon frame for the current animation state, or a blank space if lint is
     /// disabled or no log exists.
@@ -1763,7 +1910,7 @@ impl App {
             InputContext::ProjectList | InputContext::ScanLog => Some("open"),
             InputContext::DetailTargets => Some("run"),
             InputContext::DetailFields => {
-                if self.detail_column.pos() == 0 {
+                if self.base_focus() == PaneId::Package {
                     let info = self
                         .selected_project()
                         .map(|p| super::detail::build_detail_info(self, p))?;
@@ -1806,8 +1953,12 @@ impl App {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    use std::sync::mpsc;
 
     use super::*;
+    use crate::config::Config;
+    use crate::http::HttpClient;
+    use crate::project::ExampleGroup;
     use crate::project::ProjectLanguage;
     use crate::project::RustProject;
     use crate::project::WorkspaceStatus;
@@ -1816,19 +1967,19 @@ mod tests {
 
     fn make_project(name: Option<&str>, path: &str) -> RustProject {
         RustProject {
-            path:                      path.to_string(),
-            abs_path:                  path.to_string(),
-            name:                      name.map(String::from),
-            version:                   None,
-            description:               None,
-            worktree_name:             None,
+            path: path.to_string(),
+            abs_path: path.to_string(),
+            name: name.map(String::from),
+            version: None,
+            description: None,
+            worktree_name: None,
             worktree_primary_abs_path: None,
-            is_workspace:              WorkspaceStatus::Standalone,
-            types:                     Vec::new(),
-            examples:                  Vec::new(),
-            benches:                   Vec::new(),
-            test_count:                0,
-            is_rust:                   ProjectLanguage::Rust,
+            is_workspace: WorkspaceStatus::Standalone,
+            types: Vec::new(),
+            examples: Vec::new(),
+            benches: Vec::new(),
+            test_count: 0,
+            is_rust: ProjectLanguage::Rust,
         }
     }
 
@@ -1839,6 +1990,23 @@ mod tests {
             worktrees: Vec::new(),
             vendored: Vec::new(),
         }
+    }
+
+    fn make_app(projects: Vec<RustProject>) -> App {
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let scan_root =
+            std::env::temp_dir().join(format!("cargo-port-polish-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&scan_root);
+        let mut app = App::new(
+            scan_root,
+            projects,
+            bg_tx,
+            bg_rx,
+            &Config::default(),
+            HttpClient::new(),
+        );
+        app.sync_selected_project();
+        app
     }
 
     #[test]
@@ -1852,7 +2020,7 @@ mod tests {
         let mut wt0 = make_node(make_project(None, "~/ws"));
         wt0.project.worktree_name = Some("ws".to_string());
         wt0.groups = vec![MemberGroup {
-            name:    String::new(),
+            name: String::new(),
             members: vec![member_a.clone(), member_b.clone()],
         }];
 
@@ -1860,7 +2028,7 @@ mod tests {
         let mut wt1 = make_node(make_project(None, "~/ws_feat"));
         wt1.project.worktree_name = Some("ws_feat".to_string());
         wt1.groups = vec![MemberGroup {
-            name:    "crates".to_string(),
+            name: "crates".to_string(),
             members: vec![member_a, member_b],
         }];
 
@@ -1891,41 +2059,41 @@ mod tests {
         assert!(matches!(
             rows[1],
             VisibleRow::WorktreeEntry {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 0,
             }
         ));
         assert!(matches!(
             rows[2],
             VisibleRow::WorktreeMember {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 0,
-                group_index:    0,
-                member_index:   0,
+                group_index: 0,
+                member_index: 0,
             }
         ));
         assert!(matches!(
             rows[4],
             VisibleRow::WorktreeEntry {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 1,
             }
         ));
         assert!(matches!(
             rows[5],
             VisibleRow::WorktreeGroupHeader {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 1,
-                group_index:    0,
+                group_index: 0,
             }
         ));
         assert!(matches!(
             rows[7],
             VisibleRow::WorktreeMember {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 1,
-                group_index:    0,
-                member_index:   1,
+                group_index: 0,
+                member_index: 1,
             }
         ));
     }
@@ -1965,7 +2133,7 @@ mod tests {
         let member_b = make_project(Some("b"), "~/ws/b");
         let mut root = make_node(make_project(None, "~/ws"));
         root.groups = vec![MemberGroup {
-            name:    String::new(),
+            name: String::new(),
             members: vec![member_a, member_b],
         }];
 
@@ -1995,5 +2163,113 @@ mod tests {
     fn name_width_with_gutter_reserves_space_before_lint() {
         assert_eq!(App::name_width_with_gutter(0), 1);
         assert_eq!(App::name_width_with_gutter(42), 43);
+    }
+
+    #[test]
+    fn tabbable_panes_follow_canonical_order() {
+        let mut project = make_project(Some("demo"), "~/demo");
+        project.examples = vec![ExampleGroup {
+            category: String::new(),
+            names: vec!["example".to_string()],
+        }];
+
+        let mut app = make_app(vec![project.clone()]);
+        app.scan_complete = true;
+        app.git_info.insert(
+            project.path,
+            GitInfo {
+                origin: GitOrigin::Clone,
+                branch: None,
+                owner: None,
+                url: Some("https://github.com/acme/demo".to_string()),
+                first_commit: None,
+                last_commit: None,
+                ahead_behind: None,
+                default_branch: None,
+                ahead_behind_origin: None,
+                ahead_behind_local: None,
+            },
+        );
+
+        assert_eq!(
+            app.tabbable_panes(),
+            vec![
+                PaneId::ProjectList,
+                PaneId::Package,
+                PaneId::Git,
+                PaneId::Targets,
+                PaneId::CiRuns,
+            ]
+        );
+
+        app.focus_next_pane();
+        assert_eq!(app.focused_pane, PaneId::Package);
+        app.focus_next_pane();
+        assert_eq!(app.focused_pane, PaneId::Git);
+        app.focus_next_pane();
+        assert_eq!(app.focused_pane, PaneId::Targets);
+        app.focus_previous_pane();
+        assert_eq!(app.focused_pane, PaneId::Git);
+    }
+
+    #[test]
+    fn overlays_restore_prior_focus() {
+        let app_project = make_project(Some("demo"), "~/demo");
+        let mut app = make_app(vec![app_project]);
+        app.focus_pane(PaneId::Git);
+
+        app.open_overlay(PaneId::Settings);
+        app.show_settings = true;
+        assert_eq!(app.focused_pane, PaneId::Settings);
+        assert_eq!(app.return_focus, Some(PaneId::Git));
+
+        app.show_settings = false;
+        app.close_overlay();
+        assert_eq!(app.focused_pane, PaneId::Git);
+        assert!(app.return_focus.is_none());
+    }
+
+    #[test]
+    fn detail_panes_do_not_remember_selection_until_focused() {
+        let project = make_project(Some("demo"), "~/demo");
+        let mut app = make_app(vec![project]);
+
+        assert!(app.remembers_selection(PaneId::ProjectList));
+        assert!(!app.remembers_selection(PaneId::Package));
+        assert!(!app.remembers_selection(PaneId::Git));
+        assert!(!app.remembers_selection(PaneId::Targets));
+        assert!(!app.remembers_selection(PaneId::CiRuns));
+
+        app.focus_pane(PaneId::Package);
+        assert!(app.remembers_selection(PaneId::Package));
+    }
+
+    #[test]
+    fn project_change_resets_project_dependent_panes() {
+        let project_a = make_project(Some("a"), "~/a");
+        let project_b = make_project(Some("b"), "~/b");
+        let mut app = make_app(vec![project_a, project_b]);
+
+        app.focus_pane(PaneId::Package);
+        app.focus_pane(PaneId::Git);
+        app.focus_pane(PaneId::Targets);
+        app.focus_pane(PaneId::CiRuns);
+        app.package_pane.set_pos(3);
+        app.git_pane.set_pos(4);
+        app.targets_pane.set_pos(5);
+        app.ci_pane.set_pos(6);
+
+        app.list_state.select(Some(1));
+        app.sync_selected_project();
+
+        assert_eq!(app.package_pane.pos(), 0);
+        assert_eq!(app.git_pane.pos(), 0);
+        assert_eq!(app.targets_pane.pos(), 0);
+        assert_eq!(app.ci_pane.pos(), 0);
+        assert!(!app.remembers_selection(PaneId::Package));
+        assert!(!app.remembers_selection(PaneId::Git));
+        assert!(!app.remembers_selection(PaneId::Targets));
+        assert!(!app.remembers_selection(PaneId::CiRuns));
+        assert_eq!(app.selected_project_path.as_deref(), Some("~/b"));
     }
 }

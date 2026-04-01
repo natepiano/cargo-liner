@@ -52,9 +52,9 @@ pub(super) enum ExampleMsg {
 pub(super) enum CiFetchMsg {
     /// The fetch completed with updated runs for the given project path.
     Complete {
-        path:   String,
+        path: String,
         result: CiFetchResult,
-        kind:   CiFetchKind,
+        kind: CiFetchKind,
     },
 }
 
@@ -208,7 +208,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
             app.ci_state.insert(
                 fetch.project_path.clone(),
                 super::app::CiState::Fetching {
-                    runs:  existing_runs,
+                    runs: existing_runs,
                     count: CI_FETCH_DISPLAY_COUNT,
                 },
             );
@@ -426,22 +426,6 @@ fn save_last_selected(project_path: &str) {
     }
 }
 
-/// Update the last selected path when the user navigates.
-/// If the scan is still running and the selected project doesn't have details yet,
-/// spawn a priority fetch to load its data immediately.
-pub(super) fn track_selection(app: &mut App) {
-    if let Some(project) = app.selected_project() {
-        let path = project.path.clone();
-        if app.last_selected_path.as_ref() != Some(&path) {
-            app.data_generation += 1;
-            app.last_selected_path = Some(path);
-            // Disk write deferred to save_selection_on_idle / quit
-            app.selection_changed = true;
-            app.maybe_priority_fetch();
-        }
-    }
-}
-
 /// Spawn a background thread to fetch details for a single project ahead of the main scan.
 pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: Option<&String>) {
     let tx = app.bg_tx.clone();
@@ -502,8 +486,8 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
             && let Some(info) = client.fetch_crates_io_info(name)
         {
             let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                path:      project_path,
-                version:   info.version,
+                path: project_path,
+                version: info.version,
                 downloads: info.downloads,
             });
         }

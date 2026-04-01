@@ -24,7 +24,7 @@ impl Cycle {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameCycle {
     frames: &'static [&'static str],
-    cycle:  Cycle,
+    cycle: Cycle,
 }
 
 impl FrameCycle {
