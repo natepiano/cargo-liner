@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 use super::ci::GhRun;
 use super::ci::GqlCheckRun;
+use super::constants::APP_NAME;
 use super::constants::CONNECTIVITY_CHECK_URL;
 use super::constants::CRATES_IO_API_BASE;
 use super::constants::CRATES_IO_USER_AGENT;
@@ -66,6 +67,7 @@ impl HttpClient {
     pub fn new(handle: tokio::runtime::Handle) -> Option<Self> {
         let client = reqwest::Client::builder()
             .timeout(GH_TIMEOUT)
+            .user_agent(APP_NAME)
             .build()
             .ok()?;
         let github_token = Command::new("gh")

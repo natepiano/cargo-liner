@@ -15,7 +15,7 @@ use chrono::DateTime;
 use chrono::FixedOffset;
 use chrono::Utc;
 
-use super::constants::APP_NAME;
+use super::cache_paths;
 use super::constants::LINT_FAILED;
 use super::constants::LINT_NO_LOG;
 use super::constants::LINT_PASSED;
@@ -67,12 +67,7 @@ impl LintStatus {
 }
 
 /// Canonical cache directory for all per-project lint status files.
-pub fn cache_root() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join(APP_NAME)
-        .join("port-report")
-}
+pub fn cache_root() -> PathBuf { cache_paths::port_report_root() }
 
 /// Stable per-project cache key used by both cargo-port and external scripts.
 pub fn project_key(project_root: &Path) -> String {

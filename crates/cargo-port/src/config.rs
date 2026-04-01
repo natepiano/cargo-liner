@@ -64,6 +64,14 @@ impl ScrollDirection {
     }
 }
 
+/// Cache storage settings shared by CI and port-report data.
+#[derive(confique::Config, Default, Serialize)]
+pub struct CacheConfig {
+    /// Override the app cache root. Empty uses the system cache directory.
+    #[config(default = "")]
+    pub root: String,
+}
+
 /// Lint status indicator settings.
 #[derive(confique::Config, Default, Serialize)]
 pub struct LintConfig {
@@ -76,6 +84,8 @@ pub struct LintConfig {
 /// Top-level application configuration.
 #[derive(confique::Config, Default, Serialize)]
 pub struct Config {
+    #[config(nested)]
+    pub cache: CacheConfig,
     #[config(nested)]
     pub mouse: MouseConfig,
     #[config(nested)]
@@ -204,6 +214,7 @@ mod tests {
     #[test]
     fn defaults_are_correct() {
         let cfg = Config::default();
+        assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.tui.inline_dirs, vec!["crates".to_string()]);
         assert_eq!(cfg.tui.ci_run_count, 5);
         assert!(cfg.tui.include_dirs.is_empty());
@@ -211,6 +222,7 @@ mod tests {
         assert_eq!(cfg.tui.editor, "zed");
         assert!((cfg.tui.status_flash_secs - 3.0).abs() < f64::EPSILON);
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
+        assert!(!cfg.lint.enabled);
     }
 
     /// Generated template parses back into a valid `Config` via confique.
@@ -228,6 +240,7 @@ mod tests {
             .file(&path)
             .load()
             .expect("template should parse");
+        assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.tui.ci_run_count, 5);
     }
 
@@ -242,6 +255,7 @@ mod tests {
             .file(&path)
             .load()
             .expect("partial config should load");
+        assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.tui.ci_run_count, 10);
         assert_eq!(cfg.tui.editor, "zed");
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
@@ -258,6 +272,7 @@ mod tests {
             .file(&path)
             .load()
             .expect("empty config should load");
+        assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.tui.ci_run_count, 5);
         assert_eq!(cfg.tui.editor, "zed");
     }
@@ -269,6 +284,7 @@ mod tests {
         let path = dir.path().join("config.toml");
 
         let mut cfg = Config::default();
+        cfg.cache.root = "/tmp/cargo-port-cache".to_string();
         cfg.tui.ci_run_count = 42;
         cfg.tui.editor = "vim".to_string();
         cfg.tui.status_flash_secs = 5.0;
@@ -281,6 +297,7 @@ mod tests {
             .file(&path)
             .load()
             .expect("reloaded config");
+        assert_eq!(reloaded.cache.root, "/tmp/cargo-port-cache");
         assert_eq!(reloaded.tui.ci_run_count, 42);
         assert_eq!(reloaded.tui.editor, "vim");
         assert!((reloaded.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
@@ -302,7 +319,23 @@ mod tests {
             .file(&path)
             .load()
             .expect("bool enums should parse");
+        assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Normal);
         assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Include);
+    }
+
+    /// Cache root override parses from TOML.
+    #[test]
+    fn cache_root_override_parses() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[cache]\nroot = \"/tmp/cargo-port\"\n").expect("write");
+
+        let cfg = Config::builder()
+            .file(&path)
+            .load()
+            .expect("cache root should parse");
+        assert_eq!(cfg.cache.root, "/tmp/cargo-port");
+        assert!(!cfg.lint.enabled);
     }
 }

@@ -12,11 +12,11 @@ use std::thread;
 
 use walkdir::WalkDir;
 
+use super::cache_paths;
 use super::ci;
 use super::ci::CiRun;
 use super::ci::GhRun;
 use super::config::NonRustInclusion;
-use super::constants::CACHE_DIR;
 use super::constants::NO_MORE_RUNS_MARKER;
 use super::constants::OLDER_RUNS_FETCH_INCREMENT;
 use super::constants::SCAN_DISK_CONCURRENCY;
@@ -123,13 +123,9 @@ pub enum CiFetchResult {
 }
 
 /// Base cache directory for CI metadata.
-pub fn cache_dir() -> Option<PathBuf> {
-    dirs::cache_dir()
-        .or_else(|| Some(std::env::temp_dir()))
-        .map(|d| d.join(CACHE_DIR))
-}
+pub fn cache_dir() -> Option<PathBuf> { Some(cache_paths::ci_cache_root()) }
 
-/// Repo-keyed cache directory: `{cache_dir}/cargo-port/ci-cache/{owner}/{repo}`.
+/// Repo-keyed cache directory: `{cache_dir}/{owner}/{repo}`.
 fn repo_cache_dir(owner: &str, repo: &str) -> Option<PathBuf> {
     cache_dir().map(|d| d.join(owner).join(repo))
 }

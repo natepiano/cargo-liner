@@ -7,6 +7,7 @@ use clap::Parser;
 use clap::Subcommand;
 
 mod ci;
+mod cache_paths;
 mod config;
 mod constants;
 mod http;
