@@ -62,7 +62,6 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 // ── Port-report constants ────────────────────────────────────────────
 
-pub const PORT_REPORT_LOG: &str = "port-report.log";
 pub const PORT_REPORT_LATEST_JSON: &str = "latest.json";
 pub const PORT_REPORT_HISTORY_JSONL: &str = "history.jsonl";
 

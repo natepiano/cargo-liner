@@ -46,6 +46,7 @@ use crate::project::ProjectLanguage;
 use crate::project::ProjectType;
 use crate::project::RustProject;
 use crate::port_report::PortReportRun;
+use crate::port_report::PortReportCommandStatus;
 use crate::port_report::PortReportRunStatus;
 use crate::scan;
 
@@ -1662,6 +1663,55 @@ fn format_port_report_duration(run: &PortReportRun) -> String {
     format!("{minutes}:{seconds:02}")
 }
 
+fn format_port_report_commands(run: &PortReportRun) -> String {
+    let total = run.commands.len();
+    if total == 0 {
+        return "-".to_string();
+    }
+
+    let passed = run
+        .commands
+        .iter()
+        .filter(|command| matches!(command.status, PortReportCommandStatus::Passed))
+        .count();
+    let failed = run
+        .commands
+        .iter()
+        .filter(|command| matches!(command.status, PortReportCommandStatus::Failed))
+        .count();
+    let pending = run
+        .commands
+        .iter()
+        .filter(|command| matches!(command.status, PortReportCommandStatus::Pending))
+        .count();
+
+    match run.status {
+        PortReportRunStatus::Running => format!("{passed}/{total} running"),
+        PortReportRunStatus::Passed => format!("{total}/{total}"),
+        PortReportRunStatus::Failed if failed > 0 => format!("{failed}/{total} failed"),
+        PortReportRunStatus::Failed => format!("{}/{}", total.saturating_sub(pending), total),
+    }
+}
+
+fn first_failed_command(run: &PortReportRun) -> Option<&str> {
+    run.commands
+        .iter()
+        .find(|command| matches!(command.status, PortReportCommandStatus::Failed))
+        .map(|command| command.name.as_str())
+}
+
+fn format_port_report_failed(run: &PortReportRun) -> String {
+    first_failed_command(run).unwrap_or("-").to_string()
+}
+
+fn format_port_report_exit(run: &PortReportRun) -> String {
+    run.commands
+        .iter()
+        .find(|command| matches!(command.status, PortReportCommandStatus::Failed))
+        .and_then(|command| command.exit_code)
+        .map_or_else(|| "-".to_string(), |code| code.to_string())
+}
+
 pub(super) fn render_port_report_panel(
     frame: &mut Frame,
     app: &mut App,
@@ -1725,6 +1775,9 @@ pub(super) fn render_port_report_panel(
                 Cell::from(format_port_report_when(&run.started_at)),
                 Cell::from(run.status.label()),
                 Cell::from(format_port_report_duration(run)),
+                Cell::from(format_port_report_commands(run)),
+                Cell::from(format_port_report_failed(run)),
+                Cell::from(format_port_report_exit(run)),
             ])
             .style(style)
         })
@@ -1736,10 +1789,13 @@ pub(super) fn render_port_report_panel(
             Constraint::Length(10),
             Constraint::Length(8),
             Constraint::Length(6),
+            Constraint::Length(12),
+            Constraint::Length(12),
+            Constraint::Length(6),
         ],
     )
     .header(
-        Row::new(vec!["When", "Result", "Dur"]).style(
+        Row::new(vec!["When", "Result", "Dur", "Cmds", "Failed", "Exit"]).style(
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
@@ -2073,7 +2129,28 @@ fn hard_wrap(text: &str, max_width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::first_failed_command;
+    use super::format_port_report_commands;
+    use super::format_port_report_exit;
     use super::stats_column_width;
+    use crate::port_report::PortReportCommand;
+    use crate::port_report::PortReportCommandStatus;
+    use crate::port_report::PortReportRun;
+    use crate::port_report::PortReportRunStatus;
+
+    fn run_with_commands(
+        status: PortReportRunStatus,
+        commands: Vec<PortReportCommand>,
+    ) -> PortReportRun {
+        PortReportRun {
+            run_id:      "run-1".to_string(),
+            started_at:  "2026-04-01T21:00:00-04:00".to_string(),
+            finished_at: Some("2026-04-01T21:00:10-04:00".to_string()),
+            duration_ms: Some(10_000),
+            status,
+            commands,
+        }
+    }
 
     #[test]
     fn stats_width_fixed_for_three_digit_counts() {
@@ -2107,5 +2184,91 @@ mod tests {
         let (total, digits) = stats_column_width(&rows);
         assert_eq!(digits, 3);
         assert_eq!(total, 17);
+    }
+
+    #[test]
+    fn port_report_commands_summary_for_passed_run() {
+        let run = run_with_commands(
+            PortReportRunStatus::Passed,
+            vec![
+                PortReportCommand {
+                    name:        "mend".to_string(),
+                    command:     "cargo mend".to_string(),
+                    status:      PortReportCommandStatus::Passed,
+                    duration_ms: Some(1_000),
+                    exit_code:   Some(0),
+                    log_file:    "port-report/mend-latest.log".to_string(),
+                },
+                PortReportCommand {
+                    name:        "clippy".to_string(),
+                    command:     "cargo clippy".to_string(),
+                    status:      PortReportCommandStatus::Passed,
+                    duration_ms: Some(2_000),
+                    exit_code:   Some(0),
+                    log_file:    "port-report/clippy-latest.log".to_string(),
+                },
+            ],
+        );
+
+        assert_eq!(format_port_report_commands(&run), "2/2");
+        assert_eq!(first_failed_command(&run), None);
+        assert_eq!(format_port_report_exit(&run), "-");
+    }
+
+    #[test]
+    fn port_report_commands_summary_for_failed_run() {
+        let run = run_with_commands(
+            PortReportRunStatus::Failed,
+            vec![
+                PortReportCommand {
+                    name:        "mend".to_string(),
+                    command:     "cargo mend".to_string(),
+                    status:      PortReportCommandStatus::Passed,
+                    duration_ms: Some(1_000),
+                    exit_code:   Some(0),
+                    log_file:    "port-report/mend-latest.log".to_string(),
+                },
+                PortReportCommand {
+                    name:        "clippy".to_string(),
+                    command:     "cargo clippy".to_string(),
+                    status:      PortReportCommandStatus::Failed,
+                    duration_ms: Some(2_000),
+                    exit_code:   Some(101),
+                    log_file:    "port-report/clippy-latest.log".to_string(),
+                },
+            ],
+        );
+
+        assert_eq!(format_port_report_commands(&run), "1/2 failed");
+        assert_eq!(first_failed_command(&run), Some("clippy"));
+        assert_eq!(format_port_report_exit(&run), "101");
+    }
+
+    #[test]
+    fn port_report_commands_summary_for_running_run() {
+        let run = run_with_commands(
+            PortReportRunStatus::Running,
+            vec![
+                PortReportCommand {
+                    name:        "mend".to_string(),
+                    command:     "cargo mend".to_string(),
+                    status:      PortReportCommandStatus::Passed,
+                    duration_ms: Some(1_000),
+                    exit_code:   Some(0),
+                    log_file:    "port-report/mend-latest.log".to_string(),
+                },
+                PortReportCommand {
+                    name:        "clippy".to_string(),
+                    command:     "cargo clippy".to_string(),
+                    status:      PortReportCommandStatus::Pending,
+                    duration_ms: None,
+                    exit_code:   None,
+                    log_file:    "port-report/clippy-latest.log".to_string(),
+                },
+            ],
+        );
+
+        assert_eq!(format_port_report_commands(&run), "1/2 running");
+        assert_eq!(first_failed_command(&run), None);
     }
 }

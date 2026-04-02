@@ -607,12 +607,16 @@ mod tests {
         let project_path = "~/rust/demo";
         let mut projects = HashMap::new();
         let (key, entry) = make_project_entry(project_path, project_root.path());
-        let log_path = port_report::log_path(project_root.path());
+        let latest_path = port_report::latest_path_under(&port_report::cache_root(), project_root.path());
         projects.insert(key, entry);
 
-        std::fs::create_dir_all(log_path.parent().expect("log file has parent"))
+        std::fs::create_dir_all(latest_path.parent().expect("latest file has parent"))
             .expect("create cache port-report dir");
-        std::fs::write(&log_path, "2026-03-30T14:22:18-05:00\tpassed\n").expect("write log");
+        std::fs::write(
+            &latest_path,
+            r#"{"run_id":"run-1","started_at":"2026-03-30T14:22:01-05:00","finished_at":"2026-03-30T14:22:18-05:00","duration_ms":17000,"status":"passed","commands":[]}"#,
+        )
+        .expect("write latest");
 
         let scan_root = project_root.path().to_path_buf();
         let project_parents = HashSet::new();
@@ -627,7 +631,7 @@ mod tests {
         let mut pending_disk = HashMap::new();
         let mut pending_new = HashMap::new();
 
-        handle_event(&log_path, &ctx, &bg_tx, &mut pending_disk, &mut pending_new);
+        handle_event(&latest_path, &ctx, &bg_tx, &mut pending_disk, &mut pending_new);
 
         let message = bg_rx.try_recv().expect("lint status message");
         assert!(matches!(message, BackgroundMsg::LintStatus { .. }));
@@ -649,7 +653,7 @@ mod tests {
         let project_path = "~/rust/demo";
         let mut projects = HashMap::new();
         let (key, entry) = make_project_entry(project_path, project_root.path());
-        let log_path = port_report::log_path(project_root.path());
+        let latest_path = port_report::latest_path_under(&port_report::cache_root(), project_root.path());
         let child_path = entry
             .port_report_dir_path
             .join("port-report/clippy-latest.log");
@@ -657,7 +661,11 @@ mod tests {
 
         std::fs::create_dir_all(child_path.parent().expect("child file has parent"))
             .expect("create cache port-report child dir");
-        std::fs::write(&log_path, "2026-03-30T14:22:18-05:00\tfailed\n").expect("write log");
+        std::fs::write(
+            &latest_path,
+            r#"{"run_id":"run-1","started_at":"2026-03-30T14:22:01-05:00","finished_at":"2026-03-30T14:22:18-05:00","duration_ms":17000,"status":"failed","commands":[]}"#,
+        )
+        .expect("write latest");
         std::fs::write(&child_path, "warning: example\n").expect("write child file");
 
         let scan_root = project_root.path().to_path_buf();

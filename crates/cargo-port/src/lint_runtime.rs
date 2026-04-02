@@ -350,7 +350,6 @@ pub fn run_commands_for_project(
             .collect(),
     };
     port_report::write_latest_under(cache_root, project_root, &run)?;
-    port_report::append_status_under(cache_root, project_root, "started")?;
 
     let manifest_path = project_root.join("Cargo.toml");
     let mut failed = false;
@@ -388,11 +387,6 @@ pub fn run_commands_for_project(
         port_report::PortReportRunStatus::Passed
     };
 
-    port_report::append_status_under(
-        cache_root,
-        project_root,
-        if failed { "failed" } else { "passed" },
-    )?;
     port_report::write_latest_under(cache_root, project_root, &run)?;
     port_report::append_history_under(cache_root, project_root, &run)?;
     Ok(())
@@ -589,18 +583,14 @@ mod tests {
 
         run_commands_for_project(project_dir.path(), &cache_root, &commands).expect("run commands");
 
-        let log_path = port_report::log_path_under(&cache_root, project_dir.path());
         let report_dir = port_report::output_dir_under(&cache_root, project_dir.path());
         let latest_path = port_report::latest_path_under(&cache_root, project_dir.path());
         let history_path = port_report::history_path_under(&cache_root, project_dir.path());
-        let protocol = std::fs::read_to_string(log_path).expect("read protocol log");
         let report = std::fs::read_to_string(report_dir.join("echo-latest.log"))
             .expect("read command report");
         let latest = std::fs::read_to_string(latest_path).expect("read latest report");
         let history = std::fs::read_to_string(history_path).expect("read history report");
 
-        assert!(protocol.contains("\tstarted\n"));
-        assert!(protocol.contains("\tpassed\n"));
         assert_eq!(report, "lint ok\n");
         assert!(latest.contains("\"status\": \"passed\""));
         assert!(history.contains("\"status\":\"passed\""));
@@ -673,8 +663,10 @@ mod tests {
         run_commands_for_project(project_dir.path(), cache_dir.path(), &commands)
             .expect("run commands");
 
-        let log_path = port_report::log_path_under(cache_dir.path(), project_dir.path());
-        assert!(!log_path.exists());
+        let latest_path = port_report::latest_path_under(cache_dir.path(), project_dir.path());
+        let history_path = port_report::history_path_under(cache_dir.path(), project_dir.path());
+        assert!(!latest_path.exists());
+        assert!(!history_path.exists());
     }
 
     #[test]

@@ -83,8 +83,8 @@ pub struct LintCommandConfig {
 
 #[derive(Clone, confique::Config, Default, Serialize)]
 pub struct LintConfig {
-    /// Show a lint status indicator per project by reading a cache-rooted
-    /// `port-report.log` protocol file. Any external tool can produce it.
+    /// Show a lint status indicator per project by reading cache-rooted
+    /// Port Report JSON artifacts.
     #[config(default = false)]
     pub enabled: bool,
 
