@@ -27,7 +27,8 @@ use super::http::ServiceSignal;
 use super::port_report;
 use super::port_report::LintStatus;
 use super::project::GitInfo;
-use super::project::GitTracking;
+use super::project::GitPathState;
+use super::project::GitRepoPresence;
 use super::project::RustProject;
 
 /// Members within a workspace are organized into groups by their first subdirectory.
@@ -76,6 +77,10 @@ pub enum BackgroundMsg {
         path: String,
         info: GitInfo,
     },
+    GitPathState {
+        path: String,
+        state: GitPathState,
+    },
     CratesIoVersion {
         path: String,
         version: String,
@@ -115,6 +120,7 @@ impl BackgroundMsg {
             Self::DiskUsage { path, .. }
             | Self::CiRuns { path, .. }
             | Self::GitInfo { path, .. }
+            | Self::GitPathState { path, .. }
             | Self::CratesIoVersion { path, .. }
             | Self::RepoMeta { path, .. }
             | Self::LintStatus { path, .. } => Some(path),
@@ -944,14 +950,18 @@ pub fn fetch_project_details(
     project_path: &str,
     abs_path: &Path,
     project_name: Option<&String>,
-    git_tracking: GitTracking,
+    repo_presence: GitRepoPresence,
     ci_run_count: u32,
     lint_enabled: bool,
 ) {
     let client = &ctx.client;
     let repo_cache = &ctx.repo_cache;
+    let _ = tx.send(BackgroundMsg::GitPathState {
+        path: project_path.to_string(),
+        state: super::project::detect_git_path_state(abs_path),
+    });
     // Git info first (local, instant) — also provides the repo URL for CI cache lookup
-    let git_info = if git_tracking.is_tracked() {
+    let git_info = if repo_presence.is_in_repo() {
         GitInfo::detect(abs_path)
     } else {
         None
@@ -1102,6 +1112,7 @@ enum RepoDispatchRegistration {
 }
 
 type RepoDispatchMap = Arc<Mutex<HashMap<String, RepoDispatchState>>>;
+type GitInfoCache = Arc<Mutex<HashMap<PathBuf, Option<GitInfo>>>>;
 
 #[derive(Clone)]
 struct StreamingScanContext {
@@ -1112,6 +1123,7 @@ struct StreamingScanContext {
     disk_limit: Arc<tokio::sync::Semaphore>,
     http_limit: Arc<tokio::sync::Semaphore>,
     repo_dispatch: RepoDispatchMap,
+    git_info_cache: GitInfoCache,
 }
 
 struct RepoFetchRequest {
@@ -1155,6 +1167,7 @@ pub fn spawn_streaming_scan(
             disk_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_DISK_CONCURRENCY)),
             http_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_HTTP_CONCURRENCY)),
             repo_dispatch: Arc::new(Mutex::new(HashMap::new())),
+            git_info_cache: Arc::new(Mutex::new(HashMap::new())),
         };
 
         phase1_discover(&root, &scan_dirs, non_rust, &scan_context);
@@ -1211,6 +1224,7 @@ fn phase1_discover(
 
                     let discovered = phase1_local_work(
                         &scan_context.tx,
+                        &scan_context.git_info_cache,
                         DiscoveredProject {
                             path: project.path.clone(),
                             abs_path,
@@ -1219,7 +1233,7 @@ fn phase1_discover(
                             owner_repo: None,
                             lint_enabled: scan_context.lint_enabled,
                         },
-                        GitTracking::Tracked,
+                        GitRepoPresence::InRepo,
                     );
                     spawn_project_http(scan_context, &discovered);
                     spawn_disk_usage(scan_context, &discovered.abs_path, &discovered.path);
@@ -1231,10 +1245,10 @@ fn phase1_discover(
                 && let Ok(project) = RustProject::from_cargo_toml(entry.path())
             {
                 let abs_path = PathBuf::from(&project.abs_path);
-                let git_tracking = if abs_path.join(".git").exists() {
-                    GitTracking::Tracked
+                let repo_presence = if super::project::git_repo_root(&abs_path).is_some() {
+                    GitRepoPresence::InRepo
                 } else {
-                    GitTracking::Untracked
+                    GitRepoPresence::OutsideRepo
                 };
 
                 let _ = scan_context.tx.send(BackgroundMsg::ProjectDiscovered {
@@ -1243,6 +1257,7 @@ fn phase1_discover(
 
                 let discovered = phase1_local_work(
                     &scan_context.tx,
+                    &scan_context.git_info_cache,
                     DiscoveredProject {
                         path: project.path.clone(),
                         abs_path,
@@ -1251,7 +1266,7 @@ fn phase1_discover(
                         owner_repo: None,
                         lint_enabled: scan_context.lint_enabled,
                     },
-                    git_tracking,
+                    repo_presence,
                 );
                 spawn_project_http(scan_context, &discovered);
                 spawn_disk_usage(scan_context, &discovered.abs_path, &discovered.path);
@@ -1442,11 +1457,12 @@ fn spawn_crates_fetch(
 /// Returns the discovered repo metadata needed for async HTTP dispatch.
 fn phase1_local_work(
     tx: &mpsc::Sender<BackgroundMsg>,
+    git_info_cache: &GitInfoCache,
     mut project: DiscoveredProject,
-    git_tracking: GitTracking,
+    repo_presence: GitRepoPresence,
 ) -> DiscoveredProject {
-    let git_info = if git_tracking.is_tracked() {
-        GitInfo::detect(&project.abs_path)
+    let git_info = if repo_presence.is_in_repo() {
+        cached_git_info(git_info_cache, &project.abs_path)
     } else {
         None
     };
@@ -1474,6 +1490,19 @@ fn phase1_local_work(
         .as_ref()
         .and_then(|url| ci::parse_owner_repo(url));
     project
+}
+
+fn cached_git_info(git_info_cache: &GitInfoCache, project_dir: &Path) -> Option<GitInfo> {
+    let repo_root = super::project::git_repo_root(project_dir)?;
+    let Ok(mut cache) = git_info_cache.lock() else {
+        return GitInfo::detect(&repo_root);
+    };
+    if let Some(info) = cache.get(&repo_root) {
+        return info.clone();
+    }
+    let info = GitInfo::detect(&repo_root);
+    cache.insert(repo_root, info.clone());
+    info
 }
 
 #[cfg(test)]
@@ -1504,6 +1533,7 @@ mod tests {
             benches: Vec::new(),
             test_count: 0,
             is_rust: ProjectLanguage::Rust,
+            local_dependency_paths: Vec::new(),
         }
     }
 

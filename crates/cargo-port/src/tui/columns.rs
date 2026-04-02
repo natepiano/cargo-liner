@@ -8,8 +8,11 @@ use unicode_width::UnicodeWidthStr;
 use crate::ci::Conclusion;
 use crate::constants::GIT_CLONE;
 use crate::constants::GIT_FORK;
+use crate::constants::GIT_IGNORED;
 use crate::constants::GIT_LOCAL;
+use crate::constants::GIT_UNTRACKED;
 use crate::constants::IN_SYNC;
+use crate::project::GitPathState;
 
 // ── Column indices ──────────────────────────────────────────────────
 pub(super) const COL_NAME: usize = 0;
@@ -120,6 +123,7 @@ pub(super) struct CellContent {
 pub(super) struct ProjectRow<'a> {
     pub prefix: &'a str,
     pub name: &'a str,
+    pub git_path_state: GitPathState,
     pub lint_icon: &'a str,
     pub disk: &'a str,
     pub disk_style: Style,
@@ -226,6 +230,8 @@ fn pad_center(s: &str, target: usize) -> String {
     let right = total_pad - left;
     format!("{}{s}{}", " ".repeat(left), " ".repeat(right))
 }
+
+const MODIFIED_NAME_COLOR: Color = Color::Indexed(208);
 
 // ── Row rendering ───────────────────────────────────────────────────
 
@@ -342,13 +348,22 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         .ci
         .map_or(String::new(), |conclusion| String::from(conclusion.icon()));
 
+    let name_style = match row.git_path_state {
+        GitPathState::Modified => Style::default().fg(MODIFIED_NAME_COLOR),
+        GitPathState::Untracked => Style::default().fg(Color::Green),
+        GitPathState::Ignored => Style::default().fg(Color::DarkGray),
+        GitPathState::OutsideRepo | GitPathState::Clean => Style::default(),
+    };
     let ci_style = super::render::conclusion_style(row.ci);
     let origin_style = match row.git_icon {
         GIT_FORK => Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
         GIT_CLONE => Style::default().fg(Color::White),
-        GIT_LOCAL => Style::default().fg(Color::DarkGray),
+        GIT_LOCAL | GIT_IGNORED => Style::default().fg(Color::DarkGray),
+        GIT_UNTRACKED => Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
         _ => Style::default(),
     };
     let sync_style = if row.git_sync == IN_SYNC {
@@ -366,7 +381,7 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
     cells[COL_NAME] = CellContent {
         text: String::from(row.name),
-        style: Style::default(),
+        style: name_style,
         align_override: None,
     };
     cells[COL_LINT] = CellContent {
@@ -561,6 +576,7 @@ mod tests {
         let row_emoji = build_row_cells(ProjectRow {
             prefix: "▶ ",
             name: "bevy_brp 🌲:2",
+            git_path_state: GitPathState::Clean,
             lint_icon: crate::constants::LINT_PASSED,
             disk: "36.3 GiB",
             disk_style: Style::default(),
@@ -573,6 +589,7 @@ mod tests {
         let row_ascii = build_row_cells(ProjectRow {
             prefix: "▶ ",
             name: "bevy_mesh_outline_benchmark",
+            git_path_state: GitPathState::Clean,
             lint_icon: crate::constants::LINT_PASSED,
             disk: "36.3 GiB",
             disk_style: Style::default(),
@@ -652,6 +669,7 @@ mod tests {
         let row = build_row_cells(ProjectRow {
             prefix: "▶ ",
             name: "demo",
+            git_path_state: GitPathState::Clean,
             lint_icon: crate::constants::LINT_PASSED,
             disk: "36.3 GiB",
             disk_style: Style::default(),
@@ -669,5 +687,60 @@ mod tests {
             &format!(" {}", Conclusion::Success.icon())
         );
         assert_eq!(line.width(), widths.total_width());
+    }
+
+    #[test]
+    fn git_path_state_changes_name_and_git_cell_styles() {
+        let modified = build_row_cells(ProjectRow {
+            prefix: "  ",
+            name: "demo",
+            git_path_state: GitPathState::Modified,
+            lint_icon: " ",
+            disk: "—",
+            disk_style: Style::default(),
+            lang_icon: "🦀",
+            git_sync: "",
+            git_icon: crate::constants::GIT_CLONE,
+            ci: None,
+            deleted: false,
+        });
+        assert_eq!(modified.cells[COL_NAME].style.fg, Some(MODIFIED_NAME_COLOR));
+
+        let untracked = build_row_cells(ProjectRow {
+            prefix: "  ",
+            name: "demo",
+            git_path_state: GitPathState::Untracked,
+            lint_icon: " ",
+            disk: "—",
+            disk_style: Style::default(),
+            lang_icon: "🦀",
+            git_sync: "",
+            git_icon: crate::constants::GIT_UNTRACKED,
+            ci: None,
+            deleted: false,
+        });
+        assert_eq!(untracked.cells[COL_NAME].style.fg, Some(Color::Green));
+        assert_eq!(
+            untracked.cells[COL_GIT].text,
+            crate::constants::GIT_UNTRACKED
+        );
+        assert_eq!(untracked.cells[COL_GIT].style.fg, Some(Color::Green));
+
+        let ignored = build_row_cells(ProjectRow {
+            prefix: "  ",
+            name: "demo",
+            git_path_state: GitPathState::Ignored,
+            lint_icon: " ",
+            disk: "—",
+            disk_style: Style::default(),
+            lang_icon: "🦀",
+            git_sync: "",
+            git_icon: crate::constants::GIT_IGNORED,
+            ci: None,
+            deleted: false,
+        });
+        assert_eq!(ignored.cells[COL_NAME].style.fg, Some(Color::DarkGray));
+        assert_eq!(ignored.cells[COL_GIT].text, crate::constants::GIT_IGNORED);
+        assert_eq!(ignored.cells[COL_GIT].style.fg, Some(Color::DarkGray));
     }
 }

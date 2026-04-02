@@ -66,13 +66,14 @@ use crate::port_report::LintStatus;
 use crate::port_report::PortReportRun;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
-use crate::project::GitTracking;
+use crate::project::GitPathState;
 use crate::project::ProjectLanguage::Rust;
 use crate::project::RustProject;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
 use crate::scan::FlatEntry;
+use crate::scan::MemberGroup;
 use crate::scan::ProjectNode;
 use crate::watcher;
 use crate::watcher::WatchRequest;
@@ -260,6 +261,8 @@ pub(super) struct App {
     lint_rollup_paths: HashMap<LintRollupKey, Vec<String>>,
     lint_rollup_keys_by_path: HashMap<String, Vec<LintRollupKey>>,
     pub git_info: HashMap<String, GitInfo>,
+    pub git_path_states: HashMap<String, GitPathState>,
+    cargo_active_paths: HashSet<String>,
     pub crates_versions: HashMap<String, String>,
     pub crates_downloads: HashMap<String, u64>,
     pub stars: HashMap<String, u64>,
@@ -491,7 +494,20 @@ fn formatted_disk_for_node_snapshot(
         .map_or_else(|| "—".to_string(), super::render::format_bytes)
 }
 
-fn git_sync_snapshot(git_info: &HashMap<String, GitInfo>, path: &str) -> String {
+fn git_sync_snapshot(
+    git_info: &HashMap<String, GitInfo>,
+    git_path_states: &HashMap<String, GitPathState>,
+    path: &str,
+) -> String {
+    if matches!(
+        git_path_states
+            .get(path)
+            .copied()
+            .unwrap_or(GitPathState::OutsideRepo),
+        GitPathState::Untracked | GitPathState::Ignored
+    ) {
+        return String::new();
+    }
     let Some(info) = git_info.get(path) else {
         return String::new();
     };
@@ -509,109 +525,195 @@ fn build_fit_widths_snapshot(
     nodes: &[ProjectNode],
     disk_usage: &HashMap<String, u64>,
     git_info: &HashMap<String, GitInfo>,
+    git_path_states: &HashMap<String, GitPathState>,
     deleted_projects: &HashSet<String>,
     lint_enabled: bool,
     generation: u64,
 ) -> ResolvedWidths {
-    use super::columns::COL_DISK;
-    use super::columns::COL_SYNC;
-
-    let dw = super::columns::display_width;
     let mut widths = ResolvedWidths::new(lint_enabled);
 
     for node in nodes {
-        App::observe_name_width(
+        observe_node_fit_widths(
             &mut widths,
-            App::fit_name_for_node(node, live_worktree_count_for_node(node, deleted_projects)),
+            node,
+            disk_usage,
+            git_info,
+            git_path_states,
+            deleted_projects,
         );
-        widths.observe(
-            COL_DISK,
-            dw(&formatted_disk_for_node_snapshot(node, disk_usage)),
-        );
-        widths.observe(
-            COL_SYNC,
-            dw(&git_sync_snapshot(git_info, &node.project.path)),
-        );
-
-        for group in &node.groups {
-            for member in &group.members {
-                let prefix = if group.name.is_empty() {
-                    PREFIX_MEMBER_INLINE
-                } else {
-                    PREFIX_MEMBER_NAMED
-                };
-                App::observe_name_width(&mut widths, dw(prefix) + dw(&member.display_name()));
-                widths.observe(
-                    COL_DISK,
-                    dw(&formatted_disk_snapshot(disk_usage, &member.path)),
-                );
-                widths.observe(COL_SYNC, dw(&git_sync_snapshot(git_info, &member.path)));
-            }
-            if !group.name.is_empty() {
-                let label = format!("{} ({})", group.name, group.members.len());
-                App::observe_name_width(&mut widths, dw(PREFIX_GROUP_COLLAPSED) + dw(&label));
-            }
-        }
-        for vendored in &node.vendored {
-            let label = format!("{} (vendored)", vendored.display_name());
-            App::observe_name_width(&mut widths, dw(PREFIX_VENDORED) + dw(&label));
-            widths.observe(
-                COL_DISK,
-                dw(&formatted_disk_snapshot(disk_usage, &vendored.path)),
-            );
-        }
-        for wt in &node.worktrees {
-            let wt_name = wt
-                .project
-                .worktree_name
-                .as_deref()
-                .unwrap_or(&wt.project.path);
-            let wt_prefix = if wt.has_children() {
-                PREFIX_WT_COLLAPSED
-            } else {
-                PREFIX_WT_FLAT
-            };
-            App::observe_name_width(&mut widths, dw(wt_prefix) + dw(wt_name));
-            widths.observe(
-                COL_DISK,
-                dw(&formatted_disk_snapshot(disk_usage, &wt.project.path)),
-            );
-            widths.observe(COL_SYNC, dw(&git_sync_snapshot(git_info, &wt.project.path)));
-            for group in &wt.groups {
-                for member in &group.members {
-                    let prefix = if group.name.is_empty() {
-                        PREFIX_WT_MEMBER_INLINE
-                    } else {
-                        PREFIX_WT_MEMBER_NAMED
-                    };
-                    App::observe_name_width(&mut widths, dw(prefix) + dw(&member.display_name()));
-                    widths.observe(
-                        COL_DISK,
-                        dw(&formatted_disk_snapshot(disk_usage, &member.path)),
-                    );
-                    widths.observe(COL_SYNC, dw(&git_sync_snapshot(git_info, &member.path)));
-                }
-                if !group.name.is_empty() {
-                    let label = format!("{} ({})", group.name, group.members.len());
-                    App::observe_name_width(
-                        &mut widths,
-                        dw(PREFIX_WT_GROUP_COLLAPSED) + dw(&label),
-                    );
-                }
-            }
-            for vendored in &wt.vendored {
-                let label = format!("{} (vendored)", vendored.display_name());
-                App::observe_name_width(&mut widths, dw(PREFIX_WT_VENDORED) + dw(&label));
-                widths.observe(
-                    COL_DISK,
-                    dw(&formatted_disk_snapshot(disk_usage, &vendored.path)),
-                );
-            }
-        }
     }
 
     widths.generation = generation;
     widths
+}
+
+fn observe_node_fit_widths(
+    widths: &mut ResolvedWidths,
+    node: &ProjectNode,
+    disk_usage: &HashMap<String, u64>,
+    git_info: &HashMap<String, GitInfo>,
+    git_path_states: &HashMap<String, GitPathState>,
+    deleted_projects: &HashSet<String>,
+) {
+    use super::columns::COL_DISK;
+    use super::columns::COL_SYNC;
+
+    let dw = super::columns::display_width;
+    App::observe_name_width(
+        widths,
+        App::fit_name_for_node(node, live_worktree_count_for_node(node, deleted_projects)),
+    );
+    widths.observe(
+        COL_DISK,
+        dw(&formatted_disk_for_node_snapshot(node, disk_usage)),
+    );
+    widths.observe(
+        COL_SYNC,
+        dw(&git_sync_snapshot(
+            git_info,
+            git_path_states,
+            &node.project.path,
+        )),
+    );
+
+    observe_member_group_fit_widths(widths, &node.groups, disk_usage, git_info, git_path_states);
+    observe_vendored_fit_widths(widths, &node.vendored, disk_usage, PREFIX_VENDORED);
+    for worktree in &node.worktrees {
+        observe_worktree_fit_widths(widths, worktree, disk_usage, git_info, git_path_states);
+    }
+}
+
+fn observe_member_group_fit_widths(
+    widths: &mut ResolvedWidths,
+    groups: &[MemberGroup],
+    disk_usage: &HashMap<String, u64>,
+    git_info: &HashMap<String, GitInfo>,
+    git_path_states: &HashMap<String, GitPathState>,
+) {
+    use super::columns::COL_DISK;
+    use super::columns::COL_SYNC;
+
+    let dw = super::columns::display_width;
+    for group in groups {
+        for member in &group.members {
+            let prefix = if group.name.is_empty() {
+                PREFIX_MEMBER_INLINE
+            } else {
+                PREFIX_MEMBER_NAMED
+            };
+            App::observe_name_width(widths, dw(prefix) + dw(&member.display_name()));
+            widths.observe(
+                COL_DISK,
+                dw(&formatted_disk_snapshot(disk_usage, &member.path)),
+            );
+            widths.observe(
+                COL_SYNC,
+                dw(&git_sync_snapshot(git_info, git_path_states, &member.path)),
+            );
+        }
+        if !group.name.is_empty() {
+            let label = format!("{} ({})", group.name, group.members.len());
+            App::observe_name_width(widths, dw(PREFIX_GROUP_COLLAPSED) + dw(&label));
+        }
+    }
+}
+
+fn observe_vendored_fit_widths(
+    widths: &mut ResolvedWidths,
+    vendored: &[RustProject],
+    disk_usage: &HashMap<String, u64>,
+    prefix: &str,
+) {
+    use super::columns::COL_DISK;
+
+    let dw = super::columns::display_width;
+    for project in vendored {
+        let label = format!("{} (vendored)", project.display_name());
+        App::observe_name_width(widths, dw(prefix) + dw(&label));
+        widths.observe(
+            COL_DISK,
+            dw(&formatted_disk_snapshot(disk_usage, &project.path)),
+        );
+    }
+}
+
+fn observe_worktree_fit_widths(
+    widths: &mut ResolvedWidths,
+    worktree: &ProjectNode,
+    disk_usage: &HashMap<String, u64>,
+    git_info: &HashMap<String, GitInfo>,
+    git_path_states: &HashMap<String, GitPathState>,
+) {
+    use super::columns::COL_DISK;
+    use super::columns::COL_SYNC;
+
+    let dw = super::columns::display_width;
+    let worktree_name = worktree
+        .project
+        .worktree_name
+        .as_deref()
+        .unwrap_or(&worktree.project.path);
+    let worktree_prefix = if worktree.has_children() {
+        PREFIX_WT_COLLAPSED
+    } else {
+        PREFIX_WT_FLAT
+    };
+    App::observe_name_width(widths, dw(worktree_prefix) + dw(worktree_name));
+    widths.observe(
+        COL_DISK,
+        dw(&formatted_disk_snapshot(disk_usage, &worktree.project.path)),
+    );
+    widths.observe(
+        COL_SYNC,
+        dw(&git_sync_snapshot(
+            git_info,
+            git_path_states,
+            &worktree.project.path,
+        )),
+    );
+    observe_worktree_group_fit_widths(
+        widths,
+        &worktree.groups,
+        disk_usage,
+        git_info,
+        git_path_states,
+    );
+    observe_vendored_fit_widths(widths, &worktree.vendored, disk_usage, PREFIX_WT_VENDORED);
+}
+
+fn observe_worktree_group_fit_widths(
+    widths: &mut ResolvedWidths,
+    groups: &[MemberGroup],
+    disk_usage: &HashMap<String, u64>,
+    git_info: &HashMap<String, GitInfo>,
+    git_path_states: &HashMap<String, GitPathState>,
+) {
+    use super::columns::COL_DISK;
+    use super::columns::COL_SYNC;
+
+    let dw = super::columns::display_width;
+    for group in groups {
+        for member in &group.members {
+            let prefix = if group.name.is_empty() {
+                PREFIX_WT_MEMBER_INLINE
+            } else {
+                PREFIX_WT_MEMBER_NAMED
+            };
+            App::observe_name_width(widths, dw(prefix) + dw(&member.display_name()));
+            widths.observe(
+                COL_DISK,
+                dw(&formatted_disk_snapshot(disk_usage, &member.path)),
+            );
+            widths.observe(
+                COL_SYNC,
+                dw(&git_sync_snapshot(git_info, git_path_states, &member.path)),
+            );
+        }
+        if !group.name.is_empty() {
+            let label = format!("{} ({})", group.name, group.members.len());
+            App::observe_name_width(widths, dw(PREFIX_WT_GROUP_COLLAPSED) + dw(&label));
+        }
+    }
 }
 
 fn build_disk_cache_snapshot(
@@ -972,6 +1074,8 @@ impl App {
             lint_rollup_paths: HashMap::new(),
             lint_rollup_keys_by_path: HashMap::new(),
             git_info: HashMap::new(),
+            git_path_states: HashMap::new(),
+            cargo_active_paths: HashSet::new(),
             crates_versions: HashMap::new(),
             crates_downloads: HashMap::new(),
             stars: HashMap::new(),
@@ -1072,6 +1176,8 @@ impl App {
             app.scan_log.push(warning);
             app.scan_log_state.select(Some(0));
         }
+        app.recompute_cargo_active_paths();
+        app.prune_inactive_project_state();
         app.register_existing_projects();
         app.sync_lint_runtime_projects();
         app.refresh_port_report_histories_from_disk();
@@ -1090,7 +1196,8 @@ impl App {
         self.rows_dirty = true;
         self.disk_cache_dirty = true;
         self.fit_widths_dirty = true;
-        self.prune_vendored_state();
+        self.recompute_cargo_active_paths();
+        self.prune_inactive_project_state();
         self.sync_lint_runtime_projects();
         self.rebuild_lint_rollups();
         self.data_generation += 1;
@@ -1279,7 +1386,7 @@ impl App {
             return;
         }
         for project in &self.all_projects {
-            if self.is_vendored_path(&project.path) {
+            if !self.is_cargo_active_path(&project.path) {
                 continue;
             }
             if !crate::lint_runtime::project_is_eligible(
@@ -1300,7 +1407,7 @@ impl App {
     fn refresh_port_report_histories_from_disk(&mut self) {
         self.port_report_runs.clear();
         for project in &self.all_projects {
-            if self.is_vendored_path(&project.path) {
+            if !self.is_cargo_active_path(&project.path) {
                 continue;
             }
             let runs = crate::port_report::read_history(&PathBuf::from(&project.abs_path));
@@ -1319,7 +1426,7 @@ impl App {
             self.port_report_runs.remove(project_path);
             return;
         };
-        if self.is_vendored_path(project_path) {
+        if !self.is_cargo_active_path(project_path) {
             self.port_report_runs.remove(project_path);
             return;
         }
@@ -1333,15 +1440,26 @@ impl App {
 
     fn register_project_background_services(&self, project: &RustProject) {
         let abs_path = PathBuf::from(&project.abs_path);
-        let git_tracking = if abs_path.join(".git").exists() {
-            GitTracking::Tracked
-        } else {
-            GitTracking::Untracked
-        };
+        let repo_root = crate::project::git_repo_root(&abs_path);
         let _ = self.watch_tx.send(WatchRequest {
             project_path: project.path.clone(),
             abs_path,
-            git_tracking,
+            repo_root,
+        });
+    }
+
+    fn schedule_git_path_state_refreshes(&self) {
+        let tx = self.bg_tx.clone();
+        let projects: Vec<(String, String)> = self
+            .all_projects
+            .iter()
+            .map(|project| (project.path.clone(), project.abs_path.clone()))
+            .collect();
+        std::thread::spawn(move || {
+            let states = crate::project::detect_git_path_states_batch(&projects);
+            for (path, state) in states {
+                let _ = tx.send(BackgroundMsg::GitPathState { path, state });
+            }
         });
     }
 
@@ -1353,21 +1471,27 @@ impl App {
         self.sync_lint_runtime_projects_with(true);
     }
 
-    fn sync_lint_runtime_projects_with(&self, force_immediate_run: bool) {
-        let Some(runtime) = &self.lint_runtime else {
-            return;
-        };
-        let projects = self
-            .all_projects
+    fn lint_runtime_projects_snapshot(&self) -> Vec<RegisterProjectRequest> {
+        if !self.scan_complete {
+            return Vec::new();
+        }
+        self.all_projects
             .iter()
             .filter(|project| !self.deleted_projects.contains(&project.path))
-            .filter(|project| !self.is_vendored_path(&project.path))
+            .filter(|project| self.is_cargo_active_path(&project.path))
             .map(|project| RegisterProjectRequest {
                 project_path: project.path.clone(),
                 abs_path: PathBuf::from(&project.abs_path),
                 is_rust: project.is_rust == Rust,
             })
-            .collect();
+            .collect()
+    }
+
+    fn sync_lint_runtime_projects_with(&self, force_immediate_run: bool) {
+        let Some(runtime) = &self.lint_runtime else {
+            return;
+        };
+        let projects = self.lint_runtime_projects_snapshot();
         if force_immediate_run {
             runtime.sync_projects_immediately(projects);
         } else {
@@ -1444,6 +1568,7 @@ impl App {
         let nodes = self.nodes.clone();
         let disk_usage = self.disk_usage.clone();
         let git_info = self.git_info.clone();
+        let git_path_states = self.git_path_states.clone();
         let deleted_projects = self.deleted_projects.clone();
         let lint_enabled = self.lint_enabled();
         self.fit_build_active = Some(build_id);
@@ -1453,6 +1578,7 @@ impl App {
                 &nodes,
                 &disk_usage,
                 &git_info,
+                &git_path_states,
                 &deleted_projects,
                 lint_enabled,
                 build_id,
@@ -1557,6 +1683,8 @@ impl App {
         self.lint_status.clear();
         self.port_report_runs.clear();
         self.git_info.clear();
+        self.git_path_states.clear();
+        self.cargo_active_paths.clear();
         self.crates_versions.clear();
         self.crates_downloads.clear();
         self.stars.clear();
@@ -1683,6 +1811,9 @@ impl App {
     fn handle_disk_usage(&mut self, path: String, bytes: u64) {
         self.fully_loaded.insert(path.clone());
         self.disk_usage.insert(path.clone(), bytes);
+        if self.scan_complete {
+            self.refresh_git_path_state(&path);
+        }
         self.disk_cache_dirty = true;
         self.fit_widths_dirty = true;
         let mut lint_runtime_changed = false;
@@ -1706,11 +1837,6 @@ impl App {
     }
 
     fn handle_git_info(&mut self, path: String, info: GitInfo) {
-        if self.is_vendored_path(&path) {
-            self.git_info.remove(&path);
-            self.finder_dirty = true;
-            return;
-        }
         self.fit_widths_dirty = true;
         let matching_node = self
             .nodes
@@ -1739,11 +1865,6 @@ impl App {
     }
 
     fn handle_repo_meta(&mut self, path: String, stars: u64, description: Option<String>) {
-        if self.is_vendored_path(&path) {
-            self.stars.remove(&path);
-            self.repo_descriptions.remove(&path);
-            return;
-        }
         if let Some(node) = self.nodes.iter().find(|node| node.project.path == path) {
             for member in Self::all_group_members(node) {
                 self.stars.entry(member.path.clone()).or_insert(stars);
@@ -1766,7 +1887,9 @@ impl App {
 
         self.register_project_background_services(&project);
         self.all_projects.push(project);
-        self.sync_lint_runtime_projects();
+        if self.scan_complete {
+            self.sync_lint_runtime_projects();
+        }
         true
     }
 
@@ -1845,17 +1968,20 @@ impl App {
             BackgroundMsg::GitInfo { path, info } => {
                 self.handle_git_info(path, info);
             },
+            BackgroundMsg::GitPathState { path, state } => {
+                self.git_path_states.insert(path, state);
+            },
             BackgroundMsg::CratesIoVersion {
                 path,
                 version,
                 downloads,
             } => {
-                if self.is_vendored_path(&path) {
-                    self.crates_versions.remove(&path);
-                    self.crates_downloads.remove(&path);
-                } else {
+                if self.is_cargo_active_path(&path) {
                     self.crates_versions.insert(path.clone(), version);
                     self.crates_downloads.insert(path, downloads);
+                } else {
+                    self.crates_versions.remove(&path);
+                    self.crates_downloads.remove(&path);
                 }
             },
             BackgroundMsg::RepoMeta {
@@ -1882,7 +2008,7 @@ impl App {
                 }
             },
             BackgroundMsg::LintStatus { path, status } => {
-                if self.is_vendored_path(&path) {
+                if !self.is_cargo_active_path(&path) {
                     self.port_report_runs.remove(&path);
                     self.lint_status.remove(&path);
                     return false;
@@ -1914,6 +2040,8 @@ impl App {
             },
             BackgroundMsg::ScanComplete => {
                 self.scan_complete = true;
+                self.sync_lint_runtime_projects_immediately();
+                self.schedule_git_path_state_refreshes();
                 if self.focused_pane == PaneId::ScanLog {
                     self.focus_pane(PaneId::ProjectList);
                 }
@@ -1947,7 +2075,7 @@ impl App {
 
     /// Insert CI runs from the initial scan, propagating to workspace members.
     fn insert_ci_runs(&mut self, path: String, runs: Vec<CiRun>) {
-        if self.is_vendored_path(&path) {
+        if !self.is_cargo_active_path(&path) {
             self.ci_state.remove(&path);
             return;
         }
@@ -3078,27 +3206,69 @@ impl App {
             .find(|project| project.path == path)
     }
 
-    fn prune_vendored_state(&mut self) {
-        let vendored_paths: HashSet<String> = self
-            .nodes
+    fn recompute_cargo_active_paths(&mut self) {
+        let project_index: HashMap<String, Vec<String>> = self
+            .all_projects
             .iter()
-            .flat_map(|node| {
-                node.vendored
-                    .iter()
-                    .chain(
-                        node.worktrees
-                            .iter()
-                            .flat_map(|worktree| worktree.vendored.iter()),
-                    )
-                    .map(|project| project.path.clone())
-            })
+            .map(|project| (project.path.clone(), project.local_dependency_paths.clone()))
             .collect();
+        let mut active_paths: HashSet<String> = self
+            .all_projects
+            .iter()
+            .filter(|project| !self.is_vendored_path(&project.path))
+            .map(|project| project.path.clone())
+            .collect();
+        let mut frontier: Vec<String> = active_paths.iter().cloned().collect();
 
-        for path in vendored_paths {
+        while let Some(path) = frontier.pop() {
+            let Some(dependencies) = project_index.get(&path) else {
+                continue;
+            };
+            for dependency_path in dependencies {
+                if project_index.contains_key(dependency_path)
+                    && active_paths.insert(dependency_path.clone())
+                {
+                    frontier.push(dependency_path.clone());
+                }
+            }
+        }
+
+        self.cargo_active_paths = active_paths;
+    }
+
+    pub(super) fn is_cargo_active_path(&self, path: &str) -> bool {
+        self.cargo_active_paths.contains(path)
+    }
+
+    pub(super) fn git_path_state_for(&self, path: &str) -> GitPathState {
+        self.git_path_states
+            .get(path)
+            .copied()
+            .unwrap_or(GitPathState::OutsideRepo)
+    }
+
+    fn refresh_git_path_state(&mut self, path: &str) {
+        let Some(project) = self.project_by_path(path) else {
+            self.git_path_states.remove(path);
+            return;
+        };
+        let state = crate::project::detect_git_path_state(Path::new(&project.abs_path));
+        self.git_path_states.insert(path.to_string(), state);
+    }
+
+    fn prune_inactive_project_state(&mut self) {
+        let all_paths: HashSet<String> = self
+            .all_projects
+            .iter()
+            .map(|project| project.path.clone())
+            .collect();
+        self.git_path_states
+            .retain(|path, _| all_paths.contains(path));
+        for path in all_paths {
+            if self.is_cargo_active_path(&path) {
+                continue;
+            }
             self.ci_state.remove(&path);
-            self.git_info.remove(&path);
-            self.stars.remove(&path);
-            self.repo_descriptions.remove(&path);
             self.crates_versions.remove(&path);
             self.crates_downloads.remove(&path);
             self.port_report_runs.remove(&path);
@@ -3107,13 +3277,24 @@ impl App {
     }
 
     pub fn git_icon(&self, project: &RustProject) -> &'static str {
-        self.git_info
-            .get(&project.path)
-            .map_or(" ", |info| info.origin.icon())
+        match self.git_path_state_for(&project.path) {
+            GitPathState::Untracked => crate::constants::GIT_UNTRACKED,
+            GitPathState::Ignored => crate::constants::GIT_IGNORED,
+            _ => self
+                .git_info
+                .get(&project.path)
+                .map_or(" ", |info| info.origin.icon()),
+        }
     }
 
     /// Formatted ahead/behind sync status for the project list columns.
     pub fn git_sync(&self, project: &RustProject) -> String {
+        if matches!(
+            self.git_path_state_for(&project.path),
+            GitPathState::Untracked | GitPathState::Ignored
+        ) {
+            return String::new();
+        }
         let Some(info) = self.git_info.get(&project.path) else {
             return String::new();
         };
@@ -3219,6 +3400,7 @@ mod tests {
             benches: Vec::new(),
             test_count: 0,
             is_rust: ProjectLanguage::Rust,
+            local_dependency_paths: Vec::new(),
         }
     }
 
@@ -3599,6 +3781,68 @@ mod tests {
     }
 
     #[test]
+    fn lint_runtime_waits_for_scan_completion() {
+        let project = make_project(Some("demo"), "~/demo");
+        let path = project.path.clone();
+        let mut app = make_app(vec![project]);
+
+        assert!(app.lint_runtime_projects_snapshot().is_empty());
+
+        app.scan_complete = true;
+        let projects = app.lint_runtime_projects_snapshot();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].project_path, path);
+    }
+
+    #[test]
+    fn vendored_path_dependency_becomes_cargo_active() {
+        let mut root_project = make_project(Some("app"), "~/app");
+        let vendored = make_project(Some("helper"), "~/app/vendor/helper");
+        root_project.local_dependency_paths = vec![vendored.path.clone()];
+
+        let mut root = make_node(root_project.clone());
+        root.vendored = vec![vendored.clone()];
+
+        let mut app = make_app(vec![root_project, vendored.clone()]);
+        apply_nodes(&mut app, vec![root]);
+
+        assert!(app.is_vendored_path(&vendored.path));
+        assert!(app.is_cargo_active_path(&vendored.path));
+    }
+
+    #[test]
+    fn git_path_state_overrides_git_icon_and_sync() {
+        let project = make_project(Some("demo"), "~/demo");
+        let path = project.path.clone();
+        let mut app = make_app(vec![project.clone()]);
+
+        app.git_info.insert(
+            path.clone(),
+            GitInfo {
+                origin: GitOrigin::Clone,
+                branch: Some("feat/demo".to_string()),
+                owner: None,
+                url: Some("https://github.com/acme/demo".to_string()),
+                first_commit: None,
+                last_commit: None,
+                ahead_behind: Some((2, 0)),
+                default_branch: Some("main".to_string()),
+                ahead_behind_origin: None,
+                ahead_behind_local: None,
+            },
+        );
+
+        app.git_path_states
+            .insert(path.clone(), GitPathState::Untracked);
+        assert_eq!(app.git_icon(&project), crate::constants::GIT_UNTRACKED);
+        assert!(app.git_sync(&project).is_empty());
+
+        app.git_path_states.insert(path, GitPathState::Ignored);
+        assert_eq!(app.git_icon(&project), crate::constants::GIT_IGNORED);
+        assert!(app.git_sync(&project).is_empty());
+    }
+
+    #[test]
     fn name_width_with_gutter_reserves_space_before_lint() {
         assert_eq!(App::name_width_with_gutter(0), 1);
         assert_eq!(App::name_width_with_gutter(42), 43);
@@ -3755,6 +3999,28 @@ mod tests {
         app.handle_disk_usage(member.path.clone(), 0);
 
         assert!(app.deleted_projects.contains(&member.path));
+    }
+
+    #[test]
+    fn disk_updates_skip_git_path_refresh_during_scan() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let abs_path = tmp.path().join("demo");
+        std::fs::create_dir_all(&abs_path).unwrap_or_else(|_| std::process::abort());
+
+        let mut project = make_project(Some("demo"), "~/demo");
+        project.abs_path = abs_path.to_string_lossy().to_string();
+        let path = project.path.clone();
+        let mut app = make_app(vec![project]);
+
+        app.handle_disk_usage(path.clone(), 123);
+        assert!(!app.git_path_states.contains_key(&path));
+
+        app.scan_complete = true;
+        app.handle_disk_usage(path.clone(), 123);
+        assert_eq!(
+            app.git_path_states.get(&path),
+            Some(&GitPathState::OutsideRepo)
+        );
     }
 
     #[test]

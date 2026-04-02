@@ -680,6 +680,7 @@ mod tests {
             benches: Vec::new(),
             test_count: 0,
             is_rust: ProjectLanguage::Rust,
+            local_dependency_paths: Vec::new(),
         }
     }
 

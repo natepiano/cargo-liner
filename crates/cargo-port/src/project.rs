@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::io;
 use std::path::Path;
@@ -72,13 +73,11 @@ pub struct GitInfo {
 impl GitInfo {
     /// Detect git info for a project directory.
     pub fn detect(project_dir: &Path) -> Option<Self> {
-        if !project_dir.join(".git").exists() {
-            return None;
-        }
+        let repo_root = git_repo_root(project_dir)?;
 
         let remote_output = Command::new("git")
             .args(["remote"])
-            .current_dir(project_dir)
+            .current_dir(&repo_root)
             .output()
             .ok()?;
         let remotes = String::from_utf8_lossy(&remote_output.stdout);
@@ -94,7 +93,7 @@ impl GitInfo {
 
         let url_output = Command::new("git")
             .args(["remote", "get-url", "origin"])
-            .current_dir(project_dir)
+            .current_dir(&repo_root)
             .output()
             .ok()?;
         let raw_url = String::from_utf8_lossy(&url_output.stdout)
@@ -105,7 +104,7 @@ impl GitInfo {
 
         let branch = Command::new("git")
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(project_dir)
+            .current_dir(&repo_root)
             .output()
             .ok()
             .and_then(|o| {
@@ -113,12 +112,12 @@ impl GitInfo {
                 if b.is_empty() { None } else { Some(b) }
             });
 
-        let ahead_behind = parse_ahead_behind(project_dir, "HEAD...@{upstream}");
+        let ahead_behind = parse_ahead_behind(&repo_root, "HEAD...@{upstream}");
 
         // Resolve the repo's default branch from origin/HEAD (e.g. "origin/main").
         let default_branch = Command::new("git")
             .args(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"])
-            .current_dir(project_dir)
+            .current_dir(&repo_root)
             .output()
             .ok()
             .and_then(|o| {
@@ -134,13 +133,13 @@ impl GitInfo {
             .as_deref()
             .filter(|db| branch.as_deref() != Some(*db));
         let ahead_behind_origin = not_on_default
-            .and_then(|db| parse_ahead_behind(project_dir, &format!("HEAD...origin/{db}")));
+            .and_then(|db| parse_ahead_behind(&repo_root, &format!("HEAD...origin/{db}")));
         let ahead_behind_local =
-            not_on_default.and_then(|db| parse_ahead_behind(project_dir, &format!("HEAD...{db}")));
+            not_on_default.and_then(|db| parse_ahead_behind(&repo_root, &format!("HEAD...{db}")));
 
         let first_commit = Command::new("git")
             .args(["log", "--reverse", "--format=%aI", "--diff-filter=A"])
-            .current_dir(project_dir)
+            .current_dir(&repo_root)
             .output()
             .ok()
             .and_then(|o| {
@@ -153,7 +152,7 @@ impl GitInfo {
 
         let last_commit = Command::new("git")
             .args(["log", "-1", "--format=%aI"])
-            .current_dir(project_dir)
+            .current_dir(&repo_root)
             .output()
             .ok()
             .and_then(|o| {
@@ -174,6 +173,254 @@ impl GitInfo {
             ahead_behind_local,
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GitPathState {
+    #[default]
+    OutsideRepo,
+    Clean,
+    Modified,
+    Untracked,
+    Ignored,
+}
+
+impl GitPathState {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::OutsideRepo => "outside repo",
+            Self::Clean => "clean",
+            Self::Modified => "modified",
+            Self::Untracked => "untracked",
+            Self::Ignored => "ignored",
+        }
+    }
+}
+
+pub fn detect_git_path_state(project_dir: &Path) -> GitPathState {
+    let Some(repo_root) = git_repo_root(project_dir) else {
+        return GitPathState::OutsideRepo;
+    };
+    let relative_path = relative_git_path(&repo_root, project_dir);
+    if relative_path != "." {
+        let ignored = Command::new("git")
+            .args(["check-ignore", "-q", "--", &relative_path])
+            .current_dir(&repo_root)
+            .status()
+            .ok()
+            .is_some_and(|status| status.success());
+        if ignored {
+            return GitPathState::Ignored;
+        }
+    }
+    let status_output = Command::new("git")
+        .args([
+            "status",
+            "--porcelain=v1",
+            "--ignored=matching",
+            "--untracked-files=all",
+            "--",
+            &relative_path,
+        ])
+        .current_dir(&repo_root)
+        .output();
+    let Ok(status_output) = status_output else {
+        return GitPathState::Clean;
+    };
+    let stdout = String::from_utf8_lossy(&status_output.stdout);
+    let mut has_modified = false;
+    let mut has_untracked = false;
+
+    for line in stdout.lines().filter(|line| line.len() >= 3) {
+        let status_code = &line[..2];
+        match status_code {
+            "!!" => {},
+            "??" => has_untracked = true,
+            _ => has_modified = true,
+        }
+    }
+
+    if has_modified {
+        GitPathState::Modified
+    } else if has_untracked {
+        GitPathState::Untracked
+    } else {
+        GitPathState::Clean
+    }
+}
+
+pub fn git_repo_root(project_dir: &Path) -> Option<PathBuf> {
+    project_dir
+        .ancestors()
+        .find(|dir| {
+            let git_path = dir.join(".git");
+            git_path.is_dir() || git_path.is_file()
+        })
+        .map(Path::to_path_buf)
+}
+
+pub fn detect_git_path_states_batch(
+    projects: &[(String, String)],
+) -> HashMap<String, GitPathState> {
+    let mut states = HashMap::new();
+    let mut repos: HashMap<PathBuf, Vec<(String, String)>> = HashMap::new();
+
+    for (path, abs_path) in projects {
+        let abs_path = PathBuf::from(abs_path);
+        if let Some(repo_root) = git_repo_root(&abs_path) {
+            repos
+                .entry(repo_root)
+                .or_default()
+                .push((path.clone(), abs_path.to_string_lossy().to_string()));
+        } else {
+            states.insert(path.clone(), GitPathState::OutsideRepo);
+        }
+    }
+
+    for (repo_root, entries) in repos {
+        let prefixes: Vec<(String, String)> = entries
+            .iter()
+            .map(|(path, abs_path)| {
+                (
+                    path.clone(),
+                    normalize_git_relative_path(&relative_git_path(
+                        &repo_root,
+                        Path::new(abs_path),
+                    )),
+                )
+            })
+            .collect();
+
+        let mut repo_states: HashMap<String, GitPathState> = prefixes
+            .iter()
+            .map(|(path, _)| (path.clone(), GitPathState::Clean))
+            .collect();
+
+        let status_output = Command::new("git")
+            .args(["status", "--porcelain=v1", "--untracked-files=normal"])
+            .current_dir(&repo_root)
+            .output();
+        if let Ok(output) = status_output {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines().filter(|line| line.len() >= 3) {
+                let state = if &line[..2] == "??" {
+                    GitPathState::Untracked
+                } else {
+                    GitPathState::Modified
+                };
+                let changed_path = normalize_git_relative_path(parse_status_path(line));
+                if changed_path.is_empty() {
+                    continue;
+                }
+                for (path, prefix) in &prefixes {
+                    if path_contains_git_entry(prefix, &changed_path) {
+                        apply_git_path_state(
+                            repo_states
+                                .entry(path.clone())
+                                .or_insert(GitPathState::Clean),
+                            state,
+                        );
+                    }
+                }
+            }
+        }
+
+        let remaining_clean: HashSet<String> = repo_states
+            .iter()
+            .filter(|(_, state)| matches!(state, GitPathState::Clean))
+            .map(|(path, _)| path.clone())
+            .collect();
+        if !remaining_clean.is_empty() {
+            let ignored_output = Command::new("git")
+                .args([
+                    "ls-files",
+                    "--others",
+                    "-i",
+                    "--exclude-standard",
+                    "--directory",
+                ])
+                .current_dir(&repo_root)
+                .output();
+            if let Ok(output) = ignored_output {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for ignored in stdout.lines() {
+                    let ignored = normalize_git_relative_path(ignored);
+                    if ignored.is_empty() {
+                        continue;
+                    }
+                    for (path, prefix) in &prefixes {
+                        if !remaining_clean.contains(path) {
+                            continue;
+                        }
+                        if git_entry_contains_path(&ignored, prefix) {
+                            repo_states.insert(path.clone(), GitPathState::Ignored);
+                        }
+                    }
+                }
+            }
+        }
+
+        states.extend(repo_states);
+    }
+
+    states
+}
+
+fn relative_git_path(repo_root: &Path, project_dir: &Path) -> String {
+    project_dir.strip_prefix(repo_root).ok().map_or_else(
+        || ".".to_string(),
+        |path| {
+            let normalized = path
+                .components()
+                .filter_map(|component| match component {
+                    std::path::Component::Normal(segment) => {
+                        Some(segment.to_string_lossy().to_string())
+                    },
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+            if normalized.is_empty() {
+                ".".to_string()
+            } else {
+                normalized
+            }
+        },
+    )
+}
+
+fn parse_status_path(line: &str) -> &str {
+    let path = &line[3..];
+    path.rsplit_once(" -> ").map_or(path, |(_, after)| after)
+}
+
+fn normalize_git_relative_path(path: &str) -> String {
+    let normalized = path.trim().trim_matches('"').trim_end_matches('/');
+    if normalized == "." {
+        String::new()
+    } else {
+        normalized.to_string()
+    }
+}
+
+fn path_contains_git_entry(prefix: &str, entry: &str) -> bool {
+    prefix.is_empty() || entry == prefix || entry.starts_with(&format!("{prefix}/"))
+}
+
+fn git_entry_contains_path(entry: &str, path: &str) -> bool {
+    entry == path || path.starts_with(&format!("{entry}/"))
+}
+
+const fn apply_git_path_state(current: &mut GitPathState, candidate: GitPathState) {
+    *current = match (*current, candidate) {
+        (_, GitPathState::Modified) => GitPathState::Modified,
+        (GitPathState::Clean | GitPathState::Ignored, GitPathState::Untracked) => {
+            GitPathState::Untracked
+        },
+        (GitPathState::Clean, GitPathState::Ignored) => GitPathState::Ignored,
+        (state, _) => state,
+    };
 }
 
 /// Parse `git rev-list --left-right --count` output into `(ahead, behind)`.
@@ -261,16 +508,16 @@ impl From<ProjectLanguage> for bool {
     }
 }
 
-/// Whether a project directory has a `.git` directory (is git-tracked).
+/// Whether a project path lives inside a git repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GitTracking {
-    Tracked,
-    Untracked,
+pub enum GitRepoPresence {
+    InRepo,
+    OutsideRepo,
 }
 
-impl GitTracking {
-    pub const fn is_tracked(self) -> bool {
-        matches!(self, Self::Tracked)
+impl GitRepoPresence {
+    pub const fn is_in_repo(self) -> bool {
+        matches!(self, Self::InRepo)
     }
 }
 
@@ -327,6 +574,8 @@ pub struct RustProject {
     /// Whether this project is a Rust project (has `Cargo.toml`).
     #[serde(default)]
     pub is_rust: ProjectLanguage,
+    #[serde(skip)]
+    pub local_dependency_paths: Vec<String>,
 }
 
 impl RustProject {
@@ -418,6 +667,7 @@ impl RustProject {
         let examples = collect_examples(&table, project_dir);
         let benches = collect_target_names(&table, project_dir, "bench", "benches");
         let test_count = count_targets(&table, project_dir, "test", "tests");
+        let local_dependency_paths = collect_local_dependency_paths(&table, project_dir);
 
         let abs_path = project_dir.display().to_string();
 
@@ -435,6 +685,7 @@ impl RustProject {
             benches,
             test_count,
             is_rust: ProjectLanguage::Rust,
+            local_dependency_paths,
         })
     }
 
@@ -462,12 +713,101 @@ impl RustProject {
             benches: Vec::new(),
             test_count: 0,
             is_rust: ProjectLanguage::NonRust,
+            local_dependency_paths: Vec::new(),
         }
     }
 
     pub const fn is_workspace(&self) -> bool {
         matches!(self.is_workspace, WorkspaceStatus::Workspace)
     }
+}
+
+fn collect_local_dependency_paths(table: &Table, project_dir: &Path) -> Vec<String> {
+    let mut paths = Vec::new();
+    collect_dependency_paths_from_table(table.get("dependencies"), project_dir, &mut paths);
+    collect_dependency_paths_from_table(table.get("dev-dependencies"), project_dir, &mut paths);
+    collect_dependency_paths_from_table(table.get("build-dependencies"), project_dir, &mut paths);
+    collect_target_dependency_paths(table, project_dir, &mut paths);
+    collect_workspace_dependency_paths(table, project_dir, &mut paths);
+    collect_patch_dependency_paths(table, project_dir, &mut paths);
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn collect_dependency_paths_from_table(
+    value: Option<&Value>,
+    project_dir: &Path,
+    paths: &mut Vec<String>,
+) {
+    let Some(table) = value.and_then(Value::as_table) else {
+        return;
+    };
+    for dependency in table.values() {
+        if let Some(path) = dependency
+            .as_table()
+            .and_then(|dep_table| dep_table.get("path"))
+            .and_then(Value::as_str)
+            && let Some(normalized) = normalize_local_dependency_path(project_dir, path)
+        {
+            paths.push(normalized);
+        }
+    }
+}
+
+fn collect_target_dependency_paths(table: &Table, project_dir: &Path, paths: &mut Vec<String>) {
+    let Some(targets) = table.get("target").and_then(Value::as_table) else {
+        return;
+    };
+    for target in targets.values().filter_map(Value::as_table) {
+        collect_dependency_paths_from_table(target.get("dependencies"), project_dir, paths);
+        collect_dependency_paths_from_table(target.get("dev-dependencies"), project_dir, paths);
+        collect_dependency_paths_from_table(target.get("build-dependencies"), project_dir, paths);
+    }
+}
+
+fn collect_workspace_dependency_paths(table: &Table, project_dir: &Path, paths: &mut Vec<String>) {
+    let Some(workspace) = table.get("workspace").and_then(Value::as_table) else {
+        return;
+    };
+    collect_dependency_paths_from_table(workspace.get("dependencies"), project_dir, paths);
+}
+
+fn collect_patch_dependency_paths(table: &Table, project_dir: &Path, paths: &mut Vec<String>) {
+    let Some(patch) = table.get("patch").and_then(Value::as_table) else {
+        return;
+    };
+    for registry in patch.values().filter_map(Value::as_table) {
+        collect_dependency_paths_from_table(
+            Some(&Value::Table(registry.clone())),
+            project_dir,
+            paths,
+        );
+    }
+}
+
+fn normalize_local_dependency_path(project_dir: &Path, dependency_path: &str) -> Option<String> {
+    let joined = project_dir.join(dependency_path);
+    let dependency_dir = if joined.file_name().is_some_and(|name| name == "Cargo.toml") {
+        joined.parent().map(Path::to_path_buf)?
+    } else {
+        joined
+    };
+    Some(home_relative_path(&normalize_path(&dependency_dir)))
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {},
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            },
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 fn detect_types(table: &Table, project_dir: &Path) -> Vec<ProjectType> {
@@ -770,4 +1110,32 @@ fn count_rs_files_recursive(dir: &Path) -> usize {
         }
     }
     count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_repo_root_finds_ancestor_git_directory() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let repo_root = tmp.path().join("repo");
+        let nested = repo_root.join("crates").join("demo");
+        std::fs::create_dir_all(repo_root.join(".git")).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&nested).unwrap_or_else(|_| std::process::abort());
+
+        assert_eq!(git_repo_root(&nested).as_deref(), Some(repo_root.as_path()));
+    }
+
+    #[test]
+    fn git_repo_root_finds_worktree_git_file() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let repo_root = tmp.path().join("repo");
+        let nested = repo_root.join("crates").join("demo");
+        std::fs::create_dir_all(&nested).unwrap_or_else(|_| std::process::abort());
+        std::fs::write(repo_root.join(".git"), "gitdir: /tmp/fake\n")
+            .unwrap_or_else(|_| std::process::abort());
+
+        assert_eq!(git_repo_root(&nested).as_deref(), Some(repo_root.as_path()));
+    }
 }

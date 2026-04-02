@@ -32,7 +32,7 @@ use super::http::HttpClient;
 use super::port_report;
 use super::project;
 use super::project::GitInfo;
-use super::project::GitTracking;
+use super::project::GitRepoPresence;
 use super::project::RustProject;
 use super::scan;
 use super::scan::BackgroundMsg;
@@ -43,8 +43,8 @@ pub struct WatchRequest {
     pub project_path: String,
     /// Absolute filesystem path to the project root.
     pub abs_path: PathBuf,
-    /// Whether this project has git tracking.
-    pub git_tracking: GitTracking,
+    /// Absolute path of the containing git repo root when known.
+    pub repo_root: Option<PathBuf>,
 }
 
 /// Spawn a unified background watcher thread. Watches the include
@@ -81,7 +81,7 @@ pub fn spawn_watcher(
 struct ProjectEntry {
     project_path: String,
     abs_path: PathBuf,
-    git_tracking: GitTracking,
+    repo_root: Option<PathBuf>,
     port_report_dir_path: PathBuf,
 }
 
@@ -124,6 +124,8 @@ fn watcher_loop(
     let mut project_parents: HashSet<PathBuf> = HashSet::new();
     // project_path → (debounce_deadline, max_deadline)
     let mut pending_disk: HashMap<String, (Instant, Instant)> = HashMap::new();
+    // repo_root → (debounce_deadline, max_deadline)
+    let mut pending_git: HashMap<PathBuf, (Instant, Instant)> = HashMap::new();
     // Directories that might be new projects → probe deadline
     let mut pending_new: HashMap<PathBuf, Instant> = HashMap::new();
     // Directories already discovered as new projects by this watcher.
@@ -142,7 +144,7 @@ fn watcher_loop(
                         ProjectEntry {
                             project_path: req.project_path,
                             abs_path: req.abs_path.clone(),
-                            git_tracking: req.git_tracking,
+                            repo_root: req.repo_root,
                             port_report_dir_path: port_report::project_dir(&req.abs_path),
                         },
                     );
@@ -164,9 +166,19 @@ fn watcher_loop(
                 discovered: &discovered,
             };
             for event_path in &event.paths {
-                handle_event(event_path, &ctx, bg_tx, &mut pending_disk, &mut pending_new);
+                handle_event(
+                    event_path,
+                    &ctx,
+                    bg_tx,
+                    &mut pending_disk,
+                    &mut pending_git,
+                    &mut pending_new,
+                );
             }
         }
+
+        // Fire git refreshes whose debounce has expired.
+        fire_git_updates(bg_tx, &projects, &mut pending_git);
 
         // Fire disk recalculations whose debounce has expired.
         fire_disk_updates(bg_tx, &projects, &mut pending_disk);
@@ -199,6 +211,7 @@ fn handle_event(
     ctx: &EventContext<'_>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     pending_disk: &mut HashMap<String, (Instant, Instant)>,
+    pending_git: &mut HashMap<PathBuf, (Instant, Instant)>,
     pending_new: &mut HashMap<PathBuf, Instant>,
 ) {
     let now = Instant::now();
@@ -216,6 +229,18 @@ fn handle_event(
         return;
     }
 
+    if let Some(entry) = ctx
+        .projects
+        .values()
+        .find(|entry| is_fast_git_metadata_event(event_path, entry))
+    {
+        if let Some(repo_root) = &entry.repo_root {
+            emit_root_git_path_refresh(bg_tx, ctx.projects, repo_root);
+            enqueue_git_refresh(pending_git, repo_root.clone(), now, false);
+        }
+        return;
+    }
+
     // Try to match the event to a known project.
     if let Some((_, entry)) = ctx
         .projects
@@ -230,6 +255,9 @@ fn handle_event(
             entry.project_path.clone(),
             (debounce_deadline, max_deadline),
         );
+        if let Some(repo_root) = &entry.repo_root {
+            enqueue_git_refresh(pending_git, repo_root.clone(), now, false);
+        }
         return;
     }
 
@@ -244,6 +272,105 @@ fn handle_event(
         pending_new
             .entry(candidate)
             .or_insert_with(|| now + NEW_PROJECT_DEBOUNCE);
+    }
+}
+
+fn is_fast_git_metadata_event(event_path: &Path, entry: &ProjectEntry) -> bool {
+    let Some(repo_root) = entry.repo_root.as_deref() else {
+        return false;
+    };
+    let repo_git = repo_root.join(".git");
+    event_path == repo_root.join(".gitignore")
+        || event_path == repo_git.join("HEAD")
+        || event_path == repo_git.join("info").join("exclude")
+}
+
+fn enqueue_git_refresh(
+    pending_git: &mut HashMap<PathBuf, (Instant, Instant)>,
+    repo_root: PathBuf,
+    now: Instant,
+    immediate: bool,
+) {
+    let debounce_deadline = if immediate {
+        now
+    } else {
+        now + DEBOUNCE_DURATION
+    };
+    let max_deadline = pending_git
+        .get(&repo_root)
+        .map_or(now + MAX_WAIT, |(_, max)| *max);
+    pending_git.insert(repo_root, (debounce_deadline, max_deadline));
+}
+
+fn emit_root_git_path_refresh(
+    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    projects: &HashMap<PathBuf, ProjectEntry>,
+    repo_root: &Path,
+) {
+    let Some(root_entry) = projects
+        .values()
+        .find(|entry| entry.abs_path.as_path() == repo_root)
+    else {
+        return;
+    };
+    let state = project::detect_git_path_state(repo_root);
+    let _ = bg_tx.send(BackgroundMsg::GitPathState {
+        path: root_entry.project_path.clone(),
+        state,
+    });
+}
+
+fn fire_git_updates(
+    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    projects: &HashMap<PathBuf, ProjectEntry>,
+    pending_git: &mut HashMap<PathBuf, (Instant, Instant)>,
+) {
+    let now = Instant::now();
+    let ready: Vec<PathBuf> = pending_git
+        .iter()
+        .filter(|(_, (debounce, max))| now >= *debounce || now >= *max)
+        .map(|(repo_root, _)| repo_root.clone())
+        .collect();
+
+    for repo_root in ready {
+        pending_git.remove(&repo_root);
+        emit_git_refresh(bg_tx, projects, &repo_root);
+    }
+}
+
+fn emit_git_refresh(
+    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    projects: &HashMap<PathBuf, ProjectEntry>,
+    repo_root: &Path,
+) {
+    let affected: Vec<&ProjectEntry> = projects
+        .values()
+        .filter(|entry| entry.repo_root.as_deref() == Some(repo_root))
+        .collect();
+    if affected.is_empty() {
+        return;
+    }
+
+    if let Some(info) = GitInfo::detect(repo_root) {
+        for entry in &affected {
+            let _ = bg_tx.send(BackgroundMsg::GitInfo {
+                path: entry.project_path.clone(),
+                info: info.clone(),
+            });
+        }
+    }
+
+    let git_projects: Vec<(String, String)> = affected
+        .iter()
+        .map(|entry| {
+            (
+                entry.project_path.clone(),
+                entry.abs_path.to_string_lossy().to_string(),
+            )
+        })
+        .collect();
+    for (path, state) in project::detect_git_path_states_batch(&git_projects) {
+        let _ = bg_tx.send(BackgroundMsg::GitPathState { path, state });
     }
 }
 
@@ -275,16 +402,7 @@ fn fire_disk_updates(
             return;
         }
 
-        // Re-detect git sync status so the project list and git panel
-        // reflect commits, pulls, branch switches, etc.
-        if entry.git_tracking.is_tracked()
-            && let Some(info) = GitInfo::detect(&entry.abs_path)
-        {
-            let _ = bg_tx.send(BackgroundMsg::GitInfo {
-                path: project_path,
-                info,
-            });
-        }
+        let _ = project_path;
     }
 }
 
@@ -325,10 +443,10 @@ fn probe_new_projects(
         if let Some(project) = probe_project(&dir, non_rust) {
             discovered.insert(dir.clone());
             let abs_path = PathBuf::from(&project.abs_path);
-            let git_tracking = if abs_path.join(".git").exists() {
-                GitTracking::Tracked
+            let repo_presence = if project::git_repo_root(&abs_path).is_some() {
+                GitRepoPresence::InRepo
             } else {
-                GitTracking::Untracked
+                GitRepoPresence::OutsideRepo
             };
             let _ = bg_tx.send(BackgroundMsg::ProjectDiscovered {
                 project: project.clone(),
@@ -347,7 +465,7 @@ fn probe_new_projects(
                     &path,
                     &abs_path,
                     name.as_ref(),
-                    git_tracking,
+                    repo_presence,
                     ci_run_count,
                     lint_enabled,
                 );
@@ -565,7 +683,7 @@ mod tests {
             ProjectEntry {
                 project_path: project_path.to_string(),
                 abs_path: abs_path.to_path_buf(),
-                git_tracking: GitTracking::Untracked,
+                repo_root: None,
                 port_report_dir_path: port_report::project_dir(abs_path),
             },
         )
@@ -587,6 +705,7 @@ mod tests {
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
 
         handle_event(
@@ -594,10 +713,106 @@ mod tests {
             &ctx,
             &bg_tx,
             &mut pending_disk,
+            &mut pending_git,
             &mut pending_new,
         );
 
         assert!(pending_disk.contains_key("~/rust/bevy"));
+        assert!(pending_git.is_empty());
+        assert!(pending_new.is_empty());
+    }
+
+    #[test]
+    fn git_exclude_event_refreshes_git_immediately() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("my_project");
+        std::fs::create_dir_all(&project_dir).expect("create project dir");
+        init_git_repo(&project_dir);
+        let member_dir = project_dir.join("crates").join("member");
+        std::fs::create_dir_all(&member_dir).expect("create member dir");
+
+        let mut projects = HashMap::new();
+        projects.insert(
+            project_dir.clone(),
+            ProjectEntry {
+                project_path: "~/my_project".to_string(),
+                abs_path: project_dir.clone(),
+                repo_root: Some(project_dir.clone()),
+                port_report_dir_path: port_report::project_dir(&project_dir),
+            },
+        );
+        projects.insert(
+            member_dir.clone(),
+            ProjectEntry {
+                project_path: "~/my_project/crates/member".to_string(),
+                abs_path: member_dir.clone(),
+                repo_root: Some(project_dir.clone()),
+                port_report_dir_path: port_report::project_dir(&member_dir),
+            },
+        );
+        let scan_root = tmp.path().to_path_buf();
+        let project_parents = HashSet::from([scan_root.clone()]);
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root: &scan_root,
+            projects: &projects,
+            project_parents: &project_parents,
+            discovered: &discovered,
+        };
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        handle_event(
+            &project_dir.join(".git").join("info").join("exclude"),
+            &ctx,
+            &bg_tx,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        fire_git_updates(&bg_tx, &projects, &mut pending_git);
+
+        let mut got_git_info = false;
+        let mut got_root_git_state = false;
+        let mut got_member_git_state = false;
+        while let Ok(msg) = bg_rx.try_recv() {
+            match msg {
+                BackgroundMsg::GitInfo { .. } => got_git_info = true,
+                BackgroundMsg::GitPathState { path, .. } if path == "~/my_project" => {
+                    got_root_git_state = true;
+                },
+                BackgroundMsg::GitPathState { path, .. }
+                    if path == "~/my_project/crates/member" =>
+                {
+                    got_member_git_state = true;
+                },
+                _ => {},
+            }
+        }
+
+        assert!(
+            !got_git_info,
+            "repo-wide GitInfo should not block the fast path"
+        );
+        assert!(
+            got_root_git_state,
+            "expected immediate root GitPathState refresh"
+        );
+        assert!(
+            !got_member_git_state,
+            "member rows should wait for the background repo refresh"
+        );
+        assert!(
+            pending_disk.is_empty(),
+            "exclude edits should bypass disk queue"
+        );
+        assert!(
+            pending_git.contains_key(&project_dir),
+            "full repo refresh should stay queued for children"
+        );
         assert!(pending_new.is_empty());
     }
 
@@ -630,6 +845,7 @@ mod tests {
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
 
         handle_event(
@@ -637,6 +853,7 @@ mod tests {
             &ctx,
             &bg_tx,
             &mut pending_disk,
+            &mut pending_git,
             &mut pending_new,
         );
 
@@ -651,6 +868,7 @@ mod tests {
             super::super::port_report::LintStatus::Passed(_)
         ));
         assert!(pending_disk.is_empty());
+        assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());
     }
 
@@ -687,6 +905,7 @@ mod tests {
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
 
         handle_event(
@@ -694,6 +913,7 @@ mod tests {
             &ctx,
             &bg_tx,
             &mut pending_disk,
+            &mut pending_git,
             &mut pending_new,
         );
 
@@ -708,6 +928,7 @@ mod tests {
             super::super::port_report::LintStatus::Failed(_)
         ));
         assert!(pending_disk.is_empty());
+        assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());
     }
 
@@ -734,6 +955,7 @@ mod tests {
             discovered: &discovered,
         };
         let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
 
         let (bg_tx, _bg_rx) = mpsc::channel();
@@ -743,10 +965,12 @@ mod tests {
             &ctx,
             &bg_tx,
             &mut pending_disk,
+            &mut pending_git,
             &mut pending_new,
         );
 
         assert!(pending_disk.is_empty());
+        assert!(pending_git.is_empty());
         assert!(pending_new.contains_key(&new_project));
     }
 
@@ -768,6 +992,7 @@ mod tests {
             discovered: &discovered,
         };
         let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
 
         let (bg_tx, _bg_rx) = mpsc::channel();
@@ -776,9 +1001,11 @@ mod tests {
             &ctx,
             &bg_tx,
             &mut pending_disk,
+            &mut pending_git,
             &mut pending_new,
         );
 
+        assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());
     }
 
@@ -807,6 +1034,7 @@ mod tests {
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
 
         handle_event(
@@ -814,6 +1042,7 @@ mod tests {
             &ctx,
             &bg_tx,
             &mut pending_disk,
+            &mut pending_git,
             &mut pending_new,
         );
 
@@ -860,13 +1089,21 @@ mod tests {
 
     /// Helper: create a git repo in `dir` with one commit so
     /// `GitInfo::detect` returns `Some`.
+    fn git_binary() -> &'static str {
+        if Path::new("/usr/bin/git").is_file() {
+            "/usr/bin/git"
+        } else {
+            "git"
+        }
+    }
+
     fn init_git_repo(dir: &Path) {
-        Command::new("git")
+        Command::new(git_binary())
             .args(["init"])
             .current_dir(dir)
             .output()
             .expect("git init");
-        Command::new("git")
+        Command::new(git_binary())
             .args(["commit", "--allow-empty", "-m", "init"])
             .current_dir(dir)
             .output()
@@ -874,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn disk_update_sends_git_info_for_tracked_project() {
+    fn disk_update_only_sends_disk_usage_for_tracked_project() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project_dir = tmp.path().join("my_project");
         std::fs::create_dir_all(&project_dir).expect("create dir");
@@ -887,7 +1124,7 @@ mod tests {
             ProjectEntry {
                 project_path: "~/my_project".to_string(),
                 abs_path: project_dir.clone(),
-                git_tracking: GitTracking::Tracked,
+                repo_root: Some(project_dir.clone()),
                 port_report_dir_path: port_report::project_dir(&project_dir),
             },
         );
@@ -910,7 +1147,7 @@ mod tests {
             }
         }
         assert!(got_disk, "expected DiskUsage message");
-        assert!(got_git, "expected GitInfo message for tracked project");
+        assert!(!got_git, "disk updates should no longer emit GitInfo");
         assert!(pending.is_empty(), "pending entry should be consumed");
     }
 
@@ -927,7 +1164,7 @@ mod tests {
             ProjectEntry {
                 project_path: "~/no_git".to_string(),
                 abs_path: project_dir.clone(),
-                git_tracking: GitTracking::Untracked,
+                repo_root: None,
                 port_report_dir_path: port_report::project_dir(&project_dir),
             },
         );

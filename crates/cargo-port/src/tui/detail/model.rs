@@ -6,6 +6,7 @@ use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project::ExampleGroup;
 use crate::project::GitOrigin;
+use crate::project::GitPathState;
 use crate::project::ProjectLanguage;
 use crate::project::ProjectType;
 use crate::project::RustProject;
@@ -196,6 +197,7 @@ pub enum DetailField {
     Lint,
     Ci,
     Branch,
+    GitPath,
     Sync,
     VsOrigin,
     VsLocal,
@@ -222,6 +224,7 @@ impl DetailField {
             Self::Lint => "Lint",
             Self::Ci => "CI",
             Self::Branch => "Branch",
+            Self::GitPath => "Git Path",
             Self::Sync => "Sync",
             Self::VsOrigin => "vs o/dflt",
             Self::VsLocal => "vs dflt",
@@ -266,6 +269,7 @@ impl DetailField {
                     branch.to_string()
                 }
             },
+            Self::GitPath => info.git_path.label().to_string(),
             Self::Sync => info.git_sync.as_deref().unwrap_or("").to_string(),
             Self::VsOrigin => info.git_vs_origin.as_deref().unwrap_or("").to_string(),
             Self::VsLocal => info.git_vs_local.as_deref().unwrap_or("").to_string(),
@@ -297,24 +301,24 @@ impl DetailField {
 pub fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
     if info.is_rust == ProjectLanguage::NonRust {
         let mut fields = vec![DetailField::Name, DetailField::Path];
-        if !info.is_vendored && !info.lint_label.is_empty() {
+        if info.cargo_active && !info.lint_label.is_empty() {
             fields.push(DetailField::Lint);
         }
-        if !info.is_vendored {
+        if info.cargo_active {
             fields.push(DetailField::Ci);
         }
         fields.push(DetailField::Disk);
         return fields;
     }
     let mut fields = vec![DetailField::Name, DetailField::Path, DetailField::Targets];
-    if !info.is_vendored && !info.lint_label.is_empty() {
+    if info.cargo_active && !info.lint_label.is_empty() {
         fields.push(DetailField::Lint);
     }
-    if !info.is_vendored {
+    if info.cargo_active {
         fields.push(DetailField::Ci);
     }
     fields.push(DetailField::Disk);
-    if !info.is_vendored && info.crates_version.is_some() {
+    if info.cargo_active && info.crates_version.is_some() {
         fields.push(DetailField::CratesIo);
     }
     if info.has_package {
@@ -329,6 +333,9 @@ pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     let mut fields = Vec::new();
     if info.git_branch.is_some() {
         fields.push(DetailField::Branch);
+    }
+    if info.git_path != GitPathState::OutsideRepo {
+        fields.push(DetailField::GitPath);
     }
     if info.git_sync.is_some() {
         fields.push(DetailField::Sync);
@@ -381,6 +388,7 @@ pub struct DetailInfo {
     pub ci: Option<Conclusion>,
     pub stats_rows: Vec<(&'static str, usize)>,
     pub git_branch: Option<String>,
+    pub git_path: GitPathState,
     pub git_sync: Option<String>,
     /// Ahead/behind vs `origin/{default_branch}`.
     pub git_vs_origin: Option<String>,
@@ -405,7 +413,7 @@ pub struct DetailInfo {
     pub is_rust: ProjectLanguage,
     /// Whether this project declares `[package]` (has version/description fields).
     pub has_package: bool,
-    pub is_vendored: bool,
+    pub cargo_active: bool,
 }
 
 /// Resolve the title shown in the `Package` column header.
@@ -450,6 +458,7 @@ fn format_downloads(count: u64) -> String {
 
 struct GitDetailFields {
     branch: Option<String>,
+    path: GitPathState,
     sync: Option<String>,
     vs_origin: Option<String>,
     vs_local: Option<String>,
@@ -464,22 +473,6 @@ struct GitDetailFields {
 }
 
 fn build_git_detail_fields(app: &App, project: &RustProject) -> GitDetailFields {
-    if app.is_vendored_path(&project.path) {
-        return GitDetailFields {
-            branch: None,
-            sync: None,
-            vs_origin: None,
-            vs_local: None,
-            default_branch: None,
-            origin: None,
-            owner: None,
-            url: None,
-            stars: None,
-            description: None,
-            inception: None,
-            last_commit: None,
-        };
-    }
     let git = app.git_info.get(&project.path);
     let branch = git.and_then(|info| info.branch.clone());
     let sync = git
@@ -512,6 +505,7 @@ fn build_git_detail_fields(app: &App, project: &RustProject) -> GitDetailFields 
         .map(format_timestamp);
     GitDetailFields {
         branch,
+        path: app.git_path_state_for(&project.path),
         sync,
         vs_origin,
         vs_local,
@@ -543,7 +537,7 @@ pub fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
     let crates_version = app.crates_versions.get(&project.path).cloned();
     let crates_downloads = app.crates_downloads.get(&project.path).copied();
     let worktree_label = project.worktree_name.clone();
-    let is_vendored = app.is_vendored_path(&project.path);
+    let cargo_active = app.is_cargo_active_path(&project.path);
 
     let worktree_node = app
         .selected_node()
@@ -553,10 +547,10 @@ pub fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
         || {
             (
                 app.formatted_disk(project),
-                if is_vendored {
-                    None
-                } else {
+                if cargo_active {
                     app.ci_for(project)
+                } else {
+                    None
                 },
             )
         },
@@ -610,6 +604,7 @@ pub fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
         ci,
         stats_rows,
         git_branch: git_detail.branch,
+        git_path: git_detail.path,
         git_sync: git_detail.sync,
         git_vs_origin: git_detail.vs_origin,
         git_vs_local: git_detail.vs_local,
@@ -629,6 +624,6 @@ pub fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
         benches: project.benches.clone(),
         is_rust: project.is_rust,
         has_package: project.name.is_some(),
-        is_vendored,
+        cargo_active,
     }
 }

@@ -794,6 +794,7 @@ mod tests {
     use crate::port_report::PortReportRun;
     use crate::port_report::PortReportRunStatus;
     use crate::project::ExampleGroup;
+    use crate::project::GitPathState;
     use crate::project::ProjectLanguage;
     use crate::tui::render::CiColumn;
 
@@ -812,6 +813,7 @@ mod tests {
             ci: None,
             stats_rows: Vec::new(),
             git_branch: None,
+            git_path: GitPathState::OutsideRepo,
             git_sync: None,
             git_vs_origin: None,
             git_vs_local: None,
@@ -831,7 +833,7 @@ mod tests {
             benches: Vec::new(),
             is_rust,
             has_package: true,
-            is_vendored: false,
+            cargo_active: true,
         }
     }
 

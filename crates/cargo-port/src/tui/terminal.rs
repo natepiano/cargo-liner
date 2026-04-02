@@ -38,7 +38,7 @@ use crate::ci;
 use crate::config;
 use crate::http::HttpClient;
 use crate::project::GitInfo;
-use crate::project::GitTracking;
+use crate::project::GitRepoPresence;
 use crate::project::RustProject;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -524,17 +524,21 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
     let client = app.http_client.clone();
     let project_path = path.to_string();
     let abs = PathBuf::from(abs_path);
-    let git_tracking = if abs.join(".git").exists() {
-        GitTracking::Tracked
+    let repo_presence = if crate::project::git_repo_root(&abs).is_some() {
+        GitRepoPresence::InRepo
     } else {
-        GitTracking::Untracked
+        GitRepoPresence::OutsideRepo
     };
     let ci_run_count = app.ci_run_count();
     let project_name = name.cloned();
 
     thread::spawn(move || {
+        let _ = tx.send(BackgroundMsg::GitPathState {
+            path: project_path.clone(),
+            state: crate::project::detect_git_path_state(&abs),
+        });
         // Git detection can be expensive on some repos; keep it off the UI thread.
-        let git_info = if git_tracking.is_tracked() {
+        let git_info = if repo_presence.is_in_repo() {
             GitInfo::detect(&abs)
         } else {
             None

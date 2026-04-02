@@ -774,6 +774,7 @@ fn render_root_item(
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name: &name,
+        git_path_state: app.git_path_state_for(&project.path),
         lint_icon: lint,
         disk: &disk,
         disk_style: ds,
@@ -793,21 +794,28 @@ fn render_child_item(
     name: &str,
     child_sorted: &[u64],
     prefix: &'static str,
-    vendored: bool,
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
     let disk = app.formatted_disk(project);
     let disk_bytes = app.disk_usage.get(&project.path).copied();
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
     let lang = project.lang_icon();
-    let lint = if vendored {
-        " "
-    } else {
+    let cargo_active = app.is_cargo_active_path(&project.path);
+    let lint = if cargo_active {
         app.lint_icon(project)
+    } else {
+        " "
     };
-    let ci = if vendored { None } else { app.ci_for(project) };
-    let git = if vendored { " " } else { app.git_icon(project) };
-    let sync = if vendored {
+    let ci = if cargo_active {
+        app.ci_for(project)
+    } else {
+        None
+    };
+    let git = app.git_icon(project);
+    let sync = if matches!(
+        app.git_path_state_for(&project.path),
+        crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
+    ) {
         String::new()
     } else {
         app.git_sync(project)
@@ -815,6 +823,7 @@ fn render_child_item(
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name,
+        git_path_state: app.git_path_state_for(&project.path),
         lint_icon: lint,
         disk: &disk,
         disk_style: ds,
@@ -863,6 +872,7 @@ fn render_worktree_entry<'a>(
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name: &name,
+        git_path_state: app.git_path_state_for(&wt.project.path),
         lint_icon: lint,
         disk: &disk,
         disk_style: ds,
@@ -913,7 +923,7 @@ fn render_wt_member<'a>(
         PREFIX_WT_MEMBER_NAMED
     };
     let name = member.display_name();
-    render_child_item(app, member, &name, sorted, indent, false, widths)
+    render_child_item(app, member, &name, sorted, indent, widths)
 }
 
 pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListItem<'static>> {
@@ -958,7 +968,7 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                     PREFIX_MEMBER_NAMED
                 };
                 let name = member.display_name();
-                render_child_item(app, member, &name, sorted, indent, false, widths)
+                render_child_item(app, member, &name, sorted, indent, widths)
             },
             VisibleRow::Vendored {
                 node_index,
@@ -968,7 +978,7 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                 let empty = Vec::new();
                 let sorted = child_sorted.get(node_index).unwrap_or(&empty);
                 let name = format!("{} (vendored)", vendored.display_name());
-                render_child_item(app, vendored, &name, sorted, PREFIX_VENDORED, true, widths)
+                render_child_item(app, vendored, &name, sorted, PREFIX_VENDORED, widths)
             },
             VisibleRow::WorktreeEntry {
                 node_index,
@@ -1003,15 +1013,7 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                 let empty = Vec::new();
                 let sorted = child_sorted.get(node_index).unwrap_or(&empty);
                 let name = format!("{} (vendored)", vendored.display_name());
-                render_child_item(
-                    app,
-                    vendored,
-                    &name,
-                    sorted,
-                    PREFIX_WT_VENDORED,
-                    true,
-                    widths,
-                )
+                render_child_item(app, vendored, &name, sorted, PREFIX_WT_VENDORED, widths)
             },
         })
         .collect()
@@ -1027,19 +1029,26 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
                 .all_projects
                 .iter()
                 .find(|project| project.path == entry.path)?;
-            let vendored = app.is_vendored_path(&project.path);
+            let cargo_active = app.is_cargo_active_path(&project.path);
             let disk = app.formatted_disk(project);
             let disk_bytes = app.disk_usage.get(&project.path).copied();
             let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
             let lang = project.lang_icon();
-            let lint = if vendored {
-                " "
-            } else {
+            let lint = if cargo_active {
                 app.lint_icon(project)
+            } else {
+                " "
             };
-            let ci = if vendored { None } else { app.ci_for(project) };
-            let git = if vendored { " " } else { app.git_icon(project) };
-            let sync = if vendored {
+            let ci = if cargo_active {
+                app.ci_for(project)
+            } else {
+                None
+            };
+            let git = app.git_icon(project);
+            let sync = if matches!(
+                app.git_path_state_for(&project.path),
+                crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
+            ) {
                 String::new()
             } else {
                 app.git_sync(project)
@@ -1047,6 +1056,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             let row = super::columns::build_row_cells(super::columns::ProjectRow {
                 prefix: "  ",
                 name: &entry.name,
+                git_path_state: app.git_path_state_for(&project.path),
                 lint_icon: lint,
                 disk: &disk,
                 disk_style: ds,
