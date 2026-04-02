@@ -38,10 +38,10 @@ pub(super) enum Align {
 
 #[derive(Clone, Copy)]
 pub(super) struct ColumnDef {
-    pub header:              &'static str,
-    pub width:               ColumnWidth,
-    pub align:               Align,
-    pub gap:                 usize,
+    pub header: &'static str,
+    pub width: ColumnWidth,
+    pub align: Align,
+    pub gap: usize,
     pub header_borrows_left: bool,
 }
 
@@ -50,58 +50,58 @@ pub(super) const fn column_defs() -> [ColumnDef; NUM_COLS] {
     [
         // 0: Name
         ColumnDef {
-            header:              "",
-            width:               ColumnWidth::Fit { min: 10 },
-            align:               Align::Left,
-            gap:                 0,
+            header: "",
+            width: ColumnWidth::Fit { min: 10 },
+            align: Align::Left,
+            gap: 0,
             header_borrows_left: false,
         },
         // 1: Lint — borrows "Li" from Name padding
         ColumnDef {
-            header:              "Lint",
-            width:               ColumnWidth::Fixed(2),
-            align:               Align::Left,
-            gap:                 0,
+            header: "Lint",
+            width: ColumnWidth::Fixed(2),
+            align: Align::Left,
+            gap: 0,
             header_borrows_left: true,
         },
         // 2: Disk
         ColumnDef {
-            header:              "Disk",
-            width:               ColumnWidth::Fit { min: 4 },
-            align:               Align::Right,
-            gap:                 1,
+            header: "Disk",
+            width: ColumnWidth::Fit { min: 4 },
+            align: Align::Right,
+            gap: 1,
             header_borrows_left: false,
         },
         // 3: Lang
         ColumnDef {
-            header:              "R",
-            width:               ColumnWidth::Fixed(2),
-            align:               Align::Left,
-            gap:                 1,
+            header: "R",
+            width: ColumnWidth::Fixed(2),
+            align: Align::Left,
+            gap: 1,
             header_borrows_left: false,
         },
         // 4: Sync
         ColumnDef {
-            header:              "",
-            width:               ColumnWidth::Fit { min: 0 },
-            align:               Align::Left,
-            gap:                 1,
+            header: "",
+            width: ColumnWidth::Fit { min: 0 },
+            align: Align::Left,
+            gap: 1,
             header_borrows_left: false,
         },
         // 5: Git
         ColumnDef {
-            header:              "Git",
-            width:               ColumnWidth::Fixed(2),
-            align:               Align::Left,
-            gap:                 1,
+            header: "Git",
+            width: ColumnWidth::Fixed(2),
+            align: Align::Left,
+            gap: 1,
             header_borrows_left: false,
         },
         // 6: CI
         ColumnDef {
-            header:              "CI",
-            width:               ColumnWidth::Fixed(2),
-            align:               Align::Left,
-            gap:                 1,
+            header: "CI",
+            width: ColumnWidth::Fixed(2),
+            align: Align::Left,
+            gap: 1,
             header_borrows_left: false,
         },
     ]
@@ -111,40 +111,42 @@ pub(super) const fn column_defs() -> [ColumnDef; NUM_COLS] {
 
 #[derive(Default)]
 pub(super) struct CellContent {
-    pub text:           String,
-    pub style:          Style,
+    pub text: String,
+    pub style: Style,
     pub align_override: Option<Align>,
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct ProjectRow<'a> {
-    pub prefix:     &'a str,
-    pub name:       &'a str,
-    pub lint_icon:  &'a str,
-    pub disk:       &'a str,
+    pub prefix: &'a str,
+    pub name: &'a str,
+    pub lint_icon: &'a str,
+    pub disk: &'a str,
     pub disk_style: Style,
-    pub lang_icon:  &'a str,
-    pub git_sync:   &'a str,
-    pub git_icon:   &'a str,
-    pub ci:         Option<Conclusion>,
-    pub deleted:    bool,
+    pub lang_icon: &'a str,
+    pub git_sync: &'a str,
+    pub git_icon: &'a str,
+    pub ci: Option<Conclusion>,
+    pub deleted: bool,
 }
 
 pub(super) struct RowCells {
-    pub cells:   [CellContent; NUM_COLS],
-    pub prefix:  String,
+    pub cells: [CellContent; NUM_COLS],
+    pub prefix: String,
     pub deleted: bool,
 }
 
 // ── Resolved widths ─────────────────────────────────────────────────
 
 pub(super) struct ResolvedWidths {
-    widths:         [usize; NUM_COLS],
+    widths: [usize; NUM_COLS],
     pub generation: u64,
 }
 
 impl Default for ResolvedWidths {
-    fn default() -> Self { Self::new(&column_defs()) }
+    fn default() -> Self {
+        Self::new(&column_defs())
+    }
 }
 
 impl ResolvedWidths {
@@ -172,7 +174,9 @@ impl ResolvedWidths {
     }
 
     /// Get the resolved width for a column.
-    pub(super) const fn get(&self, col: usize) -> usize { self.widths[col] }
+    pub(super) const fn get(&self, col: usize) -> usize {
+        self.widths[col]
+    }
 
     /// Total display width of all columns including gaps.
     pub(super) fn total_width(&self) -> usize {
@@ -189,7 +193,9 @@ impl ResolvedWidths {
 
 /// Terminal display width of a string, accounting for multi-byte and wide
 /// characters. Use this for ALL layout calculations — never `.len()`.
-pub(super) fn display_width(s: &str) -> usize { UnicodeWidthStr::width(s) }
+pub(super) fn display_width(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
+}
 
 /// Pad a string to a target display width using trailing spaces (left-aligned).
 pub(super) fn pad_right(s: &str, target: usize) -> String {
@@ -350,38 +356,38 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
 
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
     cells[COL_NAME] = CellContent {
-        text:           String::from(row.name),
-        style:          Style::default(),
+        text: String::from(row.name),
+        style: Style::default(),
         align_override: None,
     };
     cells[COL_LINT] = CellContent {
-        text:           String::from(row.lint_icon),
-        style:          Style::default(),
+        text: String::from(row.lint_icon),
+        style: Style::default(),
         align_override: None,
     };
     cells[COL_DISK] = CellContent {
-        text:           String::from(row.disk),
-        style:          row.disk_style,
+        text: String::from(row.disk),
+        style: row.disk_style,
         align_override: None,
     };
     cells[COL_LANG] = CellContent {
-        text:           String::from(row.lang_icon),
-        style:          Style::default(),
+        text: String::from(row.lang_icon),
+        style: Style::default(),
         align_override: None,
     };
     cells[COL_SYNC] = CellContent {
-        text:           String::from(row.git_sync),
-        style:          sync_style,
+        text: String::from(row.git_sync),
+        style: sync_style,
         align_override: sync_align,
     };
     cells[COL_GIT] = CellContent {
-        text:           String::from(row.git_icon),
-        style:          origin_style,
+        text: String::from(row.git_icon),
+        style: origin_style,
         align_override: None,
     };
     cells[COL_CI] = CellContent {
-        text:           ci_text,
-        style:          ci_style,
+        text: ci_text,
+        style: ci_style,
         align_override: None,
     };
 
@@ -396,8 +402,8 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
 pub(super) fn build_group_header_cells(prefix: &str, label: &str) -> RowCells {
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
     cells[COL_NAME] = CellContent {
-        text:           String::from(label),
-        style:          Style::default().fg(Color::Yellow),
+        text: String::from(label),
+        style: Style::default().fg(Color::Yellow),
         align_override: None,
     };
     RowCells {
@@ -415,23 +421,23 @@ pub(super) fn build_summary_cells(name_width: usize, disk: &str) -> RowCells {
 
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
     cells[COL_LINT] = CellContent {
-        text:           String::from("Σ"),
-        style:          total_style,
+        text: String::from("Σ"),
+        style: total_style,
         align_override: Some(Align::Right),
     };
     cells[COL_DISK] = CellContent {
-        text:           String::from(disk),
-        style:          total_style,
+        text: String::from(disk),
+        style: total_style,
         align_override: None,
     };
     cells[COL_LANG] = CellContent {
-        text:           String::from("  "),
-        style:          Style::default(),
+        text: String::from("  "),
+        style: Style::default(),
         align_override: None,
     };
     cells[COL_GIT] = CellContent {
-        text:           String::from(" "),
-        style:          Style::default(),
+        text: String::from(" "),
+        style: Style::default(),
         align_override: None,
     };
 
@@ -534,28 +540,28 @@ mod tests {
         widths.observe(COL_SYNC, 2);
 
         let row_emoji = build_row_cells(ProjectRow {
-            prefix:     "▶ ",
-            name:       "bevy_brp 🌲:2",
-            lint_icon:  crate::constants::LINT_PASSED,
-            disk:       "36.3 GiB",
+            prefix: "▶ ",
+            name: "bevy_brp 🌲:2",
+            lint_icon: crate::constants::LINT_PASSED,
+            disk: "36.3 GiB",
             disk_style: Style::default(),
-            lang_icon:  "🦀",
-            git_sync:   "↑2",
-            git_icon:   crate::constants::GIT_CLONE,
-            ci:         Some(Conclusion::Success),
-            deleted:    false,
+            lang_icon: "🦀",
+            git_sync: "↑2",
+            git_icon: crate::constants::GIT_CLONE,
+            ci: Some(Conclusion::Success),
+            deleted: false,
         });
         let row_ascii = build_row_cells(ProjectRow {
-            prefix:     "▶ ",
-            name:       "bevy_mesh_outline_benchmark",
-            lint_icon:  crate::constants::LINT_PASSED,
-            disk:       "36.3 GiB",
+            prefix: "▶ ",
+            name: "bevy_mesh_outline_benchmark",
+            lint_icon: crate::constants::LINT_PASSED,
+            disk: "36.3 GiB",
             disk_style: Style::default(),
-            lang_icon:  "🦀",
-            git_sync:   "↑2",
-            git_icon:   crate::constants::GIT_CLONE,
-            ci:         Some(Conclusion::Success),
-            deleted:    false,
+            lang_icon: "🦀",
+            git_sync: "↑2",
+            git_icon: crate::constants::GIT_CLONE,
+            ci: Some(Conclusion::Success),
+            deleted: false,
         });
 
         let line_emoji = row_to_line(&row_emoji, &widths);

@@ -42,7 +42,7 @@ pub struct WatchRequest {
     /// Display path (e.g. `~/foo/bar`).
     pub project_path: String,
     /// Absolute filesystem path to the project root.
-    pub abs_path:     PathBuf,
+    pub abs_path: PathBuf,
     /// Whether this project has git tracking.
     pub git_tracking: GitTracking,
 }
@@ -77,9 +77,9 @@ pub fn spawn_watcher(
 
 /// Per-project tracking state.
 struct ProjectEntry {
-    project_path:         String,
-    abs_path:             PathBuf,
-    git_tracking:         GitTracking,
+    project_path: String,
+    abs_path: PathBuf,
+    git_tracking: GitTracking,
     port_report_dir_path: PathBuf,
 }
 
@@ -131,9 +131,9 @@ fn watcher_loop(
                     projects.insert(
                         req.abs_path.clone(),
                         ProjectEntry {
-                            project_path:         req.project_path,
-                            abs_path:             req.abs_path.clone(),
-                            git_tracking:         req.git_tracking,
+                            project_path: req.project_path,
+                            abs_path: req.abs_path.clone(),
+                            git_tracking: req.git_tracking,
                             port_report_dir_path: port_report::project_dir(&req.abs_path),
                         },
                     );
@@ -178,10 +178,10 @@ fn watcher_loop(
 
 /// Immutable state needed to classify a filesystem event.
 struct EventContext<'a> {
-    scan_root:       &'a Path,
-    projects:        &'a HashMap<PathBuf, ProjectEntry>,
+    scan_root: &'a Path,
+    projects: &'a HashMap<PathBuf, ProjectEntry>,
     project_parents: &'a HashSet<PathBuf>,
-    discovered:      &'a HashSet<PathBuf>,
+    discovered: &'a HashSet<PathBuf>,
 }
 
 fn handle_event(
@@ -302,7 +302,7 @@ fn probe_new_projects(
             discovered.remove(&dir);
             let display_path = project::home_relative_path(&dir);
             let _ = bg_tx.send(BackgroundMsg::DiskUsage {
-                path:  display_path,
+                path: display_path,
                 bytes: 0,
             });
             continue;
@@ -324,7 +324,7 @@ fn probe_new_projects(
             });
             let tx = bg_tx.clone();
             let task_ctx = scan::FetchContext {
-                client:     client.clone(),
+                client: client.clone(),
                 repo_cache: scan::new_repo_cache(),
             };
             let path = project.path.clone();
@@ -551,9 +551,9 @@ mod tests {
         (
             abs_path.to_path_buf(),
             ProjectEntry {
-                project_path:         project_path.to_string(),
-                abs_path:             abs_path.to_path_buf(),
-                git_tracking:         GitTracking::Untracked,
+                project_path: project_path.to_string(),
+                abs_path: abs_path.to_path_buf(),
+                git_tracking: GitTracking::Untracked,
                 port_report_dir_path: port_report::project_dir(abs_path),
             },
         )
@@ -568,10 +568,10 @@ mod tests {
         let project_parents = HashSet::from([PathBuf::from("/home/user/rust")]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            scan_root:       &scan_root,
-            projects:        &projects,
+            scan_root: &scan_root,
+            projects: &projects,
             project_parents: &project_parents,
-            discovered:      &discovered,
+            discovered: &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -606,10 +606,10 @@ mod tests {
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
         let ctx = EventContext {
-            scan_root:       &scan_root,
-            projects:        &projects,
+            scan_root: &scan_root,
+            projects: &projects,
             project_parents: &project_parents,
-            discovered:      &discovered,
+            discovered: &discovered,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -652,10 +652,10 @@ mod tests {
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
         let ctx = EventContext {
-            scan_root:       &scan_root,
-            projects:        &projects,
+            scan_root: &scan_root,
+            projects: &projects,
             project_parents: &project_parents,
-            discovered:      &discovered,
+            discovered: &discovered,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -700,10 +700,10 @@ mod tests {
         let project_parents = HashSet::from([scan_root.clone()]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            scan_root:       &scan_root,
-            projects:        &projects,
+            scan_root: &scan_root,
+            projects: &projects,
             project_parents: &project_parents,
-            discovered:      &discovered,
+            discovered: &discovered,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_new = HashMap::new();
@@ -734,10 +734,10 @@ mod tests {
         let project_parents = HashSet::from([scan_root.clone()]);
         let discovered = HashSet::from([project_dir.clone()]);
         let ctx = EventContext {
-            scan_root:       &scan_root,
-            projects:        &projects,
+            scan_root: &scan_root,
+            projects: &projects,
             project_parents: &project_parents,
-            discovered:      &discovered,
+            discovered: &discovered,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_new = HashMap::new();
@@ -772,10 +772,10 @@ mod tests {
         let project_parents = HashSet::new(); // empty — early scan
         let discovered = HashSet::new();
         let ctx = EventContext {
-            scan_root:       &scan_root,
-            projects:        &projects,
+            scan_root: &scan_root,
+            projects: &projects,
             project_parents: &project_parents,
-            discovered:      &discovered,
+            discovered: &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -857,9 +857,9 @@ mod tests {
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path:         "~/my_project".to_string(),
-                abs_path:             project_dir.clone(),
-                git_tracking:         GitTracking::Tracked,
+                project_path: "~/my_project".to_string(),
+                abs_path: project_dir.clone(),
+                git_tracking: GitTracking::Tracked,
                 port_report_dir_path: port_report::project_dir(&project_dir),
             },
         );
@@ -897,9 +897,9 @@ mod tests {
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path:         "~/no_git".to_string(),
-                abs_path:             project_dir.clone(),
-                git_tracking:         GitTracking::Untracked,
+                project_path: "~/no_git".to_string(),
+                abs_path: project_dir.clone(),
+                git_tracking: GitTracking::Untracked,
                 port_report_dir_path: port_report::project_dir(&project_dir),
             },
         );

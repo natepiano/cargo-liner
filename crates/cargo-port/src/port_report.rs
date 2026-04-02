@@ -26,7 +26,7 @@ use super::tui::Icon;
 use super::tui::LINT_SPINNER;
 
 /// Lint status derived from the last line of `port-report.log`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LintStatus {
     Running(DateTime<FixedOffset>),
     Passed(DateTime<FixedOffset>),
@@ -64,6 +64,43 @@ impl LintStatus {
             Self::Stale | Self::NoLog => None,
         }
     }
+
+    const fn severity_rank(&self) -> u8 {
+        match self {
+            Self::NoLog => 0,
+            Self::Passed(_) => 1,
+            Self::Stale => 2,
+            Self::Running(_) => 3,
+            Self::Failed(_) => 4,
+        }
+    }
+
+    pub fn combine(self, other: Self) -> Self {
+        use std::cmp::Ordering;
+
+        match self.severity_rank().cmp(&other.severity_rank()) {
+            Ordering::Greater => self,
+            Ordering::Less => other,
+            Ordering::Equal => match (self, other) {
+                (Self::Passed(lhs), Self::Passed(rhs)) => Self::Passed(lhs.max(rhs)),
+                (Self::Running(lhs), Self::Running(rhs)) => Self::Running(lhs.max(rhs)),
+                (Self::Failed(lhs), Self::Failed(rhs)) => Self::Failed(lhs.max(rhs)),
+                (Self::Stale, Self::Stale) => Self::Stale,
+                (Self::NoLog, Self::NoLog) => Self::NoLog,
+                (lhs, _) => lhs,
+            },
+        }
+    }
+
+    pub fn aggregate<I>(statuses: I) -> Self
+    where
+        I: IntoIterator<Item = Self>,
+    {
+        statuses
+            .into_iter()
+            .reduce(Self::combine)
+            .unwrap_or(Self::NoLog)
+    }
 }
 
 /// Canonical cache directory for all per-project lint status files.
@@ -85,10 +122,14 @@ pub fn project_key(project_root: &Path) -> String {
 }
 
 /// Cache-rooted directory for the project's lint watcher protocol files.
-pub fn project_dir(project_root: &Path) -> PathBuf { cache_root().join(project_key(project_root)) }
+pub fn project_dir(project_root: &Path) -> PathBuf {
+    cache_root().join(project_key(project_root))
+}
 
 /// Cache-rooted lint status file for the project.
-pub fn log_path(project_root: &Path) -> PathBuf { project_dir(project_root).join(PORT_REPORT_LOG) }
+pub fn log_path(project_root: &Path) -> PathBuf {
+    project_dir(project_root).join(PORT_REPORT_LOG)
+}
 
 /// Read the last line of the project's lint status log and parse it.
 pub fn read_status(project_root: &Path) -> LintStatus {
@@ -201,6 +242,26 @@ mod tests {
     fn parse_unknown_status() {
         let line = "2026-03-30T14:22:18-05:00\trunning";
         assert!(matches!(parse_line(line), LintStatus::NoLog));
+    }
+
+    #[test]
+    fn aggregate_prefers_highest_severity() {
+        let ts = DateTime::parse_from_rfc3339("2026-03-30T14:22:18-05:00").expect("timestamp");
+        let status = LintStatus::aggregate([
+            LintStatus::Passed(ts),
+            LintStatus::Stale,
+            LintStatus::Running(ts),
+            LintStatus::Failed(ts),
+        ]);
+        assert!(matches!(status, LintStatus::Failed(_)));
+    }
+
+    #[test]
+    fn aggregate_keeps_latest_timestamp_within_variant() {
+        let older = DateTime::parse_from_rfc3339("2026-03-30T14:22:18-05:00").expect("older");
+        let newer = DateTime::parse_from_rfc3339("2026-03-30T15:22:18-05:00").expect("newer");
+        let status = LintStatus::aggregate([LintStatus::Passed(older), LintStatus::Passed(newer)]);
+        assert_eq!(status, LintStatus::Passed(newer));
     }
 
     // ── read_last_line ──────────────────────────────────────────────

@@ -54,8 +54,8 @@ struct GqlCheckRunConnection {
 /// dispatch async work via `block_on`.
 #[derive(Clone)]
 pub struct HttpClient {
-    client:            reqwest::Client,
-    github_token:      Option<String>,
+    client: reqwest::Client,
+    github_token: Option<String>,
     pub(crate) handle: tokio::runtime::Handle,
 }
 
@@ -257,7 +257,9 @@ impl HttpClient {
     }
 
     /// Lightweight connectivity probe (sync wrapper).
-    pub fn check_online(&self) -> bool { self.handle.block_on(self.check_online_async()) }
+    pub fn check_online(&self) -> bool {
+        self.handle.block_on(self.check_online_async())
+    }
 
     /// Fetch crates.io info (sync wrapper).
     pub fn fetch_crates_io_info(&self, crate_name: &str) -> Option<CratesIoInfo> {

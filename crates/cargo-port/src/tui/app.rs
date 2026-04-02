@@ -88,30 +88,30 @@ pub(super) enum ConfirmAction {
 pub(super) use super::columns::ResolvedWidths;
 
 struct TreeBuildResult {
-    build_id:     u64,
-    nodes:        Vec<ProjectNode>,
+    build_id: u64,
+    nodes: Vec<ProjectNode>,
     flat_entries: Vec<FlatEntry>,
 }
 
 struct FitWidthsBuildResult {
     build_id: u64,
-    widths:   ResolvedWidths,
+    widths: ResolvedWidths,
 }
 
 struct DiskCacheBuildResult {
-    build_id:     u64,
-    root_sorted:  Vec<u64>,
+    build_id: u64,
+    root_sorted: Vec<u64>,
     child_sorted: HashMap<usize, Vec<u64>>,
 }
 
 #[derive(Default)]
 pub(super) struct PollBackgroundStats {
-    pub bg_msgs:       usize,
-    pub ci_msgs:       usize,
-    pub example_msgs:  usize,
-    pub tree_results:  usize,
-    pub fit_results:   usize,
-    pub disk_results:  usize,
+    pub bg_msgs: usize,
+    pub ci_msgs: usize,
+    pub example_msgs: usize,
+    pub tree_results: usize,
+    pub fit_results: usize,
+    pub disk_results: usize,
     pub needs_rebuild: bool,
 }
 
@@ -122,32 +122,43 @@ pub(super) enum VisibleRow {
     Root { node_index: usize },
     /// A group header (e.g., "examples").
     GroupHeader {
-        node_index:  usize,
+        node_index: usize,
         group_index: usize,
     },
     /// An actual project member.
     Member {
-        node_index:   usize,
-        group_index:  usize,
+        node_index: usize,
+        group_index: usize,
         member_index: usize,
     },
     /// A worktree entry shown directly under the parent node.
     WorktreeEntry {
-        node_index:     usize,
+        node_index: usize,
         worktree_index: usize,
     },
     /// A group header inside an expanded worktree entry.
     WorktreeGroupHeader {
-        node_index:     usize,
+        node_index: usize,
         worktree_index: usize,
-        group_index:    usize,
+        group_index: usize,
     },
     /// A member inside an expanded worktree entry.
     WorktreeMember {
-        node_index:     usize,
+        node_index: usize,
         worktree_index: usize,
-        group_index:    usize,
-        member_index:   usize,
+        group_index: usize,
+        member_index: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum LintRollupKey {
+    Root {
+        node_index: usize,
+    },
+    Worktree {
+        node_index: usize,
+        worktree_index: usize,
     },
 }
 
@@ -159,10 +170,7 @@ pub(super) enum CiState {
     /// so the UI never flashes empty during pagination.
     Fetching { runs: Vec<CiRun>, count: u32 },
     /// Runs are available (possibly empty when the repo genuinely has no CI).
-    Loaded {
-        runs:      Vec<CiRun>,
-        exhausted: bool,
-    },
+    Loaded { runs: Vec<CiRun>, exhausted: bool },
 }
 
 impl CiState {
@@ -173,7 +181,9 @@ impl CiState {
         }
     }
 
-    pub const fn is_fetching(&self) -> bool { matches!(self, Self::Fetching { .. }) }
+    pub const fn is_fetching(&self) -> bool {
+        matches!(self, Self::Fetching { .. })
+    }
 
     pub const fn is_exhausted(&self) -> bool {
         matches!(
@@ -197,8 +207,8 @@ impl CiState {
 /// on `App` has advanced past the generation stored here.
 pub(super) struct DetailCache {
     generation: u64,
-    path:       String,
-    pub info:   DetailInfo,
+    selection: String,
+    pub info: DetailInfo,
 }
 
 #[allow(
@@ -206,67 +216,70 @@ pub(super) struct DetailCache {
     reason = "independent UI state toggles"
 )]
 pub(super) struct App {
-    pub scan_root:             PathBuf,
-    pub inline_dirs:           Vec<String>,
-    pub include_dirs:          Vec<String>,
-    pub http_client:           HttpClient,
-    pub ci_run_count:          u32,
-    pub include_non_rust:      NonRustInclusion,
-    pub editor:                String,
-    pub status_flash_millis:   u64,
-    pub all_projects:          Vec<RustProject>,
-    pub nodes:                 Vec<ProjectNode>,
-    pub flat_entries:          Vec<FlatEntry>,
-    pub disk_usage:            HashMap<String, u64>,
-    pub ci_state:              HashMap<String, CiState>,
-    pub lint_status:           HashMap<String, LintStatus>,
-    pub lint_enabled:          bool,
-    pub git_info:              HashMap<String, GitInfo>,
-    pub crates_versions:       HashMap<String, String>,
-    pub crates_downloads:      HashMap<String, u64>,
-    pub stars:                 HashMap<String, u64>,
-    pub repo_descriptions:     HashMap<String, String>,
-    pub bg_tx:                 mpsc::Sender<BackgroundMsg>,
-    pub bg_rx:                 Receiver<BackgroundMsg>,
-    pub fully_loaded:          HashSet<String>,
-    pub priority_fetch_path:   Option<String>,
-    pub invert_scroll:         ScrollDirection,
-    pub expanded:              HashSet<ExpandKey>,
-    pub list_state:            ListState,
-    pub searching:             bool,
-    pub search_query:          String,
-    pub filtered:              Vec<usize>,
-    pub show_settings:         bool,
-    pub settings_pane:         Pane,
-    pub settings_editing:      bool,
-    pub settings_edit_buf:     String,
-    pub scan_complete:         bool,
-    pub scan_log:              Vec<String>,
-    pub scan_log_state:        ListState,
-    pub focused_pane:          PaneId,
-    pub return_focus:          Option<PaneId>,
-    pub visited_panes:         HashSet<PaneId>,
-    pub package_pane:          Pane,
-    pub git_pane:              Pane,
-    pub targets_pane:          Pane,
-    pub ci_pane:               Pane,
-    pub pending_example_run:   Option<PendingExampleRun>,
-    pub pending_ci_fetch:      Option<PendingCiFetch>,
-    pub pending_clean:         Option<String>,
-    pub confirm:               Option<ConfirmAction>,
-    pub animation_started:     Instant,
-    pub ci_fetch_tx:           mpsc::Sender<CiFetchMsg>,
-    pub ci_fetch_rx:           mpsc::Receiver<CiFetchMsg>,
-    pub example_running:       Option<String>,
-    pub example_child:         Arc<Mutex<Option<u32>>>,
-    pub example_output:        Vec<String>,
-    pub example_tx:            mpsc::Sender<ExampleMsg>,
-    pub example_rx:            mpsc::Receiver<ExampleMsg>,
-    pub last_selected_path:    Option<String>,
+    pub scan_root: PathBuf,
+    pub inline_dirs: Vec<String>,
+    pub include_dirs: Vec<String>,
+    pub http_client: HttpClient,
+    pub ci_run_count: u32,
+    pub include_non_rust: NonRustInclusion,
+    pub editor: String,
+    pub status_flash_millis: u64,
+    pub all_projects: Vec<RustProject>,
+    pub nodes: Vec<ProjectNode>,
+    pub flat_entries: Vec<FlatEntry>,
+    pub disk_usage: HashMap<String, u64>,
+    pub ci_state: HashMap<String, CiState>,
+    pub lint_status: HashMap<String, LintStatus>,
+    lint_rollup_status: HashMap<LintRollupKey, LintStatus>,
+    lint_rollup_paths: HashMap<LintRollupKey, Vec<String>>,
+    lint_rollup_keys_by_path: HashMap<String, Vec<LintRollupKey>>,
+    pub lint_enabled: bool,
+    pub git_info: HashMap<String, GitInfo>,
+    pub crates_versions: HashMap<String, String>,
+    pub crates_downloads: HashMap<String, u64>,
+    pub stars: HashMap<String, u64>,
+    pub repo_descriptions: HashMap<String, String>,
+    pub bg_tx: mpsc::Sender<BackgroundMsg>,
+    pub bg_rx: Receiver<BackgroundMsg>,
+    pub fully_loaded: HashSet<String>,
+    pub priority_fetch_path: Option<String>,
+    pub invert_scroll: ScrollDirection,
+    pub expanded: HashSet<ExpandKey>,
+    pub list_state: ListState,
+    pub searching: bool,
+    pub search_query: String,
+    pub filtered: Vec<usize>,
+    pub show_settings: bool,
+    pub settings_pane: Pane,
+    pub settings_editing: bool,
+    pub settings_edit_buf: String,
+    pub scan_complete: bool,
+    pub scan_log: Vec<String>,
+    pub scan_log_state: ListState,
+    pub focused_pane: PaneId,
+    pub return_focus: Option<PaneId>,
+    pub visited_panes: HashSet<PaneId>,
+    pub package_pane: Pane,
+    pub git_pane: Pane,
+    pub targets_pane: Pane,
+    pub ci_pane: Pane,
+    pub pending_example_run: Option<PendingExampleRun>,
+    pub pending_ci_fetch: Option<PendingCiFetch>,
+    pub pending_clean: Option<String>,
+    pub confirm: Option<ConfirmAction>,
+    pub animation_started: Instant,
+    pub ci_fetch_tx: mpsc::Sender<CiFetchMsg>,
+    pub ci_fetch_rx: mpsc::Receiver<CiFetchMsg>,
+    pub example_running: Option<String>,
+    pub example_child: Arc<Mutex<Option<u32>>>,
+    pub example_output: Vec<String>,
+    pub example_tx: mpsc::Sender<ExampleMsg>,
+    pub example_rx: mpsc::Receiver<ExampleMsg>,
+    pub last_selected_path: Option<String>,
     pub selected_project_path: Option<String>,
-    pub terminal_dirty:        bool,
-    pub should_quit:           bool,
-    pub should_restart:        bool,
+    pub terminal_dirty: bool,
+    pub should_quit: bool,
+    pub should_restart: bool,
 
     // Disk watcher
     pub watch_tx: mpsc::Sender<WatchRequest>,
@@ -278,40 +291,40 @@ pub(super) struct App {
     pub deleted_projects: HashSet<String>,
 
     // Universal finder
-    pub show_finder:       bool,
-    pub finder_query:      String,
-    pub finder_results:    Vec<usize>,
-    pub finder_total:      usize,
-    pub finder_pane:       Pane,
-    pub finder_index:      Vec<FinderItem>,
+    pub show_finder: bool,
+    pub finder_query: String,
+    pub finder_results: Vec<usize>,
+    pub finder_total: usize,
+    pub finder_pane: Pane,
+    pub finder_index: Vec<FinderItem>,
     pub finder_col_widths: [usize; FINDER_COLUMN_COUNT],
-    pub finder_dirty:      bool,
+    pub finder_dirty: bool,
 
     // Caches for per-frame hot paths
-    pub cached_visible_rows:      Vec<VisibleRow>,
-    pub rows_dirty:               bool,
-    pub cached_root_sorted:       Vec<u64>,
-    pub cached_child_sorted:      HashMap<usize, Vec<u64>>,
-    pub disk_cache_dirty:         bool,
-    pub cached_fit_widths:        ResolvedWidths,
-    fit_widths_dirty:             bool,
-    tree_build_tx:                mpsc::Sender<TreeBuildResult>,
-    tree_build_rx:                Receiver<TreeBuildResult>,
-    tree_build_active:            Option<u64>,
-    tree_build_latest:            u64,
-    fit_build_tx:                 mpsc::Sender<FitWidthsBuildResult>,
-    fit_build_rx:                 Receiver<FitWidthsBuildResult>,
-    fit_build_active:             Option<u64>,
-    fit_build_latest:             u64,
-    disk_build_tx:                mpsc::Sender<DiskCacheBuildResult>,
-    disk_build_rx:                Receiver<DiskCacheBuildResult>,
-    disk_build_active:            Option<u64>,
-    disk_build_latest:            u64,
-    pub(super) data_generation:   u64,
+    pub cached_visible_rows: Vec<VisibleRow>,
+    pub rows_dirty: bool,
+    pub cached_root_sorted: Vec<u64>,
+    pub cached_child_sorted: HashMap<usize, Vec<u64>>,
+    pub disk_cache_dirty: bool,
+    pub cached_fit_widths: ResolvedWidths,
+    fit_widths_dirty: bool,
+    tree_build_tx: mpsc::Sender<TreeBuildResult>,
+    tree_build_rx: Receiver<TreeBuildResult>,
+    tree_build_active: Option<u64>,
+    tree_build_latest: u64,
+    fit_build_tx: mpsc::Sender<FitWidthsBuildResult>,
+    fit_build_rx: Receiver<FitWidthsBuildResult>,
+    fit_build_active: Option<u64>,
+    fit_build_latest: u64,
+    disk_build_tx: mpsc::Sender<DiskCacheBuildResult>,
+    disk_build_rx: Receiver<DiskCacheBuildResult>,
+    disk_build_active: Option<u64>,
+    disk_build_latest: u64,
+    pub(super) data_generation: u64,
     pub(super) detail_generation: u64,
-    pub(super) cached_detail:     Option<DetailCache>,
+    pub(super) cached_detail: Option<DetailCache>,
     pub(super) selection_changed: bool,
-    pub(super) layout_cache:      LayoutCache,
+    pub(super) layout_cache: LayoutCache,
 
     /// Transient message shown in the status bar, auto-cleared after a timeout.
     pub(super) status_flash: Option<(String, std::time::Instant)>,
@@ -327,21 +340,21 @@ fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> V
                 if group.name.is_empty() {
                     for (mi, _) in group.members.iter().enumerate() {
                         rows.push(VisibleRow::Member {
-                            node_index:   ni,
-                            group_index:  gi,
+                            node_index: ni,
+                            group_index: gi,
                             member_index: mi,
                         });
                     }
                 } else {
                     rows.push(VisibleRow::GroupHeader {
-                        node_index:  ni,
+                        node_index: ni,
                         group_index: gi,
                     });
                     if expanded.contains(&ExpandKey::Group(ni, gi)) {
                         for (mi, _) in group.members.iter().enumerate() {
                             rows.push(VisibleRow::Member {
-                                node_index:   ni,
-                                group_index:  gi,
+                                node_index: ni,
+                                group_index: gi,
                                 member_index: mi,
                             });
                         }
@@ -351,7 +364,7 @@ fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> V
 
             for (wi, wt) in node.worktrees.iter().enumerate() {
                 rows.push(VisibleRow::WorktreeEntry {
-                    node_index:     ni,
+                    node_index: ni,
                     worktree_index: wi,
                 });
                 if wt.has_members() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
@@ -359,25 +372,25 @@ fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> V
                         if group.name.is_empty() {
                             for (mi, _) in group.members.iter().enumerate() {
                                 rows.push(VisibleRow::WorktreeMember {
-                                    node_index:     ni,
+                                    node_index: ni,
                                     worktree_index: wi,
-                                    group_index:    gi,
-                                    member_index:   mi,
+                                    group_index: gi,
+                                    member_index: mi,
                                 });
                             }
                         } else {
                             rows.push(VisibleRow::WorktreeGroupHeader {
-                                node_index:     ni,
+                                node_index: ni,
                                 worktree_index: wi,
-                                group_index:    gi,
+                                group_index: gi,
                             });
                             if expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
                                 for (mi, _) in group.members.iter().enumerate() {
                                     rows.push(VisibleRow::WorktreeMember {
-                                        node_index:     ni,
+                                        node_index: ni,
                                         worktree_index: wi,
-                                        group_index:    gi,
-                                        member_index:   mi,
+                                        group_index: gi,
+                                        member_index: mi,
                                     });
                                 }
                             }
@@ -612,7 +625,9 @@ impl App {
         }
     }
 
-    pub fn is_focused(&self, pane: PaneId) -> bool { self.focused_pane == pane }
+    pub fn is_focused(&self, pane: PaneId) -> bool {
+        self.focused_pane == pane
+    }
 
     pub fn base_focus(&self) -> PaneId {
         if self.focused_pane.is_overlay() {
@@ -707,7 +722,9 @@ impl App {
         self.visited_panes.remove(&PaneId::CiRuns);
     }
 
-    pub fn remembers_selection(&self, pane: PaneId) -> bool { self.visited_panes.contains(&pane) }
+    pub fn remembers_selection(&self, pane: PaneId) -> bool {
+        self.visited_panes.contains(&pane)
+    }
 
     pub fn sync_selected_project(&mut self) {
         self.ensure_visible_rows_cached();
@@ -772,7 +789,7 @@ impl App {
         let (tree_build_tx, tree_build_rx) = mpsc::channel();
         let (fit_build_tx, fit_build_rx) = mpsc::channel();
         let (disk_build_tx, disk_build_rx) = mpsc::channel();
-        Self {
+        let mut app = Self {
             scan_root,
             inline_dirs,
             include_dirs,
@@ -792,6 +809,9 @@ impl App {
             disk_usage: HashMap::new(),
             ci_state: HashMap::new(),
             lint_status: HashMap::new(),
+            lint_rollup_status: HashMap::new(),
+            lint_rollup_paths: HashMap::new(),
+            lint_rollup_keys_by_path: HashMap::new(),
             lint_enabled: cfg.lint.enabled,
             git_info: HashMap::new(),
             crates_versions: HashMap::new(),
@@ -880,7 +900,9 @@ impl App {
             selection_changed: false,
             layout_cache: LayoutCache::default(),
             status_flash: None,
-        }
+        };
+        app.rebuild_lint_rollups();
+        app
     }
 
     fn apply_tree_build(&mut self, nodes: Vec<ProjectNode>, flat_entries: Vec<FlatEntry>) {
@@ -894,6 +916,7 @@ impl App {
         self.rows_dirty = true;
         self.disk_cache_dirty = true;
         self.fit_widths_dirty = true;
+        self.rebuild_lint_rollups();
         self.data_generation += 1;
         self.detail_generation += 1;
 
@@ -916,7 +939,7 @@ impl App {
                     self.ci_state
                         .entry(member.path.clone())
                         .or_insert_with(|| CiState::Loaded {
-                            runs:      runs.clone(),
+                            runs: runs.clone(),
                             exhausted: false,
                         });
                 }
@@ -944,7 +967,9 @@ impl App {
         self.sync_selected_project();
     }
 
-    pub fn rebuild_tree(&mut self) { self.request_tree_rebuild(); }
+    pub fn rebuild_tree(&mut self) {
+        self.request_tree_rebuild();
+    }
 
     fn request_tree_rebuild(&mut self) {
         self.tree_build_latest = self.tree_build_latest.wrapping_add(1);
@@ -1401,7 +1426,12 @@ impl App {
                 }
             },
             BackgroundMsg::LintStatus { path, status } => {
-                self.lint_status.insert(path, status);
+                if matches!(status, LintStatus::NoLog) {
+                    self.lint_status.remove(&path);
+                } else {
+                    self.lint_status.insert(path.clone(), status);
+                }
+                self.update_lint_rollups_for_path(&path);
             },
             BackgroundMsg::ScanComplete => {
                 self.scan_complete = true;
@@ -1420,16 +1450,13 @@ impl App {
         let Some(project) = self.selected_project() else {
             return false;
         };
-        if project.path == path {
-            return true;
+        match self.selected_lint_rollup_key() {
+            Some(key) => self
+                .lint_rollup_paths
+                .get(&key)
+                .is_some_and(|paths| paths.iter().any(|candidate| candidate == path)),
+            None => project.path == path,
         }
-        let Some(node) = self.selected_node() else {
-            return false;
-        };
-        if node.project.path != project.path || node.worktrees.is_empty() {
-            return false;
-        }
-        node.worktrees.iter().any(|wt| wt.project.path == path)
     }
 
     /// Insert CI runs from the initial scan, propagating to workspace members.
@@ -1554,10 +1581,14 @@ impl App {
     }
 
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
-    pub fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
+    pub fn visible_rows(&self) -> &[VisibleRow] {
+        &self.cached_visible_rows
+    }
 
     /// Keep fit-to-content widths rebuilding in the background, never inline on the UI thread.
-    pub fn ensure_fit_widths_cached(&mut self) { self.request_fit_widths_build(); }
+    pub fn ensure_fit_widths_cached(&mut self) {
+        self.request_fit_widths_build();
+    }
 
     /// Iterate all group members in a node, including those nested under worktree entries.
     fn all_group_members(node: &ProjectNode) -> impl Iterator<Item = &RustProject> {
@@ -1589,39 +1620,81 @@ impl App {
     }
 
     /// Keep disk sort caches rebuilding in the background, never inline on the UI thread.
-    pub fn ensure_disk_cache(&mut self) { self.request_disk_cache_build(); }
+    pub fn ensure_disk_cache(&mut self) {
+        self.request_disk_cache_build();
+    }
 
     /// Ensure the cached `DetailInfo` is up to date for the selected project.
     /// The cache is valid only when the generation AND path both match.
     pub fn ensure_detail_cached(&mut self) {
-        let current_path = self
-            .selected_project()
-            .map(|p| p.path.clone())
-            .unwrap_or_default();
+        let current_selection = self.current_detail_selection_key();
 
         if let Some(ref cache) = self.cached_detail
             && cache.generation == self.detail_generation
-            && cache.path == current_path
+            && cache.selection == current_selection
         {
             return;
         }
 
         self.cached_detail = self.selected_project().map(|p| DetailCache {
             generation: self.detail_generation,
-            path:       current_path,
-            info:       super::detail::build_detail_info(self, p),
+            selection: current_selection,
+            info: super::detail::build_detail_info(self, p),
         });
     }
 
-    /// Returns the `ProjectNode` when a root row is selected (not a member or worktree).
-    pub fn selected_node(&self) -> Option<&ProjectNode> {
+    fn selected_row(&self) -> Option<VisibleRow> {
         if self.searching && !self.search_query.is_empty() {
             return None;
         }
         let rows = self.visible_rows();
         let selected = self.list_state.selected()?;
-        match rows.get(selected)? {
-            VisibleRow::Root { node_index } => self.nodes.get(*node_index),
+        rows.get(selected).copied()
+    }
+
+    fn current_detail_selection_key(&self) -> String {
+        if self.searching && !self.search_query.is_empty() {
+            return self
+                .selected_project()
+                .map(|project| format!("search:{}", project.path))
+                .unwrap_or_default();
+        }
+        match self.selected_row() {
+            Some(VisibleRow::Root { node_index }) => format!("root:{node_index}"),
+            Some(VisibleRow::GroupHeader {
+                node_index,
+                group_index,
+            }) => format!("group:{node_index}:{group_index}"),
+            Some(VisibleRow::Member {
+                node_index,
+                group_index,
+                member_index,
+            }) => format!("member:{node_index}:{group_index}:{member_index}"),
+            Some(VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
+            }) => format!("worktree:{node_index}:{worktree_index}"),
+            Some(VisibleRow::WorktreeGroupHeader {
+                node_index,
+                worktree_index,
+                group_index,
+            }) => format!("worktree-group:{node_index}:{worktree_index}:{group_index}"),
+            Some(VisibleRow::WorktreeMember {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+            }) => format!(
+                "worktree-member:{node_index}:{worktree_index}:{group_index}:{member_index}"
+            ),
+            None => String::new(),
+        }
+    }
+
+    /// Returns the `ProjectNode` when a root row is selected (not a member or worktree).
+    pub fn selected_node(&self) -> Option<&ProjectNode> {
+        match self.selected_row()? {
+            VisibleRow::Root { node_index } => self.nodes.get(node_index),
             _ => None,
         }
     }
@@ -1803,7 +1876,7 @@ impl App {
                     self.collapse_to(
                         &ExpandKey::Group(ni, gi),
                         VisibleRow::GroupHeader {
-                            node_index:  ni,
+                            node_index: ni,
                             group_index: gi,
                         },
                     );
@@ -1826,7 +1899,7 @@ impl App {
                     self.collapse_to(
                         &ExpandKey::Worktree(ni, wi),
                         VisibleRow::WorktreeEntry {
-                            node_index:     ni,
+                            node_index: ni,
                             worktree_index: wi,
                         },
                     );
@@ -1842,7 +1915,7 @@ impl App {
                     self.collapse_to(
                         &ExpandKey::Worktree(ni, wi),
                         VisibleRow::WorktreeEntry {
-                            node_index:     ni,
+                            node_index: ni,
                             worktree_index: wi,
                         },
                     );
@@ -1850,9 +1923,9 @@ impl App {
                     self.collapse_to(
                         &ExpandKey::WorktreeGroup(ni, wi, gi),
                         VisibleRow::WorktreeGroupHeader {
-                            node_index:     ni,
+                            node_index: ni,
                             worktree_index: wi,
-                            group_index:    gi,
+                            group_index: gi,
                         },
                     );
                 }
@@ -2113,13 +2186,129 @@ impl App {
         None
     }
 
-    pub fn is_deleted(&self, path: &str) -> bool { self.deleted_projects.contains(path) }
+    pub fn is_deleted(&self, path: &str) -> bool {
+        self.deleted_projects.contains(path)
+    }
 
     pub fn live_worktree_count(&self, node: &ProjectNode) -> usize {
         node.worktrees
             .iter()
             .filter(|wt| !self.is_deleted(&wt.project.path))
             .count()
+    }
+
+    fn rebuild_lint_rollups(&mut self) {
+        self.lint_rollup_status.clear();
+        self.lint_rollup_paths.clear();
+        self.lint_rollup_keys_by_path.clear();
+
+        let mut registrations: Vec<(LintRollupKey, Vec<String>)> = Vec::new();
+        for (node_index, node) in self.nodes.iter().enumerate() {
+            registrations.push((
+                LintRollupKey::Root { node_index },
+                Self::lint_paths_for_node(node),
+            ));
+            for (worktree_index, worktree) in node.worktrees.iter().enumerate() {
+                registrations.push((
+                    LintRollupKey::Worktree {
+                        node_index,
+                        worktree_index,
+                    },
+                    Self::lint_paths_for_node(worktree),
+                ));
+            }
+        }
+
+        for (key, paths) in registrations {
+            self.register_lint_rollup(key, paths);
+        }
+
+        let keys: Vec<LintRollupKey> = self.lint_rollup_paths.keys().copied().collect();
+        for key in keys {
+            self.recompute_lint_rollup(key);
+        }
+    }
+
+    fn register_lint_rollup(&mut self, key: LintRollupKey, mut paths: Vec<String>) {
+        let mut seen = HashSet::new();
+        paths.retain(|path| seen.insert(path.clone()));
+        for path in &paths {
+            self.lint_rollup_keys_by_path
+                .entry(path.clone())
+                .or_default()
+                .push(key);
+        }
+        self.lint_rollup_paths.insert(key, paths);
+    }
+
+    fn update_lint_rollups_for_path(&mut self, path: &str) {
+        let Some(keys) = self.lint_rollup_keys_by_path.get(path).cloned() else {
+            return;
+        };
+        for key in keys {
+            self.recompute_lint_rollup(key);
+        }
+    }
+
+    fn recompute_lint_rollup(&mut self, key: LintRollupKey) {
+        let Some(paths) = self.lint_rollup_paths.get(&key) else {
+            self.lint_rollup_status.remove(&key);
+            return;
+        };
+        let status = LintStatus::aggregate(
+            paths
+                .iter()
+                .filter_map(|path| self.lint_status.get(path).cloned()),
+        );
+        if matches!(status, LintStatus::NoLog) {
+            self.lint_rollup_status.remove(&key);
+        } else {
+            self.lint_rollup_status.insert(key, status);
+        }
+    }
+
+    fn lint_paths_for_node(node: &ProjectNode) -> Vec<String> {
+        let mut paths = vec![node.project.path.clone()];
+        for group in &node.groups {
+            for member in &group.members {
+                paths.push(member.path.clone());
+            }
+        }
+        for worktree in &node.worktrees {
+            paths.extend(Self::lint_paths_for_node(worktree));
+        }
+        paths
+    }
+
+    fn selected_lint_rollup_key(&self) -> Option<LintRollupKey> {
+        match self.selected_row()? {
+            VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
+                Some(LintRollupKey::Root { node_index })
+            },
+            VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
+            }
+            | VisibleRow::WorktreeGroupHeader {
+                node_index,
+                worktree_index,
+                ..
+            } => Some(LintRollupKey::Worktree {
+                node_index,
+                worktree_index,
+            }),
+            VisibleRow::Member { .. } | VisibleRow::WorktreeMember { .. } => None,
+        }
+    }
+
+    fn lint_status_for_rollup_key(&self, key: LintRollupKey) -> Option<&LintStatus> {
+        self.lint_rollup_status.get(&key)
+    }
+
+    pub fn selected_lint_status<'a>(&'a self, project: &RustProject) -> Option<&'a LintStatus> {
+        self.selected_lint_rollup_key()
+            .and_then(|key| self.lint_status_for_rollup_key(key))
+            .or_else(|| self.lint_status.get(&project.path))
     }
 
     pub fn live_node_count(&self) -> usize {
@@ -2221,7 +2410,9 @@ impl App {
         self.ci_state.get(&project.path)
     }
 
-    pub fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
+    pub fn animation_elapsed(&self) -> Duration {
+        self.animation_started.elapsed()
+    }
 
     /// Lint icon frame for the current animation state, or a blank space if lint is
     /// disabled or no log exists.
@@ -2232,6 +2423,34 @@ impl App {
             return LINT_NO_LOG;
         }
         let Some(status) = self.lint_status.get(&project.path) else {
+            return LINT_NO_LOG;
+        };
+        status.icon().frame_at(self.animation_elapsed())
+    }
+
+    pub fn lint_icon_for_root(&self, node_index: usize) -> &'static str {
+        use crate::constants::LINT_NO_LOG;
+
+        if !self.lint_enabled {
+            return LINT_NO_LOG;
+        }
+        let Some(status) = self.lint_status_for_rollup_key(LintRollupKey::Root { node_index })
+        else {
+            return LINT_NO_LOG;
+        };
+        status.icon().frame_at(self.animation_elapsed())
+    }
+
+    pub fn lint_icon_for_worktree(&self, node_index: usize, worktree_index: usize) -> &'static str {
+        use crate::constants::LINT_NO_LOG;
+
+        if !self.lint_enabled {
+            return LINT_NO_LOG;
+        }
+        let Some(status) = self.lint_status_for_rollup_key(LintRollupKey::Worktree {
+            node_index,
+            worktree_index,
+        }) else {
             return LINT_NO_LOG;
         };
         status.icon().frame_at(self.animation_elapsed())
@@ -2309,6 +2528,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use chrono::DateTime;
+
     use std::collections::HashSet;
     use std::sync::OnceLock;
     use std::sync::mpsc;
@@ -2316,6 +2537,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::http::HttpClient;
+    use crate::port_report::LintStatus;
     use crate::project::ExampleGroup;
     use crate::project::ProjectLanguage;
     use crate::project::RustProject;
@@ -2333,19 +2555,19 @@ mod tests {
 
     fn make_project(name: Option<&str>, path: &str) -> RustProject {
         RustProject {
-            path:                      path.to_string(),
-            abs_path:                  path.to_string(),
-            name:                      name.map(String::from),
-            version:                   None,
-            description:               None,
-            worktree_name:             None,
+            path: path.to_string(),
+            abs_path: path.to_string(),
+            name: name.map(String::from),
+            version: None,
+            description: None,
+            worktree_name: None,
             worktree_primary_abs_path: None,
-            is_workspace:              WorkspaceStatus::Standalone,
-            types:                     Vec::new(),
-            examples:                  Vec::new(),
-            benches:                   Vec::new(),
-            test_count:                0,
-            is_rust:                   ProjectLanguage::Rust,
+            is_workspace: WorkspaceStatus::Standalone,
+            types: Vec::new(),
+            examples: Vec::new(),
+            benches: Vec::new(),
+            test_count: 0,
+            is_rust: ProjectLanguage::Rust,
         }
     }
 
@@ -2375,6 +2597,16 @@ mod tests {
         app
     }
 
+    fn apply_nodes(app: &mut App, nodes: Vec<ProjectNode>) {
+        let flat_entries = crate::scan::build_flat_entries(&nodes);
+        app.apply_tree_build(nodes, flat_entries);
+        app.ensure_visible_rows_cached();
+    }
+
+    fn parse_ts(ts: &str) -> DateTime<chrono::FixedOffset> {
+        DateTime::parse_from_rfc3339(ts).unwrap_or_else(|_| std::process::abort())
+    }
+
     #[test]
     fn visible_rows_workspace_with_worktrees() {
         // A workspace whose groups have been moved to worktree entries
@@ -2386,7 +2618,7 @@ mod tests {
         let mut wt0 = make_node(make_project(None, "~/ws"));
         wt0.project.worktree_name = Some("ws".to_string());
         wt0.groups = vec![MemberGroup {
-            name:    String::new(),
+            name: String::new(),
             members: vec![member_a.clone(), member_b.clone()],
         }];
 
@@ -2394,7 +2626,7 @@ mod tests {
         let mut wt1 = make_node(make_project(None, "~/ws_feat"));
         wt1.project.worktree_name = Some("ws_feat".to_string());
         wt1.groups = vec![MemberGroup {
-            name:    "crates".to_string(),
+            name: "crates".to_string(),
             members: vec![member_a, member_b],
         }];
 
@@ -2425,41 +2657,41 @@ mod tests {
         assert!(matches!(
             rows[1],
             VisibleRow::WorktreeEntry {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 0,
             }
         ));
         assert!(matches!(
             rows[2],
             VisibleRow::WorktreeMember {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 0,
-                group_index:    0,
-                member_index:   0,
+                group_index: 0,
+                member_index: 0,
             }
         ));
         assert!(matches!(
             rows[4],
             VisibleRow::WorktreeEntry {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 1,
             }
         ));
         assert!(matches!(
             rows[5],
             VisibleRow::WorktreeGroupHeader {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 1,
-                group_index:    0,
+                group_index: 0,
             }
         ));
         assert!(matches!(
             rows[7],
             VisibleRow::WorktreeMember {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 1,
-                group_index:    0,
-                member_index:   1,
+                group_index: 0,
+                member_index: 1,
             }
         ));
     }
@@ -2499,7 +2731,7 @@ mod tests {
         let member_b = make_project(Some("b"), "~/ws/b");
         let mut root = make_node(make_project(None, "~/ws"));
         root.groups = vec![MemberGroup {
-            name:    String::new(),
+            name: String::new(),
             members: vec![member_a, member_b],
         }];
 
@@ -2536,7 +2768,7 @@ mod tests {
         let mut project = make_project(Some("demo"), "~/demo");
         project.examples = vec![ExampleGroup {
             category: String::new(),
-            names:    vec!["example".to_string()],
+            names: vec!["example".to_string()],
         }];
 
         let mut app = make_app(vec![project.clone()]);
@@ -2544,16 +2776,16 @@ mod tests {
         app.git_info.insert(
             project.path,
             GitInfo {
-                origin:              GitOrigin::Clone,
-                branch:              None,
-                owner:               None,
-                url:                 Some("https://github.com/acme/demo".to_string()),
-                first_commit:        None,
-                last_commit:         None,
-                ahead_behind:        None,
-                default_branch:      None,
+                origin: GitOrigin::Clone,
+                branch: None,
+                owner: None,
+                url: Some("https://github.com/acme/demo".to_string()),
+                first_commit: None,
+                last_commit: None,
+                ahead_behind: None,
+                default_branch: None,
                 ahead_behind_origin: None,
-                ahead_behind_local:  None,
+                ahead_behind_local: None,
             },
         );
 
@@ -2637,5 +2869,119 @@ mod tests {
         assert!(!app.remembers_selection(PaneId::Targets));
         assert!(!app.remembers_selection(PaneId::CiRuns));
         assert_eq!(app.selected_project_path.as_deref(), Some("~/b"));
+    }
+
+    #[test]
+    fn lint_rollups_distinguish_root_from_primary_worktree() {
+        let mut root = make_node(make_project(None, "~/ws"));
+        let member_a = make_project(Some("a"), "~/ws/a");
+        let member_b = make_project(Some("b"), "~/ws_feat/b");
+
+        let mut primary = make_node(make_project(None, "~/ws"));
+        primary.project.worktree_name = Some("ws".to_string());
+        primary.groups = vec![MemberGroup {
+            name: String::new(),
+            members: vec![member_a],
+        }];
+
+        let mut feature = make_node(make_project(None, "~/ws_feat"));
+        feature.project.worktree_name = Some("ws_feat".to_string());
+        feature.groups = vec![MemberGroup {
+            name: String::new(),
+            members: vec![member_b],
+        }];
+
+        root.worktrees = vec![primary, feature];
+
+        let mut app = make_app(vec![root.project.clone()]);
+        app.lint_enabled = true;
+        apply_nodes(&mut app, vec![root]);
+        assert!(!app.handle_bg_msg(BackgroundMsg::LintStatus {
+            path: "~/ws/a".to_string(),
+            status: LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")),
+        }));
+        assert!(!app.handle_bg_msg(BackgroundMsg::LintStatus {
+            path: "~/ws_feat/b".to_string(),
+            status: LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
+        }));
+
+        assert!(matches!(
+            app.lint_status_for_rollup_key(LintRollupKey::Root { node_index: 0 }),
+            Some(LintStatus::Failed(_))
+        ));
+        assert!(matches!(
+            app.lint_status_for_rollup_key(LintRollupKey::Worktree {
+                node_index: 0,
+                worktree_index: 0,
+            }),
+            Some(LintStatus::Passed(_))
+        ));
+        assert!(matches!(
+            app.lint_status_for_rollup_key(LintRollupKey::Worktree {
+                node_index: 0,
+                worktree_index: 1,
+            }),
+            Some(LintStatus::Failed(_))
+        ));
+    }
+
+    #[test]
+    fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
+        let mut root = make_node(make_project(None, "~/ws"));
+        let member_a = make_project(Some("a"), "~/ws/a");
+        let member_b = make_project(Some("b"), "~/ws_feat/b");
+
+        let mut primary = make_node(make_project(None, "~/ws"));
+        primary.project.worktree_name = Some("ws".to_string());
+        primary.groups = vec![MemberGroup {
+            name: String::new(),
+            members: vec![member_a],
+        }];
+
+        let mut feature = make_node(make_project(None, "~/ws_feat"));
+        feature.project.worktree_name = Some("ws_feat".to_string());
+        feature.groups = vec![MemberGroup {
+            name: String::new(),
+            members: vec![member_b],
+        }];
+
+        root.worktrees = vec![primary, feature];
+
+        let mut app = make_app(vec![root.project.clone()]);
+        app.lint_enabled = true;
+        apply_nodes(&mut app, vec![root]);
+        app.expanded.insert(ExpandKey::Node(0));
+        app.rows_dirty = true;
+        app.ensure_visible_rows_cached();
+
+        app.lint_status.insert(
+            "~/ws/a".to_string(),
+            LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")),
+        );
+        app.lint_status.insert(
+            "~/ws_feat/b".to_string(),
+            LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
+        );
+        app.rebuild_lint_rollups();
+
+        app.list_state.select(Some(0));
+        app.sync_selected_project();
+        app.ensure_detail_cached();
+        assert_eq!(
+            app.cached_detail
+                .as_ref()
+                .map(|cache| cache.info.lint_label.as_str()),
+            Some("failed (15:22:18)")
+        );
+
+        app.list_state.select(Some(1));
+        app.sync_selected_project();
+        app.ensure_detail_cached();
+        assert_eq!(
+            app.cached_detail
+                .as_ref()
+                .map(|cache| cache.info.lint_label.as_str()),
+            Some("passed (14:22:18)")
+        );
     }
 }
