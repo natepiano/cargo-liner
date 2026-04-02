@@ -2566,10 +2566,8 @@ impl App {
         }
     }
 
-    pub(super) fn select_project_in_tree(&mut self, target_path: &str) {
-        // Expand the containing node, group, or worktree parent
+    fn expand_path_in_tree(&mut self, target_path: &str) {
         for (ni, node) in self.nodes.iter().enumerate() {
-            // Direct members
             for (gi, group) in node.groups.iter().enumerate() {
                 for member in &group.members {
                     if member.path == target_path {
@@ -2585,7 +2583,6 @@ impl App {
                     self.expanded.insert(ExpandKey::Node(ni));
                 }
             }
-            // Worktree entries
             for (wi, wt) in node.worktrees.iter().enumerate() {
                 if wt.project.path == target_path {
                     self.expanded.insert(ExpandKey::Node(ni));
@@ -2609,78 +2606,69 @@ impl App {
                 }
             }
         }
+    }
 
-        self.rows_dirty = true;
-        self.ensure_visible_rows_cached();
-        let rows = self.visible_rows();
-        for (i, row) in rows.iter().enumerate() {
-            match row {
-                VisibleRow::Root { node_index } => {
-                    if self.nodes[*node_index].project.path == target_path {
-                        self.list_state.select(Some(i));
-                        return;
-                    }
-                },
-                VisibleRow::Member {
-                    node_index,
-                    group_index,
-                    member_index,
-                } => {
-                    let project =
-                        &self.nodes[*node_index].groups[*group_index].members[*member_index];
-                    if project.path == target_path {
-                        self.list_state.select(Some(i));
-                        return;
-                    }
-                },
-                VisibleRow::WorktreeEntry {
-                    node_index,
-                    worktree_index,
-                } => {
-                    let wt = &self.nodes[*node_index].worktrees[*worktree_index];
-                    if wt.project.path == target_path {
-                        self.list_state.select(Some(i));
-                        return;
-                    }
-                },
-                VisibleRow::WorktreeMember {
-                    node_index,
-                    worktree_index,
-                    group_index,
-                    member_index,
-                } => {
-                    let wt = &self.nodes[*node_index].worktrees[*worktree_index];
-                    let member = &wt.groups[*group_index].members[*member_index];
-                    if member.path == target_path {
-                        self.list_state.select(Some(i));
-                        return;
-                    }
-                },
-                VisibleRow::Vendored {
-                    node_index,
-                    vendored_index,
-                } => {
-                    let project = &self.nodes[*node_index].vendored[*vendored_index];
-                    if project.path == target_path {
-                        self.list_state.select(Some(i));
-                        return;
-                    }
-                },
-                VisibleRow::WorktreeVendored {
-                    node_index,
-                    worktree_index,
-                    vendored_index,
-                } => {
-                    let wt = &self.nodes[*node_index].worktrees[*worktree_index];
-                    let vendored = &wt.vendored[*vendored_index];
-                    if vendored.path == target_path {
-                        self.list_state.select(Some(i));
-                        return;
-                    }
-                },
-                VisibleRow::GroupHeader { .. } | VisibleRow::WorktreeGroupHeader { .. } => {},
-            }
+    fn row_matches_project_path(&self, row: VisibleRow, target_path: &str) -> bool {
+        match row {
+            VisibleRow::Root { node_index } => self.nodes[node_index].project.path == target_path,
+            VisibleRow::Member {
+                node_index,
+                group_index,
+                member_index,
+            } => {
+                self.nodes[node_index].groups[group_index].members[member_index].path == target_path
+            },
+            VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
+            } => {
+                self.nodes[node_index].worktrees[worktree_index]
+                    .project
+                    .path
+                    == target_path
+            },
+            VisibleRow::WorktreeMember {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+            } => {
+                self.nodes[node_index].worktrees[worktree_index].groups[group_index].members
+                    [member_index]
+                    .path
+                    == target_path
+            },
+            VisibleRow::Vendored {
+                node_index,
+                vendored_index,
+            } => self.nodes[node_index].vendored[vendored_index].path == target_path,
+            VisibleRow::WorktreeVendored {
+                node_index,
+                worktree_index,
+                vendored_index,
+            } => {
+                self.nodes[node_index].worktrees[worktree_index].vendored[vendored_index].path
+                    == target_path
+            },
+            VisibleRow::GroupHeader { .. } | VisibleRow::WorktreeGroupHeader { .. } => false,
         }
+    }
+
+    fn select_matching_visible_row(&mut self, target_path: &str) {
+        self.ensure_visible_rows_cached();
+        let selected_index = self
+            .visible_rows()
+            .iter()
+            .position(|row| self.row_matches_project_path(*row, target_path));
+        if let Some(selected_index) = selected_index {
+            self.list_state.select(Some(selected_index));
+        }
+    }
+
+    pub(super) fn select_project_in_tree(&mut self, target_path: &str) {
+        self.expand_path_in_tree(target_path);
+        self.rows_dirty = true;
+        self.select_matching_visible_row(target_path);
     }
 
     pub(super) fn update_search(&mut self, query: &str) {

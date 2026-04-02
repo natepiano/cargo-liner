@@ -555,10 +555,10 @@ fn workspace_member_paths(workspace: &RustProject, projects: &[RustProject]) -> 
                 let included = members
                     .iter()
                     .any(|pattern| workspace_pattern_matches(pattern, &relative));
-                let excluded = excludes
+                let is_excluded = excludes
                     .iter()
                     .any(|pattern| workspace_pattern_matches(pattern, &relative));
-                if included && !excluded {
+                if included && !is_excluded {
                     Some(project.path.clone())
                 } else {
                     None
@@ -611,7 +611,6 @@ fn normalize_workspace_path(path: &Path) -> String {
     path.components()
         .filter_map(|component| match component {
             std::path::Component::Normal(segment) => Some(segment.to_string_lossy().to_string()),
-            std::path::Component::CurDir => None,
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -1642,18 +1641,18 @@ mod tests {
 
     #[test]
     fn build_tree_only_nests_manifest_members() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
         let workspace_dir = tmp.path().join("hana");
         let included_dir = workspace_dir.join("crates").join("hana");
         let vendored_dir = workspace_dir.join("crates").join("clay-layout");
 
-        std::fs::create_dir_all(&included_dir).expect("create included dir");
-        std::fs::create_dir_all(&vendored_dir).expect("create vendored dir");
+        std::fs::create_dir_all(&included_dir).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&vendored_dir).unwrap_or_else(|_| std::process::abort());
         std::fs::write(
             workspace_dir.join("Cargo.toml"),
             "[workspace]\nmembers = [\"crates/hana\"]\n",
         )
-        .expect("write workspace manifest");
+        .unwrap_or_else(|_| std::process::abort());
 
         let workspace = make_project(
             Some("hana"),
@@ -1688,7 +1687,7 @@ mod tests {
         let workspace_node = nodes
             .iter()
             .find(|node| node.project.path == workspace.path)
-            .expect("workspace node");
+            .unwrap_or_else(|| std::process::abort());
         assert_eq!(workspace_node.groups.len(), 1);
         assert_eq!(workspace_node.groups[0].members.len(), 1);
         assert_eq!(workspace_node.groups[0].members[0].path, included.path);

@@ -105,7 +105,7 @@ const fn mark_refresh_lint_runtime(
     actions.refresh_lint_runtime = true;
 }
 
-fn mark_include_non_rust(
+const fn mark_include_non_rust(
     actions: &mut ReloadActions,
     old: &Config,
     new: &Config,
