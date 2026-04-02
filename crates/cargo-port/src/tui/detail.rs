@@ -179,11 +179,7 @@ fn render_column_inner(
             },
         };
 
-        if matches!(
-            *field,
-            DetailField::Description | DetailField::Vendored | DetailField::RepoDesc
-        ) && !value.is_empty()
-        {
+        if matches!(*field, DetailField::Description | DetailField::RepoDesc) && !value.is_empty() {
             let prefix = format!("  {label:<label_width$} ");
             let prefix_len = prefix.width();
             let col_width = area.width as usize;
@@ -829,13 +825,13 @@ mod tests {
             git_last_commit: None,
             worktree_label: None,
             worktree_names: Vec::new(),
-            vendored_names: String::new(),
             is_binary: false,
             binary_name: None,
             examples: Vec::<ExampleGroup>::new(),
             benches: Vec::new(),
             is_rust,
             has_package: true,
+            is_vendored: false,
         }
     }
 

@@ -100,6 +100,7 @@ pub(super) const PREFIX_ROOT_COLLAPSED: &str = "▶ ";
 pub(super) const PREFIX_ROOT_LEAF: &str = "  ";
 pub(super) const PREFIX_MEMBER_INLINE: &str = "    ";
 pub(super) const PREFIX_MEMBER_NAMED: &str = "        ";
+pub(super) const PREFIX_VENDORED: &str = "    ";
 pub(super) const PREFIX_GROUP_EXPANDED: &str = "    ▼ ";
 pub(super) const PREFIX_GROUP_COLLAPSED: &str = "    ▶ ";
 pub(super) const PREFIX_WT_EXPANDED: &str = "    ▼ ";
@@ -109,6 +110,7 @@ pub(super) const PREFIX_WT_GROUP_EXPANDED: &str = "        ▼ ";
 pub(super) const PREFIX_WT_GROUP_COLLAPSED: &str = "        ▶ ";
 pub(super) const PREFIX_WT_MEMBER_INLINE: &str = "        ";
 pub(super) const PREFIX_WT_MEMBER_NAMED: &str = "            ";
+pub(super) const PREFIX_WT_VENDORED: &str = "        ";
 
 pub(super) fn conclusion_style(conclusion: Option<Conclusion>) -> Style {
     match conclusion {
@@ -791,16 +793,25 @@ fn render_child_item(
     name: &str,
     child_sorted: &[u64],
     prefix: &'static str,
+    vendored: bool,
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
     let disk = app.formatted_disk(project);
     let disk_bytes = app.disk_usage.get(&project.path).copied();
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
     let lang = project.lang_icon();
-    let lint = app.lint_icon(project);
-    let ci = app.ci_for(project);
-    let git = app.git_icon(project);
-    let sync = app.git_sync(project);
+    let lint = if vendored {
+        " "
+    } else {
+        app.lint_icon(project)
+    };
+    let ci = if vendored { None } else { app.ci_for(project) };
+    let git = if vendored { " " } else { app.git_icon(project) };
+    let sync = if vendored {
+        String::new()
+    } else {
+        app.git_sync(project)
+    };
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name,
@@ -832,7 +843,7 @@ fn render_worktree_entry<'a>(
         .as_deref()
         .unwrap_or(&wt.project.path)
         .to_string();
-    let prefix = if wt.has_members() {
+    let prefix = if wt.has_children() {
         if app.expanded.contains(&ExpandKey::Worktree(ni, wi)) {
             PREFIX_WT_EXPANDED
         } else {
@@ -902,7 +913,7 @@ fn render_wt_member<'a>(
         PREFIX_WT_MEMBER_NAMED
     };
     let name = member.display_name();
-    render_child_item(app, member, &name, sorted, indent, widths)
+    render_child_item(app, member, &name, sorted, indent, false, widths)
 }
 
 pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListItem<'static>> {
@@ -947,7 +958,17 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                     PREFIX_MEMBER_NAMED
                 };
                 let name = member.display_name();
-                render_child_item(app, member, &name, sorted, indent, widths)
+                render_child_item(app, member, &name, sorted, indent, false, widths)
+            },
+            VisibleRow::Vendored {
+                node_index,
+                vendored_index,
+            } => {
+                let vendored = &app.nodes[*node_index].vendored[*vendored_index];
+                let empty = Vec::new();
+                let sorted = child_sorted.get(node_index).unwrap_or(&empty);
+                let name = format!("{} (vendored)", vendored.display_name());
+                render_child_item(app, vendored, &name, sorted, PREFIX_VENDORED, true, widths)
             },
             VisibleRow::WorktreeEntry {
                 node_index,
@@ -972,6 +993,26 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                 child_sorted,
                 widths,
             ),
+            VisibleRow::WorktreeVendored {
+                node_index,
+                worktree_index,
+                vendored_index,
+            } => {
+                let vendored =
+                    &app.nodes[*node_index].worktrees[*worktree_index].vendored[*vendored_index];
+                let empty = Vec::new();
+                let sorted = child_sorted.get(node_index).unwrap_or(&empty);
+                let name = format!("{} (vendored)", vendored.display_name());
+                render_child_item(
+                    app,
+                    vendored,
+                    &name,
+                    sorted,
+                    PREFIX_WT_VENDORED,
+                    true,
+                    widths,
+                )
+            },
         })
         .collect()
 }
@@ -982,20 +1023,27 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
         .iter()
         .filter_map(|&flat_idx| {
             let entry = app.flat_entries.get(flat_idx)?;
-            let node = app.nodes.get(entry.node_index)?;
-            let project = node
-                .groups
-                .get(entry.group_index)
-                .and_then(|g| g.members.get(entry.member_index))
-                .unwrap_or(&node.project);
+            let project = app
+                .all_projects
+                .iter()
+                .find(|project| project.path == entry.path)?;
+            let vendored = app.is_vendored_path(&project.path);
             let disk = app.formatted_disk(project);
             let disk_bytes = app.disk_usage.get(&project.path).copied();
             let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
             let lang = project.lang_icon();
-            let lint = app.lint_icon(project);
-            let ci = app.ci_for(project);
-            let git = app.git_icon(project);
-            let sync = app.git_sync(project);
+            let lint = if vendored {
+                " "
+            } else {
+                app.lint_icon(project)
+            };
+            let ci = if vendored { None } else { app.ci_for(project) };
+            let git = if vendored { " " } else { app.git_icon(project) };
+            let sync = if vendored {
+                String::new()
+            } else {
+                app.git_sync(project)
+            };
             let row = super::columns::build_row_cells(super::columns::ProjectRow {
                 prefix: "  ",
                 name: &entry.name,

@@ -117,6 +117,10 @@ pub(super) fn build_finder_index(
             }
         }
 
+        for vendored in &node.vendored {
+            add_vendored_items(&mut items, vendored, &node.project);
+        }
+
         // Add worktree entries — each has its own branch.
         // Skip the primary-as-worktree clone (same path as root) since
         // the root was already added above.
@@ -136,6 +140,10 @@ pub(super) fn build_finder_index(
                 for member in &group.members {
                     add_project_items(&mut items, member, &wt_branch);
                 }
+            }
+
+            for vendored in &wt.vendored {
+                add_vendored_items(&mut items, vendored, &wt.project);
             }
         }
     }
@@ -225,6 +233,93 @@ fn add_project_items(items: &mut Vec<FinderItem>, project: &RustProject, branch:
         let kind = FinderKind::Bench;
         items.push(FinderItem {
             search_text: format!("{name} {project_name} {dir} {branch} {}", kind.label()),
+            display_name: name.clone(),
+            kind,
+            project_path: project.path.clone(),
+            target_name: Some(name.clone()),
+            parent_label: project_name.clone(),
+            branch: branch.clone(),
+            dir: dir.clone(),
+        });
+    }
+}
+
+fn add_vendored_items(items: &mut Vec<FinderItem>, project: &RustProject, parent: &RustProject) {
+    let project_name = project
+        .name
+        .as_deref()
+        .unwrap_or_else(|| project.path.rsplit('/').next().unwrap_or(&project.path))
+        .to_string();
+    let parent_name = parent.display_name();
+    let branch = String::new();
+    let dir = project.path.clone();
+    let display_name = format!("{project_name} (vendored)");
+
+    items.push(FinderItem {
+        search_text: format!(
+            "{display_name} {project_name} {parent_name} {dir} vendored {}",
+            FinderKind::Project.label()
+        ),
+        display_name,
+        kind: FinderKind::Project,
+        project_path: project.path.clone(),
+        target_name: None,
+        parent_label: parent_name,
+        branch: branch.clone(),
+        dir: dir.clone(),
+    });
+
+    if project.types.contains(&ProjectType::Binary) {
+        let kind = FinderKind::Binary;
+        items.push(FinderItem {
+            search_text: format!(
+                "{project_name} {project_name} {} {dir} vendored {}",
+                parent.display_name(),
+                kind.label()
+            ),
+            display_name: project_name.clone(),
+            kind,
+            project_path: project.path.clone(),
+            target_name: Some(project_name.clone()),
+            parent_label: project_name.clone(),
+            branch: branch.clone(),
+            dir: dir.clone(),
+        });
+    }
+
+    for group in &project.examples {
+        for name in &group.names {
+            let display = if group.category.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{name}", group.category)
+            };
+            let kind = FinderKind::Example;
+            items.push(FinderItem {
+                search_text: format!(
+                    "{display} {project_name} {} {dir} vendored {}",
+                    parent.display_name(),
+                    kind.label()
+                ),
+                display_name: display,
+                kind,
+                project_path: project.path.clone(),
+                target_name: Some(name.clone()),
+                parent_label: project_name.clone(),
+                branch: branch.clone(),
+                dir: dir.clone(),
+            });
+        }
+    }
+
+    for name in &project.benches {
+        let kind = FinderKind::Bench;
+        items.push(FinderItem {
+            search_text: format!(
+                "{name} {project_name} {} {dir} vendored {}",
+                parent.display_name(),
+                kind.label()
+            ),
             display_name: name.clone(),
             kind,
             project_path: project.path.clone(),
@@ -562,4 +657,50 @@ fn render_finder_results(
     let mut table_state = TableState::default().with_selected(Some(app.finder_pane.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
     app.finder_pane.set_scroll_offset(table_state.offset());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::ProjectLanguage;
+    use crate::project::WorkspaceStatus;
+
+    fn make_project(name: Option<&str>, path: &str) -> RustProject {
+        RustProject {
+            path: path.to_string(),
+            abs_path: path.to_string(),
+            name: name.map(str::to_string),
+            version: None,
+            description: None,
+            worktree_name: None,
+            worktree_primary_abs_path: None,
+            is_workspace: WorkspaceStatus::Standalone,
+            types: Vec::new(),
+            examples: Vec::new(),
+            benches: Vec::new(),
+            test_count: 0,
+            is_rust: ProjectLanguage::Rust,
+        }
+    }
+
+    #[test]
+    fn build_finder_index_includes_vendored_projects() {
+        let mut node = ProjectNode {
+            project: make_project(Some("hana"), "~/rust/hana"),
+            groups: Vec::new(),
+            worktrees: Vec::new(),
+            vendored: vec![make_project(
+                Some("clay-layout"),
+                "~/rust/hana/crates/clay-layout",
+            )],
+        };
+        node.project.is_workspace = WorkspaceStatus::Workspace;
+
+        let (items, _widths) = build_finder_index(&[node], &HashMap::new());
+        assert!(items.iter().any(|item| {
+            item.project_path == "~/rust/hana/crates/clay-layout"
+                && item.display_name == "clay-layout (vendored)"
+                && item.branch.is_empty()
+        }));
+    }
 }

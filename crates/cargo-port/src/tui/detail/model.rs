@@ -207,7 +207,6 @@ pub enum DetailField {
     Inception,
     LastCommit,
     Worktree,
-    Vendored,
     CratesIo,
     Version,
     Description,
@@ -234,7 +233,6 @@ impl DetailField {
             Self::Inception => "Incept",
             Self::LastCommit => "Latest",
             Self::Worktree => "Worktree",
-            Self::Vendored => "Vendored",
             Self::CratesIo => "crates.io",
             Self::Version => "Version",
             Self::Description => "Desc",
@@ -281,7 +279,6 @@ impl DetailField {
             Self::Inception => info.git_inception.as_deref().unwrap_or("").to_string(),
             Self::LastCommit => info.git_last_commit.as_deref().unwrap_or("").to_string(),
             Self::Worktree => info.worktree_label.as_deref().unwrap_or("").to_string(),
-            Self::Vendored => info.vendored_names.clone(),
             Self::CratesIo => {
                 let version = info.crates_version.as_deref().unwrap_or("");
                 info.crates_downloads.map_or_else(
@@ -300,23 +297,24 @@ impl DetailField {
 pub fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
     if info.is_rust == ProjectLanguage::NonRust {
         let mut fields = vec![DetailField::Name, DetailField::Path];
-        if !info.lint_label.is_empty() {
+        if !info.is_vendored && !info.lint_label.is_empty() {
             fields.push(DetailField::Lint);
         }
-        fields.push(DetailField::Ci);
+        if !info.is_vendored {
+            fields.push(DetailField::Ci);
+        }
         fields.push(DetailField::Disk);
         return fields;
     }
     let mut fields = vec![DetailField::Name, DetailField::Path, DetailField::Targets];
-    if !info.lint_label.is_empty() {
+    if !info.is_vendored && !info.lint_label.is_empty() {
         fields.push(DetailField::Lint);
     }
-    fields.push(DetailField::Ci);
-    fields.push(DetailField::Disk);
-    if !info.vendored_names.is_empty() {
-        fields.push(DetailField::Vendored);
+    if !info.is_vendored {
+        fields.push(DetailField::Ci);
     }
-    if info.crates_version.is_some() {
+    fields.push(DetailField::Disk);
+    if !info.is_vendored && info.crates_version.is_some() {
         fields.push(DetailField::CratesIo);
     }
     if info.has_package {
@@ -399,7 +397,6 @@ pub struct DetailInfo {
     pub git_last_commit: Option<String>,
     pub worktree_label: Option<String>,
     pub worktree_names: Vec<String>,
-    pub vendored_names: String,
     pub is_binary: bool,
     pub binary_name: Option<String>,
     pub examples: Vec<ExampleGroup>,
@@ -408,31 +405,7 @@ pub struct DetailInfo {
     pub is_rust: ProjectLanguage,
     /// Whether this project declares `[package]` (has version/description fields).
     pub has_package: bool,
-}
-
-/// Collect vendored crate names for a project from the node tree.
-fn collect_vendored_names(app: &App, project: &RustProject) -> String {
-    for node in &app.nodes {
-        if node.project.path == project.path && !node.vendored.is_empty() {
-            return node
-                .vendored
-                .iter()
-                .filter_map(|vendored| vendored.name.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-        }
-        for worktree in &node.worktrees {
-            if worktree.project.path == project.path && !worktree.vendored.is_empty() {
-                return worktree
-                    .vendored
-                    .iter()
-                    .filter_map(|vendored| vendored.name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-            }
-        }
-    }
-    String::new()
+    pub is_vendored: bool,
 }
 
 /// Resolve the title shown in the `Package` column header.
@@ -440,23 +413,13 @@ fn resolve_package_title(app: &App, project: &RustProject) -> String {
     if project.is_rust == ProjectLanguage::NonRust {
         return "Project".to_string();
     }
+    if app.is_vendored_path(&project.path) {
+        return "Vendored Crate".to_string();
+    }
     if project.is_workspace() {
         return "Workspace".to_string();
     }
-    let is_member = app.nodes.iter().any(|node| {
-        node.project.is_workspace()
-            && node.project.path != project.path
-            && (node.groups.iter().any(|group| {
-                group
-                    .members
-                    .iter()
-                    .any(|member| member.path == project.path)
-            }) || node
-                .worktrees
-                .iter()
-                .any(|worktree| worktree.project.path == project.path))
-    });
-    if is_member {
+    if app.is_workspace_member_path(&project.path) {
         "Workspace Member".to_string()
     } else {
         "Package".to_string()
@@ -501,6 +464,22 @@ struct GitDetailFields {
 }
 
 fn build_git_detail_fields(app: &App, project: &RustProject) -> GitDetailFields {
+    if app.is_vendored_path(&project.path) {
+        return GitDetailFields {
+            branch: None,
+            sync: None,
+            vs_origin: None,
+            vs_local: None,
+            default_branch: None,
+            origin: None,
+            owner: None,
+            url: None,
+            stars: None,
+            description: None,
+            inception: None,
+            last_commit: None,
+        };
+    }
     let git = app.git_info.get(&project.path);
     let branch = git.and_then(|info| info.branch.clone());
     let sync = git
@@ -564,13 +543,23 @@ pub fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
     let crates_version = app.crates_versions.get(&project.path).cloned();
     let crates_downloads = app.crates_downloads.get(&project.path).copied();
     let worktree_label = project.worktree_name.clone();
+    let is_vendored = app.is_vendored_path(&project.path);
 
     let worktree_node = app
         .selected_node()
         .filter(|node| node.project.path == project.path && !node.worktrees.is_empty());
 
     let (disk, ci) = worktree_node.map_or_else(
-        || (app.formatted_disk(project), app.ci_for(project)),
+        || {
+            (
+                app.formatted_disk(project),
+                if is_vendored {
+                    None
+                } else {
+                    app.ci_for(project)
+                },
+            )
+        },
         |node| (app.formatted_disk_for_node(node), app.ci_for_node(node)),
     );
 
@@ -589,8 +578,6 @@ pub fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
             })
             .collect()
     });
-
-    let vendored_names = collect_vendored_names(app, project);
 
     let is_binary = project
         .types
@@ -636,12 +623,12 @@ pub fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
         git_last_commit: git_detail.last_commit,
         worktree_label,
         worktree_names,
-        vendored_names,
         is_binary,
         binary_name,
         examples: project.examples.clone(),
         benches: project.benches.clone(),
         is_rust: project.is_rust,
         has_package: project.name.is_some(),
+        is_vendored,
     }
 }

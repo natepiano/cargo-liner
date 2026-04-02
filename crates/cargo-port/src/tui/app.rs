@@ -32,11 +32,13 @@ use super::render::PREFIX_GROUP_COLLAPSED;
 use super::render::PREFIX_MEMBER_INLINE;
 use super::render::PREFIX_MEMBER_NAMED;
 use super::render::PREFIX_ROOT_COLLAPSED;
+use super::render::PREFIX_VENDORED;
 use super::render::PREFIX_WT_COLLAPSED;
 use super::render::PREFIX_WT_FLAT;
 use super::render::PREFIX_WT_GROUP_COLLAPSED;
 use super::render::PREFIX_WT_MEMBER_INLINE;
 use super::render::PREFIX_WT_MEMBER_NAMED;
+use super::render::PREFIX_WT_VENDORED;
 use super::shortcuts::InputContext;
 use super::terminal::CiFetchMsg;
 use super::terminal::ExampleMsg;
@@ -148,6 +150,11 @@ pub(super) enum VisibleRow {
         group_index: usize,
         member_index: usize,
     },
+    /// A vendored crate nested directly under the root project.
+    Vendored {
+        node_index: usize,
+        vendored_index: usize,
+    },
     /// A worktree entry shown directly under the parent node.
     WorktreeEntry {
         node_index: usize,
@@ -165,6 +172,12 @@ pub(super) enum VisibleRow {
         worktree_index: usize,
         group_index: usize,
         member_index: usize,
+    },
+    /// A vendored crate nested under a worktree entry.
+    WorktreeVendored {
+        node_index: usize,
+        worktree_index: usize,
+        vendored_index: usize,
     },
 }
 
@@ -380,12 +393,19 @@ fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> V
                 }
             }
 
+            for (vi, _) in node.vendored.iter().enumerate() {
+                rows.push(VisibleRow::Vendored {
+                    node_index: ni,
+                    vendored_index: vi,
+                });
+            }
+
             for (wi, wt) in node.worktrees.iter().enumerate() {
                 rows.push(VisibleRow::WorktreeEntry {
                     node_index: ni,
                     worktree_index: wi,
                 });
-                if wt.has_members() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
+                if wt.has_children() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
                     for (gi, group) in wt.groups.iter().enumerate() {
                         if group.name.is_empty() {
                             for (mi, _) in group.members.iter().enumerate() {
@@ -413,6 +433,14 @@ fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> V
                                 }
                             }
                         }
+                    }
+
+                    for (vi, _) in wt.vendored.iter().enumerate() {
+                        rows.push(VisibleRow::WorktreeVendored {
+                            node_index: ni,
+                            worktree_index: wi,
+                            vendored_index: vi,
+                        });
                     }
                 }
             }
@@ -524,13 +552,21 @@ fn build_fit_widths_snapshot(
                 App::observe_name_width(&mut widths, dw(PREFIX_GROUP_COLLAPSED) + dw(&label));
             }
         }
+        for vendored in &node.vendored {
+            let label = format!("{} (vendored)", vendored.display_name());
+            App::observe_name_width(&mut widths, dw(PREFIX_VENDORED) + dw(&label));
+            widths.observe(
+                COL_DISK,
+                dw(&formatted_disk_snapshot(disk_usage, &vendored.path)),
+            );
+        }
         for wt in &node.worktrees {
             let wt_name = wt
                 .project
                 .worktree_name
                 .as_deref()
                 .unwrap_or(&wt.project.path);
-            let wt_prefix = if wt.has_members() {
+            let wt_prefix = if wt.has_children() {
                 PREFIX_WT_COLLAPSED
             } else {
                 PREFIX_WT_FLAT
@@ -563,6 +599,14 @@ fn build_fit_widths_snapshot(
                     );
                 }
             }
+            for vendored in &wt.vendored {
+                let label = format!("{} (vendored)", vendored.display_name());
+                App::observe_name_width(&mut widths, dw(PREFIX_WT_VENDORED) + dw(&label));
+                widths.observe(
+                    COL_DISK,
+                    dw(&formatted_disk_snapshot(disk_usage, &vendored.path)),
+                );
+            }
         }
     }
 
@@ -587,6 +631,11 @@ fn build_disk_cache_snapshot(
         let mut values = Vec::new();
         for member in App::all_group_members(node) {
             if let Some(&bytes) = disk_usage.get(&member.path) {
+                values.push(bytes);
+            }
+        }
+        for vendored in App::all_vendored_projects(node) {
+            if let Some(&bytes) = disk_usage.get(&vendored.path) {
                 values.push(bytes);
             }
         }
@@ -1015,6 +1064,8 @@ impl App {
         self.rows_dirty = true;
         self.disk_cache_dirty = true;
         self.fit_widths_dirty = true;
+        self.prune_vendored_state();
+        self.sync_lint_runtime_projects();
         self.rebuild_lint_rollups();
         self.data_generation += 1;
         self.detail_generation += 1;
@@ -1195,6 +1246,9 @@ impl App {
             return;
         }
         for project in &self.all_projects {
+            if self.is_vendored_path(&project.path) {
+                continue;
+            }
             if !crate::lint_runtime::project_is_eligible(
                 &self.current_config.lint,
                 &project.path,
@@ -1213,6 +1267,9 @@ impl App {
     fn refresh_port_report_histories_from_disk(&mut self) {
         self.port_report_runs.clear();
         for project in &self.all_projects {
+            if self.is_vendored_path(&project.path) {
+                continue;
+            }
             let runs = crate::port_report::read_history(&PathBuf::from(&project.abs_path));
             if !runs.is_empty() {
                 self.port_report_runs.insert(project.path.clone(), runs);
@@ -1229,6 +1286,10 @@ impl App {
             self.port_report_runs.remove(project_path);
             return;
         };
+        if self.is_vendored_path(project_path) {
+            self.port_report_runs.remove(project_path);
+            return;
+        }
         let runs = crate::port_report::read_history(&PathBuf::from(&project.abs_path));
         if runs.is_empty() {
             self.port_report_runs.remove(project_path);
@@ -1267,6 +1328,7 @@ impl App {
             .all_projects
             .iter()
             .filter(|project| !self.deleted_projects.contains(&project.path))
+            .filter(|project| !self.is_vendored_path(&project.path))
             .map(|project| RegisterProjectRequest {
                 project_path: project.path.clone(),
                 abs_path: PathBuf::from(&project.abs_path),
@@ -1611,6 +1673,11 @@ impl App {
     }
 
     fn handle_git_info(&mut self, path: String, info: GitInfo) {
+        if self.is_vendored_path(&path) {
+            self.git_info.remove(&path);
+            self.finder_dirty = true;
+            return;
+        }
         self.fit_widths_dirty = true;
         let matching_node = self
             .nodes
@@ -1639,6 +1706,11 @@ impl App {
     }
 
     fn handle_repo_meta(&mut self, path: String, stars: u64, description: Option<String>) {
+        if self.is_vendored_path(&path) {
+            self.stars.remove(&path);
+            self.repo_descriptions.remove(&path);
+            return;
+        }
         if let Some(node) = self.nodes.iter().find(|node| node.project.path == path) {
             for member in Self::all_group_members(node) {
                 self.stars.entry(member.path.clone()).or_insert(stars);
@@ -1745,8 +1817,13 @@ impl App {
                 version,
                 downloads,
             } => {
-                self.crates_versions.insert(path.clone(), version);
-                self.crates_downloads.insert(path, downloads);
+                if self.is_vendored_path(&path) {
+                    self.crates_versions.remove(&path);
+                    self.crates_downloads.remove(&path);
+                } else {
+                    self.crates_versions.insert(path.clone(), version);
+                    self.crates_downloads.insert(path, downloads);
+                }
             },
             BackgroundMsg::RepoMeta {
                 path,
@@ -1772,6 +1849,11 @@ impl App {
                 }
             },
             BackgroundMsg::LintStatus { path, status } => {
+                if self.is_vendored_path(&path) {
+                    self.port_report_runs.remove(&path);
+                    self.lint_status.remove(&path);
+                    return false;
+                }
                 let eligible = self
                     .all_projects
                     .iter()
@@ -1832,6 +1914,10 @@ impl App {
 
     /// Insert CI runs from the initial scan, propagating to workspace members.
     fn insert_ci_runs(&mut self, path: String, runs: Vec<CiRun>) {
+        if self.is_vendored_path(&path) {
+            self.ci_state.remove(&path);
+            return;
+        }
         let exhausted = self
             .git_info
             .get(&path)
@@ -1971,6 +2057,15 @@ impl App {
         direct.chain(wt)
     }
 
+    fn all_vendored_projects(node: &ProjectNode) -> impl Iterator<Item = &RustProject> {
+        let direct = node.vendored.iter();
+        let wt = node
+            .worktrees
+            .iter()
+            .flat_map(|worktree| worktree.vendored.iter());
+        direct.chain(wt)
+    }
+
     fn observe_name_width(widths: &mut ResolvedWidths, content_width: usize) {
         use super::columns::COL_NAME;
 
@@ -2041,6 +2136,10 @@ impl App {
                 group_index,
                 member_index,
             }) => format!("member:{node_index}:{group_index}:{member_index}"),
+            Some(VisibleRow::Vendored {
+                node_index,
+                vendored_index,
+            }) => format!("vendored:{node_index}:{vendored_index}"),
             Some(VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
@@ -2058,6 +2157,11 @@ impl App {
             }) => format!(
                 "worktree-member:{node_index}:{worktree_index}:{group_index}:{member_index}"
             ),
+            Some(VisibleRow::WorktreeVendored {
+                node_index,
+                worktree_index,
+                vendored_index,
+            }) => format!("worktree-vendored:{node_index}:{worktree_index}:{vendored_index}"),
             None => String::new(),
         }
     }
@@ -2075,13 +2179,7 @@ impl App {
             let selected = self.list_state.selected()?;
             let flat_idx = *self.filtered.get(selected)?;
             let entry = self.flat_entries.get(flat_idx)?;
-            let node = self.nodes.get(entry.node_index)?;
-            Some(
-                node.groups
-                    .get(entry.group_index)
-                    .and_then(|g| g.members.get(entry.member_index))
-                    .unwrap_or(&node.project),
-            )
+            self.project_by_path(&entry.path)
         } else {
             let rows = self.visible_rows();
             let selected = self.list_state.selected()?;
@@ -2098,6 +2196,10 @@ impl App {
                     let group = node.groups.get(*group_index)?;
                     group.members.get(*member_index)
                 },
+                VisibleRow::Vendored {
+                    node_index,
+                    vendored_index,
+                } => self.nodes.get(*node_index)?.vendored.get(*vendored_index),
                 VisibleRow::WorktreeEntry {
                     node_index,
                     worktree_index,
@@ -2125,6 +2227,17 @@ impl App {
                     let group = wt.groups.get(*group_index)?;
                     group.members.get(*member_index)
                 },
+                VisibleRow::WorktreeVendored {
+                    node_index,
+                    worktree_index,
+                    vendored_index,
+                } => self
+                    .nodes
+                    .get(*node_index)?
+                    .worktrees
+                    .get(*worktree_index)?
+                    .vendored
+                    .get(*vendored_index),
             }
         }
     }
@@ -2143,7 +2256,7 @@ impl App {
             Some(VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
-            }) => self.nodes[*node_index].worktrees[*worktree_index].has_members(),
+            }) => self.nodes[*node_index].worktrees[*worktree_index].has_children(),
             _ => false,
         }
     }
@@ -2253,6 +2366,9 @@ impl App {
                     );
                 }
             },
+            VisibleRow::Vendored { node_index: ni, .. } => {
+                self.collapse_to(&ExpandKey::Node(ni), VisibleRow::Root { node_index: ni });
+            },
             VisibleRow::WorktreeEntry {
                 node_index: ni,
                 worktree_index: wi,
@@ -2300,6 +2416,19 @@ impl App {
                         },
                     );
                 }
+            },
+            VisibleRow::WorktreeVendored {
+                node_index: ni,
+                worktree_index: wi,
+                ..
+            } => {
+                self.collapse_to(
+                    &ExpandKey::Worktree(ni, wi),
+                    VisibleRow::WorktreeEntry {
+                        node_index: ni,
+                        worktree_index: wi,
+                    },
+                );
             },
         }
     }
@@ -2418,6 +2547,11 @@ impl App {
                     }
                 }
             }
+            for vendored in &node.vendored {
+                if vendored.path == target_path {
+                    self.expanded.insert(ExpandKey::Node(ni));
+                }
+            }
             // Worktree entries
             for (wi, wt) in node.worktrees.iter().enumerate() {
                 if wt.project.path == target_path {
@@ -2432,6 +2566,12 @@ impl App {
                                 self.expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
                             }
                         }
+                    }
+                }
+                for vendored in &wt.vendored {
+                    if vendored.path == target_path {
+                        self.expanded.insert(ExpandKey::Node(ni));
+                        self.expanded.insert(ExpandKey::Worktree(ni, wi));
                     }
                 }
             }
@@ -2479,6 +2619,28 @@ impl App {
                     let wt = &self.nodes[*node_index].worktrees[*worktree_index];
                     let member = &wt.groups[*group_index].members[*member_index];
                     if member.path == target_path {
+                        self.list_state.select(Some(i));
+                        return;
+                    }
+                },
+                VisibleRow::Vendored {
+                    node_index,
+                    vendored_index,
+                } => {
+                    let project = &self.nodes[*node_index].vendored[*vendored_index];
+                    if project.path == target_path {
+                        self.list_state.select(Some(i));
+                        return;
+                    }
+                },
+                VisibleRow::WorktreeVendored {
+                    node_index,
+                    worktree_index,
+                    vendored_index,
+                } => {
+                    let wt = &self.nodes[*node_index].worktrees[*worktree_index];
+                    let vendored = &wt.vendored[*vendored_index];
+                    if vendored.path == target_path {
                         self.list_state.select(Some(i));
                         return;
                     }
@@ -2668,7 +2830,10 @@ impl App {
                 node_index,
                 worktree_index,
             }),
-            VisibleRow::Member { .. } | VisibleRow::WorktreeMember { .. } => None,
+            VisibleRow::Member { .. }
+            | VisibleRow::Vendored { .. }
+            | VisibleRow::WorktreeMember { .. }
+            | VisibleRow::WorktreeVendored { .. } => None,
         }
     }
 
@@ -2846,10 +3011,77 @@ impl App {
                     worktree_index,
                 })
                 .map(|status| status.icon().frame_at(self.animation_elapsed())),
-            Some(VisibleRow::Member { .. } | VisibleRow::WorktreeMember { .. }) | None => self
+            Some(
+                VisibleRow::Member { .. }
+                | VisibleRow::Vendored { .. }
+                | VisibleRow::WorktreeMember { .. }
+                | VisibleRow::WorktreeVendored { .. },
+            )
+            | None => self
                 .lint_status
                 .get(&project.path)
                 .map(|status| status.icon().frame_at(self.animation_elapsed())),
+        }
+    }
+
+    pub(super) fn is_vendored_path(&self, path: &str) -> bool {
+        self.nodes.iter().any(|node| {
+            node.vendored.iter().any(|project| project.path == path)
+                || node
+                    .worktrees
+                    .iter()
+                    .any(|worktree| worktree.vendored.iter().any(|project| project.path == path))
+        })
+    }
+
+    pub(super) fn is_workspace_member_path(&self, path: &str) -> bool {
+        self.nodes.iter().any(|node| {
+            node.project.is_workspace()
+                && node
+                    .groups
+                    .iter()
+                    .any(|group| group.members.iter().any(|member| member.path == path))
+                || node.worktrees.iter().any(|worktree| {
+                    worktree.project.is_workspace()
+                        && worktree
+                            .groups
+                            .iter()
+                            .any(|group| group.members.iter().any(|member| member.path == path))
+                })
+        })
+    }
+
+    fn project_by_path(&self, path: &str) -> Option<&RustProject> {
+        self.all_projects
+            .iter()
+            .find(|project| project.path == path)
+    }
+
+    fn prune_vendored_state(&mut self) {
+        let vendored_paths: HashSet<String> = self
+            .nodes
+            .iter()
+            .flat_map(|node| {
+                node.vendored
+                    .iter()
+                    .chain(
+                        node.worktrees
+                            .iter()
+                            .flat_map(|worktree| worktree.vendored.iter()),
+                    )
+                    .map(|project| project.path.clone())
+            })
+            .collect();
+
+        for path in vendored_paths {
+            self.ci_state.remove(&path);
+            self.git_info.remove(&path);
+            self.stars.remove(&path);
+            self.repo_descriptions.remove(&path);
+            self.crates_versions.remove(&path);
+            self.crates_downloads.remove(&path);
+            self.port_report_runs.remove(&path);
+            self.lint_status.remove(&path);
         }
     }
 
@@ -3251,6 +3483,32 @@ mod tests {
             VisibleRow::Member {
                 member_index: 1,
                 ..
+            }
+        ));
+    }
+
+    #[test]
+    fn visible_rows_include_vendored_children() {
+        let member = make_project(Some("member"), "~/ws/member");
+        let vendored = make_project(Some("vendored"), "~/ws/vendor/helper");
+        let mut root = make_node(make_project(None, "~/ws"));
+        root.groups = vec![MemberGroup {
+            name: String::new(),
+            members: vec![member],
+        }];
+        root.vendored = vec![vendored];
+
+        let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
+        let rows = build_visible_rows(&[root], &expanded);
+
+        assert_eq!(rows.len(), 3, "got: {rows:?}");
+        assert!(matches!(rows[0], VisibleRow::Root { .. }));
+        assert!(matches!(rows[1], VisibleRow::Member { .. }));
+        assert!(matches!(
+            rows[2],
+            VisibleRow::Vendored {
+                node_index: 0,
+                vendored_index: 0,
             }
         ));
     }

@@ -53,15 +53,13 @@ impl ProjectNode {
     }
 
     pub fn has_children(&self) -> bool {
-        self.has_members() || !self.worktrees.is_empty()
+        self.has_members() || !self.vendored.is_empty() || !self.worktrees.is_empty()
     }
 }
 
 /// A flattened entry for fuzzy search.
 pub struct FlatEntry {
-    pub node_index: usize,
-    pub group_index: usize,
-    pub member_index: usize,
+    pub path: String,
     pub name: String,
 }
 
@@ -875,24 +873,53 @@ pub fn group_members(
 
 pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
     let mut entries = Vec::new();
-    for (ni, node) in nodes.iter().enumerate() {
-        // Add workspace root itself
-        let name = node.project.name.as_deref().unwrap_or(&node.project.path);
+    for node in nodes {
         entries.push(FlatEntry {
-            node_index: ni,
-            group_index: 0,
-            member_index: 0,
-            name: name.to_string(),
+            path: node.project.path.clone(),
+            name: node.project.display_name(),
         });
-        // Add all members
-        for (gi, group) in node.groups.iter().enumerate() {
-            for (mi, member) in group.members.iter().enumerate() {
-                let name = member.name.as_deref().unwrap_or(&member.path);
+
+        for group in &node.groups {
+            for member in &group.members {
                 entries.push(FlatEntry {
-                    node_index: ni,
-                    group_index: gi,
-                    member_index: mi,
-                    name: name.to_string(),
+                    path: member.path.clone(),
+                    name: member.display_name(),
+                });
+            }
+        }
+
+        for vendored in &node.vendored {
+            entries.push(FlatEntry {
+                path: vendored.path.clone(),
+                name: format!("{} (vendored)", vendored.display_name()),
+            });
+        }
+
+        for worktree in &node.worktrees {
+            if worktree.project.path != node.project.path {
+                entries.push(FlatEntry {
+                    path: worktree.project.path.clone(),
+                    name: worktree
+                        .project
+                        .worktree_name
+                        .clone()
+                        .unwrap_or_else(|| worktree.project.display_name()),
+                });
+            }
+
+            for group in &worktree.groups {
+                for member in &group.members {
+                    entries.push(FlatEntry {
+                        path: member.path.clone(),
+                        name: member.display_name(),
+                    });
+                }
+            }
+
+            for vendored in &worktree.vendored {
+                entries.push(FlatEntry {
+                    path: vendored.path.clone(),
+                    name: format!("{} (vendored)", vendored.display_name()),
                 });
             }
         }
@@ -1618,10 +1645,10 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let workspace_dir = tmp.path().join("hana");
         let included_dir = workspace_dir.join("crates").join("hana");
-        let orphan_dir = workspace_dir.join("crates").join("clay-layout");
+        let vendored_dir = workspace_dir.join("crates").join("clay-layout");
 
         std::fs::create_dir_all(&included_dir).expect("create included dir");
-        std::fs::create_dir_all(&orphan_dir).expect("create orphan dir");
+        std::fs::create_dir_all(&vendored_dir).expect("create vendored dir");
         std::fs::write(
             workspace_dir.join("Cargo.toml"),
             "[workspace]\nmembers = [\"crates/hana\"]\n",
@@ -1644,17 +1671,17 @@ mod tests {
             Some(&workspace_dir.to_string_lossy()),
             WorkspaceStatus::Standalone,
         );
-        let orphan = make_project(
+        let vendored = make_project(
             Some("clay-layout"),
             "~/rust/hana/crates/clay-layout",
-            &orphan_dir.to_string_lossy(),
+            &vendored_dir.to_string_lossy(),
             None,
             Some(&workspace_dir.to_string_lossy()),
             WorkspaceStatus::Standalone,
         );
 
         let nodes = build_tree(
-            &[workspace.clone(), included.clone(), orphan.clone()],
+            &[workspace.clone(), included.clone(), vendored.clone()],
             &["crates".to_string()],
         );
 
@@ -1670,9 +1697,11 @@ mod tests {
                 .groups
                 .iter()
                 .flat_map(|group| group.members.iter())
-                .all(|member| member.path != orphan.path),
+                .all(|member| member.path != vendored.path),
             "non-member crate should not be grouped as a workspace member"
         );
+        assert_eq!(workspace_node.vendored.len(), 1);
+        assert_eq!(workspace_node.vendored[0].path, vendored.path);
     }
 
     #[test]
