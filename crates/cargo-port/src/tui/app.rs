@@ -822,6 +822,31 @@ impl App {
         self.current_config.tui.ci_run_count
     }
 
+    fn has_cached_non_rust_projects(&self) -> bool {
+        self.all_projects
+            .iter()
+            .any(|project| project.is_rust != Rust)
+    }
+
+    fn filter_tree_projects(
+        projects: &[RustProject],
+        include_non_rust: NonRustInclusion,
+    ) -> Vec<RustProject> {
+        if include_non_rust.includes_non_rust() {
+            projects.to_vec()
+        } else {
+            projects
+                .iter()
+                .filter(|project| project.is_rust == Rust)
+                .cloned()
+                .collect()
+        }
+    }
+
+    fn tree_projects_snapshot(&self) -> Vec<RustProject> {
+        Self::filter_tree_projects(&self.all_projects, self.include_non_rust())
+    }
+
     pub fn editor(&self) -> &str {
         &self.current_config.tui.editor
     }
@@ -925,7 +950,8 @@ impl App {
             cfg.tui.include_dirs.clone(),
             http_client.clone(),
         );
-        let nodes = scan::build_tree(&projects, &cfg.tui.inline_dirs);
+        let tree_projects = Self::filter_tree_projects(&projects, cfg.tui.include_non_rust);
+        let nodes = scan::build_tree(&tree_projects, &cfg.tui.inline_dirs);
         let flat_entries = scan::build_flat_entries(&nodes);
         let list_state = initial_list_state(&nodes);
         let (tree_build_tx, tree_build_rx) = mpsc::channel();
@@ -1181,7 +1207,14 @@ impl App {
             return;
         }
 
-        let actions = config_reload::collect_reload_actions(&self.current_config, cfg);
+        let actions = config_reload::collect_reload_actions(
+            &self.current_config,
+            cfg,
+            config_reload::ReloadContext {
+                scan_complete: self.scan_complete,
+                has_cached_non_rust: self.has_cached_non_rust_projects(),
+            },
+        );
         crate::config::set_active_config(cfg);
         self.current_config = cfg.clone();
 
@@ -1352,7 +1385,7 @@ impl App {
 
     fn spawn_tree_build(&mut self, build_id: u64) {
         let tx = self.tree_build_tx.clone();
-        let projects = self.all_projects.clone();
+        let projects = self.tree_projects_snapshot();
         let inline_dirs = self.current_config.tui.inline_dirs.clone();
         self.tree_build_active = Some(build_id);
         std::thread::spawn(move || {
@@ -3211,21 +3244,35 @@ mod tests {
     }
 
     fn make_app(projects: Vec<RustProject>) -> App {
+        make_app_with_config(projects, &Config::default())
+    }
+
+    fn make_app_with_config(projects: Vec<RustProject>, cfg: &Config) -> App {
         let (bg_tx, bg_rx) = mpsc::channel();
         let scan_root =
             std::env::temp_dir().join(format!("cargo-port-polish-test-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&scan_root);
-        let mut app = App::new(
-            scan_root,
-            projects,
-            bg_tx,
-            bg_rx,
-            &Config::default(),
-            test_http_client(),
-        );
+        let mut app = App::new(scan_root, projects, bg_tx, bg_rx, cfg, test_http_client());
         app.service_retry_spawns_enabled = false;
         app.sync_selected_project();
         app
+    }
+
+    fn make_non_rust_project(name: Option<&str>, path: &str) -> RustProject {
+        let mut project = make_project(name, path);
+        project.is_rust = ProjectLanguage::NonRust;
+        project
+    }
+
+    fn wait_for_tree_build(app: &mut App) {
+        for _ in 0..100 {
+            let _ = app.poll_tree_builds();
+            if app.tree_build_active.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        app.ensure_visible_rows_cached();
     }
 
     #[test]
@@ -3284,6 +3331,56 @@ mod tests {
                 .as_ref()
                 .is_some_and(|(msg, _)| msg.contains("Config reload failed"))
         );
+    }
+
+    #[test]
+    fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
+        let rust_project = make_project(Some("rust"), "~/rust");
+        let non_rust_project = make_non_rust_project(Some("js"), "~/js");
+        let mut cfg = Config::default();
+        cfg.tui.include_non_rust = NonRustInclusion::Include;
+        let mut app =
+            make_app_with_config(vec![rust_project.clone(), non_rust_project.clone()], &cfg);
+        app.scan_complete = true;
+
+        assert_eq!(app.all_projects.len(), 2);
+        assert_eq!(app.nodes.len(), 2);
+
+        let mut hide_cfg = cfg.clone();
+        hide_cfg.tui.include_non_rust = NonRustInclusion::Exclude;
+        app.apply_config(&hide_cfg);
+        wait_for_tree_build(&mut app);
+
+        assert_eq!(app.all_projects.len(), 2);
+        assert!(app.scan_complete);
+        assert_eq!(app.nodes.len(), 1);
+        assert_eq!(app.nodes[0].project.path, rust_project.path);
+
+        app.apply_config(&cfg);
+        wait_for_tree_build(&mut app);
+
+        assert_eq!(app.all_projects.len(), 2);
+        assert!(app.scan_complete);
+        assert_eq!(app.nodes.len(), 2);
+        assert!(
+            app.nodes
+                .iter()
+                .any(|node| node.project.path == non_rust_project.path)
+        );
+    }
+
+    #[test]
+    fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
+        let rust_project = make_project(Some("rust"), "~/rust");
+        let mut app = make_app(vec![rust_project]);
+        app.scan_complete = true;
+
+        let mut cfg = app.current_config.clone();
+        cfg.tui.include_non_rust = NonRustInclusion::Include;
+        app.apply_config(&cfg);
+
+        assert!(app.all_projects.is_empty());
+        assert!(!app.scan_complete);
     }
 
     fn apply_nodes(app: &mut App, nodes: Vec<ProjectNode>) {

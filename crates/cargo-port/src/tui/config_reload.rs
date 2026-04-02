@@ -23,10 +23,16 @@ pub(super) struct ReloadActions {
     pub refresh_lint_runtime: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct ReloadContext {
+    pub scan_complete: bool,
+    pub has_cached_non_rust: bool,
+}
+
 #[derive(Clone, Copy)]
 struct ConfigHandler {
     key: ConfigKey,
-    mark: fn(&mut ReloadActions),
+    mark: fn(&mut ReloadActions, &Config, &Config, ReloadContext),
 }
 
 const CONFIG_HANDLERS: &[ConfigHandler] = &[
@@ -36,7 +42,7 @@ const CONFIG_HANDLERS: &[ConfigHandler] = &[
     },
     ConfigHandler {
         key: ConfigKey::IncludeNonRust,
-        mark: mark_rescan,
+        mark: mark_include_non_rust,
     },
     ConfigHandler {
         key: ConfigKey::CiRunCount,
@@ -72,16 +78,51 @@ const CONFIG_HANDLERS: &[ConfigHandler] = &[
     },
 ];
 
-const fn mark_rebuild_tree(actions: &mut ReloadActions) {
+const fn mark_rebuild_tree(
+    actions: &mut ReloadActions,
+    _old: &Config,
+    _new: &Config,
+    _context: ReloadContext,
+) {
     actions.rebuild_tree = true;
 }
 
-const fn mark_rescan(actions: &mut ReloadActions) {
+const fn mark_rescan(
+    actions: &mut ReloadActions,
+    _old: &Config,
+    _new: &Config,
+    _context: ReloadContext,
+) {
     actions.rescan = true;
 }
 
-const fn mark_refresh_lint_runtime(actions: &mut ReloadActions) {
+const fn mark_refresh_lint_runtime(
+    actions: &mut ReloadActions,
+    _old: &Config,
+    _new: &Config,
+    _context: ReloadContext,
+) {
     actions.refresh_lint_runtime = true;
+}
+
+fn mark_include_non_rust(
+    actions: &mut ReloadActions,
+    old: &Config,
+    new: &Config,
+    context: ReloadContext,
+) {
+    if !context.scan_complete {
+        actions.rescan = true;
+        return;
+    }
+
+    let enabling_non_rust = !old.tui.include_non_rust.includes_non_rust()
+        && new.tui.include_non_rust.includes_non_rust();
+    if enabling_non_rust && !context.has_cached_non_rust {
+        actions.rescan = true;
+    } else {
+        actions.rebuild_tree = true;
+    }
 }
 
 pub(super) fn changed_keys(old: &Config, new: &Config) -> Vec<ConfigKey> {
@@ -127,13 +168,17 @@ pub(super) fn changed_keys(old: &Config, new: &Config) -> Vec<ConfigKey> {
     keys
 }
 
-pub(super) fn collect_reload_actions(old: &Config, new: &Config) -> ReloadActions {
+pub(super) fn collect_reload_actions(
+    old: &Config,
+    new: &Config,
+    context: ReloadContext,
+) -> ReloadActions {
     let mut actions = ReloadActions::default();
 
     for key in changed_keys(old, new) {
         for handler in CONFIG_HANDLERS {
             if handler.key == key {
-                (handler.mark)(&mut actions);
+                (handler.mark)(&mut actions, old, new, context);
             }
         }
     }
@@ -162,7 +207,7 @@ mod tests {
         assert!(keys.contains(&ConfigKey::Editor));
         assert!(keys.contains(&ConfigKey::StatusFlashSecs));
         assert_eq!(
-            collect_reload_actions(&Config::default(), &new),
+            collect_reload_actions(&Config::default(), &new, ReloadContext::default()),
             ReloadActions::default()
         );
     }
@@ -175,7 +220,53 @@ mod tests {
         new.tui.include_non_rust.toggle();
 
         assert_eq!(
-            collect_reload_actions(&Config::default(), &new),
+            collect_reload_actions(&Config::default(), &new, ReloadContext::default()),
+            ReloadActions {
+                rebuild_tree: false,
+                rescan: true,
+                refresh_lint_runtime: false,
+            }
+        );
+    }
+
+    #[test]
+    fn completed_scan_rebuilds_tree_when_hiding_cached_non_rust_projects() {
+        let mut old = Config::default();
+        old.tui.include_non_rust.toggle();
+        let mut new = old.clone();
+        new.tui.include_non_rust.toggle();
+
+        assert_eq!(
+            collect_reload_actions(
+                &old,
+                &new,
+                ReloadContext {
+                    scan_complete: true,
+                    has_cached_non_rust: true,
+                },
+            ),
+            ReloadActions {
+                rebuild_tree: true,
+                rescan: false,
+                refresh_lint_runtime: false,
+            }
+        );
+    }
+
+    #[test]
+    fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
+        let mut new = Config::default();
+        new.tui.include_non_rust.toggle();
+
+        assert_eq!(
+            collect_reload_actions(
+                &Config::default(),
+                &new,
+                ReloadContext {
+                    scan_complete: true,
+                    has_cached_non_rust: false,
+                },
+            ),
             ReloadActions {
                 rebuild_tree: false,
                 rescan: true,
@@ -192,7 +283,7 @@ mod tests {
         new.lint.commands = vec![crate::config::default_clippy_lint_command()];
 
         assert_eq!(
-            collect_reload_actions(&Config::default(), &new),
+            collect_reload_actions(&Config::default(), &new, ReloadContext::default()),
             ReloadActions {
                 rebuild_tree: false,
                 rescan: false,
@@ -207,7 +298,7 @@ mod tests {
         new.cache.root = "tmp-cache".to_string();
 
         assert_eq!(
-            collect_reload_actions(&Config::default(), &new),
+            collect_reload_actions(&Config::default(), &new, ReloadContext::default()),
             ReloadActions {
                 rebuild_tree: false,
                 rescan: true,
