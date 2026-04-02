@@ -4,8 +4,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::thread;
@@ -22,6 +20,8 @@ use super::constants::OLDER_RUNS_FETCH_INCREMENT;
 use super::constants::SCAN_DISK_CONCURRENCY;
 use super::constants::SCAN_HTTP_CONCURRENCY;
 use super::http::HttpClient;
+use super::http::ServiceKind;
+use super::http::ServiceSignal;
 use super::port_report;
 use super::port_report::LintStatus;
 use super::project::GitInfo;
@@ -33,35 +33,39 @@ use super::project::RustProject;
 /// or under the primary `crates/` directory -- these are shown without a folder header.
 #[derive(Clone)]
 pub struct MemberGroup {
-    pub name:    String,
+    pub name: String,
     pub members: Vec<RustProject>,
 }
 
 #[derive(Clone)]
 pub struct ProjectNode {
-    pub project:   RustProject,
-    pub groups:    Vec<MemberGroup>,
+    pub project: RustProject,
+    pub groups: Vec<MemberGroup>,
     pub worktrees: Vec<Self>,
-    pub vendored:  Vec<RustProject>,
+    pub vendored: Vec<RustProject>,
 }
 
 impl ProjectNode {
-    pub fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members.is_empty()) }
+    pub fn has_members(&self) -> bool {
+        self.groups.iter().any(|g| !g.members.is_empty())
+    }
 
-    pub fn has_children(&self) -> bool { self.has_members() || !self.worktrees.is_empty() }
+    pub fn has_children(&self) -> bool {
+        self.has_members() || !self.worktrees.is_empty()
+    }
 }
 
 /// A flattened entry for fuzzy search.
 pub struct FlatEntry {
-    pub node_index:   usize,
-    pub group_index:  usize,
+    pub node_index: usize,
+    pub group_index: usize,
     pub member_index: usize,
-    pub name:         String,
+    pub name: String,
 }
 
 pub enum BackgroundMsg {
     DiskUsage {
-        path:  String,
+        path: String,
         bytes: u64,
     },
     CiRuns {
@@ -73,13 +77,13 @@ pub enum BackgroundMsg {
         info: GitInfo,
     },
     CratesIoVersion {
-        path:      String,
-        version:   String,
+        path: String,
+        version: String,
         downloads: u64,
     },
     RepoMeta {
-        path:        String,
-        stars:       u64,
+        path: String,
+        stars: u64,
         description: Option<String>,
     },
     ProjectDiscovered {
@@ -89,11 +93,19 @@ pub enum BackgroundMsg {
         path: String,
     },
     LintStatus {
-        path:   String,
+        path: String,
         status: LintStatus,
     },
     ScanComplete,
-    NetworkOffline,
+    ServiceReachable {
+        service: ServiceKind,
+    },
+    ServiceRecovered {
+        service: ServiceKind,
+    },
+    ServiceUnreachable {
+        service: ServiceKind,
+    },
 }
 
 impl BackgroundMsg {
@@ -107,9 +119,41 @@ impl BackgroundMsg {
             | Self::RepoMeta { path, .. }
             | Self::LintStatus { path, .. } => Some(path),
             Self::ProjectDiscovered { project } => Some(&project.path),
-            Self::ScanActivity { .. } | Self::ScanComplete | Self::NetworkOffline => None,
+            Self::ScanActivity { .. }
+            | Self::ScanComplete
+            | Self::ServiceReachable { .. }
+            | Self::ServiceRecovered { .. }
+            | Self::ServiceUnreachable { .. } => None,
         }
     }
+}
+
+const fn combine_service_signal(
+    left: Option<ServiceSignal>,
+    right: Option<ServiceSignal>,
+) -> Option<ServiceSignal> {
+    match (left, right) {
+        (Some(ServiceSignal::Unreachable(service)), _)
+        | (_, Some(ServiceSignal::Unreachable(service))) => {
+            Some(ServiceSignal::Unreachable(service))
+        },
+        (Some(ServiceSignal::Reachable(service)), _)
+        | (_, Some(ServiceSignal::Reachable(service))) => Some(ServiceSignal::Reachable(service)),
+        (None, None) => None,
+    }
+}
+
+pub fn emit_service_signal(tx: &mpsc::Sender<BackgroundMsg>, signal: Option<ServiceSignal>) {
+    let msg = match signal {
+        Some(ServiceSignal::Reachable(service)) => BackgroundMsg::ServiceReachable { service },
+        Some(ServiceSignal::Unreachable(service)) => BackgroundMsg::ServiceUnreachable { service },
+        None => return,
+    };
+    let _ = tx.send(msg);
+}
+
+pub fn emit_service_recovered(tx: &mpsc::Sender<BackgroundMsg>, service: ServiceKind) {
+    let _ = tx.send(BackgroundMsg::ServiceRecovered { service });
 }
 
 /// What a CI fetch function returns. Forces callers to handle the
@@ -123,13 +167,19 @@ pub enum CiFetchResult {
 }
 
 /// Base cache directory for CI metadata.
-pub fn cache_dir() -> PathBuf { cache_paths::ci_cache_root() }
+pub fn cache_dir() -> PathBuf {
+    cache_paths::ci_cache_root()
+}
 
 /// Repo-keyed cache directory: `{cache_dir}/{owner}/{repo}`.
-fn repo_cache_dir(owner: &str, repo: &str) -> PathBuf { cache_dir().join(owner).join(repo) }
+fn repo_cache_dir(owner: &str, repo: &str) -> PathBuf {
+    cache_dir().join(owner).join(repo)
+}
 
 /// Public accessor for clearing the cache directory.
-pub fn repo_cache_dir_pub(owner: &str, repo: &str) -> PathBuf { repo_cache_dir(owner, repo) }
+pub fn repo_cache_dir_pub(owner: &str, repo: &str) -> PathBuf {
+    repo_cache_dir(owner, repo)
+}
 
 /// Check if the "no more runs" marker exists for a repo.
 pub fn is_exhausted(owner: &str, repo: &str) -> bool {
@@ -204,7 +254,7 @@ fn fetch_recent_runs(
     owner: &str,
     repo: &str,
     gh_runs: &[GhRun],
-) -> (Vec<CiRun>, Option<RepoMetaInfo>) {
+) -> (Vec<CiRun>, Option<RepoMetaInfo>, Option<ServiceSignal>) {
     let mut result: Vec<CiRun> = Vec::with_capacity(gh_runs.len());
 
     // Partition into cached hits and misses.
@@ -218,7 +268,8 @@ fn fetch_recent_runs(
     }
 
     // Single GraphQL call: jobs for uncached runs + repo metadata.
-    let (jobs_map, meta) = client.batch_fetch_jobs_and_meta(owner, repo, &uncached);
+    let (batch, signal) = client.batch_fetch_jobs_and_meta(owner, repo, &uncached);
+    let (jobs_map, meta) = batch.unwrap_or_default();
     for gh_run in &uncached {
         if let Some(check_runs) = jobs_map.get(&gh_run.id) {
             let ci_run = ci::build_ci_run(gh_run, check_runs.clone(), repo_url);
@@ -227,7 +278,7 @@ fn fetch_recent_runs(
         }
     }
 
-    (result, meta)
+    (result, meta, signal)
 }
 
 /// Async version of `fetch_recent_runs` for the concurrent scan phase.
@@ -237,7 +288,7 @@ async fn fetch_recent_runs_async(
     owner: &str,
     repo: &str,
     gh_runs: &[GhRun],
-) -> (Vec<CiRun>, Option<RepoMetaInfo>) {
+) -> (Vec<CiRun>, Option<RepoMetaInfo>, Option<ServiceSignal>) {
     let mut result: Vec<CiRun> = Vec::with_capacity(gh_runs.len());
 
     let mut uncached: Vec<&GhRun> = Vec::new();
@@ -249,9 +300,10 @@ async fn fetch_recent_runs_async(
         }
     }
 
-    let (jobs_map, meta) = client
+    let (batch, signal) = client
         .batch_fetch_jobs_and_meta_async(owner, repo, &uncached)
         .await;
+    let (jobs_map, meta) = batch.unwrap_or_default();
     for gh_run in &uncached {
         if let Some(check_runs) = jobs_map.get(&gh_run.id) {
             let ci_run = ci::build_ci_run(gh_run, check_runs.clone(), repo_url);
@@ -260,7 +312,7 @@ async fn fetch_recent_runs_async(
         }
     }
 
-    (result, meta)
+    (result, meta, signal)
 }
 
 /// Async version of `fetch_ci_runs_cached` for the concurrent scan phase.
@@ -270,12 +322,11 @@ async fn fetch_ci_runs_cached_async(
     owner: &str,
     repo: &str,
     count: u32,
-) -> (CiFetchResult, Option<RepoMetaInfo>) {
-    let gh_runs = client
-        .list_runs_async(owner, repo, None, count)
-        .await
-        .unwrap_or_default();
-    let (fetched, meta) = fetch_recent_runs_async(client, repo_url, owner, repo, &gh_runs).await;
+) -> (CiFetchResult, Option<RepoMetaInfo>, Option<ServiceSignal>) {
+    let (gh_runs, list_signal) = client.list_runs_async(owner, repo, None, count).await;
+    let gh_runs = gh_runs.unwrap_or_default();
+    let (fetched, meta, detail_signal) =
+        fetch_recent_runs_async(client, repo_url, owner, repo, &gh_runs).await;
     let cached = load_all_cached_runs(owner, repo);
     let merged = merge_runs(fetched, cached);
 
@@ -284,7 +335,11 @@ async fn fetch_ci_runs_cached_async(
     } else {
         CiFetchResult::Loaded(merged)
     };
-    (result, meta)
+    (
+        result,
+        meta,
+        combine_service_signal(list_signal, detail_signal),
+    )
 }
 
 /// Merge fetched + cached runs, deduplicated by `run_id`, sorted descending.
@@ -319,11 +374,10 @@ pub fn fetch_ci_runs_cached(
     owner: &str,
     repo: &str,
     count: u32,
-) -> (CiFetchResult, Option<RepoMetaInfo>) {
-    let gh_runs = client
-        .list_runs(owner, repo, None, count)
-        .unwrap_or_default();
-    let (fetched, meta) = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
+) -> (CiFetchResult, Option<RepoMetaInfo>, Option<ServiceSignal>) {
+    let (gh_runs, list_signal) = client.list_runs(owner, repo, None, count);
+    let gh_runs = gh_runs.unwrap_or_default();
+    let (fetched, meta, detail_signal) = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
     let cached = load_all_cached_runs(owner, repo);
     let merged = merge_runs(fetched, cached);
 
@@ -332,7 +386,11 @@ pub fn fetch_ci_runs_cached(
     } else {
         CiFetchResult::Loaded(merged)
     };
-    (result, meta)
+    (
+        result,
+        meta,
+        combine_service_signal(list_signal, detail_signal),
+    )
 }
 
 /// Fetch older CI runs beyond what we currently have, by requesting a
@@ -343,21 +401,22 @@ pub fn fetch_older_runs(
     owner: &str,
     repo: &str,
     current_count: u32,
-) -> CiFetchResult {
+) -> (CiFetchResult, Option<ServiceSignal>) {
     let fetch_count = current_count + OLDER_RUNS_FETCH_INCREMENT;
-    let gh_runs = client
-        .list_runs(owner, repo, None, fetch_count)
-        .unwrap_or_default();
-    let (fetched, _meta) = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
+    let (gh_runs, list_signal) = client.list_runs(owner, repo, None, fetch_count);
+    let gh_runs = gh_runs.unwrap_or_default();
+    let (fetched, _meta, detail_signal) =
+        fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
 
     let mut result = fetched;
     result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
 
-    if gh_runs.is_empty() {
+    let result = if gh_runs.is_empty() {
         CiFetchResult::CacheOnly(result)
     } else {
         CiFetchResult::Loaded(result)
-    }
+    };
+    (result, combine_service_signal(list_signal, detail_signal))
 }
 
 /// Re-fetch at the current count to pick up newly created runs without
@@ -368,33 +427,23 @@ pub fn fetch_newer_runs(
     owner: &str,
     repo: &str,
     current_count: u32,
-) -> CiFetchResult {
-    let gh_runs = client
-        .list_runs(owner, repo, None, current_count)
-        .unwrap_or_default();
-    let (mut result, _meta) = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
+) -> (CiFetchResult, Option<ServiceSignal>) {
+    let (gh_runs, list_signal) = client.list_runs(owner, repo, None, current_count);
+    let gh_runs = gh_runs.unwrap_or_default();
+    let (mut result, _meta, detail_signal) =
+        fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
     result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
 
-    if gh_runs.is_empty() {
+    let result = if gh_runs.is_empty() {
         CiFetchResult::CacheOnly(result)
     } else {
         CiFetchResult::Loaded(result)
-    }
-}
-
-/// Sent once per session when the first network operation fails.
-static OFFLINE_NOTIFIED: AtomicBool = AtomicBool::new(false);
-static ONLINE_CHECKED: AtomicBool = AtomicBool::new(false);
-
-/// Send a one-shot offline notification if we haven't already.
-fn notify_offline_once(tx: &mpsc::Sender<BackgroundMsg>) {
-    if !OFFLINE_NOTIFIED.swap(true, Ordering::Relaxed) {
-        let _ = tx.send(BackgroundMsg::NetworkOffline);
-    }
+    };
+    (result, combine_service_signal(list_signal, detail_signal))
 }
 
 pub struct CratesIoInfo {
-    pub version:   String,
+    pub version: String,
     pub downloads: u64,
 }
 
@@ -473,10 +522,10 @@ pub fn build_tree(projects: &[RustProject], inline_dirs: &[String]) -> Vec<Proje
             .any(|ws| project.path.starts_with(&format!("{ws}/")));
         if !under_workspace {
             nodes.push(ProjectNode {
-                project:   project.clone(),
-                groups:    Vec::new(),
+                project: project.clone(),
+                groups: Vec::new(),
                 worktrees: Vec::new(),
-                vendored:  Vec::new(),
+                vendored: Vec::new(),
             });
         }
     }
@@ -572,10 +621,10 @@ fn merge_worktrees(nodes: &mut Vec<ProjectNode>) {
             primary.worktrees.insert(
                 0,
                 ProjectNode {
-                    project:   primary_as_wt,
-                    groups:    primary_groups,
+                    project: primary_as_wt,
+                    groups: primary_groups,
                     worktrees: Vec::new(),
-                    vendored:  Vec::new(),
+                    vendored: Vec::new(),
                 },
             );
         }
@@ -709,20 +758,20 @@ pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
         // Add workspace root itself
         let name = node.project.name.as_deref().unwrap_or(&node.project.path);
         entries.push(FlatEntry {
-            node_index:   ni,
-            group_index:  0,
+            node_index: ni,
+            group_index: 0,
             member_index: 0,
-            name:         name.to_string(),
+            name: name.to_string(),
         });
         // Add all members
         for (gi, group) in node.groups.iter().enumerate() {
             for (mi, member) in group.members.iter().enumerate() {
                 let name = member.name.as_deref().unwrap_or(&member.path);
                 entries.push(FlatEntry {
-                    node_index:   ni,
-                    group_index:  gi,
+                    node_index: ni,
+                    group_index: gi,
                     member_index: mi,
-                    name:         name.to_string(),
+                    name: name.to_string(),
                 });
             }
         }
@@ -732,7 +781,7 @@ pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
 
 /// Shared network context passed to `fetch_project_details`.
 pub struct FetchContext {
-    pub client:     HttpClient,
+    pub client: HttpClient,
     pub repo_cache: RepoCache,
 }
 
@@ -767,19 +816,6 @@ pub fn fetch_project_details(
         });
     }
 
-    // Network operations — check connectivity once per session.
-    let online =
-        if ONLINE_CHECKED.load(Ordering::Relaxed) || OFFLINE_NOTIFIED.load(Ordering::Relaxed) {
-            !OFFLINE_NOTIFIED.load(Ordering::Relaxed)
-        } else {
-            let is_online = client.check_online();
-            ONLINE_CHECKED.store(true, Ordering::Relaxed);
-            if !is_online {
-                notify_offline_once(tx);
-            }
-            is_online
-        };
-
     // CI runs + repo metadata — deduplicated across worktrees of the
     // same repo. First thread to reach a given `owner/repo` does the
     // HTTP calls; subsequent threads reuse the cached result.
@@ -796,48 +832,43 @@ pub fn fetch_project_details(
             let _ = tx.send(BackgroundMsg::ScanActivity {
                 path: format!("CI: {project_path}"),
             });
-            let (result, meta) =
+            let (result, meta, signal) =
                 fetch_ci_runs_cached(client, repo_url, &owner, &repo, ci_run_count);
-            let cache_only = matches!(result, CiFetchResult::CacheOnly(_));
+            emit_service_signal(tx, signal);
             let runs = match result {
                 CiFetchResult::Loaded(r) | CiFetchResult::CacheOnly(r) => r,
             };
-            let data = CachedRepoData {
-                runs,
-                meta,
-                cache_only,
-            };
+            let data = CachedRepoData { runs, meta };
             if let Ok(mut c) = repo_cache.lock() {
                 c.insert(cache_key, data.clone());
             }
             data
         });
 
-        if data.runs.is_empty() && data.cache_only && !online {
-            notify_offline_once(tx);
-        }
         let _ = tx.send(BackgroundMsg::CiRuns {
             path: project_path.to_string(),
             runs: data.runs,
         });
         if let Some(meta) = data.meta {
             let _ = tx.send(BackgroundMsg::RepoMeta {
-                path:        project_path.to_string(),
-                stars:       meta.stars,
+                path: project_path.to_string(),
+                stars: meta.stars,
                 description: meta.description,
             });
         }
     }
 
     // Crates.io version + downloads (network)
-    if let Some(name) = project_name
-        && let Some(info) = client.fetch_crates_io_info(name)
-    {
-        let _ = tx.send(BackgroundMsg::CratesIoVersion {
-            path:      project_path.to_string(),
-            version:   info.version,
-            downloads: info.downloads,
-        });
+    if let Some(name) = project_name {
+        let (info, signal) = client.fetch_crates_io_info(name);
+        emit_service_signal(tx, signal);
+        if let Some(info) = info {
+            let _ = tx.send(BackgroundMsg::CratesIoVersion {
+                path: project_path.to_string(),
+                version: info.version,
+                downloads: info.downloads,
+            });
+        }
     }
 
     if lint_enabled {
@@ -845,7 +876,7 @@ pub fn fetch_project_details(
         let lint = port_report::read_status(abs_path);
         if !matches!(lint, LintStatus::NoLog) {
             let _ = tx.send(BackgroundMsg::LintStatus {
-                path:   project_path.to_string(),
+                path: project_path.to_string(),
                 status: lint,
             });
         }
@@ -862,7 +893,7 @@ pub fn fetch_project_details(
 
 #[derive(Clone)]
 pub struct RepoMetaInfo {
-    pub stars:       u64,
+    pub stars: u64,
     pub description: Option<String>,
 }
 
@@ -871,14 +902,15 @@ pub struct RepoMetaInfo {
 /// HTTP calls.
 #[derive(Clone)]
 pub struct CachedRepoData {
-    runs:       Vec<CiRun>,
-    meta:       Option<RepoMetaInfo>,
-    cache_only: bool,
+    runs: Vec<CiRun>,
+    meta: Option<RepoMetaInfo>,
 }
 
 pub type RepoCache = Arc<Mutex<HashMap<String, CachedRepoData>>>;
 
-pub fn new_repo_cache() -> RepoCache { Arc::new(Mutex::new(HashMap::new())) }
+pub fn new_repo_cache() -> RepoCache {
+    Arc::new(Mutex::new(HashMap::new()))
+}
 
 /// Resolve include-dir entries to absolute paths. Relative entries are
 /// joined to `scan_root`; absolute entries are used as-is. An empty
@@ -903,11 +935,11 @@ pub fn resolve_include_dirs(scan_root: &Path, include_dirs: &[String]) -> Vec<Pa
 /// Information collected in phase 1 (local work) for a single project,
 /// used to drive async HTTP dispatch and disk usage.
 struct DiscoveredProject {
-    path:         String,
-    abs_path:     PathBuf,
-    name:         Option<String>,
-    repo_url:     Option<String>,
-    owner_repo:   Option<(String, String)>,
+    path: String,
+    abs_path: PathBuf,
+    name: Option<String>,
+    repo_url: Option<String>,
+    owner_repo: Option<(String, String)>,
     lint_enabled: bool,
 }
 
@@ -926,21 +958,21 @@ type RepoDispatchMap = Arc<Mutex<HashMap<String, RepoDispatchState>>>;
 
 #[derive(Clone)]
 struct StreamingScanContext {
-    client:        HttpClient,
-    tx:            mpsc::Sender<BackgroundMsg>,
-    ci_run_count:  u32,
-    lint_enabled:  bool,
-    disk_limit:    Arc<tokio::sync::Semaphore>,
-    http_limit:    Arc<tokio::sync::Semaphore>,
+    client: HttpClient,
+    tx: mpsc::Sender<BackgroundMsg>,
+    ci_run_count: u32,
+    lint_enabled: bool,
+    disk_limit: Arc<tokio::sync::Semaphore>,
+    http_limit: Arc<tokio::sync::Semaphore>,
     repo_dispatch: RepoDispatchMap,
 }
 
 struct RepoFetchRequest {
-    key:          String,
+    key: String,
     project_path: String,
-    repo_url:     String,
-    owner:        String,
-    repo:         String,
+    repo_url: String,
+    owner: String,
+    repo: String,
 }
 
 /// Spawn a streaming scan using a hybrid approach:
@@ -978,7 +1010,6 @@ pub fn spawn_streaming_scan(
             repo_dispatch: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        spawn_connectivity_check(&scan_context);
         phase1_discover(&root, &scan_dirs, non_rust, &scan_context);
         let _ = scan_tx.send(BackgroundMsg::ScanComplete);
     });
@@ -1180,10 +1211,6 @@ fn finish_repo_fetch(
 }
 
 fn send_repo_data(tx: &mpsc::Sender<BackgroundMsg>, paths: &[String], data: &CachedRepoData) {
-    if data.runs.is_empty() && data.cache_only {
-        notify_offline_once(tx);
-    }
-
     for path in paths {
         let _ = tx.send(BackgroundMsg::CiRuns {
             path: path.clone(),
@@ -1191,36 +1218,12 @@ fn send_repo_data(tx: &mpsc::Sender<BackgroundMsg>, paths: &[String], data: &Cac
         });
         if let Some(meta) = &data.meta {
             let _ = tx.send(BackgroundMsg::RepoMeta {
-                path:        path.clone(),
-                stars:       meta.stars,
+                path: path.clone(),
+                stars: meta.stars,
                 description: meta.description.clone(),
             });
         }
     }
-}
-
-fn spawn_connectivity_check(scan_context: &StreamingScanContext) {
-    let client = scan_context.client.clone();
-    let handle = client.handle.clone();
-    let tx = scan_context.tx.clone();
-    let http_limit = Arc::clone(&scan_context.http_limit);
-
-    handle.spawn(async move {
-        if ONLINE_CHECKED.load(Ordering::Relaxed) || OFFLINE_NOTIFIED.load(Ordering::Relaxed) {
-            return;
-        }
-        let Ok(_permit) = http_limit.acquire_owned().await else {
-            return;
-        };
-        if ONLINE_CHECKED.load(Ordering::Relaxed) || OFFLINE_NOTIFIED.load(Ordering::Relaxed) {
-            return;
-        }
-        let is_online = client.check_online_async().await;
-        ONLINE_CHECKED.store(true, Ordering::Relaxed);
-        if !is_online {
-            notify_offline_once(&tx);
-        }
-    });
 }
 
 fn spawn_repo_fetch(scan_context: &StreamingScanContext, request: RepoFetchRequest) {
@@ -1238,7 +1241,7 @@ fn spawn_repo_fetch(scan_context: &StreamingScanContext, request: RepoFetchReque
         let _ = tx.send(BackgroundMsg::ScanActivity {
             path: format!("CI: {}", request.project_path),
         });
-        let (result, meta) = fetch_ci_runs_cached_async(
+        let (result, meta, signal) = fetch_ci_runs_cached_async(
             &client,
             &request.repo_url,
             &request.owner,
@@ -1246,13 +1249,12 @@ fn spawn_repo_fetch(scan_context: &StreamingScanContext, request: RepoFetchReque
             ci_run_count,
         )
         .await;
-        let cache_only = matches!(&result, CiFetchResult::CacheOnly(_));
+        emit_service_signal(&tx, signal);
         let data = CachedRepoData {
             runs: match result {
                 CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
             },
             meta,
-            cache_only,
         };
         let paths = finish_repo_fetch(&repo_dispatch, &request.key, data.clone());
         send_repo_data(&tx, &paths, &data);
@@ -1277,10 +1279,12 @@ fn spawn_crates_fetch(
         let Ok(_permit) = http_limit.acquire_owned().await else {
             return;
         };
-        if let Some(info) = client.fetch_crates_io_info_async(&crate_name).await {
+        let (info, signal) = client.fetch_crates_io_info_async(&crate_name).await;
+        emit_service_signal(&tx, signal);
+        if let Some(info) = info {
             let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                path:      project_path,
-                version:   info.version,
+                path: project_path,
+                version: info.version,
                 downloads: info.downloads,
             });
         }
@@ -1311,7 +1315,7 @@ fn phase1_local_work(
         let lint = port_report::read_status(&project.abs_path);
         if !matches!(lint, LintStatus::NoLog) {
             let _ = tx.send(BackgroundMsg::LintStatus {
-                path:   project.path.clone(),
+                path: project.path.clone(),
                 status: lint,
             });
         }
@@ -1460,7 +1464,7 @@ mod tests {
             WorkspaceStatus::Standalone,
         );
         let groups = vec![MemberGroup {
-            name:    String::new(),
+            name: String::new(),
             members: vec![member_a, member_b],
         }];
 

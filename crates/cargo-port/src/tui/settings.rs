@@ -16,7 +16,6 @@ use super::app::App;
 use super::constants::SETTINGS_POPUP_WIDTH;
 use super::render;
 use crate::config;
-use crate::config::LintCommandConfig;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingOption {
@@ -47,7 +46,9 @@ impl SettingOption {
         }
     }
 
-    pub(super) const fn count() -> usize { 9 }
+    pub(super) const fn count() -> usize {
+        9
+    }
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
@@ -88,13 +89,7 @@ fn format_port_report_commands(cfg: &config::Config) -> String {
     };
     commands
         .iter()
-        .map(|command| {
-            if command.name.trim().is_empty() {
-                command.command.trim().to_string()
-            } else {
-                command.name.trim().to_string()
-            }
-        })
+        .map(|command| command.command.trim().to_string())
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -233,16 +228,57 @@ fn push_wrapped_value_row(
     }
 }
 
-fn parse_port_report_commands(value: &str) -> Option<Vec<LintCommandConfig>> {
-    let names = parse_dir_list(value);
-    if names.is_empty() {
-        return Some(Vec::new());
-    }
+fn prev_char_boundary(s: &str, cursor: usize) -> usize {
+    s[..cursor].char_indices().last().map_or(0, |(idx, _)| idx)
+}
 
-    names
-        .into_iter()
-        .map(|name| config::builtin_lint_command(&name))
-        .collect()
+fn next_char_boundary(s: &str, cursor: usize) -> usize {
+    s[cursor..]
+        .chars()
+        .next()
+        .map_or(s.len(), |ch| cursor + ch.len_utf8())
+}
+
+fn render_edit_buffer(buf: &str, cursor: usize) -> String {
+    let mut rendered = String::with_capacity(buf.len() + 1);
+    rendered.push_str(&buf[..cursor]);
+    rendered.push('_');
+    rendered.push_str(&buf[cursor..]);
+    rendered
+}
+
+fn insert_char_at_cursor(buf: &mut String, cursor: &mut usize, ch: char) {
+    buf.insert(*cursor, ch);
+    *cursor += ch.len_utf8();
+}
+
+fn backspace_at_cursor(buf: &mut String, cursor: &mut usize) {
+    if *cursor == 0 {
+        return;
+    }
+    let prev = prev_char_boundary(buf, *cursor);
+    buf.drain(prev..*cursor);
+    *cursor = prev;
+}
+
+fn delete_at_cursor(buf: &mut String, cursor: usize) {
+    if cursor >= buf.len() {
+        return;
+    }
+    let next = next_char_boundary(buf, cursor);
+    buf.drain(cursor..next);
+}
+
+fn parse_port_report_commands(value: &str) -> Vec<config::LintCommandConfig> {
+    config::normalize_lint_commands(
+        &parse_dir_list(value)
+            .into_iter()
+            .map(|command| config::LintCommandConfig {
+                name: String::new(),
+                command,
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
@@ -353,7 +389,7 @@ pub(super) fn build_settings_lines(
             push_wrapped_value_row(
                 lines,
                 &label,
-                &format!("{}_", app.settings_edit_buf),
+                &render_edit_buffer(&app.settings_edit_buf, app.settings_edit_cursor),
                 Style::default().fg(Color::Yellow),
                 Style::default().fg(Color::Yellow),
                 content_width,
@@ -464,24 +500,29 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
                 let cfg = config::load();
                 app.settings_edit_buf = cfg.tui.ci_run_count.to_string();
                 app.settings_editing = true;
+                app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::InlineDirs) => {
                 app.settings_edit_buf = app.inline_dirs.join(", ");
                 app.settings_editing = true;
+                app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::IncludeDirs) => {
                 app.settings_edit_buf = app.include_dirs.join(", ");
                 app.settings_editing = true;
+                app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::PortReportProjects) => {
                 let cfg = config::load();
                 app.settings_edit_buf = cfg.lint.include.join(", ");
                 app.settings_editing = true;
+                app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::PortReportCommands) => {
                 let cfg = config::load();
                 app.settings_edit_buf = format_port_report_commands(&cfg);
                 app.settings_editing = true;
+                app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::IncludeNonRust) => {
                 app.include_non_rust.toggle();
@@ -496,6 +537,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
             Some(SettingOption::Editor) => {
                 app.settings_edit_buf.clone_from(&app.editor);
                 app.settings_editing = true;
+                app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             None => {},
         },
@@ -555,36 +597,48 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                     ));
                 },
                 Some(SettingOption::PortReportCommands) => {
-                    if let Some(commands) = parse_port_report_commands(&value) {
-                        let mut cfg = config::load();
-                        cfg.lint.commands = commands;
-                        let _ = config::save(&cfg);
-                        app.apply_lint_runtime_setting(&cfg);
-                        app.status_flash = Some((
-                            "Port Report commands updated".to_string(),
-                            std::time::Instant::now(),
-                        ));
-                    } else {
-                        app.status_flash = Some((
-                            "Unknown Port Report command preset".to_string(),
-                            std::time::Instant::now(),
-                        ));
-                    }
+                    let mut cfg = config::load();
+                    cfg.lint.commands = parse_port_report_commands(&value);
+                    let _ = config::save(&cfg);
+                    app.apply_lint_runtime_setting(&cfg);
+                    app.status_flash = Some((
+                        "Port Report commands updated".to_string(),
+                        std::time::Instant::now(),
+                    ));
                 },
                 _ => {},
             }
             app.settings_editing = false;
             app.settings_edit_buf.clear();
+            app.settings_edit_cursor = 0;
         },
         KeyCode::Esc => {
             app.settings_editing = false;
             app.settings_edit_buf.clear();
+            app.settings_edit_cursor = 0;
+        },
+        KeyCode::Left => {
+            app.settings_edit_cursor =
+                prev_char_boundary(&app.settings_edit_buf, app.settings_edit_cursor);
+        },
+        KeyCode::Right => {
+            app.settings_edit_cursor =
+                next_char_boundary(&app.settings_edit_buf, app.settings_edit_cursor);
+        },
+        KeyCode::Home => {
+            app.settings_edit_cursor = 0;
+        },
+        KeyCode::End => {
+            app.settings_edit_cursor = app.settings_edit_buf.len();
         },
         KeyCode::Backspace => {
-            app.settings_edit_buf.pop();
+            backspace_at_cursor(&mut app.settings_edit_buf, &mut app.settings_edit_cursor);
+        },
+        KeyCode::Delete => {
+            delete_at_cursor(&mut app.settings_edit_buf, app.settings_edit_cursor);
         },
         KeyCode::Char(c) => {
-            app.settings_edit_buf.push(c);
+            insert_char_at_cursor(&mut app.settings_edit_buf, &mut app.settings_edit_cursor, c);
         },
         _ => {},
     }
@@ -642,17 +696,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_port_report_commands_accepts_builtin_presets() {
-        let commands =
-            parse_port_report_commands("mend, clippy").expect("builtin presets should parse");
+    fn parse_port_report_commands_accepts_builtin_commands() {
+        let commands = parse_port_report_commands(
+            "cargo mend --manifest-path \"$MANIFEST_PATH\", cargo clippy --workspace",
+        );
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].name, "mend");
         assert_eq!(commands[1].name, "clippy");
     }
 
     #[test]
-    fn parse_port_report_commands_rejects_unknown_presets() {
-        assert!(parse_port_report_commands("fmt").is_none());
+    fn parse_port_report_commands_accepts_arbitrary_shell_commands() {
+        let commands = parse_port_report_commands("something --else");
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "something");
+        assert_eq!(commands[0].command, "something --else");
     }
 
     #[test]
@@ -680,5 +738,41 @@ mod tests {
         for line in &lines[1..] {
             assert_eq!(line.spans[0].content.as_ref(), "                ");
         }
+    }
+
+    #[test]
+    fn edit_buffer_renders_cursor_in_place() {
+        assert_eq!(render_edit_buffer("hana", 0), "_hana");
+        assert_eq!(render_edit_buffer("hana", 2), "ha_na");
+        assert_eq!(render_edit_buffer("hana", 4), "hana_");
+    }
+
+    #[test]
+    fn cursor_edit_helpers_support_in_place_editing() {
+        let mut buf = "hana".to_string();
+        let mut cursor = 2;
+
+        insert_char_at_cursor(&mut buf, &mut cursor, 'X');
+        assert_eq!(buf, "haXna");
+        assert_eq!(cursor, 3);
+
+        backspace_at_cursor(&mut buf, &mut cursor);
+        assert_eq!(buf, "hana");
+        assert_eq!(cursor, 2);
+
+        delete_at_cursor(&mut buf, cursor);
+        assert_eq!(buf, "haa");
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn cursor_movement_respects_char_boundaries() {
+        let text = "a🦀b";
+        let crab = "🦀".len();
+
+        assert_eq!(next_char_boundary(text, 0), 1);
+        assert_eq!(next_char_boundary(text, 1), 1 + crab);
+        assert_eq!(prev_char_boundary(text, text.len()), 1 + crab);
+        assert_eq!(prev_char_boundary(text, 1 + crab), 1);
     }
 }

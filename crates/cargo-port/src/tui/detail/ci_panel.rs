@@ -1,0 +1,376 @@
+use ratatui::Frame;
+use ratatui::layout::Constraint;
+use ratatui::style::Color;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::widgets::Block;
+use ratatui::widgets::Borders;
+use ratatui::widgets::Cell;
+use ratatui::widgets::Row;
+use ratatui::widgets::Table;
+use ratatui::widgets::TableState;
+use unicode_width::UnicodeWidthStr;
+
+use super::super::animation::BRAILLE_SPINNER;
+use super::super::app::App;
+use super::super::app::CiState;
+use super::super::constants::CI_EXTRA_ROWS;
+use super::super::constants::CI_TIMESTAMP_WIDTH;
+use super::super::render::CiColumn;
+use super::super::types::PaneId;
+use super::format_timestamp;
+use crate::ci;
+use crate::ci::CiRun;
+use crate::ci::Conclusion;
+use crate::scan;
+
+/// Build the header `Row` for the CI table from the given columns.
+fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
+    let right_aligned = Style::default()
+        .add_modifier(Modifier::BOLD)
+        .fg(Color::DarkGray);
+    let mut header_cells = vec![
+        Cell::from("Commit").style(right_aligned),
+        Cell::from("Branch").style(right_aligned),
+        Cell::from("Timestamp").style(right_aligned),
+    ];
+    for col in cols {
+        header_cells.push(
+            Cell::from(
+                ratatui::text::Line::from(col.label()).alignment(ratatui::layout::Alignment::Right),
+            )
+            .style(right_aligned),
+        );
+        header_cells.push(Cell::from(""));
+    }
+    header_cells.push(
+        Cell::from(ratatui::text::Line::from("Total").alignment(ratatui::layout::Alignment::Right))
+            .style(right_aligned),
+    );
+    header_cells.push(Cell::from(""));
+    Row::new(header_cells).bottom_margin(0)
+}
+
+pub(super) const CI_COMPACT_DURATION_WIDTH: usize = 2;
+
+/// Build one data `Row` for a single `CiRun`.
+fn build_ci_data_row(
+    ci_run: &CiRun,
+    cols: &[CiColumn],
+    remembered: bool,
+    show_durations: bool,
+) -> Row<'static> {
+    let timestamp = format_timestamp(&ci_run.created_at);
+    let total_dur = ci_run
+        .wall_clock_secs
+        .map_or_else(|| "—".to_string(), ci::format_secs);
+
+    let commit = ci_run.commit_title.as_deref().unwrap_or("");
+    let commit_style = if remembered {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let mut cells = vec![
+        Cell::from(commit.to_string()).style(commit_style),
+        Cell::from(ci_run.branch.clone()),
+        Cell::from(timestamp),
+    ];
+
+    for col in cols {
+        let job = ci_run.jobs.iter().find(|job| col.matches(&job.name));
+        if let Some(job) = job {
+            let style = super::super::render::conclusion_style(Some(job.conclusion));
+            cells.push(
+                Cell::from(
+                    ratatui::text::Line::from(if show_durations {
+                        job.duration.trim().to_string()
+                    } else {
+                        String::new()
+                    })
+                    .alignment(ratatui::layout::Alignment::Right),
+                )
+                .style(style),
+            );
+            cells.push(Cell::from(job.conclusion.icon().to_string()).style(style));
+        } else {
+            cells.push(
+                Cell::from(
+                    ratatui::text::Line::from("—").alignment(ratatui::layout::Alignment::Right),
+                )
+                .style(Style::default().fg(Color::DarkGray)),
+            );
+            cells.push(Cell::from(""));
+        }
+    }
+
+    let total_style = super::super::render::conclusion_style(Some(ci_run.conclusion));
+    cells.push(
+        Cell::from(
+            ratatui::text::Line::from(if show_durations {
+                total_dur.trim().to_string()
+            } else {
+                String::new()
+            })
+            .alignment(ratatui::layout::Alignment::Right),
+        )
+        .style(total_style),
+    );
+    cells.push(Cell::from(ci_run.conclusion.icon().to_string()).style(total_style));
+
+    Row::new(cells)
+}
+
+/// Build column width constraints for the CI table based on content.
+///
+/// Duration, timestamp, branch, and glyph columns use `Length` (exact
+/// fit-to-content). Commit uses `Fill` to absorb all remaining space.
+fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -> Vec<Constraint> {
+    let branch_width = u16::try_from(
+        ci_runs
+            .iter()
+            .map(|run| run.branch.len())
+            .max()
+            .unwrap_or("Branch".len())
+            .max("Branch".len()),
+    )
+    .unwrap_or(u16::MAX);
+    let glyph_width = u16::try_from(
+        Conclusion::Success
+            .icon()
+            .width()
+            .max(Conclusion::Failure.icon().width()),
+    )
+    .unwrap_or(u16::MAX);
+    let mut widths = vec![
+        Constraint::Fill(1),
+        Constraint::Length(branch_width),
+        Constraint::Length(CI_TIMESTAMP_WIDTH),
+    ];
+    for col in cols {
+        let width =
+            u16::try_from(ci_duration_width(ci_runs, *col, show_durations)).unwrap_or(u16::MAX);
+        widths.push(Constraint::Length(width));
+        widths.push(Constraint::Length(glyph_width));
+    }
+    let total_width = u16::try_from(ci_total_width(ci_runs, show_durations)).unwrap_or(u16::MAX);
+    widths.push(Constraint::Length(total_width));
+    widths.push(Constraint::Length(glyph_width));
+    widths
+}
+
+fn ci_duration_width(ci_runs: &[CiRun], col: CiColumn, show_durations: bool) -> usize {
+    if show_durations {
+        ci_duration_min_width(ci_runs, col)
+    } else {
+        CI_COMPACT_DURATION_WIDTH
+    }
+}
+
+/// Minimum width for a CI duration column: the wider of the header label
+/// and the widest duration value across all runs.
+fn ci_duration_min_width(ci_runs: &[CiRun], col: CiColumn) -> usize {
+    let max_data = ci_runs
+        .iter()
+        .filter_map(|run| run.jobs.iter().find(|job| col.matches(&job.name)))
+        .map(|job| job.duration.trim().len())
+        .max()
+        .unwrap_or(0);
+    col.label().len().max(max_data)
+}
+
+pub(super) fn ci_total_width(ci_runs: &[CiRun], show_durations: bool) -> usize {
+    if show_durations {
+        ci_total_min_width(ci_runs)
+    } else {
+        CI_COMPACT_DURATION_WIDTH
+    }
+}
+
+/// Minimum width for the Total duration column.
+fn ci_total_min_width(ci_runs: &[CiRun]) -> usize {
+    let max_data = ci_runs
+        .iter()
+        .filter_map(|run| run.wall_clock_secs)
+        .map(|seconds| ci::format_secs(seconds).trim().len())
+        .max()
+        .unwrap_or(0);
+    "Total".len().max(max_data)
+}
+
+fn ci_table_fixed_width(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -> usize {
+    let glyph_width = Conclusion::Success
+        .icon()
+        .width()
+        .max(Conclusion::Failure.icon().width());
+    let branch_width = ci_runs
+        .iter()
+        .map(|run| run.branch.len())
+        .max()
+        .unwrap_or("Branch".len())
+        .max("Branch".len());
+    let column_count = 1 + 2 + (cols.len() * 2) + 2;
+    let base = branch_width + usize::from(CI_TIMESTAMP_WIDTH);
+    let job_columns: usize = cols
+        .iter()
+        .map(|col| ci_duration_width(ci_runs, *col, show_durations) + glyph_width)
+        .sum();
+    let total = ci_total_width(ci_runs, show_durations) + glyph_width;
+    base + job_columns + total + column_count.saturating_sub(1)
+}
+
+pub(super) fn ci_table_shows_durations(
+    ci_runs: &[CiRun],
+    cols: &[CiColumn],
+    inner_width: u16,
+) -> bool {
+    ci_table_fixed_width(ci_runs, cols, true) <= usize::from(inner_width)
+}
+
+fn selected_ci_state(app: &App) -> Option<&CiState> {
+    app.selected_project()
+        .and_then(|project| app.ci_state_for(project))
+}
+
+fn ci_panel_title(
+    total: usize,
+    cached: usize,
+    is_fetching: bool,
+    fetch_count: u32,
+    elapsed: std::time::Duration,
+) -> String {
+    if is_fetching {
+        let spinner = BRAILLE_SPINNER.frame_at(elapsed);
+        format!(" CI Runs {spinner} fetching {fetch_count} more… ")
+    } else {
+        format!(" CI Runs (cached {cached}, total {total}) ")
+    }
+}
+
+fn build_fetch_row(
+    widths_len: usize,
+    is_fetching: bool,
+    is_exhausted: bool,
+    fetch_count: u32,
+    elapsed: std::time::Duration,
+) -> Row<'static> {
+    let fetch_label = if is_fetching {
+        let spinner = BRAILLE_SPINNER.frame_at(elapsed);
+        format!("{spinner} fetching {fetch_count} more…")
+    } else if is_exhausted {
+        "↓ fetch new runs".to_string()
+    } else {
+        "↓ fetch more runs".to_string()
+    };
+    let fetch_style = Style::default().fg(Color::Cyan);
+    let mut fetch_cells: Vec<Cell> = vec![Cell::from(fetch_label).style(fetch_style)];
+    for _ in 1..widths_len {
+        fetch_cells.push(Cell::from(""));
+    }
+    Row::new(fetch_cells)
+}
+
+pub fn render_ci_panel(
+    frame: &mut Frame,
+    app: &mut App,
+    ci_runs: &[CiRun],
+    area: ratatui::layout::Rect,
+) {
+    let ci_focused = app.is_focused(PaneId::CiRuns);
+
+    let total = ci_runs.len();
+    let cached = app
+        .selected_project()
+        .and_then(|project| app.git_info.get(&project.path))
+        .and_then(|git| git.url.as_ref())
+        .and_then(|url| ci::parse_owner_repo(url))
+        .map_or(0, |(owner, repo)| scan::count_cached_runs(&owner, &repo));
+
+    let ci_state = selected_ci_state(app);
+    let is_fetching = ci_state.is_some_and(CiState::is_fetching);
+    let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
+    let fetch_count = ci_state.map_or(0, CiState::fetch_count);
+    let elapsed = app.animation_elapsed();
+    let title = ci_panel_title(total, cached, is_fetching, fetch_count, elapsed);
+
+    let ci_block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+        .border_style(if ci_focused {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        });
+
+    let inner = ci_block.inner(area);
+    app.ci_pane.set_len(ci_runs.len() + CI_EXTRA_ROWS);
+    app.ci_pane.set_content_area(inner);
+
+    let all_columns = [
+        CiColumn::Fmt,
+        CiColumn::Taplo,
+        CiColumn::Clippy,
+        CiColumn::Mend,
+        CiColumn::Build,
+        CiColumn::Test,
+        CiColumn::Bench,
+    ];
+    let cols: Vec<CiColumn> = all_columns
+        .into_iter()
+        .filter(|col| {
+            ci_runs
+                .iter()
+                .any(|run| run.jobs.iter().any(|job| col.matches(&job.name)))
+        })
+        .collect();
+    let show_durations = ci_table_shows_durations(ci_runs, &cols, inner.width);
+
+    let header = build_ci_header_row(&cols);
+
+    let mut rows: Vec<Row> = ci_runs
+        .iter()
+        .enumerate()
+        .map(|(index, ci_run)| {
+            build_ci_data_row(
+                ci_run,
+                &cols,
+                !ci_focused
+                    && index == app.ci_pane.pos()
+                    && app.remembers_selection(PaneId::CiRuns),
+                show_durations,
+            )
+        })
+        .collect();
+
+    let widths = build_ci_widths(ci_runs, &cols, show_durations);
+    rows.push(build_fetch_row(
+        widths.len(),
+        is_fetching,
+        is_exhausted,
+        fetch_count,
+        elapsed,
+    ));
+
+    let highlight_style = if ci_focused {
+        Style::default().fg(Color::Black).bg(Color::Cyan)
+    } else {
+        Style::default()
+    };
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(ci_block)
+        .column_spacing(1)
+        .row_highlight_style(highlight_style);
+
+    let mut table_state = TableState::default().with_selected(Some(app.ci_pane.pos()));
+    frame.render_stateful_widget(table, area, &mut table_state);
+    app.ci_pane.set_scroll_offset(table_state.offset());
+}

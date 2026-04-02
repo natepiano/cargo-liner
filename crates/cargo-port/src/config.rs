@@ -18,15 +18,21 @@ pub enum NonRustInclusion {
 }
 
 impl From<bool> for NonRustInclusion {
-    fn from(b: bool) -> Self { if b { Self::Include } else { Self::Exclude } }
+    fn from(b: bool) -> Self {
+        if b { Self::Include } else { Self::Exclude }
+    }
 }
 
 impl From<NonRustInclusion> for bool {
-    fn from(val: NonRustInclusion) -> Self { matches!(val, NonRustInclusion::Include) }
+    fn from(val: NonRustInclusion) -> Self {
+        matches!(val, NonRustInclusion::Include)
+    }
 }
 
 impl NonRustInclusion {
-    pub const fn includes_non_rust(self) -> bool { matches!(self, Self::Include) }
+    pub const fn includes_non_rust(self) -> bool {
+        matches!(self, Self::Include)
+    }
 
     pub const fn toggle(&mut self) {
         *self = match *self {
@@ -46,15 +52,21 @@ pub enum ScrollDirection {
 }
 
 impl From<bool> for ScrollDirection {
-    fn from(b: bool) -> Self { if b { Self::Inverted } else { Self::Normal } }
+    fn from(b: bool) -> Self {
+        if b { Self::Inverted } else { Self::Normal }
+    }
 }
 
 impl From<ScrollDirection> for bool {
-    fn from(val: ScrollDirection) -> Self { matches!(val, ScrollDirection::Inverted) }
+    fn from(val: ScrollDirection) -> Self {
+        matches!(val, ScrollDirection::Inverted)
+    }
 }
 
 impl ScrollDirection {
-    pub const fn is_inverted(self) -> bool { matches!(self, Self::Inverted) }
+    pub const fn is_inverted(self) -> bool {
+        matches!(self, Self::Inverted)
+    }
 
     pub const fn toggle(&mut self) {
         *self = match *self {
@@ -76,7 +88,7 @@ pub struct CacheConfig {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LintCommandConfig {
     #[serde(default)]
-    pub name:    String,
+    pub name: String,
     #[serde(default)]
     pub command: String,
 }
@@ -99,39 +111,88 @@ pub struct LintConfig {
     pub exclude: Vec<String>,
 
     /// Commands to run when a watched project changes. Empty falls back to the
-    /// built-in `cargo mend` + `cargo clippy` pair.
+    /// built-in clippy command.
     #[config(default = [])]
     pub commands: Vec<LintCommandConfig>,
 }
 
 impl LintConfig {
     pub fn resolved_commands(&self) -> Vec<LintCommandConfig> {
-        if self.commands.is_empty() {
-            return vec![LintCommandConfig {
-                name:    "clippy".to_string(),
-                command:
-                    "cargo clippy --workspace --all-targets --all-features --manifest-path \"$MANIFEST_PATH\" -- -D warnings"
-                        .to_string(),
-            }];
+        let commands = normalize_lint_commands(&self.commands);
+        if commands.is_empty() {
+            return vec![default_clippy_lint_command()];
         }
-        self.commands.clone()
+        commands
+    }
+}
+
+pub fn default_clippy_lint_command() -> LintCommandConfig {
+    LintCommandConfig {
+        name:    "clippy".to_string(),
+        command:
+            "cargo clippy --workspace --all-targets --all-features --manifest-path \"$MANIFEST_PATH\" -- -D warnings"
+                .to_string(),
     }
 }
 
 pub fn builtin_lint_command(name: &str) -> Option<LintCommandConfig> {
     match name.trim().to_ascii_lowercase().as_str() {
         "mend" => Some(LintCommandConfig {
-            name:    "mend".to_string(),
+            name: "mend".to_string(),
             command: "cargo mend --manifest-path \"$MANIFEST_PATH\"".to_string(),
         }),
-        "clippy" => Some(LintCommandConfig {
-            name:    "clippy".to_string(),
-            command:
-                "cargo clippy --workspace --all-targets --all-features --manifest-path \"$MANIFEST_PATH\" -- -D warnings"
-                    .to_string(),
-        }),
+        "clippy" => Some(default_clippy_lint_command()),
         _ => None,
     }
+}
+
+pub fn infer_lint_command_name(command: &str) -> String {
+    let mut parts = command.split_whitespace();
+    let Some(first) = parts.next() else {
+        return String::new();
+    };
+
+    if first == "cargo" {
+        if let Some(second) = parts.next()
+            && !second.starts_with('-')
+        {
+            return second.to_string();
+        }
+        return "cargo".to_string();
+    }
+
+    Path::new(first)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(first)
+        .to_string()
+}
+
+fn normalize_lint_command(command: &LintCommandConfig) -> Option<LintCommandConfig> {
+    let name = command.name.trim();
+    let command_str = command.command.trim();
+
+    if command_str.is_empty() {
+        return builtin_lint_command(name);
+    }
+
+    Some(LintCommandConfig {
+        name: if name.is_empty() {
+            infer_lint_command_name(command_str)
+        } else {
+            name.to_string()
+        },
+        command: command_str.to_string(),
+    })
+}
+
+pub fn normalize_lint_commands(commands: &[LintCommandConfig]) -> Vec<LintCommandConfig> {
+    commands.iter().filter_map(normalize_lint_command).collect()
+}
+
+pub fn normalize_config(mut config: Config) -> Config {
+    config.lint.commands = normalize_lint_commands(&config.lint.commands);
+    config
 }
 
 /// Top-level application configuration.
@@ -142,9 +203,9 @@ pub struct Config {
     #[config(nested)]
     pub mouse: MouseConfig,
     #[config(nested)]
-    pub tui:   TuiConfig,
+    pub tui: TuiConfig,
     #[config(nested)]
-    pub lint:  LintConfig,
+    pub lint: LintConfig,
 }
 
 /// TUI display and behaviour settings.
@@ -183,11 +244,11 @@ pub struct TuiConfig {
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            inline_dirs:       vec!["crates".to_string()],
-            ci_run_count:      5,
-            include_dirs:      Vec::new(),
-            include_non_rust:  NonRustInclusion::Exclude,
-            editor:            "zed".to_string(),
+            inline_dirs: vec!["crates".to_string()],
+            ci_run_count: 5,
+            include_dirs: Vec::new(),
+            include_non_rust: NonRustInclusion::Exclude,
+            editor: "zed".to_string(),
             status_flash_secs: 3.0,
         }
     }
@@ -222,7 +283,7 @@ pub fn load() -> Config {
         let _ = create_default_config(&path);
     }
 
-    Config::builder().file(&path).load().unwrap_or_default()
+    normalize_config(Config::builder().file(&path).load().unwrap_or_default())
 }
 
 fn create_default_config(path: &Path) -> Result<(), String> {
@@ -247,8 +308,9 @@ pub fn save(config: &Config) -> Result<(), String> {
             .map_err(|e| format!("Failed to create config directory: {e}"))?;
     }
 
+    let config = normalize_config(config.clone());
     let contents =
-        toml::to_string_pretty(config).map_err(|e| format!("Failed to serialize config: {e}"))?;
+        toml::to_string_pretty(&config).map_err(|e| format!("Failed to serialize config: {e}"))?;
 
     std::fs::write(&path, contents).map_err(|e| format!("Failed to write config: {e}"))?;
 
@@ -430,6 +492,42 @@ mod tests {
         assert_eq!(cfg.lint.commands[0].name, "fmt");
         assert_eq!(cfg.lint.commands[0].command, "cargo fmt --check");
         assert_eq!(cfg.lint.commands[1].name, "clippy");
+    }
+
+    #[test]
+    fn normalize_config_resolves_builtin_name_only_commands() {
+        let cfg = normalize_config(Config {
+            lint: LintConfig {
+                commands: vec![LintCommandConfig {
+                    name: "clippy".to_string(),
+                    command: String::new(),
+                }],
+                ..LintConfig::default()
+            },
+            ..Config::default()
+        });
+
+        assert_eq!(cfg.lint.commands.len(), 1);
+        assert_eq!(cfg.lint.commands[0].name, "clippy");
+        assert!(cfg.lint.commands[0].command.contains("cargo clippy"));
+    }
+
+    #[test]
+    fn normalize_config_names_raw_commands() {
+        let cfg = normalize_config(Config {
+            lint: LintConfig {
+                commands: vec![LintCommandConfig {
+                    name: String::new(),
+                    command: "cargo fmt --check".to_string(),
+                }],
+                ..LintConfig::default()
+            },
+            ..Config::default()
+        });
+
+        assert_eq!(cfg.lint.commands.len(), 1);
+        assert_eq!(cfg.lint.commands[0].name, "fmt");
+        assert_eq!(cfg.lint.commands[0].command, "cargo fmt --check");
     }
 
     /// Empty lint command config falls back to the built-in clippy command.

@@ -81,11 +81,11 @@ commands = []
 Notes:
 - `include` entries can be bare project names, display-path prefixes, or absolute-path prefixes
 - `exclude` is applied after `include`
-- an empty `commands` list uses the built-in default command set
+- an empty `commands` list uses the built-in default command
 
 #### Commands
 
-The released default is `clippy` only.
+The released default is a single clippy command:
 
 ```toml
 [lint]
@@ -93,6 +93,14 @@ enabled = true
 include = ["cargo-port"]
 exclude = []
 commands = []
+```
+
+That expands to:
+
+```toml
+[[lint.commands]]
+name = "clippy"
+command = "cargo clippy --workspace --all-targets --all-features --manifest-path \"$MANIFEST_PATH\" -- -D warnings"
 ```
 
 If you want to override that, you can configure explicit commands:
@@ -111,9 +119,11 @@ name = "clippy"
 command = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 ```
 
-In the Settings popup, `Commands` currently supports the built-in presets:
-- `clippy`
-- `mend, clippy`
+`command` is executed as a shell command in the project root, not as an implied Cargo subcommand. That means values like `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features --manifest-path "$MANIFEST_PATH" -- -D warnings`, or `something --else` are all valid.
+
+In the Settings popup, `Commands` accepts a comma-separated list of full shell commands.
+
+Legacy preset-style entries such as `clippy` or `mend` are normalized to their built-in command definitions when config is loaded or saved.
 
 #### Cache location
 

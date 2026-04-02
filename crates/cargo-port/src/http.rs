@@ -7,20 +7,61 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::process::Command;
+use std::time::Duration;
 
 use serde::Deserialize;
 
 use super::ci::GhRun;
 use super::ci::GqlCheckRun;
 use super::constants::APP_NAME;
-use super::constants::CONNECTIVITY_CHECK_URL;
 use super::constants::CRATES_IO_API_BASE;
 use super::constants::CRATES_IO_USER_AGENT;
 use super::constants::GH_TIMEOUT;
 use super::constants::GITHUB_API_BASE;
 use super::constants::GITHUB_GRAPHQL_URL;
+use super::constants::SERVICE_RETRY_SECS;
 use super::scan::CratesIoInfo;
 use super::scan::RepoMetaInfo;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum ServiceKind {
+    GitHub,
+    CratesIo,
+}
+
+impl ServiceKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::GitHub => "GitHub",
+            Self::CratesIo => "crates.io",
+        }
+    }
+
+    const fn probe_url(self) -> &'static str {
+        match self {
+            Self::GitHub => GITHUB_API_BASE,
+            Self::CratesIo => CRATES_IO_API_BASE,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceSignal {
+    Reachable(ServiceKind),
+    Unreachable(ServiceKind),
+}
+
+type GitHubJobsAndMeta = (HashMap<u64, Vec<GqlCheckRun>>, Option<RepoMetaInfo>);
+
+pub type HttpOutcome<T> = (Option<T>, Option<ServiceSignal>);
+
+fn classify_network_error(service: ServiceKind, error: &reqwest::Error) -> Option<ServiceSignal> {
+    if error.is_connect() || error.is_timeout() {
+        Some(ServiceSignal::Unreachable(service))
+    } else {
+        None
+    }
+}
 
 // ── Serde types for API responses ────────────────────────────────────
 
@@ -55,8 +96,8 @@ struct GqlCheckRunConnection {
 /// dispatch async work via `block_on`.
 #[derive(Clone)]
 pub struct HttpClient {
-    client:            reqwest::Client,
-    github_token:      Option<String>,
+    client: reqwest::Client,
+    github_token: Option<String>,
     pub(crate) handle: tokio::runtime::Handle,
 }
 
@@ -82,25 +123,44 @@ impl HttpClient {
 
     // ── Async internals ─────────────────────────────────────────────
 
-    async fn github_get_async(&self, path: &str) -> Option<Vec<u8>> {
-        let token = self.github_token.as_ref()?;
+    async fn github_get_async(&self, path: &str) -> HttpOutcome<Vec<u8>> {
+        let Some(token) = self.github_token.as_ref() else {
+            return (None, None);
+        };
         let url = format!("{GITHUB_API_BASE}/{path}");
-        let response = self
+        let response = match self
             .client
             .get(&url)
             .header("Authorization", format!("Bearer {token}"))
             .header("Accept", "application/vnd.github+json")
             .send()
             .await
-            .ok()?;
-        let body = response.bytes().await.ok()?;
-        Some(body.to_vec())
+        {
+            Ok(response) => response,
+            Err(error) => return (None, classify_network_error(ServiceKind::GitHub, &error)),
+        };
+        let body = match response.bytes().await {
+            Ok(body) => body,
+            Err(error) => {
+                return (
+                    None,
+                    classify_network_error(ServiceKind::GitHub, &error)
+                        .or(Some(ServiceSignal::Reachable(ServiceKind::GitHub))),
+                );
+            },
+        };
+        (
+            Some(body.to_vec()),
+            Some(ServiceSignal::Reachable(ServiceKind::GitHub)),
+        )
     }
 
-    async fn github_graphql_async(&self, query: &str) -> Option<Vec<u8>> {
-        let token = self.github_token.as_ref()?;
+    async fn github_graphql_async(&self, query: &str) -> HttpOutcome<Vec<u8>> {
+        let Some(token) = self.github_token.as_ref() else {
+            return (None, None);
+        };
         let payload = serde_json::json!({ "query": query });
-        let response = self
+        let response = match self
             .client
             .post(GITHUB_GRAPHQL_URL)
             .header("Authorization", format!("Bearer {token}"))
@@ -108,9 +168,24 @@ impl HttpClient {
             .body(payload.to_string())
             .send()
             .await
-            .ok()?;
-        let body = response.bytes().await.ok()?;
-        Some(body.to_vec())
+        {
+            Ok(response) => response,
+            Err(error) => return (None, classify_network_error(ServiceKind::GitHub, &error)),
+        };
+        let body = match response.bytes().await {
+            Ok(body) => body,
+            Err(error) => {
+                return (
+                    None,
+                    classify_network_error(ServiceKind::GitHub, &error)
+                        .or(Some(ServiceSignal::Reachable(ServiceKind::GitHub))),
+                );
+            },
+        };
+        (
+            Some(body.to_vec()),
+            Some(ServiceSignal::Reachable(ServiceKind::GitHub)),
+        )
     }
 
     // ── Async public API ────────────────────────────────────────────
@@ -122,15 +197,19 @@ impl HttpClient {
         repo: &str,
         branch: Option<&str>,
         count: u32,
-    ) -> Option<Vec<GhRun>> {
+    ) -> HttpOutcome<Vec<GhRun>> {
         let mut path =
             format!("repos/{owner}/{repo}/actions/runs?per_page={count}&status=completed");
         if let Some(branch) = branch {
             let _ = write!(path, "&branch={branch}");
         }
-        let body = self.github_get_async(&path).await?;
-        let response: GhRunsResponse = serde_json::from_slice(&body).ok()?;
-        Some(response.workflow_runs)
+        let (body, signal) = self.github_get_async(&path).await;
+        let value = body.and_then(|body| {
+            serde_json::from_slice::<GhRunsResponse>(&body)
+                .ok()
+                .map(|response| response.workflow_runs)
+        });
+        (value, signal)
     }
 
     /// Batch-fetch job details for uncached runs AND repo metadata in a
@@ -141,7 +220,7 @@ impl HttpClient {
         owner: &str,
         repo: &str,
         runs: &[&GhRun],
-    ) -> (HashMap<u64, Vec<GqlCheckRun>>, Option<RepoMetaInfo>) {
+    ) -> HttpOutcome<GitHubJobsAndMeta> {
         let repo_fragment = format!(
             "repo: repository(owner: \"{owner}\", name: \"{repo}\") {{ stargazerCount description }}"
         );
@@ -159,14 +238,15 @@ impl HttpClient {
         }
 
         let query = format!("{{ {} }}", parts.join(" "));
-        let Some(body) = self.github_graphql_async(&query).await else {
-            return (HashMap::new(), None);
+        let (body, signal) = self.github_graphql_async(&query).await;
+        let Some(body) = body else {
+            return (None, signal);
         };
         let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) else {
-            return (HashMap::new(), None);
+            return (None, signal);
         };
         let Some(data) = json.get("data") else {
-            return (HashMap::new(), None);
+            return (None, signal);
         };
 
         // Parse repo metadata.
@@ -195,38 +275,62 @@ impl HttpClient {
             })
             .unwrap_or_default();
 
-        (jobs, meta)
+        (Some((jobs, meta)), signal)
     }
 
-    /// Lightweight connectivity probe — HEAD request to crates.io
-    /// (async).
-    pub async fn check_online_async(&self) -> bool {
+    /// Lightweight service probe used only while recovering from a prior failure.
+    pub async fn probe_service_async(&self, service: ServiceKind) -> bool {
         self.client
-            .head(CONNECTIVITY_CHECK_URL)
+            .head(service.probe_url())
+            .timeout(Duration::from_secs(SERVICE_RETRY_SECS))
             .send()
             .await
             .is_ok()
     }
 
     /// Fetch version and download count from the crates.io API (async).
-    pub async fn fetch_crates_io_info_async(&self, crate_name: &str) -> Option<CratesIoInfo> {
+    pub async fn fetch_crates_io_info_async(&self, crate_name: &str) -> HttpOutcome<CratesIoInfo> {
         let url = format!("{CRATES_IO_API_BASE}/crates/{crate_name}");
-        let response = self
+        let response = match self
             .client
             .get(&url)
             .header("User-Agent", CRATES_IO_USER_AGENT)
             .send()
             .await
-            .ok()?;
-        let body = response.bytes().await.ok()?;
-        let json: serde_json::Value = serde_json::from_slice(&body).ok()?;
-        let krate = json.get("crate")?;
-        let version = krate
-            .get("max_stable_version")?
-            .as_str()
-            .map(String::from)?;
-        let downloads = krate.get("downloads")?.as_u64().unwrap_or(0);
-        Some(CratesIoInfo { version, downloads })
+        {
+            Ok(response) => response,
+            Err(error) => return (None, classify_network_error(ServiceKind::CratesIo, &error)),
+        };
+        let body = match response.bytes().await {
+            Ok(body) => body,
+            Err(error) => {
+                return (
+                    None,
+                    classify_network_error(ServiceKind::CratesIo, &error)
+                        .or(Some(ServiceSignal::Reachable(ServiceKind::CratesIo))),
+                );
+            },
+        };
+        let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) else {
+            return (None, Some(ServiceSignal::Reachable(ServiceKind::CratesIo)));
+        };
+        let Some(krate) = json.get("crate") else {
+            return (None, Some(ServiceSignal::Reachable(ServiceKind::CratesIo)));
+        };
+        let Some(max_stable_version) = krate.get("max_stable_version") else {
+            return (None, Some(ServiceSignal::Reachable(ServiceKind::CratesIo)));
+        };
+        let Some(version) = max_stable_version.as_str().map(String::from) else {
+            return (None, Some(ServiceSignal::Reachable(ServiceKind::CratesIo)));
+        };
+        let downloads = krate
+            .get("downloads")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        (
+            Some(CratesIoInfo { version, downloads }),
+            Some(ServiceSignal::Reachable(ServiceKind::CratesIo)),
+        )
     }
 
     // ── Sync wrappers (for std/rayon thread callers) ────────────────
@@ -238,7 +342,7 @@ impl HttpClient {
         repo: &str,
         branch: Option<&str>,
         count: u32,
-    ) -> Option<Vec<GhRun>> {
+    ) -> HttpOutcome<Vec<GhRun>> {
         self.handle
             .block_on(self.list_runs_async(owner, repo, branch, count))
     }
@@ -249,16 +353,17 @@ impl HttpClient {
         owner: &str,
         repo: &str,
         runs: &[&GhRun],
-    ) -> (HashMap<u64, Vec<GqlCheckRun>>, Option<RepoMetaInfo>) {
+    ) -> HttpOutcome<GitHubJobsAndMeta> {
         self.handle
             .block_on(self.batch_fetch_jobs_and_meta_async(owner, repo, runs))
     }
 
-    /// Lightweight connectivity probe (sync wrapper).
-    pub fn check_online(&self) -> bool { self.handle.block_on(self.check_online_async()) }
+    pub fn probe_service(&self, service: ServiceKind) -> bool {
+        self.handle.block_on(self.probe_service_async(service))
+    }
 
     /// Fetch crates.io info (sync wrapper).
-    pub fn fetch_crates_io_info(&self, crate_name: &str) -> Option<CratesIoInfo> {
+    pub fn fetch_crates_io_info(&self, crate_name: &str) -> HttpOutcome<CratesIoInfo> {
         self.handle
             .block_on(self.fetch_crates_io_info_async(crate_name))
     }

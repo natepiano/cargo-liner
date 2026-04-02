@@ -13,18 +13,12 @@ impl Cycle {
         );
         Self { period }
     }
-
-    pub fn progress_at(self, elapsed: Duration) -> f64 {
-        let period = self.period.as_secs_f64();
-        let progress = elapsed.as_secs_f64() % period;
-        progress / period
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameCycle {
     frames: &'static [&'static str],
-    cycle:  Cycle,
+    cycle: Cycle,
 }
 
 impl FrameCycle {
@@ -72,37 +66,14 @@ pub const LINT_SPINNER_FRAMES: &[&str] = &[
 ];
 pub const LINT_SPINNER: FrameCycle =
     FrameCycle::new(LINT_SPINNER_FRAMES, Duration::from_millis(1200));
-pub const OFFLINE_PULSE: Cycle = Cycle::new(Duration::from_millis(2000));
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
-    use super::Cycle;
     use super::FrameCycle;
 
     const TEST_FRAMES: &[&str] = &["a", "b", "c", "d"];
-    const TEST_CYCLE: Cycle = Cycle::new(Duration::from_millis(1000));
     const TEST_FRAME_CYCLE: FrameCycle = FrameCycle::new(TEST_FRAMES, Duration::from_millis(400));
-
-    fn assert_approx_eq(left: f64, right: f64) {
-        assert!((left - right).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn cycle_progress_starts_at_zero() {
-        assert_approx_eq(TEST_CYCLE.progress_at(Duration::ZERO), 0.0);
-    }
-
-    #[test]
-    fn cycle_progress_wraps_at_period_boundary() {
-        assert_approx_eq(TEST_CYCLE.progress_at(Duration::from_millis(1000)), 0.0);
-    }
-
-    #[test]
-    fn cycle_progress_reports_fractional_position() {
-        assert_approx_eq(TEST_CYCLE.progress_at(Duration::from_millis(250)), 0.25);
-    }
 
     #[test]
     fn frame_cycle_returns_first_frame_at_zero() {

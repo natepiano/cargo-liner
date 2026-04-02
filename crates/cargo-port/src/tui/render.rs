@@ -18,26 +18,18 @@ use ratatui::widgets::ListItem;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use super::animation::OFFLINE_PULSE;
 use super::app::App;
 use super::app::BottomPanel;
 use super::app::CiState;
 use super::app::ConfirmAction;
 use super::app::ExpandKey;
-use super::app::NetworkStatus;
 use super::app::ResolvedWidths;
 use super::app::VisibleRow;
-use super::columns::COL_NAME;
 use super::constants::BLOCK_BORDER_WIDTH;
 use super::constants::BYTES_PER_GIB;
 use super::constants::BYTES_PER_MIB;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::constants::DETAIL_PANEL_HEIGHT;
-use super::constants::OFFLINE_PULSE_AMPLITUDE;
-use super::constants::OFFLINE_PULSE_BLUE;
-use super::constants::OFFLINE_PULSE_GREEN;
-use super::constants::OFFLINE_PULSE_OFFSET;
-use super::constants::OFFLINE_PULSE_RED;
 use super::constants::SEARCH_BAR_HEIGHT;
 use super::shortcuts::Shortcut;
 use super::types::LayoutCache;
@@ -319,8 +311,8 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                     let selected_project_ref = app.selected_project();
                     render_empty_ci_panel(frame, app, selected_project_ref, right_layout[1]);
                 }
-                if app.network_status == NetworkStatus::Offline {
-                    render_offline_overlay(frame, app, right_layout[1]);
+                if let Some(message) = app.unreachable_service_message() {
+                    render_unreachable_overlay(frame, right_layout[1], &message);
                 }
             },
             BottomPanel::PortReport => {
@@ -333,6 +325,31 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             },
         }
     }
+}
+
+fn render_unreachable_overlay(frame: &mut Frame, area: Rect, msg: &str) {
+    if area.width < 4 || area.height < 3 {
+        return;
+    }
+
+    let width = u16::try_from(msg.len() + 4).unwrap_or(u16::MAX);
+    let overlay_area = centered_rect(width, 3, area);
+    frame.render_widget(Clear, overlay_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+    let inner = block.inner(overlay_area);
+    frame.render_widget(block, overlay_area);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            msg,
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
+        inner,
+    );
 }
 
 fn render_empty_ci_panel(frame: &mut Frame, app: &App, project: Option<&RustProject>, area: Rect) {
@@ -381,42 +398,6 @@ fn render_empty_ci_panel(frame: &mut Frame, app: &App, project: Option<&RustProj
     }
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "values are clamped to 0.0..=255.0 before cast"
-)]
-fn render_offline_overlay(frame: &mut Frame, app: &App, area: Rect) {
-    let msg = "  No internet connection  ";
-
-    let progress = OFFLINE_PULSE.progress_at(app.animation_elapsed());
-    let pulse = (progress * std::f64::consts::TAU)
-        .sin()
-        .mul_add(OFFLINE_PULSE_AMPLITUDE, OFFLINE_PULSE_OFFSET);
-
-    let r = (OFFLINE_PULSE_RED * pulse).clamp(0.0, 255.0) as u8;
-    let g = (OFFLINE_PULSE_GREEN * pulse).clamp(0.0, 255.0) as u8;
-    let fg = Color::Rgb(r, g, OFFLINE_PULSE_BLUE);
-
-    let msg_width = u16::try_from(msg.len()).unwrap_or(u16::MAX);
-    let x = area.x + area.width.saturating_sub(msg_width) / 2;
-    let y = area.y + area.height / 2;
-
-    if y >= area.y && y < area.y + area.height {
-        let overlay_area = Rect {
-            x,
-            y,
-            width: msg_width.min(area.width),
-            height: 1,
-        };
-        let widget = Paragraph::new(Line::from(Span::styled(
-            msg,
-            Style::default().fg(fg).add_modifier(Modifier::BOLD),
-        )));
-        frame.render_widget(widget, overlay_area);
-    }
-}
-
 pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     let search_focused = app.is_focused(PaneId::Search);
     let search_style = if search_focused {
@@ -461,48 +442,74 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
         render_tree_items(app, widths)
     };
 
-    // Append disk total as the last row
+    let total_project_rows = items.len();
     let total_bytes: u64 = app.disk_usage.values().sum();
-    if total_bytes > 0 {
-        let total_str = format_bytes(total_bytes);
-        let summary =
-            super::columns::build_summary_cells(widths.get(COL_NAME), &total_str, app.lint_enabled);
-        items.push(ListItem::new(super::columns::row_to_line(&summary, widths)));
-    }
 
     let node_count = app.live_node_count();
     let scan_root = project::home_relative_path(&app.scan_root);
     let name_text = format!("{scan_root} ({node_count})");
     let header_line = super::columns::header_line(widths, &name_text);
-
-    let project_list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(header_line)
-                .border_style(if app.is_focused(PaneId::ProjectList) {
-                    Style::default().fg(Color::Cyan)
-                } else {
-                    Style::default()
-                })
-                .title_style(
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-        )
-        .highlight_style(if app.is_focused(PaneId::ProjectList) {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(header_line)
+        .border_style(if app.is_focused(PaneId::ProjectList) {
+            Style::default().fg(Color::Cyan)
         } else {
             Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        });
+        })
+        .title_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    frame.render_stateful_widget(project_list, area, &mut app.list_state);
+    let summary_line = if total_bytes > 0 {
+        let total_str = format_bytes(total_bytes);
+        let summary = super::columns::build_summary_cells(widths, &total_str);
+        Some(super::columns::row_to_line(&summary, widths))
+    } else {
+        None
+    };
+    let pin_summary =
+        should_pin_project_summary(total_project_rows, summary_line.is_some(), inner.height);
+
+    if !pin_summary && let Some(ref line) = summary_line {
+        items.push(ListItem::new(line.clone()));
+    }
+
+    let list_area = if pin_summary && inner.height > 1 {
+        Rect::new(inner.x, inner.y, inner.width, inner.height - 1)
+    } else {
+        inner
+    };
+    let project_list = List::new(items).highlight_style(if app.is_focused(PaneId::ProjectList) {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    });
+
+    frame.render_stateful_widget(project_list, list_area, &mut app.list_state);
+
+    if pin_summary && let Some(line) = summary_line {
+        let footer_area = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(1),
+            inner.width,
+            1,
+        );
+        frame.render_widget(Paragraph::new(line), footer_area);
+    }
+}
+
+fn should_pin_project_summary(project_rows: usize, has_summary: bool, inner_height: u16) -> bool {
+    has_summary && project_rows.saturating_add(1) > usize::from(inner_height)
 }
 
 pub(super) fn render_scan_log(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -640,9 +647,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             let flash_width = msg.width();
             let flash_start = total_width.saturating_sub(flash_width) / 2;
             let flash_area = Rect {
-                x:      area.x + u16::try_from(flash_start).unwrap_or(u16::MAX),
-                y:      area.y,
-                width:  u16::try_from((total_width - flash_start).min(flash_width + 1))
+                x: area.x + u16::try_from(flash_start).unwrap_or(u16::MAX),
+                y: area.y,
+                width: u16::try_from((total_width - flash_start).min(flash_width + 1))
                     .unwrap_or(u16::MAX),
                 height: 1,
             };
@@ -685,9 +692,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Left section
     if !left_spans.is_empty() {
         let left_area = Rect {
-            x:      area.x,
-            y:      area.y,
-            width:  area.width,
+            x: area.x,
+            y: area.y,
+            width: area.width,
             height: 1,
         };
         frame.render_widget(
@@ -702,9 +709,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         // Only render if it doesn't overlap with the left section
         if center_start >= left_width {
             let center_area = Rect {
-                x:      area.x + u16::try_from(center_start).unwrap_or(u16::MAX),
-                y:      area.y,
-                width:  u16::try_from((total_width - center_start).min(center_width + 1))
+                x: area.x + u16::try_from(center_start).unwrap_or(u16::MAX),
+                y: area.y,
+                width: u16::try_from((total_width - center_start).min(center_width + 1))
                     .unwrap_or(u16::MAX),
                 height: 1,
             };
@@ -719,9 +726,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     if !right_spans.is_empty() {
         let right_start = total_width.saturating_sub(right_width + 1);
         let right_area = Rect {
-            x:      area.x + u16::try_from(right_start).unwrap_or(u16::MAX),
-            y:      area.y,
-            width:  u16::try_from(right_width + 1).unwrap_or(u16::MAX),
+            x: area.x + u16::try_from(right_start).unwrap_or(u16::MAX),
+            y: area.y,
+            width: u16::try_from(right_width + 1).unwrap_or(u16::MAX),
             height: 1,
         };
         frame.render_widget(
@@ -1004,4 +1011,24 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             Some(ListItem::new(super::columns::row_to_line(&row, widths)))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_pin_project_summary;
+
+    #[test]
+    fn project_summary_stays_inline_when_everything_fits() {
+        assert!(!should_pin_project_summary(5, true, 6));
+    }
+
+    #[test]
+    fn project_summary_pins_when_list_overflows() {
+        assert!(should_pin_project_summary(6, true, 6));
+    }
+
+    #[test]
+    fn project_summary_does_not_pin_without_summary_content() {
+        assert!(!should_pin_project_summary(100, false, 6));
+    }
 }

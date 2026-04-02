@@ -55,9 +55,9 @@ pub(super) enum ExampleMsg {
 pub(super) enum CiFetchMsg {
     /// The fetch completed with updated runs for the given project path.
     Complete {
-        path:   String,
+        path: String,
         result: CiFetchResult,
-        kind:   CiFetchKind,
+        kind: CiFetchKind,
     },
 }
 
@@ -259,7 +259,7 @@ fn event_loop(
             app.ci_state.insert(
                 fetch.project_path.clone(),
                 super::app::CiState::Fetching {
-                    runs:  existing_runs,
+                    runs: existing_runs,
                     count: CI_FETCH_DISPLAY_COUNT,
                 },
             );
@@ -472,6 +472,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     };
 
     let tx = app.ci_fetch_tx.clone();
+    let bg_tx = app.bg_tx.clone();
     let client = app.http_client.clone();
     let project_path = fetch.project_path.clone();
     let current_count = fetch.current_count;
@@ -479,7 +480,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     let url = repo_url.clone();
 
     thread::spawn(move || {
-        let result = match kind {
+        let (result, network) = match kind {
             CiFetchKind::FetchOlder => {
                 scan::fetch_older_runs(&client, &url, &owner, &repo, current_count)
             },
@@ -487,6 +488,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
                 scan::fetch_newer_runs(&client, &url, &owner, &repo, current_count)
             },
         };
+        scan::emit_service_signal(&bg_tx, network);
         let _ = tx.send(CiFetchMsg::Complete {
             path: project_path,
             result,
@@ -495,7 +497,9 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     });
 }
 
-fn last_selected_path_file() -> PathBuf { scan::cache_dir().join("last_selected.txt") }
+fn last_selected_path_file() -> PathBuf {
+    scan::cache_dir().join("last_selected.txt")
+}
 
 pub(super) fn load_last_selected() -> Option<String> {
     let path = last_selected_path_file();
@@ -538,8 +542,9 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
         if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
             && let Some((owner, repo)) = ci::parse_owner_repo(repo_url)
         {
-            let (result, _meta) =
+            let (result, _meta, signal) =
                 scan::fetch_ci_runs_cached(&client, repo_url, &owner, &repo, ci_run_count);
+            scan::emit_service_signal(&tx, signal);
             let runs = match result {
                 CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
             };
@@ -555,14 +560,16 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
             bytes,
         });
 
-        if let Some(name) = project_name.as_ref()
-            && let Some(info) = client.fetch_crates_io_info(name)
-        {
-            let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                path:      project_path,
-                version:   info.version,
-                downloads: info.downloads,
-            });
+        if let Some(name) = project_name.as_ref() {
+            let (info, signal) = client.fetch_crates_io_info(name);
+            scan::emit_service_signal(&tx, signal);
+            if let Some(info) = info {
+                let _ = tx.send(BackgroundMsg::CratesIoVersion {
+                    path: project_path,
+                    version: info.version,
+                    downloads: info.downloads,
+                });
+            }
         }
     });
 }

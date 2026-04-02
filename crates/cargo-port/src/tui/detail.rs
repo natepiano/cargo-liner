@@ -1,11 +1,6 @@
-use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
 
-use chrono::DateTime;
-use chrono::FixedOffset;
-use chrono::Local;
-use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
@@ -25,87 +20,29 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
-use super::animation::BRAILLE_SPINNER;
 use super::app::App;
-use super::app::CiState;
-use super::app::ConfirmAction;
-use super::constants::CI_EXTRA_ROWS;
-use super::constants::CI_TIMESTAMP_WIDTH;
-use super::render::CiColumn;
-use super::types::Pane;
 use super::types::PaneId;
-use crate::ci;
-use crate::ci::CiRun;
-use crate::ci::Conclusion;
-use crate::constants::IN_SYNC;
-use crate::constants::SYNC_DOWN;
-use crate::constants::SYNC_UP;
-use crate::port_report::PortReportCommandStatus;
-use crate::port_report::PortReportRun;
-use crate::port_report::PortReportRunStatus;
-use crate::project::ExampleGroup;
-use crate::project::GitOrigin;
-use crate::project::ProjectLanguage;
-use crate::project::ProjectType;
-use crate::project::RustProject;
-use crate::scan;
 
-#[derive(Default)]
-pub(super) struct ProjectCounts {
-    pub workspaces:  usize,
-    pub libs:        usize,
-    pub bins:        usize,
-    pub proc_macros: usize,
-    pub examples:    usize,
-    pub benches:     usize,
-    pub tests:       usize,
-}
+mod ci_panel;
+mod interaction;
+mod model;
+mod port_report_panel;
 
-impl ProjectCounts {
-    pub fn add_project(&mut self, project: &RustProject) {
-        if project.is_workspace() {
-            self.workspaces += 1;
-        }
-        for t in &project.types {
-            match t {
-                ProjectType::Library => self.libs += 1,
-                ProjectType::Binary => self.bins += 1,
-                ProjectType::ProcMacro => self.proc_macros += 1,
-                ProjectType::BuildScript => {},
-            }
-        }
-        self.examples += project.example_count();
-        self.benches += project.benches.len();
-        self.tests += project.test_count;
-    }
-
-    /// Returns non-zero stats as (label, count) pairs for column display.
-    pub fn to_rows(&self) -> Vec<(&'static str, usize)> {
-        let mut rows = Vec::new();
-        if self.workspaces > 0 {
-            rows.push(("ws", self.workspaces));
-        }
-        if self.libs > 0 {
-            rows.push(("lib", self.libs));
-        }
-        if self.bins > 0 {
-            rows.push(("bin", self.bins));
-        }
-        if self.proc_macros > 0 {
-            rows.push(("proc-macro", self.proc_macros));
-        }
-        if self.examples > 0 {
-            rows.push(("example", self.examples));
-        }
-        if self.benches > 0 {
-            rows.push(("bench", self.benches));
-        }
-        if self.tests > 0 {
-            rows.push(("test", self.tests));
-        }
-        rows
-    }
-}
+pub(super) use ci_panel::render_ci_panel;
+pub(super) use interaction::handle_ci_runs_key;
+pub(super) use interaction::handle_detail_key;
+pub(super) use model::CiFetchKind;
+pub(super) use model::DetailField;
+pub(super) use model::DetailInfo;
+pub(super) use model::PendingCiFetch;
+pub(super) use model::PendingExampleRun;
+pub(super) use model::ProjectCounts;
+pub(super) use model::RunTargetKind;
+pub(super) use model::build_detail_info;
+pub(super) use model::build_target_list;
+pub(super) use model::git_fields;
+pub(super) use model::package_fields;
+pub(super) use port_report_panel::render_port_report_panel;
 
 /// Compute the fixed stats column width from the stat rows.
 /// Returns `(total_width, digit_width)`.
@@ -120,66 +57,23 @@ fn stats_column_width(stats_rows: &[(&str, usize)]) -> (u16, u16) {
         .max()
         .unwrap_or(0);
     let digit_width: u16 = if max_count >= 1000 { 4 } else { 3 };
-    // "proc-macro" is the longest possible label at 10 chars
-    let total = 1 + 1 + digit_width + 1 + 10 + 1; // border + lpad + digits + space + label + rpad
+    let total = 1 + 1 + digit_width + 1 + 10 + 1;
     (total, digit_width)
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum RunTargetKind {
-    Binary,
-    Example,
-    Bench,
-}
-
-impl RunTargetKind {
-    pub const BINARY_COLOR: Color = Color::Green;
-    pub const EXAMPLE_COLOR: Color = Color::Cyan;
-    pub const BENCH_COLOR: Color = Color::Magenta;
-
-    pub const fn color(self) -> Color {
-        match self {
-            Self::Binary => Self::BINARY_COLOR,
-            Self::Example => Self::EXAMPLE_COLOR,
-            Self::Bench => Self::BENCH_COLOR,
-        }
-    }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Binary => "bin",
-            Self::Example => "example",
-            Self::Bench => "bench",
-        }
-    }
-}
-
-pub(super) struct TargetEntry {
-    pub name:         String,
-    pub display_name: String,
-    pub kind:         RunTargetKind,
 }
 
 /// Shared style constants for detail panel rendering.
 struct RenderStyles {
-    highlight:       Style,
-    readonly_label:  Style,
-    active_border:   Style,
+    highlight: Style,
+    readonly_label: Style,
+    active_border: Style,
     inactive_border: Style,
-    title:           Style,
-}
-
-/// Whether to build in release or debug mode.
-#[derive(Clone, Copy)]
-enum BuildMode {
-    Debug,
-    Release,
+    title: Style,
 }
 
 struct ColumnFocus {
-    active:     bool,
+    active: bool,
     remembered: bool,
-    cursor:     usize,
+    cursor: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -217,9 +111,9 @@ enum TargetPresence {
 
 struct DetailLayoutSpec {
     constraints: Vec<Constraint>,
-    git_col:     Option<usize>,
+    git_col: Option<usize>,
     targets_col: Option<usize>,
-    max_col:     usize,
+    max_col: usize,
 }
 
 fn detail_layout_spec(git: GitPresence, targets: TargetPresence) -> DetailLayoutSpec {
@@ -231,580 +125,21 @@ fn detail_layout_spec(git: GitPresence, targets: TargetPresence) -> DetailLayout
                 Constraint::Percentage(37),
                 Constraint::Percentage(26),
             ],
-            git_col:     Some(1),
+            git_col: Some(1),
             targets_col: Some(2),
-            max_col:     1 + usize::from(has_targets),
+            max_col: 1 + usize::from(has_targets),
         },
         GitPresence::Missing => DetailLayoutSpec {
             constraints: vec![Constraint::Percentage(74), Constraint::Percentage(26)],
-            git_col:     None,
+            git_col: None,
             targets_col: Some(1),
-            max_col:     usize::from(has_targets),
+            max_col: usize::from(has_targets),
         },
     }
 }
 
 const fn has_targets(info: &DetailInfo) -> bool {
     info.is_binary || !info.examples.is_empty() || !info.benches.is_empty()
-}
-
-/// Build a flat list of all runnable targets: binaries first, then examples alphabetically,
-/// then benches alphabetically.
-pub(super) fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
-    let mut entries = Vec::new();
-
-    if info.is_binary
-        && let Some(name) = &info.binary_name
-    {
-        entries.push(TargetEntry {
-            display_name: name.clone(),
-            name:         name.clone(),
-            kind:         RunTargetKind::Binary,
-        });
-    }
-
-    // Collect examples with category prefix for display, sorted with
-    // categorized (containing '/') before uncategorized, then alphabetically.
-    let mut examples: Vec<(String, String)> = info
-        .examples
-        .iter()
-        .flat_map(|g| {
-            g.names.iter().map(|n| {
-                let display = if g.category.is_empty() {
-                    n.clone()
-                } else {
-                    format!("{}/{n}", g.category)
-                };
-                (n.clone(), display)
-            })
-        })
-        .collect();
-    examples.sort_by(|a, b| {
-        let a_has_cat = a.1.contains('/');
-        let b_has_cat = b.1.contains('/');
-        match (a_has_cat, b_has_cat) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.1.cmp(&b.1),
-        }
-    });
-    for (name, display_name) in examples {
-        entries.push(TargetEntry {
-            name,
-            display_name,
-            kind: RunTargetKind::Example,
-        });
-    }
-
-    let mut bench_names = info.benches.clone();
-    bench_names.sort();
-    for name in bench_names {
-        entries.push(TargetEntry {
-            display_name: name.clone(),
-            name,
-            kind: RunTargetKind::Bench,
-        });
-    }
-
-    entries
-}
-
-pub(super) struct PendingExampleRun {
-    pub abs_path:     String,
-    pub target_name:  String,
-    pub package_name: Option<String>,
-    pub kind:         RunTargetKind,
-    pub release:      bool,
-}
-
-/// Whether a CI fetch should look for older runs or just refresh for new ones.
-#[derive(Clone, Copy)]
-pub(super) enum CiFetchKind {
-    /// Increment the limit to discover older history.
-    FetchOlder,
-    /// Re-fetch at the current limit to pick up newly created runs.
-    Refresh,
-}
-
-/// A pending request to fetch more CI runs for a project.
-pub(super) struct PendingCiFetch {
-    pub project_path:  String,
-    pub current_count: u32,
-    pub kind:          CiFetchKind,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum DetailField {
-    Name,
-    Path,
-    Targets,
-    Disk,
-    Lint,
-    Ci,
-    Branch,
-    Sync,
-    VsOrigin,
-    VsLocal,
-    Origin,
-    Owner,
-    Repo,
-    Stars,
-    RepoDesc,
-    Inception,
-    LastCommit,
-    Worktree,
-    Vendored,
-    CratesIo,
-    Version,
-    Description,
-}
-
-impl DetailField {
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            Self::Name => "Name",
-            Self::Path => "Path",
-            Self::Targets => "Targets",
-            Self::Disk => "Disk",
-            Self::Lint => "Lint",
-            Self::Ci => "CI",
-            Self::Branch => "Branch",
-            Self::Sync => "Sync",
-            Self::VsOrigin => "vs o/dflt",
-            Self::VsLocal => "vs dflt",
-            Self::Origin => "Origin",
-            Self::Owner => "Owner",
-            Self::Repo => "Repo",
-            Self::Stars => "Stars",
-            Self::RepoDesc => "About",
-            Self::Inception => "Incept",
-            Self::LastCommit => "Latest",
-            Self::Worktree => "Worktree",
-            Self::Vendored => "Vendored",
-            Self::CratesIo => "crates.io",
-            Self::Version => "Version",
-            Self::Description => "Desc",
-        }
-    }
-
-    pub(super) const fn is_from_cargo_toml(self) -> bool {
-        matches!(
-            self,
-            Self::Name | Self::Targets | Self::Version | Self::Description
-        )
-    }
-
-    pub(super) fn value(self, info: &DetailInfo) -> String {
-        match self {
-            Self::Name => info.name.clone(),
-            Self::Path => info.path.clone(),
-            Self::Targets => info.types.clone(),
-            Self::Disk => info.disk.clone(),
-            Self::Lint => info.lint_label.clone(),
-            Self::Ci => info.ci.map_or_else(String::new, |c| c.icon().to_string()),
-            Self::Branch => {
-                let branch = info.git_branch.as_deref().unwrap_or("");
-                let is_default = info
-                    .default_branch
-                    .as_deref()
-                    .is_some_and(|db| db == branch);
-                if is_default {
-                    format!("{branch} (HEAD)")
-                } else {
-                    branch.to_string()
-                }
-            },
-            Self::Sync => info.git_sync.as_deref().unwrap_or("").to_string(),
-            Self::VsOrigin => info.git_vs_origin.as_deref().unwrap_or("").to_string(),
-            Self::VsLocal => info.git_vs_local.as_deref().unwrap_or("").to_string(),
-            Self::Origin => info.git_origin.as_deref().unwrap_or("").to_string(),
-            Self::Owner => info.git_owner.as_deref().unwrap_or("").to_string(),
-            Self::Repo => info.git_url.as_deref().unwrap_or("").to_string(),
-            Self::Stars => info
-                .git_stars
-                .map_or_else(String::new, |c| format!("⭐ {c}")),
-            Self::RepoDesc => info.repo_description.as_deref().unwrap_or("").to_string(),
-            Self::Inception => info.git_inception.as_deref().unwrap_or("").to_string(),
-            Self::LastCommit => info.git_last_commit.as_deref().unwrap_or("").to_string(),
-            Self::Worktree => info.worktree_label.as_deref().unwrap_or("").to_string(),
-            Self::Vendored => info.vendored_names.clone(),
-            Self::CratesIo => {
-                let version = info.crates_version.as_deref().unwrap_or("");
-                info.crates_downloads.map_or_else(
-                    || version.to_string(),
-                    |dl| format!("{version} ({})", format_downloads(dl)),
-                )
-            },
-            Self::Version => info.version.clone(),
-            Self::Description => info.description.as_deref().unwrap_or("—").to_string(),
-        }
-    }
-}
-
-/// All fields for the `Package` column.
-/// Non-Rust projects show only name, path, disk, and CI.
-pub(super) fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
-    if info.is_rust == ProjectLanguage::NonRust {
-        let mut fields = vec![DetailField::Name, DetailField::Path, DetailField::Disk];
-        if !info.lint_label.is_empty() {
-            fields.push(DetailField::Lint);
-        }
-        fields.push(DetailField::Ci);
-        return fields;
-    }
-    let mut fields = vec![
-        DetailField::Name,
-        DetailField::Path,
-        DetailField::Targets,
-        DetailField::Disk,
-    ];
-    if !info.lint_label.is_empty() {
-        fields.push(DetailField::Lint);
-    }
-    fields.push(DetailField::Ci);
-    if !info.vendored_names.is_empty() {
-        fields.push(DetailField::Vendored);
-    }
-    if info.crates_version.is_some() {
-        fields.push(DetailField::CratesIo);
-    }
-    if info.has_package {
-        fields.push(DetailField::Version);
-        fields.push(DetailField::Description);
-    }
-    fields
-}
-
-/// Git fields (right column). Only includes fields that have data.
-pub(super) fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
-    let mut fields = Vec::new();
-    if info.git_branch.is_some() {
-        fields.push(DetailField::Branch);
-    }
-    if info.git_sync.is_some() {
-        fields.push(DetailField::Sync);
-    }
-    if info.git_vs_origin.is_some() {
-        fields.push(DetailField::VsOrigin);
-    }
-    if info.git_vs_local.is_some() {
-        fields.push(DetailField::VsLocal);
-    }
-    if info.worktree_label.is_some() {
-        fields.push(DetailField::Worktree);
-    }
-    if info.git_origin.is_some() {
-        fields.push(DetailField::Origin);
-    }
-    if info.git_url.is_some() {
-        fields.push(DetailField::Repo);
-    }
-    if info.git_owner.is_some() {
-        fields.push(DetailField::Owner);
-    }
-    if info.git_stars.is_some() {
-        fields.push(DetailField::Stars);
-    }
-    if info.repo_description.is_some() {
-        fields.push(DetailField::RepoDesc);
-    }
-    if info.git_inception.is_some() {
-        fields.push(DetailField::Inception);
-    }
-    if info.git_last_commit.is_some() {
-        fields.push(DetailField::LastCommit);
-    }
-    fields
-}
-
-#[derive(Clone)]
-pub(super) struct DetailInfo {
-    pub package_title:    String,
-    pub name:             String,
-    pub path:             String,
-    pub version:          String,
-    pub description:      Option<String>,
-    pub crates_version:   Option<String>,
-    pub crates_downloads: Option<u64>,
-    pub types:            String,
-    pub disk:             String,
-    pub lint_label:       String,
-    pub ci:               Option<Conclusion>,
-    pub stats_rows:       Vec<(&'static str, usize)>,
-    pub git_branch:       Option<String>,
-    pub git_sync:         Option<String>,
-    /// Ahead/behind vs `origin/{default_branch}`.
-    pub git_vs_origin:    Option<String>,
-    /// Ahead/behind vs local `{default_branch}`.
-    pub git_vs_local:     Option<String>,
-    /// The repo's default branch name (e.g. "main", "master").
-    pub default_branch:   Option<String>,
-    pub git_origin:       Option<String>,
-    pub git_owner:        Option<String>,
-    pub git_url:          Option<String>,
-    pub git_stars:        Option<u64>,
-    pub repo_description: Option<String>,
-    pub git_inception:    Option<String>,
-    pub git_last_commit:  Option<String>,
-    pub worktree_label:   Option<String>,
-    pub worktree_names:   Vec<String>,
-    pub vendored_names:   String,
-    pub is_binary:        bool,
-    pub binary_name:      Option<String>,
-    pub examples:         Vec<ExampleGroup>,
-    pub benches:          Vec<String>,
-    /// Whether this is a Rust project (has `Cargo.toml`).
-    pub is_rust:          ProjectLanguage,
-    /// Whether this project declares `[package]` (has version/description fields).
-    pub has_package:      bool,
-}
-
-/// Collect vendored crate names for a project from the node tree.
-fn collect_vendored_names(app: &App, project: &RustProject) -> String {
-    for node in &app.nodes {
-        // Check the node itself
-        if node.project.path == project.path && !node.vendored.is_empty() {
-            return node
-                .vendored
-                .iter()
-                .filter_map(|v| v.name.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-        }
-        // Check worktrees
-        for wt in &node.worktrees {
-            if wt.project.path == project.path && !wt.vendored.is_empty() {
-                return wt
-                    .vendored
-                    .iter()
-                    .filter_map(|v| v.name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-            }
-        }
-    }
-    String::new()
-}
-
-/// Resolve the title shown in the `Package` column header.
-fn resolve_package_title(app: &App, project: &RustProject) -> String {
-    if project.is_rust == ProjectLanguage::NonRust {
-        return "Project".to_string();
-    }
-    if project.is_workspace() {
-        return "Workspace".to_string();
-    }
-    // Check if this project is under a workspace node
-    let is_member = app.nodes.iter().any(|n| {
-        n.project.is_workspace()
-            && n.project.path != project.path
-            && (n
-                .groups
-                .iter()
-                .any(|g| g.members.iter().any(|m| m.path == project.path))
-                || n.worktrees.iter().any(|wt| wt.project.path == project.path))
-    });
-    if is_member {
-        "Workspace Member".to_string()
-    } else {
-        "Package".to_string()
-    }
-}
-
-fn format_ahead_behind((ahead, behind): (usize, usize)) -> String {
-    match (ahead, behind) {
-        (0, 0) => IN_SYNC.to_string(),
-        (a, 0) => format!("{SYNC_UP}{a} ahead"),
-        (0, b) => format!("{SYNC_DOWN}{b} behind"),
-        (a, b) => format!("{SYNC_UP}{a} {SYNC_DOWN}{b}"),
-    }
-}
-
-/// Format a download count with comma-separated thousands (e.g. `1,234,567`).
-fn format_downloads(n: u64) -> String {
-    let s = n.to_string();
-    let mut result = String::with_capacity(s.len() + s.len() / 3);
-    for (i, ch) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i).is_multiple_of(3) {
-            result.push(',');
-        }
-        result.push(ch);
-    }
-    result
-}
-
-struct GitDetailFields {
-    branch:         Option<String>,
-    sync:           Option<String>,
-    vs_origin:      Option<String>,
-    vs_local:       Option<String>,
-    default_branch: Option<String>,
-    origin:         Option<String>,
-    owner:          Option<String>,
-    url:            Option<String>,
-    stars:          Option<u64>,
-    description:    Option<String>,
-    inception:      Option<String>,
-    last_commit:    Option<String>,
-}
-
-fn build_git_detail_fields(app: &App, project: &RustProject) -> GitDetailFields {
-    let git = app.git_info.get(&project.path);
-    let branch = git.and_then(|g| g.branch.clone());
-    let sync = git
-        .map(|g| match g.ahead_behind {
-            Some((0, 0)) => IN_SYNC.to_string(),
-            Some((a, 0)) => format!("{SYNC_UP}{a} ahead"),
-            Some((0, b)) => format!("{SYNC_DOWN}{b} behind"),
-            Some((a, b)) => format!("{SYNC_UP}{a} {SYNC_DOWN}{b}"),
-            None if g.origin != GitOrigin::Local => "not published".to_string(),
-            None => String::new(),
-        })
-        .filter(|s| !s.is_empty());
-    let vs_origin = git
-        .and_then(|g| g.ahead_behind_origin)
-        .map(format_ahead_behind);
-    let vs_local = git
-        .and_then(|g| g.ahead_behind_local)
-        .map(format_ahead_behind);
-    let default_branch = git.and_then(|g| g.default_branch.clone());
-    let origin = git.map(|g| format!("{} {}", g.origin.icon(), g.origin.label()));
-    let owner = git.and_then(|g| g.owner.clone());
-    let url = git.and_then(|g| g.url.clone());
-    let stars = app.stars.get(&project.path).copied();
-    let description = app.repo_descriptions.get(&project.path).cloned();
-    let inception = git
-        .and_then(|g| g.first_commit.as_deref())
-        .map(format_timestamp);
-    let last_commit = git
-        .and_then(|g| g.last_commit.as_deref())
-        .map(format_timestamp);
-    GitDetailFields {
-        branch,
-        sync,
-        vs_origin,
-        vs_local,
-        default_branch,
-        origin,
-        owner,
-        url,
-        stars,
-        description,
-        inception,
-        last_commit,
-    }
-}
-
-pub(super) fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
-    let mut counts = app.workspace_counts(project).unwrap_or_else(|| {
-        let mut c = ProjectCounts::default();
-        c.add_project(project);
-        c
-    });
-    // For standalone crates, add_project doesn't count the root project's
-    // examples/benches/tests — only workspace aggregation does. Fill them in.
-    if !project.is_workspace() {
-        counts.examples = project.example_count();
-        counts.benches = project.benches.len();
-        counts.tests = project.test_count;
-    }
-    let stats_rows = counts.to_rows();
-
-    let git_detail = build_git_detail_fields(app, project);
-    let crates_version = app.crates_versions.get(&project.path).cloned();
-    let crates_downloads = app.crates_downloads.get(&project.path).copied();
-    let worktree_label = project.worktree_name.clone();
-
-    // Aggregate disk and CI across worktrees when the selected node has them
-    let worktree_node = app
-        .selected_node()
-        .filter(|n| n.project.path == project.path && !n.worktrees.is_empty());
-
-    let (disk, ci) = worktree_node.map_or_else(
-        || (app.formatted_disk(project), app.ci_for(project)),
-        |node| (app.formatted_disk_for_node(node), app.ci_for_node(node)),
-    );
-
-    let package_title = resolve_package_title(app, project);
-
-    let worktree_names: Vec<String> = worktree_node.map_or_else(Vec::new, |node| {
-        node.worktrees
-            .iter()
-            .map(|wt| {
-                wt.project
-                    .worktree_name
-                    .as_deref()
-                    .unwrap_or(&wt.project.path)
-                    .to_string()
-            })
-            .collect()
-    });
-
-    // Collect vendored crate names for this project
-    let vendored_names = collect_vendored_names(app, project);
-
-    // Check if this project is a binary
-    let is_binary = project
-        .types
-        .iter()
-        .any(|t| matches!(t, crate::project::ProjectType::Binary));
-    let binary_name = if is_binary {
-        project.name.clone()
-    } else {
-        None
-    };
-
-    DetailInfo {
-        package_title,
-        name: project.name.clone().unwrap_or_else(|| "-".to_string()),
-        path: project.path.clone(),
-        version: project.version.clone().unwrap_or_else(|| "-".to_string()),
-        description: project.description.clone(),
-        types: project
-            .types
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", "),
-        disk,
-        lint_label: if app.lint_enabled {
-            app.selected_lint_status(project)
-                .map_or_else(String::new, |s| {
-                    let label = s.label();
-                    s.timestamp().map_or_else(
-                        || label.to_string(),
-                        |ts| format!("{label} ({})", ts.format("%H:%M:%S")),
-                    )
-                })
-        } else {
-            String::new()
-        },
-        ci,
-        stats_rows,
-        crates_version,
-        crates_downloads,
-        git_branch: git_detail.branch,
-        git_sync: git_detail.sync,
-        git_vs_origin: git_detail.vs_origin,
-        git_vs_local: git_detail.vs_local,
-        default_branch: git_detail.default_branch,
-        git_origin: git_detail.origin,
-        git_owner: git_detail.owner,
-        git_url: git_detail.url,
-        git_stars: git_detail.stars,
-        repo_description: git_detail.description,
-        git_inception: git_detail.inception,
-        git_last_commit: git_detail.last_commit,
-        worktree_label,
-        worktree_names,
-        vendored_names,
-        is_binary,
-        binary_name,
-        examples: project.examples.clone(),
-        benches: project.benches.clone(),
-        is_rust: project.is_rust,
-        has_package: project.name.is_some(),
-    }
 }
 
 fn render_column_inner(
@@ -817,6 +152,7 @@ fn render_column_inner(
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut focused_output_line: usize = 0;
+    let label_width = package_label_width(fields);
     for (i, field) in fields.iter().enumerate() {
         if focus.active && i == focus.cursor {
             focused_output_line = lines.len();
@@ -843,14 +179,13 @@ fn render_column_inner(
             },
         };
 
-        // Word-wrap long fields across multiple lines
         if matches!(
             *field,
             DetailField::Description | DetailField::Vendored | DetailField::RepoDesc
         ) && !value.is_empty()
         {
-            let prefix = format!("  {label:<8} ");
-            let prefix_len = prefix.len();
+            let prefix = format!("  {label:<label_width$} ");
+            let prefix_len = prefix.width();
             let col_width = area.width as usize;
             let avail = col_width.saturating_sub(prefix_len + 1);
             if avail > 0 {
@@ -870,14 +205,13 @@ fn render_column_inner(
                 }
             } else {
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {label:<8} "), ls),
+                    Span::styled(format!("  {label:<label_width$} "), ls),
                     Span::styled(value, vs),
                 ]));
             }
         } else if matches!(*field, DetailField::Repo | DetailField::Branch) && !value.is_empty() {
-            // Hard-wrap fields that have no spaces (URLs, branch names)
-            let prefix = format!("  {label:<8} ");
-            let prefix_len = prefix.len();
+            let prefix = format!("  {label:<label_width$} ");
+            let prefix_len = prefix.width();
             let col_width = area.width as usize;
             let avail = col_width.saturating_sub(prefix_len + 1);
             if avail > 0 {
@@ -897,13 +231,13 @@ fn render_column_inner(
                 }
             } else {
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {label:<8} "), ls),
+                    Span::styled(format!("  {label:<label_width$} "), ls),
                     Span::styled(value, vs),
                 ]));
             }
         } else {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {label:<8} "), ls),
+                Span::styled(format!("  {label:<label_width$} "), ls),
                 Span::styled(value, vs),
             ]));
         }
@@ -916,6 +250,15 @@ fn render_column_inner(
         0
     };
     frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
+}
+
+fn package_label_width(fields: &[DetailField]) -> usize {
+    fields
+        .iter()
+        .map(|field| field.label().width())
+        .max()
+        .unwrap_or(0)
+        .max(8)
 }
 
 fn render_git_column_inner(
@@ -933,7 +276,6 @@ fn render_git_column_inner(
         if focus.active && i == focus.cursor {
             focused_output_line = lines.len();
         }
-        // Dynamic labels for vs-default fields — show actual branch name.
         let dynamic_label;
         let label = match *field {
             DetailField::VsOrigin => {
@@ -967,7 +309,7 @@ fn render_git_column_inner(
                 } else if matches!(
                     *field,
                     DetailField::Sync | DetailField::VsOrigin | DetailField::VsLocal
-                ) && value == IN_SYNC
+                ) && value == crate::constants::IN_SYNC
                 {
                     Style::default().fg(Color::Green)
                 } else if *field == DetailField::Sync && value == "not published" {
@@ -1078,11 +420,11 @@ pub(super) fn render_detail_panel(
         app.layout_cache.detail_targets_col = spec.targets_col;
 
         let styles = RenderStyles {
-            highlight:       Style::default().fg(Color::Black).bg(Color::Cyan),
-            readonly_label:  Style::default().fg(Color::DarkGray),
-            active_border:   Style::default().fg(Color::Cyan),
+            highlight: Style::default().fg(Color::Black).bg(Color::Cyan),
+            readonly_label: Style::default().fg(Color::DarkGray),
+            active_border: Style::default().fg(Color::Cyan),
             inactive_border: Style::default(),
-            title:           title_style,
+            title: title_style,
         };
 
         render_project_panel(frame, app, info, &styles, columns[0]);
@@ -1090,9 +432,9 @@ pub(super) fn render_detail_panel(
         if let Some(col) = spec.git_col {
             app.git_pane.set_len(git.len());
             let focus = ColumnFocus {
-                active:     app.is_focused(PaneId::Git),
+                active: app.is_focused(PaneId::Git),
                 remembered: app.remembers_selection(PaneId::Git),
-                cursor:     app.git_pane.pos(),
+                cursor: app.git_pane.pos(),
             };
             let git_block = Block::default()
                 .borders(Borders::ALL)
@@ -1142,9 +484,9 @@ fn render_project_panel(
     let fields = package_fields(info);
     app.package_pane.set_len(fields.len());
     let focus = ColumnFocus {
-        active:     app.is_focused(PaneId::Package),
+        active: app.is_focused(PaneId::Package),
         remembered: app.remembers_selection(PaneId::Package),
-        cursor:     app.package_pane.pos(),
+        cursor: app.package_pane.pos(),
     };
     let project_block = Block::default()
         .borders(Borders::ALL)
@@ -1164,7 +506,6 @@ fn render_project_panel(
     } else {
         let (stats_width, digit_width) = stats_column_width(&info.stats_rows);
 
-        // Split into fields (left) and stats column (right) with border
         let sub_cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(20), Constraint::Length(stats_width)])
@@ -1172,7 +513,6 @@ fn render_project_panel(
 
         render_column_inner(frame, info, &fields, &focus, styles, sub_cols[0]);
 
-        // Stats column with left border
         let stats_block = Block::default().borders(Borders::LEFT);
         let stats_inner = stats_block.inner(sub_cols[1]);
         frame.render_widget(stats_block, sub_cols[1]);
@@ -1199,7 +539,7 @@ fn render_targets_panel(
     area: Rect,
 ) {
     let bin_count: usize = usize::from(info.is_binary);
-    let ex_count: usize = info.examples.iter().map(|g| g.names.len()).sum();
+    let ex_count: usize = info.examples.iter().map(|group| group.names.len()).sum();
     let bench_count = info.benches.len();
     let mut title_parts = Vec::new();
     if bin_count > 0 {
@@ -1253,7 +593,6 @@ fn render_targets_panel(
         .collect();
 
     let widths = [Constraint::Fill(1), Constraint::Length(7)];
-
     let highlight_style = if is_active {
         Style::default().fg(Color::Black).bg(Color::Cyan)
     } else {
@@ -1275,7 +614,6 @@ fn render_targets_panel(
     app.targets_pane.set_scroll_offset(table_state.offset());
 }
 
-/// Format ISO 8601 timestamp as `yyyy-mm-dd hh:mm`.
 /// Get the local UTC offset in seconds (e.g., -28800 for PST).
 fn local_utc_offset_secs() -> i64 {
     static OFFSET: OnceLock<i64> = OnceLock::new();
@@ -1284,12 +622,12 @@ fn local_utc_offset_secs() -> i64 {
             .arg("+%z")
             .output()
             .ok()
-            .and_then(|o| {
-                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if s.len() >= 5 {
-                    let sign: i64 = if s.starts_with('-') { -1 } else { 1 };
-                    let hours: i64 = s[1..3].parse().ok()?;
-                    let mins: i64 = s[3..5].parse().ok()?;
+            .and_then(|output| {
+                let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if value.len() >= 5 {
+                    let sign: i64 = if value.starts_with('-') { -1 } else { 1 };
+                    let hours: i64 = value[1..3].parse().ok()?;
+                    let mins: i64 = value[3..5].parse().ok()?;
                     Some(sign * (hours * 3600 + mins * 60))
                 } else {
                     None
@@ -1315,18 +653,15 @@ const fn days_in_month(year: i64, month: i64) -> i64 {
 
 /// Convert a UTC ISO 8601 timestamp to local time, formatted as `yyyy-mm-dd hh:mm`.
 fn format_timestamp(iso: &str) -> String {
-    // Get local UTC offset using libc (macOS/Linux)
     let utc_offset_secs = local_utc_offset_secs();
-
     let stripped = iso.trim_end_matches('Z');
     match stripped.split_once('T') {
         Some((date, time)) => {
-            // Parse date and time components
             let date_parts: Vec<&str> = date.split('-').collect();
             let time_parts: Vec<&str> = time.split(':').collect();
             if date_parts.len() >= 3
                 && time_parts.len() >= 2
-                && let (Ok(y), Ok(mo), Ok(d), Ok(h), Ok(mi)) = (
+                && let (Ok(y), Ok(month), Ok(day), Ok(hour), Ok(minute)) = (
                     date_parts[0].parse::<i64>(),
                     date_parts[1].parse::<i64>(),
                     date_parts[2].parse::<i64>(),
@@ -1334,10 +669,9 @@ fn format_timestamp(iso: &str) -> String {
                     time_parts[1].parse::<i64>(),
                 )
             {
-                // Convert to total minutes, apply offset, reconstruct
-                let total_mins = h * 60 + mi + utc_offset_secs / 60;
-                let mut day = d;
-                let mut month = mo;
+                let total_mins = hour * 60 + minute + utc_offset_secs / 60;
+                let mut day = day;
+                let mut month = month;
                 let mut year = y;
                 let mut adj_mins = total_mins % (24 * 60);
                 if adj_mins < 0 {
@@ -1367,451 +701,11 @@ fn format_timestamp(iso: &str) -> String {
                 let local_m = adj_mins % 60;
                 return format!("{year:04}-{month:02}-{day:02} {local_h:02}:{local_m:02}");
             }
-            // Fallback: just strip Z and show as-is
             let short_time = if time.len() >= 5 { &time[..5] } else { time };
             format!("{date} {short_time}")
         },
         None => stripped.to_string(),
     }
-}
-
-/// Build the header `Row` for the CI table from the given columns.
-fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
-    let right_aligned = Style::default()
-        .add_modifier(Modifier::BOLD)
-        .fg(Color::DarkGray);
-    let mut header_cells = vec![
-        Cell::from("Commit").style(right_aligned),
-        Cell::from("Branch").style(right_aligned),
-        Cell::from("Timestamp").style(right_aligned),
-    ];
-    for col in cols {
-        header_cells.push(
-            Cell::from(Line::from(col.label()).alignment(ratatui::layout::Alignment::Right))
-                .style(right_aligned),
-        );
-        header_cells.push(Cell::from("")); // glyph column
-    }
-    header_cells.push(
-        Cell::from(Line::from("Total").alignment(ratatui::layout::Alignment::Right))
-            .style(right_aligned),
-    );
-    header_cells.push(Cell::from("")); // glyph column
-    Row::new(header_cells).bottom_margin(0)
-}
-
-/// Build one data `Row` for a single `CiRun`.
-fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn], remembered: bool) -> Row<'static> {
-    let timestamp = format_timestamp(&ci_run.created_at);
-    let branch = &ci_run.branch;
-
-    let total_dur = ci_run
-        .wall_clock_secs
-        .map_or_else(|| "—".to_string(), ci::format_secs);
-
-    let commit = ci_run.commit_title.as_deref().unwrap_or("");
-    let commit_style = if remembered {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    let mut cells = vec![
-        Cell::from(commit.to_string()).style(commit_style),
-        Cell::from(branch.clone()),
-        Cell::from(timestamp),
-    ];
-
-    for col in cols {
-        let job = ci_run.jobs.iter().find(|j| col.matches(&j.name));
-        if let Some(j) = job {
-            let style = super::render::conclusion_style(Some(j.conclusion));
-            cells.push(
-                Cell::from(
-                    Line::from(j.duration.trim().to_string())
-                        .alignment(ratatui::layout::Alignment::Right),
-                )
-                .style(style),
-            );
-            cells.push(Cell::from(j.conclusion.icon().to_string()).style(style));
-        } else {
-            cells.push(
-                Cell::from(Line::from("—").alignment(ratatui::layout::Alignment::Right))
-                    .style(Style::default().fg(Color::DarkGray)),
-            );
-            cells.push(Cell::from(""));
-        }
-    }
-
-    // Total column
-    let total_style = super::render::conclusion_style(Some(ci_run.conclusion));
-    cells.push(
-        Cell::from(
-            Line::from(total_dur.trim().to_string()).alignment(ratatui::layout::Alignment::Right),
-        )
-        .style(total_style),
-    );
-    cells.push(Cell::from(ci_run.conclusion.icon().to_string()).style(total_style));
-
-    Row::new(cells)
-}
-
-/// Build column width constraints for the CI table based on content.
-///
-/// Duration, timestamp, branch, and glyph columns use `Length` (exact
-/// fit-to-content). Commit uses `Fill` to absorb all remaining space.
-fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn]) -> Vec<Constraint> {
-    let branch_width = u16::try_from(
-        ci_runs
-            .iter()
-            .map(|r| r.branch.len())
-            .max()
-            .unwrap_or("Branch".len())
-            .max("Branch".len()),
-    )
-    .unwrap_or(u16::MAX);
-    let glyph_width = u16::try_from(
-        Conclusion::Success
-            .icon()
-            .width()
-            .max(Conclusion::Failure.icon().width()),
-    )
-    .unwrap_or(u16::MAX);
-    let mut widths = vec![
-        Constraint::Fill(1),                    // Commit — absorbs remaining space
-        Constraint::Length(branch_width),       // Branch — fit-to-content
-        Constraint::Length(CI_TIMESTAMP_WIDTH), // Timestamp — exact
-    ];
-    for col in cols {
-        let width = u16::try_from(ci_duration_min_width(ci_runs, *col)).unwrap_or(u16::MAX);
-        widths.push(Constraint::Length(width)); // duration — exact
-        widths.push(Constraint::Length(glyph_width)); // glyph
-    }
-    let total_width = u16::try_from(ci_total_min_width(ci_runs)).unwrap_or(u16::MAX);
-    widths.push(Constraint::Length(total_width)); // Total duration — exact
-    widths.push(Constraint::Length(glyph_width)); // Total glyph
-    widths
-}
-
-/// Minimum width for a CI duration column: the wider of the header label
-/// and the widest duration value across all runs.
-fn ci_duration_min_width(ci_runs: &[CiRun], col: CiColumn) -> usize {
-    let max_data = ci_runs
-        .iter()
-        .filter_map(|r| r.jobs.iter().find(|j| col.matches(&j.name)))
-        .map(|j| j.duration.trim().len())
-        .max()
-        .unwrap_or(0);
-    col.label().len().max(max_data)
-}
-
-/// Minimum width for the Total duration column.
-fn ci_total_min_width(ci_runs: &[CiRun]) -> usize {
-    let max_data = ci_runs
-        .iter()
-        .filter_map(|r| r.wall_clock_secs)
-        .map(|s| ci::format_secs(s).trim().len())
-        .max()
-        .unwrap_or(0);
-    "Total".len().max(max_data)
-}
-
-pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun], area: Rect) {
-    let ci_focused = app.is_focused(PaneId::CiRuns);
-
-    let total = ci_runs.len();
-    let cached = app
-        .selected_project()
-        .and_then(|p| app.git_info.get(&p.path))
-        .and_then(|g| g.url.as_ref())
-        .and_then(|url| ci::parse_owner_repo(url))
-        .map_or(0, |(owner, repo)| scan::count_cached_runs(&owner, &repo));
-
-    let is_fetching = app
-        .selected_project()
-        .and_then(|p| app.ci_state_for(p))
-        .is_some_and(CiState::is_fetching);
-    let is_exhausted = app
-        .selected_project()
-        .and_then(|p| app.ci_state_for(p))
-        .is_some_and(CiState::is_exhausted);
-    let fetch_count = app
-        .selected_project()
-        .and_then(|p| app.ci_state_for(p))
-        .map_or(0, CiState::fetch_count);
-
-    let title = if is_fetching {
-        let spinner = BRAILLE_SPINNER.frame_at(app.animation_elapsed());
-        format!(" CI Runs {spinner} fetching {fetch_count} more… ")
-    } else {
-        format!(" CI Runs (cached {cached}, total {total}) ")
-    };
-
-    let ci_block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-        .border_style(if ci_focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        });
-
-    app.ci_pane.set_len(ci_runs.len() + CI_EXTRA_ROWS);
-    app.ci_pane.set_content_area(ci_block.inner(area));
-
-    let all_columns = [
-        CiColumn::Fmt,
-        CiColumn::Taplo,
-        CiColumn::Clippy,
-        CiColumn::Mend,
-        CiColumn::Build,
-        CiColumn::Test,
-        CiColumn::Bench,
-    ];
-    let cols: Vec<CiColumn> = all_columns
-        .into_iter()
-        .filter(|col| {
-            ci_runs
-                .iter()
-                .any(|r| r.jobs.iter().any(|j| col.matches(&j.name)))
-        })
-        .collect();
-
-    let header = build_ci_header_row(&cols);
-
-    let mut rows: Vec<Row> = ci_runs
-        .iter()
-        .enumerate()
-        .map(|(i, ci_run)| {
-            build_ci_data_row(
-                ci_run,
-                &cols,
-                !ci_focused && i == app.ci_pane.pos() && app.remembers_selection(PaneId::CiRuns),
-            )
-        })
-        .collect();
-
-    let widths = build_ci_widths(ci_runs, &cols);
-
-    // "Fetch more" / "fetch new runs" as a table row
-    let fetch_label = if is_fetching {
-        let spinner = BRAILLE_SPINNER.frame_at(app.animation_elapsed());
-        format!("{spinner} fetching {fetch_count} more…")
-    } else if is_exhausted {
-        "↓ fetch new runs".to_string()
-    } else {
-        "↓ fetch more runs".to_string()
-    };
-    let fetch_style = Style::default().fg(Color::Cyan);
-
-    let num_cols = widths.len();
-    let mut fetch_cells: Vec<Cell> = vec![Cell::from(fetch_label).style(fetch_style)];
-    for _ in 1..num_cols {
-        fetch_cells.push(Cell::from(""));
-    }
-    rows.push(Row::new(fetch_cells));
-
-    let highlight_style = if ci_focused {
-        Style::default().fg(Color::Black).bg(Color::Cyan)
-    } else {
-        Style::default()
-    };
-
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(ci_block)
-        .column_spacing(1)
-        .row_highlight_style(highlight_style);
-
-    let mut table_state = TableState::default().with_selected(Some(app.ci_pane.pos()));
-    frame.render_stateful_widget(table, area, &mut table_state);
-    app.ci_pane.set_scroll_offset(table_state.offset());
-}
-
-fn format_port_report_when(timestamp: &str) -> String {
-    DateTime::parse_from_rfc3339(timestamp).map_or_else(
-        |_| timestamp.to_string(),
-        |ts: DateTime<FixedOffset>| ts.with_timezone(&Local).format("%H:%M:%S").to_string(),
-    )
-}
-
-fn format_port_report_duration(run: &PortReportRun) -> String {
-    let duration_ms = run.duration_ms.or_else(|| {
-        if matches!(run.status, PortReportRunStatus::Running) {
-            DateTime::parse_from_rfc3339(&run.started_at)
-                .ok()
-                .and_then(|started| {
-                    u64::try_from((Local::now() - started.with_timezone(&Local)).num_milliseconds())
-                        .ok()
-                })
-        } else {
-            None
-        }
-    });
-    let Some(duration_ms) = duration_ms else {
-        return "—".to_string();
-    };
-    let total_seconds = duration_ms / 1000;
-    let minutes = total_seconds / 60;
-    let seconds = total_seconds % 60;
-    format!("{minutes}:{seconds:02}")
-}
-
-fn format_port_report_commands(run: &PortReportRun) -> String {
-    let total = run.commands.len();
-    if total == 0 {
-        return "-".to_string();
-    }
-
-    let passed = run
-        .commands
-        .iter()
-        .filter(|command| matches!(command.status, PortReportCommandStatus::Passed))
-        .count();
-    let failed = run
-        .commands
-        .iter()
-        .filter(|command| matches!(command.status, PortReportCommandStatus::Failed))
-        .count();
-    let pending = run
-        .commands
-        .iter()
-        .filter(|command| matches!(command.status, PortReportCommandStatus::Pending))
-        .count();
-
-    match run.status {
-        PortReportRunStatus::Running => format!("{passed}/{total} running"),
-        PortReportRunStatus::Passed => format!("{total}/{total}"),
-        PortReportRunStatus::Failed if failed > 0 => format!("{failed}/{total} failed"),
-        PortReportRunStatus::Failed => format!("{}/{}", total.saturating_sub(pending), total),
-    }
-}
-
-fn first_failed_command(run: &PortReportRun) -> Option<&str> {
-    run.commands
-        .iter()
-        .find(|command| matches!(command.status, PortReportCommandStatus::Failed))
-        .map(|command| command.name.as_str())
-}
-
-fn format_port_report_failed(run: &PortReportRun) -> String {
-    first_failed_command(run).unwrap_or("-").to_string()
-}
-
-fn format_port_report_exit(run: &PortReportRun) -> String {
-    run.commands
-        .iter()
-        .find(|command| matches!(command.status, PortReportCommandStatus::Failed))
-        .and_then(|command| command.exit_code)
-        .map_or_else(|| "-".to_string(), |code| code.to_string())
-}
-
-pub(super) fn render_port_report_panel(
-    frame: &mut Frame,
-    app: &mut App,
-    runs: &[PortReportRun],
-    area: Rect,
-) {
-    let focused = app.is_focused(PaneId::CiRuns);
-    let (watching, worker_count) = app.selected_project().map_or((false, 0usize), |project| {
-        let watching = app.port_report_is_watchable(project) && app.lint_runtime.is_some();
-        (watching, usize::from(watching))
-    });
-    let title = format!(
-        " Port Report (watching {}, workers {}, runs {}) ",
-        if watching { "yes" } else { "no" },
-        worker_count,
-        runs.len()
-    );
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-        .border_style(if focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        });
-
-    let inner = block.inner(area);
-    app.port_report_pane.set_len(runs.len());
-    app.port_report_pane.set_content_area(inner);
-
-    if runs.is_empty() {
-        frame.render_widget(block, area);
-        if area.height > 2 {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    "No local Port Report runs yet",
-                    Style::default().fg(Color::DarkGray),
-                )))
-                .alignment(ratatui::layout::Alignment::Center),
-                inner,
-            );
-        }
-        return;
-    }
-
-    let rows: Vec<Row> = runs
-        .iter()
-        .map(|run| {
-            let style = match run.status {
-                PortReportRunStatus::Running => Style::default().fg(Color::Cyan),
-                PortReportRunStatus::Passed => Style::default().fg(Color::Green),
-                PortReportRunStatus::Failed => Style::default().fg(Color::Red),
-            };
-            Row::new(vec![
-                Cell::from(format_port_report_when(&run.started_at)),
-                Cell::from(run.status.label()),
-                Cell::from(format_port_report_duration(run)),
-                Cell::from(format_port_report_commands(run)),
-                Cell::from(format_port_report_failed(run)),
-                Cell::from(format_port_report_exit(run)),
-            ])
-            .style(style)
-        })
-        .collect();
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(10),
-            Constraint::Length(8),
-            Constraint::Length(6),
-            Constraint::Length(12),
-            Constraint::Length(12),
-            Constraint::Length(6),
-        ],
-    )
-    .header(
-        Row::new(vec!["When", "Result", "Dur", "Cmds", "Failed", "Exit"]).style(
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        ),
-    )
-    .block(block)
-    .column_spacing(1)
-    .row_highlight_style(if focused {
-        Style::default().fg(Color::Black).bg(Color::Cyan)
-    } else {
-        Style::default()
-    });
-
-    let mut table_state = TableState::default().with_selected(Some(app.port_report_pane.pos()));
-    frame.render_stateful_widget(table, area, &mut table_state);
-    app.port_report_pane.set_scroll_offset(table_state.offset());
 }
 
 /// Returns (`max_column_index`, `targets_column_index` or `None`).
@@ -1838,250 +732,6 @@ fn detail_layout(app: &App) -> DetailLayoutSpec {
     detail_layout_spec(git, targets)
 }
 
-fn handle_target_action(app: &mut App, mode: BuildMode) {
-    let Some(project) = app.selected_project() else {
-        return;
-    };
-    let info = build_detail_info(app, project);
-    let entries = build_target_list(&info);
-    if let Some(entry) = entries.get(app.targets_pane.pos())
-        && let Some(project) = app.selected_project()
-    {
-        app.pending_example_run = Some(PendingExampleRun {
-            abs_path:     project.abs_path.clone(),
-            target_name:  entry.name.clone(),
-            package_name: project.name.clone(),
-            kind:         entry.kind,
-            release:      matches!(mode, BuildMode::Release),
-        });
-    }
-}
-
-pub(super) fn handle_detail_key(app: &mut App, key: KeyCode) {
-    let pane = active_detail_pane(app);
-
-    match key {
-        KeyCode::Up => pane.up(),
-        KeyCode::Down => pane.down(),
-        KeyCode::Home => pane.home(),
-        KeyCode::End => pane.end(),
-        KeyCode::Left => focus_adjacent_detail_pane(app, false),
-        KeyCode::Right => focus_adjacent_detail_pane(app, true),
-        KeyCode::Enter => handle_detail_enter(app),
-        KeyCode::Char('r') => {
-            if app.is_focused(PaneId::Targets) {
-                handle_target_action(app, BuildMode::Release);
-            }
-        },
-        KeyCode::Char('c') => {
-            if let Some(project) = app.selected_project()
-                && project.is_rust == ProjectLanguage::Rust
-            {
-                app.confirm = Some(ConfirmAction::Clean(project.abs_path.clone()));
-            }
-        },
-        _ => {},
-    }
-}
-
-/// Return a mutable reference to the pane that owns the cursor for the
-/// currently active detail column.
-fn active_detail_pane(app: &mut App) -> &mut Pane {
-    match app.base_focus() {
-        PaneId::Targets => &mut app.targets_pane,
-        PaneId::Git => &mut app.git_pane,
-        PaneId::Package | PaneId::ProjectList | PaneId::CiRuns | PaneId::ScanLog => {
-            &mut app.package_pane
-        },
-        PaneId::Search | PaneId::Settings | PaneId::Finder => &mut app.package_pane,
-    }
-}
-
-fn detail_panes(app: &App) -> Vec<PaneId> {
-    app.tabbable_panes()
-        .into_iter()
-        .filter(|pane| matches!(pane, PaneId::Package | PaneId::Git | PaneId::Targets))
-        .collect()
-}
-
-fn focus_adjacent_detail_pane(app: &mut App, forward: bool) {
-    let panes = detail_panes(app);
-    let current = app.base_focus();
-    let Some(index) = panes.iter().position(|pane| *pane == current) else {
-        return;
-    };
-
-    let next = if forward {
-        panes.get(index + 1).copied()
-    } else {
-        index
-            .checked_sub(1)
-            .and_then(|prev| panes.get(prev).copied())
-    };
-
-    if let Some(pane) = next {
-        app.focus_pane(pane);
-    }
-}
-
-/// Handle the Enter key in the detail panel.
-fn handle_detail_enter(app: &mut App) {
-    if app.is_focused(PaneId::Targets) {
-        handle_target_action(app, BuildMode::Debug);
-    } else if app.base_focus() == PaneId::Package {
-        let info = app.selected_project().map(|p| build_detail_info(app, p));
-        let fields = info.as_ref().map(package_fields).unwrap_or_default();
-        match fields.get(app.package_pane.pos()) {
-            Some(DetailField::CratesIo) => {
-                if let Some(ref info) = info {
-                    open_url(&format!("https://crates.io/crates/{}", info.name));
-                }
-            },
-            Some(field) if field.is_from_cargo_toml() => open_cargo_toml(app),
-            _ => {},
-        }
-    } else {
-        // Git column — open repo URL in browser
-        if let Some(info) = app.selected_project().map(|p| build_detail_info(app, p))
-            && matches!(
-                git_fields(&info).get(app.git_pane.pos()),
-                Some(DetailField::Repo)
-            )
-            && let Some(ref url) = info.git_url
-        {
-            open_url(url);
-        }
-    }
-}
-
-fn open_url(url: &str) {
-    let _ = std::process::Command::new(if cfg!(target_os = "macos") {
-        "open"
-    } else if cfg!(target_os = "windows") {
-        "start"
-    } else {
-        "xdg-open"
-    })
-    .arg(url)
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null())
-    .spawn();
-}
-
-pub(super) fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
-    if app.showing_port_report() {
-        match key {
-            KeyCode::Up => app.port_report_pane.up(),
-            KeyCode::Down => app.port_report_pane.down(),
-            KeyCode::Home => app.port_report_pane.home(),
-            KeyCode::End => app.port_report_pane.end(),
-            KeyCode::Char('p') => app.toggle_bottom_panel(),
-            _ => {},
-        }
-        return;
-    }
-
-    let ci_state = app.selected_project().and_then(|p| app.ci_state_for(p));
-    let run_count = ci_state.map_or(0, |s: &CiState| s.runs().len());
-    let is_fetching = ci_state.is_some_and(CiState::is_fetching);
-    let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
-
-    match key {
-        KeyCode::Up => {
-            app.ci_pane.up();
-        },
-        KeyCode::Down => {
-            app.ci_pane.down();
-        },
-        KeyCode::Home => {
-            app.ci_pane.home();
-        },
-        KeyCode::End => {
-            app.ci_pane.end();
-        },
-        KeyCode::Enter => {
-            let cursor_pos = app.ci_pane.pos();
-            if cursor_pos < run_count {
-                // Open the CI run in the browser
-                if let Some(runs) = ci_state.map(CiState::runs)
-                    && let Some(run) = runs.get(cursor_pos)
-                {
-                    let _ = std::process::Command::new("open").arg(&run.url).spawn();
-                }
-            } else if cursor_pos == run_count
-                && !is_fetching
-                && let Some(project) = app.selected_project()
-            {
-                let current_count = u32::try_from(run_count).unwrap_or(u32::MAX);
-                let kind = if is_exhausted {
-                    CiFetchKind::Refresh
-                } else {
-                    CiFetchKind::FetchOlder
-                };
-                app.pending_ci_fetch = Some(PendingCiFetch {
-                    project_path: project.path.clone(),
-                    current_count,
-                    kind,
-                });
-            }
-        },
-        KeyCode::Char('c') => {
-            if let Some(project) = app.selected_project() {
-                let path = project.path.clone();
-                clear_ci_cache(app, &path);
-            }
-        },
-        KeyCode::Char('p') => app.toggle_bottom_panel(),
-        _ => {},
-    }
-}
-
-/// Clear CI cache for a project and remove its runs from the app.
-fn clear_ci_cache(app: &mut App, project_path: &str) {
-    // Derive (owner, repo) from local git info — no network needed
-    if let Some(git) = app.git_info.get(project_path)
-        && let Some(url) = &git.url
-        && let Some((owner, repo)) = ci::parse_owner_repo(url)
-    {
-        let _ = std::fs::remove_dir_all(scan::repo_cache_dir_pub(&owner, &repo));
-    }
-
-    // Insert empty Loaded so the CI panel stays visible with the "fetch more" row
-    app.ci_state.insert(
-        project_path.to_string(),
-        CiState::Loaded {
-            runs:      Vec::new(),
-            exhausted: false,
-        },
-    );
-    app.ci_pane.home();
-    app.data_generation += 1;
-}
-
-fn open_cargo_toml(app: &App) {
-    let Some(project) = app.selected_project() else {
-        return;
-    };
-    // For workspace members, open the workspace root; for standalone, open the project dir.
-    let project_dir = app
-        .nodes
-        .iter()
-        .find(|n| {
-            n.groups
-                .iter()
-                .any(|g| g.members.iter().any(|m| m.path == project.path))
-        })
-        .map_or_else(|| project.abs_path.clone(), |n| n.project.abs_path.clone());
-
-    let cargo_toml = PathBuf::from(&project.abs_path).join("Cargo.toml");
-    let _ = std::process::Command::new(&app.editor)
-        .arg(&project_dir)
-        .arg(&cargo_toml)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-}
-
 /// Word-wrap text to fit within `max_width` characters, breaking at word boundaries.
 fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     let mut result = Vec::new();
@@ -2090,7 +740,6 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     for word in text.split_whitespace() {
         if current_line.is_empty() {
             if word.len() > max_width {
-                // Single word longer than the line — just push it
                 result.push(word.to_string());
             } else {
                 current_line.push_str(word);
@@ -2129,14 +778,80 @@ fn hard_wrap(text: &str, max_width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::first_failed_command;
-    use super::format_port_report_commands;
-    use super::format_port_report_exit;
+    use super::DetailField;
+    use super::DetailInfo;
+    use super::ci_panel::CI_COMPACT_DURATION_WIDTH;
+    use super::ci_panel::ci_table_shows_durations;
+    use super::ci_panel::ci_total_width;
+    use super::model::package_fields;
+    use super::package_label_width;
+    use super::port_report_panel::first_failed_command;
+    use super::port_report_panel::format_port_report_commands;
+    use super::port_report_panel::format_port_report_exit;
     use super::stats_column_width;
+    use crate::ci::CiJob;
+    use crate::ci::CiRun;
+    use crate::ci::Conclusion;
+    use crate::ci::FetchStatus::Fetched;
     use crate::port_report::PortReportCommand;
     use crate::port_report::PortReportCommandStatus;
     use crate::port_report::PortReportRun;
     use crate::port_report::PortReportRunStatus;
+    use crate::project::ExampleGroup;
+    use crate::project::ProjectLanguage;
+    use crate::tui::render::CiColumn;
+
+    fn detail_info(is_rust: ProjectLanguage, lint_label: &str) -> DetailInfo {
+        DetailInfo {
+            package_title: "Package".to_string(),
+            name: "demo".to_string(),
+            path: "~/demo".to_string(),
+            version: "0.1.0".to_string(),
+            description: None,
+            crates_version: None,
+            crates_downloads: None,
+            types: "lib".to_string(),
+            disk: "36.3 GiB".to_string(),
+            lint_label: lint_label.to_string(),
+            ci: None,
+            stats_rows: Vec::new(),
+            git_branch: None,
+            git_sync: None,
+            git_vs_origin: None,
+            git_vs_local: None,
+            default_branch: None,
+            git_origin: None,
+            git_owner: None,
+            git_url: None,
+            git_stars: None,
+            repo_description: None,
+            git_inception: None,
+            git_last_commit: None,
+            worktree_label: None,
+            worktree_names: Vec::new(),
+            vendored_names: String::new(),
+            is_binary: false,
+            binary_name: None,
+            examples: Vec::<ExampleGroup>::new(),
+            benches: Vec::new(),
+            is_rust,
+            has_package: true,
+        }
+    }
+
+    fn ci_run_with_jobs(jobs: Vec<CiJob>) -> CiRun {
+        CiRun {
+            run_id: 1,
+            created_at: "2026-04-01T21:00:00-04:00".to_string(),
+            branch: "feat/box-select".to_string(),
+            url: "https://example.com/run/1".to_string(),
+            conclusion: Conclusion::Success,
+            jobs,
+            wall_clock_secs: Some(17),
+            commit_title: Some("feat: add box select".to_string()),
+            fetched: Fetched,
+        }
+    }
 
     fn run_with_commands(
         status: PortReportRunStatus,
@@ -2154,7 +869,6 @@ mod tests {
 
     #[test]
     fn stats_width_fixed_for_three_digit_counts() {
-        // 3-digit counts: border + lpad + 3 digits + space + 10 label + rpad = 17
         let rows = vec![("example", 999), ("lib", 1)];
         let (total, digits) = stats_column_width(&rows);
         assert_eq!(digits, 3);
@@ -2163,7 +877,6 @@ mod tests {
 
     #[test]
     fn stats_width_expands_at_four_digits() {
-        // 4-digit counts: border + lpad + 4 digits + space + 10 label + rpad = 18
         let rows = vec![("example", 1000), ("lib", 1)];
         let (total, digits) = stats_column_width(&rows);
         assert_eq!(digits, 4);
@@ -2172,7 +885,6 @@ mod tests {
 
     #[test]
     fn stats_width_stable_for_short_labels() {
-        // Even with only short labels present, width stays fixed to fit "proc-macro"
         let rows = vec![("lib", 5), ("bin", 2)];
         let (total, _) = stats_column_width(&rows);
         assert_eq!(total, 17);
@@ -2187,25 +899,97 @@ mod tests {
     }
 
     #[test]
+    fn package_fields_place_lint_and_ci_before_disk_for_rust_projects() {
+        let info = detail_info(ProjectLanguage::Rust, "🟢");
+        assert_eq!(
+            package_fields(&info)
+                .into_iter()
+                .map(DetailField::label)
+                .collect::<Vec<_>>(),
+            vec![
+                "Name", "Path", "Targets", "Lint", "CI", "Disk", "Version", "Desc",
+            ]
+        );
+    }
+
+    #[test]
+    fn package_fields_place_lint_and_ci_before_disk_for_non_rust_projects() {
+        let info = detail_info(ProjectLanguage::NonRust, "🔴");
+        assert_eq!(
+            package_fields(&info)
+                .into_iter()
+                .map(DetailField::label)
+                .collect::<Vec<_>>(),
+            vec!["Name", "Path", "Lint", "CI", "Disk"]
+        );
+    }
+
+    #[test]
+    fn package_label_width_expands_for_crates_io() {
+        let info = DetailInfo {
+            crates_version: Some("0.0.3".to_string()),
+            crates_downloads: Some(74),
+            ..detail_info(ProjectLanguage::Rust, "🟢")
+        };
+        let fields = package_fields(&info);
+        assert_eq!(package_label_width(&fields), "crates.io".len());
+    }
+
+    #[test]
+    fn ci_table_hides_durations_when_fixed_columns_overflow() {
+        let runs = vec![ci_run_with_jobs(vec![
+            CiJob {
+                name: "fmt".to_string(),
+                conclusion: Conclusion::Success,
+                duration: "17s".to_string(),
+                duration_secs: Some(17),
+            },
+            CiJob {
+                name: "clippy".to_string(),
+                conclusion: Conclusion::Success,
+                duration: "21s".to_string(),
+                duration_secs: Some(21),
+            },
+        ])];
+        let cols = vec![CiColumn::Fmt, CiColumn::Clippy];
+
+        assert!(!ci_table_shows_durations(&runs, &cols, 20));
+        assert_eq!(ci_total_width(&runs, false), CI_COMPACT_DURATION_WIDTH);
+    }
+
+    #[test]
+    fn ci_table_keeps_durations_when_fixed_columns_fit() {
+        let runs = vec![ci_run_with_jobs(vec![CiJob {
+            name: "fmt".to_string(),
+            conclusion: Conclusion::Success,
+            duration: "17s".to_string(),
+            duration_secs: Some(17),
+        }])];
+        let cols = vec![CiColumn::Fmt];
+
+        assert!(ci_table_shows_durations(&runs, &cols, 80));
+    }
+
+    #[test]
     fn port_report_commands_summary_for_passed_run() {
         let run = run_with_commands(
             PortReportRunStatus::Passed,
             vec![
                 PortReportCommand {
-                    name:        "mend".to_string(),
-                    command:     "cargo mend".to_string(),
-                    status:      PortReportCommandStatus::Passed,
+                    name: "mend".to_string(),
+                    command: "cargo mend".to_string(),
+                    status: PortReportCommandStatus::Passed,
                     duration_ms: Some(1_000),
-                    exit_code:   Some(0),
-                    log_file:    "port-report/mend-latest.log".to_string(),
+                    exit_code: Some(0),
+                    log_file: "port-report/mend-latest.log".to_string(),
                 },
                 PortReportCommand {
-                    name:        "clippy".to_string(),
-                    command:     "cargo clippy".to_string(),
-                    status:      PortReportCommandStatus::Passed,
+                    name: "clippy".to_string(),
+                    command: "cargo clippy".to_string(),
+                    status: PortReportCommandStatus::Passed,
                     duration_ms: Some(2_000),
-                    exit_code:   Some(0),
-                    log_file:    "port-report/clippy-latest.log".to_string(),
+                    exit_code: Some(0),
+                    log_file: "port-report/clippy-latest.log".to_string(),
                 },
             ],
         );
@@ -2221,20 +1005,20 @@ mod tests {
             PortReportRunStatus::Failed,
             vec![
                 PortReportCommand {
-                    name:        "mend".to_string(),
-                    command:     "cargo mend".to_string(),
-                    status:      PortReportCommandStatus::Passed,
+                    name: "mend".to_string(),
+                    command: "cargo mend".to_string(),
+                    status: PortReportCommandStatus::Passed,
                     duration_ms: Some(1_000),
-                    exit_code:   Some(0),
-                    log_file:    "port-report/mend-latest.log".to_string(),
+                    exit_code: Some(0),
+                    log_file: "port-report/mend-latest.log".to_string(),
                 },
                 PortReportCommand {
-                    name:        "clippy".to_string(),
-                    command:     "cargo clippy".to_string(),
-                    status:      PortReportCommandStatus::Failed,
+                    name: "clippy".to_string(),
+                    command: "cargo clippy".to_string(),
+                    status: PortReportCommandStatus::Failed,
                     duration_ms: Some(2_000),
-                    exit_code:   Some(101),
-                    log_file:    "port-report/clippy-latest.log".to_string(),
+                    exit_code: Some(101),
+                    log_file: "port-report/clippy-latest.log".to_string(),
                 },
             ],
         );
@@ -2250,20 +1034,20 @@ mod tests {
             PortReportRunStatus::Running,
             vec![
                 PortReportCommand {
-                    name:        "mend".to_string(),
-                    command:     "cargo mend".to_string(),
-                    status:      PortReportCommandStatus::Passed,
+                    name: "mend".to_string(),
+                    command: "cargo mend".to_string(),
+                    status: PortReportCommandStatus::Passed,
                     duration_ms: Some(1_000),
-                    exit_code:   Some(0),
-                    log_file:    "port-report/mend-latest.log".to_string(),
+                    exit_code: Some(0),
+                    log_file: "port-report/mend-latest.log".to_string(),
                 },
                 PortReportCommand {
-                    name:        "clippy".to_string(),
-                    command:     "cargo clippy".to_string(),
-                    status:      PortReportCommandStatus::Pending,
+                    name: "clippy".to_string(),
+                    command: "cargo clippy".to_string(),
+                    status: PortReportCommandStatus::Pending,
                     duration_ms: None,
-                    exit_code:   None,
-                    log_file:    "port-report/clippy-latest.log".to_string(),
+                    exit_code: None,
+                    log_file: "port-report/clippy-latest.log".to_string(),
                 },
             ],
         );

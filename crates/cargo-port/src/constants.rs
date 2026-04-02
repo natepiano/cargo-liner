@@ -4,7 +4,7 @@ use std::time::Duration;
 
 pub const PASSING: &str = "🟢";
 pub const FAILING: &str = "🔴";
-pub const CANCELLED: &str = "⛔";
+pub const CANCELLED: &str = "🌑";
 pub const IN_SYNC: &str = "☑️";
 pub const SYNC_UP: &str = "↑";
 pub const SYNC_DOWN: &str = "↓";
@@ -43,8 +43,8 @@ pub const SCAN_HTTP_CONCURRENCY: usize = 8;
 pub const GITHUB_API_BASE: &str = "https://api.github.com";
 pub const GITHUB_GRAPHQL_URL: &str = "https://api.github.com/graphql";
 pub const CRATES_IO_API_BASE: &str = "https://crates.io/api/v1";
-pub const CONNECTIVITY_CHECK_URL: &str = "https://crates.io";
 pub const CRATES_IO_USER_AGENT: &str = "cargo-port";
+pub const SERVICE_RETRY_SECS: u64 = 1;
 
 // ── Watcher constants ─────────────────────────────────────────────────
 
