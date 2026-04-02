@@ -96,8 +96,8 @@ struct GqlCheckRunConnection {
 /// dispatch async work via `block_on`.
 #[derive(Clone)]
 pub struct HttpClient {
-    client: reqwest::Client,
-    github_token: Option<String>,
+    client:            reqwest::Client,
+    github_token:      Option<String>,
     pub(crate) handle: tokio::runtime::Handle,
 }
 

@@ -1,6 +1,7 @@
 mod animation;
 mod app;
 mod columns;
+mod config_reload;
 mod constants;
 mod detail;
 mod finder;

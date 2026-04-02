@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::style::Color;
@@ -9,7 +11,6 @@ use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
-use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
@@ -47,9 +48,7 @@ impl SettingOption {
         }
     }
 
-    pub(super) const fn count() -> usize {
-        9
-    }
+    pub(super) const fn count() -> usize { 9 }
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
@@ -286,7 +285,7 @@ fn parse_port_report_commands(value: &str) -> Vec<config::LintCommandConfig> {
     )
 }
 
-fn save_updated_config(app: &mut App, cfg: config::Config) -> bool {
+fn save_updated_config(app: &mut App, cfg: &config::Config) -> bool {
     match app.save_and_apply_config(cfg) {
         Ok(()) => true,
         Err(err) => {
@@ -482,7 +481,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
             Some(SettingOption::InvertScroll) => {
                 let mut cfg = app.current_config.clone();
                 cfg.mouse.invert_scroll.toggle();
-                let _ = save_updated_config(app, cfg);
+                let _ = save_updated_config(app, &cfg);
             },
             Some(SettingOption::CiRunCount) => {
                 let mut cfg = app.current_config.clone();
@@ -491,12 +490,12 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
                 } else {
                     cfg.tui.ci_run_count = cfg.tui.ci_run_count.saturating_sub(1).max(1);
                 }
-                let _ = save_updated_config(app, cfg);
+                let _ = save_updated_config(app, &cfg);
             },
             Some(SettingOption::IncludeNonRust) => {
                 let mut cfg = app.current_config.clone();
                 cfg.tui.include_non_rust.toggle();
-                let _ = save_updated_config(app, cfg);
+                let _ = save_updated_config(app, &cfg);
             },
             Some(SettingOption::PortReportEnabled) => {
                 toggle_port_report(app);
@@ -507,7 +506,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
             Some(SettingOption::InvertScroll) => {
                 let mut cfg = app.current_config.clone();
                 cfg.mouse.invert_scroll.toggle();
-                let _ = save_updated_config(app, cfg);
+                let _ = save_updated_config(app, &cfg);
             },
             Some(SettingOption::CiRunCount) => {
                 app.settings_edit_buf = app.current_config.tui.ci_run_count.to_string();
@@ -537,7 +536,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
             Some(SettingOption::IncludeNonRust) => {
                 let mut cfg = app.current_config.clone();
                 cfg.tui.include_non_rust.toggle();
-                let _ = save_updated_config(app, cfg);
+                let _ = save_updated_config(app, &cfg);
             },
             Some(SettingOption::PortReportEnabled) => {
                 toggle_port_report(app);
@@ -565,33 +564,33 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                         let count: u32 = n.max(1);
                         let mut cfg = app.current_config.clone();
                         cfg.tui.ci_run_count = count;
-                        let _ = save_updated_config(app, cfg);
+                        let _ = save_updated_config(app, &cfg);
                     }
                 },
                 Some(SettingOption::InlineDirs) => {
                     let dirs = normalize_sorted_list(&value);
                     let mut cfg = app.current_config.clone();
                     cfg.tui.inline_dirs = dirs;
-                    let _ = save_updated_config(app, cfg);
+                    let _ = save_updated_config(app, &cfg);
                 },
                 Some(SettingOption::IncludeDirs) => {
                     let dirs = normalize_sorted_list(&value);
                     let mut cfg = app.current_config.clone();
                     cfg.tui.include_dirs = dirs;
-                    let _ = save_updated_config(app, cfg);
+                    let _ = save_updated_config(app, &cfg);
                 },
                 Some(SettingOption::Editor) => {
                     let editor = value.trim().to_string();
                     if !editor.is_empty() {
                         let mut cfg = app.current_config.clone();
                         cfg.tui.editor = editor;
-                        let _ = save_updated_config(app, cfg);
+                        let _ = save_updated_config(app, &cfg);
                     }
                 },
                 Some(SettingOption::PortReportProjects) => {
                     let mut cfg = app.current_config.clone();
                     cfg.lint.include = normalize_sorted_list(&value);
-                    if save_updated_config(app, cfg) {
+                    if save_updated_config(app, &cfg) {
                         app.status_flash =
                             Some(("Port Report projects updated".to_string(), Instant::now()));
                     }
@@ -599,7 +598,7 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                 Some(SettingOption::PortReportCommands) => {
                     let mut cfg = app.current_config.clone();
                     cfg.lint.commands = parse_port_report_commands(&value);
-                    if save_updated_config(app, cfg) {
+                    if save_updated_config(app, &cfg) {
                         app.status_flash =
                             Some(("Port Report commands updated".to_string(), Instant::now()));
                     }
@@ -645,7 +644,7 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
 fn toggle_port_report(app: &mut App) {
     let mut cfg = app.current_config.clone();
     cfg.lint.enabled = !cfg.lint.enabled;
-    if !save_updated_config(app, cfg.clone()) {
+    if !save_updated_config(app, &cfg) {
         return;
     }
     app.status_flash = Some((

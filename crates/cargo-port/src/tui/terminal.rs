@@ -55,9 +55,9 @@ pub(super) enum ExampleMsg {
 pub(super) enum CiFetchMsg {
     /// The fetch completed with updated runs for the given project path.
     Complete {
-        path: String,
+        path:   String,
         result: CiFetchResult,
-        kind: CiFetchKind,
+        kind:   CiFetchKind,
     },
 }
 
@@ -267,7 +267,7 @@ fn event_loop(
             app.ci_state.insert(
                 fetch.project_path.clone(),
                 super::app::CiState::Fetching {
-                    runs: existing_runs,
+                    runs:  existing_runs,
                     count: CI_FETCH_DISPLAY_COUNT,
                 },
             );
@@ -505,9 +505,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     });
 }
 
-fn last_selected_path_file() -> PathBuf {
-    scan::cache_dir().join("last_selected.txt")
-}
+fn last_selected_path_file() -> PathBuf { scan::cache_dir().join("last_selected.txt") }
 
 pub(super) fn load_last_selected() -> Option<String> {
     let path = last_selected_path_file();
@@ -573,8 +571,8 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
             scan::emit_service_signal(&tx, signal);
             if let Some(info) = info {
                 let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                    path: project_path,
-                    version: info.version,
+                    path:      project_path,
+                    version:   info.version,
                     downloads: info.downloads,
                 });
             }
