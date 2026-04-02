@@ -122,14 +122,10 @@ pub fn project_key(project_root: &Path) -> String {
 }
 
 /// Cache-rooted directory for the project's lint watcher protocol files.
-pub fn project_dir(project_root: &Path) -> PathBuf {
-    cache_root().join(project_key(project_root))
-}
+pub fn project_dir(project_root: &Path) -> PathBuf { cache_root().join(project_key(project_root)) }
 
 /// Cache-rooted lint status file for the project.
-pub fn log_path(project_root: &Path) -> PathBuf {
-    project_dir(project_root).join(PORT_REPORT_LOG)
-}
+pub fn log_path(project_root: &Path) -> PathBuf { project_dir(project_root).join(PORT_REPORT_LOG) }
 
 /// Read the last line of the project's lint status log and parse it.
 pub fn read_status(project_root: &Path) -> LintStatus {

@@ -30,10 +30,10 @@ pub struct CiArgs {
 /// Workflow run from the GitHub REST API (`/actions/runs`).
 #[derive(Deserialize)]
 pub struct GhRun {
-    pub id: u64,
-    pub node_id: String,
-    pub created_at: String,
-    pub head_branch: String,
+    pub id:            u64,
+    pub node_id:       String,
+    pub created_at:    String,
+    pub head_branch:   String,
     pub display_title: Option<String>,
 }
 
@@ -41,9 +41,9 @@ pub struct GhRun {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GqlCheckRun {
-    pub(super) name: String,
-    pub(super) conclusion: Option<String>,
-    pub(super) started_at: Option<String>,
+    pub(super) name:         String,
+    pub(super) conclusion:   Option<String>,
+    pub(super) started_at:   Option<String>,
     pub(super) completed_at: Option<String>,
 }
 
@@ -73,41 +73,35 @@ impl Conclusion {
         }
     }
 
-    pub const fn is_success(self) -> bool {
-        matches!(self, Self::Success)
-    }
+    pub const fn is_success(self) -> bool { matches!(self, Self::Success) }
 
-    pub const fn is_failure(self) -> bool {
-        matches!(self, Self::Failure)
-    }
+    pub const fn is_failure(self) -> bool { matches!(self, Self::Failure) }
 }
 
 impl std::fmt::Display for Conclusion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.icon())
-    }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.icon()) }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CiRun {
-    pub run_id: u64,
-    pub created_at: String,
-    pub branch: String,
-    pub url: String,
-    pub conclusion: Conclusion,
-    pub jobs: Vec<CiJob>,
+    pub run_id:          u64,
+    pub created_at:      String,
+    pub branch:          String,
+    pub url:             String,
+    pub conclusion:      Conclusion,
+    pub jobs:            Vec<CiJob>,
     pub wall_clock_secs: Option<u64>,
     #[serde(default)]
-    pub commit_title: Option<String>,
+    pub commit_title:    Option<String>,
     #[serde(default)]
-    pub fetched: FetchStatus,
+    pub fetched:         FetchStatus,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CiJob {
-    pub name: String,
-    pub conclusion: Conclusion,
-    pub duration: String,
+    pub name:          String,
+    pub conclusion:    Conclusion,
+    pub duration:      String,
     pub duration_secs: Option<u64>,
 }
 

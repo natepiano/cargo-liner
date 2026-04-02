@@ -39,9 +39,7 @@ impl SettingOption {
         }
     }
 
-    pub(super) const fn count() -> usize {
-        6
-    }
+    pub(super) const fn count() -> usize { 6 }
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
