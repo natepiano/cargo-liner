@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use ratatui::style::Color;
+
 // ── Shared icons ─────────────────────────────────────────────────────
 
 pub const PASSING: &str = "🟢";
@@ -16,14 +18,16 @@ pub const LINT_FAILED: &str = "🔴";
 pub const LINT_STALE: &str = "⚫";
 pub const LINT_NO_LOG: &str = " ";
 
-// ── Git origin icons ─────────────────────────────────────────────────
+// ── Git UI constants ─────────────────────────────────────────────────
 
 pub const GIT_LOCAL: &str = "📁";
 pub const GIT_CLONE: &str = "📥";
 pub const GIT_FORK: &str = "🔱";
-pub const GIT_UNTRACKED: &str = "U";
 pub const GIT_IGNORED: &str = "I";
 pub const WORKTREE: &str = "🌲";
+pub const GIT_MODIFIED_COLOR: Color = Color::Indexed(208);
+pub const GIT_UNTRACKED_COLOR: Color = Color::Green;
+pub const GIT_IGNORED_COLOR: Color = Color::DarkGray;
 
 // ── CI constants ──────────────────────────────────────────────────────
 
@@ -61,6 +65,8 @@ pub const NEW_PROJECT_DEBOUNCE: Duration = Duration::from_secs(2);
 
 /// How often the watcher thread checks for expired timers.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
+pub const WATCHER_DISK_CONCURRENCY: usize = 1;
+pub const WATCHER_GIT_CONCURRENCY: usize = 2;
 
 // ── Port-report constants ────────────────────────────────────────────
 

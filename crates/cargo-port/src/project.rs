@@ -14,6 +14,7 @@ use toml::Value;
 use crate::constants::GIT_CLONE;
 use crate::constants::GIT_FORK;
 use crate::constants::GIT_LOCAL;
+use crate::perf_log;
 
 /// Whether a project is a plain clone or a fork (has an "upstream" remote).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -49,25 +50,25 @@ impl GitOrigin {
 #[derive(Debug, Clone, Serialize)]
 pub struct GitInfo {
     /// Whether this is a clone or a fork.
-    pub origin: GitOrigin,
+    pub origin:              GitOrigin,
     /// The current branch name.
-    pub branch: Option<String>,
+    pub branch:              Option<String>,
     /// The GitHub/GitLab owner (e.g. "natepiano").
-    pub owner: Option<String>,
+    pub owner:               Option<String>,
     /// The HTTPS URL to the repository.
-    pub url: Option<String>,
+    pub url:                 Option<String>,
     /// ISO 8601 date of the first commit (inception).
-    pub first_commit: Option<String>,
+    pub first_commit:        Option<String>,
     /// ISO 8601 date of the most recent commit.
-    pub last_commit: Option<String>,
+    pub last_commit:         Option<String>,
     /// Commits ahead and behind the upstream tracking branch (ahead, behind).
-    pub ahead_behind: Option<(usize, usize)>,
+    pub ahead_behind:        Option<(usize, usize)>,
     /// The repo's default branch name resolved from `origin/HEAD`.
-    pub default_branch: Option<String>,
+    pub default_branch:      Option<String>,
     /// Commits ahead and behind `origin/{default_branch}`.
     pub ahead_behind_origin: Option<(usize, usize)>,
     /// Commits ahead and behind the local `{default_branch}`.
-    pub ahead_behind_local: Option<(usize, usize)>,
+    pub ahead_behind_local:  Option<(usize, usize)>,
 }
 
 impl GitInfo {
@@ -199,6 +200,7 @@ impl GitPathState {
 }
 
 pub fn detect_git_path_state(project_dir: &Path) -> GitPathState {
+    let started = std::time::Instant::now();
     let Some(repo_root) = git_repo_root(project_dir) else {
         return GitPathState::OutsideRepo;
     };
@@ -211,7 +213,19 @@ pub fn detect_git_path_state(project_dir: &Path) -> GitPathState {
             .ok()
             .is_some_and(|status| status.success());
         if ignored {
-            return GitPathState::Ignored;
+            let state = GitPathState::Ignored;
+            perf_log::log_duration(
+                "git_path_state_single",
+                started.elapsed(),
+                &format!(
+                    "repo_root={} project_dir={} state={}",
+                    repo_root.display(),
+                    project_dir.display(),
+                    state.label()
+                ),
+                0,
+            );
+            return state;
         }
     }
     let status_output = Command::new("git")
@@ -241,13 +255,25 @@ pub fn detect_git_path_state(project_dir: &Path) -> GitPathState {
         }
     }
 
-    if has_modified {
+    let state = if has_modified {
         GitPathState::Modified
     } else if has_untracked {
         GitPathState::Untracked
     } else {
         GitPathState::Clean
-    }
+    };
+    perf_log::log_duration(
+        "git_path_state_single",
+        started.elapsed(),
+        &format!(
+            "repo_root={} project_dir={} state={}",
+            repo_root.display(),
+            project_dir.display(),
+            state.label()
+        ),
+        0,
+    );
+    state
 }
 
 pub fn git_repo_root(project_dir: &Path) -> Option<PathBuf> {
@@ -263,6 +289,7 @@ pub fn git_repo_root(project_dir: &Path) -> Option<PathBuf> {
 pub fn detect_git_path_states_batch(
     projects: &[(String, String)],
 ) -> HashMap<String, GitPathState> {
+    let started = std::time::Instant::now();
     let mut states = HashMap::new();
     let mut repos: HashMap<PathBuf, Vec<(String, String)>> = HashMap::new();
 
@@ -278,6 +305,7 @@ pub fn detect_git_path_states_batch(
         }
     }
 
+    let repo_count = repos.len();
     for (repo_root, entries) in repos {
         let prefixes: Vec<(String, String)> = entries
             .iter()
@@ -297,10 +325,13 @@ pub fn detect_git_path_states_batch(
             .map(|(path, _)| (path.clone(), GitPathState::Clean))
             .collect();
 
+        let status_started = std::time::Instant::now();
         let status_output = Command::new("git")
             .args(["status", "--porcelain=v1", "--untracked-files=normal"])
             .current_dir(&repo_root)
             .output();
+        let status_elapsed_ms = status_started.elapsed().as_millis();
+        let mut ignored_elapsed_ms = 0;
         if let Ok(output) = status_output {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines().filter(|line| line.len() >= 3) {
@@ -332,6 +363,7 @@ pub fn detect_git_path_states_batch(
             .map(|(path, _)| path.clone())
             .collect();
         if !remaining_clean.is_empty() {
+            let ignored_started = std::time::Instant::now();
             let ignored_output = Command::new("git")
                 .args([
                     "ls-files",
@@ -342,6 +374,7 @@ pub fn detect_git_path_states_batch(
                 ])
                 .current_dir(&repo_root)
                 .output();
+            ignored_elapsed_ms = ignored_started.elapsed().as_millis();
             if let Ok(output) = ignored_output {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for ignored in stdout.lines() {
@@ -360,10 +393,23 @@ pub fn detect_git_path_states_batch(
                 }
             }
         }
+        perf_log::log_event(&format!(
+            "git_path_states_repo repo_root={} rows={} status_ms={} ignored_ms={}",
+            repo_root.display(),
+            prefixes.len(),
+            status_elapsed_ms,
+            ignored_elapsed_ms
+        ));
 
         states.extend(repo_states);
     }
 
+    perf_log::log_duration(
+        "git_path_states_batch",
+        started.elapsed(),
+        &format!("repos={} rows={}", repo_count, projects.len()),
+        0,
+    );
     states
 }
 
@@ -476,15 +522,11 @@ pub enum WorkspaceStatus {
 }
 
 impl From<bool> for WorkspaceStatus {
-    fn from(b: bool) -> Self {
-        if b { Self::Workspace } else { Self::Standalone }
-    }
+    fn from(b: bool) -> Self { if b { Self::Workspace } else { Self::Standalone } }
 }
 
 impl From<WorkspaceStatus> for bool {
-    fn from(val: WorkspaceStatus) -> Self {
-        matches!(val, WorkspaceStatus::Workspace)
-    }
+    fn from(val: WorkspaceStatus) -> Self { matches!(val, WorkspaceStatus::Workspace) }
 }
 
 /// Whether a project is a Rust project (has `Cargo.toml`) or a non-Rust git repo.
@@ -497,15 +539,11 @@ pub enum ProjectLanguage {
 }
 
 impl From<bool> for ProjectLanguage {
-    fn from(b: bool) -> Self {
-        if b { Self::Rust } else { Self::NonRust }
-    }
+    fn from(b: bool) -> Self { if b { Self::Rust } else { Self::NonRust } }
 }
 
 impl From<ProjectLanguage> for bool {
-    fn from(val: ProjectLanguage) -> Self {
-        matches!(val, ProjectLanguage::Rust)
-    }
+    fn from(val: ProjectLanguage) -> Self { matches!(val, ProjectLanguage::Rust) }
 }
 
 /// Whether a project path lives inside a git repository.
@@ -516,9 +554,7 @@ pub enum GitRepoPresence {
 }
 
 impl GitRepoPresence {
-    pub const fn is_in_repo(self) -> bool {
-        matches!(self, Self::InRepo)
-    }
+    pub const fn is_in_repo(self) -> bool { matches!(self, Self::InRepo) }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -546,43 +582,41 @@ impl fmt::Display for ProjectType {
 pub struct ExampleGroup {
     /// Subdirectory name, or empty for root-level examples.
     pub category: String,
-    pub names: Vec<String>,
+    pub names:    Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RustProject {
     /// Display path (e.g. `~/rust/bevy`).
-    pub path: String,
+    pub path:                      String,
     /// Absolute filesystem path for operations that need to access the project on disk.
     #[serde(skip)]
-    pub abs_path: String,
-    pub name: Option<String>,
-    pub version: Option<String>,
-    pub description: Option<String>,
-    pub worktree_name: Option<String>,
+    pub abs_path:                  String,
+    pub name:                      Option<String>,
+    pub version:                   Option<String>,
+    pub description:               Option<String>,
+    pub worktree_name:             Option<String>,
     /// Absolute path of the primary git repo root. Shared by primaries and their
     /// worktrees, used as the identity key for grouping worktrees together.
     #[serde(skip)]
     pub worktree_primary_abs_path: Option<String>,
     /// Whether this project has a `[workspace]` section.
     #[serde(default)]
-    pub is_workspace: WorkspaceStatus,
-    pub types: Vec<ProjectType>,
-    pub examples: Vec<ExampleGroup>,
-    pub benches: Vec<String>,
-    pub test_count: usize,
+    pub is_workspace:              WorkspaceStatus,
+    pub types:                     Vec<ProjectType>,
+    pub examples:                  Vec<ExampleGroup>,
+    pub benches:                   Vec<String>,
+    pub test_count:                usize,
     /// Whether this project is a Rust project (has `Cargo.toml`).
     #[serde(default)]
-    pub is_rust: ProjectLanguage,
+    pub is_rust:                   ProjectLanguage,
     #[serde(skip)]
-    pub local_dependency_paths: Vec<String>,
+    pub local_dependency_paths:    Vec<String>,
 }
 
 impl RustProject {
     /// Total number of examples across all groups.
-    pub fn example_count(&self) -> usize {
-        self.examples.iter().map(|g| g.names.len()).sum()
-    }
+    pub fn example_count(&self) -> usize { self.examples.iter().map(|g| g.names.len()).sum() }
 
     /// Language icon for the project list.
     pub const fn lang_icon(&self) -> &'static str {

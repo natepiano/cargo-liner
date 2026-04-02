@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
@@ -28,6 +29,8 @@ use super::constants::DEBOUNCE_DURATION;
 use super::constants::MAX_WAIT;
 use super::constants::NEW_PROJECT_DEBOUNCE;
 use super::constants::POLL_INTERVAL;
+use super::constants::WATCHER_DISK_CONCURRENCY;
+use super::constants::WATCHER_GIT_CONCURRENCY;
 use super::http::HttpClient;
 use super::port_report;
 use super::project;
@@ -36,15 +39,16 @@ use super::project::GitRepoPresence;
 use super::project::RustProject;
 use super::scan;
 use super::scan::BackgroundMsg;
+use crate::perf_log;
 
 /// Request to register an already-known project with the watcher.
 pub struct WatchRequest {
     /// Display path (e.g. `~/foo/bar`).
     pub project_path: String,
     /// Absolute filesystem path to the project root.
-    pub abs_path: PathBuf,
+    pub abs_path:     PathBuf,
     /// Absolute path of the containing git repo root when known.
-    pub repo_root: Option<PathBuf>,
+    pub repo_root:    Option<PathBuf>,
 }
 
 /// Spawn a unified background watcher thread. Watches the include
@@ -79,9 +83,9 @@ pub fn spawn_watcher(
 
 /// Per-project tracking state.
 struct ProjectEntry {
-    project_path: String,
-    abs_path: PathBuf,
-    repo_root: Option<PathBuf>,
+    project_path:         String,
+    abs_path:             PathBuf,
+    repo_root:            Option<PathBuf>,
     port_report_dir_path: PathBuf,
 }
 
@@ -130,6 +134,9 @@ fn watcher_loop(
     let mut pending_new: HashMap<PathBuf, Instant> = HashMap::new();
     // Directories already discovered as new projects by this watcher.
     let mut discovered: HashSet<PathBuf> = HashSet::new();
+    let mut watched_git_metadata: HashSet<PathBuf> = HashSet::new();
+    let disk_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_DISK_CONCURRENCY));
+    let git_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_GIT_CONCURRENCY));
 
     loop {
         // Drain new registrations (exit when the app disconnects).
@@ -139,12 +146,13 @@ fn watcher_loop(
                     if let Some(parent) = req.abs_path.parent() {
                         project_parents.insert(parent.to_path_buf());
                     }
+                    watch_git_metadata_paths(&mut watcher, &req, &mut watched_git_metadata);
                     projects.insert(
                         req.abs_path.clone(),
                         ProjectEntry {
-                            project_path: req.project_path,
-                            abs_path: req.abs_path.clone(),
-                            repo_root: req.repo_root,
+                            project_path:         req.project_path,
+                            abs_path:             req.abs_path.clone(),
+                            repo_root:            req.repo_root,
                             port_report_dir_path: port_report::project_dir(&req.abs_path),
                         },
                     );
@@ -178,10 +186,22 @@ fn watcher_loop(
         }
 
         // Fire git refreshes whose debounce has expired.
-        fire_git_updates(bg_tx, &projects, &mut pending_git);
+        fire_git_updates(
+            &client.handle,
+            &git_limit,
+            bg_tx,
+            &projects,
+            &mut pending_git,
+        );
 
         // Fire disk recalculations whose debounce has expired.
-        fire_disk_updates(bg_tx, &projects, &mut pending_disk);
+        fire_disk_updates(
+            &client.handle,
+            &disk_limit,
+            bg_tx,
+            &projects,
+            &mut pending_disk,
+        );
 
         // Probe new-project candidates whose debounce has expired.
         probe_new_projects(
@@ -198,12 +218,44 @@ fn watcher_loop(
     }
 }
 
+fn watch_git_metadata_paths(
+    watcher: &mut impl Watcher,
+    req: &WatchRequest,
+    watched_git_metadata: &mut HashSet<PathBuf>,
+) {
+    let Some(repo_root) = req.repo_root.as_deref() else {
+        return;
+    };
+
+    let metadata_paths = git_metadata_watch_paths(repo_root);
+    for path in metadata_paths {
+        if watched_git_metadata.insert(path.clone()) {
+            let _ = watcher.watch(&path, RecursiveMode::NonRecursive);
+            perf_log::log_event(&format!(
+                "watcher_watch_git_metadata path={}",
+                path.display()
+            ));
+        }
+    }
+}
+
+fn git_metadata_watch_paths(repo_root: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![repo_root.join(".gitignore")];
+    let git_path = repo_root.join(".git");
+    if git_path.is_dir() {
+        paths.push(git_path.join("HEAD"));
+        paths.push(git_path.join("info"));
+        paths.push(git_path.join("info").join("exclude"));
+    }
+    paths
+}
+
 /// Immutable state needed to classify a filesystem event.
 struct EventContext<'a> {
-    scan_root: &'a Path,
-    projects: &'a HashMap<PathBuf, ProjectEntry>,
+    scan_root:       &'a Path,
+    projects:        &'a HashMap<PathBuf, ProjectEntry>,
     project_parents: &'a HashSet<PathBuf>,
-    discovered: &'a HashSet<PathBuf>,
+    discovered:      &'a HashSet<PathBuf>,
 }
 
 fn handle_event(
@@ -235,6 +287,11 @@ fn handle_event(
         .find(|entry| is_fast_git_metadata_event(event_path, entry))
     {
         if let Some(repo_root) = &entry.repo_root {
+            perf_log::log_event(&format!(
+                "watcher_fast_git_metadata_event repo_root={} event_path={}",
+                repo_root.display(),
+                event_path.display()
+            ));
             emit_root_git_path_refresh(bg_tx, ctx.projects, repo_root);
             enqueue_git_refresh(pending_git, repo_root.clone(), now, false);
         }
@@ -299,6 +356,12 @@ fn enqueue_git_refresh(
     let max_deadline = pending_git
         .get(&repo_root)
         .map_or(now + MAX_WAIT, |(_, max)| *max);
+    perf_log::log_event(&format!(
+        "watcher_enqueue_git_refresh repo_root={} immediate={} pending_git={}",
+        repo_root.display(),
+        immediate,
+        pending_git.len() + usize::from(!pending_git.contains_key(&repo_root))
+    ));
     pending_git.insert(repo_root, (debounce_deadline, max_deadline));
 }
 
@@ -307,6 +370,7 @@ fn emit_root_git_path_refresh(
     projects: &HashMap<PathBuf, ProjectEntry>,
     repo_root: &Path,
 ) {
+    let started = Instant::now();
     let Some(root_entry) = projects
         .values()
         .find(|entry| entry.abs_path.as_path() == repo_root)
@@ -314,6 +378,17 @@ fn emit_root_git_path_refresh(
         return;
     };
     let state = project::detect_git_path_state(repo_root);
+    perf_log::log_duration(
+        "watcher_root_git_path_refresh",
+        started.elapsed(),
+        &format!(
+            "repo_root={} path={} state={}",
+            repo_root.display(),
+            root_entry.project_path,
+            state.label()
+        ),
+        0,
+    );
     let _ = bg_tx.send(BackgroundMsg::GitPathState {
         path: root_entry.project_path.clone(),
         state,
@@ -321,6 +396,8 @@ fn emit_root_git_path_refresh(
 }
 
 fn fire_git_updates(
+    handle: &tokio::runtime::Handle,
+    git_limit: &Arc<tokio::sync::Semaphore>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     projects: &HashMap<PathBuf, ProjectEntry>,
     pending_git: &mut HashMap<PathBuf, (Instant, Instant)>,
@@ -334,47 +411,107 @@ fn fire_git_updates(
 
     for repo_root in ready {
         pending_git.remove(&repo_root);
-        emit_git_refresh(bg_tx, projects, &repo_root);
+        let affected: Vec<(String, String)> = projects
+            .values()
+            .filter(|entry| entry.repo_root.as_deref() == Some(repo_root.as_path()))
+            .map(|entry| {
+                (
+                    entry.project_path.clone(),
+                    entry.abs_path.to_string_lossy().to_string(),
+                )
+            })
+            .collect();
+        if affected.is_empty() {
+            continue;
+        }
+        spawn_git_refresh(handle, git_limit, bg_tx.clone(), repo_root, affected);
     }
 }
 
-fn emit_git_refresh(
-    bg_tx: &mpsc::Sender<BackgroundMsg>,
-    projects: &HashMap<PathBuf, ProjectEntry>,
-    repo_root: &Path,
+fn spawn_git_refresh(
+    handle: &tokio::runtime::Handle,
+    git_limit: &Arc<tokio::sync::Semaphore>,
+    bg_tx: mpsc::Sender<BackgroundMsg>,
+    repo_root: PathBuf,
+    affected: Vec<(String, String)>,
 ) {
-    let affected: Vec<&ProjectEntry> = projects
-        .values()
-        .filter(|entry| entry.repo_root.as_deref() == Some(repo_root))
-        .collect();
-    if affected.is_empty() {
-        return;
-    }
+    let handle = handle.clone();
+    let git_limit = Arc::clone(git_limit);
+    handle.spawn(async move {
+        let queue_started = Instant::now();
+        let Ok(_permit) = git_limit.acquire_owned().await else {
+            return;
+        };
+        perf_log::log_duration(
+            "watcher_git_queue_wait",
+            queue_started.elapsed(),
+            &format!(
+                "repo_root={} affected_rows={}",
+                repo_root.display(),
+                affected.len()
+            ),
+            0,
+        );
 
-    if let Some(info) = GitInfo::detect(repo_root) {
-        for entry in &affected {
-            let _ = bg_tx.send(BackgroundMsg::GitInfo {
-                path: entry.project_path.clone(),
-                info: info.clone(),
-            });
+        let started = Instant::now();
+        let repo_root_for_git_info = repo_root.clone();
+        let git_info_started = Instant::now();
+        let git_info =
+            tokio::task::spawn_blocking(move || GitInfo::detect(&repo_root_for_git_info))
+                .await
+                .ok()
+                .flatten();
+        let git_info_elapsed_ms = git_info_started.elapsed().as_millis();
+        perf_log::log_duration(
+            "watcher_git_info_detect",
+            git_info_started.elapsed(),
+            &format!(
+                "repo_root={} affected_rows={}",
+                repo_root.display(),
+                affected.len()
+            ),
+            0,
+        );
+        if let Some(info) = git_info {
+            for (path, _) in &affected {
+                let _ = bg_tx.send(BackgroundMsg::GitInfo {
+                    path: path.clone(),
+                    info: info.clone(),
+                });
+            }
         }
-    }
 
-    let git_projects: Vec<(String, String)> = affected
-        .iter()
-        .map(|entry| {
-            (
-                entry.project_path.clone(),
-                entry.abs_path.to_string_lossy().to_string(),
-            )
+        let git_projects = affected.clone();
+        let state_started = Instant::now();
+        let git_path_states = tokio::task::spawn_blocking(move || {
+            project::detect_git_path_states_batch(&git_projects)
         })
-        .collect();
-    for (path, state) in project::detect_git_path_states_batch(&git_projects) {
-        let _ = bg_tx.send(BackgroundMsg::GitPathState { path, state });
-    }
+        .await
+        .ok();
+        let git_path_states_elapsed_ms = state_started.elapsed().as_millis();
+        if let Some(git_path_states) = git_path_states {
+            for (path, state) in git_path_states {
+                let _ = bg_tx.send(BackgroundMsg::GitPathState { path, state });
+            }
+        }
+        perf_log::log_duration(
+            "watcher_git_refresh",
+            started.elapsed(),
+            &format!(
+                "repo_root={} affected_rows={} git_info_ms={} git_path_states_ms={}",
+                repo_root.display(),
+                affected.len(),
+                git_info_elapsed_ms,
+                git_path_states_elapsed_ms
+            ),
+            0,
+        );
+    });
 }
 
 fn fire_disk_updates(
+    handle: &tokio::runtime::Handle,
+    disk_limit: &Arc<tokio::sync::Semaphore>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     projects: &HashMap<PathBuf, ProjectEntry>,
     pending_disk: &mut HashMap<String, (Instant, Instant)>,
@@ -391,19 +528,53 @@ fn fire_disk_updates(
         let Some(entry) = projects.values().find(|e| e.project_path == project_path) else {
             continue;
         };
-        let bytes = scan::dir_size(&entry.abs_path);
-        if bg_tx
-            .send(BackgroundMsg::DiskUsage {
-                path: project_path.clone(),
-                bytes,
-            })
-            .is_err()
-        {
-            return;
-        }
-
-        let _ = project_path;
+        spawn_disk_update(
+            handle,
+            disk_limit,
+            bg_tx.clone(),
+            project_path,
+            entry.abs_path.clone(),
+        );
     }
+}
+
+fn spawn_disk_update(
+    handle: &tokio::runtime::Handle,
+    disk_limit: &Arc<tokio::sync::Semaphore>,
+    bg_tx: mpsc::Sender<BackgroundMsg>,
+    project_path: String,
+    abs_path: PathBuf,
+) {
+    let handle = handle.clone();
+    let disk_limit = Arc::clone(disk_limit);
+    handle.spawn(async move {
+        let queue_started = Instant::now();
+        let Ok(_permit) = disk_limit.acquire_owned().await else {
+            return;
+        };
+        perf_log::log_duration(
+            "watcher_disk_queue_wait",
+            queue_started.elapsed(),
+            &format!("path={} abs_path={}", project_path, abs_path.display()),
+            0,
+        );
+
+        let started = Instant::now();
+        let bytes = tokio::task::spawn_blocking(move || scan::dir_size(&abs_path))
+            .await
+            .ok()
+            .unwrap_or(0);
+        perf_log::log_duration(
+            "watcher_disk_usage",
+            started.elapsed(),
+            &format!("path={} bytes={}", project_path, bytes),
+            0,
+        );
+        let _ = bg_tx.send(BackgroundMsg::DiskUsage {
+            path: project_path,
+            bytes,
+        });
+    });
 }
 
 fn probe_new_projects(
@@ -431,7 +602,7 @@ fn probe_new_projects(
             discovered.remove(&dir);
             let display_path = project::home_relative_path(&dir);
             let _ = bg_tx.send(BackgroundMsg::DiskUsage {
-                path: display_path,
+                path:  display_path,
                 bytes: 0,
             });
             continue;
@@ -453,7 +624,7 @@ fn probe_new_projects(
             });
             let tx = bg_tx.clone();
             let task_ctx = scan::FetchContext {
-                client: client.clone(),
+                client:     client.clone(),
                 repo_cache: scan::new_repo_cache(),
             };
             let path = project.path.clone();
@@ -526,8 +697,20 @@ fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<RustProject> 
 )]
 mod tests {
     use std::process::Command;
+    use std::sync::Arc;
+    use std::sync::OnceLock;
+    use std::time::Duration;
 
     use super::*;
+
+    fn test_runtime() -> &'static tokio::runtime::Runtime {
+        static TEST_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+        TEST_RT.get_or_init(|| {
+            tokio::runtime::Runtime::new().unwrap_or_else(|_| std::process::abort())
+        })
+    }
+
+    fn wait_for_messages() { std::thread::sleep(Duration::from_millis(100)); }
 
     // ── project_level_dir ────────────────────────────────────────────
 
@@ -681,9 +864,9 @@ mod tests {
         (
             abs_path.to_path_buf(),
             ProjectEntry {
-                project_path: project_path.to_string(),
-                abs_path: abs_path.to_path_buf(),
-                repo_root: None,
+                project_path:         project_path.to_string(),
+                abs_path:             abs_path.to_path_buf(),
+                repo_root:            None,
                 port_report_dir_path: port_report::project_dir(abs_path),
             },
         )
@@ -698,10 +881,10 @@ mod tests {
         let project_parents = HashSet::from([PathBuf::from("/home/user/rust")]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            scan_root: &scan_root,
-            projects: &projects,
+            scan_root:       &scan_root,
+            projects:        &projects,
             project_parents: &project_parents,
-            discovered: &discovered,
+            discovered:      &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -735,18 +918,18 @@ mod tests {
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path: "~/my_project".to_string(),
-                abs_path: project_dir.clone(),
-                repo_root: Some(project_dir.clone()),
+                project_path:         "~/my_project".to_string(),
+                abs_path:             project_dir.clone(),
+                repo_root:            Some(project_dir.clone()),
                 port_report_dir_path: port_report::project_dir(&project_dir),
             },
         );
         projects.insert(
             member_dir.clone(),
             ProjectEntry {
-                project_path: "~/my_project/crates/member".to_string(),
-                abs_path: member_dir.clone(),
-                repo_root: Some(project_dir.clone()),
+                project_path:         "~/my_project/crates/member".to_string(),
+                abs_path:             member_dir.clone(),
+                repo_root:            Some(project_dir.clone()),
                 port_report_dir_path: port_report::project_dir(&member_dir),
             },
         );
@@ -754,10 +937,10 @@ mod tests {
         let project_parents = HashSet::from([scan_root.clone()]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            scan_root: &scan_root,
-            projects: &projects,
+            scan_root:       &scan_root,
+            projects:        &projects,
             project_parents: &project_parents,
-            discovered: &discovered,
+            discovered:      &discovered,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -773,7 +956,15 @@ mod tests {
             &mut pending_new,
         );
 
-        fire_git_updates(&bg_tx, &projects, &mut pending_git);
+        let git_limit = Arc::new(tokio::sync::Semaphore::new(1));
+        fire_git_updates(
+            test_runtime().handle(),
+            &git_limit,
+            &bg_tx,
+            &projects,
+            &mut pending_git,
+        );
+        wait_for_messages();
 
         let mut got_git_info = false;
         let mut got_root_git_state = false;
@@ -838,10 +1029,10 @@ mod tests {
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
         let ctx = EventContext {
-            scan_root: &scan_root,
-            projects: &projects,
+            scan_root:       &scan_root,
+            projects:        &projects,
             project_parents: &project_parents,
-            discovered: &discovered,
+            discovered:      &discovered,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -898,10 +1089,10 @@ mod tests {
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
         let ctx = EventContext {
-            scan_root: &scan_root,
-            projects: &projects,
+            scan_root:       &scan_root,
+            projects:        &projects,
             project_parents: &project_parents,
-            discovered: &discovered,
+            discovered:      &discovered,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -949,10 +1140,10 @@ mod tests {
         let project_parents = HashSet::from([scan_root.clone()]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            scan_root: &scan_root,
-            projects: &projects,
+            scan_root:       &scan_root,
+            projects:        &projects,
             project_parents: &project_parents,
-            discovered: &discovered,
+            discovered:      &discovered,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
@@ -986,10 +1177,10 @@ mod tests {
         let project_parents = HashSet::from([scan_root.clone()]);
         let discovered = HashSet::from([project_dir.clone()]);
         let ctx = EventContext {
-            scan_root: &scan_root,
-            projects: &projects,
+            scan_root:       &scan_root,
+            projects:        &projects,
             project_parents: &project_parents,
-            discovered: &discovered,
+            discovered:      &discovered,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
@@ -1027,10 +1218,10 @@ mod tests {
         let project_parents = HashSet::new(); // empty — early scan
         let discovered = HashSet::new();
         let ctx = EventContext {
-            scan_root: &scan_root,
-            projects: &projects,
+            scan_root:       &scan_root,
+            projects:        &projects,
             project_parents: &project_parents,
-            discovered: &discovered,
+            discovered:      &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -1122,9 +1313,9 @@ mod tests {
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path: "~/my_project".to_string(),
-                abs_path: project_dir.clone(),
-                repo_root: Some(project_dir.clone()),
+                project_path:         "~/my_project".to_string(),
+                abs_path:             project_dir.clone(),
+                repo_root:            Some(project_dir.clone()),
                 port_report_dir_path: port_report::project_dir(&project_dir),
             },
         );
@@ -1135,7 +1326,15 @@ mod tests {
             .expect("1s subtraction should not underflow");
         let mut pending = HashMap::from([("~/my_project".to_string(), (past, past))]);
 
-        fire_disk_updates(&tx, &projects, &mut pending);
+        let disk_limit = Arc::new(tokio::sync::Semaphore::new(1));
+        fire_disk_updates(
+            test_runtime().handle(),
+            &disk_limit,
+            &tx,
+            &projects,
+            &mut pending,
+        );
+        wait_for_messages();
 
         let mut got_disk = false;
         let mut got_git = false;
@@ -1162,9 +1361,9 @@ mod tests {
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path: "~/no_git".to_string(),
-                abs_path: project_dir.clone(),
-                repo_root: None,
+                project_path:         "~/no_git".to_string(),
+                abs_path:             project_dir.clone(),
+                repo_root:            None,
                 port_report_dir_path: port_report::project_dir(&project_dir),
             },
         );
@@ -1174,7 +1373,15 @@ mod tests {
             .expect("1s subtraction should not underflow");
         let mut pending = HashMap::from([("~/no_git".to_string(), (past, past))]);
 
-        fire_disk_updates(&tx, &projects, &mut pending);
+        let disk_limit = Arc::new(tokio::sync::Semaphore::new(1));
+        fire_disk_updates(
+            test_runtime().handle(),
+            &disk_limit,
+            &tx,
+            &projects,
+            &mut pending,
+        );
+        wait_for_messages();
 
         let mut got_disk = false;
         let mut got_git = false;

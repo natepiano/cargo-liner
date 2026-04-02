@@ -63,17 +63,17 @@ fn stats_column_width(stats_rows: &[(&str, usize)]) -> (u16, u16) {
 
 /// Shared style constants for detail panel rendering.
 struct RenderStyles {
-    highlight: Style,
-    readonly_label: Style,
-    active_border: Style,
+    highlight:       Style,
+    readonly_label:  Style,
+    active_border:   Style,
     inactive_border: Style,
-    title: Style,
+    title:           Style,
 }
 
 struct ColumnFocus {
-    active: bool,
+    active:     bool,
     remembered: bool,
-    cursor: usize,
+    cursor:     usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -111,9 +111,9 @@ enum TargetPresence {
 
 struct DetailLayoutSpec {
     constraints: Vec<Constraint>,
-    git_col: Option<usize>,
+    git_col:     Option<usize>,
     targets_col: Option<usize>,
-    max_col: usize,
+    max_col:     usize,
 }
 
 fn detail_layout_spec(git: GitPresence, targets: TargetPresence) -> DetailLayoutSpec {
@@ -125,15 +125,15 @@ fn detail_layout_spec(git: GitPresence, targets: TargetPresence) -> DetailLayout
                 Constraint::Percentage(37),
                 Constraint::Percentage(26),
             ],
-            git_col: Some(1),
+            git_col:     Some(1),
             targets_col: Some(2),
-            max_col: 1 + usize::from(has_targets),
+            max_col:     1 + usize::from(has_targets),
         },
         GitPresence::Missing => DetailLayoutSpec {
             constraints: vec![Constraint::Percentage(74), Constraint::Percentage(26)],
-            git_col: None,
+            git_col:     None,
             targets_col: Some(1),
-            max_col: usize::from(has_targets),
+            max_col:     usize::from(has_targets),
         },
     }
 }
@@ -416,11 +416,11 @@ pub(super) fn render_detail_panel(
         app.layout_cache.detail_targets_col = spec.targets_col;
 
         let styles = RenderStyles {
-            highlight: Style::default().fg(Color::Black).bg(Color::Cyan),
-            readonly_label: Style::default().fg(Color::DarkGray),
-            active_border: Style::default().fg(Color::Cyan),
+            highlight:       Style::default().fg(Color::Black).bg(Color::Cyan),
+            readonly_label:  Style::default().fg(Color::DarkGray),
+            active_border:   Style::default().fg(Color::Cyan),
             inactive_border: Style::default(),
-            title: title_style,
+            title:           title_style,
         };
 
         render_project_panel(frame, app, info, &styles, columns[0]);
@@ -428,9 +428,9 @@ pub(super) fn render_detail_panel(
         if let Some(col) = spec.git_col {
             app.git_pane.set_len(git.len());
             let focus = ColumnFocus {
-                active: app.is_focused(PaneId::Git),
+                active:     app.is_focused(PaneId::Git),
                 remembered: app.remembers_selection(PaneId::Git),
-                cursor: app.git_pane.pos(),
+                cursor:     app.git_pane.pos(),
             };
             let git_block = Block::default()
                 .borders(Borders::ALL)
@@ -480,9 +480,9 @@ fn render_project_panel(
     let fields = package_fields(info);
     app.package_pane.set_len(fields.len());
     let focus = ColumnFocus {
-        active: app.is_focused(PaneId::Package),
+        active:     app.is_focused(PaneId::Package),
         remembered: app.remembers_selection(PaneId::Package),
-        cursor: app.package_pane.pos(),
+        cursor:     app.package_pane.pos(),
     };
     let project_block = Block::default()
         .borders(Borders::ALL)
@@ -937,15 +937,15 @@ mod tests {
     fn ci_table_hides_durations_when_fixed_columns_overflow() {
         let runs = vec![ci_run_with_jobs(vec![
             CiJob {
-                name: "fmt".to_string(),
-                conclusion: Conclusion::Success,
-                duration: "17s".to_string(),
+                name:          "fmt".to_string(),
+                conclusion:    Conclusion::Success,
+                duration:      "17s".to_string(),
                 duration_secs: Some(17),
             },
             CiJob {
-                name: "clippy".to_string(),
-                conclusion: Conclusion::Success,
-                duration: "21s".to_string(),
+                name:          "clippy".to_string(),
+                conclusion:    Conclusion::Success,
+                duration:      "21s".to_string(),
                 duration_secs: Some(21),
             },
         ])];
@@ -958,9 +958,9 @@ mod tests {
     #[test]
     fn ci_table_keeps_durations_when_fixed_columns_fit() {
         let runs = vec![ci_run_with_jobs(vec![CiJob {
-            name: "fmt".to_string(),
-            conclusion: Conclusion::Success,
-            duration: "17s".to_string(),
+            name:          "fmt".to_string(),
+            conclusion:    Conclusion::Success,
+            duration:      "17s".to_string(),
             duration_secs: Some(17),
         }])];
         let cols = vec![CiColumn::Fmt];
@@ -974,20 +974,20 @@ mod tests {
             PortReportRunStatus::Passed,
             vec![
                 PortReportCommand {
-                    name: "mend".to_string(),
-                    command: "cargo mend".to_string(),
-                    status: PortReportCommandStatus::Passed,
+                    name:        "mend".to_string(),
+                    command:     "cargo mend".to_string(),
+                    status:      PortReportCommandStatus::Passed,
                     duration_ms: Some(1_000),
-                    exit_code: Some(0),
-                    log_file: "port-report/mend-latest.log".to_string(),
+                    exit_code:   Some(0),
+                    log_file:    "port-report/mend-latest.log".to_string(),
                 },
                 PortReportCommand {
-                    name: "clippy".to_string(),
-                    command: "cargo clippy".to_string(),
-                    status: PortReportCommandStatus::Passed,
+                    name:        "clippy".to_string(),
+                    command:     "cargo clippy".to_string(),
+                    status:      PortReportCommandStatus::Passed,
                     duration_ms: Some(2_000),
-                    exit_code: Some(0),
-                    log_file: "port-report/clippy-latest.log".to_string(),
+                    exit_code:   Some(0),
+                    log_file:    "port-report/clippy-latest.log".to_string(),
                 },
             ],
         );
@@ -1003,20 +1003,20 @@ mod tests {
             PortReportRunStatus::Failed,
             vec![
                 PortReportCommand {
-                    name: "mend".to_string(),
-                    command: "cargo mend".to_string(),
-                    status: PortReportCommandStatus::Passed,
+                    name:        "mend".to_string(),
+                    command:     "cargo mend".to_string(),
+                    status:      PortReportCommandStatus::Passed,
                     duration_ms: Some(1_000),
-                    exit_code: Some(0),
-                    log_file: "port-report/mend-latest.log".to_string(),
+                    exit_code:   Some(0),
+                    log_file:    "port-report/mend-latest.log".to_string(),
                 },
                 PortReportCommand {
-                    name: "clippy".to_string(),
-                    command: "cargo clippy".to_string(),
-                    status: PortReportCommandStatus::Failed,
+                    name:        "clippy".to_string(),
+                    command:     "cargo clippy".to_string(),
+                    status:      PortReportCommandStatus::Failed,
                     duration_ms: Some(2_000),
-                    exit_code: Some(101),
-                    log_file: "port-report/clippy-latest.log".to_string(),
+                    exit_code:   Some(101),
+                    log_file:    "port-report/clippy-latest.log".to_string(),
                 },
             ],
         );
@@ -1032,20 +1032,20 @@ mod tests {
             PortReportRunStatus::Running,
             vec![
                 PortReportCommand {
-                    name: "mend".to_string(),
-                    command: "cargo mend".to_string(),
-                    status: PortReportCommandStatus::Passed,
+                    name:        "mend".to_string(),
+                    command:     "cargo mend".to_string(),
+                    status:      PortReportCommandStatus::Passed,
                     duration_ms: Some(1_000),
-                    exit_code: Some(0),
-                    log_file: "port-report/mend-latest.log".to_string(),
+                    exit_code:   Some(0),
+                    log_file:    "port-report/mend-latest.log".to_string(),
                 },
                 PortReportCommand {
-                    name: "clippy".to_string(),
-                    command: "cargo clippy".to_string(),
-                    status: PortReportCommandStatus::Pending,
+                    name:        "clippy".to_string(),
+                    command:     "cargo clippy".to_string(),
+                    status:      PortReportCommandStatus::Pending,
                     duration_ms: None,
-                    exit_code: None,
-                    log_file: "port-report/clippy-latest.log".to_string(),
+                    exit_code:   None,
+                    log_file:    "port-report/clippy-latest.log".to_string(),
                 },
             ],
         );

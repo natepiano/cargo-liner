@@ -24,6 +24,7 @@ use super::constants::SCAN_HTTP_CONCURRENCY;
 use super::http::HttpClient;
 use super::http::ServiceKind;
 use super::http::ServiceSignal;
+use super::perf_log;
 use super::port_report;
 use super::port_report::LintStatus;
 use super::project::GitInfo;
@@ -36,22 +37,20 @@ use super::project::RustProject;
 /// or under the primary `crates/` directory -- these are shown without a folder header.
 #[derive(Clone)]
 pub struct MemberGroup {
-    pub name: String,
+    pub name:    String,
     pub members: Vec<RustProject>,
 }
 
 #[derive(Clone)]
 pub struct ProjectNode {
-    pub project: RustProject,
-    pub groups: Vec<MemberGroup>,
+    pub project:   RustProject,
+    pub groups:    Vec<MemberGroup>,
     pub worktrees: Vec<Self>,
-    pub vendored: Vec<RustProject>,
+    pub vendored:  Vec<RustProject>,
 }
 
 impl ProjectNode {
-    pub fn has_members(&self) -> bool {
-        self.groups.iter().any(|g| !g.members.is_empty())
-    }
+    pub fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members.is_empty()) }
 
     pub fn has_children(&self) -> bool {
         self.has_members() || !self.vendored.is_empty() || !self.worktrees.is_empty()
@@ -66,7 +65,7 @@ pub struct FlatEntry {
 
 pub enum BackgroundMsg {
     DiskUsage {
-        path: String,
+        path:  String,
         bytes: u64,
     },
     CiRuns {
@@ -78,17 +77,17 @@ pub enum BackgroundMsg {
         info: GitInfo,
     },
     GitPathState {
-        path: String,
+        path:  String,
         state: GitPathState,
     },
     CratesIoVersion {
-        path: String,
-        version: String,
+        path:      String,
+        version:   String,
         downloads: u64,
     },
     RepoMeta {
-        path: String,
-        stars: u64,
+        path:        String,
+        stars:       u64,
         description: Option<String>,
     },
     ProjectDiscovered {
@@ -98,7 +97,7 @@ pub enum BackgroundMsg {
         path: String,
     },
     LintStatus {
-        path: String,
+        path:   String,
         status: LintStatus,
     },
     ScanComplete,
@@ -173,19 +172,13 @@ pub enum CiFetchResult {
 }
 
 /// Base cache directory for CI metadata.
-pub fn cache_dir() -> PathBuf {
-    cache_paths::ci_cache_root()
-}
+pub fn cache_dir() -> PathBuf { cache_paths::ci_cache_root() }
 
 /// Repo-keyed cache directory: `{cache_dir}/{owner}/{repo}`.
-fn repo_cache_dir(owner: &str, repo: &str) -> PathBuf {
-    cache_dir().join(owner).join(repo)
-}
+fn repo_cache_dir(owner: &str, repo: &str) -> PathBuf { cache_dir().join(owner).join(repo) }
 
 /// Public accessor for clearing the cache directory.
-pub fn repo_cache_dir_pub(owner: &str, repo: &str) -> PathBuf {
-    repo_cache_dir(owner, repo)
-}
+pub fn repo_cache_dir_pub(owner: &str, repo: &str) -> PathBuf { repo_cache_dir(owner, repo) }
 
 /// Check if the "no more runs" marker exists for a repo.
 pub fn is_exhausted(owner: &str, repo: &str) -> bool {
@@ -449,7 +442,7 @@ pub fn fetch_newer_runs(
 }
 
 pub struct CratesIoInfo {
-    pub version: String,
+    pub version:   String,
     pub downloads: u64,
 }
 
@@ -523,10 +516,10 @@ pub fn build_tree(projects: &[RustProject], inline_dirs: &[String]) -> Vec<Proje
             continue;
         }
         nodes.push(ProjectNode {
-            project: project.clone(),
-            groups: Vec::new(),
+            project:   project.clone(),
+            groups:    Vec::new(),
             worktrees: Vec::new(),
-            vendored: Vec::new(),
+            vendored:  Vec::new(),
         });
     }
 
@@ -745,10 +738,10 @@ fn merge_worktrees(nodes: &mut Vec<ProjectNode>) {
             primary.worktrees.insert(
                 0,
                 ProjectNode {
-                    project: primary_as_wt,
-                    groups: primary_groups,
+                    project:   primary_as_wt,
+                    groups:    primary_groups,
                     worktrees: Vec::new(),
-                    vendored: Vec::new(),
+                    vendored:  Vec::new(),
                 },
             );
         }
@@ -934,7 +927,7 @@ pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
 
 /// Shared network context passed to `fetch_project_details`.
 pub struct FetchContext {
-    pub client: HttpClient,
+    pub client:     HttpClient,
     pub repo_cache: RepoCache,
 }
 
@@ -957,7 +950,7 @@ pub fn fetch_project_details(
     let client = &ctx.client;
     let repo_cache = &ctx.repo_cache;
     let _ = tx.send(BackgroundMsg::GitPathState {
-        path: project_path.to_string(),
+        path:  project_path.to_string(),
         state: super::project::detect_git_path_state(abs_path),
     });
     // Git info first (local, instant) — also provides the repo URL for CI cache lookup
@@ -1008,8 +1001,8 @@ pub fn fetch_project_details(
         });
         if let Some(meta) = data.meta {
             let _ = tx.send(BackgroundMsg::RepoMeta {
-                path: project_path.to_string(),
-                stars: meta.stars,
+                path:        project_path.to_string(),
+                stars:       meta.stars,
                 description: meta.description,
             });
         }
@@ -1021,8 +1014,8 @@ pub fn fetch_project_details(
         emit_service_signal(tx, signal);
         if let Some(info) = info {
             let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                path: project_path.to_string(),
-                version: info.version,
+                path:      project_path.to_string(),
+                version:   info.version,
                 downloads: info.downloads,
             });
         }
@@ -1033,7 +1026,7 @@ pub fn fetch_project_details(
         let lint = port_report::read_status(abs_path);
         if !matches!(lint, LintStatus::NoLog) {
             let _ = tx.send(BackgroundMsg::LintStatus {
-                path: project_path.to_string(),
+                path:   project_path.to_string(),
                 status: lint,
             });
         }
@@ -1050,7 +1043,7 @@ pub fn fetch_project_details(
 
 #[derive(Clone)]
 pub struct RepoMetaInfo {
-    pub stars: u64,
+    pub stars:       u64,
     pub description: Option<String>,
 }
 
@@ -1065,9 +1058,7 @@ pub struct CachedRepoData {
 
 pub type RepoCache = Arc<Mutex<HashMap<String, CachedRepoData>>>;
 
-pub fn new_repo_cache() -> RepoCache {
-    Arc::new(Mutex::new(HashMap::new()))
-}
+pub fn new_repo_cache() -> RepoCache { Arc::new(Mutex::new(HashMap::new())) }
 
 /// Resolve include-dir entries to absolute paths. Relative entries are
 /// joined to `scan_root`; absolute entries are used as-is. An empty
@@ -1092,11 +1083,11 @@ pub fn resolve_include_dirs(scan_root: &Path, include_dirs: &[String]) -> Vec<Pa
 /// Information collected in phase 1 (local work) for a single project,
 /// used to drive async HTTP dispatch and disk usage.
 struct DiscoveredProject {
-    path: String,
-    abs_path: PathBuf,
-    name: Option<String>,
-    repo_url: Option<String>,
-    owner_repo: Option<(String, String)>,
+    path:         String,
+    abs_path:     PathBuf,
+    name:         Option<String>,
+    repo_url:     Option<String>,
+    owner_repo:   Option<(String, String)>,
     lint_enabled: bool,
 }
 
@@ -1116,22 +1107,22 @@ type GitInfoCache = Arc<Mutex<HashMap<PathBuf, Option<GitInfo>>>>;
 
 #[derive(Clone)]
 struct StreamingScanContext {
-    client: HttpClient,
-    tx: mpsc::Sender<BackgroundMsg>,
-    ci_run_count: u32,
-    lint_enabled: bool,
-    disk_limit: Arc<tokio::sync::Semaphore>,
-    http_limit: Arc<tokio::sync::Semaphore>,
-    repo_dispatch: RepoDispatchMap,
+    client:         HttpClient,
+    tx:             mpsc::Sender<BackgroundMsg>,
+    ci_run_count:   u32,
+    lint_enabled:   bool,
+    disk_limit:     Arc<tokio::sync::Semaphore>,
+    http_limit:     Arc<tokio::sync::Semaphore>,
+    repo_dispatch:  RepoDispatchMap,
     git_info_cache: GitInfoCache,
 }
 
 struct RepoFetchRequest {
-    key: String,
+    key:          String,
     project_path: String,
-    repo_url: String,
-    owner: String,
-    repo: String,
+    repo_url:     String,
+    owner:        String,
+    repo:         String,
 }
 
 /// Spawn a streaming scan using a hybrid approach:
@@ -1317,12 +1308,27 @@ fn spawn_disk_usage(scan_context: &StreamingScanContext, abs_path: &Path, projec
     let project_path = project_path.to_string();
 
     handle.spawn(async move {
+        let queue_started = std::time::Instant::now();
         let Ok(_permit) = disk_limit.acquire_owned().await else {
             return;
         };
+        let queue_elapsed = queue_started.elapsed();
+        perf_log::log_duration(
+            "tokio_disk_queue_wait",
+            queue_elapsed,
+            &format!("path={project_path} abs_path={}", abs_path.display()),
+            0,
+        );
+        let run_started = std::time::Instant::now();
         let Ok(bytes) = tokio::task::spawn_blocking(move || dir_size(&abs_path)).await else {
             return;
         };
+        perf_log::log_duration(
+            "tokio_disk_usage",
+            run_started.elapsed(),
+            &format!("path={project_path} bytes={bytes}"),
+            0,
+        );
         let _ = tx.send(BackgroundMsg::DiskUsage {
             path: project_path,
             bytes,
@@ -1380,8 +1386,8 @@ fn send_repo_data(tx: &mpsc::Sender<BackgroundMsg>, paths: &[String], data: &Cac
         });
         if let Some(meta) = &data.meta {
             let _ = tx.send(BackgroundMsg::RepoMeta {
-                path: path.clone(),
-                stars: meta.stars,
+                path:        path.clone(),
+                stars:       meta.stars,
                 description: meta.description.clone(),
             });
         }
@@ -1397,9 +1403,20 @@ fn spawn_repo_fetch(scan_context: &StreamingScanContext, request: RepoFetchReque
     let ci_run_count = scan_context.ci_run_count;
 
     handle.spawn(async move {
+        let queue_started = std::time::Instant::now();
         let Ok(_permit) = http_limit.acquire_owned().await else {
             return;
         };
+        perf_log::log_duration(
+            "tokio_repo_fetch_queue_wait",
+            queue_started.elapsed(),
+            &format!(
+                "path={} repo={}/{}",
+                request.project_path, request.owner, request.repo
+            ),
+            0,
+        );
+        let fetch_started = std::time::Instant::now();
         let _ = tx.send(BackgroundMsg::ScanActivity {
             path: format!("CI: {}", request.project_path),
         });
@@ -1418,6 +1435,18 @@ fn spawn_repo_fetch(scan_context: &StreamingScanContext, request: RepoFetchReque
             },
             meta,
         };
+        perf_log::log_duration(
+            "tokio_repo_fetch",
+            fetch_started.elapsed(),
+            &format!(
+                "path={} repo={}/{} runs={}",
+                request.project_path,
+                request.owner,
+                request.repo,
+                data.runs.len()
+            ),
+            0,
+        );
         let paths = finish_repo_fetch(&repo_dispatch, &request.key, data.clone());
         send_repo_data(&tx, &paths, &data);
     });
@@ -1438,15 +1467,32 @@ fn spawn_crates_fetch(
     let crate_name = crate_name.to_string();
 
     handle.spawn(async move {
+        let queue_started = std::time::Instant::now();
         let Ok(_permit) = http_limit.acquire_owned().await else {
             return;
         };
+        perf_log::log_duration(
+            "tokio_crates_fetch_queue_wait",
+            queue_started.elapsed(),
+            &format!("path={project_path} crate={crate_name}"),
+            0,
+        );
+        let fetch_started = std::time::Instant::now();
         let (info, signal) = client.fetch_crates_io_info_async(&crate_name).await;
         emit_service_signal(&tx, signal);
+        perf_log::log_duration(
+            "tokio_crates_fetch",
+            fetch_started.elapsed(),
+            &format!(
+                "path={project_path} crate={crate_name} found={}",
+                info.is_some()
+            ),
+            0,
+        );
         if let Some(info) = info {
             let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                path: project_path,
-                version: info.version,
+                path:      project_path,
+                version:   info.version,
                 downloads: info.downloads,
             });
         }
@@ -1478,7 +1524,7 @@ fn phase1_local_work(
         let lint = port_report::read_status(&project.abs_path);
         if !matches!(lint, LintStatus::NoLog) {
             let _ = tx.send(BackgroundMsg::LintStatus {
-                path: project.path.clone(),
+                path:   project.path.clone(),
                 status: lint,
             });
         }
@@ -1641,7 +1687,7 @@ mod tests {
             WorkspaceStatus::Standalone,
         );
         let groups = vec![MemberGroup {
-            name: String::new(),
+            name:    String::new(),
             members: vec![member_a, member_b],
         }];
 

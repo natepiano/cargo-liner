@@ -40,19 +40,19 @@ pub(super) struct FinderItem {
     /// Display name shown in the results list.
     pub display_name: String,
     /// The haystack string used for fuzzy matching (includes parent context).
-    pub search_text: String,
+    pub search_text:  String,
     /// What kind of item this is.
-    pub kind: FinderKind,
+    pub kind:         FinderKind,
     /// Path of the project this item belongs to (for navigation).
     pub project_path: String,
     /// For targets: the cargo target name (used with --example/--bench).
-    pub target_name: Option<String>,
+    pub target_name:  Option<String>,
     /// Parent project display name (shown dimmed for non-project items).
     pub parent_label: String,
     /// Git branch, if known. Distinguishes worktrees.
-    pub branch: String,
+    pub branch:       String,
     /// Directory name (last path component).
-    pub dir: String,
+    pub dir:          String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -545,9 +545,9 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
 
     // Search input line
     let input_area = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width,
+        x:      inner.x,
+        y:      inner.y,
+        width:  inner.width,
         height: 1,
     };
     let prompt_style = Style::default()
@@ -567,9 +567,9 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
         return;
     }
     let sep_area = Rect {
-        x: inner.x,
-        y: inner.y + 1,
-        width: inner.width,
+        x:      inner.x,
+        y:      inner.y + 1,
+        width:  inner.width,
         height: 1,
     };
     let sep = Line::from(Span::styled(
@@ -580,9 +580,9 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
 
     // Results table
     let results_area = Rect {
-        x: inner.x,
-        y: inner.y + 2,
-        width: inner.width,
+        x:      inner.x,
+        y:      inner.y + 2,
+        width:  inner.width,
         height: inner.height.saturating_sub(2),
     };
 
@@ -667,30 +667,30 @@ mod tests {
 
     fn make_project(name: Option<&str>, path: &str) -> RustProject {
         RustProject {
-            path: path.to_string(),
-            abs_path: path.to_string(),
-            name: name.map(str::to_string),
-            version: None,
-            description: None,
-            worktree_name: None,
+            path:                      path.to_string(),
+            abs_path:                  path.to_string(),
+            name:                      name.map(str::to_string),
+            version:                   None,
+            description:               None,
+            worktree_name:             None,
             worktree_primary_abs_path: None,
-            is_workspace: WorkspaceStatus::Standalone,
-            types: Vec::new(),
-            examples: Vec::new(),
-            benches: Vec::new(),
-            test_count: 0,
-            is_rust: ProjectLanguage::Rust,
-            local_dependency_paths: Vec::new(),
+            is_workspace:              WorkspaceStatus::Standalone,
+            types:                     Vec::new(),
+            examples:                  Vec::new(),
+            benches:                   Vec::new(),
+            test_count:                0,
+            is_rust:                   ProjectLanguage::Rust,
+            local_dependency_paths:    Vec::new(),
         }
     }
 
     #[test]
     fn build_finder_index_includes_vendored_projects() {
         let mut node = ProjectNode {
-            project: make_project(Some("hana"), "~/rust/hana"),
-            groups: Vec::new(),
+            project:   make_project(Some("hana"), "~/rust/hana"),
+            groups:    Vec::new(),
             worktrees: Vec::new(),
-            vendored: vec![make_project(
+            vendored:  vec![make_project(
                 Some("clay-layout"),
                 "~/rust/hana/crates/clay-layout",
             )],

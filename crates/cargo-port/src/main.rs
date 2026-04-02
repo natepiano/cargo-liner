@@ -11,6 +11,7 @@ mod config;
 mod constants;
 mod http;
 mod lint_runtime;
+mod perf_log;
 mod port_report;
 mod project;
 mod scan;

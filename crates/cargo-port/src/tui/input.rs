@@ -110,7 +110,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
 
     app.sync_selected_project();
 
-    super::perf::log_duration(
+    crate::perf_log::log_duration(
         "input_event",
         started.elapsed(),
         &format!(
@@ -120,7 +120,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
             app.scan_complete,
             app.selected_project().map_or("-", |p| p.path.as_str())
         ),
-        super::perf::slow_input_event_threshold_ms(),
+        crate::perf_log::slow_input_event_threshold_ms(),
     );
 }
 

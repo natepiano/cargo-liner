@@ -55,9 +55,9 @@ pub(super) enum ExampleMsg {
 pub(super) enum CiFetchMsg {
     /// The fetch completed with updated runs for the given project path.
     Complete {
-        path: String,
+        path:   String,
         result: CiFetchResult,
-        kind: CiFetchKind,
+        kind:   CiFetchKind,
     },
 }
 
@@ -93,7 +93,7 @@ pub fn run(path: &Path) -> ExitCode {
         },
     };
     config::set_active_config(&cfg);
-    let perf_log_path = super::perf::init();
+    let perf_log_path = crate::perf_log::init();
     let Ok(rt) = tokio::runtime::Runtime::new() else {
         eprintln!("Error: failed to create async runtime");
         return ExitCode::FAILURE;
@@ -128,7 +128,7 @@ pub fn run(path: &Path) -> ExitCode {
     };
 
     let mut app = App::new(scan_root, projects, bg_tx, bg_rx, &cfg, http_client);
-    super::perf::log_event(&format!("tui_ready perf_log={}", perf_log_path.display()));
+    crate::perf_log::log_event(&format!("tui_ready perf_log={}", perf_log_path.display()));
     let input_rx = spawn_input_thread();
 
     let result = event_loop(&mut terminal, &mut app, &input_rx);
@@ -267,7 +267,7 @@ fn event_loop(
             app.ci_state.insert(
                 fetch.project_path.clone(),
                 super::app::CiState::Fetching {
-                    runs: existing_runs,
+                    runs:  existing_runs,
                     count: CI_FETCH_DISPLAY_COUNT,
                 },
             );
@@ -282,9 +282,9 @@ fn event_loop(
         let idle_elapsed = idle_started.elapsed();
 
         let frame_elapsed = frame_started.elapsed();
-        if frame_elapsed.as_millis() >= super::perf::slow_frame_threshold_ms() {
-            super::perf::log_event(&format!(
-                "slow_frame elapsed_ms={} input_ms={} bg_ms={} rows_ms={} disk_ms={} fit_ms={} detail_ms={} draw_ms={} idle_ms={} input_count={} bg_msgs={} ci_msgs={} example_msgs={} tree_results={} fit_results={} disk_results={} needs_rebuild={} projects={} nodes={} scan_complete={}",
+        if frame_elapsed.as_millis() >= crate::perf_log::slow_frame_threshold_ms() {
+            crate::perf_log::log_event(&format!(
+                "slow_frame elapsed_ms={} input_ms={} bg_ms={} rows_ms={} disk_ms={} fit_ms={} detail_ms={} draw_ms={} idle_ms={} input_count={} bg_msgs={} disk_usage_msgs={} git_info_msgs={} git_path_state_msgs={} lint_status_msgs={} ci_msgs={} example_msgs={} tree_results={} fit_results={} disk_results={} needs_rebuild={} projects={} nodes={} scan_complete={}",
                 frame_elapsed.as_millis(),
                 input_elapsed.as_millis(),
                 bg_elapsed.as_millis(),
@@ -296,6 +296,10 @@ fn event_loop(
                 idle_elapsed.as_millis(),
                 input_count,
                 bg_stats.bg_msgs,
+                bg_stats.disk_usage_msgs,
+                bg_stats.git_info_msgs,
+                bg_stats.git_path_state_msgs,
+                bg_stats.lint_status_msgs,
                 bg_stats.ci_msgs,
                 bg_stats.example_msgs,
                 bg_stats.tree_results,
@@ -505,9 +509,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     });
 }
 
-fn last_selected_path_file() -> PathBuf {
-    scan::cache_dir().join("last_selected.txt")
-}
+fn last_selected_path_file() -> PathBuf { scan::cache_dir().join("last_selected.txt") }
 
 pub(super) fn load_last_selected() -> Option<String> {
     let path = last_selected_path_file();
@@ -534,7 +536,7 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
 
     thread::spawn(move || {
         let _ = tx.send(BackgroundMsg::GitPathState {
-            path: project_path.clone(),
+            path:  project_path.clone(),
             state: crate::project::detect_git_path_state(&abs),
         });
         // Git detection can be expensive on some repos; keep it off the UI thread.
@@ -577,8 +579,8 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
             scan::emit_service_signal(&tx, signal);
             if let Some(info) = info {
                 let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                    path: project_path,
-                    version: info.version,
+                    path:      project_path,
+                    version:   info.version,
                     downloads: info.downloads,
                 });
             }
