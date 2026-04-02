@@ -643,9 +643,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             let flash_width = msg.width();
             let flash_start = total_width.saturating_sub(flash_width) / 2;
             let flash_area = Rect {
-                x:      area.x + u16::try_from(flash_start).unwrap_or(u16::MAX),
-                y:      area.y,
-                width:  u16::try_from((total_width - flash_start).min(flash_width + 1))
+                x: area.x + u16::try_from(flash_start).unwrap_or(u16::MAX),
+                y: area.y,
+                width: u16::try_from((total_width - flash_start).min(flash_width + 1))
                     .unwrap_or(u16::MAX),
                 height: 1,
             };
@@ -688,9 +688,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Left section
     if !left_spans.is_empty() {
         let left_area = Rect {
-            x:      area.x,
-            y:      area.y,
-            width:  area.width,
+            x: area.x,
+            y: area.y,
+            width: area.width,
             height: 1,
         };
         frame.render_widget(
@@ -705,9 +705,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         // Only render if it doesn't overlap with the left section
         if center_start >= left_width {
             let center_area = Rect {
-                x:      area.x + u16::try_from(center_start).unwrap_or(u16::MAX),
-                y:      area.y,
-                width:  u16::try_from((total_width - center_start).min(center_width + 1))
+                x: area.x + u16::try_from(center_start).unwrap_or(u16::MAX),
+                y: area.y,
+                width: u16::try_from((total_width - center_start).min(center_width + 1))
                     .unwrap_or(u16::MAX),
                 height: 1,
             };
@@ -722,9 +722,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     if !right_spans.is_empty() {
         let right_start = total_width.saturating_sub(right_width + 1);
         let right_area = Rect {
-            x:      area.x + u16::try_from(right_start).unwrap_or(u16::MAX),
-            y:      area.y,
-            width:  u16::try_from(right_width + 1).unwrap_or(u16::MAX),
+            x: area.x + u16::try_from(right_start).unwrap_or(u16::MAX),
+            y: area.y,
+            width: u16::try_from(right_width + 1).unwrap_or(u16::MAX),
             height: 1,
         };
         frame.render_widget(
@@ -753,7 +753,7 @@ fn render_root_item(
     let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
     let ci = app.ci_for_node(node);
     let lang = project.lang_icon();
-    let lint = app.lint_icon(project);
+    let lint = app.lint_icon_for_root(node_index);
     let git = app.git_icon(project);
     let sync = app.git_sync(project);
     let prefix = if node.has_children() {
@@ -837,7 +837,27 @@ fn render_worktree_entry<'a>(
     } else {
         PREFIX_WT_FLAT
     };
-    render_child_item(app, &wt.project, &name, sorted, prefix, widths)
+    let disk = app.formatted_disk(&wt.project);
+    let disk_bytes = app.disk_usage.get(&wt.project.path).copied();
+    let ds = disk_color(disk_percentile(disk_bytes, sorted));
+    let lang = wt.project.lang_icon();
+    let lint = app.lint_icon_for_worktree(ni, wi);
+    let ci = app.ci_for(&wt.project);
+    let git = app.git_icon(&wt.project);
+    let sync = app.git_sync(&wt.project);
+    let row = super::columns::build_row_cells(super::columns::ProjectRow {
+        prefix,
+        name: &name,
+        lint_icon: lint,
+        disk: &disk,
+        disk_style: ds,
+        lang_icon: lang,
+        git_sync: &sync,
+        git_icon: git,
+        ci,
+        deleted: app.is_deleted(&wt.project.path),
+    });
+    ListItem::new(super::columns::row_to_line(&row, widths))
 }
 
 fn render_wt_group_header<'a>(

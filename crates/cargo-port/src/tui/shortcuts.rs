@@ -23,54 +23,54 @@ impl InputContext {
 
 /// A keyboard shortcut for display in the status bar.
 pub(super) struct Shortcut {
-    pub key:         &'static str,
+    pub key: &'static str,
     pub description: &'static str,
 }
 
 // ── Reusable shortcut definitions ──────────────────────────────────────
 
 const NAV: Shortcut = Shortcut {
-    key:         "↑/↓",
+    key: "↑/↓",
     description: "nav",
 };
 const ARROWS_COLUMN: Shortcut = Shortcut {
-    key:         "←/→",
+    key: "←/→",
     description: "column",
 };
 const ARROWS_EXPAND: Shortcut = Shortcut {
-    key:         "←/→",
+    key: "←/→",
     description: "expand",
 };
 const ARROWS_TOGGLE: Shortcut = Shortcut {
-    key:         "←/→",
+    key: "←/→",
     description: "toggle",
 };
 const TAB_PANE: Shortcut = Shortcut {
-    key:         "Tab",
+    key: "Tab",
     description: "pane",
 };
 const ESC_BACK: Shortcut = Shortcut {
-    key:         "Esc",
+    key: "Esc",
     description: "back",
 };
 const ESC_CANCEL: Shortcut = Shortcut {
-    key:         "Esc",
+    key: "Esc",
     description: "cancel",
 };
 const ESC_CLOSE: Shortcut = Shortcut {
-    key:         "Esc",
+    key: "Esc",
     description: "close",
 };
 const RELEASE: Shortcut = Shortcut {
-    key:         "r",
+    key: "r",
     description: "release",
 };
 const CLEAN: Shortcut = Shortcut {
-    key:         "c",
+    key: "c",
     description: "clean",
 };
 const CLEAR_CACHE: Shortcut = Shortcut {
-    key:         "c",
+    key: "c",
     description: "clear cache",
 };
 const SWITCH_PANEL: Shortcut = Shortcut {
@@ -78,23 +78,23 @@ const SWITCH_PANEL: Shortcut = Shortcut {
     description: "switch",
 };
 const RESCAN: Shortcut = Shortcut {
-    key:         "r",
+    key: "r",
     description: "rescan",
 };
 const SETTINGS: Shortcut = Shortcut {
-    key:         "s",
+    key: "s",
     description: "settings",
 };
 const FIND: Shortcut = Shortcut {
-    key:         "/",
+    key: "/",
     description: "find",
 };
 const QUIT: Shortcut = Shortcut {
-    key:         "q",
+    key: "q",
     description: "quit",
 };
 const RESTART: Shortcut = Shortcut {
-    key:         "R",
+    key: "R",
     description: "restart",
 };
 
@@ -111,8 +111,8 @@ const fn enter(description: &'static str) -> Shortcut {
 /// right (globals).
 pub(super) struct StatusBarGroups {
     pub navigation: Vec<Shortcut>,
-    pub actions:    Vec<Shortcut>,
-    pub global:     Vec<Shortcut>,
+    pub actions: Vec<Shortcut>,
+    pub global: Vec<Shortcut>,
 }
 
 /// Build all three shortcut groups for the current context.
