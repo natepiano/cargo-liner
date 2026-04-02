@@ -113,26 +113,28 @@ pub enum PortReportCommandStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PortReportCommand {
-    pub name:        String,
-    pub command:     String,
-    pub status:      PortReportCommandStatus,
+    pub name: String,
+    pub command: String,
+    pub status: PortReportCommandStatus,
     pub duration_ms: Option<u64>,
-    pub exit_code:   Option<i32>,
-    pub log_file:    String,
+    pub exit_code: Option<i32>,
+    pub log_file: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PortReportRun {
-    pub run_id:      String,
-    pub started_at:  String,
+    pub run_id: String,
+    pub started_at: String,
     pub finished_at: Option<String>,
     pub duration_ms: Option<u64>,
-    pub status:      PortReportRunStatus,
-    pub commands:    Vec<PortReportCommand>,
+    pub status: PortReportRunStatus,
+    pub commands: Vec<PortReportCommand>,
 }
 
 /// Canonical cache directory for all per-project lint status files.
-pub fn cache_root() -> PathBuf { cache_paths::port_report_root() }
+pub fn cache_root() -> PathBuf {
+    cache_paths::port_report_root()
+}
 
 /// Stable per-project cache key used by both cargo-port and external scripts.
 pub fn project_key(project_root: &Path) -> String {
@@ -145,7 +147,9 @@ pub fn project_key(project_root: &Path) -> String {
 }
 
 /// Cache-rooted directory for the project's lint watcher protocol files.
-pub fn project_dir(project_root: &Path) -> PathBuf { cache_root().join(project_key(project_root)) }
+pub fn project_dir(project_root: &Path) -> PathBuf {
+    cache_root().join(project_key(project_root))
+}
 
 /// Cache-rooted directory for the project's lint watcher protocol files under
 /// an explicit cache root.
@@ -449,20 +453,20 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("tempdir");
         let completed = PortReportRun {
-            run_id:      "completed".to_string(),
-            started_at:  "2026-04-01T18:00:00-04:00".to_string(),
+            run_id: "completed".to_string(),
+            started_at: "2026-04-01T18:00:00-04:00".to_string(),
             finished_at: Some("2026-04-01T18:00:10-04:00".to_string()),
             duration_ms: Some(10_000),
-            status:      PortReportRunStatus::Passed,
-            commands:    Vec::new(),
+            status: PortReportRunStatus::Passed,
+            commands: Vec::new(),
         };
         let running = PortReportRun {
-            run_id:      "running".to_string(),
-            started_at:  "2026-04-01T18:05:00-04:00".to_string(),
+            run_id: "running".to_string(),
+            started_at: "2026-04-01T18:05:00-04:00".to_string(),
             finished_at: None,
             duration_ms: None,
-            status:      PortReportRunStatus::Running,
-            commands:    Vec::new(),
+            status: PortReportRunStatus::Running,
+            commands: Vec::new(),
         };
 
         append_history_under(cache_dir.path(), project_dir.path(), &completed)
@@ -480,12 +484,12 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("tempdir");
         let completed = PortReportRun {
-            run_id:      "same-run".to_string(),
-            started_at:  "2026-04-01T18:00:00-04:00".to_string(),
+            run_id: "same-run".to_string(),
+            started_at: "2026-04-01T18:00:00-04:00".to_string(),
             finished_at: Some("2026-04-01T18:00:10-04:00".to_string()),
             duration_ms: Some(10_000),
-            status:      PortReportRunStatus::Passed,
-            commands:    Vec::new(),
+            status: PortReportRunStatus::Passed,
+            commands: Vec::new(),
         };
 
         append_history_under(cache_dir.path(), project_dir.path(), &completed)

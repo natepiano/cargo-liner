@@ -18,63 +18,67 @@ pub(super) enum ConfigKey {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct ReloadActions {
-    pub rebuild_tree:         bool,
-    pub rescan:               bool,
+    pub rebuild_tree: bool,
+    pub rescan: bool,
     pub refresh_lint_runtime: bool,
 }
 
 #[derive(Clone, Copy)]
 struct ConfigHandler {
-    key:  ConfigKey,
+    key: ConfigKey,
     mark: fn(&mut ReloadActions),
 }
 
 const CONFIG_HANDLERS: &[ConfigHandler] = &[
     ConfigHandler {
-        key:  ConfigKey::InlineDirs,
+        key: ConfigKey::InlineDirs,
         mark: mark_rebuild_tree,
     },
     ConfigHandler {
-        key:  ConfigKey::IncludeNonRust,
+        key: ConfigKey::IncludeNonRust,
         mark: mark_rescan,
     },
     ConfigHandler {
-        key:  ConfigKey::CiRunCount,
+        key: ConfigKey::CiRunCount,
         mark: mark_rescan,
     },
     ConfigHandler {
-        key:  ConfigKey::IncludeDirs,
+        key: ConfigKey::IncludeDirs,
         mark: mark_rescan,
     },
     ConfigHandler {
-        key:  ConfigKey::CacheRoot,
+        key: ConfigKey::CacheRoot,
         mark: mark_rescan,
     },
     ConfigHandler {
-        key:  ConfigKey::CacheRoot,
+        key: ConfigKey::CacheRoot,
         mark: mark_refresh_lint_runtime,
     },
     ConfigHandler {
-        key:  ConfigKey::LintEnabled,
+        key: ConfigKey::LintEnabled,
         mark: mark_refresh_lint_runtime,
     },
     ConfigHandler {
-        key:  ConfigKey::LintInclude,
+        key: ConfigKey::LintInclude,
         mark: mark_refresh_lint_runtime,
     },
     ConfigHandler {
-        key:  ConfigKey::LintExclude,
+        key: ConfigKey::LintExclude,
         mark: mark_refresh_lint_runtime,
     },
     ConfigHandler {
-        key:  ConfigKey::LintCommands,
+        key: ConfigKey::LintCommands,
         mark: mark_refresh_lint_runtime,
     },
 ];
 
-const fn mark_rebuild_tree(actions: &mut ReloadActions) { actions.rebuild_tree = true; }
+const fn mark_rebuild_tree(actions: &mut ReloadActions) {
+    actions.rebuild_tree = true;
+}
 
-const fn mark_rescan(actions: &mut ReloadActions) { actions.rescan = true; }
+const fn mark_rescan(actions: &mut ReloadActions) {
+    actions.rescan = true;
+}
 
 const fn mark_refresh_lint_runtime(actions: &mut ReloadActions) {
     actions.refresh_lint_runtime = true;
@@ -173,8 +177,8 @@ mod tests {
         assert_eq!(
             collect_reload_actions(&Config::default(), &new),
             ReloadActions {
-                rebuild_tree:         false,
-                rescan:               true,
+                rebuild_tree: false,
+                rescan: true,
                 refresh_lint_runtime: false,
             }
         );
@@ -190,8 +194,8 @@ mod tests {
         assert_eq!(
             collect_reload_actions(&Config::default(), &new),
             ReloadActions {
-                rebuild_tree:         false,
-                rescan:               false,
+                rebuild_tree: false,
+                rescan: false,
                 refresh_lint_runtime: true,
             }
         );
@@ -205,8 +209,8 @@ mod tests {
         assert_eq!(
             collect_reload_actions(&Config::default(), &new),
             ReloadActions {
-                rebuild_tree:         false,
-                rescan:               true,
+                rebuild_tree: false,
+                rescan: true,
                 refresh_lint_runtime: true,
             }
         );

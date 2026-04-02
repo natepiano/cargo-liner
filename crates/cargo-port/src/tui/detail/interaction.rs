@@ -36,11 +36,11 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
         && let Some(project) = app.selected_project()
     {
         app.pending_example_run = Some(PendingExampleRun {
-            abs_path:     project.abs_path.clone(),
-            target_name:  entry.name.clone(),
+            abs_path: project.abs_path.clone(),
+            target_name: entry.name.clone(),
             package_name: project.name.clone(),
-            kind:         entry.kind,
-            release:      matches!(mode, BuildMode::Release),
+            kind: entry.kind,
+            release: matches!(mode, BuildMode::Release),
         });
     }
 }
@@ -230,7 +230,7 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
     app.ci_state.insert(
         project_path.to_string(),
         CiState::Loaded {
-            runs:      Vec::new(),
+            runs: Vec::new(),
             exhausted: false,
         },
     );

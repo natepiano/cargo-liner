@@ -8,6 +8,8 @@ use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::thread;
 
+use toml::Table;
+use toml::Value;
 use walkdir::WalkDir;
 
 use super::cache_paths;
@@ -33,35 +35,39 @@ use super::project::RustProject;
 /// or under the primary `crates/` directory -- these are shown without a folder header.
 #[derive(Clone)]
 pub struct MemberGroup {
-    pub name:    String,
+    pub name: String,
     pub members: Vec<RustProject>,
 }
 
 #[derive(Clone)]
 pub struct ProjectNode {
-    pub project:   RustProject,
-    pub groups:    Vec<MemberGroup>,
+    pub project: RustProject,
+    pub groups: Vec<MemberGroup>,
     pub worktrees: Vec<Self>,
-    pub vendored:  Vec<RustProject>,
+    pub vendored: Vec<RustProject>,
 }
 
 impl ProjectNode {
-    pub fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members.is_empty()) }
+    pub fn has_members(&self) -> bool {
+        self.groups.iter().any(|g| !g.members.is_empty())
+    }
 
-    pub fn has_children(&self) -> bool { self.has_members() || !self.worktrees.is_empty() }
+    pub fn has_children(&self) -> bool {
+        self.has_members() || !self.worktrees.is_empty()
+    }
 }
 
 /// A flattened entry for fuzzy search.
 pub struct FlatEntry {
-    pub node_index:   usize,
-    pub group_index:  usize,
+    pub node_index: usize,
+    pub group_index: usize,
     pub member_index: usize,
-    pub name:         String,
+    pub name: String,
 }
 
 pub enum BackgroundMsg {
     DiskUsage {
-        path:  String,
+        path: String,
         bytes: u64,
     },
     CiRuns {
@@ -73,13 +79,13 @@ pub enum BackgroundMsg {
         info: GitInfo,
     },
     CratesIoVersion {
-        path:      String,
-        version:   String,
+        path: String,
+        version: String,
         downloads: u64,
     },
     RepoMeta {
-        path:        String,
-        stars:       u64,
+        path: String,
+        stars: u64,
         description: Option<String>,
     },
     ProjectDiscovered {
@@ -89,7 +95,7 @@ pub enum BackgroundMsg {
         path: String,
     },
     LintStatus {
-        path:   String,
+        path: String,
         status: LintStatus,
     },
     ScanComplete,
@@ -163,13 +169,19 @@ pub enum CiFetchResult {
 }
 
 /// Base cache directory for CI metadata.
-pub fn cache_dir() -> PathBuf { cache_paths::ci_cache_root() }
+pub fn cache_dir() -> PathBuf {
+    cache_paths::ci_cache_root()
+}
 
 /// Repo-keyed cache directory: `{cache_dir}/{owner}/{repo}`.
-fn repo_cache_dir(owner: &str, repo: &str) -> PathBuf { cache_dir().join(owner).join(repo) }
+fn repo_cache_dir(owner: &str, repo: &str) -> PathBuf {
+    cache_dir().join(owner).join(repo)
+}
 
 /// Public accessor for clearing the cache directory.
-pub fn repo_cache_dir_pub(owner: &str, repo: &str) -> PathBuf { repo_cache_dir(owner, repo) }
+pub fn repo_cache_dir_pub(owner: &str, repo: &str) -> PathBuf {
+    repo_cache_dir(owner, repo)
+}
 
 /// Check if the "no more runs" marker exists for a repo.
 pub fn is_exhausted(owner: &str, repo: &str) -> bool {
@@ -433,7 +445,7 @@ pub fn fetch_newer_runs(
 }
 
 pub struct CratesIoInfo {
-    pub version:   String,
+    pub version: String,
     pub downloads: u64,
 }
 
@@ -471,13 +483,12 @@ pub fn build_tree(projects: &[RustProject], inline_dirs: &[String]) -> Vec<Proje
 
     for (i, project) in projects.iter().enumerate() {
         if top_level_workspaces.contains(&i) {
+            let member_paths = workspace_member_paths(project, projects);
             let mut all_members: Vec<RustProject> = projects
                 .iter()
                 .enumerate()
                 .filter(|(j, p)| {
-                    *j != i
-                        && !top_level_workspaces.contains(j)
-                        && p.path.starts_with(&format!("{}/", project.path))
+                    *j != i && !top_level_workspaces.contains(j) && member_paths.contains(&p.path)
                 })
                 .map(|(j, p)| {
                     consumed.insert(j);
@@ -507,17 +518,12 @@ pub fn build_tree(projects: &[RustProject], inline_dirs: &[String]) -> Vec<Proje
         if consumed.contains(&i) {
             continue;
         }
-        let under_workspace = workspace_paths
-            .iter()
-            .any(|ws| project.path.starts_with(&format!("{ws}/")));
-        if !under_workspace {
-            nodes.push(ProjectNode {
-                project:   project.clone(),
-                groups:    Vec::new(),
-                worktrees: Vec::new(),
-                vendored:  Vec::new(),
-            });
-        }
+        nodes.push(ProjectNode {
+            project: project.clone(),
+            groups: Vec::new(),
+            worktrees: Vec::new(),
+            vendored: Vec::new(),
+        });
     }
 
     nodes.sort_by(|a, b| a.project.path.cmp(&b.project.path));
@@ -531,6 +537,131 @@ pub fn build_tree(projects: &[RustProject], inline_dirs: &[String]) -> Vec<Proje
     merge_worktrees(&mut nodes);
 
     nodes
+}
+
+fn workspace_member_paths(workspace: &RustProject, projects: &[RustProject]) -> HashSet<String> {
+    let manifest = Path::new(&workspace.abs_path).join("Cargo.toml");
+    let Some((members, excludes)) = workspace_member_patterns(&manifest) else {
+        return projects
+            .iter()
+            .filter(|project| project.path.starts_with(&format!("{}/", workspace.path)))
+            .map(|project| project.path.clone())
+            .collect();
+    };
+
+    projects
+        .iter()
+        .filter(|project| project.path.starts_with(&format!("{}/", workspace.path)))
+        .filter_map(|project| {
+            workspace_relative_path(workspace, project).and_then(|relative| {
+                let included = members
+                    .iter()
+                    .any(|pattern| workspace_pattern_matches(pattern, &relative));
+                let excluded = excludes
+                    .iter()
+                    .any(|pattern| workspace_pattern_matches(pattern, &relative));
+                if included && !excluded {
+                    Some(project.path.clone())
+                } else {
+                    None
+                }
+            })
+        })
+        .collect()
+}
+
+fn workspace_member_patterns(manifest_path: &Path) -> Option<(Vec<String>, Vec<String>)> {
+    let contents = std::fs::read_to_string(manifest_path).ok()?;
+    let table: Table = contents.parse().ok()?;
+    let workspace = table.get("workspace")?.as_table()?;
+
+    let members = workspace
+        .get("members")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(Value::as_str)
+                .map(std::string::ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let excludes = workspace
+        .get("exclude")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(Value::as_str)
+                .map(std::string::ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some((members, excludes))
+}
+
+fn workspace_relative_path(workspace: &RustProject, project: &RustProject) -> Option<String> {
+    Path::new(&project.abs_path)
+        .strip_prefix(&workspace.abs_path)
+        .ok()
+        .map(normalize_workspace_path)
+}
+
+fn normalize_workspace_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(segment) => Some(segment.to_string_lossy().to_string()),
+            std::path::Component::CurDir => None,
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn workspace_pattern_matches(pattern: &str, path: &str) -> bool {
+    let pattern_segments: Vec<&str> = pattern
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let path_segments: Vec<&str> = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    workspace_pattern_matches_segments(&pattern_segments, &path_segments)
+}
+
+fn workspace_pattern_matches_segments(pattern: &[&str], path: &[&str]) -> bool {
+    match pattern.split_first() {
+        None => path.is_empty(),
+        Some((&"**", rest)) => {
+            workspace_pattern_matches_segments(rest, path)
+                || (!path.is_empty() && workspace_pattern_matches_segments(pattern, &path[1..]))
+        },
+        Some((segment, rest)) => {
+            !path.is_empty()
+                && workspace_pattern_matches_segment(segment, path[0])
+                && workspace_pattern_matches_segments(rest, &path[1..])
+        },
+    }
+}
+
+fn workspace_pattern_matches_segment(pattern: &str, value: &str) -> bool {
+    fn matches(pattern: &[u8], value: &[u8]) -> bool {
+        match pattern.split_first() {
+            None => value.is_empty(),
+            Some((b'*', rest)) => {
+                matches(rest, value) || (!value.is_empty() && matches(pattern, &value[1..]))
+            },
+            Some((b'?', rest)) => !value.is_empty() && matches(rest, &value[1..]),
+            Some((head, rest)) => {
+                !value.is_empty() && *head == value[0] && matches(rest, &value[1..])
+            },
+        }
+    }
+
+    matches(pattern.as_bytes(), value.as_bytes())
 }
 
 /// Group worktree nodes under their primary (non-worktree) project.
@@ -611,10 +742,10 @@ fn merge_worktrees(nodes: &mut Vec<ProjectNode>) {
             primary.worktrees.insert(
                 0,
                 ProjectNode {
-                    project:   primary_as_wt,
-                    groups:    primary_groups,
+                    project: primary_as_wt,
+                    groups: primary_groups,
                     worktrees: Vec::new(),
-                    vendored:  Vec::new(),
+                    vendored: Vec::new(),
                 },
             );
         }
@@ -748,20 +879,20 @@ pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
         // Add workspace root itself
         let name = node.project.name.as_deref().unwrap_or(&node.project.path);
         entries.push(FlatEntry {
-            node_index:   ni,
-            group_index:  0,
+            node_index: ni,
+            group_index: 0,
             member_index: 0,
-            name:         name.to_string(),
+            name: name.to_string(),
         });
         // Add all members
         for (gi, group) in node.groups.iter().enumerate() {
             for (mi, member) in group.members.iter().enumerate() {
                 let name = member.name.as_deref().unwrap_or(&member.path);
                 entries.push(FlatEntry {
-                    node_index:   ni,
-                    group_index:  gi,
+                    node_index: ni,
+                    group_index: gi,
                     member_index: mi,
-                    name:         name.to_string(),
+                    name: name.to_string(),
                 });
             }
         }
@@ -771,7 +902,7 @@ pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
 
 /// Shared network context passed to `fetch_project_details`.
 pub struct FetchContext {
-    pub client:     HttpClient,
+    pub client: HttpClient,
     pub repo_cache: RepoCache,
 }
 
@@ -841,8 +972,8 @@ pub fn fetch_project_details(
         });
         if let Some(meta) = data.meta {
             let _ = tx.send(BackgroundMsg::RepoMeta {
-                path:        project_path.to_string(),
-                stars:       meta.stars,
+                path: project_path.to_string(),
+                stars: meta.stars,
                 description: meta.description,
             });
         }
@@ -854,8 +985,8 @@ pub fn fetch_project_details(
         emit_service_signal(tx, signal);
         if let Some(info) = info {
             let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                path:      project_path.to_string(),
-                version:   info.version,
+                path: project_path.to_string(),
+                version: info.version,
                 downloads: info.downloads,
             });
         }
@@ -866,7 +997,7 @@ pub fn fetch_project_details(
         let lint = port_report::read_status(abs_path);
         if !matches!(lint, LintStatus::NoLog) {
             let _ = tx.send(BackgroundMsg::LintStatus {
-                path:   project_path.to_string(),
+                path: project_path.to_string(),
                 status: lint,
             });
         }
@@ -883,7 +1014,7 @@ pub fn fetch_project_details(
 
 #[derive(Clone)]
 pub struct RepoMetaInfo {
-    pub stars:       u64,
+    pub stars: u64,
     pub description: Option<String>,
 }
 
@@ -898,7 +1029,9 @@ pub struct CachedRepoData {
 
 pub type RepoCache = Arc<Mutex<HashMap<String, CachedRepoData>>>;
 
-pub fn new_repo_cache() -> RepoCache { Arc::new(Mutex::new(HashMap::new())) }
+pub fn new_repo_cache() -> RepoCache {
+    Arc::new(Mutex::new(HashMap::new()))
+}
 
 /// Resolve include-dir entries to absolute paths. Relative entries are
 /// joined to `scan_root`; absolute entries are used as-is. An empty
@@ -923,11 +1056,11 @@ pub fn resolve_include_dirs(scan_root: &Path, include_dirs: &[String]) -> Vec<Pa
 /// Information collected in phase 1 (local work) for a single project,
 /// used to drive async HTTP dispatch and disk usage.
 struct DiscoveredProject {
-    path:         String,
-    abs_path:     PathBuf,
-    name:         Option<String>,
-    repo_url:     Option<String>,
-    owner_repo:   Option<(String, String)>,
+    path: String,
+    abs_path: PathBuf,
+    name: Option<String>,
+    repo_url: Option<String>,
+    owner_repo: Option<(String, String)>,
     lint_enabled: bool,
 }
 
@@ -946,21 +1079,21 @@ type RepoDispatchMap = Arc<Mutex<HashMap<String, RepoDispatchState>>>;
 
 #[derive(Clone)]
 struct StreamingScanContext {
-    client:        HttpClient,
-    tx:            mpsc::Sender<BackgroundMsg>,
-    ci_run_count:  u32,
-    lint_enabled:  bool,
-    disk_limit:    Arc<tokio::sync::Semaphore>,
-    http_limit:    Arc<tokio::sync::Semaphore>,
+    client: HttpClient,
+    tx: mpsc::Sender<BackgroundMsg>,
+    ci_run_count: u32,
+    lint_enabled: bool,
+    disk_limit: Arc<tokio::sync::Semaphore>,
+    http_limit: Arc<tokio::sync::Semaphore>,
     repo_dispatch: RepoDispatchMap,
 }
 
 struct RepoFetchRequest {
-    key:          String,
+    key: String,
     project_path: String,
-    repo_url:     String,
-    owner:        String,
-    repo:         String,
+    repo_url: String,
+    owner: String,
+    repo: String,
 }
 
 /// Spawn a streaming scan using a hybrid approach:
@@ -1206,8 +1339,8 @@ fn send_repo_data(tx: &mpsc::Sender<BackgroundMsg>, paths: &[String], data: &Cac
         });
         if let Some(meta) = &data.meta {
             let _ = tx.send(BackgroundMsg::RepoMeta {
-                path:        path.clone(),
-                stars:       meta.stars,
+                path: path.clone(),
+                stars: meta.stars,
                 description: meta.description.clone(),
             });
         }
@@ -1271,8 +1404,8 @@ fn spawn_crates_fetch(
         emit_service_signal(&tx, signal);
         if let Some(info) = info {
             let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                path:      project_path,
-                version:   info.version,
+                path: project_path,
+                version: info.version,
                 downloads: info.downloads,
             });
         }
@@ -1303,7 +1436,7 @@ fn phase1_local_work(
         let lint = port_report::read_status(&project.abs_path);
         if !matches!(lint, LintStatus::NoLog) {
             let _ = tx.send(BackgroundMsg::LintStatus {
-                path:   project.path.clone(),
+                path: project.path.clone(),
                 status: lint,
             });
         }
@@ -1452,7 +1585,7 @@ mod tests {
             WorkspaceStatus::Standalone,
         );
         let groups = vec![MemberGroup {
-            name:    String::new(),
+            name: String::new(),
             members: vec![member_a, member_b],
         }];
 
@@ -1478,6 +1611,68 @@ mod tests {
             "primary-as-wt should have the groups"
         );
         assert_eq!(nodes[0].worktrees[0].groups[0].members.len(), 2);
+    }
+
+    #[test]
+    fn build_tree_only_nests_manifest_members() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = tmp.path().join("hana");
+        let included_dir = workspace_dir.join("crates").join("hana");
+        let orphan_dir = workspace_dir.join("crates").join("clay-layout");
+
+        std::fs::create_dir_all(&included_dir).expect("create included dir");
+        std::fs::create_dir_all(&orphan_dir).expect("create orphan dir");
+        std::fs::write(
+            workspace_dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/hana\"]\n",
+        )
+        .expect("write workspace manifest");
+
+        let workspace = make_project(
+            Some("hana"),
+            "~/rust/hana",
+            &workspace_dir.to_string_lossy(),
+            None,
+            Some(&workspace_dir.to_string_lossy()),
+            WorkspaceStatus::Workspace,
+        );
+        let included = make_project(
+            Some("hana-node-api"),
+            "~/rust/hana/crates/hana",
+            &included_dir.to_string_lossy(),
+            None,
+            Some(&workspace_dir.to_string_lossy()),
+            WorkspaceStatus::Standalone,
+        );
+        let orphan = make_project(
+            Some("clay-layout"),
+            "~/rust/hana/crates/clay-layout",
+            &orphan_dir.to_string_lossy(),
+            None,
+            Some(&workspace_dir.to_string_lossy()),
+            WorkspaceStatus::Standalone,
+        );
+
+        let nodes = build_tree(
+            &[workspace.clone(), included.clone(), orphan.clone()],
+            &["crates".to_string()],
+        );
+
+        let workspace_node = nodes
+            .iter()
+            .find(|node| node.project.path == workspace.path)
+            .expect("workspace node");
+        assert_eq!(workspace_node.groups.len(), 1);
+        assert_eq!(workspace_node.groups[0].members.len(), 1);
+        assert_eq!(workspace_node.groups[0].members[0].path, included.path);
+        assert!(
+            workspace_node
+                .groups
+                .iter()
+                .flat_map(|group| group.members.iter())
+                .all(|member| member.path != orphan.path),
+            "non-member crate should not be grouped as a workspace member"
+        );
     }
 
     #[test]
