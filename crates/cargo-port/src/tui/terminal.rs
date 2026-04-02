@@ -85,7 +85,14 @@ pub fn run(path: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let cfg = config::load();
+    let cfg = match config::try_load() {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            eprintln!("Error: {err}");
+            return ExitCode::FAILURE;
+        },
+    };
+    config::set_active_config(&cfg);
     let perf_log_path = super::perf::init();
     let Ok(rt) = tokio::runtime::Runtime::new() else {
         eprintln!("Error: failed to create async runtime");
@@ -194,6 +201,7 @@ fn event_loop(
         let input_elapsed = input_started.elapsed();
 
         let bg_started = Instant::now();
+        app.maybe_reload_config_from_disk();
         let bg_stats = app.poll_background();
         let bg_elapsed = bg_started.elapsed();
 
@@ -521,7 +529,7 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
     } else {
         GitTracking::Untracked
     };
-    let ci_run_count = app.ci_run_count;
+    let ci_run_count = app.ci_run_count();
     let project_name = name.cloned();
 
     thread::spawn(move || {

@@ -785,9 +785,9 @@ mod tests {
     use super::ci_panel::ci_total_width;
     use super::model::package_fields;
     use super::package_label_width;
-    use super::port_report_panel::first_failed_command;
     use super::port_report_panel::format_port_report_commands;
-    use super::port_report_panel::format_port_report_exit;
+    use super::port_report_panel::format_port_report_pending;
+    use super::port_report_panel::format_port_report_slowest;
     use super::stats_column_width;
     use crate::ci::CiJob;
     use crate::ci::CiRun;
@@ -994,9 +994,9 @@ mod tests {
             ],
         );
 
-        assert_eq!(format_port_report_commands(&run), "2/2");
-        assert_eq!(first_failed_command(&run), None);
-        assert_eq!(format_port_report_exit(&run), "-");
+        assert_eq!(format_port_report_commands(&run), "mend, clippy");
+        assert_eq!(format_port_report_pending(&run), "0");
+        assert_eq!(format_port_report_slowest(&run), "clippy 0:02");
     }
 
     #[test]
@@ -1023,9 +1023,9 @@ mod tests {
             ],
         );
 
-        assert_eq!(format_port_report_commands(&run), "1/2 failed");
-        assert_eq!(first_failed_command(&run), Some("clippy"));
-        assert_eq!(format_port_report_exit(&run), "101");
+        assert_eq!(format_port_report_commands(&run), "mend, clippy");
+        assert_eq!(format_port_report_pending(&run), "0");
+        assert_eq!(format_port_report_slowest(&run), "clippy 0:02");
     }
 
     #[test]
@@ -1052,7 +1052,8 @@ mod tests {
             ],
         );
 
-        assert_eq!(format_port_report_commands(&run), "1/2 running");
-        assert_eq!(first_failed_command(&run), None);
+        assert_eq!(format_port_report_commands(&run), "mend, clippy");
+        assert_eq!(format_port_report_pending(&run), "1");
+        assert_eq!(format_port_report_slowest(&run), "mend 0:01");
     }
 }

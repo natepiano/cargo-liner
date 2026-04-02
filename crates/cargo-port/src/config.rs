@@ -1,5 +1,7 @@
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::sync::RwLock;
 
 use confique::Config as _;
 use serde::Deserialize;
@@ -77,7 +79,7 @@ impl ScrollDirection {
 }
 
 /// Cache storage settings shared by CI and port-report data.
-#[derive(Clone, confique::Config, Default, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
 pub struct CacheConfig {
     /// Override the app cache root. Empty uses the system cache directory.
     #[config(default = "")]
@@ -93,7 +95,7 @@ pub struct LintCommandConfig {
     pub command: String,
 }
 
-#[derive(Clone, confique::Config, Default, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
 pub struct LintConfig {
     /// Show a lint status indicator per project by reading cache-rooted
     /// Port Report JSON artifacts.
@@ -196,7 +198,7 @@ pub fn normalize_config(mut config: Config) -> Config {
 }
 
 /// Top-level application configuration.
-#[derive(Clone, confique::Config, Default, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, confique::Config, Serialize)]
 pub struct Config {
     #[config(nested)]
     pub cache: CacheConfig,
@@ -209,7 +211,7 @@ pub struct Config {
 }
 
 /// TUI display and behaviour settings.
-#[derive(Clone, confique::Config, Serialize)]
+#[derive(Clone, Debug, PartialEq, confique::Config, Serialize)]
 pub struct TuiConfig {
     /// Directory names whose members are shown inline (pulled up to the
     /// workspace level). For example, `["crates"]` means projects under
@@ -255,7 +257,7 @@ impl Default for TuiConfig {
 }
 
 /// Mouse input settings.
-#[derive(Clone, confique::Config, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
 pub struct MouseConfig {
     /// Whether to invert mouse scroll direction.
     #[config(default = true)]
@@ -274,16 +276,44 @@ pub fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join(APP_NAME).join(CONFIG_FILE))
 }
 
-pub fn load() -> Config {
-    let Some(path) = config_path() else {
-        return Config::default();
-    };
+fn active_config_cell() -> &'static RwLock<Config> {
+    static ACTIVE_CONFIG: OnceLock<RwLock<Config>> = OnceLock::new();
+    ACTIVE_CONFIG.get_or_init(|| RwLock::new(Config::default()))
+}
 
+pub fn active_config() -> Config {
+    active_config_cell()
+        .read()
+        .map_or_else(|_| Config::default(), |cfg| cfg.clone())
+}
+
+pub fn set_active_config(config: &Config) {
+    if let Ok(mut active) = active_config_cell().write() {
+        *active = normalize_config(config.clone());
+    }
+}
+
+fn load_from_path(path: &Path) -> Result<Config, String> {
     if !path.exists() {
-        let _ = create_default_config(&path);
+        create_default_config(path)?;
     }
 
-    normalize_config(Config::builder().file(&path).load().unwrap_or_default())
+    Config::builder()
+        .file(path)
+        .load()
+        .map(normalize_config)
+        .map_err(|err| format!("Failed to load config '{}': {err}", path.display()))
+}
+
+pub(crate) fn try_load_from_path(path: &Path) -> Result<Config, String> {
+    load_from_path(path)
+}
+
+pub fn try_load() -> Result<Config, String> {
+    let Some(path) = config_path() else {
+        return Ok(Config::default());
+    };
+    try_load_from_path(&path)
 }
 
 fn create_default_config(path: &Path) -> Result<(), String> {

@@ -9,6 +9,7 @@ use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
+use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
@@ -100,7 +101,7 @@ fn settings_rows(app: &App, cfg: &config::Config) -> Vec<SettingsRow> {
         (
             Some(SettingOption::InvertScroll),
             "Invert scroll",
-            if app.invert_scroll.is_inverted() {
+            if app.invert_scroll().is_inverted() {
                 "ON"
             } else {
                 "OFF"
@@ -110,7 +111,7 @@ fn settings_rows(app: &App, cfg: &config::Config) -> Vec<SettingsRow> {
         (
             Some(SettingOption::IncludeNonRust),
             "Non-Rust projects",
-            if app.include_non_rust.includes_non_rust() {
+            if app.include_non_rust().includes_non_rust() {
                 "ON"
             } else {
                 "OFF"
@@ -122,7 +123,11 @@ fn settings_rows(app: &App, cfg: &config::Config) -> Vec<SettingsRow> {
             "CI run count",
             cfg.tui.ci_run_count.to_string(),
         ),
-        (Some(SettingOption::Editor), "Editor", app.editor.clone()),
+        (
+            Some(SettingOption::Editor),
+            "Editor",
+            app.editor().to_string(),
+        ),
         (
             Some(SettingOption::IncludeDirs),
             "Include dirs",
@@ -137,7 +142,7 @@ fn settings_rows(app: &App, cfg: &config::Config) -> Vec<SettingsRow> {
         (
             Some(SettingOption::PortReportEnabled),
             "Enabled",
-            if app.lint_enabled { "ON" } else { "OFF" }.to_string(),
+            if app.lint_enabled() { "ON" } else { "OFF" }.to_string(),
         ),
         (
             Some(SettingOption::PortReportProjects),
@@ -281,9 +286,18 @@ fn parse_port_report_commands(value: &str) -> Vec<config::LintCommandConfig> {
     )
 }
 
+fn save_updated_config(app: &mut App, cfg: config::Config) -> bool {
+    match app.save_and_apply_config(cfg) {
+        Ok(()) => true,
+        Err(err) => {
+            app.status_flash = Some((format!("Config save failed: {err}"), Instant::now()));
+            false
+        },
+    }
+}
+
 pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
-    let cfg = config::load();
-    let rows = settings_rows(app, &cfg);
+    let rows = settings_rows(app, &app.current_config);
     let key_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
@@ -399,9 +413,9 @@ pub(super) fn build_settings_lines(
             || setting == Some(SettingOption::PortReportEnabled)
         {
             let is_on = match setting {
-                Some(SettingOption::InvertScroll) => app.invert_scroll.is_inverted(),
-                Some(SettingOption::IncludeNonRust) => app.include_non_rust.includes_non_rust(),
-                Some(SettingOption::PortReportEnabled) => app.lint_enabled,
+                Some(SettingOption::InvertScroll) => app.invert_scroll().is_inverted(),
+                Some(SettingOption::IncludeNonRust) => app.include_non_rust().includes_non_rust(),
+                Some(SettingOption::PortReportEnabled) => app.lint_enabled(),
                 _ => false,
             };
             let toggle_style = if is_on {
@@ -466,25 +480,23 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         },
         KeyCode::Left | KeyCode::Right => match setting {
             Some(SettingOption::InvertScroll) => {
-                app.invert_scroll.toggle();
-                save_settings(app);
+                let mut cfg = app.current_config.clone();
+                cfg.mouse.invert_scroll.toggle();
+                let _ = save_updated_config(app, cfg);
             },
             Some(SettingOption::CiRunCount) => {
-                let mut cfg = config::load();
+                let mut cfg = app.current_config.clone();
                 if key == KeyCode::Right {
                     cfg.tui.ci_run_count = cfg.tui.ci_run_count.saturating_add(1);
                 } else {
                     cfg.tui.ci_run_count = cfg.tui.ci_run_count.saturating_sub(1).max(1);
                 }
-                app.ci_run_count = cfg.tui.ci_run_count;
-                let _ = config::save(&cfg);
+                let _ = save_updated_config(app, cfg);
             },
             Some(SettingOption::IncludeNonRust) => {
-                app.include_non_rust.toggle();
-                let mut cfg = config::load();
-                cfg.tui.include_non_rust = app.include_non_rust;
-                let _ = config::save(&cfg);
-                app.rescan();
+                let mut cfg = app.current_config.clone();
+                cfg.tui.include_non_rust.toggle();
+                let _ = save_updated_config(app, cfg);
             },
             Some(SettingOption::PortReportEnabled) => {
                 toggle_port_report(app);
@@ -493,49 +505,45 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         },
         KeyCode::Enter | KeyCode::Char(' ') => match setting {
             Some(SettingOption::InvertScroll) => {
-                app.invert_scroll.toggle();
-                save_settings(app);
+                let mut cfg = app.current_config.clone();
+                cfg.mouse.invert_scroll.toggle();
+                let _ = save_updated_config(app, cfg);
             },
             Some(SettingOption::CiRunCount) => {
-                let cfg = config::load();
-                app.settings_edit_buf = cfg.tui.ci_run_count.to_string();
+                app.settings_edit_buf = app.current_config.tui.ci_run_count.to_string();
                 app.settings_editing = true;
                 app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::InlineDirs) => {
-                app.settings_edit_buf = app.inline_dirs.join(", ");
+                app.settings_edit_buf = app.current_config.tui.inline_dirs.join(", ");
                 app.settings_editing = true;
                 app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::IncludeDirs) => {
-                app.settings_edit_buf = app.include_dirs.join(", ");
+                app.settings_edit_buf = app.current_config.tui.include_dirs.join(", ");
                 app.settings_editing = true;
                 app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::PortReportProjects) => {
-                let cfg = config::load();
-                app.settings_edit_buf = cfg.lint.include.join(", ");
+                app.settings_edit_buf = app.current_config.lint.include.join(", ");
                 app.settings_editing = true;
                 app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::PortReportCommands) => {
-                let cfg = config::load();
-                app.settings_edit_buf = format_port_report_commands(&cfg);
+                app.settings_edit_buf = format_port_report_commands(&app.current_config);
                 app.settings_editing = true;
                 app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::IncludeNonRust) => {
-                app.include_non_rust.toggle();
-                let mut cfg = config::load();
-                cfg.tui.include_non_rust = app.include_non_rust;
-                let _ = config::save(&cfg);
-                app.rescan();
+                let mut cfg = app.current_config.clone();
+                cfg.tui.include_non_rust.toggle();
+                let _ = save_updated_config(app, cfg);
             },
             Some(SettingOption::PortReportEnabled) => {
                 toggle_port_report(app);
             },
             Some(SettingOption::Editor) => {
-                app.settings_edit_buf.clone_from(&app.editor);
+                app.settings_edit_buf = app.editor().to_string();
                 app.settings_editing = true;
                 app.settings_edit_cursor = app.settings_edit_buf.len();
             },
@@ -555,56 +563,46 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                 Some(SettingOption::CiRunCount) => {
                     if let Ok(n) = value.parse::<u32>() {
                         let count: u32 = n.max(1);
-                        app.ci_run_count = count;
-                        let mut cfg = config::load();
+                        let mut cfg = app.current_config.clone();
                         cfg.tui.ci_run_count = count;
-                        let _ = config::save(&cfg);
+                        let _ = save_updated_config(app, cfg);
                     }
                 },
                 Some(SettingOption::InlineDirs) => {
                     let dirs = normalize_sorted_list(&value);
-                    app.inline_dirs.clone_from(&dirs);
-                    let mut cfg = config::load();
+                    let mut cfg = app.current_config.clone();
                     cfg.tui.inline_dirs = dirs;
-                    let _ = config::save(&cfg);
-                    app.rebuild_tree();
+                    let _ = save_updated_config(app, cfg);
                 },
                 Some(SettingOption::IncludeDirs) => {
                     let dirs = normalize_sorted_list(&value);
-                    app.include_dirs.clone_from(&dirs);
-                    let mut cfg = config::load();
+                    let mut cfg = app.current_config.clone();
                     cfg.tui.include_dirs = dirs;
-                    let _ = config::save(&cfg);
-                    app.rescan();
+                    let _ = save_updated_config(app, cfg);
                 },
                 Some(SettingOption::Editor) => {
                     let editor = value.trim().to_string();
                     if !editor.is_empty() {
-                        app.editor.clone_from(&editor);
-                        let mut cfg = config::load();
+                        let mut cfg = app.current_config.clone();
                         cfg.tui.editor = editor;
-                        let _ = config::save(&cfg);
+                        let _ = save_updated_config(app, cfg);
                     }
                 },
                 Some(SettingOption::PortReportProjects) => {
-                    let mut cfg = config::load();
+                    let mut cfg = app.current_config.clone();
                     cfg.lint.include = normalize_sorted_list(&value);
-                    let _ = config::save(&cfg);
-                    app.apply_lint_runtime_setting(&cfg);
-                    app.status_flash = Some((
-                        "Port Report projects updated".to_string(),
-                        std::time::Instant::now(),
-                    ));
+                    if save_updated_config(app, cfg) {
+                        app.status_flash =
+                            Some(("Port Report projects updated".to_string(), Instant::now()));
+                    }
                 },
                 Some(SettingOption::PortReportCommands) => {
-                    let mut cfg = config::load();
+                    let mut cfg = app.current_config.clone();
                     cfg.lint.commands = parse_port_report_commands(&value);
-                    let _ = config::save(&cfg);
-                    app.apply_lint_runtime_setting(&cfg);
-                    app.status_flash = Some((
-                        "Port Report commands updated".to_string(),
-                        std::time::Instant::now(),
-                    ));
+                    if save_updated_config(app, cfg) {
+                        app.status_flash =
+                            Some(("Port Report commands updated".to_string(), Instant::now()));
+                    }
                 },
                 _ => {},
             }
@@ -644,17 +642,12 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
     }
 }
 
-pub(super) fn save_settings(app: &App) {
-    let mut cfg = config::load();
-    cfg.mouse.invert_scroll = app.invert_scroll;
-    let _ = config::save(&cfg);
-}
-
 fn toggle_port_report(app: &mut App) {
-    let mut cfg = config::load();
+    let mut cfg = app.current_config.clone();
     cfg.lint.enabled = !cfg.lint.enabled;
-    let _ = config::save(&cfg);
-    app.apply_lint_runtime_setting(&cfg);
+    if !save_updated_config(app, cfg.clone()) {
+        return;
+    }
     app.status_flash = Some((
         format!(
             "Port Report {}",

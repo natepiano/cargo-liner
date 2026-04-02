@@ -634,7 +634,7 @@ fn shortcut_display_width(shortcuts: &[Shortcut]) -> usize {
 pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Flash message takes over the entire status bar with a contrasting background.
     let flash_active = app.status_flash.as_ref().is_some_and(|(_, created)| {
-        created.elapsed().as_millis() < u128::from(app.status_flash_millis)
+        created.elapsed().as_millis() < u128::from(app.status_flash_millis())
     });
 
     if flash_active {

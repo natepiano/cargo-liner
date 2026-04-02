@@ -27,9 +27,9 @@ pub fn configured_app_cache_root_for(cfg: &Config) -> PathBuf {
     }
 }
 
-/// Resolve the active app cache root from persisted config.
+/// Resolve the active app cache root from the process' last good config.
 pub fn app_cache_root() -> PathBuf {
-    let cfg = config::load();
+    let cfg = config::active_config();
     configured_app_cache_root_for(&cfg)
 }
 

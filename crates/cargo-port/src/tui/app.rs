@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -8,6 +9,7 @@ use std::sync::mpsc::Receiver;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
 
 use nucleo_matcher::Matcher;
 use nucleo_matcher::Utf32Str;
@@ -94,6 +96,19 @@ pub(super) enum ConfirmAction {
 }
 
 pub(super) use super::columns::ResolvedWidths;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ConfigFileStamp {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ConfigEffects {
+    rebuild_tree: bool,
+    rescan: bool,
+    refresh_lint_runtime: bool,
+}
 
 struct TreeBuildResult {
     build_id: u64,
@@ -224,14 +239,9 @@ pub(super) struct DetailCache {
     reason = "independent UI state toggles"
 )]
 pub(super) struct App {
+    pub(super) current_config: Config,
     pub scan_root: PathBuf,
-    pub inline_dirs: Vec<String>,
-    pub include_dirs: Vec<String>,
     pub http_client: HttpClient,
-    pub ci_run_count: u32,
-    pub include_non_rust: NonRustInclusion,
-    pub editor: String,
-    pub status_flash_millis: u64,
     pub all_projects: Vec<RustProject>,
     pub nodes: Vec<ProjectNode>,
     pub flat_entries: Vec<FlatEntry>,
@@ -242,7 +252,6 @@ pub(super) struct App {
     lint_rollup_status: HashMap<LintRollupKey, LintStatus>,
     lint_rollup_paths: HashMap<LintRollupKey, Vec<String>>,
     lint_rollup_keys_by_path: HashMap<String, Vec<LintRollupKey>>,
-    pub lint_enabled: bool,
     pub git_info: HashMap<String, GitInfo>,
     pub crates_versions: HashMap<String, String>,
     pub crates_downloads: HashMap<String, u64>,
@@ -252,7 +261,6 @@ pub(super) struct App {
     pub bg_rx: Receiver<BackgroundMsg>,
     pub fully_loaded: HashSet<String>,
     pub priority_fetch_path: Option<String>,
-    pub invert_scroll: ScrollDirection,
     pub expanded: HashSet<ExpandKey>,
     pub list_state: ListState,
     pub searching: bool,
@@ -342,6 +350,8 @@ pub(super) struct App {
 
     /// Transient message shown in the status bar, auto-cleared after a timeout.
     pub(super) status_flash: Option<(String, std::time::Instant)>,
+    config_path: Option<PathBuf>,
+    config_last_seen: Option<ConfigFileStamp>,
 }
 
 /// Build the flat list of visible rows from the node tree and expansion state.
@@ -415,6 +425,20 @@ fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> V
         }
     }
     rows
+}
+
+impl ConfigEffects {
+    fn between(old: &Config, new: &Config) -> Self {
+        let cache_changed = old.cache != new.cache;
+        Self {
+            rebuild_tree: old.tui.inline_dirs != new.tui.inline_dirs,
+            rescan: old.tui.ci_run_count != new.tui.ci_run_count
+                || old.tui.include_dirs != new.tui.include_dirs
+                || old.tui.include_non_rust != new.tui.include_non_rust
+                || cache_changed,
+            refresh_lint_runtime: old.lint != new.lint || cache_changed,
+        }
+    }
 }
 
 fn live_worktree_count_for_node(node: &ProjectNode, deleted_projects: &HashSet<String>) -> usize {
@@ -753,13 +777,43 @@ impl App {
         matches!(self.bottom_panel, BottomPanel::PortReport)
     }
 
+    pub fn lint_enabled(&self) -> bool {
+        self.current_config.lint.enabled
+    }
+
+    pub fn invert_scroll(&self) -> ScrollDirection {
+        self.current_config.mouse.invert_scroll
+    }
+
+    pub fn include_non_rust(&self) -> NonRustInclusion {
+        self.current_config.tui.include_non_rust
+    }
+
+    pub fn ci_run_count(&self) -> u32 {
+        self.current_config.tui.ci_run_count
+    }
+
+    pub fn editor(&self) -> &str {
+        &self.current_config.tui.editor
+    }
+
+    pub fn status_flash_millis(&self) -> u64 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "config value is always positive; sub-millisecond truncation is intentional"
+        )]
+        {
+            (self.current_config.tui.status_flash_secs * 1000.0) as u64
+        }
+    }
+
     pub fn port_report_is_watchable(&self, project: &RustProject) -> bool {
-        if !self.lint_enabled {
+        if !self.lint_enabled() {
             return false;
         }
-        let cfg = crate::config::load();
         crate::lint_runtime::project_is_eligible(
-            &cfg.lint,
+            &self.current_config.lint,
             &project.path,
             &PathBuf::from(&project.abs_path),
             project.is_rust == Rust,
@@ -828,42 +882,30 @@ impl App {
     ) -> Self {
         let (example_tx, example_rx) = mpsc::channel();
         let (ci_fetch_tx, ci_fetch_rx) = mpsc::channel();
-        let inline_dirs = cfg.tui.inline_dirs.clone();
-        let include_dirs = cfg.tui.include_dirs.clone();
-        let ci_run_count = cfg.tui.ci_run_count;
-        let include_non_rust = cfg.tui.include_non_rust;
+        crate::config::set_active_config(cfg);
+        let config_path = crate::config::config_path();
+        let config_last_seen = config_path.as_deref().and_then(Self::config_file_stamp);
         let lint_spawn = lint_runtime::spawn(cfg);
         let lint_warning = lint_spawn.warning.clone();
         let watch_tx = watcher::spawn_watcher(
             scan_root.clone(),
             bg_tx.clone(),
-            ci_run_count,
-            include_non_rust,
+            cfg.tui.ci_run_count,
+            cfg.tui.include_non_rust,
             cfg.lint.enabled,
-            include_dirs.clone(),
+            cfg.tui.include_dirs.clone(),
             http_client.clone(),
         );
-        let editor = cfg.tui.editor.clone();
-        let nodes = scan::build_tree(&projects, &inline_dirs);
+        let nodes = scan::build_tree(&projects, &cfg.tui.inline_dirs);
         let flat_entries = scan::build_flat_entries(&nodes);
         let list_state = initial_list_state(&nodes);
         let (tree_build_tx, tree_build_rx) = mpsc::channel();
         let (fit_build_tx, fit_build_rx) = mpsc::channel();
         let (disk_build_tx, disk_build_rx) = mpsc::channel();
         let mut app = Self {
+            current_config: cfg.clone(),
             scan_root,
-            inline_dirs,
-            include_dirs,
             http_client,
-            ci_run_count,
-            include_non_rust,
-            editor,
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "config value is always positive; sub-millisecond truncation is intentional"
-            )]
-            status_flash_millis: (cfg.tui.status_flash_secs * 1000.0) as u64,
             all_projects: projects,
             nodes,
             flat_entries,
@@ -874,7 +916,6 @@ impl App {
             lint_rollup_status: HashMap::new(),
             lint_rollup_paths: HashMap::new(),
             lint_rollup_keys_by_path: HashMap::new(),
-            lint_enabled: cfg.lint.enabled,
             git_info: HashMap::new(),
             crates_versions: HashMap::new(),
             crates_downloads: HashMap::new(),
@@ -884,7 +925,6 @@ impl App {
             bg_rx,
             fully_loaded: HashSet::new(),
             priority_fetch_path: None,
-            invert_scroll: cfg.mouse.invert_scroll,
             expanded: HashSet::new(),
             list_state,
             searching: false,
@@ -970,6 +1010,8 @@ impl App {
             status_flash: lint_warning
                 .clone()
                 .map(|warning| (warning, Instant::now())),
+            config_path,
+            config_last_seen,
         };
         if let Some(warning) = lint_warning {
             app.scan_log.push(warning);
@@ -1048,25 +1090,100 @@ impl App {
         self.request_tree_rebuild();
     }
 
+    fn config_file_stamp(path: &Path) -> Option<ConfigFileStamp> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some(ConfigFileStamp {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+        })
+    }
+
+    fn sync_config_watch_state(&mut self) {
+        self.config_last_seen = self
+            .config_path
+            .as_deref()
+            .and_then(Self::config_file_stamp);
+    }
+
+    fn record_config_reload_failure(&mut self, err: String) {
+        self.status_flash = Some((
+            "Config reload failed; keeping previous settings".to_string(),
+            Instant::now(),
+        ));
+        self.scan_log.push(format!("config reload failed: {err}"));
+        self.scan_log_state
+            .select(Some(self.scan_log.len().saturating_sub(1)));
+    }
+
+    pub(super) fn maybe_reload_config_from_disk(&mut self) {
+        let current_stamp = self
+            .config_path
+            .as_deref()
+            .and_then(Self::config_file_stamp);
+        if current_stamp == self.config_last_seen {
+            return;
+        }
+
+        self.config_last_seen = current_stamp;
+        let reload_result = self
+            .config_path
+            .as_deref()
+            .map_or_else(crate::config::try_load, crate::config::try_load_from_path);
+        match reload_result {
+            Ok(cfg) => {
+                self.apply_config(cfg);
+                self.sync_config_watch_state();
+            },
+            Err(err) => self.record_config_reload_failure(err),
+        }
+    }
+
+    pub(super) fn save_and_apply_config(&mut self, cfg: Config) -> Result<(), String> {
+        crate::config::save(&cfg)?;
+        self.apply_config(cfg);
+        self.sync_config_watch_state();
+        Ok(())
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn apply_lint_runtime_setting(&mut self, cfg: &Config) {
-        self.lint_enabled = cfg.lint.enabled;
+        self.apply_config(cfg.clone());
+    }
+
+    pub(super) fn apply_config(&mut self, cfg: Config) {
+        if self.current_config == cfg {
+            return;
+        }
+
+        let effects = ConfigEffects::between(&self.current_config, &cfg);
+        crate::config::set_active_config(&cfg);
+        self.current_config = cfg.clone();
+
+        if effects.refresh_lint_runtime {
+            self.refresh_lint_runtime_from_config(&cfg);
+        }
+
+        if effects.rescan {
+            self.rescan();
+        } else {
+            if effects.refresh_lint_runtime {
+                self.respawn_watcher();
+            }
+            if effects.rebuild_tree {
+                self.rebuild_tree();
+            }
+        }
+    }
+
+    fn refresh_lint_runtime_from_config(&mut self, cfg: &Config) {
         let lint_spawn = lint_runtime::spawn(cfg);
         self.lint_runtime = lint_spawn.handle;
-        self.watch_tx = watcher::spawn_watcher(
-            self.scan_root.clone(),
-            self.bg_tx.clone(),
-            self.ci_run_count,
-            self.include_non_rust,
-            self.lint_enabled,
-            self.include_dirs.clone(),
-            self.http_client.clone(),
-        );
         self.register_existing_projects();
         self.sync_lint_runtime_projects_immediately();
         self.refresh_lint_statuses_from_disk();
         self.refresh_port_report_histories_from_disk();
         self.rebuild_lint_rollups();
-        self.cached_fit_widths = ResolvedWidths::new(self.lint_enabled);
+        self.cached_fit_widths = ResolvedWidths::new(self.lint_enabled());
         self.rows_dirty = true;
         self.fit_widths_dirty = true;
         self.data_generation += 1;
@@ -1079,6 +1196,18 @@ impl App {
         }
     }
 
+    fn respawn_watcher(&mut self) {
+        self.watch_tx = watcher::spawn_watcher(
+            self.scan_root.clone(),
+            self.bg_tx.clone(),
+            self.ci_run_count(),
+            self.include_non_rust(),
+            self.lint_enabled(),
+            self.current_config.tui.include_dirs.clone(),
+            self.http_client.clone(),
+        );
+    }
+
     fn register_existing_projects(&self) {
         for project in &self.all_projects {
             self.register_project_background_services(project);
@@ -1086,14 +1215,13 @@ impl App {
     }
 
     fn refresh_lint_statuses_from_disk(&mut self) {
-        let cfg = crate::config::load();
         self.lint_status.clear();
-        if !self.lint_enabled {
+        if !self.lint_enabled() {
             return;
         }
         for project in &self.all_projects {
             if !crate::lint_runtime::project_is_eligible(
-                &cfg.lint,
+                &self.current_config.lint,
                 &project.path,
                 &PathBuf::from(&project.abs_path),
                 project.is_rust == Rust,
@@ -1188,7 +1316,7 @@ impl App {
     fn spawn_tree_build(&mut self, build_id: u64) {
         let tx = self.tree_build_tx.clone();
         let projects = self.all_projects.clone();
-        let inline_dirs = self.inline_dirs.clone();
+        let inline_dirs = self.current_config.tui.inline_dirs.clone();
         self.tree_build_active = Some(build_id);
         std::thread::spawn(move || {
             let started = Instant::now();
@@ -1247,7 +1375,7 @@ impl App {
         let disk_usage = self.disk_usage.clone();
         let git_info = self.git_info.clone();
         let deleted_projects = self.deleted_projects.clone();
-        let lint_enabled = self.lint_enabled;
+        let lint_enabled = self.lint_enabled();
         self.fit_build_active = Some(build_id);
         std::thread::spawn(move || {
             let started = Instant::now();
@@ -1391,23 +1519,15 @@ impl App {
         self.detail_generation += 1;
         let (tx, rx) = scan::spawn_streaming_scan(
             &self.scan_root,
-            self.ci_run_count,
-            &self.include_dirs,
-            self.include_non_rust,
-            self.lint_enabled,
+            self.ci_run_count(),
+            &self.current_config.tui.include_dirs,
+            self.include_non_rust(),
+            self.lint_enabled(),
             self.http_client.clone(),
         );
         self.bg_tx = tx;
         self.bg_rx = rx;
-        self.watch_tx = watcher::spawn_watcher(
-            self.scan_root.clone(),
-            self.bg_tx.clone(),
-            self.ci_run_count,
-            self.include_non_rust,
-            self.lint_enabled,
-            self.include_dirs.clone(),
-            self.http_client.clone(),
-        );
+        self.respawn_watcher();
     }
 
     pub(super) fn poll_background(&mut self) -> PollBackgroundStats {
@@ -1689,9 +1809,8 @@ impl App {
                     .iter()
                     .find(|project| project.path == path)
                     .is_some_and(|project| {
-                        let cfg = crate::config::load();
                         crate::lint_runtime::project_is_eligible(
-                            &cfg.lint,
+                            &self.current_config.lint,
                             &project.path,
                             &PathBuf::from(&project.abs_path),
                             project.is_rust == Rust,
@@ -2697,7 +2816,7 @@ impl App {
     pub fn lint_icon(&self, project: &RustProject) -> &'static str {
         use crate::constants::LINT_NO_LOG;
 
-        if !self.lint_enabled {
+        if !self.lint_enabled() {
             return LINT_NO_LOG;
         }
         let Some(status) = self.lint_status.get(&project.path) else {
@@ -2709,7 +2828,7 @@ impl App {
     pub fn lint_icon_for_root(&self, node_index: usize) -> &'static str {
         use crate::constants::LINT_NO_LOG;
 
-        if !self.lint_enabled {
+        if !self.lint_enabled() {
             return LINT_NO_LOG;
         }
         let Some(status) = self.lint_status_for_rollup_key(LintRollupKey::Root { node_index })
@@ -2722,7 +2841,7 @@ impl App {
     pub fn lint_icon_for_worktree(&self, node_index: usize, worktree_index: usize) -> &'static str {
         use crate::constants::LINT_NO_LOG;
 
-        if !self.lint_enabled {
+        if !self.lint_enabled() {
             return LINT_NO_LOG;
         }
         let Some(status) = self.lint_status_for_rollup_key(LintRollupKey::Worktree {
@@ -2735,7 +2854,7 @@ impl App {
     }
 
     pub(super) fn selected_lint_icon(&self, project: &RustProject) -> Option<&'static str> {
-        if !self.lint_enabled {
+        if !self.lint_enabled() {
             return None;
         }
         match self.selected_row() {
@@ -2907,6 +3026,64 @@ mod tests {
         app.service_retry_spawns_enabled = false;
         app.sync_selected_project();
         app
+    }
+
+    #[test]
+    fn external_config_reload_applies_valid_changes() {
+        let mut app = make_app(Vec::new());
+        let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let path = dir.path().join("config.toml");
+
+        let mut cfg = Config::default();
+        cfg.tui.editor = "helix".to_string();
+        cfg.tui.ci_run_count = 9;
+        cfg.mouse.invert_scroll = ScrollDirection::Normal;
+        std::fs::write(
+            &path,
+            toml::to_string_pretty(&cfg).unwrap_or_else(|_| std::process::abort()),
+        )
+        .unwrap_or_else(|_| std::process::abort());
+
+        app.config_path = Some(path);
+        app.config_last_seen = None;
+        app.maybe_reload_config_from_disk();
+
+        assert_eq!(app.editor(), "helix");
+        assert_eq!(app.ci_run_count(), 9);
+        assert_eq!(app.invert_scroll(), ScrollDirection::Normal);
+        assert_eq!(app.current_config.tui.editor, "helix");
+        assert_eq!(app.current_config.tui.ci_run_count, 9);
+    }
+
+    #[test]
+    fn external_config_reload_keeps_last_good_config_on_parse_error() {
+        let mut app = make_app(Vec::new());
+        let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let path = dir.path().join("config.toml");
+
+        let mut cfg = Config::default();
+        cfg.tui.editor = "zed".to_string();
+        std::fs::write(
+            &path,
+            toml::to_string_pretty(&cfg).unwrap_or_else(|_| std::process::abort()),
+        )
+        .unwrap_or_else(|_| std::process::abort());
+
+        app.config_path = Some(path.clone());
+        app.config_last_seen = None;
+        app.maybe_reload_config_from_disk();
+
+        std::fs::write(&path, "[tui\neditor = \"vim\"\n").unwrap_or_else(|_| std::process::abort());
+        app.config_last_seen = None;
+        app.maybe_reload_config_from_disk();
+
+        assert_eq!(app.editor(), "zed");
+        assert_eq!(app.current_config.tui.editor, "zed");
+        assert!(
+            app.status_flash
+                .as_ref()
+                .is_some_and(|(msg, _)| msg.contains("Config reload failed"))
+        );
     }
 
     fn apply_nodes(app: &mut App, nodes: Vec<ProjectNode>) {
@@ -3273,7 +3450,7 @@ mod tests {
         root.worktrees = vec![primary, feature];
 
         let mut app = make_app(vec![root.project.clone()]);
-        app.lint_enabled = true;
+        app.current_config.lint.enabled = true;
         apply_nodes(&mut app, vec![root]);
         app.lint_status.insert(
             "~/ws/a".to_string(),
@@ -3328,7 +3505,7 @@ mod tests {
         root.worktrees = vec![primary, feature];
 
         let mut app = make_app(vec![root.project.clone()]);
-        app.lint_enabled = true;
+        app.current_config.lint.enabled = true;
         apply_nodes(&mut app, vec![root]);
         app.expanded.insert(ExpandKey::Node(0));
         app.rows_dirty = true;

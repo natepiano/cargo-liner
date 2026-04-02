@@ -259,7 +259,7 @@ fn open_cargo_toml(app: &App) {
         );
 
     let cargo_toml = PathBuf::from(&project.abs_path).join("Cargo.toml");
-    let _ = std::process::Command::new(&app.editor)
+    let _ = std::process::Command::new(app.editor())
         .arg(&project_dir)
         .arg(&cargo_toml)
         .stdout(std::process::Stdio::null())

@@ -76,12 +76,12 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
         Event::Mouse(mouse) => match mouse.kind {
             MouseEventKind::ScrollUp => {
                 if app.focused_pane == PaneId::ScanLog {
-                    if app.invert_scroll.is_inverted() {
+                    if app.invert_scroll().is_inverted() {
                         app.scan_log_scroll_down();
                     } else {
                         app.scan_log_scroll_up();
                     }
-                } else if app.invert_scroll.is_inverted() {
+                } else if app.invert_scroll().is_inverted() {
                     app.move_down();
                 } else {
                     app.move_up();
@@ -89,12 +89,12 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
             },
             MouseEventKind::ScrollDown => {
                 if app.focused_pane == PaneId::ScanLog {
-                    if app.invert_scroll.is_inverted() {
+                    if app.invert_scroll().is_inverted() {
                         app.scan_log_scroll_up();
                     } else {
                         app.scan_log_scroll_down();
                     }
-                } else if app.invert_scroll.is_inverted() {
+                } else if app.invert_scroll().is_inverted() {
                     app.move_up();
                 } else {
                     app.move_down();
@@ -263,8 +263,7 @@ fn open_in_editor(app: &App) {
         })
         .map_or_else(|| project.abs_path.clone(), |n| n.project.abs_path.clone());
 
-    let editor = app.editor.clone();
-    let _ = std::process::Command::new(&editor)
+    let _ = std::process::Command::new(app.editor())
         .arg(&abs_path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

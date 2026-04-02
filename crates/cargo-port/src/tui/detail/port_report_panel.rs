@@ -22,26 +22,24 @@ use crate::port_report::PortReportCommandStatus;
 use crate::port_report::PortReportRun;
 use crate::port_report::PortReportRunStatus;
 
-fn format_port_report_when(timestamp: &str) -> String {
+fn format_port_report_timestamp(timestamp: &str) -> String {
     DateTime::parse_from_rfc3339(timestamp).map_or_else(
         |_| timestamp.to_string(),
-        |ts: DateTime<FixedOffset>| ts.with_timezone(&Local).format("%H:%M:%S").to_string(),
+        |ts: DateTime<FixedOffset>| {
+            ts.with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        },
     )
 }
 
-fn format_port_report_duration(run: &PortReportRun) -> String {
-    let duration_ms = run.duration_ms.or_else(|| {
-        if matches!(run.status, PortReportRunStatus::Running) {
-            DateTime::parse_from_rfc3339(&run.started_at)
-                .ok()
-                .and_then(|started| {
-                    u64::try_from((Local::now() - started.with_timezone(&Local)).num_milliseconds())
-                        .ok()
-                })
-        } else {
-            None
-        }
-    });
+fn format_port_report_finished(run: &PortReportRun) -> String {
+    run.finished_at
+        .as_deref()
+        .map_or_else(|| "—".to_string(), format_port_report_timestamp)
+}
+
+fn format_duration_ms(duration_ms: Option<u64>) -> String {
     let Some(duration_ms) = duration_ms else {
         return "—".to_string();
     };
@@ -52,52 +50,45 @@ fn format_port_report_duration(run: &PortReportRun) -> String {
 }
 
 pub(super) fn format_port_report_commands(run: &PortReportRun) -> String {
-    let total = run.commands.len();
-    if total == 0 {
+    if run.commands.is_empty() {
         return "-".to_string();
     }
 
-    let passed = run
+    let names = run
         .commands
         .iter()
-        .filter(|command| matches!(command.status, PortReportCommandStatus::Passed))
-        .count();
-    let failed = run
-        .commands
-        .iter()
-        .filter(|command| matches!(command.status, PortReportCommandStatus::Failed))
-        .count();
-    let pending = run
-        .commands
-        .iter()
-        .filter(|command| matches!(command.status, PortReportCommandStatus::Pending))
-        .count();
-
-    match run.status {
-        PortReportRunStatus::Running => format!("{passed}/{total} running"),
-        PortReportRunStatus::Passed => format!("{total}/{total}"),
-        PortReportRunStatus::Failed if failed > 0 => format!("{failed}/{total} failed"),
-        PortReportRunStatus::Failed => format!("{}/{}", total.saturating_sub(pending), total),
+        .map(|command| command.name.trim())
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.is_empty() {
+        "-".to_string()
+    } else {
+        names
     }
 }
 
-pub(super) fn first_failed_command(run: &PortReportRun) -> Option<&str> {
+pub(super) fn format_port_report_pending(run: &PortReportRun) -> String {
     run.commands
         .iter()
-        .find(|command| matches!(command.status, PortReportCommandStatus::Failed))
-        .map(|command| command.name.as_str())
+        .filter(|command| matches!(command.status, PortReportCommandStatus::Pending))
+        .count()
+        .to_string()
 }
 
-fn format_port_report_failed(run: &PortReportRun) -> String {
-    first_failed_command(run).unwrap_or("-").to_string()
-}
-
-pub(super) fn format_port_report_exit(run: &PortReportRun) -> String {
+pub(super) fn format_port_report_slowest(run: &PortReportRun) -> String {
     run.commands
         .iter()
-        .find(|command| matches!(command.status, PortReportCommandStatus::Failed))
-        .and_then(|command| command.exit_code)
-        .map_or_else(|| "-".to_string(), |code| code.to_string())
+        .filter_map(|command| {
+            command
+                .duration_ms
+                .map(|duration_ms| (command.name.trim(), duration_ms))
+        })
+        .max_by_key(|(_, duration_ms)| *duration_ms)
+        .map_or_else(
+            || "—".to_string(),
+            |(name, duration_ms)| format!("{name} {}", format_duration_ms(Some(duration_ms))),
+        )
 }
 
 pub fn render_port_report_panel(
@@ -160,12 +151,12 @@ pub fn render_port_report_panel(
                 PortReportRunStatus::Failed => Style::default().fg(Color::Red),
             };
             Row::new(vec![
-                Cell::from(format_port_report_when(&run.started_at)),
+                Cell::from(format_port_report_timestamp(&run.started_at)),
+                Cell::from(format_port_report_finished(run)),
                 Cell::from(run.status.label()),
-                Cell::from(format_port_report_duration(run)),
                 Cell::from(format_port_report_commands(run)),
-                Cell::from(format_port_report_failed(run)),
-                Cell::from(format_port_report_exit(run)),
+                Cell::from(format_port_report_pending(run)),
+                Cell::from(format_port_report_slowest(run)),
             ])
             .style(style)
         })
@@ -174,16 +165,19 @@ pub fn render_port_report_panel(
     let table = Table::new(
         rows,
         [
-            Constraint::Length(10),
+            Constraint::Length(16),
+            Constraint::Length(16),
             Constraint::Length(8),
-            Constraint::Length(6),
-            Constraint::Length(12),
-            Constraint::Length(12),
-            Constraint::Length(6),
+            Constraint::Fill(1),
+            Constraint::Length(7),
+            Constraint::Length(16),
         ],
     )
     .header(
-        Row::new(vec!["When", "Result", "Dur", "Cmds", "Failed", "Exit"]).style(
+        Row::new(vec![
+            "Started", "Finished", "Result", "Cmds", "Pending", "Slowest",
+        ])
+        .style(
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
