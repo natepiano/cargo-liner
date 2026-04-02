@@ -163,9 +163,7 @@ pub fn project_key(project_root: &Path) -> String {
 }
 
 /// Cache-rooted directory for the project's lint watcher protocol files.
-pub fn project_dir(project_root: &Path) -> PathBuf {
-    cache_root().join(project_key(project_root))
-}
+pub fn project_dir(project_root: &Path) -> PathBuf { cache_root().join(project_key(project_root)) }
 
 /// Cache-rooted directory for the project's lint watcher protocol files under
 /// an explicit cache root.
@@ -317,8 +315,8 @@ mod tests {
 
     fn run(status: PortReportRunStatus) -> PortReportRun {
         PortReportRun {
-            run_id:      "run-1".to_string(),
-            started_at:  "2026-03-30T14:22:01-05:00".to_string(),
+            run_id: "run-1".to_string(),
+            started_at: "2026-03-30T14:22:01-05:00".to_string(),
             finished_at: Some("2026-03-30T14:22:18-05:00".to_string()),
             duration_ms: Some(17_000),
             status,
@@ -330,12 +328,18 @@ mod tests {
 
     #[test]
     fn parse_passed() {
-        assert!(matches!(parse_run(&run(PortReportRunStatus::Passed)), LintStatus::Passed(_)));
+        assert!(matches!(
+            parse_run(&run(PortReportRunStatus::Passed)),
+            LintStatus::Passed(_)
+        ));
     }
 
     #[test]
     fn parse_failed() {
-        assert!(matches!(parse_run(&run(PortReportRunStatus::Failed)), LintStatus::Failed(_)));
+        assert!(matches!(
+            parse_run(&run(PortReportRunStatus::Failed)),
+            LintStatus::Failed(_)
+        ));
     }
 
     #[test]

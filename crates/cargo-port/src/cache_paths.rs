@@ -61,7 +61,10 @@ mod tests {
     #[test]
     fn empty_cache_root_uses_default() {
         let cfg = Config::default();
-        assert_eq!(configured_app_cache_root_for(&cfg), default_app_cache_root());
+        assert_eq!(
+            configured_app_cache_root_for(&cfg),
+            default_app_cache_root()
+        );
     }
 
     #[test]

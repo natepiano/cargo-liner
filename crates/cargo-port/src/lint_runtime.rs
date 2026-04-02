@@ -59,9 +59,7 @@ impl RuntimeHandle {
 }
 
 impl Drop for RuntimeHandle {
-    fn drop(&mut self) {
-        let _ = self.tx.send(SupervisorMsg::Shutdown);
-    }
+    fn drop(&mut self) { let _ = self.tx.send(SupervisorMsg::Shutdown); }
 }
 
 pub struct SpawnResult {
@@ -82,7 +80,7 @@ struct ProjectWorker {
 pub fn spawn(config: &Config) -> SpawnResult {
     if !config.lint.enabled {
         return SpawnResult {
-            handle: None,
+            handle:  None,
             warning: None,
         };
     }
@@ -92,7 +90,7 @@ pub fn spawn(config: &Config) -> SpawnResult {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || supervisor_loop(rx, cache_root, lint));
     SpawnResult {
-        handle: Some(RuntimeHandle { tx }),
+        handle:  Some(RuntimeHandle { tx }),
         warning: None,
     }
 }
@@ -101,11 +99,7 @@ pub fn spawn(config: &Config) -> SpawnResult {
     clippy::needless_pass_by_value,
     reason = "supervisor owns its queue and worker map for the lifetime of the runtime"
 )]
-fn supervisor_loop(
-    rx: mpsc::Receiver<SupervisorMsg>,
-    cache_root: PathBuf,
-    lint: LintConfig,
-) {
+fn supervisor_loop(rx: mpsc::Receiver<SupervisorMsg>, cache_root: PathBuf, lint: LintConfig) {
     let commands = lint.resolved_commands();
     let mut workers: HashMap<PathBuf, ProjectWorker> = HashMap::new();
     let mut initialized = false;
@@ -114,13 +108,7 @@ fn supervisor_loop(
         match rx.recv() {
             Ok(SupervisorMsg::SyncProjects(projects)) => {
                 let desired = desired_projects(&lint, projects);
-                reconcile_workers(
-                    &mut workers,
-                    desired,
-                    &cache_root,
-                    &commands,
-                    initialized,
-                );
+                reconcile_workers(&mut workers, desired, &cache_root, &commands, initialized);
                 initialized = true;
             },
             Ok(SupervisorMsg::Shutdown) | Err(_) => {
@@ -194,7 +182,10 @@ fn spawn_project_worker(
         let Ok(mut watcher) = notify::recommended_watcher(handler) else {
             return;
         };
-        if watcher.watch(&project_root, RecursiveMode::Recursive).is_err() {
+        if watcher
+            .watch(&project_root, RecursiveMode::Recursive)
+            .is_err()
+        {
             return;
         }
 
@@ -241,10 +232,20 @@ fn should_watch_project(lint: &LintConfig, request: &RegisterProjectRequest) -> 
     if !request.is_rust || !request.abs_path.join("Cargo.toml").is_file() {
         return false;
     }
-    if !matches_prefixes(&lint.include, &request.project_path, &request.abs_path, false) {
+    if !matches_prefixes(
+        &lint.include,
+        &request.project_path,
+        &request.abs_path,
+        false,
+    ) {
         return false;
     }
-    !matches_prefixes(&lint.exclude, &request.project_path, &request.abs_path, false)
+    !matches_prefixes(
+        &lint.exclude,
+        &request.project_path,
+        &request.abs_path,
+        false,
+    )
 }
 
 fn matches_prefixes(
@@ -289,7 +290,11 @@ fn is_relevant_change(project_root: &Path, path: &Path) -> bool {
 }
 
 fn event_debounce(project_root: &Path, event: &notify::Event) -> Option<Duration> {
-    if !event.paths.iter().any(|path| is_relevant_change(project_root, path)) {
+    if !event
+        .paths
+        .iter()
+        .any(|path| is_relevant_change(project_root, path))
+    {
         return None;
     }
     if matches!(event.kind, notify::event::EventKind::Remove(_)) {
@@ -422,7 +427,11 @@ fn run_command(
         Err(err) => (
             false,
             None,
-            format!("failed to spawn lint command '{}': {err}\n", command.command).into_bytes(),
+            format!(
+                "failed to spawn lint command '{}': {err}\n",
+                command.command
+            )
+            .into_bytes(),
         ),
     };
 
@@ -490,9 +499,9 @@ mod tests {
         )
         .expect("write manifest");
         let lint = LintConfig {
-            enabled: true,
-            include: vec!["~/rust/demo".to_string()],
-            exclude: vec![project_dir.path().to_string_lossy().to_string()],
+            enabled:  true,
+            include:  vec!["~/rust/demo".to_string()],
+            exclude:  vec![project_dir.path().to_string_lossy().to_string()],
             commands: Vec::new(),
         };
 
@@ -516,9 +525,9 @@ mod tests {
         .expect("write manifest");
 
         let lint = LintConfig {
-            enabled: true,
-            include: vec!["bevy_lagrange".to_string()],
-            exclude: Vec::new(),
+            enabled:  true,
+            include:  vec!["bevy_lagrange".to_string()],
+            exclude:  Vec::new(),
             commands: Vec::new(),
         };
 
@@ -551,8 +560,14 @@ mod tests {
     #[test]
     fn relevant_changes_ignore_git_and_target_paths() {
         let project_dir = tempfile::tempdir().expect("tempdir");
-        assert!(is_relevant_change(project_dir.path(), &project_dir.path().join("src/main.rs")));
-        assert!(is_relevant_change(project_dir.path(), &project_dir.path().join("Cargo.toml")));
+        assert!(is_relevant_change(
+            project_dir.path(),
+            &project_dir.path().join("src/main.rs")
+        ));
+        assert!(is_relevant_change(
+            project_dir.path(),
+            &project_dir.path().join("Cargo.toml")
+        ));
         assert!(!is_relevant_change(
             project_dir.path(),
             &project_dir.path().join("target/debug/app")
@@ -605,9 +620,9 @@ mod tests {
         )
         .expect("write manifest");
         let lint = LintConfig {
-            enabled: true,
-            include: vec!["~/rust/demo".to_string()],
-            exclude: vec!["~/rust/demo/excluded".to_string()],
+            enabled:  true,
+            include:  vec!["~/rust/demo".to_string()],
+            exclude:  vec!["~/rust/demo/excluded".to_string()],
             commands: Vec::new(),
         };
 
@@ -629,12 +644,12 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("tempdir");
         let source_path = project_dir.path().join("src/lib.rs");
         let remove_event = notify::Event {
-            kind: notify::event::EventKind::Remove(notify::event::RemoveKind::File),
+            kind:  notify::event::EventKind::Remove(notify::event::RemoveKind::File),
             paths: vec![source_path.clone()],
             attrs: notify::event::EventAttributes::default(),
         };
         let modify_event = notify::Event {
-            kind: notify::event::EventKind::Modify(notify::event::ModifyKind::Data(
+            kind:  notify::event::EventKind::Modify(notify::event::ModifyKind::Data(
                 notify::event::DataChange::Any,
             )),
             paths: vec![source_path],

@@ -40,25 +40,25 @@ use crate::ci::Conclusion;
 use crate::constants::IN_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
+use crate::port_report::PortReportCommandStatus;
+use crate::port_report::PortReportRun;
+use crate::port_report::PortReportRunStatus;
 use crate::project::ExampleGroup;
 use crate::project::GitOrigin;
 use crate::project::ProjectLanguage;
 use crate::project::ProjectType;
 use crate::project::RustProject;
-use crate::port_report::PortReportRun;
-use crate::port_report::PortReportCommandStatus;
-use crate::port_report::PortReportRunStatus;
 use crate::scan;
 
 #[derive(Default)]
 pub(super) struct ProjectCounts {
-    pub workspaces: usize,
-    pub libs: usize,
-    pub bins: usize,
+    pub workspaces:  usize,
+    pub libs:        usize,
+    pub bins:        usize,
     pub proc_macros: usize,
-    pub examples: usize,
-    pub benches: usize,
-    pub tests: usize,
+    pub examples:    usize,
+    pub benches:     usize,
+    pub tests:       usize,
 }
 
 impl ProjectCounts {
@@ -155,18 +155,18 @@ impl RunTargetKind {
 }
 
 pub(super) struct TargetEntry {
-    pub name: String,
+    pub name:         String,
     pub display_name: String,
-    pub kind: RunTargetKind,
+    pub kind:         RunTargetKind,
 }
 
 /// Shared style constants for detail panel rendering.
 struct RenderStyles {
-    highlight: Style,
-    readonly_label: Style,
-    active_border: Style,
+    highlight:       Style,
+    readonly_label:  Style,
+    active_border:   Style,
     inactive_border: Style,
-    title: Style,
+    title:           Style,
 }
 
 /// Whether to build in release or debug mode.
@@ -177,9 +177,9 @@ enum BuildMode {
 }
 
 struct ColumnFocus {
-    active: bool,
+    active:     bool,
     remembered: bool,
-    cursor: usize,
+    cursor:     usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -217,9 +217,9 @@ enum TargetPresence {
 
 struct DetailLayoutSpec {
     constraints: Vec<Constraint>,
-    git_col: Option<usize>,
+    git_col:     Option<usize>,
     targets_col: Option<usize>,
-    max_col: usize,
+    max_col:     usize,
 }
 
 fn detail_layout_spec(git: GitPresence, targets: TargetPresence) -> DetailLayoutSpec {
@@ -231,15 +231,15 @@ fn detail_layout_spec(git: GitPresence, targets: TargetPresence) -> DetailLayout
                 Constraint::Percentage(37),
                 Constraint::Percentage(26),
             ],
-            git_col: Some(1),
+            git_col:     Some(1),
             targets_col: Some(2),
-            max_col: 1 + usize::from(has_targets),
+            max_col:     1 + usize::from(has_targets),
         },
         GitPresence::Missing => DetailLayoutSpec {
             constraints: vec![Constraint::Percentage(74), Constraint::Percentage(26)],
-            git_col: None,
+            git_col:     None,
             targets_col: Some(1),
-            max_col: usize::from(has_targets),
+            max_col:     usize::from(has_targets),
         },
     }
 }
@@ -258,8 +258,8 @@ pub(super) fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
     {
         entries.push(TargetEntry {
             display_name: name.clone(),
-            name: name.clone(),
-            kind: RunTargetKind::Binary,
+            name:         name.clone(),
+            kind:         RunTargetKind::Binary,
         });
     }
 
@@ -310,11 +310,11 @@ pub(super) fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
 }
 
 pub(super) struct PendingExampleRun {
-    pub abs_path: String,
-    pub target_name: String,
+    pub abs_path:     String,
+    pub target_name:  String,
     pub package_name: Option<String>,
-    pub kind: RunTargetKind,
-    pub release: bool,
+    pub kind:         RunTargetKind,
+    pub release:      bool,
 }
 
 /// Whether a CI fetch should look for older runs or just refresh for new ones.
@@ -328,9 +328,9 @@ pub(super) enum CiFetchKind {
 
 /// A pending request to fetch more CI runs for a project.
 pub(super) struct PendingCiFetch {
-    pub project_path: String,
+    pub project_path:  String,
     pub current_count: u32,
-    pub kind: CiFetchKind,
+    pub kind:          CiFetchKind,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -519,44 +519,44 @@ pub(super) fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
 
 #[derive(Clone)]
 pub(super) struct DetailInfo {
-    pub package_title: String,
-    pub name: String,
-    pub path: String,
-    pub version: String,
-    pub description: Option<String>,
-    pub crates_version: Option<String>,
+    pub package_title:    String,
+    pub name:             String,
+    pub path:             String,
+    pub version:          String,
+    pub description:      Option<String>,
+    pub crates_version:   Option<String>,
     pub crates_downloads: Option<u64>,
-    pub types: String,
-    pub disk: String,
-    pub lint_label: String,
-    pub ci: Option<Conclusion>,
-    pub stats_rows: Vec<(&'static str, usize)>,
-    pub git_branch: Option<String>,
-    pub git_sync: Option<String>,
+    pub types:            String,
+    pub disk:             String,
+    pub lint_label:       String,
+    pub ci:               Option<Conclusion>,
+    pub stats_rows:       Vec<(&'static str, usize)>,
+    pub git_branch:       Option<String>,
+    pub git_sync:         Option<String>,
     /// Ahead/behind vs `origin/{default_branch}`.
-    pub git_vs_origin: Option<String>,
+    pub git_vs_origin:    Option<String>,
     /// Ahead/behind vs local `{default_branch}`.
-    pub git_vs_local: Option<String>,
+    pub git_vs_local:     Option<String>,
     /// The repo's default branch name (e.g. "main", "master").
-    pub default_branch: Option<String>,
-    pub git_origin: Option<String>,
-    pub git_owner: Option<String>,
-    pub git_url: Option<String>,
-    pub git_stars: Option<u64>,
+    pub default_branch:   Option<String>,
+    pub git_origin:       Option<String>,
+    pub git_owner:        Option<String>,
+    pub git_url:          Option<String>,
+    pub git_stars:        Option<u64>,
     pub repo_description: Option<String>,
-    pub git_inception: Option<String>,
-    pub git_last_commit: Option<String>,
-    pub worktree_label: Option<String>,
-    pub worktree_names: Vec<String>,
-    pub vendored_names: String,
-    pub is_binary: bool,
-    pub binary_name: Option<String>,
-    pub examples: Vec<ExampleGroup>,
-    pub benches: Vec<String>,
+    pub git_inception:    Option<String>,
+    pub git_last_commit:  Option<String>,
+    pub worktree_label:   Option<String>,
+    pub worktree_names:   Vec<String>,
+    pub vendored_names:   String,
+    pub is_binary:        bool,
+    pub binary_name:      Option<String>,
+    pub examples:         Vec<ExampleGroup>,
+    pub benches:          Vec<String>,
     /// Whether this is a Rust project (has `Cargo.toml`).
-    pub is_rust: ProjectLanguage,
+    pub is_rust:          ProjectLanguage,
     /// Whether this project declares `[package]` (has version/description fields).
-    pub has_package: bool,
+    pub has_package:      bool,
 }
 
 /// Collect vendored crate names for a project from the node tree.
@@ -634,18 +634,18 @@ fn format_downloads(n: u64) -> String {
 }
 
 struct GitDetailFields {
-    branch: Option<String>,
-    sync: Option<String>,
-    vs_origin: Option<String>,
-    vs_local: Option<String>,
+    branch:         Option<String>,
+    sync:           Option<String>,
+    vs_origin:      Option<String>,
+    vs_local:       Option<String>,
     default_branch: Option<String>,
-    origin: Option<String>,
-    owner: Option<String>,
-    url: Option<String>,
-    stars: Option<u64>,
-    description: Option<String>,
-    inception: Option<String>,
-    last_commit: Option<String>,
+    origin:         Option<String>,
+    owner:          Option<String>,
+    url:            Option<String>,
+    stars:          Option<u64>,
+    description:    Option<String>,
+    inception:      Option<String>,
+    last_commit:    Option<String>,
 }
 
 fn build_git_detail_fields(app: &App, project: &RustProject) -> GitDetailFields {
@@ -1078,11 +1078,11 @@ pub(super) fn render_detail_panel(
         app.layout_cache.detail_targets_col = spec.targets_col;
 
         let styles = RenderStyles {
-            highlight: Style::default().fg(Color::Black).bg(Color::Cyan),
-            readonly_label: Style::default().fg(Color::DarkGray),
-            active_border: Style::default().fg(Color::Cyan),
+            highlight:       Style::default().fg(Color::Black).bg(Color::Cyan),
+            readonly_label:  Style::default().fg(Color::DarkGray),
+            active_border:   Style::default().fg(Color::Cyan),
             inactive_border: Style::default(),
-            title: title_style,
+            title:           title_style,
         };
 
         render_project_panel(frame, app, info, &styles, columns[0]);
@@ -1090,9 +1090,9 @@ pub(super) fn render_detail_panel(
         if let Some(col) = spec.git_col {
             app.git_pane.set_len(git.len());
             let focus = ColumnFocus {
-                active: app.is_focused(PaneId::Git),
+                active:     app.is_focused(PaneId::Git),
                 remembered: app.remembers_selection(PaneId::Git),
-                cursor: app.git_pane.pos(),
+                cursor:     app.git_pane.pos(),
             };
             let git_block = Block::default()
                 .borders(Borders::ALL)
@@ -1142,9 +1142,9 @@ fn render_project_panel(
     let fields = package_fields(info);
     app.package_pane.set_len(fields.len());
     let focus = ColumnFocus {
-        active: app.is_focused(PaneId::Package),
+        active:     app.is_focused(PaneId::Package),
         remembered: app.remembers_selection(PaneId::Package),
-        cursor: app.package_pane.pos(),
+        cursor:     app.package_pane.pos(),
     };
     let project_block = Block::default()
         .borders(Borders::ALL)
@@ -1635,20 +1635,21 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun
 }
 
 fn format_port_report_when(timestamp: &str) -> String {
-    DateTime::parse_from_rfc3339(timestamp)
-        .map_or_else(
-            |_| timestamp.to_string(),
-            |ts: DateTime<FixedOffset>| ts.with_timezone(&Local).format("%H:%M:%S").to_string(),
-        )
+    DateTime::parse_from_rfc3339(timestamp).map_or_else(
+        |_| timestamp.to_string(),
+        |ts: DateTime<FixedOffset>| ts.with_timezone(&Local).format("%H:%M:%S").to_string(),
+    )
 }
 
 fn format_port_report_duration(run: &PortReportRun) -> String {
     let duration_ms = run.duration_ms.or_else(|| {
         if matches!(run.status, PortReportRunStatus::Running) {
-            DateTime::parse_from_rfc3339(&run.started_at).ok().and_then(|started| {
-                u64::try_from((Local::now() - started.with_timezone(&Local)).num_milliseconds())
-                    .ok()
-            })
+            DateTime::parse_from_rfc3339(&run.started_at)
+                .ok()
+                .and_then(|started| {
+                    u64::try_from((Local::now() - started.with_timezone(&Local)).num_milliseconds())
+                        .ok()
+                })
         } else {
             None
         }
@@ -1847,11 +1848,11 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
         && let Some(project) = app.selected_project()
     {
         app.pending_example_run = Some(PendingExampleRun {
-            abs_path: project.abs_path.clone(),
-            target_name: entry.name.clone(),
+            abs_path:     project.abs_path.clone(),
+            target_name:  entry.name.clone(),
             package_name: project.name.clone(),
-            kind: entry.kind,
-            release: matches!(mode, BuildMode::Release),
+            kind:         entry.kind,
+            release:      matches!(mode, BuildMode::Release),
         });
     }
 }
@@ -2049,7 +2050,7 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
     app.ci_state.insert(
         project_path.to_string(),
         CiState::Loaded {
-            runs: Vec::new(),
+            runs:      Vec::new(),
             exhausted: false,
         },
     );
@@ -2142,8 +2143,8 @@ mod tests {
         commands: Vec<PortReportCommand>,
     ) -> PortReportRun {
         PortReportRun {
-            run_id:      "run-1".to_string(),
-            started_at:  "2026-04-01T21:00:00-04:00".to_string(),
+            run_id: "run-1".to_string(),
+            started_at: "2026-04-01T21:00:00-04:00".to_string(),
             finished_at: Some("2026-04-01T21:00:10-04:00".to_string()),
             duration_ms: Some(10_000),
             status,

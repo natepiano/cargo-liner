@@ -604,7 +604,11 @@ fn toggle_port_report(app: &mut App) {
     app.status_flash = Some((
         format!(
             "Port Report {}",
-            if cfg.lint.enabled { "enabled" } else { "disabled" }
+            if cfg.lint.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
         ),
         std::time::Instant::now(),
     ));
@@ -616,8 +620,9 @@ fn toggle_port_report(app: &mut App) {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use super::*;
     use ratatui::style::Style;
+
+    use super::*;
 
     #[test]
     fn port_report_setting_has_stable_index() {

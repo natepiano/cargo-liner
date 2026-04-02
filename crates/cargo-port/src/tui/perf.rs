@@ -16,9 +16,7 @@ const SLOW_BG_BATCH_MS: u128 = 50;
 const SLOW_WORKER_MS: u128 = 25;
 const SLOW_INPUT_EVENT_MS: u128 = 25;
 
-fn log_path() -> PathBuf {
-    std::env::temp_dir().join("cargo-port-tui-perf.log")
-}
+fn log_path() -> PathBuf { std::env::temp_dir().join("cargo-port-tui-perf.log") }
 
 fn timestamp_millis() -> u128 {
     SystemTime::now()
@@ -54,9 +52,7 @@ pub(super) fn init() -> PathBuf {
     path
 }
 
-pub(super) fn log_event(message: &str) {
-    write_line(message);
-}
+pub(super) fn log_event(message: &str) { write_line(message); }
 
 pub(super) fn log_duration(label: &str, elapsed: Duration, details: &str, threshold_ms: u128) {
     let elapsed_ms = elapsed.as_millis();
@@ -66,18 +62,10 @@ pub(super) fn log_duration(label: &str, elapsed: Duration, details: &str, thresh
     write_line(&format!("{label} elapsed_ms={elapsed_ms} {details}"));
 }
 
-pub(super) const fn slow_frame_threshold_ms() -> u128 {
-    SLOW_FRAME_MS
-}
+pub(super) const fn slow_frame_threshold_ms() -> u128 { SLOW_FRAME_MS }
 
-pub(super) const fn slow_bg_batch_threshold_ms() -> u128 {
-    SLOW_BG_BATCH_MS
-}
+pub(super) const fn slow_bg_batch_threshold_ms() -> u128 { SLOW_BG_BATCH_MS }
 
-pub(super) const fn slow_worker_threshold_ms() -> u128 {
-    SLOW_WORKER_MS
-}
+pub(super) const fn slow_worker_threshold_ms() -> u128 { SLOW_WORKER_MS }
 
-pub(super) const fn slow_input_event_threshold_ms() -> u128 {
-    SLOW_INPUT_EVENT_MS
-}
+pub(super) const fn slow_input_event_threshold_ms() -> u128 { SLOW_INPUT_EVENT_MS }

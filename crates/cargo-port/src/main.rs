@@ -5,8 +5,8 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-mod ci;
 mod cache_paths;
+mod ci;
 mod config;
 mod constants;
 mod http;

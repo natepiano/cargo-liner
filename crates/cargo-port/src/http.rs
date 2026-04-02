@@ -55,8 +55,8 @@ struct GqlCheckRunConnection {
 /// dispatch async work via `block_on`.
 #[derive(Clone)]
 pub struct HttpClient {
-    client: reqwest::Client,
-    github_token: Option<String>,
+    client:            reqwest::Client,
+    github_token:      Option<String>,
     pub(crate) handle: tokio::runtime::Handle,
 }
 
@@ -255,9 +255,7 @@ impl HttpClient {
     }
 
     /// Lightweight connectivity probe (sync wrapper).
-    pub fn check_online(&self) -> bool {
-        self.handle.block_on(self.check_online_async())
-    }
+    pub fn check_online(&self) -> bool { self.handle.block_on(self.check_online_async()) }
 
     /// Fetch crates.io info (sync wrapper).
     pub fn fetch_crates_io_info(&self, crate_name: &str) -> Option<CratesIoInfo> {
@@ -283,7 +281,10 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]
+    #[allow(
+        clippy::expect_used,
+        reason = "tests should panic on unexpected values"
+    )]
     fn client_sends_app_user_agent_header() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("read listener address");
@@ -292,8 +293,7 @@ mod tests {
             let mut buffer = [0_u8; 4096];
             let size = stream.read(&mut buffer).expect("read request bytes");
             let request = String::from_utf8_lossy(&buffer[..size]).into_owned();
-            let response =
-                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+            let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
             stream.write_all(response).expect("write response");
             request
         });
