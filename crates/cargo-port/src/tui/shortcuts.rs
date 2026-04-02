@@ -1,12 +1,13 @@
 /// The current input context, derived from app state. Determines which
 /// shortcuts are shown in the status bar and how keys are dispatched.
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(super) enum InputContext {
     ProjectList,
     ScanLog,
     DetailFields,
     DetailTargets,
     CiRuns,
+    PortReport,
     Searching,
     Finder,
     Settings,
@@ -72,6 +73,10 @@ const CLEAR_CACHE: Shortcut = Shortcut {
     key:         "c",
     description: "clear cache",
 };
+const SWITCH_PANEL: Shortcut = Shortcut {
+    key:         "p",
+    description: "switch",
+};
 const RESCAN: Shortcut = Shortcut {
     key:         "r",
     description: "rescan",
@@ -124,6 +129,7 @@ pub(super) fn for_status_bar(
             detail_groups(context, enter_action, is_rust)
         },
         InputContext::CiRuns => ci_groups(enter_action),
+        InputContext::PortReport => port_report_groups(enter_action),
         InputContext::ScanLog | InputContext::ProjectList => {
             project_list_groups(enter_action, is_rust)
         },
@@ -173,6 +179,19 @@ fn ci_groups(enter_action: Option<&'static str>) -> (Vec<Shortcut>, Vec<Shortcut
         actions.push(enter(action));
     }
     actions.push(CLEAR_CACHE);
+    actions.push(SWITCH_PANEL);
+
+    (navigation, actions)
+}
+
+fn port_report_groups(enter_action: Option<&'static str>) -> (Vec<Shortcut>, Vec<Shortcut>) {
+    let navigation = vec![NAV, TAB_PANE, ESC_BACK];
+
+    let mut actions = Vec::new();
+    if let Some(action) = enter_action {
+        actions.push(enter(action));
+    }
+    actions.push(SWITCH_PANEL);
 
     (navigation, actions)
 }

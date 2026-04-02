@@ -54,3 +54,85 @@ include_non_rust = true
 ```
 
 These show up with reduced details (no types, version, examples) but can still display disk usage, git info, and CI runs.
+
+### Port Report
+
+Port Report is cargo-port's local lint/watch runtime. When enabled, cargo-port watches only the projects you allow-list, runs configured commands when they change, and shows the current status in the project list.
+
+Port Report is off by default.
+
+In the Settings popup (`s`), the `Port Report` section exposes:
+- `Enabled`
+- `Projects`
+- `Commands`
+
+`Projects` is an allow-list. If it is empty, Port Report watches nothing.
+
+#### Basic config
+
+```toml
+[lint]
+enabled = true
+include = ["cargo-port", "bevy_lagrange"]
+exclude = []
+commands = []
+```
+
+Notes:
+- `include` entries can be bare project names, display-path prefixes, or absolute-path prefixes
+- `exclude` is applied after `include`
+- an empty `commands` list uses the built-in default command set
+
+#### Commands
+
+The released default is `clippy` only.
+
+```toml
+[lint]
+enabled = true
+include = ["cargo-port"]
+exclude = []
+commands = []
+```
+
+If you want to override that, you can configure explicit commands:
+
+```toml
+[lint]
+enabled = true
+include = ["cargo-port"]
+
+[[lint.commands]]
+name = "mend"
+command = "cargo mend"
+
+[[lint.commands]]
+name = "clippy"
+command = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+```
+
+In the Settings popup, `Commands` currently supports the built-in presets:
+- `clippy`
+- `mend, clippy`
+
+#### Cache location
+
+Port Report writes its cache under cargo-port's shared cache root.
+
+By default this uses the platform cache directory:
+- macOS: `~/Library/Caches/cargo-port`
+- Linux: `~/.cache/cargo-port`
+
+You can override the root:
+
+```toml
+[cache]
+root = ""
+```
+
+Rules:
+- empty string means use the default platform cache root
+- a relative path extends the default cargo-port cache root
+- an absolute path replaces it
+
+Port Report data is stored under the `port-report/` cache subtree. CI cache uses the same shared root under `ci/`.

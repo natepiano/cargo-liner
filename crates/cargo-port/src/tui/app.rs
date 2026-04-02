@@ -53,6 +53,7 @@ use crate::http::HttpClient;
 use crate::lint_runtime;
 use crate::lint_runtime::RegisterProjectRequest;
 use crate::lint_runtime::RuntimeHandle;
+use crate::port_report::PortReportRun;
 use crate::port_report::LintStatus;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
@@ -71,6 +72,12 @@ use crate::watcher::WatchRequest;
 pub(super) enum NetworkStatus {
     Online,
     Offline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BottomPanel {
+    CiRuns,
+    PortReport,
 }
 
 /// An expand key: a node, group, worktree entry, or group within a worktree.
@@ -223,6 +230,7 @@ pub(super) struct App {
     pub disk_usage:            HashMap<String, u64>,
     pub ci_state:              HashMap<String, CiState>,
     pub lint_status:           HashMap<String, LintStatus>,
+    pub port_report_runs:      HashMap<String, Vec<PortReportRun>>,
     pub lint_enabled:          bool,
     pub git_info:              HashMap<String, GitInfo>,
     pub crates_versions:       HashMap<String, String>,
@@ -253,6 +261,8 @@ pub(super) struct App {
     pub git_pane:              Pane,
     pub targets_pane:          Pane,
     pub ci_pane:               Pane,
+    pub port_report_pane:      Pane,
+    pub bottom_panel:          BottomPanel,
     pub pending_example_run:   Option<PendingExampleRun>,
     pub pending_ci_fetch:      Option<PendingCiFetch>,
     pub pending_clean:         Option<String>,
@@ -607,7 +617,13 @@ impl App {
             match self.focused_pane {
                 PaneId::Package | PaneId::Git => InputContext::DetailFields,
                 PaneId::Targets => InputContext::DetailTargets,
-                PaneId::CiRuns => InputContext::CiRuns,
+                PaneId::CiRuns => {
+                    if matches!(self.bottom_panel, BottomPanel::PortReport) {
+                        InputContext::PortReport
+                    } else {
+                        InputContext::CiRuns
+                    }
+                },
                 PaneId::ScanLog => InputContext::ScanLog,
                 PaneId::Search => InputContext::Searching,
                 PaneId::Settings => InputContext::Settings,
@@ -665,13 +681,7 @@ impl App {
                     info.is_binary || !info.examples.is_empty() || !info.benches.is_empty()
                 }),
                 PaneId::CiRuns => self.selected_project().is_some_and(|project| {
-                    self.ci_state
-                        .get(&project.path)
-                        .is_some_and(|state| !state.runs().is_empty())
-                        || self
-                            .git_info
-                            .get(&project.path)
-                            .is_some_and(|info| info.url.is_some())
+                    self.bottom_panel_available(project)
                 }),
                 PaneId::ScanLog => !self.scan_complete,
                 PaneId::Search | PaneId::Settings | PaneId::Finder => false,
@@ -706,6 +716,7 @@ impl App {
         self.git_pane.home();
         self.targets_pane.home();
         self.ci_pane.home();
+        self.port_report_pane.home();
         self.visited_panes.remove(&PaneId::Package);
         self.visited_panes.remove(&PaneId::Git);
         self.visited_panes.remove(&PaneId::Targets);
@@ -713,6 +724,47 @@ impl App {
     }
 
     pub fn remembers_selection(&self, pane: PaneId) -> bool { self.visited_panes.contains(&pane) }
+
+    pub const fn toggle_bottom_panel(&mut self) {
+        self.bottom_panel = match self.bottom_panel {
+            BottomPanel::CiRuns => BottomPanel::PortReport,
+            BottomPanel::PortReport => BottomPanel::CiRuns,
+        };
+    }
+
+    pub const fn showing_port_report(&self) -> bool {
+        matches!(self.bottom_panel, BottomPanel::PortReport)
+    }
+
+    pub fn port_report_is_watchable(&self, project: &RustProject) -> bool {
+        if !self.lint_enabled {
+            return false;
+        }
+        let cfg = crate::config::load();
+        crate::lint_runtime::project_is_eligible(
+            &cfg.lint,
+            &project.path,
+            &PathBuf::from(&project.abs_path),
+            project.is_rust == crate::project::ProjectLanguage::Rust,
+        )
+    }
+
+    pub fn bottom_panel_available(&self, project: &RustProject) -> bool {
+        let has_ci = self
+            .ci_state
+            .get(&project.path)
+            .is_some_and(|state| !state.runs().is_empty())
+            || self
+                .git_info
+                .get(&project.path)
+                .is_some_and(|info| info.url.is_some());
+        let has_port_report = self
+            .port_report_runs
+            .get(&project.path)
+            .is_some_and(|runs| !runs.is_empty())
+            || self.port_report_is_watchable(project);
+        has_ci || has_port_report
+    }
 
     pub fn sync_selected_project(&mut self) {
         self.ensure_visible_rows_cached();
@@ -736,6 +788,7 @@ impl App {
         if let Some(path) = current
             && self.last_selected_path.as_ref() != Some(&path)
         {
+            self.reload_port_report_history(&path);
             self.data_generation += 1;
             self.detail_generation += 1;
             self.last_selected_path = Some(path);
@@ -800,6 +853,7 @@ impl App {
             disk_usage: HashMap::new(),
             ci_state: HashMap::new(),
             lint_status: HashMap::new(),
+            port_report_runs: HashMap::new(),
             lint_enabled: cfg.lint.enabled,
             git_info: HashMap::new(),
             crates_versions: HashMap::new(),
@@ -830,6 +884,8 @@ impl App {
             git_pane: Pane::new(),
             targets_pane: Pane::new(),
             ci_pane: Pane::new(),
+            port_report_pane: Pane::new(),
+            bottom_panel: BottomPanel::CiRuns,
             pending_example_run: None,
             pending_ci_fetch: None,
             pending_clean: None,
@@ -896,6 +952,7 @@ impl App {
         }
         app.register_existing_projects();
         app.sync_lint_runtime_projects();
+        app.refresh_port_report_histories_from_disk();
         app
     }
 
@@ -978,6 +1035,7 @@ impl App {
         self.register_existing_projects();
         self.sync_lint_runtime_projects();
         self.refresh_lint_statuses_from_disk();
+        self.refresh_port_report_histories_from_disk();
         self.cached_fit_widths = ResolvedWidths::new(self.lint_enabled);
         self.rows_dirty = true;
         self.fit_widths_dirty = true;
@@ -1016,6 +1074,30 @@ impl App {
             if !matches!(status, LintStatus::NoLog) {
                 self.lint_status.insert(project.path.clone(), status);
             }
+        }
+    }
+
+    fn refresh_port_report_histories_from_disk(&mut self) {
+        self.port_report_runs.clear();
+        for project in &self.all_projects {
+            let runs = crate::port_report::read_history(&PathBuf::from(&project.abs_path));
+            if !runs.is_empty() {
+                self.port_report_runs.insert(project.path.clone(), runs);
+            }
+        }
+    }
+
+    fn reload_port_report_history(&mut self, project_path: &str) {
+        let Some(project) = self.all_projects.iter().find(|project| project.path == project_path)
+        else {
+            self.port_report_runs.remove(project_path);
+            return;
+        };
+        let runs = crate::port_report::read_history(&PathBuf::from(&project.abs_path));
+        if runs.is_empty() {
+            self.port_report_runs.remove(project_path);
+        } else {
+            self.port_report_runs.insert(project_path.to_string(), runs);
         }
     }
 
@@ -1520,8 +1602,10 @@ impl App {
                         )
                     });
                 if eligible {
+                    self.reload_port_report_history(&path);
                     self.lint_status.insert(path, status);
                 } else {
+                    self.port_report_runs.remove(&path);
                     self.lint_status.remove(&path);
                 }
             },
@@ -2775,5 +2859,15 @@ mod tests {
         cfg.lint.enabled = false;
         app.apply_lint_runtime_setting(&cfg);
         assert!(!app.cached_fit_widths.lint_enabled());
+    }
+
+    #[test]
+    fn bottom_panel_changes_input_context_for_lower_pane() {
+        let mut app = make_app(vec![make_project(Some("demo"), "~/demo")]);
+        app.focus_pane(PaneId::CiRuns);
+        assert_eq!(app.input_context(), InputContext::CiRuns);
+
+        app.toggle_bottom_panel();
+        assert_eq!(app.input_context(), InputContext::PortReport);
     }
 }

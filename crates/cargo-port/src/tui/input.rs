@@ -221,9 +221,18 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     }
 
     // CI panel
-    if let Some(clicked_row) = app.ci_pane.clicked_row(pos) {
+    let clicked_row = if app.showing_port_report() {
+        app.port_report_pane.clicked_row(pos)
+    } else {
+        app.ci_pane.clicked_row(pos)
+    };
+    if let Some(clicked_row) = clicked_row {
         app.focus_pane(PaneId::CiRuns);
-        app.ci_pane.set_pos(clicked_row);
+        if app.showing_port_report() {
+            app.port_report_pane.set_pos(clicked_row);
+        } else {
+            app.ci_pane.set_pos(clicked_row);
+        }
     }
 }
 

@@ -63,6 +63,8 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
 // ── Port-report constants ────────────────────────────────────────────
 
 pub const PORT_REPORT_LOG: &str = "port-report.log";
+pub const PORT_REPORT_LATEST_JSON: &str = "latest.json";
+pub const PORT_REPORT_HISTORY_JSONL: &str = "history.jsonl";
 
 /// A `started` entry older than this is considered stale (crashed watcher).
 pub const STALE_TIMEOUT: Duration = Duration::from_secs(30 * 60);

@@ -6,10 +6,12 @@
 
 use std::fs::File;
 use std::io;
+use std::io::BufRead;
+use std::io::BufReader;
 use std::io::Read;
-use std::io::Write;
 use std::io::Seek;
 use std::io::SeekFrom;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -17,12 +19,16 @@ use chrono::DateTime;
 use chrono::FixedOffset;
 use chrono::Local;
 use chrono::Utc;
+use serde::Deserialize;
+use serde::Serialize;
 
 use super::cache_paths;
 use super::constants::LINT_FAILED;
 use super::constants::LINT_NO_LOG;
 use super::constants::LINT_PASSED;
 use super::constants::LINT_STALE;
+use super::constants::PORT_REPORT_HISTORY_JSONL;
+use super::constants::PORT_REPORT_LATEST_JSON;
 use super::constants::PORT_REPORT_LOG;
 use super::constants::STALE_TIMEOUT;
 use super::tui::Icon;
@@ -69,6 +75,52 @@ impl LintStatus {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PortReportRunStatus {
+    Running,
+    Passed,
+    Failed,
+}
+
+impl PortReportRunStatus {
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PortReportCommandStatus {
+    Pending,
+    Passed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortReportCommand {
+    pub name:        String,
+    pub command:     String,
+    pub status:      PortReportCommandStatus,
+    pub duration_ms: Option<u64>,
+    pub exit_code:   Option<i32>,
+    pub log_file:    String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortReportRun {
+    pub run_id:      String,
+    pub started_at:  String,
+    pub finished_at: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub status:      PortReportRunStatus,
+    pub commands:    Vec<PortReportCommand>,
+}
+
 /// Canonical cache directory for all per-project lint status files.
 pub fn cache_root() -> PathBuf { cache_paths::port_report_root() }
 
@@ -105,6 +157,14 @@ pub fn output_dir_under(cache_root: &Path, project_root: &Path) -> PathBuf {
     project_dir_under(cache_root, project_root).join("port-report")
 }
 
+pub fn latest_path_under(cache_root: &Path, project_root: &Path) -> PathBuf {
+    project_dir_under(cache_root, project_root).join(PORT_REPORT_LATEST_JSON)
+}
+
+pub fn history_path_under(cache_root: &Path, project_root: &Path) -> PathBuf {
+    project_dir_under(cache_root, project_root).join(PORT_REPORT_HISTORY_JSONL)
+}
+
 /// Append a status event to the project's protocol file under an explicit
 /// cache root.
 pub fn append_status_under(cache_root: &Path, project_root: &Path, status: &str) -> io::Result<()> {
@@ -117,6 +177,86 @@ pub fn append_status_under(cache_root: &Path, project_root: &Path, status: &str)
         .append(true)
         .open(path)?;
     writeln!(file, "{}\t{status}", Local::now().to_rfc3339())
+}
+
+pub fn write_latest_under(
+    cache_root: &Path,
+    project_root: &Path,
+    run: &PortReportRun,
+) -> io::Result<()> {
+    let path = latest_path_under(cache_root, project_root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_vec_pretty(run)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let tmp_path = path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, json)?;
+    std::fs::rename(tmp_path, path)
+}
+
+pub fn clear_latest_under(cache_root: &Path, project_root: &Path) -> io::Result<()> {
+    let path = latest_path_under(cache_root, project_root);
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+pub fn append_history_under(
+    cache_root: &Path,
+    project_root: &Path,
+    run: &PortReportRun,
+) -> io::Result<()> {
+    let path = history_path_under(cache_root, project_root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let json = serde_json::to_string(run)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    writeln!(file, "{json}")
+}
+
+pub fn read_history(project_root: &Path) -> Vec<PortReportRun> {
+    read_history_under(&cache_root(), project_root)
+}
+
+pub fn read_history_under(cache_root: &Path, project_root: &Path) -> Vec<PortReportRun> {
+    let mut runs = read_history_file(&history_path_under(cache_root, project_root));
+    let latest = read_latest_file(&latest_path_under(cache_root, project_root));
+
+    if let Some(latest_run) = latest
+        && runs
+            .last()
+            .is_none_or(|run| run.run_id != latest_run.run_id)
+    {
+        runs.push(latest_run);
+    }
+
+    runs.reverse();
+    runs
+}
+
+fn read_latest_file(path: &Path) -> Option<PortReportRun> {
+    let file = File::open(path).ok()?;
+    serde_json::from_reader(file).ok()
+}
+
+fn read_history_file(path: &Path) -> Vec<PortReportRun> {
+    let Ok(file) = File::open(path) else {
+        return Vec::new();
+    };
+    let reader = BufReader::new(file);
+    reader
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str::<PortReportRun>(&line).ok())
+        .collect()
 }
 
 /// Read the last line of the project's lint status log and parse it.
@@ -342,5 +482,58 @@ mod tests {
             !path.starts_with(dir.path()),
             "cache log path should not recreate project directories"
         );
+    }
+
+    #[test]
+    fn history_reads_newest_first_and_includes_latest() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        let completed = PortReportRun {
+            run_id:      "completed".to_string(),
+            started_at:  "2026-04-01T18:00:00-04:00".to_string(),
+            finished_at: Some("2026-04-01T18:00:10-04:00".to_string()),
+            duration_ms: Some(10_000),
+            status:      PortReportRunStatus::Passed,
+            commands:    Vec::new(),
+        };
+        let running = PortReportRun {
+            run_id:      "running".to_string(),
+            started_at:  "2026-04-01T18:05:00-04:00".to_string(),
+            finished_at: None,
+            duration_ms: None,
+            status:      PortReportRunStatus::Running,
+            commands:    Vec::new(),
+        };
+
+        append_history_under(cache_dir.path(), project_dir.path(), &completed)
+            .expect("append history");
+        write_latest_under(cache_dir.path(), project_dir.path(), &running).expect("write latest");
+
+        let runs = read_history_under(cache_dir.path(), project_dir.path());
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].run_id, "running");
+        assert_eq!(runs[1].run_id, "completed");
+    }
+
+    #[test]
+    fn latest_final_run_does_not_duplicate_completed_history() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        let completed = PortReportRun {
+            run_id:      "same-run".to_string(),
+            started_at:  "2026-04-01T18:00:00-04:00".to_string(),
+            finished_at: Some("2026-04-01T18:00:10-04:00".to_string()),
+            duration_ms: Some(10_000),
+            status:      PortReportRunStatus::Passed,
+            commands:    Vec::new(),
+        };
+
+        append_history_under(cache_dir.path(), project_dir.path(), &completed)
+            .expect("append history");
+        write_latest_under(cache_dir.path(), project_dir.path(), &completed).expect("write latest");
+
+        let runs = read_history_under(cache_dir.path(), project_dir.path());
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id, "same-run");
     }
 }

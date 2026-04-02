@@ -2,6 +2,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
 
+use chrono::DateTime;
+use chrono::FixedOffset;
+use chrono::Local;
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Constraint;
@@ -42,6 +45,8 @@ use crate::project::GitOrigin;
 use crate::project::ProjectLanguage;
 use crate::project::ProjectType;
 use crate::project::RustProject;
+use crate::port_report::PortReportRun;
+use crate::port_report::PortReportRunStatus;
 use crate::scan;
 
 #[derive(Default)]
@@ -1629,6 +1634,130 @@ pub(super) fn render_ci_panel(frame: &mut Frame, app: &mut App, ci_runs: &[CiRun
     app.ci_pane.set_scroll_offset(table_state.offset());
 }
 
+fn format_port_report_when(timestamp: &str) -> String {
+    DateTime::parse_from_rfc3339(timestamp)
+        .map_or_else(
+            |_| timestamp.to_string(),
+            |ts: DateTime<FixedOffset>| ts.with_timezone(&Local).format("%H:%M:%S").to_string(),
+        )
+}
+
+fn format_port_report_duration(run: &PortReportRun) -> String {
+    let duration_ms = run.duration_ms.or_else(|| {
+        if matches!(run.status, PortReportRunStatus::Running) {
+            DateTime::parse_from_rfc3339(&run.started_at).ok().and_then(|started| {
+                u64::try_from((Local::now() - started.with_timezone(&Local)).num_milliseconds())
+                    .ok()
+            })
+        } else {
+            None
+        }
+    });
+    let Some(duration_ms) = duration_ms else {
+        return "—".to_string();
+    };
+    let total_seconds = duration_ms / 1000;
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    format!("{minutes}:{seconds:02}")
+}
+
+pub(super) fn render_port_report_panel(
+    frame: &mut Frame,
+    app: &mut App,
+    runs: &[PortReportRun],
+    area: Rect,
+) {
+    let focused = app.is_focused(PaneId::CiRuns);
+    let (watching, worker_count) = app.selected_project().map_or((false, 0usize), |project| {
+        let watching = app.port_report_is_watchable(project) && app.lint_runtime.is_some();
+        (watching, usize::from(watching))
+    });
+    let title = format!(
+        " Port Report (watching {}, workers {}, runs {}) ",
+        if watching { "yes" } else { "no" },
+        worker_count,
+        runs.len()
+    );
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+        .border_style(if focused {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        });
+
+    let inner = block.inner(area);
+    app.port_report_pane.set_len(runs.len());
+    app.port_report_pane.set_content_area(inner);
+
+    if runs.is_empty() {
+        frame.render_widget(block, area);
+        if area.height > 2 {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "No local Port Report runs yet",
+                    Style::default().fg(Color::DarkGray),
+                )))
+                .alignment(ratatui::layout::Alignment::Center),
+                inner,
+            );
+        }
+        return;
+    }
+
+    let rows: Vec<Row> = runs
+        .iter()
+        .map(|run| {
+            let style = match run.status {
+                PortReportRunStatus::Running => Style::default().fg(Color::Cyan),
+                PortReportRunStatus::Passed => Style::default().fg(Color::Green),
+                PortReportRunStatus::Failed => Style::default().fg(Color::Red),
+            };
+            Row::new(vec![
+                Cell::from(format_port_report_when(&run.started_at)),
+                Cell::from(run.status.label()),
+                Cell::from(format_port_report_duration(run)),
+            ])
+            .style(style)
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Length(6),
+        ],
+    )
+    .header(
+        Row::new(vec!["When", "Result", "Dur"]).style(
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+    )
+    .block(block)
+    .column_spacing(1)
+    .row_highlight_style(if focused {
+        Style::default().fg(Color::Black).bg(Color::Cyan)
+    } else {
+        Style::default()
+    });
+
+    let mut table_state = TableState::default().with_selected(Some(app.port_report_pane.pos()));
+    frame.render_stateful_widget(table, area, &mut table_state);
+    app.port_report_pane.set_scroll_offset(table_state.offset());
+}
+
 /// Returns (`max_column_index`, `targets_column_index` or `None`).
 pub(super) fn detail_layout_pub(app: &App) -> (usize, Option<usize>) {
     let spec = detail_layout(app);
@@ -1784,6 +1913,18 @@ fn open_url(url: &str) {
 }
 
 pub(super) fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
+    if app.showing_port_report() {
+        match key {
+            KeyCode::Up => app.port_report_pane.up(),
+            KeyCode::Down => app.port_report_pane.down(),
+            KeyCode::Home => app.port_report_pane.home(),
+            KeyCode::End => app.port_report_pane.end(),
+            KeyCode::Char('p') => app.toggle_bottom_panel(),
+            _ => {},
+        }
+        return;
+    }
+
     let ci_state = app.selected_project().and_then(|p| app.ci_state_for(p));
     let run_count = ci_state.map_or(0, |s: &CiState| s.runs().len());
     let is_fetching = ci_state.is_some_and(CiState::is_fetching);
@@ -1834,6 +1975,7 @@ pub(super) fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
                 clear_ci_cache(app, &path);
             }
         },
+        KeyCode::Char('p') => app.toggle_bottom_panel(),
         _ => {},
     }
 }

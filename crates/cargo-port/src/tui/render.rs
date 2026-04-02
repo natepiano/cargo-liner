@@ -22,6 +22,7 @@ use super::animation::OFFLINE_PULSE;
 use super::app::App;
 use super::app::CiState;
 use super::app::ConfirmAction;
+use super::app::BottomPanel;
 use super::app::ExpandKey;
 use super::app::NetworkStatus;
 use super::app::ResolvedWidths;
@@ -282,6 +283,11 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         .selected_project()
         .and_then(|p| app.ci_state_for(p))
         .is_some();
+    let detail_port_report_runs = app
+        .selected_project()
+        .and_then(|p| app.port_report_runs.get(&p.path))
+        .cloned()
+        .unwrap_or_default();
     let detail_ci_runs: Vec<CiRun> = app
         .selected_project()
         .and_then(|p| app.ci_state_for(p))
@@ -304,16 +310,27 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     // Running output replaces the CI panel; Esc restores it.
     if has_example_output {
         render_example_output(frame, app, right_layout[1]);
-    } else if has_ci {
-        super::detail::render_ci_panel(frame, app, &detail_ci_runs, right_layout[1]);
-        if app.network_status == NetworkStatus::Offline {
-            render_offline_overlay(frame, app, right_layout[1]);
-        }
     } else {
-        let selected_project_ref = app.selected_project();
-        render_empty_ci_panel(frame, app, selected_project_ref, right_layout[1]);
-        if app.network_status == NetworkStatus::Offline {
-            render_offline_overlay(frame, app, right_layout[1]);
+        match app.bottom_panel {
+            BottomPanel::CiRuns => {
+                if has_ci {
+                    super::detail::render_ci_panel(frame, app, &detail_ci_runs, right_layout[1]);
+                } else {
+                    let selected_project_ref = app.selected_project();
+                    render_empty_ci_panel(frame, app, selected_project_ref, right_layout[1]);
+                }
+                if app.network_status == NetworkStatus::Offline {
+                    render_offline_overlay(frame, app, right_layout[1]);
+                }
+            },
+            BottomPanel::PortReport => {
+                super::detail::render_port_report_panel(
+                    frame,
+                    app,
+                    &detail_port_report_runs,
+                    right_layout[1],
+                );
+            },
         }
     }
 }

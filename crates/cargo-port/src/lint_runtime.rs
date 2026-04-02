@@ -12,6 +12,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 
+use chrono::Local;
 use notify::RecursiveMode;
 use notify::Watcher;
 
@@ -302,6 +303,12 @@ fn project_still_runnable(project_root: &Path) -> bool {
     project_root.is_dir() && project_root.join("Cargo.toml").is_file()
 }
 
+struct CommandExecution {
+    success:     bool,
+    exit_code:   Option<i32>,
+    duration_ms: u64,
+}
+
 pub fn run_commands_for_project(
     project_root: &Path,
     cache_root: &Path,
@@ -313,28 +320,81 @@ pub fn run_commands_for_project(
 
     let output_dir = port_report::output_dir_under(cache_root, project_root);
     std::fs::create_dir_all(&output_dir)?;
+    let started_at = Local::now();
+    let started_at_str = started_at.to_rfc3339();
+    let run_started = Instant::now();
+    let mut run = port_report::PortReportRun {
+        run_id:      started_at_str.clone(),
+        started_at:  started_at_str,
+        finished_at: None,
+        duration_ms: None,
+        status:      port_report::PortReportRunStatus::Running,
+        commands:    commands
+            .iter()
+            .enumerate()
+            .map(|(index, command)| {
+                let log_name = command_log_name(command, index);
+                port_report::PortReportCommand {
+                    name:        if command.name.trim().is_empty() {
+                        log_name.clone()
+                    } else {
+                        command.name.trim().to_string()
+                    },
+                    command:     command.command.clone(),
+                    status:      port_report::PortReportCommandStatus::Pending,
+                    duration_ms: None,
+                    exit_code:   None,
+                    log_file:    format!("port-report/{log_name}-latest.log"),
+                }
+            })
+            .collect(),
+    };
+    port_report::write_latest_under(cache_root, project_root, &run)?;
     port_report::append_status_under(cache_root, project_root, "started")?;
 
     let manifest_path = project_root.join("Cargo.toml");
     let mut failed = false;
     for (index, command) in commands.iter().enumerate() {
         if !project_still_runnable(project_root) {
+            let _ = port_report::clear_latest_under(cache_root, project_root);
             return Ok(());
         }
-        if !run_command(project_root, &manifest_path, &output_dir, command, index)? {
+        let execution = run_command(project_root, &manifest_path, &output_dir, command, index)?;
+        if let Some(command_run) = run.commands.get_mut(index) {
+            command_run.status = if execution.success {
+                port_report::PortReportCommandStatus::Passed
+            } else {
+                port_report::PortReportCommandStatus::Failed
+            };
+            command_run.duration_ms = Some(execution.duration_ms);
+            command_run.exit_code = execution.exit_code;
+        }
+        port_report::write_latest_under(cache_root, project_root, &run)?;
+        if !execution.success {
             failed = true;
         }
     }
 
     if !project_still_runnable(project_root) {
+        let _ = port_report::clear_latest_under(cache_root, project_root);
         return Ok(());
     }
+
+    run.finished_at = Some(Local::now().to_rfc3339());
+    run.duration_ms = Some(u64::try_from(run_started.elapsed().as_millis()).unwrap_or(u64::MAX));
+    run.status = if failed {
+        port_report::PortReportRunStatus::Failed
+    } else {
+        port_report::PortReportRunStatus::Passed
+    };
 
     port_report::append_status_under(
         cache_root,
         project_root,
         if failed { "failed" } else { "passed" },
     )?;
+    port_report::write_latest_under(cache_root, project_root, &run)?;
+    port_report::append_history_under(cache_root, project_root, &run)?;
     Ok(())
 }
 
@@ -344,11 +404,12 @@ fn run_command(
     output_dir: &Path,
     command: &LintCommandConfig,
     index: usize,
-) -> io::Result<bool> {
+) -> io::Result<CommandExecution> {
     let log_name = command_log_name(command, index);
     let log_path = output_dir.join(format!("{log_name}-latest.log"));
     let tmp_path = output_dir.join(format!("{log_name}-latest.log.tmp"));
 
+    let started = Instant::now();
     let shell_output = Command::new("/bin/sh")
         .arg("-lc")
         .arg(&command.command)
@@ -358,21 +419,26 @@ fn run_command(
         .env("PORT_REPORT_DIR", output_dir)
         .output();
 
-    let (success, bytes) = match shell_output {
+    let (success, exit_code, bytes) = match shell_output {
         Ok(output) => {
             let mut bytes = output.stdout;
             bytes.extend_from_slice(&output.stderr);
-            (output.status.success(), bytes)
+            (output.status.success(), output.status.code(), bytes)
         },
         Err(err) => (
             false,
+            None,
             format!("failed to spawn lint command '{}': {err}\n", command.command).into_bytes(),
         ),
     };
 
     std::fs::write(&tmp_path, bytes)?;
     std::fs::rename(tmp_path, log_path)?;
-    Ok(success)
+    Ok(CommandExecution {
+        success,
+        exit_code,
+        duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    })
 }
 
 fn command_log_name(command: &LintCommandConfig, index: usize) -> String {
@@ -525,13 +591,19 @@ mod tests {
 
         let log_path = port_report::log_path_under(&cache_root, project_dir.path());
         let report_dir = port_report::output_dir_under(&cache_root, project_dir.path());
+        let latest_path = port_report::latest_path_under(&cache_root, project_dir.path());
+        let history_path = port_report::history_path_under(&cache_root, project_dir.path());
         let protocol = std::fs::read_to_string(log_path).expect("read protocol log");
         let report = std::fs::read_to_string(report_dir.join("echo-latest.log"))
             .expect("read command report");
+        let latest = std::fs::read_to_string(latest_path).expect("read latest report");
+        let history = std::fs::read_to_string(history_path).expect("read history report");
 
         assert!(protocol.contains("\tstarted\n"));
         assert!(protocol.contains("\tpassed\n"));
         assert_eq!(report, "lint ok\n");
+        assert!(latest.contains("\"status\": \"passed\""));
+        assert!(history.contains("\"status\":\"passed\""));
     }
 
     #[test]
