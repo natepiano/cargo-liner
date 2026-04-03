@@ -545,9 +545,7 @@ fn handle_git_completion(pending_git: &mut HashMap<PathBuf, GitState>, repo_root
 }
 
 fn classify_fast_git_event(event_path: &Path, entry: &ProjectEntry) -> Option<GitRefreshKind> {
-    let Some(repo_root) = entry.repo_root.as_deref() else {
-        return None;
-    };
+    let repo_root = entry.repo_root.as_deref()?;
     let repo_git = repo_root.join(".git");
     if event_path == repo_root.join(".gitignore")
         || event_path == repo_git.join("index")
