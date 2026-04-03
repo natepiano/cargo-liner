@@ -89,6 +89,16 @@ struct ProjectEntry {
     port_report_dir_path: PathBuf,
 }
 
+enum DiskState {
+    Pending {
+        debounce_deadline: Instant,
+        max_deadline:      Instant,
+    },
+    Running {
+        dirty_since_start: bool,
+    },
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "watcher loop owns the full set of shared scan services and config flags"
@@ -126,8 +136,8 @@ fn watcher_loop(
     let mut projects: HashMap<PathBuf, ProjectEntry> = HashMap::new();
     // Directories that contain at least one known project (e.g. `~/rust/`).
     let mut project_parents: HashSet<PathBuf> = HashSet::new();
-    // project_path → (debounce_deadline, max_deadline)
-    let mut pending_disk: HashMap<String, (Instant, Instant)> = HashMap::new();
+    // project_path → disk refresh state
+    let mut pending_disk: HashMap<String, DiskState> = HashMap::new();
     // repo_root → (debounce_deadline, max_deadline)
     let mut pending_git: HashMap<PathBuf, (Instant, Instant)> = HashMap::new();
     // Directories that might be new projects → probe deadline
@@ -135,6 +145,7 @@ fn watcher_loop(
     // Directories already discovered as new projects by this watcher.
     let mut discovered: HashSet<PathBuf> = HashSet::new();
     let mut watched_git_metadata: HashSet<PathBuf> = HashSet::new();
+    let (disk_done_tx, disk_done_rx) = mpsc::channel::<String>();
     let disk_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_DISK_CONCURRENCY));
     let git_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_GIT_CONCURRENCY));
 
@@ -185,6 +196,10 @@ fn watcher_loop(
             }
         }
 
+        while let Ok(project_path) = disk_done_rx.try_recv() {
+            handle_disk_completion(&mut pending_disk, &project_path);
+        }
+
         // Fire git refreshes whose debounce has expired.
         fire_git_updates(
             &client.handle,
@@ -198,6 +213,7 @@ fn watcher_loop(
         fire_disk_updates(
             &client.handle,
             &disk_limit,
+            &disk_done_tx,
             bg_tx,
             &projects,
             &mut pending_disk,
@@ -223,20 +239,30 @@ fn watch_git_metadata_paths(
     req: &WatchRequest,
     watched_git_metadata: &mut HashSet<PathBuf>,
 ) {
+    let started = Instant::now();
     let Some(repo_root) = req.repo_root.as_deref() else {
         return;
     };
 
     let metadata_paths = git_metadata_watch_paths(repo_root);
+    let mut added = 0;
     for path in metadata_paths {
         if watched_git_metadata.insert(path.clone()) {
             let _ = watcher.watch(&path, RecursiveMode::NonRecursive);
-            perf_log::log_event(&format!(
-                "watcher_watch_git_metadata path={}",
-                path.display()
-            ));
+            added += 1;
         }
     }
+    perf_log::log_duration(
+        "watcher_watch_git_metadata",
+        started.elapsed(),
+        &format!(
+            "repo_root={} request_path={} added={}",
+            repo_root.display(),
+            req.project_path,
+            added
+        ),
+        0,
+    );
 }
 
 fn git_metadata_watch_paths(repo_root: &Path) -> Vec<PathBuf> {
@@ -262,7 +288,7 @@ fn handle_event(
     event_path: &Path,
     ctx: &EventContext<'_>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
-    pending_disk: &mut HashMap<String, (Instant, Instant)>,
+    pending_disk: &mut HashMap<String, DiskState>,
     pending_git: &mut HashMap<PathBuf, (Instant, Instant)>,
     pending_new: &mut HashMap<PathBuf, Instant>,
 ) {
@@ -304,15 +330,14 @@ fn handle_event(
         .iter()
         .find(|(root, _)| event_path.starts_with(root))
     {
-        let debounce_deadline = now + DEBOUNCE_DURATION;
-        let max_deadline = pending_disk
-            .get(&entry.project_path)
-            .map_or(now + MAX_WAIT, |(_, max)| *max);
-        pending_disk.insert(
-            entry.project_path.clone(),
-            (debounce_deadline, max_deadline),
-        );
-        if let Some(repo_root) = &entry.repo_root {
+        if is_target_metadata_event(event_path, entry.abs_path.as_path()) {
+            spawn_project_refresh(bg_tx.clone(), entry.abs_path.clone());
+        }
+        let is_target_event = event_path.starts_with(entry.abs_path.join("target"));
+        schedule_disk_refresh(pending_disk, &entry.project_path, now);
+        if !is_target_event
+            && let Some(repo_root) = &entry.repo_root
+        {
             enqueue_git_refresh(pending_git, repo_root.clone(), now, false);
         }
         return;
@@ -332,6 +357,51 @@ fn handle_event(
     }
 }
 
+fn schedule_disk_refresh(
+    pending_disk: &mut HashMap<String, DiskState>,
+    project_path: &str,
+    now: Instant,
+) {
+    match pending_disk.get_mut(project_path) {
+        Some(DiskState::Pending {
+            debounce_deadline,
+            ..
+        }) => {
+            *debounce_deadline = now + DEBOUNCE_DURATION;
+        },
+        Some(DiskState::Running { dirty_since_start }) => {
+            *dirty_since_start = true;
+        },
+        None => {
+            pending_disk.insert(
+                project_path.to_string(),
+                DiskState::Pending {
+                    debounce_deadline: now + DEBOUNCE_DURATION,
+                    max_deadline:      now + MAX_WAIT,
+                },
+            );
+        },
+    }
+}
+
+fn handle_disk_completion(pending_disk: &mut HashMap<String, DiskState>, project_path: &str) {
+    let now = Instant::now();
+    let Some(state) = pending_disk.remove(project_path) else {
+        return;
+    };
+    if let DiskState::Running { dirty_since_start } = state
+        && dirty_since_start
+    {
+        pending_disk.insert(
+            project_path.to_string(),
+            DiskState::Pending {
+                debounce_deadline: now + DEBOUNCE_DURATION,
+                max_deadline:      now + MAX_WAIT,
+            },
+        );
+    }
+}
+
 fn is_fast_git_metadata_event(event_path: &Path, entry: &ProjectEntry) -> bool {
     let Some(repo_root) = entry.repo_root.as_deref() else {
         return false;
@@ -340,6 +410,34 @@ fn is_fast_git_metadata_event(event_path: &Path, entry: &ProjectEntry) -> bool {
     event_path == repo_root.join(".gitignore")
         || event_path == repo_git.join("HEAD")
         || event_path == repo_git.join("info").join("exclude")
+}
+
+fn is_target_metadata_event(event_path: &Path, project_root: &Path) -> bool {
+    let cargo_toml = project_root.join("Cargo.toml");
+    let build_rs = project_root.join("build.rs");
+    let src_main = project_root.join("src").join("main.rs");
+    let src_bin = project_root.join("src").join("bin");
+    let examples = project_root.join("examples");
+    let benches = project_root.join("benches");
+    let tests = project_root.join("tests");
+
+    event_path == cargo_toml
+        || event_path == build_rs
+        || event_path == src_main
+        || event_path.starts_with(src_bin)
+        || event_path.starts_with(examples)
+        || event_path.starts_with(benches)
+        || event_path.starts_with(tests)
+}
+
+fn spawn_project_refresh(bg_tx: mpsc::Sender<BackgroundMsg>, project_root: PathBuf) {
+    rayon::spawn(move || {
+        let cargo_toml = project_root.join("Cargo.toml");
+        let Ok(project) = RustProject::from_cargo_toml(&cargo_toml) else {
+            return;
+        };
+        let _ = bg_tx.send(BackgroundMsg::ProjectRefreshed { project });
+    });
 }
 
 fn enqueue_git_refresh(
@@ -512,27 +610,39 @@ fn spawn_git_refresh(
 fn fire_disk_updates(
     handle: &tokio::runtime::Handle,
     disk_limit: &Arc<tokio::sync::Semaphore>,
+    disk_done_tx: &mpsc::Sender<String>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     projects: &HashMap<PathBuf, ProjectEntry>,
-    pending_disk: &mut HashMap<String, (Instant, Instant)>,
+    pending_disk: &mut HashMap<String, DiskState>,
 ) {
     let now = Instant::now();
     let ready: Vec<String> = pending_disk
         .iter()
-        .filter(|(_, (debounce, max))| now >= *debounce || now >= *max)
-        .map(|(key, _)| key.clone())
+        .filter_map(|(key, state)| match state {
+            DiskState::Pending {
+                debounce_deadline,
+                max_deadline,
+            } if now >= *debounce_deadline || now >= *max_deadline => Some(key.clone()),
+            DiskState::Pending { .. } | DiskState::Running { .. } => None,
+        })
         .collect();
 
     for project_path in ready {
-        pending_disk.remove(&project_path);
+        let Some(state) = pending_disk.get_mut(&project_path) else {
+            continue;
+        };
+        *state = DiskState::Running {
+            dirty_since_start: false,
+        };
         let Some(entry) = projects.values().find(|e| e.project_path == project_path) else {
             continue;
         };
         spawn_disk_update(
             handle,
             disk_limit,
+            disk_done_tx.clone(),
             bg_tx.clone(),
-            project_path,
+            project_path.clone(),
             entry.abs_path.clone(),
         );
     }
@@ -541,6 +651,7 @@ fn fire_disk_updates(
 fn spawn_disk_update(
     handle: &tokio::runtime::Handle,
     disk_limit: &Arc<tokio::sync::Semaphore>,
+    disk_done_tx: mpsc::Sender<String>,
     bg_tx: mpsc::Sender<BackgroundMsg>,
     project_path: String,
     abs_path: PathBuf,
@@ -567,13 +678,14 @@ fn spawn_disk_update(
         perf_log::log_duration(
             "watcher_disk_usage",
             started.elapsed(),
-            &format!("path={} bytes={}", project_path, bytes),
+            &format!("path={project_path} bytes={bytes}"),
             0,
         );
         let _ = bg_tx.send(BackgroundMsg::DiskUsage {
-            path: project_path,
+            path: project_path.clone(),
             bytes,
         });
+        let _ = disk_done_tx.send(project_path);
     });
 }
 
@@ -872,6 +984,13 @@ mod tests {
         )
     }
 
+    fn assert_pending_disk(states: &HashMap<String, DiskState>, project_path: &str) {
+        assert!(matches!(
+            states.get(project_path),
+            Some(DiskState::Pending { .. })
+        ));
+    }
+
     #[test]
     fn known_project_event_goes_to_pending_disk() {
         let scan_root = PathBuf::from("/home/user");
@@ -900,7 +1019,69 @@ mod tests {
             &mut pending_new,
         );
 
-        assert!(pending_disk.contains_key("~/rust/bevy"));
+        assert_pending_disk(&pending_disk, "~/rust/bevy");
+        assert!(pending_git.is_empty());
+        assert!(pending_new.is_empty());
+    }
+
+    #[test]
+    fn target_event_refreshes_project_metadata() {
+        let project_root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(project_root.path().join("examples")).expect("create examples dir");
+        std::fs::write(
+            project_root.path().join("Cargo.toml"),
+            r#"[package]
+name = "demo"
+version = "0.1.0"
+edition = "2024"
+"#,
+        )
+        .expect("write Cargo.toml");
+        std::fs::write(
+            project_root.path().join("examples").join("new_target.rs"),
+            "fn main() {}\n",
+        )
+        .expect("write example");
+
+        let mut projects = HashMap::new();
+        let (key, entry) = make_project_entry("~/rust/demo", project_root.path());
+        projects.insert(key, entry);
+        let scan_root = project_root.path().to_path_buf();
+        let project_parents = HashSet::new();
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root: &scan_root,
+            projects: &projects,
+            project_parents: &project_parents,
+            discovered: &discovered,
+        };
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        handle_event(
+            &project_root.path().join("examples").join("new_target.rs"),
+            &ctx,
+            &bg_tx,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+        wait_for_messages();
+
+        let mut refreshed = None;
+        while let Ok(msg) = bg_rx.try_recv() {
+            if let BackgroundMsg::ProjectRefreshed { project } = msg {
+                refreshed = Some(project);
+                break;
+            }
+        }
+
+        let refreshed = refreshed.expect("project refresh");
+        assert_eq!(refreshed.abs_path, project_root.path().display().to_string());
+        assert_eq!(refreshed.example_count(), 1);
+        assert_pending_disk(&pending_disk, "~/rust/demo");
         assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());
     }
@@ -1324,12 +1505,20 @@ mod tests {
         let past = Instant::now()
             .checked_sub(std::time::Duration::from_secs(1))
             .expect("1s subtraction should not underflow");
-        let mut pending = HashMap::from([("~/my_project".to_string(), (past, past))]);
+        let mut pending = HashMap::from([(
+            "~/my_project".to_string(),
+            DiskState::Pending {
+                debounce_deadline: past,
+                max_deadline:      past,
+            },
+        )]);
 
         let disk_limit = Arc::new(tokio::sync::Semaphore::new(1));
+        let (disk_done_tx, _disk_done_rx) = mpsc::channel();
         fire_disk_updates(
             test_runtime().handle(),
             &disk_limit,
+            &disk_done_tx,
             &tx,
             &projects,
             &mut pending,
@@ -1347,7 +1536,10 @@ mod tests {
         }
         assert!(got_disk, "expected DiskUsage message");
         assert!(!got_git, "disk updates should no longer emit GitInfo");
-        assert!(pending.is_empty(), "pending entry should be consumed");
+        assert!(matches!(
+            pending.get("~/my_project"),
+            Some(DiskState::Running { .. })
+        ));
     }
 
     #[test]
@@ -1371,12 +1563,20 @@ mod tests {
         let past = Instant::now()
             .checked_sub(std::time::Duration::from_secs(1))
             .expect("1s subtraction should not underflow");
-        let mut pending = HashMap::from([("~/no_git".to_string(), (past, past))]);
+        let mut pending = HashMap::from([(
+            "~/no_git".to_string(),
+            DiskState::Pending {
+                debounce_deadline: past,
+                max_deadline:      past,
+            },
+        )]);
 
         let disk_limit = Arc::new(tokio::sync::Semaphore::new(1));
+        let (disk_done_tx, _disk_done_rx) = mpsc::channel();
         fire_disk_updates(
             test_runtime().handle(),
             &disk_limit,
+            &disk_done_tx,
             &tx,
             &projects,
             &mut pending,
@@ -1394,5 +1594,19 @@ mod tests {
         }
         assert!(got_disk, "expected DiskUsage message");
         assert!(!got_git, "should not send GitInfo for untracked project");
+    }
+
+    #[test]
+    fn disk_completion_requeues_once_when_project_changed_while_running() {
+        let mut pending = HashMap::from([(
+            "~/rust/bevy".to_string(),
+            DiskState::Running {
+                dirty_since_start: true,
+            },
+        )]);
+
+        handle_disk_completion(&mut pending, "~/rust/bevy");
+
+        assert_pending_disk(&pending, "~/rust/bevy");
     }
 }

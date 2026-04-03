@@ -102,6 +102,8 @@ pub fn run(path: &Path) -> ExitCode {
         eprintln!("Error: failed to create HTTP client");
         return ExitCode::FAILURE;
     };
+    let scan_started_at = std::time::Instant::now();
+    crate::perf_log::log_event("scan_start kind=initial run=1");
     let (bg_tx, bg_rx) = scan::spawn_streaming_scan(
         &scan_root,
         cfg.tui.ci_run_count,
@@ -127,7 +129,15 @@ pub fn run(path: &Path) -> ExitCode {
         },
     };
 
-    let mut app = App::new(scan_root, projects, bg_tx, bg_rx, &cfg, http_client);
+    let mut app = App::new(
+        scan_root,
+        projects,
+        bg_tx,
+        bg_rx,
+        &cfg,
+        http_client,
+        scan_started_at,
+    );
     crate::perf_log::log_event(&format!("tui_ready perf_log={}", perf_log_path.display()));
     let input_rx = spawn_input_thread();
 

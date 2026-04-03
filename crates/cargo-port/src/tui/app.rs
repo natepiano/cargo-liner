@@ -125,6 +125,20 @@ struct DiskCacheBuildResult {
 }
 
 #[derive(Default)]
+struct StartupPhaseTracker {
+    scan_complete_at:   Option<Instant>,
+    disk_expected:      Option<usize>,
+    disk_seen:          HashSet<String>,
+    disk_complete_at:   Option<Instant>,
+    repo_expected:      Option<usize>,
+    repo_seen:          HashSet<String>,
+    repo_complete_at:   Option<Instant>,
+    lint_expected:      Option<HashSet<String>>,
+    lint_seen_terminal: HashSet<String>,
+    lint_complete_at:   Option<Instant>,
+}
+
+#[derive(Default)]
 pub(super) struct PollBackgroundStats {
     pub bg_msgs:             usize,
     pub disk_usage_msgs:     usize,
@@ -287,6 +301,9 @@ pub(super) struct App {
     pub settings_edit_buf:     String,
     pub settings_edit_cursor:  usize,
     pub scan_complete:         bool,
+    scan_started_at:           Instant,
+    scan_run_count:            u64,
+    startup_phases:            StartupPhaseTracker,
     pub scan_log:              Vec<String>,
     pub scan_log_state:        ListState,
     pub focused_pane:          PaneId,
@@ -488,7 +505,7 @@ fn formatted_disk_snapshot(disk_usage: &HashMap<String, u64>, path: &str) -> Str
     disk_usage
         .get(path)
         .copied()
-        .map_or_else(|| "—".to_string(), super::render::format_bytes)
+        .map_or_else(|| super::render::format_bytes(0), super::render::format_bytes)
 }
 
 fn formatted_disk_for_node_snapshot(
@@ -496,7 +513,7 @@ fn formatted_disk_for_node_snapshot(
     disk_usage: &HashMap<String, u64>,
 ) -> String {
     disk_bytes_for_node_snapshot(node, disk_usage)
-        .map_or_else(|| "—".to_string(), super::render::format_bytes)
+        .map_or_else(|| super::render::format_bytes(0), super::render::format_bytes)
 }
 
 fn git_sync_snapshot(
@@ -856,8 +873,7 @@ impl App {
                 PaneId::CiRuns => self
                     .selected_project()
                     .is_some_and(|project| self.bottom_panel_available(project)),
-                PaneId::ScanLog => !self.scan_complete,
-                PaneId::Search | PaneId::Settings | PaneId::Finder => false,
+                PaneId::ScanLog | PaneId::Search | PaneId::Settings | PaneId::Finder => false,
             })
             .collect()
     }
@@ -1028,6 +1044,7 @@ impl App {
         bg_rx: Receiver<BackgroundMsg>,
         cfg: &Config,
         http_client: HttpClient,
+        scan_started_at: Instant,
     ) -> Self {
         let (example_tx, example_rx) = mpsc::channel();
         let (ci_fetch_tx, ci_fetch_rx) = mpsc::channel();
@@ -1088,6 +1105,9 @@ impl App {
             settings_edit_buf: String::new(),
             settings_edit_cursor: 0,
             scan_complete: false,
+            scan_started_at,
+            scan_run_count: 1,
+            startup_phases: StartupPhaseTracker::default(),
             scan_log: Vec::new(),
             scan_log_state: ListState::default(),
             focused_pane: PaneId::ProjectList,
@@ -1183,6 +1203,7 @@ impl App {
             .selected_project()
             .map(|p| p.path.clone())
             .or_else(|| self.last_selected_path.clone());
+        let should_focus_project_list = self.focused_pane == PaneId::ScanLog && !nodes.is_empty();
         self.nodes = nodes;
         self.flat_entries = flat_entries;
         self.finder_dirty = true;
@@ -1239,6 +1260,9 @@ impl App {
             self.select_project_in_tree(&path);
         } else if !self.nodes.is_empty() {
             self.list_state.select(Some(0));
+        }
+        if should_focus_project_list {
+            self.focus_pane(PaneId::ProjectList);
         }
         self.sync_selected_project();
     }
@@ -1430,13 +1454,21 @@ impl App {
     }
 
     fn register_project_background_services(&self, project: &RustProject) {
+        let started = Instant::now();
         let abs_path = PathBuf::from(&project.abs_path);
         let repo_root = crate::project::git_repo_root(&abs_path);
+        let has_repo_root = repo_root.is_some();
         let _ = self.watch_tx.send(WatchRequest {
             project_path: project.path.clone(),
             abs_path,
             repo_root,
         });
+        crate::perf_log::log_duration(
+            "app_register_project_background_services",
+            started.elapsed(),
+            &format!("path={} has_repo_root={has_repo_root}", project.path),
+            0,
+        );
     }
 
     fn schedule_git_path_state_refreshes(&self) {
@@ -1450,6 +1482,44 @@ impl App {
             let states = crate::project::detect_git_path_states_batch(&projects);
             for (path, state) in states {
                 let _ = tx.send(BackgroundMsg::GitPathState { path, state });
+            }
+        });
+    }
+
+    fn schedule_git_first_commit_refreshes(&self) {
+        let tx = self.bg_tx.clone();
+        let mut projects_by_repo: HashMap<PathBuf, Vec<String>> = HashMap::new();
+        for project in &self.all_projects {
+            let abs_path = PathBuf::from(&project.abs_path);
+            let Some(repo_root) = crate::project::git_repo_root(&abs_path) else {
+                continue;
+            };
+            projects_by_repo
+                .entry(repo_root)
+                .or_default()
+                .push(project.path.clone());
+        }
+        std::thread::spawn(move || {
+            for (repo_root, paths) in projects_by_repo {
+                let started = Instant::now();
+                let first_commit = crate::project::detect_first_commit(&repo_root);
+                crate::perf_log::log_duration(
+                    "git_first_commit_fetch",
+                    started.elapsed(),
+                    &format!(
+                        "repo_root={} rows={} found={}",
+                        repo_root.display(),
+                        paths.len(),
+                        first_commit.is_some()
+                    ),
+                    0,
+                );
+                for path in paths {
+                    let _ = tx.send(BackgroundMsg::GitFirstCommit {
+                        path,
+                        first_commit: first_commit.clone(),
+                    });
+                }
             }
         });
     }
@@ -1483,6 +1553,92 @@ impl App {
             runtime.sync_projects_immediately(projects);
         } else {
             runtime.sync_projects(projects);
+        }
+    }
+
+    fn initialize_startup_phase_tracker(&mut self) {
+        let repo_expected = self
+            .git_info
+            .values()
+            .filter_map(|info| info.url.as_deref())
+            .filter_map(ci::parse_owner_repo)
+            .map(|(owner, repo)| format!("{owner}/{repo}"))
+            .collect::<HashSet<_>>();
+        let lint_expected = self
+            .lint_runtime_projects_snapshot()
+            .into_iter()
+            .map(|request| request.project_path)
+            .collect::<HashSet<_>>();
+        let disk_expected = initial_disk_batch_count(&self.all_projects);
+
+        self.startup_phases.scan_complete_at = Some(Instant::now());
+        self.startup_phases.disk_expected = Some(disk_expected);
+        self.startup_phases.repo_expected = Some(repo_expected.len());
+        self.startup_phases.lint_expected = Some(lint_expected);
+
+        crate::perf_log::log_event(&format!(
+            "startup_phase_plan disk_expected={} repo_expected={} lint_expected={}",
+            self.startup_phases.disk_expected.unwrap_or(0),
+            self.startup_phases.repo_expected.unwrap_or(0),
+            self.startup_phases
+                .lint_expected
+                .as_ref()
+                .map_or(0, HashSet::len)
+        ));
+        self.maybe_log_startup_phase_completions();
+    }
+
+    fn maybe_log_startup_phase_completions(&mut self) {
+        let Some(scan_complete_at) = self.startup_phases.scan_complete_at else {
+            return;
+        };
+        let now = Instant::now();
+
+        if self.startup_phases.disk_complete_at.is_none()
+            && self
+                .startup_phases
+                .disk_expected
+                .is_some_and(|expected| self.startup_phases.disk_seen.len() >= expected)
+        {
+            self.startup_phases.disk_complete_at = Some(now);
+            crate::perf_log::log_event(&format!(
+                "startup_phase_complete phase=disk_applied since_scan_complete_ms={} seen={} expected={}",
+                now.duration_since(scan_complete_at).as_millis(),
+                self.startup_phases.disk_seen.len(),
+                self.startup_phases.disk_expected.unwrap_or(0)
+            ));
+        }
+
+        if self.startup_phases.repo_complete_at.is_none()
+            && self
+                .startup_phases
+                .repo_expected
+                .is_some_and(|expected| self.startup_phases.repo_seen.len() >= expected)
+        {
+            self.startup_phases.repo_complete_at = Some(now);
+            crate::perf_log::log_event(&format!(
+                "startup_phase_complete phase=repo_fetch_applied since_scan_complete_ms={} seen={} expected={}",
+                now.duration_since(scan_complete_at).as_millis(),
+                self.startup_phases.repo_seen.len(),
+                self.startup_phases.repo_expected.unwrap_or(0)
+            ));
+        }
+
+        if self.startup_phases.lint_complete_at.is_none()
+            && self.startup_phases.lint_expected.as_ref().is_some_and(|expected| {
+                self.startup_phases.lint_seen_terminal.len() >= expected.len()
+            })
+        {
+            self.startup_phases.lint_complete_at = Some(now);
+            crate::perf_log::log_event(&format!(
+                "startup_phase_complete phase=lint_terminal_applied since_scan_complete_ms={} seen={} expected={}",
+                now.duration_since(scan_complete_at).as_millis(),
+                self.startup_phases.lint_seen_terminal.len(),
+                self.startup_phases
+                    .lint_expected
+                    .as_ref()
+                    .map_or(0, HashSet::len)
+            ));
         }
     }
 
@@ -1679,6 +1835,13 @@ impl App {
         self.scan_log.clear();
         self.scan_log_state = ListState::default();
         self.scan_complete = false;
+        self.scan_started_at = Instant::now();
+        self.scan_run_count += 1;
+        self.startup_phases = StartupPhaseTracker::default();
+        crate::perf_log::log_event(&format!(
+            "scan_start kind=rescan run={}",
+            self.scan_run_count
+        ));
         self.fully_loaded.clear();
         self.priority_fetch_path = None;
         self.focus_pane(PaneId::ProjectList);
@@ -1727,15 +1890,20 @@ impl App {
                 break;
             };
             match &msg {
-                BackgroundMsg::DiskUsage { .. } => stats.disk_usage_msgs += 1,
-                BackgroundMsg::GitInfo { .. } => stats.git_info_msgs += 1,
+                BackgroundMsg::DiskUsage { .. } | BackgroundMsg::DiskUsageBatch { .. } => {
+                    stats.disk_usage_msgs += 1;
+                },
+                BackgroundMsg::GitInfo { .. } | BackgroundMsg::GitFirstCommit { .. } => {
+                    stats.git_info_msgs += 1;
+                },
                 BackgroundMsg::GitPathState { .. } => stats.git_path_state_msgs += 1,
                 BackgroundMsg::LintStatus { .. } => stats.lint_status_msgs += 1,
                 BackgroundMsg::CiRuns { .. }
+                | BackgroundMsg::RepoFetchComplete { .. }
                 | BackgroundMsg::CratesIoVersion { .. }
                 | BackgroundMsg::RepoMeta { .. }
                 | BackgroundMsg::ProjectDiscovered { .. }
-                | BackgroundMsg::ScanActivity { .. }
+                | BackgroundMsg::ProjectRefreshed { .. }
                 | BackgroundMsg::ScanComplete
                 | BackgroundMsg::ServiceReachable { .. }
                 | BackgroundMsg::ServiceRecovered { .. }
@@ -1821,9 +1989,19 @@ impl App {
     }
 
     fn handle_disk_usage(&mut self, path: String, bytes: u64) {
+        self.apply_disk_usage(path, bytes, self.scan_complete);
+    }
+
+    fn handle_disk_usage_batch(&mut self, entries: Vec<(String, u64)>) {
+        for (path, bytes) in entries {
+            self.apply_disk_usage(path, bytes, false);
+        }
+    }
+
+    fn apply_disk_usage(&mut self, path: String, bytes: u64, refresh_git_path_state: bool) {
         self.fully_loaded.insert(path.clone());
         self.disk_usage.insert(path.clone(), bytes);
-        if self.scan_complete {
+        if refresh_git_path_state {
             self.refresh_git_path_state(&path);
         }
         self.disk_cache_dirty = true;
@@ -1876,6 +2054,18 @@ impl App {
         self.finder_dirty = true;
     }
 
+    fn handle_git_first_commit(&mut self, path: &str, first_commit: Option<String>) {
+        let Some(info) = self.git_info.get_mut(path) else {
+            return;
+        };
+        info.first_commit = first_commit;
+    }
+
+    fn handle_repo_fetch_complete(&mut self, key: String) {
+        self.startup_phases.repo_seen.insert(key);
+        self.maybe_log_startup_phase_completions();
+    }
+
     fn handle_repo_meta(&mut self, path: String, stars: u64, description: Option<String>) {
         if let Some(node) = self.nodes.iter().find(|node| node.project.path == path) {
             for member in Self::all_group_members(node) {
@@ -1903,6 +2093,44 @@ impl App {
             self.sync_lint_runtime_projects();
         }
         true
+    }
+
+    fn handle_project_refreshed(&mut self, project: &RustProject) -> bool {
+        let project_path = project.path.clone();
+        let updated_in_all_projects = self
+            .all_projects
+            .iter_mut()
+            .find(|existing| existing.path == project_path)
+            .is_some_and(|existing| {
+                *existing = project.clone();
+                true
+            });
+
+        let updated_in_nodes = self.replace_project_in_nodes(&project_path, project);
+        let updated = updated_in_all_projects || updated_in_nodes;
+
+        if !updated {
+            return false;
+        }
+
+        self.recompute_cargo_active_paths();
+        self.prune_inactive_project_state();
+        self.sync_lint_runtime_projects();
+        self.cached_detail = None;
+        self.finder_dirty = true;
+        self.rows_dirty = true;
+        self.fit_widths_dirty = true;
+        true
+    }
+
+    fn replace_project_in_nodes(&mut self, project_path: &str, project: &RustProject) -> bool {
+        let mut updated = false;
+
+        for node in &mut self.nodes {
+            updated |= replace_project_in_node(node, project_path, project);
+        }
+
+        updated
     }
 
     fn apply_service_signal(&mut self, signal: ServiceSignal) {
@@ -1972,13 +2200,33 @@ impl App {
         }
         match msg {
             BackgroundMsg::DiskUsage { path, bytes } => {
+                self.startup_phases.disk_seen.insert(path.clone());
                 self.handle_disk_usage(path, bytes);
+                self.maybe_log_startup_phase_completions();
+            },
+            BackgroundMsg::DiskUsageBatch { root_path, entries } => {
+                self.data_generation += 1;
+                if entries
+                    .iter()
+                    .any(|(path, _)| self.detail_path_is_affected(path))
+                {
+                    self.detail_generation += 1;
+                }
+                self.startup_phases.disk_seen.insert(root_path);
+                self.handle_disk_usage_batch(entries);
+                self.maybe_log_startup_phase_completions();
             },
             BackgroundMsg::CiRuns { path, runs } => {
                 self.insert_ci_runs(path, runs);
             },
+            BackgroundMsg::RepoFetchComplete { key } => {
+                self.handle_repo_fetch_complete(key);
+            },
             BackgroundMsg::GitInfo { path, info } => {
                 self.handle_git_info(path, info);
+            },
+            BackgroundMsg::GitFirstCommit { path, first_commit } => {
+                self.handle_git_first_commit(&path, first_commit);
             },
             BackgroundMsg::GitPathState { path, state } => {
                 crate::perf_log::log_event(&format!(
@@ -2013,18 +2261,13 @@ impl App {
                     return true;
                 }
             },
-            BackgroundMsg::ScanActivity { path } => {
-                self.scan_log.push(path);
-                let len = self.scan_log.len();
-                if self
-                    .scan_log_state
-                    .selected()
-                    .is_none_or(|s| s >= len.saturating_sub(2))
-                {
-                    self.scan_log_state.select(Some(len.saturating_sub(1)));
+            BackgroundMsg::ProjectRefreshed { project } => {
+                if self.handle_project_refreshed(&project) {
+                    return true;
                 }
             },
             BackgroundMsg::LintStatus { path, status } => {
+                let status_is_terminal = matches!(status, LintStatus::Passed(_) | LintStatus::Failed(_));
                 if !self.is_cargo_active_path(&path) {
                     self.port_report_runs.remove(&path);
                     self.lint_status.remove(&path);
@@ -2054,11 +2297,40 @@ impl App {
                     self.lint_status.remove(&path);
                 }
                 self.update_lint_rollups_for_path(&path);
+                if self.scan_complete
+                    && status_is_terminal
+                    && self
+                        .startup_phases
+                        .lint_expected
+                        .as_ref()
+                        .is_some_and(|expected| expected.contains(&path))
+                {
+                    self.startup_phases.lint_seen_terminal.insert(path);
+                    self.maybe_log_startup_phase_completions();
+                }
             },
             BackgroundMsg::ScanComplete => {
+                let kind = if self.scan_run_count == 1 {
+                    "initial"
+                } else {
+                    "rescan"
+                };
+                crate::perf_log::log_duration(
+                    "scan_complete",
+                    self.scan_started_at.elapsed(),
+                    &format!(
+                        "kind={} run={} projects={}",
+                        kind,
+                        self.scan_run_count,
+                        self.all_projects.len()
+                    ),
+                    0,
+                );
                 self.scan_complete = true;
+                self.initialize_startup_phase_tracker();
                 self.sync_lint_runtime_projects_immediately();
                 self.schedule_git_path_state_refreshes();
+                self.schedule_git_first_commit_refreshes();
                 if self.focused_pane == PaneId::ScanLog {
                     self.focus_pane(PaneId::ProjectList);
                 }
@@ -3009,7 +3281,7 @@ impl App {
     pub fn formatted_disk(&self, project: &RustProject) -> String {
         match self.disk_usage.get(&project.path) {
             Some(&bytes) => super::render::format_bytes(bytes),
-            None => "—".to_string(),
+            None => super::render::format_bytes(0),
         }
     }
 
@@ -3038,7 +3310,7 @@ impl App {
         if any_data {
             super::render::format_bytes(total)
         } else {
-            "—".to_string()
+            super::render::format_bytes(0)
         }
     }
 
@@ -3363,6 +3635,82 @@ impl App {
     }
 }
 
+fn replace_project_in_node(node: &mut ProjectNode, project_path: &str, project: &RustProject) -> bool {
+    let updated = if node.project.path == project_path {
+        node.project = project.clone();
+        true
+    } else {
+        false
+    };
+
+    let mut updated = updated;
+
+    for group in &mut node.groups {
+        for member in &mut group.members {
+            if member.path == project_path {
+                *member = project.clone();
+                updated = true;
+            }
+        }
+    }
+
+    for vendored in &mut node.vendored {
+        if vendored.path == project_path {
+            *vendored = project.clone();
+            updated = true;
+        }
+    }
+
+    for worktree in &mut node.worktrees {
+        if worktree.project.path == project_path {
+            worktree.project = project.clone();
+            updated = true;
+        }
+
+        for group in &mut worktree.groups {
+            for member in &mut group.members {
+                if member.path == project_path {
+                    *member = project.clone();
+                    updated = true;
+                }
+            }
+        }
+
+        for vendored in &mut worktree.vendored {
+            if vendored.path == project_path {
+                *vendored = project.clone();
+                updated = true;
+            }
+        }
+    }
+
+    updated
+}
+
+fn initial_disk_batch_count(projects: &[RustProject]) -> usize {
+    let mut abs_paths: Vec<&str> = projects.iter().map(|project| project.abs_path.as_str()).collect();
+    abs_paths.sort_by(|left, right| {
+        Path::new(left)
+            .components()
+            .count()
+            .cmp(&Path::new(right).components().count())
+            .then_with(|| left.cmp(right))
+    });
+
+    let mut roots: Vec<&str> = Vec::new();
+    for abs_path in abs_paths {
+        if roots
+            .iter()
+            .any(|root| Path::new(abs_path).starts_with(Path::new(root)))
+        {
+            continue;
+        }
+        roots.push(abs_path);
+    }
+
+    roots.len()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -3428,7 +3776,15 @@ mod tests {
         let scan_root =
             std::env::temp_dir().join(format!("cargo-port-polish-test-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&scan_root);
-        let mut app = App::new(scan_root, projects, bg_tx, bg_rx, cfg, test_http_client());
+        let mut app = App::new(
+            scan_root,
+            projects,
+            bg_tx,
+            bg_rx,
+            cfg,
+            test_http_client(),
+            Instant::now(),
+        );
         app.service_retry_spawns_enabled = false;
         app.sync_selected_project();
         app
@@ -3899,6 +4255,55 @@ mod tests {
         assert_eq!(app.focused_pane, PaneId::Targets);
         app.focus_previous_pane();
         assert_eq!(app.focused_pane, PaneId::Git);
+    }
+
+    #[test]
+    fn project_refresh_updates_selected_tree_project_targets() {
+        let project = make_project(Some("demo"), "~/demo");
+        let mut app = make_app(vec![project.clone()]);
+        app.scan_complete = true;
+        app.list_state.select(Some(0));
+        app.sync_selected_project();
+
+        assert_eq!(app.selected_project().map(RustProject::example_count), Some(0));
+        assert!(!app.tabbable_panes().contains(&PaneId::Targets));
+
+        let mut refreshed = project;
+        refreshed.examples = vec![ExampleGroup {
+            category: String::new(),
+            names:    vec!["tracked_row_paths".to_string()],
+        }];
+
+        assert!(app.handle_project_refreshed(&refreshed));
+        app.sync_selected_project();
+
+        assert_eq!(app.selected_project().map(RustProject::example_count), Some(1));
+        assert!(app.tabbable_panes().contains(&PaneId::Targets));
+    }
+
+    #[test]
+    fn first_non_empty_tree_build_focuses_project_list() {
+        let project = make_project(Some("demo"), "~/demo");
+        let mut app = make_app(vec![project.clone()]);
+        app.focus_pane(PaneId::ScanLog);
+
+        apply_nodes(&mut app, vec![make_node(project)]);
+
+        assert_eq!(app.focused_pane, PaneId::ProjectList);
+        assert_eq!(app.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn initial_disk_batch_count_groups_nested_projects_under_one_root() {
+        let projects = vec![
+            make_project(Some("bevy"), "~/rust/bevy"),
+            make_project(Some("ecs"), "~/rust/bevy/crates/bevy_ecs"),
+            make_project(Some("render"), "~/rust/bevy/crates/bevy_render"),
+            make_project(Some("hana"), "~/rust/hana"),
+            make_project(Some("hana_core"), "~/rust/hana/crates/hana"),
+        ];
+
+        assert_eq!(initial_disk_batch_count(&projects), 2);
     }
 
     #[test]

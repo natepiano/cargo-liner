@@ -708,7 +708,10 @@ mod tests {
             ci:             None,
             deleted:        false,
         });
-        assert_eq!(untracked.cells[COL_NAME].style.fg, Some(GIT_UNTRACKED_COLOR));
+        assert_eq!(
+            untracked.cells[COL_NAME].style.fg,
+            Some(GIT_UNTRACKED_COLOR)
+        );
         assert_eq!(untracked.cells[COL_GIT].text, crate::constants::GIT_CLONE);
         assert_eq!(untracked.cells[COL_GIT].style.fg, Some(Color::White));
 

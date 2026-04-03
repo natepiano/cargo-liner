@@ -38,7 +38,7 @@ fn write_line(message: &str) {
     let _ = file.flush();
 }
 
-pub(crate) fn init() -> PathBuf {
+pub fn init() -> PathBuf {
     let path = log_path();
     let file = OpenOptions::new()
         .create(true)
@@ -52,9 +52,9 @@ pub(crate) fn init() -> PathBuf {
     path
 }
 
-pub(crate) fn log_event(message: &str) { write_line(message); }
+pub fn log_event(message: &str) { write_line(message); }
 
-pub(crate) fn log_duration(label: &str, elapsed: Duration, details: &str, threshold_ms: u128) {
+pub fn log_duration(label: &str, elapsed: Duration, details: &str, threshold_ms: u128) {
     let elapsed_ms = elapsed.as_millis();
     if elapsed_ms < threshold_ms {
         return;
@@ -62,10 +62,10 @@ pub(crate) fn log_duration(label: &str, elapsed: Duration, details: &str, thresh
     write_line(&format!("{label} elapsed_ms={elapsed_ms} {details}"));
 }
 
-pub(crate) const fn slow_frame_threshold_ms() -> u128 { SLOW_FRAME_MS }
+pub const fn slow_frame_threshold_ms() -> u128 { SLOW_FRAME_MS }
 
-pub(crate) const fn slow_bg_batch_threshold_ms() -> u128 { SLOW_BG_BATCH_MS }
+pub const fn slow_bg_batch_threshold_ms() -> u128 { SLOW_BG_BATCH_MS }
 
-pub(crate) const fn slow_worker_threshold_ms() -> u128 { SLOW_WORKER_MS }
+pub const fn slow_worker_threshold_ms() -> u128 { SLOW_WORKER_MS }
 
-pub(crate) const fn slow_input_event_threshold_ms() -> u128 { SLOW_INPUT_EVENT_MS }
+pub const fn slow_input_event_threshold_ms() -> u128 { SLOW_INPUT_EVENT_MS }

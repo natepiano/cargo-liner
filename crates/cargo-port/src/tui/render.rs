@@ -235,38 +235,20 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
 
 fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let search_height = if app.searching { SEARCH_BAR_HEIGHT } else { 0 };
-    let left_constraints = if app.scan_complete {
-        vec![Constraint::Length(search_height), Constraint::Min(1)]
-    } else {
-        let project_rows = u16::try_from(app.visible_rows().len()).unwrap_or(u16::MAX);
-        let project_height = (project_rows + 2).max(3);
-        vec![
-            Constraint::Length(search_height),
-            Constraint::Length(project_height),
-            Constraint::Min(3),
-        ]
-    };
+    let left_constraints = vec![Constraint::Length(search_height), Constraint::Min(1)];
     let left_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints(left_constraints)
         .split(area);
 
     app.layout_cache.project_list = left_layout[1];
-    app.layout_cache.scan_log = if app.scan_complete {
-        None
-    } else {
-        Some(left_layout[2])
-    };
+    app.layout_cache.scan_log = None;
 
     if app.searching {
         render_search_bar(frame, app, left_layout[0]);
     }
 
     render_project_list(frame, app, left_layout[1]);
-
-    if !app.scan_complete {
-        render_scan_log(frame, app, left_layout[2]);
-    }
 }
 
 fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -467,13 +449,9 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let summary_line = if total_bytes > 0 {
-        let total_str = format_bytes(total_bytes);
-        let summary = super::columns::build_summary_cells(widths, &total_str);
-        Some(super::columns::row_to_line(&summary, widths))
-    } else {
-        None
-    };
+    let total_str = format_bytes(total_bytes);
+    let summary = super::columns::build_summary_cells(widths, &total_str);
+    let summary_line = Some(super::columns::row_to_line(&summary, widths));
     let pin_summary =
         should_pin_project_summary(total_project_rows, summary_line.is_some(), inner.height);
 
@@ -512,56 +490,6 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
 
 fn should_pin_project_summary(project_rows: usize, has_summary: bool, inner_height: u16) -> bool {
     has_summary && project_rows.saturating_add(1) > usize::from(inner_height)
-}
-
-pub(super) fn render_scan_log(frame: &mut Frame, app: &mut App, area: Rect) {
-    let log_items: Vec<ListItem> = app
-        .scan_log
-        .iter()
-        .map(|p| {
-            ListItem::new(Span::styled(
-                format!("  {p}"),
-                Style::default().fg(Color::DarkGray),
-            ))
-        })
-        .collect();
-
-    let scan_focused = app.is_focused(PaneId::ScanLog);
-    let scan_title = if scan_focused {
-        " Scanning (focused) "
-    } else {
-        " Scanning "
-    };
-    let scan_log = List::new(log_items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(scan_title)
-                .title_style(if scan_focused {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
-                })
-                .border_style(if scan_focused {
-                    Style::default().fg(Color::Cyan)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                }),
-        )
-        .highlight_style(if scan_focused {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Cyan)
-        });
-
-    frame.render_stateful_widget(scan_log, area, &mut app.scan_log_state);
 }
 
 fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {

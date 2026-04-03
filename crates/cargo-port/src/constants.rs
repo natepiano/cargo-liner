@@ -44,6 +44,7 @@ pub const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";
 pub const OLDER_RUNS_FETCH_INCREMENT: u32 = 5;
 pub const SCAN_DISK_CONCURRENCY: usize = 2;
 pub const SCAN_HTTP_CONCURRENCY: usize = 8;
+pub const SCAN_LOCAL_CONCURRENCY: usize = 8;
 // ── HTTP constants ───────────────────────────────────────────────────
 
 pub const GITHUB_API_BASE: &str = "https://api.github.com";
@@ -65,7 +66,7 @@ pub const NEW_PROJECT_DEBOUNCE: Duration = Duration::from_secs(2);
 
 /// How often the watcher thread checks for expired timers.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
-pub const WATCHER_DISK_CONCURRENCY: usize = 1;
+pub const WATCHER_DISK_CONCURRENCY: usize = 2;
 pub const WATCHER_GIT_CONCURRENCY: usize = 2;
 
 // ── Port-report constants ────────────────────────────────────────────

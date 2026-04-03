@@ -75,12 +75,16 @@ impl GitInfo {
     /// Detect git info for a project directory.
     pub fn detect(project_dir: &Path) -> Option<Self> {
         let repo_root = git_repo_root(project_dir)?;
+        let mut info = Self::detect_fast(&repo_root)?;
+        info.first_commit = detect_first_commit(&repo_root);
+        Some(info)
+    }
 
-        let remote_output = Command::new("git")
-            .args(["remote"])
-            .current_dir(&repo_root)
-            .output()
-            .ok()?;
+    /// Detect the subset of git info needed on the startup critical path.
+    pub fn detect_fast(project_dir: &Path) -> Option<Self> {
+        let repo_root = git_repo_root(project_dir)?;
+
+        let remote_output = git_output_logged(&repo_root, "remote", ["remote"]).ok()?;
         let remotes = String::from_utf8_lossy(&remote_output.stdout);
         let has_origin = remotes.lines().any(|line| line.trim() == "origin");
         let has_upstream = remotes.lines().any(|line| line.trim() == "upstream");
@@ -92,34 +96,30 @@ impl GitInfo {
             GitOrigin::Clone
         };
 
-        let url_output = Command::new("git")
-            .args(["remote", "get-url", "origin"])
-            .current_dir(&repo_root)
-            .output()
-            .ok()?;
+        let url_output =
+            git_output_logged(&repo_root, "remote_get_url_origin", ["remote", "get-url", "origin"])
+                .ok()?;
         let raw_url = String::from_utf8_lossy(&url_output.stdout)
             .trim()
             .to_string();
 
         let (owner, url) = parse_remote_url(&raw_url);
 
-        let branch = Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(&repo_root)
-            .output()
+        let branch = git_output_logged(&repo_root, "rev_parse_head", ["rev-parse", "--abbrev-ref", "HEAD"])
             .ok()
             .and_then(|o| {
                 let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
                 if b.is_empty() { None } else { Some(b) }
             });
 
-        let ahead_behind = parse_ahead_behind(&repo_root, "HEAD...@{upstream}");
+        let ahead_behind = parse_ahead_behind(&repo_root, "HEAD...@{upstream}", "upstream");
 
         // Resolve the repo's default branch from origin/HEAD (e.g. "origin/main").
-        let default_branch = Command::new("git")
-            .args(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"])
-            .current_dir(&repo_root)
-            .output()
+        let default_branch = git_output_logged(
+            &repo_root,
+            "symbolic_ref_origin_head",
+            ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
+        )
             .ok()
             .and_then(|o| {
                 let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
@@ -133,28 +133,19 @@ impl GitInfo {
         let not_on_default = default_branch
             .as_deref()
             .filter(|db| branch.as_deref() != Some(*db));
-        let ahead_behind_origin = not_on_default
-            .and_then(|db| parse_ahead_behind(&repo_root, &format!("HEAD...origin/{db}")));
+        let ahead_behind_origin = not_on_default.and_then(|db| {
+            parse_ahead_behind(
+                &repo_root,
+                &format!("HEAD...origin/{db}"),
+                "default_origin",
+            )
+        });
         let ahead_behind_local =
-            not_on_default.and_then(|db| parse_ahead_behind(&repo_root, &format!("HEAD...{db}")));
-
-        let first_commit = Command::new("git")
-            .args(["log", "--reverse", "--format=%aI", "--diff-filter=A"])
-            .current_dir(&repo_root)
-            .output()
-            .ok()
-            .and_then(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .next()
-                    .filter(|s| !s.is_empty())
-                    .map(std::string::ToString::to_string)
+            not_on_default.and_then(|db| {
+                parse_ahead_behind(&repo_root, &format!("HEAD...{db}"), "default_local")
             });
 
-        let last_commit = Command::new("git")
-            .args(["log", "-1", "--format=%aI"])
-            .current_dir(&repo_root)
-            .output()
+        let last_commit = git_output_logged(&repo_root, "log_last_commit", ["log", "-1", "--format=%aI"])
             .ok()
             .and_then(|o| {
                 let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
@@ -166,7 +157,7 @@ impl GitInfo {
             branch,
             owner,
             url,
-            first_commit,
+            first_commit: None,
             last_commit,
             ahead_behind,
             default_branch,
@@ -174,6 +165,51 @@ impl GitInfo {
             ahead_behind_local,
         })
     }
+}
+
+pub fn detect_first_commit(project_dir: &Path) -> Option<String> {
+    let repo_root = git_repo_root(project_dir)?;
+    git_output_logged(
+        &repo_root,
+        "log_first_commit",
+        ["log", "--max-parents=0", "--reverse", "--format=%aI", "HEAD"],
+    )
+    .ok()
+    .and_then(|o| {
+        String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .next()
+            .filter(|s| !s.is_empty())
+            .map(std::string::ToString::to_string)
+    })
+}
+
+fn git_output_logged<const N: usize>(
+    repo_root: &Path,
+    op: &str,
+    args: [&str; N],
+) -> io::Result<std::process::Output> {
+    let started = std::time::Instant::now();
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo_root)
+        .output();
+    let status = output
+        .as_ref()
+        .ok()
+        .and_then(|out| out.status.code())
+        .map_or_else(|| "signal".to_string(), |code| code.to_string());
+    perf_log::log_duration(
+        "git_info_detect_call",
+        started.elapsed(),
+        &format!(
+            "repo_root={} op={} status={status}",
+            repo_root.display(),
+            op,
+        ),
+        0,
+    );
+    output
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,6 +234,10 @@ impl GitPathState {
         }
     }
 }
+
+type ProjectPathEntry = (String, String);
+type GitPathStatesByProject = HashMap<String, GitPathState>;
+type ProjectsByRepoRoot = HashMap<PathBuf, Vec<ProjectPathEntry>>;
 
 pub fn detect_git_path_state(project_dir: &Path) -> GitPathState {
     let started = std::time::Instant::now();
@@ -286,12 +326,29 @@ pub fn git_repo_root(project_dir: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-pub fn detect_git_path_states_batch(
-    projects: &[(String, String)],
-) -> HashMap<String, GitPathState> {
+pub fn detect_git_path_states_batch(projects: &[ProjectPathEntry]) -> GitPathStatesByProject {
     let started = std::time::Instant::now();
+    let (mut states, repos) = partition_projects_by_repo(projects);
+
+    let repo_count = repos.len();
+    for (repo_root, entries) in repos {
+        states.extend(detect_repo_git_path_states(&repo_root, &entries));
+    }
+
+    perf_log::log_duration(
+        "git_path_states_batch",
+        started.elapsed(),
+        &format!("repos={} rows={}", repo_count, projects.len()),
+        0,
+    );
+    states
+}
+
+fn partition_projects_by_repo(
+    projects: &[ProjectPathEntry],
+) -> (GitPathStatesByProject, ProjectsByRepoRoot) {
     let mut states = HashMap::new();
-    let mut repos: HashMap<PathBuf, Vec<(String, String)>> = HashMap::new();
+    let mut repos: ProjectsByRepoRoot = HashMap::new();
 
     for (path, abs_path) in projects {
         let abs_path = PathBuf::from(abs_path);
@@ -305,112 +362,125 @@ pub fn detect_git_path_states_batch(
         }
     }
 
-    let repo_count = repos.len();
-    for (repo_root, entries) in repos {
-        let prefixes: Vec<(String, String)> = entries
-            .iter()
-            .map(|(path, abs_path)| {
-                (
-                    path.clone(),
-                    normalize_git_relative_path(&relative_git_path(
-                        &repo_root,
-                        Path::new(abs_path),
-                    )),
-                )
-            })
-            .collect();
+    (states, repos)
+}
 
-        let mut repo_states: HashMap<String, GitPathState> = prefixes
-            .iter()
-            .map(|(path, _)| (path.clone(), GitPathState::Clean))
-            .collect();
+fn detect_repo_git_path_states(
+    repo_root: &Path,
+    entries: &[ProjectPathEntry],
+) -> GitPathStatesByProject {
+    let prefixes: Vec<ProjectPathEntry> = entries
+        .iter()
+        .map(|(path, abs_path)| {
+            (
+                path.clone(),
+                normalize_git_relative_path(&relative_git_path(repo_root, Path::new(abs_path))),
+            )
+        })
+        .collect();
+    let mut repo_states: GitPathStatesByProject = prefixes
+        .iter()
+        .map(|(path, _)| (path.clone(), GitPathState::Clean))
+        .collect();
 
-        let status_started = std::time::Instant::now();
-        let status_output = Command::new("git")
-            .args(["status", "--porcelain=v1", "--untracked-files=normal"])
-            .current_dir(&repo_root)
-            .output();
-        let status_elapsed_ms = status_started.elapsed().as_millis();
-        let mut ignored_elapsed_ms = 0;
-        if let Ok(output) = status_output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines().filter(|line| line.len() >= 3) {
-                let state = if &line[..2] == "??" {
-                    GitPathState::Untracked
-                } else {
-                    GitPathState::Modified
-                };
-                let changed_path = normalize_git_relative_path(parse_status_path(line));
-                if changed_path.is_empty() {
-                    continue;
-                }
-                for (path, prefix) in &prefixes {
-                    if path_contains_git_entry(prefix, &changed_path) {
-                        apply_git_path_state(
-                            repo_states
-                                .entry(path.clone())
-                                .or_insert(GitPathState::Clean),
-                            state,
-                        );
-                    }
-                }
+    let status_started = std::time::Instant::now();
+    let status_output = Command::new("git")
+        .args(["status", "--porcelain=v1", "--untracked-files=normal"])
+        .current_dir(repo_root)
+        .output();
+    let status_elapsed_ms = status_started.elapsed().as_millis();
+    apply_repo_status_output(&mut repo_states, &prefixes, status_output);
+
+    let ignored_elapsed_ms = update_ignored_repo_states(repo_root, &prefixes, &mut repo_states);
+
+    perf_log::log_event(&format!(
+        "git_path_states_repo repo_root={} rows={} status_ms={} ignored_ms={ignored_elapsed_ms}",
+        repo_root.display(),
+        prefixes.len(),
+        status_elapsed_ms,
+    ));
+
+    repo_states
+}
+
+fn apply_repo_status_output(
+    repo_states: &mut GitPathStatesByProject,
+    prefixes: &[ProjectPathEntry],
+    status_output: io::Result<std::process::Output>,
+) {
+    let Ok(output) = status_output else {
+        return;
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines().filter(|line| line.len() >= 3) {
+        let state = if &line[..2] == "??" {
+            GitPathState::Untracked
+        } else {
+            GitPathState::Modified
+        };
+        let changed_path = normalize_git_relative_path(parse_status_path(line));
+        if changed_path.is_empty() {
+            continue;
+        }
+        for (path, prefix) in prefixes {
+            if path_contains_git_entry(prefix, &changed_path) {
+                apply_git_path_state(
+                    repo_states
+                        .entry(path.clone())
+                        .or_insert(GitPathState::Clean),
+                    state,
+                );
             }
         }
+    }
+}
 
-        let remaining_clean: HashSet<String> = repo_states
-            .iter()
-            .filter(|(_, state)| matches!(state, GitPathState::Clean))
-            .map(|(path, _)| path.clone())
-            .collect();
-        if !remaining_clean.is_empty() {
-            let ignored_started = std::time::Instant::now();
-            let ignored_output = Command::new("git")
-                .args([
-                    "ls-files",
-                    "--others",
-                    "-i",
-                    "--exclude-standard",
-                    "--directory",
-                ])
-                .current_dir(&repo_root)
-                .output();
-            ignored_elapsed_ms = ignored_started.elapsed().as_millis();
-            if let Ok(output) = ignored_output {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for ignored in stdout.lines() {
-                    let ignored = normalize_git_relative_path(ignored);
-                    if ignored.is_empty() {
-                        continue;
-                    }
-                    for (path, prefix) in &prefixes {
-                        if !remaining_clean.contains(path) {
-                            continue;
-                        }
-                        if git_entry_contains_path(&ignored, prefix) {
-                            repo_states.insert(path.clone(), GitPathState::Ignored);
-                        }
-                    }
-                }
-            }
-        }
-        perf_log::log_event(&format!(
-            "git_path_states_repo repo_root={} rows={} status_ms={} ignored_ms={}",
-            repo_root.display(),
-            prefixes.len(),
-            status_elapsed_ms,
-            ignored_elapsed_ms
-        ));
-
-        states.extend(repo_states);
+fn update_ignored_repo_states(
+    repo_root: &Path,
+    prefixes: &[ProjectPathEntry],
+    repo_states: &mut GitPathStatesByProject,
+) -> u128 {
+    let remaining_clean: HashSet<String> = repo_states
+        .iter()
+        .filter(|(_, state)| matches!(state, GitPathState::Clean))
+        .map(|(path, _)| path.clone())
+        .collect();
+    if remaining_clean.is_empty() {
+        return 0;
     }
 
-    perf_log::log_duration(
-        "git_path_states_batch",
-        started.elapsed(),
-        &format!("repos={} rows={}", repo_count, projects.len()),
-        0,
-    );
-    states
+    let ignored_started = std::time::Instant::now();
+    let ignored_output = Command::new("git")
+        .args([
+            "ls-files",
+            "--others",
+            "-i",
+            "--exclude-standard",
+            "--directory",
+        ])
+        .current_dir(repo_root)
+        .output();
+    let ignored_elapsed_ms = ignored_started.elapsed().as_millis();
+    let Ok(output) = ignored_output else {
+        return ignored_elapsed_ms;
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for ignored in stdout.lines() {
+        let ignored = normalize_git_relative_path(ignored);
+        if ignored.is_empty() {
+            continue;
+        }
+        for (path, prefix) in prefixes {
+            if !remaining_clean.contains(path) {
+                continue;
+            }
+            if git_entry_contains_path(&ignored, prefix) {
+                repo_states.insert(path.clone(), GitPathState::Ignored);
+            }
+        }
+    }
+
+    ignored_elapsed_ms
 }
 
 fn relative_git_path(repo_root: &Path, project_dir: &Path) -> String {
@@ -470,11 +540,12 @@ const fn apply_git_path_state(current: &mut GitPathState, candidate: GitPathStat
 }
 
 /// Parse `git rev-list --left-right --count` output into `(ahead, behind)`.
-fn parse_ahead_behind(project_dir: &Path, revspec: &str) -> Option<(usize, usize)> {
-    Command::new("git")
-        .args(["rev-list", "--left-right", "--count", revspec])
-        .current_dir(project_dir)
-        .output()
+fn parse_ahead_behind(project_dir: &Path, revspec: &str, op_suffix: &str) -> Option<(usize, usize)> {
+    git_output_logged(
+        project_dir,
+        &format!("rev_list_{op_suffix}"),
+        ["rev-list", "--left-right", "--count", revspec],
+    )
         .ok()
         .and_then(|o| {
             let s = String::from_utf8_lossy(&o.stdout);

@@ -21,6 +21,7 @@ use super::constants::NO_MORE_RUNS_MARKER;
 use super::constants::OLDER_RUNS_FETCH_INCREMENT;
 use super::constants::SCAN_DISK_CONCURRENCY;
 use super::constants::SCAN_HTTP_CONCURRENCY;
+use super::constants::SCAN_LOCAL_CONCURRENCY;
 use super::http::HttpClient;
 use super::http::ServiceKind;
 use super::http::ServiceSignal;
@@ -68,13 +69,24 @@ pub enum BackgroundMsg {
         path:  String,
         bytes: u64,
     },
+    DiskUsageBatch {
+        root_path: String,
+        entries:   Vec<(String, u64)>,
+    },
     CiRuns {
         path: String,
         runs: Vec<CiRun>,
     },
+    RepoFetchComplete {
+        key: String,
+    },
     GitInfo {
         path: String,
         info: GitInfo,
+    },
+    GitFirstCommit {
+        path:         String,
+        first_commit: Option<String>,
     },
     GitPathState {
         path:  String,
@@ -93,8 +105,8 @@ pub enum BackgroundMsg {
     ProjectDiscovered {
         project: RustProject,
     },
-    ScanActivity {
-        path: String,
+    ProjectRefreshed {
+        project: RustProject,
     },
     LintStatus {
         path:   String,
@@ -119,12 +131,16 @@ impl BackgroundMsg {
             Self::DiskUsage { path, .. }
             | Self::CiRuns { path, .. }
             | Self::GitInfo { path, .. }
+            | Self::GitFirstCommit { path, .. }
             | Self::GitPathState { path, .. }
             | Self::CratesIoVersion { path, .. }
             | Self::RepoMeta { path, .. }
             | Self::LintStatus { path, .. } => Some(path),
-            Self::ProjectDiscovered { project } => Some(&project.path),
-            Self::ScanActivity { .. }
+            Self::ProjectDiscovered { project } | Self::ProjectRefreshed { project } => {
+                Some(&project.path)
+            },
+            Self::DiskUsageBatch { .. }
+            | Self::RepoFetchComplete { .. }
             | Self::ScanComplete
             | Self::ServiceReachable { .. }
             | Self::ServiceRecovered { .. }
@@ -979,9 +995,6 @@ pub fn fetch_project_details(
             .and_then(|c| c.get(&cache_key).cloned());
 
         let data = cached.unwrap_or_else(|| {
-            let _ = tx.send(BackgroundMsg::ScanActivity {
-                path: format!("CI: {project_path}"),
-            });
             let (result, meta, signal) =
                 fetch_ci_runs_cached(client, repo_url, &owner, &repo, ci_run_count);
             emit_service_signal(tx, signal);
@@ -1082,6 +1095,7 @@ pub fn resolve_include_dirs(scan_root: &Path, include_dirs: &[String]) -> Vec<Pa
 
 /// Information collected in phase 1 (local work) for a single project,
 /// used to drive async HTTP dispatch and disk usage.
+#[derive(Clone)]
 struct DiscoveredProject {
     path:         String,
     abs_path:     PathBuf,
@@ -1113,6 +1127,7 @@ struct StreamingScanContext {
     lint_enabled:   bool,
     disk_limit:     Arc<tokio::sync::Semaphore>,
     http_limit:     Arc<tokio::sync::Semaphore>,
+    local_limit:    Arc<tokio::sync::Semaphore>,
     repo_dispatch:  RepoDispatchMap,
     git_info_cache: GitInfoCache,
 }
@@ -1127,8 +1142,10 @@ struct RepoFetchRequest {
 
 /// Spawn a streaming scan using a hybrid approach:
 ///
-/// - **Discovery + local work (rayon):** Walk the directory tree, discover projects, collect git
-///   info and lint status, and dispatch background work.
+/// - **Discovery (scan thread):** Walk the directory tree, discover projects, and emit rows
+///   quickly.
+/// - **Local enrichment (tokio blocking pool):** Git info and lint status run behind their own
+///   semaphore so they do not block discovery.
 /// - **Disk usage (tokio blocking pool):** `dir_size()` runs behind its own semaphore so disk walks
 ///   cannot monopolize startup.
 /// - **HTTP (tokio):** CI runs, repo metadata, crates.io info, and connectivity checks run on the
@@ -1157,12 +1174,29 @@ pub fn spawn_streaming_scan(
             lint_enabled,
             disk_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_DISK_CONCURRENCY)),
             http_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_HTTP_CONCURRENCY)),
+            local_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_LOCAL_CONCURRENCY)),
             repo_dispatch: Arc::new(Mutex::new(HashMap::new())),
             git_info_cache: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        phase1_discover(&root, &scan_dirs, non_rust, &scan_context);
+        let phase1_started = std::time::Instant::now();
+        let phase1 = phase1_discover(&scan_dirs, non_rust, &scan_context);
+        perf_log::log_duration(
+            "phase1_discover_total",
+            phase1_started.elapsed(),
+            &format!(
+                "scan_dirs={} visited_dirs={} manifests={} projects={} non_rust_projects={} disk_entries={}",
+                scan_dirs.len(),
+                phase1.stats.visited_dirs,
+                phase1.stats.manifests,
+                phase1.stats.projects,
+                phase1.stats.non_rust_projects,
+                phase1.disk_entries.len()
+            ),
+            0,
+        );
         let _ = scan_tx.send(BackgroundMsg::ScanComplete);
+        spawn_initial_disk_usage(&scan_context, &phase1.disk_entries);
     });
 
     (tx, rx)
@@ -1171,12 +1205,30 @@ pub fn spawn_streaming_scan(
 /// Walk `scan_dirs`, discover projects, and stream per-project work immediately. Discovery and
 /// local metadata collection stay on the dedicated scan thread, while disk and network work are
 /// dispatched onto bounded background queues.
+struct Phase1DiscoverStats {
+    visited_dirs:       usize,
+    manifests:          usize,
+    projects:           usize,
+    non_rust_projects:  usize,
+}
+
+struct Phase1DiscoverResult {
+    disk_entries: Vec<(String, PathBuf)>,
+    stats:        Phase1DiscoverStats,
+}
+
 fn phase1_discover(
-    root: &Path,
     scan_dirs: &[PathBuf],
     non_rust: NonRustInclusion,
     scan_context: &StreamingScanContext,
-) {
+) -> Phase1DiscoverResult {
+    let mut disk_entries = Vec::new();
+    let mut stats = Phase1DiscoverStats {
+        visited_dirs:      0,
+        manifests:         0,
+        projects:          0,
+        non_rust_projects: 0,
+    };
     for dir in scan_dirs {
         if !dir.is_dir() {
             continue;
@@ -1184,21 +1236,12 @@ fn phase1_discover(
         let mut iter = WalkDir::new(dir).into_iter();
         while let Some(Ok(entry)) = iter.next() {
             if entry.file_type().is_dir() {
+                stats.visited_dirs += 1;
                 let name = entry.file_name();
                 if name == "target" || name == ".git" {
                     iter.skip_current_dir();
                     continue;
                 }
-
-                let rel = entry
-                    .path()
-                    .strip_prefix(root)
-                    .unwrap_or_else(|_| entry.path())
-                    .display()
-                    .to_string();
-                let _ = scan_context.tx.send(BackgroundMsg::ScanActivity {
-                    path: if rel.is_empty() { ".".to_string() } else { rel },
-                });
 
                 if non_rust.includes_non_rust()
                     && entry.path().join(".git").is_dir()
@@ -1208,61 +1251,85 @@ fn phase1_discover(
 
                     let project = RustProject::from_git_dir(entry.path());
                     let abs_path = PathBuf::from(&project.abs_path);
+                    stats.projects += 1;
+                    stats.non_rust_projects += 1;
 
                     let _ = scan_context.tx.send(BackgroundMsg::ProjectDiscovered {
                         project: project.clone(),
                     });
 
-                    let discovered = phase1_local_work(
-                        &scan_context.tx,
-                        &scan_context.git_info_cache,
-                        DiscoveredProject {
-                            path: project.path.clone(),
-                            abs_path,
-                            name: None,
-                            repo_url: None,
-                            owner_repo: None,
-                            lint_enabled: scan_context.lint_enabled,
-                        },
-                        GitRepoPresence::InRepo,
-                    );
-                    spawn_project_http(scan_context, &discovered);
-                    spawn_disk_usage(scan_context, &discovered.abs_path, &discovered.path);
+                    let discovered = DiscoveredProject {
+                        path: project.path.clone(),
+                        abs_path,
+                        name: None,
+                        repo_url: None,
+                        owner_repo: None,
+                        lint_enabled: scan_context.lint_enabled,
+                    };
+                    spawn_project_local_work(scan_context, discovered.clone(), GitRepoPresence::InRepo);
+                    disk_entries.push((discovered.path.clone(), discovered.abs_path.clone()));
                     continue;
                 }
             }
             if entry.file_type().is_file()
                 && entry.file_name() == "Cargo.toml"
-                && let Ok(project) = RustProject::from_cargo_toml(entry.path())
             {
+                stats.manifests += 1;
+                let manifest_started = std::time::Instant::now();
+                let Ok(project) = RustProject::from_cargo_toml(entry.path()) else {
+                    continue;
+                };
+                perf_log::log_duration(
+                    "phase1_manifest_parse",
+                    manifest_started.elapsed(),
+                    &format!("manifest={}", entry.path().display()),
+                    0,
+                );
+                stats.projects += 1;
                 let abs_path = PathBuf::from(&project.abs_path);
+                let repo_presence_started = std::time::Instant::now();
                 let repo_presence = if super::project::git_repo_root(&abs_path).is_some() {
                     GitRepoPresence::InRepo
                 } else {
                     GitRepoPresence::OutsideRepo
                 };
+                perf_log::log_duration(
+                    "phase1_repo_presence",
+                    repo_presence_started.elapsed(),
+                    &format!(
+                        "path={} in_repo={}",
+                        project.path,
+                        repo_presence.is_in_repo()
+                    ),
+                    0,
+                );
 
                 let _ = scan_context.tx.send(BackgroundMsg::ProjectDiscovered {
                     project: project.clone(),
                 });
 
-                let discovered = phase1_local_work(
-                    &scan_context.tx,
-                    &scan_context.git_info_cache,
-                    DiscoveredProject {
-                        path: project.path.clone(),
-                        abs_path,
-                        name: project.name.clone(),
-                        repo_url: None,
-                        owner_repo: None,
-                        lint_enabled: scan_context.lint_enabled,
-                    },
-                    repo_presence,
-                );
-                spawn_project_http(scan_context, &discovered);
-                spawn_disk_usage(scan_context, &discovered.abs_path, &discovered.path);
+                let discovered = DiscoveredProject {
+                    path: project.path.clone(),
+                    abs_path,
+                    name: project.name.clone(),
+                    repo_url: None,
+                    owner_repo: None,
+                    lint_enabled: scan_context.lint_enabled,
+                };
+                spawn_project_local_work(scan_context, discovered.clone(), repo_presence);
+                disk_entries.push((discovered.path.clone(), discovered.abs_path.clone()));
             }
         }
+    }
+    Phase1DiscoverResult { disk_entries, stats }
+}
+
+fn spawn_initial_disk_usage(
+    scan_context: &StreamingScanContext,
+    disk_entries: &[(String, PathBuf)],
+) {
+    for tree in group_disk_usage_trees(disk_entries) {
+        spawn_disk_usage_tree(scan_context, tree);
     }
 }
 
@@ -1300,12 +1367,92 @@ fn spawn_project_http(scan_context: &StreamingScanContext, project: &DiscoveredP
     }
 }
 
-fn spawn_disk_usage(scan_context: &StreamingScanContext, abs_path: &Path, project_path: &str) {
+fn spawn_project_local_work(
+    scan_context: &StreamingScanContext,
+    project: DiscoveredProject,
+    repo_presence: GitRepoPresence,
+) {
+    let handle = scan_context.client.handle.clone();
+    let tx = scan_context.tx.clone();
+    let git_info_cache = Arc::clone(&scan_context.git_info_cache);
+    let local_limit = Arc::clone(&scan_context.local_limit);
+    let scan_context = scan_context.clone();
+
+    handle.spawn(async move {
+        let queue_started = std::time::Instant::now();
+        let Ok(_permit) = local_limit.acquire_owned().await else {
+            return;
+        };
+        perf_log::log_duration(
+            "tokio_local_queue_wait",
+            queue_started.elapsed(),
+            &format!("path={} abs_path={}", project.path, project.abs_path.display()),
+            0,
+        );
+        let run_started = std::time::Instant::now();
+        let tx_for_work = tx.clone();
+        let git_info_cache_for_work = Arc::clone(&git_info_cache);
+        let project_for_work = project.clone();
+        let Ok(discovered) = tokio::task::spawn_blocking(move || {
+            phase1_local_work(
+                &tx_for_work,
+                &git_info_cache_for_work,
+                project_for_work,
+                repo_presence,
+            )
+        })
+        .await
+        else {
+            return;
+        };
+        perf_log::log_duration(
+            "tokio_local_work",
+            run_started.elapsed(),
+            &format!("path={} abs_path={}", discovered.path, discovered.abs_path.display()),
+            0,
+        );
+        spawn_project_http(&scan_context, &discovered);
+    });
+}
+
+#[derive(Clone)]
+struct DiskUsageTree {
+    root_path: String,
+    root_abs_path: PathBuf,
+    entries: Vec<(String, PathBuf)>,
+}
+
+fn group_disk_usage_trees(disk_entries: &[(String, PathBuf)]) -> Vec<DiskUsageTree> {
+    let mut sorted = disk_entries.to_vec();
+    sorted.sort_by(|(_, left), (_, right)| {
+        left.components()
+            .count()
+            .cmp(&right.components().count())
+            .then_with(|| left.cmp(right))
+    });
+
+    let mut trees: Vec<DiskUsageTree> = Vec::new();
+    for (path, abs_path) in sorted {
+        if let Some(tree) = trees
+            .iter_mut()
+            .find(|tree| abs_path.starts_with(&tree.root_abs_path))
+        {
+            tree.entries.push((path, abs_path));
+        } else {
+            trees.push(DiskUsageTree {
+                root_path: path.clone(),
+                root_abs_path: abs_path.clone(),
+                entries: vec![(path, abs_path)],
+            });
+        }
+    }
+    trees
+}
+
+fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTree) {
     let handle = scan_context.client.handle.clone();
     let tx = scan_context.tx.clone();
     let disk_limit = Arc::clone(&scan_context.disk_limit);
-    let abs_path = abs_path.to_path_buf();
-    let project_path = project_path.to_string();
 
     handle.spawn(async move {
         let queue_started = std::time::Instant::now();
@@ -1316,24 +1463,79 @@ fn spawn_disk_usage(scan_context: &StreamingScanContext, abs_path: &Path, projec
         perf_log::log_duration(
             "tokio_disk_queue_wait",
             queue_elapsed,
-            &format!("path={project_path} abs_path={}", abs_path.display()),
+            &format!(
+                "path={} abs_path={} rows={}",
+                tree.root_path,
+                tree.root_abs_path.display(),
+                tree.entries.len()
+            ),
             0,
         );
         let run_started = std::time::Instant::now();
-        let Ok(bytes) = tokio::task::spawn_blocking(move || dir_size(&abs_path)).await else {
+        let tree_for_walk = tree.clone();
+        let Ok(results) =
+            tokio::task::spawn_blocking(move || dir_sizes_for_tree(&tree_for_walk)).await
+        else {
             return;
         };
         perf_log::log_duration(
             "tokio_disk_usage",
             run_started.elapsed(),
-            &format!("path={project_path} bytes={bytes}"),
+            &format!(
+                "path={} abs_path={} rows={}",
+                tree.root_path,
+                tree.root_abs_path.display(),
+                tree.entries.len()
+            ),
             0,
         );
-        let _ = tx.send(BackgroundMsg::DiskUsage {
-            path: project_path,
-            bytes,
+        let _ = tx.send(BackgroundMsg::DiskUsageBatch {
+            root_path: tree.root_path,
+            entries:   results,
         });
     });
+}
+
+fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(String, u64)> {
+    let mut totals: HashMap<String, u64> = tree
+        .entries
+        .iter()
+        .map(|(path, _)| (path.clone(), 0))
+        .collect();
+    let entry_paths_by_abs: HashMap<PathBuf, Vec<String>> =
+        tree.entries
+            .iter()
+            .fold(HashMap::new(), |mut acc, (path, abs_path)| {
+                acc.entry(abs_path.clone()).or_default().push(path.clone());
+                acc
+            });
+
+    for entry in WalkDir::new(&tree.root_abs_path).into_iter().flatten() {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let bytes = metadata.len();
+        let mut current = entry.path().parent();
+        while let Some(dir) = current {
+            if let Some(paths) = entry_paths_by_abs.get(dir) {
+                for path in paths {
+                    *totals.entry(path.clone()).or_default() += bytes;
+                }
+            }
+            if dir == tree.root_abs_path {
+                break;
+            }
+            current = dir.parent();
+        }
+    }
+
+    tree.entries
+        .iter()
+        .map(|(path, _)| (path.clone(), totals.get(path).copied().unwrap_or(0)))
+        .collect()
 }
 
 fn register_repo_path(
@@ -1417,9 +1619,6 @@ fn spawn_repo_fetch(scan_context: &StreamingScanContext, request: RepoFetchReque
             0,
         );
         let fetch_started = std::time::Instant::now();
-        let _ = tx.send(BackgroundMsg::ScanActivity {
-            path: format!("CI: {}", request.project_path),
-        });
         let (result, meta, signal) = fetch_ci_runs_cached_async(
             &client,
             &request.repo_url,
@@ -1449,6 +1648,7 @@ fn spawn_repo_fetch(scan_context: &StreamingScanContext, request: RepoFetchReque
         );
         let paths = finish_repo_fetch(&repo_dispatch, &request.key, data.clone());
         send_repo_data(&tx, &paths, &data);
+        let _ = tx.send(BackgroundMsg::RepoFetchComplete { key: request.key });
     });
 }
 
@@ -1507,6 +1707,7 @@ fn phase1_local_work(
     mut project: DiscoveredProject,
     repo_presence: GitRepoPresence,
 ) -> DiscoveredProject {
+    let started = std::time::Instant::now();
     let git_info = if repo_presence.is_in_repo() {
         cached_git_info(git_info_cache, &project.abs_path)
     } else {
@@ -1535,19 +1736,51 @@ fn phase1_local_work(
         .repo_url
         .as_ref()
         .and_then(|url| ci::parse_owner_repo(url));
+    perf_log::log_duration(
+        "phase1_local_work",
+        started.elapsed(),
+        &format!(
+            "path={} in_repo={} has_git_info={} lint_enabled={}",
+            project.path,
+            repo_presence.is_in_repo(),
+            git_info.is_some(),
+            project.lint_enabled
+        ),
+        0,
+    );
     project
 }
 
 fn cached_git_info(git_info_cache: &GitInfoCache, project_dir: &Path) -> Option<GitInfo> {
+    let started = std::time::Instant::now();
     let repo_root = super::project::git_repo_root(project_dir)?;
     let Ok(mut cache) = git_info_cache.lock() else {
-        return GitInfo::detect(&repo_root);
+        let info = GitInfo::detect_fast(&repo_root);
+        perf_log::log_duration(
+            "phase1_cached_git_info",
+            started.elapsed(),
+            &format!("repo_root={} cache=poisoned hit=false", repo_root.display()),
+            0,
+        );
+        return info;
     };
     if let Some(info) = cache.get(&repo_root) {
+        perf_log::log_duration(
+            "phase1_cached_git_info",
+            started.elapsed(),
+            &format!("repo_root={} cache=ok hit=true", repo_root.display()),
+            0,
+        );
         return info.clone();
     }
-    let info = GitInfo::detect(&repo_root);
-    cache.insert(repo_root, info.clone());
+    let info = GitInfo::detect_fast(&repo_root);
+    cache.insert(repo_root.clone(), info.clone());
+    perf_log::log_duration(
+        "phase1_cached_git_info",
+        started.elapsed(),
+        &format!("repo_root={} cache=ok hit=false", repo_root.display()),
+        0,
+    );
     info
 }
 
@@ -1858,5 +2091,54 @@ mod tests {
             2,
             "nodes without identity should not be merged"
         );
+    }
+
+    #[test]
+    fn group_disk_usage_trees_merges_nested_projects_under_one_root() {
+        let trees = group_disk_usage_trees(&[
+            ("~/rust/bevy".to_string(), PathBuf::from("/home/user/rust/bevy")),
+            (
+                "~/rust/bevy/crates/bevy_ecs".to_string(),
+                PathBuf::from("/home/user/rust/bevy/crates/bevy_ecs"),
+            ),
+            (
+                "~/rust/bevy/tools/ci".to_string(),
+                PathBuf::from("/home/user/rust/bevy/tools/ci"),
+            ),
+            (
+                "~/rust/hana".to_string(),
+                PathBuf::from("/home/user/rust/hana"),
+            ),
+        ]);
+
+        assert_eq!(trees.len(), 2);
+        assert_eq!(trees[0].root_path, "~/rust/bevy");
+        assert_eq!(trees[0].entries.len(), 3);
+        assert_eq!(trees[1].root_path, "~/rust/hana");
+        assert_eq!(trees[1].entries.len(), 1);
+    }
+
+    #[test]
+    fn dir_sizes_for_tree_accumulates_root_and_child_sizes_from_one_walk() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let root = tmp.path().join("bevy");
+        let child = root.join("crates").join("bevy_ecs");
+        std::fs::create_dir_all(&child).unwrap_or_else(|_| std::process::abort());
+        std::fs::write(root.join("root.txt"), vec![0_u8; 5]).unwrap_or_else(|_| std::process::abort());
+        std::fs::write(child.join("child.txt"), vec![0_u8; 7])
+            .unwrap_or_else(|_| std::process::abort());
+
+        let sizes = dir_sizes_for_tree(&DiskUsageTree {
+            root_path:     "~/rust/bevy".to_string(),
+            root_abs_path: root.clone(),
+            entries:       vec![
+                ("~/rust/bevy".to_string(), root),
+                ("~/rust/bevy/crates/bevy_ecs".to_string(), child),
+            ],
+        });
+        let sizes: HashMap<String, u64> = sizes.into_iter().collect();
+
+        assert_eq!(sizes.get("~/rust/bevy"), Some(&12));
+        assert_eq!(sizes.get("~/rust/bevy/crates/bevy_ecs"), Some(&7));
     }
 }
