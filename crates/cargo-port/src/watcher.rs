@@ -133,16 +133,7 @@ fn watcher_loop(
     let Ok(mut watcher) = notify::recommended_watcher(handler) else {
         return;
     };
-    for dir in &watch_dirs {
-        if dir.is_dir() {
-            let _ = watcher.watch(dir, RecursiveMode::Recursive);
-        }
-    }
-    if lint_enabled {
-        let lint_root = port_report::cache_root();
-        let _ = std::fs::create_dir_all(&lint_root);
-        let _ = watcher.watch(&lint_root, RecursiveMode::Recursive);
-    }
+    register_watch_roots(&mut watcher, &watch_dirs, lint_enabled);
 
     // `abs_path` → project tracking state
     let mut projects: HashMap<PathBuf, ProjectEntry> = HashMap::new();
@@ -163,59 +154,38 @@ fn watcher_loop(
     let git_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_GIT_CONCURRENCY));
 
     loop {
-        // Drain new registrations (exit when the app disconnects).
-        loop {
-            match watch_rx.try_recv() {
-                Ok(req) => {
-                    if let Some(parent) = req.abs_path.parent() {
-                        project_parents.insert(parent.to_path_buf());
-                    }
-                    watch_git_metadata_paths(&mut watcher, &req, &mut watched_git_metadata);
-                    projects.insert(
-                        req.abs_path.clone(),
-                        ProjectEntry {
-                            project_path:         req.project_path,
-                            abs_path:             req.abs_path.clone(),
-                            repo_root:            req.repo_root,
-                            port_report_dir_path: port_report::project_dir(&req.abs_path),
-                        },
-                    );
-                },
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => return,
-            }
+        if drain_watch_requests(
+            &mut watcher,
+            watch_rx,
+            &mut projects,
+            &mut project_parents,
+            &mut watched_git_metadata,
+        ) {
+            return;
         }
 
-        // Drain filesystem events.
-        while let Ok(result) = notify_rx.try_recv() {
-            let Ok(event) = result else {
-                continue;
-            };
-            let ctx = EventContext {
+        let dispatch = WatcherDispatchContext {
+            event: EventContext {
                 scan_root,
                 projects: &projects,
                 project_parents: &project_parents,
                 discovered: &discovered,
-            };
-            for event_path in &event.paths {
-                handle_event(
-                    event_path,
-                    &ctx,
-                    bg_tx,
-                    &mut pending_disk,
-                    &mut pending_git,
-                    &mut pending_new,
-                );
-            }
-        }
-
-        while let Ok(project_path) = disk_done_rx.try_recv() {
-            handle_disk_completion(&mut pending_disk, &project_path);
-        }
-
-        while let Ok(repo_root) = git_done_rx.try_recv() {
-            handle_git_completion(&mut pending_git, repo_root);
-        }
+            },
+            bg_tx,
+        };
+        drain_notify_events(
+            &notify_rx,
+            &dispatch,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+        drain_completed_refreshes(
+            &disk_done_rx,
+            &git_done_rx,
+            &mut pending_disk,
+            &mut pending_git,
+        );
 
         // Fire git refreshes whose debounce has expired.
         fire_git_updates(
@@ -249,6 +219,92 @@ fn watcher_loop(
         );
 
         thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn register_watch_roots(
+    watcher: &mut impl Watcher,
+    watch_dirs: &[PathBuf],
+    lint_enabled: bool,
+) {
+    for dir in watch_dirs {
+        if dir.is_dir() {
+            let _ = watcher.watch(dir, RecursiveMode::Recursive);
+        }
+    }
+    if lint_enabled {
+        let lint_root = port_report::cache_root();
+        let _ = std::fs::create_dir_all(&lint_root);
+        let _ = watcher.watch(&lint_root, RecursiveMode::Recursive);
+    }
+}
+
+fn drain_watch_requests(
+    watcher: &mut impl Watcher,
+    watch_rx: &mpsc::Receiver<WatchRequest>,
+    projects: &mut HashMap<PathBuf, ProjectEntry>,
+    project_parents: &mut HashSet<PathBuf>,
+    watched_git_metadata: &mut HashSet<PathBuf>,
+) -> bool {
+    loop {
+        match watch_rx.try_recv() {
+            Ok(req) => {
+                if let Some(parent) = req.abs_path.parent() {
+                    project_parents.insert(parent.to_path_buf());
+                }
+                watch_git_metadata_paths(watcher, &req, watched_git_metadata);
+                projects.insert(
+                    req.abs_path.clone(),
+                    ProjectEntry {
+                        project_path:         req.project_path,
+                        abs_path:             req.abs_path.clone(),
+                        repo_root:            req.repo_root,
+                        port_report_dir_path: port_report::project_dir(&req.abs_path),
+                    },
+                );
+            },
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => return true,
+        }
+    }
+}
+
+fn drain_notify_events(
+    notify_rx: &mpsc::Receiver<notify::Result<notify::Event>>,
+    ctx: &WatcherDispatchContext<'_>,
+    pending_disk: &mut HashMap<String, DiskState>,
+    pending_git: &mut HashMap<PathBuf, GitState>,
+    pending_new: &mut HashMap<PathBuf, Instant>,
+) {
+    while let Ok(result) = notify_rx.try_recv() {
+        let Ok(event) = result else {
+            continue;
+        };
+        for event_path in &event.paths {
+            handle_event(
+                event_path,
+                &ctx.event,
+                ctx.bg_tx,
+                pending_disk,
+                pending_git,
+                pending_new,
+            );
+        }
+    }
+}
+
+fn drain_completed_refreshes(
+    disk_done_rx: &mpsc::Receiver<String>,
+    git_done_rx: &mpsc::Receiver<PathBuf>,
+    pending_disk: &mut HashMap<String, DiskState>,
+    pending_git: &mut HashMap<PathBuf, GitState>,
+) {
+    while let Ok(project_path) = disk_done_rx.try_recv() {
+        handle_disk_completion(pending_disk, &project_path);
+    }
+
+    while let Ok(repo_root) = git_done_rx.try_recv() {
+        handle_git_completion(pending_git, repo_root);
     }
 }
 
@@ -300,6 +356,11 @@ struct EventContext<'a> {
     projects:        &'a HashMap<PathBuf, ProjectEntry>,
     project_parents: &'a HashSet<PathBuf>,
     discovered:      &'a HashSet<PathBuf>,
+}
+
+struct WatcherDispatchContext<'a> {
+    event: EventContext<'a>,
+    bg_tx: &'a mpsc::Sender<BackgroundMsg>,
 }
 
 fn handle_event(
@@ -960,6 +1021,14 @@ fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<RustProject> 
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests should panic on unexpected values"
+)]
+#[allow(
+    clippy::panic,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {

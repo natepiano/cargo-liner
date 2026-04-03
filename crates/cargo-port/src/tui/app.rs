@@ -3791,6 +3791,18 @@ fn initial_disk_batch_count(projects: &[RustProject]) -> usize {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests should panic on unexpected values"
+)]
+#[allow(
+    clippy::panic,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use std::collections::HashSet;
     use std::sync::OnceLock;
