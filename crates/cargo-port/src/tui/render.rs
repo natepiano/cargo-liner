@@ -688,7 +688,6 @@ fn render_root_item(
     let ci = app.ci_for_node(node);
     let lang = project.lang_icon();
     let lint = app.lint_icon_for_root(node_index);
-    let git = app.git_icon(project);
     let sync = app.git_sync(project);
     let prefix = if node.has_children() {
         if app.expanded.contains(&ExpandKey::Node(node_index)) {
@@ -708,7 +707,6 @@ fn render_root_item(
         disk_style: ds,
         lang_icon: lang,
         git_sync: &sync,
-        git_icon: git,
         ci,
         deleted: app.is_deleted(&project.path),
     });
@@ -739,7 +737,6 @@ fn render_child_item(
     } else {
         None
     };
-    let git = app.git_icon(project);
     let sync = if matches!(
         app.git_path_state_for(&project.path),
         crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
@@ -757,7 +754,6 @@ fn render_child_item(
         disk_style: ds,
         lang_icon: lang,
         git_sync: &sync,
-        git_icon: git,
         ci,
         deleted: app.is_deleted(&project.path),
     });
@@ -795,7 +791,6 @@ fn render_worktree_entry<'a>(
     let lang = wt.project.lang_icon();
     let lint = app.lint_icon_for_worktree(ni, wi);
     let ci = app.ci_for(&wt.project);
-    let git = app.git_icon(&wt.project);
     let sync = app.git_sync(&wt.project);
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
@@ -806,7 +801,6 @@ fn render_worktree_entry<'a>(
         disk_style: ds,
         lang_icon: lang,
         git_sync: &sync,
-        git_icon: git,
         ci,
         deleted: app.is_deleted(&wt.project.path),
     });
@@ -972,7 +966,6 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             } else {
                 None
             };
-            let git = app.git_icon(project);
             let sync = if matches!(
                 app.git_path_state_for(&project.path),
                 crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
@@ -990,7 +983,6 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
                 disk_style: ds,
                 lang_icon: lang,
                 git_sync: &sync,
-                git_icon: git,
                 ci,
                 deleted: app.is_deleted(&project.path),
             });

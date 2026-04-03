@@ -124,6 +124,9 @@ fn supervisor_loop(rx: mpsc::Receiver<SupervisorMsg>, cache_root: PathBuf, lint:
                 force_immediate_run,
             }) => {
                 let desired = desired_projects(&lint, projects);
+                if !initialized {
+                    clear_orphaned_running_statuses(&desired, &cache_root);
+                }
                 reconcile_workers(
                     &mut workers,
                     desired,
@@ -145,6 +148,15 @@ fn supervisor_loop(rx: mpsc::Receiver<SupervisorMsg>, cache_root: PathBuf, lint:
 
 const fn should_trigger_new_runs(initialized: bool, force_immediate_run: bool) -> bool {
     initialized || force_immediate_run
+}
+
+fn clear_orphaned_running_statuses(
+    desired: &HashMap<PathBuf, RegisterProjectRequest>,
+    cache_root: &Path,
+) {
+    for project_root in desired.keys() {
+        let _ = port_report::clear_latest_if_running_under(cache_root, project_root);
+    }
 }
 
 fn desired_projects(

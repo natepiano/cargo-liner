@@ -18,6 +18,8 @@ const SLOW_INPUT_EVENT_MS: u128 = 25;
 
 fn log_path() -> PathBuf { std::env::temp_dir().join("cargo-port-tui-perf.log") }
 
+fn previous_log_path() -> PathBuf { std::env::temp_dir().join("cargo-port-tui-perf.prev.log") }
+
 fn timestamp_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -40,6 +42,11 @@ fn write_line(message: &str) {
 
 pub fn init() -> PathBuf {
     let path = log_path();
+    let previous_path = previous_log_path();
+    if path.is_file() {
+        let _ = std::fs::remove_file(&previous_path);
+        let _ = std::fs::rename(&path, &previous_path);
+    }
     let file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -48,7 +55,12 @@ pub fn init() -> PathBuf {
         .ok();
     let _ = PERF_LOG.set(Mutex::new(file));
     let _ = PERF_LOG_PATH.set(path.clone());
-    log_event(&format!("session_start pid={}", std::process::id()));
+    log_event(&format!(
+        "session_start pid={} perf_log={} previous_perf_log={}",
+        std::process::id(),
+        path.display(),
+        previous_path.display()
+    ));
     path
 }
 

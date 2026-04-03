@@ -75,8 +75,10 @@ fn top_level_entries(root: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 fn entry_name(path: &Path) -> String {
-    path.file_name()
-        .map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().to_string())
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().to_string(),
+    )
 }
 
 fn subtree_size_parallel(path: &Path) -> u64 {
@@ -99,7 +101,10 @@ fn subtree_size_parallel(path: &Path) -> u64 {
     };
     let paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
 
-    paths.par_iter().map(|child| subtree_size_parallel(child)).sum()
+    paths
+        .par_iter()
+        .map(|child| subtree_size_parallel(child))
+        .sum()
 }
 
 fn format_bytes(bytes: u64) -> String {

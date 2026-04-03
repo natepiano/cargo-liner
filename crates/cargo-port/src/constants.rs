@@ -23,7 +23,6 @@ pub const LINT_NO_LOG: &str = " ";
 pub const GIT_LOCAL: &str = "📁";
 pub const GIT_CLONE: &str = "📥";
 pub const GIT_FORK: &str = "🔱";
-pub const GIT_IGNORED: &str = "I";
 pub const WORKTREE: &str = "🌲";
 pub const GIT_MODIFIED_COLOR: Color = Color::Indexed(208);
 pub const GIT_UNTRACKED_COLOR: Color = Color::Green;

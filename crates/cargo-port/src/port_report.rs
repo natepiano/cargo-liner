@@ -192,6 +192,18 @@ pub fn clear_latest_under(cache_root: &Path, project_root: &Path) -> io::Result<
     }
 }
 
+pub fn clear_latest_if_running_under(cache_root: &Path, project_root: &Path) -> io::Result<bool> {
+    let path = latest_path_under(cache_root, project_root);
+    let Some(run) = read_latest_file(&path) else {
+        return Ok(false);
+    };
+    if matches!(run.status, PortReportRunStatus::Running) {
+        clear_latest_under(cache_root, project_root)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 pub fn append_history_under(
     cache_root: &Path,
     project_root: &Path,
@@ -473,6 +485,27 @@ mod tests {
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].run_id, "running");
         assert_eq!(runs[1].run_id, "completed");
+    }
+
+    #[test]
+    fn clear_latest_if_running_removes_running_latest() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        let running = PortReportRun {
+            run_id:      "running".to_string(),
+            started_at:  Utc::now().format("%+").to_string(),
+            finished_at: None,
+            duration_ms: None,
+            status:      PortReportRunStatus::Running,
+            commands:    Vec::new(),
+        };
+        write_latest_under(cache_dir.path(), project_dir.path(), &running).expect("write latest");
+
+        let cleared =
+            clear_latest_if_running_under(cache_dir.path(), project_dir.path()).expect("clear");
+
+        assert!(cleared);
+        assert!(!latest_path_under(cache_dir.path(), project_dir.path()).exists());
     }
 
     #[test]

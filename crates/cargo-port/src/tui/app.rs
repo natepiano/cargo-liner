@@ -126,16 +126,17 @@ struct DiskCacheBuildResult {
 
 #[derive(Default)]
 struct StartupPhaseTracker {
-    scan_complete_at:   Option<Instant>,
-    disk_expected:      Option<usize>,
-    disk_seen:          HashSet<String>,
-    disk_complete_at:   Option<Instant>,
-    repo_expected:      Option<usize>,
-    repo_seen:          HashSet<String>,
-    repo_complete_at:   Option<Instant>,
-    lint_expected:      Option<HashSet<String>>,
-    lint_seen_terminal: HashSet<String>,
-    lint_complete_at:   Option<Instant>,
+    scan_complete_at:    Option<Instant>,
+    disk_expected:       Option<usize>,
+    disk_seen:           HashSet<String>,
+    disk_complete_at:    Option<Instant>,
+    repo_expected:       Option<usize>,
+    repo_seen:           HashSet<String>,
+    repo_complete_at:    Option<Instant>,
+    lint_expected:       Option<HashSet<String>>,
+    lint_seen_terminal:  HashSet<String>,
+    lint_complete_at:    Option<Instant>,
+    startup_complete_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -481,6 +482,21 @@ fn live_worktree_count_for_node(node: &ProjectNode, deleted_projects: &HashSet<S
         .count()
 }
 
+fn unique_node_paths(node: &ProjectNode) -> Vec<&str> {
+    let mut seen = HashSet::new();
+    let mut paths = Vec::new();
+
+    for path in std::iter::once(node.project.path.as_str())
+        .chain(node.worktrees.iter().map(|wt| wt.project.path.as_str()))
+    {
+        if seen.insert(path) {
+            paths.push(path);
+        }
+    }
+
+    paths
+}
+
 fn disk_bytes_for_node_snapshot(
     node: &ProjectNode,
     disk_usage: &HashMap<String, u64>,
@@ -490,9 +506,7 @@ fn disk_bytes_for_node_snapshot(
     }
     let mut total = 0;
     let mut any_data = false;
-    for path in
-        std::iter::once(&node.project.path).chain(node.worktrees.iter().map(|wt| &wt.project.path))
-    {
+    for path in unique_node_paths(node) {
         if let Some(&bytes) = disk_usage.get(path) {
             total += bytes;
             any_data = true;
@@ -502,18 +516,20 @@ fn disk_bytes_for_node_snapshot(
 }
 
 fn formatted_disk_snapshot(disk_usage: &HashMap<String, u64>, path: &str) -> String {
-    disk_usage
-        .get(path)
-        .copied()
-        .map_or_else(|| super::render::format_bytes(0), super::render::format_bytes)
+    disk_usage.get(path).copied().map_or_else(
+        || super::render::format_bytes(0),
+        super::render::format_bytes,
+    )
 }
 
 fn formatted_disk_for_node_snapshot(
     node: &ProjectNode,
     disk_usage: &HashMap<String, u64>,
 ) -> String {
-    disk_bytes_for_node_snapshot(node, disk_usage)
-        .map_or_else(|| super::render::format_bytes(0), super::render::format_bytes)
+    disk_bytes_for_node_snapshot(node, disk_usage).map_or_else(
+        || super::render::format_bytes(0),
+        super::render::format_bytes,
+    )
 }
 
 fn git_sync_snapshot(
@@ -1567,14 +1583,36 @@ impl App {
         let lint_expected = self
             .lint_runtime_projects_snapshot()
             .into_iter()
-            .map(|request| request.project_path)
+            .filter_map(|request| {
+                self.lint_status
+                    .get(&request.project_path)
+                    .map(|status| (request.project_path, status))
+            })
+            .filter(|(_, status)| !matches!(status, LintStatus::NoLog))
+            .map(|(path, _)| path)
             .collect::<HashSet<_>>();
         let disk_expected = initial_disk_batch_count(&self.all_projects);
+        let lint_seen_terminal = lint_expected
+            .iter()
+            .filter(|path| {
+                self.lint_status.get(*path).is_some_and(|status| {
+                    matches!(
+                        status,
+                        LintStatus::Passed(_)
+                            | LintStatus::Failed(_)
+                            | LintStatus::Stale
+                            | LintStatus::NoLog
+                    )
+                })
+            })
+            .cloned()
+            .collect::<HashSet<_>>();
 
         self.startup_phases.scan_complete_at = Some(Instant::now());
         self.startup_phases.disk_expected = Some(disk_expected);
         self.startup_phases.repo_expected = Some(repo_expected.len());
         self.startup_phases.lint_expected = Some(lint_expected);
+        self.startup_phases.lint_seen_terminal = lint_seen_terminal;
 
         crate::perf_log::log_event(&format!(
             "startup_phase_plan disk_expected={} repo_expected={} lint_expected={}",
@@ -1625,9 +1663,13 @@ impl App {
         }
 
         if self.startup_phases.lint_complete_at.is_none()
-            && self.startup_phases.lint_expected.as_ref().is_some_and(|expected| {
-                self.startup_phases.lint_seen_terminal.len() >= expected.len()
-            })
+            && self
+                .startup_phases
+                .lint_expected
+                .as_ref()
+                .is_some_and(|expected| {
+                    self.startup_phases.lint_seen_terminal.len() >= expected.len()
+                })
         {
             self.startup_phases.lint_complete_at = Some(now);
             crate::perf_log::log_event(&format!(
@@ -1639,6 +1681,36 @@ impl App {
                     .as_ref()
                     .map_or(0, HashSet::len)
             ));
+        }
+
+        if self.startup_phases.startup_complete_at.is_none() {
+            let disk_ready = self.startup_phases.disk_complete_at.is_some();
+            let repo_ready = self.startup_phases.repo_complete_at.is_some();
+            let lint_ready = self
+                .startup_phases
+                .lint_expected
+                .as_ref()
+                .is_none_or(|_| self.startup_phases.lint_complete_at.is_some());
+            if disk_ready && repo_ready && lint_ready {
+                self.startup_phases.startup_complete_at = Some(now);
+                crate::perf_log::log_event(&format!(
+                    "startup_complete since_scan_complete_ms={} disk_seen={} disk_expected={} repo_seen={} repo_expected={} lint_seen={} lint_expected={}",
+                    now.duration_since(scan_complete_at).as_millis(),
+                    self.startup_phases.disk_seen.len(),
+                    self.startup_phases.disk_expected.unwrap_or(0),
+                    self.startup_phases.repo_seen.len(),
+                    self.startup_phases.repo_expected.unwrap_or(0),
+                    self.startup_phases.lint_seen_terminal.len(),
+                    self.startup_phases
+                        .lint_expected
+                        .as_ref()
+                        .map_or(0, HashSet::len)
+                ));
+                crate::perf_log::log_event(&format!(
+                    "steady_state_begin since_scan_complete_ms={}",
+                    now.duration_since(scan_complete_at).as_millis()
+                ));
+            }
         }
     }
 
@@ -2028,6 +2100,14 @@ impl App {
 
     fn handle_git_info(&mut self, path: String, info: GitInfo) {
         self.fit_widths_dirty = true;
+        let preserved_first_commit = self
+            .git_info
+            .get(&path)
+            .and_then(|existing| existing.first_commit.clone());
+        let mut info = info;
+        if info.first_commit.is_none() {
+            info.first_commit = preserved_first_commit;
+        }
         let matching_node = self
             .nodes
             .iter()
@@ -2267,7 +2347,13 @@ impl App {
                 }
             },
             BackgroundMsg::LintStatus { path, status } => {
-                let status_is_terminal = matches!(status, LintStatus::Passed(_) | LintStatus::Failed(_));
+                let status_is_terminal = matches!(
+                    status,
+                    LintStatus::Passed(_)
+                        | LintStatus::Failed(_)
+                        | LintStatus::Stale
+                        | LintStatus::NoLog
+                );
                 if !self.is_cargo_active_path(&path) {
                     self.port_report_runs.remove(&path);
                     self.lint_status.remove(&path);
@@ -3299,9 +3385,7 @@ impl App {
         }
         let mut total: u64 = 0;
         let mut any_data = false;
-        for path in std::iter::once(&node.project.path)
-            .chain(node.worktrees.iter().map(|wt| &wt.project.path))
-        {
+        for path in unique_node_paths(node) {
             if let Some(&bytes) = self.disk_usage.get(path) {
                 total += bytes;
                 any_data = true;
@@ -3321,9 +3405,7 @@ impl App {
         }
         let mut total: u64 = 0;
         let mut any_data = false;
-        for path in std::iter::once(&node.project.path)
-            .chain(node.worktrees.iter().map(|wt| &wt.project.path))
-        {
+        for path in unique_node_paths(node) {
             if let Some(&bytes) = self.disk_usage.get(path) {
                 total += bytes;
                 any_data = true;
@@ -3555,16 +3637,6 @@ impl App {
         }
     }
 
-    pub fn git_icon(&self, project: &RustProject) -> &'static str {
-        match self.git_path_state_for(&project.path) {
-            GitPathState::Ignored => crate::constants::GIT_IGNORED,
-            _ => self
-                .git_info
-                .get(&project.path)
-                .map_or(" ", |info| info.origin.icon()),
-        }
-    }
-
     /// Formatted ahead/behind sync status for the project list columns.
     pub fn git_sync(&self, project: &RustProject) -> String {
         if matches!(
@@ -3635,7 +3707,11 @@ impl App {
     }
 }
 
-fn replace_project_in_node(node: &mut ProjectNode, project_path: &str, project: &RustProject) -> bool {
+fn replace_project_in_node(
+    node: &mut ProjectNode,
+    project_path: &str,
+    project: &RustProject,
+) -> bool {
     let updated = if node.project.path == project_path {
         node.project = project.clone();
         true
@@ -3688,7 +3764,10 @@ fn replace_project_in_node(node: &mut ProjectNode, project_path: &str, project: 
 }
 
 fn initial_disk_batch_count(projects: &[RustProject]) -> usize {
-    let mut abs_paths: Vec<&str> = projects.iter().map(|project| project.abs_path.as_str()).collect();
+    let mut abs_paths: Vec<&str> = projects
+        .iter()
+        .map(|project| project.abs_path.as_str())
+        .collect();
     abs_paths.sort_by(|left, right| {
         Path::new(left)
             .components()
@@ -4157,6 +4236,34 @@ mod tests {
     }
 
     #[test]
+    fn startup_lint_expectation_only_tracks_existing_lint_statuses() {
+        let project_a = make_project(Some("a"), "~/a");
+        let project_b = make_project(Some("b"), "~/b");
+        let mut app = make_app(vec![project_a.clone(), project_b.clone()]);
+        app.scan_complete = true;
+        app.lint_status.insert(
+            project_a.path.clone(),
+            LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")),
+        );
+
+        app.initialize_startup_phase_tracker();
+
+        let expected = app
+            .startup_phases
+            .lint_expected
+            .as_ref()
+            .expect("lint expected");
+        assert_eq!(expected.len(), 1);
+        assert!(expected.contains(&project_a.path));
+        assert!(!expected.contains(&project_b.path));
+        assert!(
+            app.startup_phases
+                .lint_seen_terminal
+                .contains(&project_a.path)
+        );
+    }
+
+    #[test]
     fn vendored_path_dependency_becomes_cargo_active() {
         let mut root_project = make_project(Some("app"), "~/app");
         let vendored = make_project(Some("helper"), "~/app/vendor/helper");
@@ -4173,7 +4280,7 @@ mod tests {
     }
 
     #[test]
-    fn git_path_state_overrides_git_icon_and_sync() {
+    fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
         let project = make_project(Some("demo"), "~/demo");
         let path = project.path.clone();
         let mut app = make_app(vec![project.clone()]);
@@ -4196,11 +4303,9 @@ mod tests {
 
         app.git_path_states
             .insert(path.clone(), GitPathState::Untracked);
-        assert_eq!(app.git_icon(&project), crate::constants::GIT_CLONE);
         assert!(app.git_sync(&project).is_empty());
 
         app.git_path_states.insert(path, GitPathState::Ignored);
-        assert_eq!(app.git_icon(&project), crate::constants::GIT_IGNORED);
         assert!(app.git_sync(&project).is_empty());
     }
 
@@ -4265,7 +4370,10 @@ mod tests {
         app.list_state.select(Some(0));
         app.sync_selected_project();
 
-        assert_eq!(app.selected_project().map(RustProject::example_count), Some(0));
+        assert_eq!(
+            app.selected_project().map(RustProject::example_count),
+            Some(0)
+        );
         assert!(!app.tabbable_panes().contains(&PaneId::Targets));
 
         let mut refreshed = project;
@@ -4277,7 +4385,10 @@ mod tests {
         assert!(app.handle_project_refreshed(&refreshed));
         app.sync_selected_project();
 
-        assert_eq!(app.selected_project().map(RustProject::example_count), Some(1));
+        assert_eq!(
+            app.selected_project().map(RustProject::example_count),
+            Some(1)
+        );
         assert!(app.tabbable_panes().contains(&PaneId::Targets));
     }
 
@@ -4556,6 +4667,31 @@ mod tests {
                 .as_ref()
                 .map(|cache| cache.info.lint_label.as_str()),
             Some("🟢")
+        );
+    }
+
+    #[test]
+    fn disk_rollup_deduplicates_primary_worktree_path() {
+        let mut root = make_node(make_project(None, "~/ws"));
+        let mut primary = make_node(make_project(None, "~/ws"));
+        primary.project.worktree_name = Some("ws".to_string());
+        let mut feature = make_node(make_project(None, "~/ws_feat"));
+        feature.project.worktree_name = Some("ws_feat".to_string());
+        root.worktrees = vec![primary, feature];
+
+        let mut app = make_app(vec![root.project.clone()]);
+        apply_nodes(&mut app, vec![root.clone()]);
+        app.disk_usage.insert("~/ws".to_string(), 15);
+        app.disk_usage.insert("~/ws_feat".to_string(), 21);
+
+        assert_eq!(app.disk_bytes_for_node(&root), Some(36));
+        assert_eq!(
+            disk_bytes_for_node_snapshot(&root, &app.disk_usage),
+            Some(36)
+        );
+        assert_eq!(
+            app.formatted_disk_for_node(&root),
+            crate::tui::render::format_bytes(36)
         );
     }
 }

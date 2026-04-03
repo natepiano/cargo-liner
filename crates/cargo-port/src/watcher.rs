@@ -99,6 +99,18 @@ enum DiskState {
     },
 }
 
+enum GitState {
+    Pending {
+        debounce_deadline: Instant,
+        max_deadline:      Instant,
+        refresh_info:      bool,
+    },
+    Running {
+        dirty_since_start: bool,
+        refresh_info:      bool,
+    },
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "watcher loop owns the full set of shared scan services and config flags"
@@ -138,14 +150,15 @@ fn watcher_loop(
     let mut project_parents: HashSet<PathBuf> = HashSet::new();
     // project_path → disk refresh state
     let mut pending_disk: HashMap<String, DiskState> = HashMap::new();
-    // repo_root → (debounce_deadline, max_deadline)
-    let mut pending_git: HashMap<PathBuf, (Instant, Instant)> = HashMap::new();
+    // repo_root → git refresh state
+    let mut pending_git: HashMap<PathBuf, GitState> = HashMap::new();
     // Directories that might be new projects → probe deadline
     let mut pending_new: HashMap<PathBuf, Instant> = HashMap::new();
     // Directories already discovered as new projects by this watcher.
     let mut discovered: HashSet<PathBuf> = HashSet::new();
     let mut watched_git_metadata: HashSet<PathBuf> = HashSet::new();
     let (disk_done_tx, disk_done_rx) = mpsc::channel::<String>();
+    let (git_done_tx, git_done_rx) = mpsc::channel::<PathBuf>();
     let disk_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_DISK_CONCURRENCY));
     let git_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_GIT_CONCURRENCY));
 
@@ -200,10 +213,15 @@ fn watcher_loop(
             handle_disk_completion(&mut pending_disk, &project_path);
         }
 
+        while let Ok(repo_root) = git_done_rx.try_recv() {
+            handle_git_completion(&mut pending_git, repo_root);
+        }
+
         // Fire git refreshes whose debounce has expired.
         fire_git_updates(
             &client.handle,
             &git_limit,
+            &git_done_tx,
             bg_tx,
             &projects,
             &mut pending_git,
@@ -289,7 +307,7 @@ fn handle_event(
     ctx: &EventContext<'_>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     pending_disk: &mut HashMap<String, DiskState>,
-    pending_git: &mut HashMap<PathBuf, (Instant, Instant)>,
+    pending_git: &mut HashMap<PathBuf, GitState>,
     pending_new: &mut HashMap<PathBuf, Instant>,
 ) {
     let now = Instant::now();
@@ -319,7 +337,14 @@ fn handle_event(
                 event_path.display()
             ));
             emit_root_git_path_refresh(bg_tx, ctx.projects, repo_root);
-            enqueue_git_refresh(pending_git, repo_root.clone(), now, false);
+            enqueue_git_refresh(
+                pending_git,
+                repo_root.clone(),
+                now,
+                false,
+                true,
+                "fast_git_metadata",
+            );
         }
         return;
     }
@@ -333,12 +358,32 @@ fn handle_event(
         if is_target_metadata_event(event_path, entry.abs_path.as_path()) {
             spawn_project_refresh(bg_tx.clone(), entry.abs_path.clone());
         }
+        if let Some(repo_root) = &entry.repo_root
+            && is_internal_git_path(event_path, repo_root)
+        {
+            if is_full_git_metadata_event(event_path, repo_root) {
+                enqueue_git_refresh(
+                    pending_git,
+                    repo_root.clone(),
+                    now,
+                    false,
+                    true,
+                    "git_internal",
+                );
+            }
+            return;
+        }
         let is_target_event = event_path.starts_with(entry.abs_path.join("target"));
         schedule_disk_refresh(pending_disk, &entry.project_path, now);
-        if !is_target_event
-            && let Some(repo_root) = &entry.repo_root
-        {
-            enqueue_git_refresh(pending_git, repo_root.clone(), now, false);
+        if !is_target_event && let Some(repo_root) = &entry.repo_root {
+            enqueue_git_refresh(
+                pending_git,
+                repo_root.clone(),
+                now,
+                false,
+                is_full_git_metadata_event(event_path, repo_root),
+                "project_event",
+            );
         }
         return;
     }
@@ -364,8 +409,7 @@ fn schedule_disk_refresh(
 ) {
     match pending_disk.get_mut(project_path) {
         Some(DiskState::Pending {
-            debounce_deadline,
-            ..
+            debounce_deadline, ..
         }) => {
             *debounce_deadline = now + DEBOUNCE_DURATION;
         },
@@ -402,6 +446,28 @@ fn handle_disk_completion(pending_disk: &mut HashMap<String, DiskState>, project
     }
 }
 
+fn handle_git_completion(pending_git: &mut HashMap<PathBuf, GitState>, repo_root: PathBuf) {
+    let now = Instant::now();
+    let Some(state) = pending_git.remove(&repo_root) else {
+        return;
+    };
+    if let GitState::Running {
+        dirty_since_start,
+        refresh_info,
+    } = state
+        && dirty_since_start
+    {
+        pending_git.insert(
+            repo_root,
+            GitState::Pending {
+                debounce_deadline: now + DEBOUNCE_DURATION,
+                max_deadline: now + MAX_WAIT,
+                refresh_info,
+            },
+        );
+    }
+}
+
 fn is_fast_git_metadata_event(event_path: &Path, entry: &ProjectEntry) -> bool {
     let Some(repo_root) = entry.repo_root.as_deref() else {
         return false;
@@ -410,6 +476,24 @@ fn is_fast_git_metadata_event(event_path: &Path, entry: &ProjectEntry) -> bool {
     event_path == repo_root.join(".gitignore")
         || event_path == repo_git.join("HEAD")
         || event_path == repo_git.join("info").join("exclude")
+}
+
+fn is_internal_git_path(event_path: &Path, repo_root: &Path) -> bool {
+    event_path.starts_with(repo_root.join(".git"))
+}
+
+fn is_full_git_metadata_event(event_path: &Path, repo_root: &Path) -> bool {
+    let git_path = repo_root.join(".git");
+    event_path == repo_root.join(".git")
+        || event_path == repo_root.join(".gitignore")
+        || event_path == git_path.join("HEAD")
+        || event_path == git_path.join("FETCH_HEAD")
+        || event_path == git_path.join("ORIG_HEAD")
+        || event_path == git_path.join("config")
+        || event_path == git_path.join("packed-refs")
+        || event_path == git_path.join("info").join("exclude")
+        || event_path.starts_with(git_path.join("refs").join("heads"))
+        || event_path.starts_with(git_path.join("refs").join("remotes"))
 }
 
 fn is_target_metadata_event(event_path: &Path, project_root: &Path) -> bool {
@@ -441,26 +525,65 @@ fn spawn_project_refresh(bg_tx: mpsc::Sender<BackgroundMsg>, project_root: PathB
 }
 
 fn enqueue_git_refresh(
-    pending_git: &mut HashMap<PathBuf, (Instant, Instant)>,
+    pending_git: &mut HashMap<PathBuf, GitState>,
     repo_root: PathBuf,
     now: Instant,
     immediate: bool,
+    refresh_info: bool,
+    cause: &str,
 ) {
-    let debounce_deadline = if immediate {
-        now
-    } else {
-        now + DEBOUNCE_DURATION
-    };
-    let max_deadline = pending_git
-        .get(&repo_root)
-        .map_or(now + MAX_WAIT, |(_, max)| *max);
+    let pending_count = pending_git
+        .iter()
+        .filter(|(path, _)| path.as_path() != repo_root.as_path())
+        .filter(|(_, state)| matches!(state, GitState::Pending { .. }))
+        .count()
+        + usize::from(!matches!(
+            pending_git.get(&repo_root),
+            Some(GitState::Pending { .. })
+        ));
     perf_log::log_event(&format!(
-        "watcher_enqueue_git_refresh repo_root={} immediate={} pending_git={}",
+        "watcher_enqueue_git_refresh repo_root={} immediate={} refresh_info={} cause={} pending_git={}",
         repo_root.display(),
         immediate,
-        pending_git.len() + usize::from(!pending_git.contains_key(&repo_root))
+        refresh_info,
+        cause,
+        pending_count,
     ));
-    pending_git.insert(repo_root, (debounce_deadline, max_deadline));
+    match pending_git.get_mut(&repo_root) {
+        Some(GitState::Pending {
+            debounce_deadline,
+            refresh_info: pending_refresh_info,
+            ..
+        }) => {
+            *debounce_deadline = if immediate {
+                now
+            } else {
+                now + DEBOUNCE_DURATION
+            };
+            *pending_refresh_info |= refresh_info;
+        },
+        Some(GitState::Running {
+            dirty_since_start,
+            refresh_info: pending_refresh_info,
+        }) => {
+            *dirty_since_start = true;
+            *pending_refresh_info |= refresh_info;
+        },
+        None => {
+            pending_git.insert(
+                repo_root,
+                GitState::Pending {
+                    debounce_deadline: if immediate {
+                        now
+                    } else {
+                        now + DEBOUNCE_DURATION
+                    },
+                    max_deadline: now + MAX_WAIT,
+                    refresh_info,
+                },
+            );
+        },
+    }
 }
 
 fn emit_root_git_path_refresh(
@@ -496,19 +619,34 @@ fn emit_root_git_path_refresh(
 fn fire_git_updates(
     handle: &tokio::runtime::Handle,
     git_limit: &Arc<tokio::sync::Semaphore>,
+    git_done_tx: &mpsc::Sender<PathBuf>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     projects: &HashMap<PathBuf, ProjectEntry>,
-    pending_git: &mut HashMap<PathBuf, (Instant, Instant)>,
+    pending_git: &mut HashMap<PathBuf, GitState>,
 ) {
     let now = Instant::now();
-    let ready: Vec<PathBuf> = pending_git
+    let ready: Vec<(PathBuf, bool)> = pending_git
         .iter()
-        .filter(|(_, (debounce, max))| now >= *debounce || now >= *max)
-        .map(|(repo_root, _)| repo_root.clone())
+        .filter_map(|(repo_root, state)| match state {
+            GitState::Pending {
+                debounce_deadline,
+                max_deadline,
+                refresh_info,
+            } if now >= *debounce_deadline || now >= *max_deadline => {
+                Some((repo_root.clone(), *refresh_info))
+            },
+            GitState::Pending { .. } | GitState::Running { .. } => None,
+        })
         .collect();
 
-    for repo_root in ready {
-        pending_git.remove(&repo_root);
+    for (repo_root, refresh_info) in ready {
+        pending_git.insert(
+            repo_root.clone(),
+            GitState::Running {
+                dirty_since_start: false,
+                refresh_info:      false,
+            },
+        );
         let affected: Vec<(String, String)> = projects
             .values()
             .filter(|entry| entry.repo_root.as_deref() == Some(repo_root.as_path()))
@@ -522,16 +660,26 @@ fn fire_git_updates(
         if affected.is_empty() {
             continue;
         }
-        spawn_git_refresh(handle, git_limit, bg_tx.clone(), repo_root, affected);
+        spawn_git_refresh(
+            handle,
+            git_limit,
+            git_done_tx.clone(),
+            bg_tx.clone(),
+            repo_root,
+            affected,
+            refresh_info,
+        );
     }
 }
 
 fn spawn_git_refresh(
     handle: &tokio::runtime::Handle,
     git_limit: &Arc<tokio::sync::Semaphore>,
+    git_done_tx: mpsc::Sender<PathBuf>,
     bg_tx: mpsc::Sender<BackgroundMsg>,
     repo_root: PathBuf,
     affected: Vec<(String, String)>,
+    refresh_info: bool,
 ) {
     let handle = handle.clone();
     let git_limit = Arc::clone(git_limit);
@@ -552,32 +700,37 @@ fn spawn_git_refresh(
         );
 
         let started = Instant::now();
-        let repo_root_for_git_info = repo_root.clone();
-        let git_info_started = Instant::now();
-        let git_info =
-            tokio::task::spawn_blocking(move || GitInfo::detect(&repo_root_for_git_info))
-                .await
-                .ok()
-                .flatten();
-        let git_info_elapsed_ms = git_info_started.elapsed().as_millis();
-        perf_log::log_duration(
-            "watcher_git_info_detect",
-            git_info_started.elapsed(),
-            &format!(
-                "repo_root={} affected_rows={}",
-                repo_root.display(),
-                affected.len()
-            ),
-            0,
-        );
-        if let Some(info) = git_info {
-            for (path, _) in &affected {
-                let _ = bg_tx.send(BackgroundMsg::GitInfo {
-                    path: path.clone(),
-                    info: info.clone(),
-                });
+        let git_info_elapsed_ms = if refresh_info {
+            let repo_root_for_git_info = repo_root.clone();
+            let git_info_started = Instant::now();
+            let git_info =
+                tokio::task::spawn_blocking(move || GitInfo::detect_fast(&repo_root_for_git_info))
+                    .await
+                    .ok()
+                    .flatten();
+            let git_info_elapsed_ms = git_info_started.elapsed().as_millis();
+            perf_log::log_duration(
+                "watcher_git_info_detect",
+                git_info_started.elapsed(),
+                &format!(
+                    "repo_root={} affected_rows={} refresh_info={refresh_info}",
+                    repo_root.display(),
+                    affected.len()
+                ),
+                0,
+            );
+            if let Some(info) = git_info {
+                for (path, _) in &affected {
+                    let _ = bg_tx.send(BackgroundMsg::GitInfo {
+                        path: path.clone(),
+                        info: info.clone(),
+                    });
+                }
             }
-        }
+            git_info_elapsed_ms
+        } else {
+            0
+        };
 
         let git_projects = affected.clone();
         let state_started = Instant::now();
@@ -596,14 +749,16 @@ fn spawn_git_refresh(
             "watcher_git_refresh",
             started.elapsed(),
             &format!(
-                "repo_root={} affected_rows={} git_info_ms={} git_path_states_ms={}",
+                "repo_root={} affected_rows={} refresh_info={} git_info_ms={} git_path_states_ms={}",
                 repo_root.display(),
                 affected.len(),
+                refresh_info,
                 git_info_elapsed_ms,
                 git_path_states_elapsed_ms
             ),
             0,
         );
+        let _ = git_done_tx.send(repo_root);
     });
 }
 
@@ -1050,10 +1205,10 @@ edition = "2024"
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
         let ctx = EventContext {
-            scan_root: &scan_root,
-            projects: &projects,
+            scan_root:       &scan_root,
+            projects:        &projects,
             project_parents: &project_parents,
-            discovered: &discovered,
+            discovered:      &discovered,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -1079,7 +1234,10 @@ edition = "2024"
         }
 
         let refreshed = refreshed.expect("project refresh");
-        assert_eq!(refreshed.abs_path, project_root.path().display().to_string());
+        assert_eq!(
+            refreshed.abs_path,
+            project_root.path().display().to_string()
+        );
         assert_eq!(refreshed.example_count(), 1);
         assert_pending_disk(&pending_disk, "~/rust/demo");
         assert!(pending_git.is_empty());
@@ -1127,6 +1285,7 @@ edition = "2024"
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
+        let (git_done_tx, _git_done_rx) = mpsc::channel();
 
         handle_event(
             &project_dir.join(".git").join("info").join("exclude"),
@@ -1141,6 +1300,7 @@ edition = "2024"
         fire_git_updates(
             test_runtime().handle(),
             &git_limit,
+            &git_done_tx,
             &bg_tx,
             &projects,
             &mut pending_git,
@@ -1185,6 +1345,50 @@ edition = "2024"
             pending_git.contains_key(&project_dir),
             "full repo refresh should stay queued for children"
         );
+        assert!(pending_new.is_empty());
+    }
+
+    #[test]
+    fn git_internal_noise_is_ignored() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("my_project");
+        std::fs::create_dir_all(project_dir.join(".git").join("objects")).expect("create git dir");
+
+        let mut projects = HashMap::new();
+        projects.insert(
+            project_dir.clone(),
+            ProjectEntry {
+                project_path:         "~/my_project".to_string(),
+                abs_path:             project_dir.clone(),
+                repo_root:            Some(project_dir.clone()),
+                port_report_dir_path: port_report::project_dir(&project_dir),
+            },
+        );
+        let scan_root = tmp.path().to_path_buf();
+        let project_parents = HashSet::from([scan_root.clone()]);
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, _bg_rx) = mpsc::channel();
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        handle_event(
+            &project_dir.join(".git").join("objects").join("pack.tmp"),
+            &ctx,
+            &bg_tx,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        assert!(pending_disk.is_empty());
+        assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());
     }
 
@@ -1448,6 +1652,16 @@ edition = "2024"
                 PathBuf::from("/home/user/.claude"),
             ]
         );
+    }
+
+    #[test]
+    fn tilde_include_dirs_expand_to_home_paths() {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/user"));
+        let dirs = scan::resolve_include_dirs(
+            Path::new("/home/user/rust"),
+            &["~/rust".to_string(), "~/.claude".to_string()],
+        );
+        assert_eq!(dirs, vec![home.join("rust"), home.join(".claude"),]);
     }
 
     #[test]

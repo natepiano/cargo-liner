@@ -119,7 +119,8 @@ fn top_level_project_count(projects: &[ProjectEntry]) -> usize {
     let mut count = 0usize;
     for project in projects {
         let is_nested = projects.iter().any(|candidate| {
-            candidate.abs_path != project.abs_path && project.abs_path.starts_with(&candidate.abs_path)
+            candidate.abs_path != project.abs_path
+                && project.abs_path.starts_with(&candidate.abs_path)
         });
         if !is_nested {
             count += 1;

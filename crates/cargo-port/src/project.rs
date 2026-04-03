@@ -96,21 +96,28 @@ impl GitInfo {
             GitOrigin::Clone
         };
 
-        let url_output =
-            git_output_logged(&repo_root, "remote_get_url_origin", ["remote", "get-url", "origin"])
-                .ok()?;
+        let url_output = git_output_logged(
+            &repo_root,
+            "remote_get_url_origin",
+            ["remote", "get-url", "origin"],
+        )
+        .ok()?;
         let raw_url = String::from_utf8_lossy(&url_output.stdout)
             .trim()
             .to_string();
 
         let (owner, url) = parse_remote_url(&raw_url);
 
-        let branch = git_output_logged(&repo_root, "rev_parse_head", ["rev-parse", "--abbrev-ref", "HEAD"])
-            .ok()
-            .and_then(|o| {
-                let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if b.is_empty() { None } else { Some(b) }
-            });
+        let branch = git_output_logged(
+            &repo_root,
+            "rev_parse_head",
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+        )
+        .ok()
+        .and_then(|o| {
+            let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if b.is_empty() { None } else { Some(b) }
+        });
 
         let ahead_behind = parse_ahead_behind(&repo_root, "HEAD...@{upstream}", "upstream");
 
@@ -120,37 +127,33 @@ impl GitInfo {
             "symbolic_ref_origin_head",
             ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
         )
-            .ok()
-            .and_then(|o| {
-                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                // Comes back as "origin/main" — strip the "origin/" prefix.
-                s.strip_prefix("origin/")
-                    .filter(|b| !b.is_empty())
-                    .map(str::to_string)
-            });
+        .ok()
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            // Comes back as "origin/main" — strip the "origin/" prefix.
+            s.strip_prefix("origin/")
+                .filter(|b| !b.is_empty())
+                .map(str::to_string)
+        });
 
         // Compare HEAD against the default branch when it differs from the current branch.
         let not_on_default = default_branch
             .as_deref()
             .filter(|db| branch.as_deref() != Some(*db));
         let ahead_behind_origin = not_on_default.and_then(|db| {
-            parse_ahead_behind(
-                &repo_root,
-                &format!("HEAD...origin/{db}"),
-                "default_origin",
-            )
+            parse_ahead_behind(&repo_root, &format!("HEAD...origin/{db}"), "default_origin")
         });
-        let ahead_behind_local =
-            not_on_default.and_then(|db| {
-                parse_ahead_behind(&repo_root, &format!("HEAD...{db}"), "default_local")
-            });
+        let ahead_behind_local = not_on_default.and_then(|db| {
+            parse_ahead_behind(&repo_root, &format!("HEAD...{db}"), "default_local")
+        });
 
-        let last_commit = git_output_logged(&repo_root, "log_last_commit", ["log", "-1", "--format=%aI"])
-            .ok()
-            .and_then(|o| {
-                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if s.is_empty() { None } else { Some(s) }
-            });
+        let last_commit =
+            git_output_logged(&repo_root, "log_last_commit", ["log", "-1", "--format=%aI"])
+                .ok()
+                .and_then(|o| {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if s.is_empty() { None } else { Some(s) }
+                });
 
         Some(Self {
             origin,
@@ -172,7 +175,13 @@ pub fn detect_first_commit(project_dir: &Path) -> Option<String> {
     git_output_logged(
         &repo_root,
         "log_first_commit",
-        ["log", "--max-parents=0", "--reverse", "--format=%aI", "HEAD"],
+        [
+            "log",
+            "--max-parents=0",
+            "--reverse",
+            "--format=%aI",
+            "HEAD",
+        ],
     )
     .ok()
     .and_then(|o| {
@@ -540,20 +549,24 @@ const fn apply_git_path_state(current: &mut GitPathState, candidate: GitPathStat
 }
 
 /// Parse `git rev-list --left-right --count` output into `(ahead, behind)`.
-fn parse_ahead_behind(project_dir: &Path, revspec: &str, op_suffix: &str) -> Option<(usize, usize)> {
+fn parse_ahead_behind(
+    project_dir: &Path,
+    revspec: &str,
+    op_suffix: &str,
+) -> Option<(usize, usize)> {
     git_output_logged(
         project_dir,
         &format!("rev_list_{op_suffix}"),
         ["rev-list", "--left-right", "--count", revspec],
     )
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout);
-            let mut parts = s.trim().split('\t');
-            let ahead = parts.next()?.parse::<usize>().ok()?;
-            let behind = parts.next()?.parse::<usize>().ok()?;
-            Some((ahead, behind))
-        })
+    .ok()
+    .and_then(|o| {
+        let s = String::from_utf8_lossy(&o.stdout);
+        let mut parts = s.trim().split('\t');
+        let ahead = parts.next()?.parse::<usize>().ok()?;
+        let behind = parts.next()?.parse::<usize>().ok()?;
+        Some((ahead, behind))
+    })
 }
 
 /// Extract the owner and HTTPS URL from a git remote URL.

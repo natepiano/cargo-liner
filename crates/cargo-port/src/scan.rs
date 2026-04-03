@@ -1083,7 +1083,8 @@ pub fn resolve_include_dirs(scan_root: &Path, include_dirs: &[String]) -> Vec<Pa
     include_dirs
         .iter()
         .map(|dir| {
-            let path = Path::new(dir);
+            let expanded = expand_home_path(dir);
+            let path = expanded.as_path();
             if path.is_absolute() {
                 path.to_path_buf()
             } else {
@@ -1091,6 +1092,16 @@ pub fn resolve_include_dirs(scan_root: &Path, include_dirs: &[String]) -> Vec<Pa
             }
         })
         .collect()
+}
+
+fn expand_home_path(raw: &str) -> PathBuf {
+    if raw == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(raw));
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return dirs::home_dir().map_or_else(|| PathBuf::from(raw), |home| home.join(rest));
+    }
+    PathBuf::from(raw)
 }
 
 /// Information collected in phase 1 (local work) for a single project,
@@ -1206,10 +1217,10 @@ pub fn spawn_streaming_scan(
 /// local metadata collection stay on the dedicated scan thread, while disk and network work are
 /// dispatched onto bounded background queues.
 struct Phase1DiscoverStats {
-    visited_dirs:       usize,
-    manifests:          usize,
-    projects:           usize,
-    non_rust_projects:  usize,
+    visited_dirs:      usize,
+    manifests:         usize,
+    projects:          usize,
+    non_rust_projects: usize,
 }
 
 struct Phase1DiscoverResult {
@@ -1266,14 +1277,16 @@ fn phase1_discover(
                         owner_repo: None,
                         lint_enabled: scan_context.lint_enabled,
                     };
-                    spawn_project_local_work(scan_context, discovered.clone(), GitRepoPresence::InRepo);
+                    spawn_project_local_work(
+                        scan_context,
+                        discovered.clone(),
+                        GitRepoPresence::InRepo,
+                    );
                     disk_entries.push((discovered.path.clone(), discovered.abs_path.clone()));
                     continue;
                 }
             }
-            if entry.file_type().is_file()
-                && entry.file_name() == "Cargo.toml"
-            {
+            if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
                 stats.manifests += 1;
                 let manifest_started = std::time::Instant::now();
                 let Ok(project) = RustProject::from_cargo_toml(entry.path()) else {
@@ -1321,7 +1334,10 @@ fn phase1_discover(
             }
         }
     }
-    Phase1DiscoverResult { disk_entries, stats }
+    Phase1DiscoverResult {
+        disk_entries,
+        stats,
+    }
 }
 
 fn spawn_initial_disk_usage(
@@ -1386,7 +1402,11 @@ fn spawn_project_local_work(
         perf_log::log_duration(
             "tokio_local_queue_wait",
             queue_started.elapsed(),
-            &format!("path={} abs_path={}", project.path, project.abs_path.display()),
+            &format!(
+                "path={} abs_path={}",
+                project.path,
+                project.abs_path.display()
+            ),
             0,
         );
         let run_started = std::time::Instant::now();
@@ -1408,7 +1428,11 @@ fn spawn_project_local_work(
         perf_log::log_duration(
             "tokio_local_work",
             run_started.elapsed(),
-            &format!("path={} abs_path={}", discovered.path, discovered.abs_path.display()),
+            &format!(
+                "path={} abs_path={}",
+                discovered.path,
+                discovered.abs_path.display()
+            ),
             0,
         );
         spawn_project_http(&scan_context, &discovered);
@@ -1417,9 +1441,9 @@ fn spawn_project_local_work(
 
 #[derive(Clone)]
 struct DiskUsageTree {
-    root_path: String,
+    root_path:     String,
     root_abs_path: PathBuf,
-    entries: Vec<(String, PathBuf)>,
+    entries:       Vec<(String, PathBuf)>,
 }
 
 fn group_disk_usage_trees(disk_entries: &[(String, PathBuf)]) -> Vec<DiskUsageTree> {
@@ -1440,9 +1464,9 @@ fn group_disk_usage_trees(disk_entries: &[(String, PathBuf)]) -> Vec<DiskUsageTr
             tree.entries.push((path, abs_path));
         } else {
             trees.push(DiskUsageTree {
-                root_path: path.clone(),
+                root_path:     path.clone(),
                 root_abs_path: abs_path.clone(),
-                entries: vec![(path, abs_path)],
+                entries:       vec![(path, abs_path)],
             });
         }
     }
@@ -2096,7 +2120,10 @@ mod tests {
     #[test]
     fn group_disk_usage_trees_merges_nested_projects_under_one_root() {
         let trees = group_disk_usage_trees(&[
-            ("~/rust/bevy".to_string(), PathBuf::from("/home/user/rust/bevy")),
+            (
+                "~/rust/bevy".to_string(),
+                PathBuf::from("/home/user/rust/bevy"),
+            ),
             (
                 "~/rust/bevy/crates/bevy_ecs".to_string(),
                 PathBuf::from("/home/user/rust/bevy/crates/bevy_ecs"),
@@ -2124,7 +2151,8 @@ mod tests {
         let root = tmp.path().join("bevy");
         let child = root.join("crates").join("bevy_ecs");
         std::fs::create_dir_all(&child).unwrap_or_else(|_| std::process::abort());
-        std::fs::write(root.join("root.txt"), vec![0_u8; 5]).unwrap_or_else(|_| std::process::abort());
+        std::fs::write(root.join("root.txt"), vec![0_u8; 5])
+            .unwrap_or_else(|_| std::process::abort());
         std::fs::write(child.join("child.txt"), vec![0_u8; 7])
             .unwrap_or_else(|_| std::process::abort());
 
