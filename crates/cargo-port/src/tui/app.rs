@@ -1067,7 +1067,7 @@ impl App {
         crate::config::set_active_config(cfg);
         let config_path = crate::config::config_path();
         let config_last_seen = config_path.as_deref().and_then(Self::config_file_stamp);
-        let lint_spawn = lint_runtime::spawn(cfg);
+        let lint_spawn = lint_runtime::spawn(cfg, bg_tx.clone());
         let lint_warning = lint_spawn.warning.clone();
         let watch_tx = watcher::spawn_watcher(
             scan_root.clone(),
@@ -1373,7 +1373,7 @@ impl App {
     }
 
     fn refresh_lint_runtime_from_config(&mut self, cfg: &Config) {
-        let lint_spawn = lint_runtime::spawn(cfg);
+        let lint_spawn = lint_runtime::spawn(cfg, self.bg_tx.clone());
         self.lint_runtime = lint_spawn.handle;
         self.register_existing_projects();
         self.sync_lint_runtime_projects_immediately();

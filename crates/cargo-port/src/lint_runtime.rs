@@ -21,6 +21,7 @@ use crate::config::Config;
 use crate::config::LintCommandConfig;
 use crate::config::LintConfig;
 use crate::port_report;
+use crate::scan::BackgroundMsg;
 
 const LINT_DEBOUNCE: Duration = Duration::from_millis(750);
 const DELETE_LINT_DEBOUNCE: Duration = Duration::from_millis(1500);
@@ -90,7 +91,7 @@ struct ProjectWorker {
     handle: JoinHandle<()>,
 }
 
-pub fn spawn(config: &Config) -> SpawnResult {
+pub fn spawn(config: &Config, bg_tx: mpsc::Sender<BackgroundMsg>) -> SpawnResult {
     if !config.lint.enabled {
         return SpawnResult {
             handle:  None,
@@ -101,7 +102,7 @@ pub fn spawn(config: &Config) -> SpawnResult {
     let cache_root = cache_paths::port_report_root_for(config);
     let lint = config.lint.clone();
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || supervisor_loop(rx, cache_root, lint));
+    thread::spawn(move || supervisor_loop(rx, cache_root, lint, bg_tx));
     SpawnResult {
         handle:  Some(RuntimeHandle { tx }),
         warning: None,
@@ -112,7 +113,12 @@ pub fn spawn(config: &Config) -> SpawnResult {
     clippy::needless_pass_by_value,
     reason = "supervisor owns its queue and worker map for the lifetime of the runtime"
 )]
-fn supervisor_loop(rx: mpsc::Receiver<SupervisorMsg>, cache_root: PathBuf, lint: LintConfig) {
+fn supervisor_loop(
+    rx: mpsc::Receiver<SupervisorMsg>,
+    cache_root: PathBuf,
+    lint: LintConfig,
+    bg_tx: mpsc::Sender<BackgroundMsg>,
+) {
     let commands = lint.resolved_commands();
     let mut workers: HashMap<PathBuf, ProjectWorker> = HashMap::new();
     let mut initialized = false;
@@ -125,7 +131,7 @@ fn supervisor_loop(rx: mpsc::Receiver<SupervisorMsg>, cache_root: PathBuf, lint:
             }) => {
                 let desired = desired_projects(&lint, projects);
                 if !initialized {
-                    clear_orphaned_running_statuses(&desired, &cache_root);
+                    clear_orphaned_running_statuses(&desired, &cache_root, &bg_tx);
                 }
                 reconcile_workers(
                     &mut workers,
@@ -133,6 +139,7 @@ fn supervisor_loop(rx: mpsc::Receiver<SupervisorMsg>, cache_root: PathBuf, lint:
                     &cache_root,
                     &commands,
                     should_trigger_new_runs(initialized, force_immediate_run),
+                    &bg_tx,
                 );
                 initialized = true;
             },
@@ -153,9 +160,19 @@ const fn should_trigger_new_runs(initialized: bool, force_immediate_run: bool) -
 fn clear_orphaned_running_statuses(
     desired: &HashMap<PathBuf, RegisterProjectRequest>,
     cache_root: &Path,
+    bg_tx: &mpsc::Sender<BackgroundMsg>,
 ) {
-    for project_root in desired.keys() {
-        let _ = port_report::clear_latest_if_running_under(cache_root, project_root);
+    for (project_root, request) in desired {
+        let Ok(cleared) = port_report::clear_latest_if_running_under(cache_root, project_root)
+        else {
+            continue;
+        };
+        if cleared {
+            let _ = bg_tx.send(BackgroundMsg::LintStatus {
+                path:   request.project_path.clone(),
+                status: port_report::LintStatus::NoLog,
+            });
+        }
     }
 }
 
@@ -176,6 +193,7 @@ fn reconcile_workers(
     cache_root: &Path,
     commands: &[LintCommandConfig],
     trigger_new_runs: bool,
+    bg_tx: &mpsc::Sender<BackgroundMsg>,
 ) {
     let stale: Vec<PathBuf> = workers
         .keys()
@@ -190,10 +208,12 @@ fn reconcile_workers(
     for (path, request) in desired {
         workers.entry(path).or_insert_with(|| {
             spawn_project_worker(
+                request.project_path,
                 request.abs_path,
                 cache_root.to_path_buf(),
                 commands.to_vec(),
                 trigger_new_runs,
+                bg_tx.clone(),
             )
         });
     }
@@ -205,10 +225,12 @@ fn stop_worker(worker: ProjectWorker) {
 }
 
 fn spawn_project_worker(
+    project_path: String,
     project_root: PathBuf,
     cache_root: PathBuf,
     commands: Vec<LintCommandConfig>,
     run_immediately: bool,
+    bg_tx: mpsc::Sender<BackgroundMsg>,
 ) -> ProjectWorker {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::clone(&stop);
@@ -254,7 +276,13 @@ fn spawn_project_worker(
                         && Instant::now() >= deadline
                     {
                         if project_still_runnable(&project_root) {
-                            let _ = run_commands_for_project(&project_root, &cache_root, &commands);
+                            let _ = run_commands_for_project(
+                                &project_root,
+                                &project_path,
+                                &cache_root,
+                                &commands,
+                                &bg_tx,
+                            );
                         }
                         next_run_at = None;
                     }
@@ -354,8 +382,10 @@ struct CommandExecution {
 
 pub fn run_commands_for_project(
     project_root: &Path,
+    project_path: &str,
     cache_root: &Path,
     commands: &[LintCommandConfig],
+    bg_tx: &mpsc::Sender<BackgroundMsg>,
 ) -> io::Result<()> {
     if !project_still_runnable(project_root) {
         return Ok(());
@@ -393,12 +423,20 @@ pub fn run_commands_for_project(
             .collect(),
     };
     port_report::write_latest_under(cache_root, project_root, &run)?;
+    let _ = bg_tx.send(BackgroundMsg::LintStatus {
+        path:   project_path.to_string(),
+        status: port_report::read_status_under(cache_root, project_root),
+    });
 
     let manifest_path = project_root.join("Cargo.toml");
     let mut failed = false;
     for (index, command) in commands.iter().enumerate() {
         if !project_still_runnable(project_root) {
             let _ = port_report::clear_latest_under(cache_root, project_root);
+            let _ = bg_tx.send(BackgroundMsg::LintStatus {
+                path:   project_path.to_string(),
+                status: port_report::LintStatus::NoLog,
+            });
             return Ok(());
         }
         let execution = run_command(project_root, &manifest_path, &output_dir, command, index)?;
@@ -419,6 +457,10 @@ pub fn run_commands_for_project(
 
     if !project_still_runnable(project_root) {
         let _ = port_report::clear_latest_under(cache_root, project_root);
+        let _ = bg_tx.send(BackgroundMsg::LintStatus {
+            path:   project_path.to_string(),
+            status: port_report::LintStatus::NoLog,
+        });
         return Ok(());
     }
 
@@ -432,6 +474,10 @@ pub fn run_commands_for_project(
 
     port_report::write_latest_under(cache_root, project_root, &run)?;
     port_report::append_history_under(cache_root, project_root, &run)?;
+    let _ = bg_tx.send(BackgroundMsg::LintStatus {
+        path:   project_path.to_string(),
+        status: port_report::read_status_under(cache_root, project_root),
+    });
     Ok(())
 }
 
@@ -634,7 +680,15 @@ mod tests {
             command: "printf 'lint ok\\n'".to_string(),
         }];
 
-        run_commands_for_project(project_dir.path(), &cache_root, &commands).expect("run commands");
+        let (tx, _rx) = mpsc::channel();
+        run_commands_for_project(
+            project_dir.path(),
+            "~/rust/demo",
+            &cache_root,
+            &commands,
+            &tx,
+        )
+        .expect("run commands");
 
         let report_dir = port_report::output_dir_under(&cache_root, project_dir.path());
         let latest_path = port_report::latest_path_under(&cache_root, project_dir.path());
@@ -713,8 +767,15 @@ mod tests {
             command: "printf 'lint ok\\n'".to_string(),
         }];
 
-        run_commands_for_project(project_dir.path(), cache_dir.path(), &commands)
-            .expect("run commands");
+        let (tx, _rx) = mpsc::channel();
+        run_commands_for_project(
+            project_dir.path(),
+            "~/rust/demo",
+            cache_dir.path(),
+            &commands,
+            &tx,
+        )
+        .expect("run commands");
 
         let latest_path = port_report::latest_path_under(cache_dir.path(), project_dir.path());
         let history_path = port_report::history_path_under(cache_dir.path(), project_dir.path());
@@ -728,6 +789,7 @@ mod tests {
         let mut workers = HashMap::new();
         let (worker, exited) = dummy_worker();
         workers.insert(path, worker);
+        let (bg_tx, _bg_rx) = mpsc::channel();
 
         reconcile_workers(
             &mut workers,
@@ -735,6 +797,7 @@ mod tests {
             Path::new("/tmp/cache"),
             &Vec::new(),
             false,
+            &bg_tx,
         );
 
         assert!(workers.is_empty());
@@ -753,12 +816,14 @@ mod tests {
         let desired = HashMap::from([(project_dir.path().to_path_buf(), request)]);
 
         let mut workers = HashMap::new();
+        let (bg_tx, _bg_rx) = mpsc::channel();
         reconcile_workers(
             &mut workers,
             desired,
             Path::new("/tmp/cache"),
             &Vec::new(),
             true,
+            &bg_tx,
         );
 
         assert_eq!(workers.len(), 1);

@@ -264,6 +264,10 @@ pub fn read_status(project_root: &Path) -> LintStatus {
     read_status_from_path(&latest_path_under(&cache_root(), project_root))
 }
 
+pub fn read_status_under(cache_root: &Path, project_root: &Path) -> LintStatus {
+    read_status_from_path(&latest_path_under(cache_root, project_root))
+}
+
 fn read_status_from_path(path: &Path) -> LintStatus {
     let Some(run) = read_latest_file(path) else {
         return LintStatus::NoLog;
