@@ -111,6 +111,16 @@ enum GitState {
     },
 }
 
+#[derive(Clone, Copy)]
+enum GitRefreshKind {
+    PathStateOnly,
+    FullMetadata,
+}
+
+impl GitRefreshKind {
+    const fn refresh_info(self) -> bool { matches!(self, Self::FullMetadata) }
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "watcher loop owns the full set of shared scan services and config flags"
@@ -222,11 +232,7 @@ fn watcher_loop(
     }
 }
 
-fn register_watch_roots(
-    watcher: &mut impl Watcher,
-    watch_dirs: &[PathBuf],
-    lint_enabled: bool,
-) {
+fn register_watch_roots(watcher: &mut impl Watcher, watch_dirs: &[PathBuf], lint_enabled: bool) {
     for dir in watch_dirs {
         if dir.is_dir() {
             let _ = watcher.watch(dir, RecursiveMode::Recursive);
@@ -344,6 +350,7 @@ fn git_metadata_watch_paths(repo_root: &Path) -> Vec<PathBuf> {
     let git_path = repo_root.join(".git");
     if git_path.is_dir() {
         paths.push(git_path.join("HEAD"));
+        paths.push(git_path.join("index"));
         paths.push(git_path.join("info"));
         paths.push(git_path.join("info").join("exclude"));
     }
@@ -386,16 +393,15 @@ fn handle_event(
         return;
     }
 
-    if let Some(entry) = ctx
-        .projects
-        .values()
-        .find(|entry| is_fast_git_metadata_event(event_path, entry))
-    {
+    if let Some((entry, refresh_kind)) = ctx.projects.values().find_map(|entry| {
+        classify_fast_git_event(event_path, entry).map(|refresh_kind| (entry, refresh_kind))
+    }) {
         if let Some(repo_root) = &entry.repo_root {
             perf_log::log_event(&format!(
-                "watcher_fast_git_metadata_event repo_root={} event_path={}",
+                "watcher_fast_git_metadata_event repo_root={} event_path={} refresh_info={}",
                 repo_root.display(),
-                event_path.display()
+                event_path.display(),
+                refresh_kind.refresh_info()
             ));
             emit_root_git_path_refresh(bg_tx, ctx.projects, repo_root);
             enqueue_git_refresh(
@@ -403,8 +409,12 @@ fn handle_event(
                 repo_root.clone(),
                 now,
                 false,
-                true,
-                "fast_git_metadata",
+                refresh_kind.refresh_info(),
+                if refresh_kind.refresh_info() {
+                    "fast_git_metadata"
+                } else {
+                    "fast_git_path_state"
+                },
             );
         }
         return;
@@ -422,14 +432,18 @@ fn handle_event(
         if let Some(repo_root) = &entry.repo_root
             && is_internal_git_path(event_path, repo_root)
         {
-            if is_full_git_metadata_event(event_path, repo_root) {
+            if let Some(refresh_kind) = classify_internal_git_event(event_path, repo_root) {
                 enqueue_git_refresh(
                     pending_git,
                     repo_root.clone(),
                     now,
                     false,
-                    true,
-                    "git_internal",
+                    refresh_kind.refresh_info(),
+                    if refresh_kind.refresh_info() {
+                        "git_internal"
+                    } else {
+                        "git_internal_path_state"
+                    },
                 );
             }
             return;
@@ -442,7 +456,8 @@ fn handle_event(
                 repo_root.clone(),
                 now,
                 false,
-                is_full_git_metadata_event(event_path, repo_root),
+                classify_internal_git_event(event_path, repo_root)
+                    .is_some_and(GitRefreshKind::refresh_info),
                 "project_event",
             );
         }
@@ -529,32 +544,48 @@ fn handle_git_completion(pending_git: &mut HashMap<PathBuf, GitState>, repo_root
     }
 }
 
-fn is_fast_git_metadata_event(event_path: &Path, entry: &ProjectEntry) -> bool {
+fn classify_fast_git_event(event_path: &Path, entry: &ProjectEntry) -> Option<GitRefreshKind> {
     let Some(repo_root) = entry.repo_root.as_deref() else {
-        return false;
+        return None;
     };
     let repo_git = repo_root.join(".git");
-    event_path == repo_root.join(".gitignore")
-        || event_path == repo_git.join("HEAD")
+    if event_path == repo_root.join(".gitignore")
+        || event_path == repo_git.join("index")
         || event_path == repo_git.join("info").join("exclude")
+    {
+        Some(GitRefreshKind::PathStateOnly)
+    } else if event_path == repo_git.join("HEAD") {
+        Some(GitRefreshKind::FullMetadata)
+    } else {
+        None
+    }
 }
 
 fn is_internal_git_path(event_path: &Path, repo_root: &Path) -> bool {
     event_path.starts_with(repo_root.join(".git"))
 }
 
-fn is_full_git_metadata_event(event_path: &Path, repo_root: &Path) -> bool {
+fn classify_internal_git_event(event_path: &Path, repo_root: &Path) -> Option<GitRefreshKind> {
     let git_path = repo_root.join(".git");
-    event_path == repo_root.join(".git")
-        || event_path == repo_root.join(".gitignore")
+    if event_path == repo_root.join(".gitignore")
+        || event_path == git_path.join("index")
+        || event_path == git_path.join("index.lock")
+        || event_path == git_path.join("info").join("exclude")
+    {
+        Some(GitRefreshKind::PathStateOnly)
+    } else if event_path == repo_root.join(".git")
         || event_path == git_path.join("HEAD")
         || event_path == git_path.join("FETCH_HEAD")
         || event_path == git_path.join("ORIG_HEAD")
         || event_path == git_path.join("config")
         || event_path == git_path.join("packed-refs")
-        || event_path == git_path.join("info").join("exclude")
         || event_path.starts_with(git_path.join("refs").join("heads"))
         || event_path.starts_with(git_path.join("refs").join("remotes"))
+    {
+        Some(GitRefreshKind::FullMetadata)
+    } else {
+        None
+    }
 }
 
 fn is_target_metadata_event(event_path: &Path, project_root: &Path) -> bool {
@@ -1027,10 +1058,7 @@ fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<RustProject> 
     clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
 )]
-#[allow(
-    clippy::panic,
-    reason = "tests should panic on unexpected values"
-)]
+#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use std::process::Command;
     use std::sync::Arc;
@@ -1458,6 +1486,107 @@ edition = "2024"
 
         assert!(pending_disk.is_empty());
         assert!(pending_git.is_empty());
+        assert!(pending_new.is_empty());
+    }
+
+    #[test]
+    fn git_index_event_refreshes_git_path_immediately() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("my_project");
+        std::fs::create_dir_all(&project_dir).expect("create project dir");
+        init_git_repo(&project_dir);
+        let member_dir = project_dir.join("crates").join("member");
+        std::fs::create_dir_all(&member_dir).expect("create member dir");
+
+        let mut projects = HashMap::new();
+        projects.insert(
+            project_dir.clone(),
+            ProjectEntry {
+                project_path:         "~/my_project".to_string(),
+                abs_path:             project_dir.clone(),
+                repo_root:            Some(project_dir.clone()),
+                port_report_dir_path: port_report::project_dir(&project_dir),
+            },
+        );
+        projects.insert(
+            member_dir.clone(),
+            ProjectEntry {
+                project_path:         "~/my_project/crates/member".to_string(),
+                abs_path:             member_dir.clone(),
+                repo_root:            Some(project_dir.clone()),
+                port_report_dir_path: port_report::project_dir(&member_dir),
+            },
+        );
+        let scan_root = tmp.path().to_path_buf();
+        let project_parents = HashSet::from([scan_root.clone()]);
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+        let (git_done_tx, _git_done_rx) = mpsc::channel();
+
+        handle_event(
+            &project_dir.join(".git").join("index"),
+            &ctx,
+            &bg_tx,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        let git_limit = Arc::new(tokio::sync::Semaphore::new(1));
+        fire_git_updates(
+            test_runtime().handle(),
+            &git_limit,
+            &git_done_tx,
+            &bg_tx,
+            &projects,
+            &mut pending_git,
+        );
+        wait_for_messages();
+
+        let mut got_git_info = false;
+        let mut got_root_git_state = false;
+        let mut got_member_git_state = false;
+        while let Ok(msg) = bg_rx.try_recv() {
+            match msg {
+                BackgroundMsg::GitInfo { .. } => got_git_info = true,
+                BackgroundMsg::GitPathState { path, .. } if path == "~/my_project" => {
+                    got_root_git_state = true;
+                },
+                BackgroundMsg::GitPathState { path, .. }
+                    if path == "~/my_project/crates/member" =>
+                {
+                    got_member_git_state = true;
+                },
+                _ => {},
+            }
+        }
+
+        assert!(
+            !got_git_info,
+            "index writes should refresh path state without a full GitInfo refresh"
+        );
+        assert!(
+            got_root_git_state,
+            "expected immediate root GitPathState refresh"
+        );
+        assert!(
+            !got_member_git_state,
+            "member rows should wait for the background repo refresh"
+        );
+        assert!(pending_disk.is_empty());
+        assert!(
+            pending_git.contains_key(&project_dir),
+            "repo refresh should stay queued for child rows"
+        );
         assert!(pending_new.is_empty());
     }
 
