@@ -17,7 +17,7 @@ struct Args {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct ProjectEntry {
     abs_path: PathBuf,
-    path: String,
+    path:     String,
 }
 
 fn main() -> Result<(), String> {
@@ -78,7 +78,7 @@ fn discover_projects(root: &Path) -> Vec<ProjectEntry> {
             };
             projects.push(ProjectEntry {
                 abs_path: project_dir.to_path_buf(),
-                path: tilde_path(project_dir),
+                path:     tilde_path(project_dir),
             });
         }
     }

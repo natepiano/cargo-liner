@@ -6,12 +6,12 @@ pub struct ToastTaskId(pub u64);
 
 #[derive(Clone, Debug)]
 struct Toast {
-    id: u64,
-    title: String,
-    body: String,
-    timeout_at: Option<Instant>,
-    task_id: Option<ToastTaskId>,
-    dismissed: bool,
+    id:            u64,
+    title:         String,
+    body:          String,
+    timeout_at:    Option<Instant>,
+    task_id:       Option<ToastTaskId>,
+    dismissed:     bool,
     finished_task: bool,
 }
 
@@ -25,29 +25,23 @@ impl Toast {
 
 #[derive(Clone, Copy, Debug)]
 pub struct ToastView<'a> {
-    id: u64,
+    id:    u64,
     title: &'a str,
-    body: &'a str,
+    body:  &'a str,
 }
 
 impl<'a> ToastView<'a> {
-    pub const fn id(&self) -> u64 {
-        self.id
-    }
+    pub const fn id(&self) -> u64 { self.id }
 
-    pub const fn title(&self) -> &'a str {
-        self.title
-    }
+    pub const fn title(&self) -> &'a str { self.title }
 
-    pub const fn body(&self) -> &'a str {
-        self.body
-    }
+    pub const fn body(&self) -> &'a str { self.body }
 }
 
 #[derive(Default)]
 pub struct ToastManager {
     next_id: u64,
-    toasts: Vec<Toast>,
+    toasts:  Vec<Toast>,
 }
 
 impl ToastManager {
@@ -114,18 +108,16 @@ impl ToastManager {
         }
     }
 
-    pub fn prune(&mut self, now: Instant) {
-        self.toasts.retain(|toast| toast.is_active(now));
-    }
+    pub fn prune(&mut self, now: Instant) { self.toasts.retain(|toast| toast.is_active(now)); }
 
     pub fn active(&self, now: Instant) -> Vec<ToastView<'_>> {
         self.toasts
             .iter()
             .filter(|toast| toast.is_active(now))
             .map(|toast| ToastView {
-                id: toast.id,
+                id:    toast.id,
                 title: &toast.title,
-                body: &toast.body,
+                body:  &toast.body,
             })
             .collect()
     }

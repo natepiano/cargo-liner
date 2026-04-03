@@ -229,10 +229,7 @@ pub(super) fn ci_table_shows_durations(
     ci_table_fixed_width(ci_runs, cols, true) <= usize::from(inner_width)
 }
 
-fn selected_ci_state(app: &App) -> Option<&CiState> {
-    app.selected_project()
-        .and_then(|project| app.ci_state_for(project))
-}
+fn selected_ci_state(app: &App) -> Option<&CiState> { app.selected_ci_state() }
 
 fn ci_panel_title(
     total: usize,
@@ -282,11 +279,16 @@ pub fn render_ci_panel(
 
     let total = ci_runs.len();
     let cached = app
-        .selected_project()
+        .selected_ci_project()
         .and_then(|project| app.git_info.get(&project.path))
-        .and_then(|git| git.url.as_ref())
-        .and_then(|url| ci::parse_owner_repo(url))
-        .map_or(0, |(owner, repo)| scan::count_cached_runs(&owner, &repo));
+        .and_then(|git| {
+            git.url.as_ref().and_then(|url| {
+                ci::parse_owner_repo(url).map(|(owner, repo)| {
+                    scan::count_cached_runs(&owner, &repo, git.branch.as_deref())
+                })
+            })
+        })
+        .unwrap_or(0);
 
     let ci_state = selected_ci_state(app);
     let is_fetching = ci_state.is_some_and(CiState::is_fetching);

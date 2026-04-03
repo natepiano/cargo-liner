@@ -29,8 +29,8 @@ const STOP_POLL: Duration = Duration::from_millis(250);
 
 pub struct RegisterProjectRequest {
     pub project_path: String,
-    pub abs_path: PathBuf,
-    pub is_rust: bool,
+    pub abs_path:     PathBuf,
+    pub is_rust:      bool,
 }
 
 pub fn project_is_eligible(
@@ -70,33 +70,31 @@ impl RuntimeHandle {
 }
 
 impl Drop for RuntimeHandle {
-    fn drop(&mut self) {
-        let _ = self.tx.send(SupervisorMsg::Shutdown);
-    }
+    fn drop(&mut self) { let _ = self.tx.send(SupervisorMsg::Shutdown); }
 }
 
 pub struct SpawnResult {
-    pub handle: Option<RuntimeHandle>,
+    pub handle:  Option<RuntimeHandle>,
     pub warning: Option<String>,
 }
 
 enum SupervisorMsg {
     SyncProjects {
-        projects: Vec<RegisterProjectRequest>,
+        projects:            Vec<RegisterProjectRequest>,
         force_immediate_run: bool,
     },
     Shutdown,
 }
 
 struct ProjectWorker {
-    stop: Arc<AtomicBool>,
+    stop:   Arc<AtomicBool>,
     handle: JoinHandle<()>,
 }
 
 pub fn spawn(config: &Config, bg_tx: mpsc::Sender<BackgroundMsg>) -> SpawnResult {
     if !config.lint.enabled {
         return SpawnResult {
-            handle: None,
+            handle:  None,
             warning: None,
         };
     }
@@ -106,7 +104,7 @@ pub fn spawn(config: &Config, bg_tx: mpsc::Sender<BackgroundMsg>) -> SpawnResult
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || supervisor_loop(rx, cache_root, lint, bg_tx));
     SpawnResult {
-        handle: Some(RuntimeHandle { tx }),
+        handle:  Some(RuntimeHandle { tx }),
         warning: None,
     }
 }
@@ -171,7 +169,7 @@ fn clear_orphaned_running_statuses(
         };
         if cleared {
             let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                path: request.project_path.clone(),
+                path:   request.project_path.clone(),
                 status: port_report::LintStatus::NoLog,
             });
         }
@@ -377,8 +375,8 @@ fn project_still_runnable(project_root: &Path) -> bool {
 }
 
 struct CommandExecution {
-    success: bool,
-    exit_code: Option<i32>,
+    success:     bool,
+    exit_code:   Option<i32>,
     duration_ms: u64,
 }
 
@@ -399,27 +397,27 @@ pub fn run_commands_for_project(
     let started_at_str = started_at.to_rfc3339();
     let run_started = Instant::now();
     let mut run = port_report::PortReportRun {
-        run_id: started_at_str.clone(),
-        started_at: started_at_str,
+        run_id:      started_at_str.clone(),
+        started_at:  started_at_str,
         finished_at: None,
         duration_ms: None,
-        status: port_report::PortReportRunStatus::Running,
-        commands: commands
+        status:      port_report::PortReportRunStatus::Running,
+        commands:    commands
             .iter()
             .enumerate()
             .map(|(index, command)| {
                 let log_name = command_log_name(command, index);
                 port_report::PortReportCommand {
-                    name: if command.name.trim().is_empty() {
+                    name:        if command.name.trim().is_empty() {
                         log_name.clone()
                     } else {
                         command.name.trim().to_string()
                     },
-                    command: command.command.clone(),
-                    status: port_report::PortReportCommandStatus::Pending,
+                    command:     command.command.clone(),
+                    status:      port_report::PortReportCommandStatus::Pending,
                     duration_ms: None,
-                    exit_code: None,
-                    log_file: format!("port-report/{log_name}-latest.log"),
+                    exit_code:   None,
+                    log_file:    format!("port-report/{log_name}-latest.log"),
                 }
             })
             .collect(),
@@ -431,7 +429,7 @@ pub fn run_commands_for_project(
         project_root.display()
     ));
     let _ = bg_tx.send(BackgroundMsg::LintStatus {
-        path: project_path.to_string(),
+        path:   project_path.to_string(),
         status: port_report::read_status_under(cache_root, project_root),
     });
 
@@ -441,7 +439,7 @@ pub fn run_commands_for_project(
         if !project_still_runnable(project_root) {
             let _ = port_report::clear_latest_under(cache_root, project_root);
             let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                path: project_path.to_string(),
+                path:   project_path.to_string(),
                 status: port_report::LintStatus::NoLog,
             });
             return Ok(());
@@ -465,7 +463,7 @@ pub fn run_commands_for_project(
     if !project_still_runnable(project_root) {
         let _ = port_report::clear_latest_under(cache_root, project_root);
         let _ = bg_tx.send(BackgroundMsg::LintStatus {
-            path: project_path.to_string(),
+            path:   project_path.to_string(),
             status: port_report::LintStatus::NoLog,
         });
         return Ok(());
@@ -482,7 +480,7 @@ pub fn run_commands_for_project(
     port_report::write_latest_under(cache_root, project_root, &run)?;
     port_report::append_history_under(cache_root, project_root, &run)?;
     let _ = bg_tx.send(BackgroundMsg::LintStatus {
-        path: project_path.to_string(),
+        path:   project_path.to_string(),
         status: port_report::read_status_under(cache_root, project_root),
     });
     Ok(())
@@ -590,9 +588,9 @@ mod tests {
         )
         .expect("write manifest");
         let lint = LintConfig {
-            enabled: true,
-            include: vec!["~/rust/demo".to_string()],
-            exclude: vec![project_dir.path().to_string_lossy().to_string()],
+            enabled:  true,
+            include:  vec!["~/rust/demo".to_string()],
+            exclude:  vec![project_dir.path().to_string_lossy().to_string()],
             commands: Vec::new(),
         };
 
@@ -616,9 +614,9 @@ mod tests {
         .expect("write manifest");
 
         let lint = LintConfig {
-            enabled: true,
-            include: vec!["bevy_lagrange".to_string()],
-            exclude: Vec::new(),
+            enabled:  true,
+            include:  vec!["bevy_lagrange".to_string()],
+            exclude:  Vec::new(),
             commands: Vec::new(),
         };
 
@@ -683,7 +681,7 @@ mod tests {
         cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
         let cache_root = cache_paths::port_report_root_for(&cfg);
         let commands = vec![LintCommandConfig {
-            name: "echo".to_string(),
+            name:    "echo".to_string(),
             command: "printf 'lint ok\\n'".to_string(),
         }];
 
@@ -719,9 +717,9 @@ mod tests {
         )
         .expect("write manifest");
         let lint = LintConfig {
-            enabled: true,
-            include: vec!["~/rust/demo".to_string()],
-            exclude: vec!["~/rust/demo/excluded".to_string()],
+            enabled:  true,
+            include:  vec!["~/rust/demo".to_string()],
+            exclude:  vec!["~/rust/demo/excluded".to_string()],
             commands: Vec::new(),
         };
 
@@ -743,12 +741,12 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("tempdir");
         let source_path = project_dir.path().join("src/lib.rs");
         let remove_event = notify::Event {
-            kind: notify::event::EventKind::Remove(notify::event::RemoveKind::File),
+            kind:  notify::event::EventKind::Remove(notify::event::RemoveKind::File),
             paths: vec![source_path.clone()],
             attrs: notify::event::EventAttributes::default(),
         };
         let modify_event = notify::Event {
-            kind: notify::event::EventKind::Modify(notify::event::ModifyKind::Data(
+            kind:  notify::event::EventKind::Modify(notify::event::ModifyKind::Data(
                 notify::event::DataChange::Any,
             )),
             paths: vec![source_path],
@@ -770,7 +768,7 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("tempdir");
         let commands = vec![LintCommandConfig {
-            name: "echo".to_string(),
+            name:    "echo".to_string(),
             command: "printf 'lint ok\\n'".to_string(),
         }];
 

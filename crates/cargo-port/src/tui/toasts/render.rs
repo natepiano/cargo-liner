@@ -84,9 +84,9 @@ pub fn render_toasts(
         let close_text = "[x]";
         let close_width = u16::try_from(close_text.len()).unwrap_or(u16::MAX);
         let close_rect = Rect {
-            x: card.x + card.width.saturating_sub(close_width + 2),
-            y: card.y,
-            width: close_width + 1,
+            x:      card.x + card.width.saturating_sub(close_width + 2),
+            y:      card.y,
+            width:  close_width + 1,
             height: 1,
         };
         frame.render_widget(
@@ -105,18 +105,18 @@ pub fn render_toasts(
                 border_style.add_modifier(Modifier::BOLD),
             ))),
             Rect {
-                x: inner.x,
-                y: inner.y,
-                width: inner.width.saturating_sub(close_width + 1),
+                x:      inner.x,
+                y:      inner.y,
+                width:  inner.width.saturating_sub(close_width + 1),
                 height: 1,
             },
         );
         frame.render_widget(
             Paragraph::new(toast.body()).wrap(Wrap { trim: false }),
             Rect {
-                x: inner.x,
-                y: inner.y.saturating_add(1),
-                width: inner.width,
+                x:      inner.x,
+                y:      inner.y.saturating_add(1),
+                width:  inner.width,
                 height: inner.height.saturating_sub(1),
             },
         );

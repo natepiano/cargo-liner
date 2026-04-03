@@ -36,11 +36,11 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
         && let Some(project) = app.selected_project()
     {
         app.pending_example_run = Some(PendingExampleRun {
-            abs_path: project.abs_path.clone(),
-            target_name: entry.name.clone(),
+            abs_path:     project.abs_path.clone(),
+            target_name:  entry.name.clone(),
             package_name: project.name.clone(),
-            kind: entry.kind,
-            release: matches!(mode, BuildMode::Release),
+            kind:         entry.kind,
+            release:      matches!(mode, BuildMode::Release),
         });
     }
 }
@@ -145,9 +145,7 @@ pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
         return;
     }
 
-    let ci_state = app
-        .selected_project()
-        .and_then(|project| app.ci_state_for(project));
+    let ci_state = app.selected_ci_state();
     let run_count = ci_state.map_or(0, |state| state.runs().len());
     let is_fetching = ci_state.is_some_and(CiState::is_fetching);
     let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
@@ -167,7 +165,7 @@ pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
                 }
             } else if cursor_pos == run_count
                 && !is_fetching
-                && let Some(project) = app.selected_project()
+                && let Some(project) = app.selected_ci_project()
             {
                 let current_count = u32::try_from(run_count).unwrap_or(u32::MAX);
                 let kind = if is_exhausted {
@@ -183,7 +181,7 @@ pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
             }
         },
         KeyCode::Char('c') => {
-            if let Some(project) = app.selected_project() {
+            if let Some(project) = app.selected_ci_project() {
                 let path = project.path.clone();
                 clear_ci_cache(app, &path);
             }
@@ -199,13 +197,14 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
         && let Some(url) = git.url.as_deref()
         && let Some((owner, repo)) = ci::parse_owner_repo(url)
     {
-        let _ = std::fs::remove_dir_all(scan::repo_cache_dir_pub(&owner, &repo));
+        let _ =
+            std::fs::remove_dir_all(scan::ci_cache_dir_pub(&owner, &repo, git.branch.as_deref()));
     }
 
     app.ci_state.insert(
         project_path.to_string(),
         CiState::Loaded {
-            runs: Vec::new(),
+            runs:      Vec::new(),
             exhausted: false,
         },
     );

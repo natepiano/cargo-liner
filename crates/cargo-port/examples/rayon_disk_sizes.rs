@@ -16,7 +16,7 @@ struct Args {
 
 #[derive(Debug)]
 struct EntrySize {
-    name: String,
+    name:  String,
     bytes: u64,
 }
 
@@ -32,7 +32,7 @@ fn main() -> Result<(), String> {
     let sizes: Vec<EntrySize> = entries
         .par_iter()
         .map(|entry| EntrySize {
-            name: entry_name(entry),
+            name:  entry_name(entry),
             bytes: subtree_size_parallel(entry),
         })
         .collect();

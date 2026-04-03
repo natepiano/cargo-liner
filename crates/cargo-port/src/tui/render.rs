@@ -1,5 +1,23 @@
 use std::collections::HashMap;
 
+use ratatui::Frame;
+use ratatui::layout::Constraint;
+use ratatui::layout::Direction;
+use ratatui::layout::Layout;
+use ratatui::layout::Rect;
+use ratatui::style::Color;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::widgets::Block;
+use ratatui::widgets::Borders;
+use ratatui::widgets::Clear;
+use ratatui::widgets::List;
+use ratatui::widgets::ListItem;
+use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
+
 use super::app::App;
 use super::app::BottomPanel;
 use super::app::CiState;
@@ -24,23 +42,6 @@ use crate::project::GitOrigin;
 use crate::project::ProjectLanguage::Rust;
 use crate::project::RustProject;
 use crate::scan;
-use ratatui::Frame;
-use ratatui::layout::Constraint;
-use ratatui::layout::Direction;
-use ratatui::layout::Layout;
-use ratatui::layout::Rect;
-use ratatui::style::Color;
-use ratatui::style::Modifier;
-use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::text::Span;
-use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
-use ratatui::widgets::Clear;
-use ratatui::widgets::List;
-use ratatui::widgets::ListItem;
-use ratatui::widgets::Paragraph;
-use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy)]
 pub(super) enum CiColumn {
@@ -262,19 +263,16 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Clear, area);
 
     let detail_info = app.cached_detail.as_ref().map(|c| c.info.clone());
-    let has_ci = app
-        .selected_project()
-        .and_then(|p| app.ci_state_for(p))
-        .is_some();
+    let selected_ci_state = app.selected_ci_state();
+    let selected_has_ci_owner = app.selected_ci_project().is_some();
+    let has_ci = selected_ci_state.is_some();
     let detail_port_report_runs = app
         .selected_project()
         .and_then(|p| app.port_report_runs.get(&p.path))
         .cloned()
         .unwrap_or_default();
-    let detail_ci_runs: Vec<CiRun> = app
-        .selected_project()
-        .and_then(|p| app.ci_state_for(p))
-        .map(|s: &CiState| s.runs().to_vec())
+    let detail_ci_runs: Vec<CiRun> = selected_ci_state
+        .map(|state: &CiState| state.runs().to_vec())
         .unwrap_or_default();
     let has_example_output = !app.example_output.is_empty();
 
@@ -299,8 +297,13 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                 if has_ci {
                     super::detail::render_ci_panel(frame, app, &detail_ci_runs, right_layout[1]);
                 } else {
-                    let selected_project_ref = app.selected_project();
-                    render_empty_ci_panel(frame, app, selected_project_ref, right_layout[1]);
+                    render_empty_ci_panel(
+                        frame,
+                        app,
+                        app.selected_project(),
+                        selected_has_ci_owner,
+                        right_layout[1],
+                    );
                 }
                 if let Some(message) = app.unreachable_service_message() {
                     render_unreachable_overlay(frame, right_layout[1], &message);
@@ -343,7 +346,13 @@ fn render_unreachable_overlay(frame: &mut Frame, area: Rect, msg: &str) {
     );
 }
 
-fn render_empty_ci_panel(frame: &mut Frame, app: &App, project: Option<&RustProject>, area: Rect) {
+fn render_empty_ci_panel(
+    frame: &mut Frame,
+    app: &App,
+    project: Option<&RustProject>,
+    selected_has_ci_owner: bool,
+    area: Rect,
+) {
     let ci_focused = app.is_focused(PaneId::CiRuns);
     let border_style = if ci_focused {
         Style::default().fg(Color::Cyan)
@@ -363,13 +372,17 @@ fn render_empty_ci_panel(frame: &mut Frame, app: &App, project: Option<&RustProj
     // Determine why there's no CI
     let has_git = project.is_some_and(|p| app.git_info.contains_key(&p.path));
     let has_url = project
+        .filter(|_| selected_has_ci_owner)
         .and_then(|p| app.git_info.get(&p.path))
         .is_some_and(|g| g.url.is_some());
     let is_local = project
+        .filter(|_| selected_has_ci_owner)
         .and_then(|p| app.git_info.get(&p.path))
         .is_some_and(|g| g.origin == GitOrigin::Local);
 
-    let msg = if !has_git {
+    let msg = if project.is_some() && !selected_has_ci_owner {
+        "CI is shown on branch/worktree rows"
+    } else if !has_git {
         "Not a git repository"
     } else if is_local || !has_url {
         "CI requires a GitHub origin remote"
@@ -475,8 +488,11 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     let total_str = format_bytes(total_bytes);
     let summary = super::columns::build_summary_cells(widths, &total_str);
     let summary_line = Some(super::columns::row_to_line(&summary, widths));
-    let pin_summary =
-        should_pin_project_summary(total_project_rows, summary_line.is_some(), content_area.height);
+    let pin_summary = should_pin_project_summary(
+        total_project_rows,
+        summary_line.is_some(),
+        content_area.height,
+    );
 
     if !pin_summary && let Some(ref line) = summary_line {
         items.push(ListItem::new(line.clone()));
@@ -696,9 +712,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Left section
     if !left_spans.is_empty() {
         let left_area = Rect {
-            x: area.x,
-            y: area.y,
-            width: area.width,
+            x:      area.x,
+            y:      area.y,
+            width:  area.width,
             height: 1,
         };
         frame.render_widget(
@@ -713,9 +729,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         // Only render if it doesn't overlap with the left section
         if center_start >= left_width {
             let center_area = Rect {
-                x: area.x + u16::try_from(center_start).unwrap_or(u16::MAX),
-                y: area.y,
-                width: u16::try_from((total_width - center_start).min(center_width + 1))
+                x:      area.x + u16::try_from(center_start).unwrap_or(u16::MAX),
+                y:      area.y,
+                width:  u16::try_from((total_width - center_start).min(center_width + 1))
                     .unwrap_or(u16::MAX),
                 height: 1,
             };
@@ -730,9 +746,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     if !right_spans.is_empty() {
         let right_start = total_width.saturating_sub(right_width + 1);
         let right_area = Rect {
-            x: area.x + u16::try_from(right_start).unwrap_or(u16::MAX),
-            y: area.y,
-            width: u16::try_from(right_width + 1).unwrap_or(u16::MAX),
+            x:      area.x + u16::try_from(right_start).unwrap_or(u16::MAX),
+            y:      area.y,
+            width:  u16::try_from(right_width + 1).unwrap_or(u16::MAX),
             height: 1,
         };
         frame.render_widget(
