@@ -242,7 +242,14 @@ pub fn run_selection(
     let missing_packages = selection
         .packages
         .iter()
-        .filter(|package| !cache_is_current_for(&findings_dir, &package.root, loaded_config))
+        .filter(|package| {
+            !cache_is_current_for(
+                &findings_dir,
+                &package.root,
+                &package.source_root,
+                loaded_config,
+            )
+        })
         .collect::<Vec<_>>();
 
     if !missing_packages.is_empty() {
@@ -668,6 +675,7 @@ fn refresh_rustc_args() -> Vec<String> {
 fn cache_is_current_for(
     findings_dir: &Path,
     package_root: &Path,
+    source_root: &Path,
     loaded_config: &LoadedConfig,
 ) -> bool {
     let cache_path = findings_dir.join(cache_filename_for(package_root));
@@ -687,17 +695,20 @@ fn cache_is_current_for(
         && stored.analysis_fingerprint == current_analysis_fingerprint()
         && stored.package_root == package_root.to_string_lossy()
         && stored.config_fingerprint == loaded_config.fingerprint
-        && !package_sources_newer_than(package_root, cache_modified)
+        && !package_sources_newer_than(package_root, source_root, cache_modified)
 }
 
-fn package_sources_newer_than(package_root: &Path, reference: std::time::SystemTime) -> bool {
+fn package_sources_newer_than(
+    package_root: &Path,
+    source_root: &Path,
+    reference: std::time::SystemTime,
+) -> bool {
     let manifest = package_root.join("Cargo.toml");
     if file_is_newer_than(&manifest, reference) {
         return true;
     }
 
-    let src = package_root.join("src");
-    rust_sources_newer_than(&src, reference)
+    rust_sources_newer_than(source_root, reference)
 }
 
 fn file_is_newer_than(path: &Path, reference: std::time::SystemTime) -> bool {
@@ -896,13 +907,9 @@ fn exit_code_from_i32(code: i32) -> ExitCode {
 fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Result<bool> {
     let crate_root_file = real_file_path(tcx, tcx.def_span(CRATE_DEF_ID))
         .context("failed to determine local crate root file")?;
-    let Some(src_root) = crate_root_file
-        .parent()
-        .filter(|parent| parent.file_name().and_then(|name| name.to_str()) == Some("src"))
-    else {
+    let Some(src_root) = analysis_source_root_for(&crate_root_file, &settings.package_root) else {
         return Ok(false);
     };
-    let src_root = src_root.to_path_buf();
 
     let mut sink = FindingsSink::default();
     let crate_items = tcx.hir_crate_items(());
@@ -959,6 +966,19 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
     fs::write(&output_path, serde_json::to_vec_pretty(&report)?)
         .with_context(|| format!("failed to write findings file {}", output_path.display()))?;
     Ok(true)
+}
+
+fn analysis_source_root_for(crate_root_file: &Path, package_root: &Path) -> Option<PathBuf> {
+    let source_root = crate_root_file.parent()?.to_path_buf();
+    let canonical_crate_root =
+        fs::canonicalize(crate_root_file).unwrap_or_else(|_| crate_root_file.to_path_buf());
+    let canonical_package_root =
+        fs::canonicalize(package_root).unwrap_or_else(|_| package_root.to_path_buf());
+    let relative = canonical_crate_root
+        .strip_prefix(&canonical_package_root)
+        .ok()?;
+    let first_component = relative.components().next()?.as_os_str().to_str()?;
+    matches!(first_component, "src" | "examples" | "tests" | "benches").then_some(source_root)
 }
 
 #[derive(Default)]
@@ -3004,6 +3024,7 @@ mod tests {
     use super::StoredFinding;
     use super::StoredReport;
     use super::allow_pub_crate_by_policy;
+    use super::analysis_source_root_for;
     use super::cache_filename_for;
     use super::cache_is_current_for;
     use super::classify_diagnostic_block;
@@ -3203,6 +3224,7 @@ mod tests {
         fs::create_dir_all(&temp_dir)?;
 
         let package_root = Path::new("/tmp/example-crate");
+        let source_root = package_root.join("src");
         let cache_path = temp_dir.join(cache_filename_for(package_root));
         let stale = StoredReport {
             version:                    FINDINGS_SCHEMA_VERSION - 1,
@@ -3238,6 +3260,7 @@ mod tests {
         assert!(!cache_is_current_for(
             &temp_dir,
             package_root,
+            &source_root,
             &loaded_config
         ));
 
@@ -3282,6 +3305,7 @@ mod tests {
         assert!(cache_is_current_for(
             &findings_dir,
             &package_root,
+            &src_dir,
             &loaded_config
         ));
 
@@ -3294,6 +3318,7 @@ mod tests {
         assert!(!cache_is_current_for(
             &findings_dir,
             &package_root,
+            &src_dir,
             &loaded_config
         ));
 
@@ -3338,6 +3363,7 @@ mod tests {
         assert!(!cache_is_current_for(
             &findings_dir,
             &package_root,
+            &src_dir,
             &loaded_config
         ));
 
@@ -3383,11 +3409,98 @@ mod tests {
         assert!(!cache_is_current_for(
             &findings_dir,
             &package_root,
+            &src_dir,
             &loaded_config
         ));
 
         fs::remove_dir_all(&temp_dir)?;
         Ok(())
+    }
+
+    #[test]
+    fn cache_is_current_tracks_selected_example_source_root() -> anyhow::Result<()> {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("mend-cache-example-test-{unique}"));
+        let package_root = temp_dir.join("crate");
+        let examples_dir = package_root.join("examples");
+        let src_dir = package_root.join("src");
+        fs::create_dir_all(&examples_dir)?;
+        fs::create_dir_all(&src_dir)?;
+        fs::write(
+            package_root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )?;
+        fs::write(examples_dir.join("demo.rs"), "fn main() {}\n")?;
+        fs::write(src_dir.join("lib.rs"), "pub fn shared() {}\n")?;
+
+        let findings_dir = temp_dir.join("findings");
+        fs::create_dir_all(&findings_dir)?;
+        let cache_path = findings_dir.join(cache_filename_for(&package_root));
+        let report = StoredReport {
+            version:                    FINDINGS_SCHEMA_VERSION,
+            analysis_fingerprint:       current_analysis_fingerprint(),
+            package_root:               package_root.to_string_lossy().into_owned(),
+            config_fingerprint:         "expected".to_string(),
+            findings:                   Vec::new(),
+            pub_use_fix_facts:          Vec::new(),
+            saw_unused_import_warnings: false,
+        };
+        fs::write(&cache_path, serde_json::to_vec(&report)?)?;
+
+        let loaded_config = LoadedConfig {
+            config:      VisibilityConfig::default(),
+            diagnostics: crate::config::DiagnosticsConfig::default(),
+            root:        temp_dir.clone(),
+            fingerprint: "expected".to_string(),
+        };
+
+        assert!(cache_is_current_for(
+            &findings_dir,
+            &package_root,
+            &examples_dir,
+            &loaded_config
+        ));
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        fs::write(examples_dir.join("demo.rs"), "fn main() { shared(); }\n")?;
+
+        assert!(!cache_is_current_for(
+            &findings_dir,
+            &package_root,
+            &examples_dir,
+            &loaded_config
+        ));
+        assert!(cache_is_current_for(
+            &findings_dir,
+            &package_root,
+            &src_dir,
+            &loaded_config
+        ));
+
+        fs::remove_dir_all(&temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn analysis_source_root_ignores_build_scripts() {
+        let package_root = Path::new("/tmp/example-crate");
+
+        assert_eq!(
+            analysis_source_root_for(&package_root.join("src/lib.rs"), package_root),
+            Some(package_root.join("src"))
+        );
+        assert_eq!(
+            analysis_source_root_for(&package_root.join("src/bin/demo.rs"), package_root),
+            Some(package_root.join("src/bin"))
+        );
+        assert_eq!(
+            analysis_source_root_for(&package_root.join("examples/demo.rs"), package_root),
+            Some(package_root.join("examples"))
+        );
+        assert_eq!(
+            analysis_source_root_for(&package_root.join("build.rs"), package_root),
+            None
+        );
     }
 
     #[test]

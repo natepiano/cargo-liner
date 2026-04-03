@@ -33,6 +33,7 @@ pub struct SelectedPackage {
     pub name:          String,
     pub manifest_path: PathBuf,
     pub root:          PathBuf,
+    pub source_root:   PathBuf,
     pub target:        TargetSelector,
 }
 
@@ -137,46 +138,53 @@ fn selected_package_from_metadata(package: &Package) -> Result<SelectedPackage> 
         .parent()
         .context("package manifest path had no parent directory")?
         .to_path_buf();
+    let target = select_primary_target_metadata(package.targets.as_slice())
+        .context("package metadata did not contain a selectable target")?;
+    let source_root = target
+        .src_path
+        .as_std_path()
+        .parent()
+        .context("target source path had no parent directory")?
+        .to_path_buf();
     Ok(SelectedPackage {
         name: package.name.to_string(),
         manifest_path,
         root,
-        target: select_primary_target(package.targets.as_slice()),
+        source_root,
+        target: target_selector(target),
     })
 }
 
-fn select_primary_target(targets: &[Target]) -> TargetSelector {
-    if targets.len() == 1 {
-        let target = &targets[0];
-        if target
-            .kind
-            .iter()
-            .any(|kind| *kind == TargetKind::Lib || *kind == TargetKind::ProcMacro)
-        {
-            return TargetSelector::Lib;
-        }
-        if target.kind.contains(&TargetKind::Bin) {
-            return TargetSelector::Bin(target.name.clone());
-        }
-        if target.kind.contains(&TargetKind::Example) {
-            return TargetSelector::Example(target.name.clone());
-        }
-        if target.kind.contains(&TargetKind::Test) {
-            return TargetSelector::Test(target.name.clone());
-        }
-        if target.kind.contains(&TargetKind::Bench) {
-            return TargetSelector::Bench(target.name.clone());
-        }
-
-        return TargetSelector::Implicit;
+fn target_selector(target: &Target) -> TargetSelector {
+    if target
+        .kind
+        .iter()
+        .any(|kind| *kind == TargetKind::Lib || *kind == TargetKind::ProcMacro)
+    {
+        return TargetSelector::Lib;
+    }
+    if target.kind.contains(&TargetKind::Bin) {
+        return TargetSelector::Bin(target.name.clone());
+    }
+    if target.kind.contains(&TargetKind::Example) {
+        return TargetSelector::Example(target.name.clone());
+    }
+    if target.kind.contains(&TargetKind::Test) {
+        return TargetSelector::Test(target.name.clone());
+    }
+    if target.kind.contains(&TargetKind::Bench) {
+        return TargetSelector::Bench(target.name.clone());
     }
 
-    let select_named = |kind: TargetKind, ctor: fn(String) -> TargetSelector| {
-        targets
-            .iter()
-            .find(|target| target.kind.contains(&kind))
-            .map(|target| ctor(target.name.clone()))
-    };
+    TargetSelector::Implicit
+}
+
+fn select_primary_target_metadata(targets: &[Target]) -> Option<&Target> {
+    if targets.len() == 1 {
+        return targets.first();
+    }
+
+    let select_named = |kind: TargetKind| targets.iter().find(|target| target.kind.contains(&kind));
 
     if targets.iter().any(|target| {
         target
@@ -184,14 +192,19 @@ fn select_primary_target(targets: &[Target]) -> TargetSelector {
             .iter()
             .any(|kind| *kind == TargetKind::Lib || *kind == TargetKind::ProcMacro)
     }) {
-        return TargetSelector::Lib;
+        return targets.iter().find(|target| {
+            target
+                .kind
+                .iter()
+                .any(|kind| *kind == TargetKind::Lib || *kind == TargetKind::ProcMacro)
+        });
     }
 
-    select_named(TargetKind::Bin, TargetSelector::Bin)
-        .or_else(|| select_named(TargetKind::Example, TargetSelector::Example))
-        .or_else(|| select_named(TargetKind::Test, TargetSelector::Test))
-        .or_else(|| select_named(TargetKind::Bench, TargetSelector::Bench))
-        .unwrap_or(TargetSelector::Implicit)
+    select_named(TargetKind::Bin)
+        .or_else(|| select_named(TargetKind::Example))
+        .or_else(|| select_named(TargetKind::Test))
+        .or_else(|| select_named(TargetKind::Bench))
+        .or_else(|| targets.first())
 }
 
 fn cargo_metadata_for(manifest_path: &Path) -> Result<Metadata> {
@@ -275,6 +288,14 @@ path = "examples/demo.rs"
             selection.packages[0].target,
             TargetSelector::Example("demo".to_string())
         );
+        assert_eq!(
+            fs::canonicalize(&selection.packages[0].source_root).unwrap_or_else(|error| panic!(
+                "canonicalize selected example source root: {error}"
+            )),
+            fs::canonicalize(temp.path().join("examples")).unwrap_or_else(|error| panic!(
+                "canonicalize expected example source root: {error}"
+            ))
+        );
     }
 
     #[test]
@@ -304,6 +325,12 @@ path = "src/bin/demo.rs"
         assert_eq!(
             selection.packages[0].target,
             TargetSelector::Bin("demo".to_string())
+        );
+        assert_eq!(
+            fs::canonicalize(&selection.packages[0].source_root)
+                .unwrap_or_else(|error| panic!("canonicalize selected bin source root: {error}")),
+            fs::canonicalize(temp.path().join("src/bin"))
+                .unwrap_or_else(|error| panic!("canonicalize expected bin source root: {error}"))
         );
     }
 

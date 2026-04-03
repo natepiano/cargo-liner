@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `cargo mend` no longer re-refreshes example-only and `src/bin/*` packages on every run; it now writes and reuses findings caches for those targets, preventing repeated growth in `target/mend/`
+
 ## [0.2.6] - 2026-03-30
 
 ### Fixed
