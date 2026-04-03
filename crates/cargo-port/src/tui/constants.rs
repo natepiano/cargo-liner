@@ -13,6 +13,9 @@ pub(super) const FINDER_POPUP_HEIGHT: u16 = 28;
 pub(super) const SETTINGS_POPUP_WIDTH: u16 = 90;
 pub(super) const CONFIRM_DIALOG_HEIGHT: u16 = 3;
 pub(super) const CI_TIMESTAMP_WIDTH: u16 = 16;
+pub(super) const TOAST_WIDTH: u16 = 40;
+pub(super) const TOAST_HEIGHT: u16 = 5;
+pub(super) const TOAST_GAP: u16 = 0;
 
 pub(super) const MAX_FINDER_RESULTS: usize = 50;
 

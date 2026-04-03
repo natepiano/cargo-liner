@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,7 +42,11 @@ use super::render::PREFIX_WT_MEMBER_NAMED;
 use super::render::PREFIX_WT_VENDORED;
 use super::shortcuts::InputContext;
 use super::terminal::CiFetchMsg;
+use super::terminal::CleanMsg;
 use super::terminal::ExampleMsg;
+use super::toasts::ToastManager;
+use super::toasts::ToastTaskId;
+use super::toasts::ToastView;
 use super::types::LayoutCache;
 use super::types::Pane;
 use super::types::PaneId;
@@ -49,6 +54,7 @@ use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::config::Config;
+use crate::config::NavigationKeys;
 use crate::config::NonRustInclusion;
 use crate::config::ScrollDirection;
 use crate::constants::IN_SYNC;
@@ -99,59 +105,70 @@ pub(super) enum ConfirmAction {
     Clean(String),
 }
 
+#[derive(Clone)]
+pub(super) struct PendingClean {
+    pub abs_path: String,
+    pub toast: ToastTaskId,
+}
+
 pub(super) use super::columns::ResolvedWidths;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ConfigFileStamp {
     modified: Option<SystemTime>,
-    len:      u64,
+    len: u64,
 }
 
 struct TreeBuildResult {
-    build_id:     u64,
-    nodes:        Vec<ProjectNode>,
+    build_id: u64,
+    nodes: Vec<ProjectNode>,
     flat_entries: Vec<FlatEntry>,
 }
 
 struct FitWidthsBuildResult {
     build_id: u64,
-    widths:   ResolvedWidths,
+    widths: ResolvedWidths,
 }
 
 struct DiskCacheBuildResult {
-    build_id:     u64,
-    root_sorted:  Vec<u64>,
+    build_id: u64,
+    root_sorted: Vec<u64>,
     child_sorted: HashMap<usize, Vec<u64>>,
 }
 
 #[derive(Default)]
 struct StartupPhaseTracker {
-    scan_complete_at:    Option<Instant>,
-    disk_expected:       Option<usize>,
-    disk_seen:           HashSet<String>,
-    disk_complete_at:    Option<Instant>,
-    repo_expected:       Option<usize>,
-    repo_seen:           HashSet<String>,
-    repo_complete_at:    Option<Instant>,
-    lint_expected:       Option<HashSet<String>>,
-    lint_seen_terminal:  HashSet<String>,
-    lint_complete_at:    Option<Instant>,
+    scan_complete_at: Option<Instant>,
+    disk_expected: Option<usize>,
+    disk_seen: HashSet<String>,
+    disk_complete_at: Option<Instant>,
+    git_expected: HashSet<String>,
+    git_seen: HashSet<String>,
+    git_complete_at: Option<Instant>,
+    repo_expected: HashSet<String>,
+    repo_seen: HashSet<String>,
+    repo_complete_at: Option<Instant>,
+    git_toast: Option<ToastTaskId>,
+    repo_toast: Option<ToastTaskId>,
+    lint_expected: Option<HashSet<String>>,
+    lint_seen_terminal: HashSet<String>,
+    lint_complete_at: Option<Instant>,
     startup_complete_at: Option<Instant>,
 }
 
 #[derive(Default)]
 pub(super) struct PollBackgroundStats {
-    pub bg_msgs:             usize,
-    pub disk_usage_msgs:     usize,
+    pub bg_msgs: usize,
+    pub disk_usage_msgs: usize,
     pub git_path_state_msgs: usize,
-    pub git_info_msgs:       usize,
-    pub lint_status_msgs:    usize,
-    pub ci_msgs:             usize,
-    pub example_msgs:        usize,
-    pub tree_results:        usize,
-    pub fit_results:         usize,
-    pub disk_results:        usize,
-    pub needs_rebuild:       bool,
+    pub git_info_msgs: usize,
+    pub lint_status_msgs: usize,
+    pub ci_msgs: usize,
+    pub example_msgs: usize,
+    pub tree_results: usize,
+    pub fit_results: usize,
+    pub disk_results: usize,
+    pub needs_rebuild: bool,
 }
 
 /// What a visible row represents.
@@ -161,41 +178,41 @@ pub(super) enum VisibleRow {
     Root { node_index: usize },
     /// A group header (e.g., "examples").
     GroupHeader {
-        node_index:  usize,
+        node_index: usize,
         group_index: usize,
     },
     /// An actual project member.
     Member {
-        node_index:   usize,
-        group_index:  usize,
+        node_index: usize,
+        group_index: usize,
         member_index: usize,
     },
     /// A vendored crate nested directly under the root project.
     Vendored {
-        node_index:     usize,
+        node_index: usize,
         vendored_index: usize,
     },
     /// A worktree entry shown directly under the parent node.
     WorktreeEntry {
-        node_index:     usize,
+        node_index: usize,
         worktree_index: usize,
     },
     /// A group header inside an expanded worktree entry.
     WorktreeGroupHeader {
-        node_index:     usize,
+        node_index: usize,
         worktree_index: usize,
-        group_index:    usize,
+        group_index: usize,
     },
     /// A member inside an expanded worktree entry.
     WorktreeMember {
-        node_index:     usize,
+        node_index: usize,
         worktree_index: usize,
-        group_index:    usize,
-        member_index:   usize,
+        group_index: usize,
+        member_index: usize,
     },
     /// A vendored crate nested under a worktree entry.
     WorktreeVendored {
-        node_index:     usize,
+        node_index: usize,
         worktree_index: usize,
         vendored_index: usize,
     },
@@ -207,7 +224,7 @@ enum LintRollupKey {
         node_index: usize,
     },
     Worktree {
-        node_index:     usize,
+        node_index: usize,
         worktree_index: usize,
     },
 }
@@ -220,10 +237,7 @@ pub(super) enum CiState {
     /// so the UI never flashes empty during pagination.
     Fetching { runs: Vec<CiRun>, count: u32 },
     /// Runs are available (possibly empty when the repo genuinely has no CI).
-    Loaded {
-        runs:      Vec<CiRun>,
-        exhausted: bool,
-    },
+    Loaded { runs: Vec<CiRun>, exhausted: bool },
 }
 
 impl CiState {
@@ -234,7 +248,9 @@ impl CiState {
         }
     }
 
-    pub const fn is_fetching(&self) -> bool { matches!(self, Self::Fetching { .. }) }
+    pub const fn is_fetching(&self) -> bool {
+        matches!(self, Self::Fetching { .. })
+    }
 
     pub const fn is_exhausted(&self) -> bool {
         matches!(
@@ -258,8 +274,8 @@ impl CiState {
 /// on `App` has advanced past the generation stored here.
 pub(super) struct DetailCache {
     generation: u64,
-    selection:  String,
-    pub info:   DetailInfo,
+    selection: String,
+    pub info: DetailInfo,
 }
 
 #[allow(
@@ -268,77 +284,84 @@ pub(super) struct DetailCache {
 )]
 pub(super) struct App {
     pub(super) current_config: Config,
-    pub scan_root:             PathBuf,
-    pub http_client:           HttpClient,
-    pub all_projects:          Vec<RustProject>,
-    pub nodes:                 Vec<ProjectNode>,
-    pub flat_entries:          Vec<FlatEntry>,
-    pub disk_usage:            HashMap<String, u64>,
-    pub ci_state:              HashMap<String, CiState>,
-    pub lint_status:           HashMap<String, LintStatus>,
-    pub port_report_runs:      HashMap<String, Vec<PortReportRun>>,
-    lint_rollup_status:        HashMap<LintRollupKey, LintStatus>,
-    lint_rollup_paths:         HashMap<LintRollupKey, Vec<String>>,
-    lint_rollup_keys_by_path:  HashMap<String, Vec<LintRollupKey>>,
-    pub git_info:              HashMap<String, GitInfo>,
-    pub git_path_states:       HashMap<String, GitPathState>,
-    cargo_active_paths:        HashSet<String>,
-    pub crates_versions:       HashMap<String, String>,
-    pub crates_downloads:      HashMap<String, u64>,
-    pub stars:                 HashMap<String, u64>,
-    pub repo_descriptions:     HashMap<String, String>,
-    pub bg_tx:                 mpsc::Sender<BackgroundMsg>,
-    pub bg_rx:                 Receiver<BackgroundMsg>,
-    pub fully_loaded:          HashSet<String>,
-    pub priority_fetch_path:   Option<String>,
-    pub expanded:              HashSet<ExpandKey>,
-    pub list_state:            ListState,
-    pub searching:             bool,
-    pub search_query:          String,
-    pub filtered:              Vec<usize>,
-    pub show_settings:         bool,
-    pub settings_pane:         Pane,
-    pub settings_editing:      bool,
-    pub settings_edit_buf:     String,
-    pub settings_edit_cursor:  usize,
-    pub scan_complete:         bool,
-    scan_started_at:           Instant,
-    scan_run_count:            u64,
-    startup_phases:            StartupPhaseTracker,
-    pub scan_log:              Vec<String>,
-    pub scan_log_state:        ListState,
-    pub focused_pane:          PaneId,
-    pub return_focus:          Option<PaneId>,
-    pub visited_panes:         HashSet<PaneId>,
-    pub package_pane:          Pane,
-    pub git_pane:              Pane,
-    pub targets_pane:          Pane,
-    pub ci_pane:               Pane,
-    pub port_report_pane:      Pane,
-    pub bottom_panel:          BottomPanel,
-    pub pending_example_run:   Option<PendingExampleRun>,
-    pub pending_ci_fetch:      Option<PendingCiFetch>,
-    pub pending_clean:         Option<String>,
-    pub confirm:               Option<ConfirmAction>,
-    pub animation_started:     Instant,
-    pub ci_fetch_tx:           mpsc::Sender<CiFetchMsg>,
-    pub ci_fetch_rx:           mpsc::Receiver<CiFetchMsg>,
-    pub example_running:       Option<String>,
-    pub example_child:         Arc<Mutex<Option<u32>>>,
-    pub example_output:        Vec<String>,
-    pub example_tx:            mpsc::Sender<ExampleMsg>,
-    pub example_rx:            mpsc::Receiver<ExampleMsg>,
-    pub last_selected_path:    Option<String>,
+    pub scan_root: PathBuf,
+    pub http_client: HttpClient,
+    pub all_projects: Vec<RustProject>,
+    pub nodes: Vec<ProjectNode>,
+    pub flat_entries: Vec<FlatEntry>,
+    pub disk_usage: HashMap<String, u64>,
+    pub ci_state: HashMap<String, CiState>,
+    pub lint_status: HashMap<String, LintStatus>,
+    pub port_report_runs: HashMap<String, Vec<PortReportRun>>,
+    lint_rollup_status: HashMap<LintRollupKey, LintStatus>,
+    lint_rollup_paths: HashMap<LintRollupKey, Vec<String>>,
+    lint_rollup_keys_by_path: HashMap<String, Vec<LintRollupKey>>,
+    pub git_info: HashMap<String, GitInfo>,
+    pub git_path_states: HashMap<String, GitPathState>,
+    cargo_active_paths: HashSet<String>,
+    pub crates_versions: HashMap<String, String>,
+    pub crates_downloads: HashMap<String, u64>,
+    pub stars: HashMap<String, u64>,
+    pub repo_descriptions: HashMap<String, String>,
+    pub bg_tx: mpsc::Sender<BackgroundMsg>,
+    pub bg_rx: Receiver<BackgroundMsg>,
+    pub fully_loaded: HashSet<String>,
+    pub priority_fetch_path: Option<String>,
+    pub expanded: HashSet<ExpandKey>,
+    pub list_state: ListState,
+    pub searching: bool,
+    pub search_query: String,
+    pub filtered: Vec<usize>,
+    pub show_settings: bool,
+    pub settings_pane: Pane,
+    pub settings_editing: bool,
+    pub settings_edit_buf: String,
+    pub settings_edit_cursor: usize,
+    pub scan_complete: bool,
+    scan_started_at: Instant,
+    scan_run_count: u64,
+    startup_phases: StartupPhaseTracker,
+    pub scan_log: Vec<String>,
+    pub scan_log_state: ListState,
+    pub focused_pane: PaneId,
+    pub return_focus: Option<PaneId>,
+    pub visited_panes: HashSet<PaneId>,
+    pub package_pane: Pane,
+    pub git_pane: Pane,
+    pub targets_pane: Pane,
+    pub ci_pane: Pane,
+    pub toast_pane: Pane,
+    pub port_report_pane: Pane,
+    pub bottom_panel: BottomPanel,
+    pub pending_example_run: Option<PendingExampleRun>,
+    pub pending_ci_fetch: Option<PendingCiFetch>,
+    pub pending_cleans: VecDeque<PendingClean>,
+    pub confirm: Option<ConfirmAction>,
+    pub animation_started: Instant,
+    pub ci_fetch_tx: mpsc::Sender<CiFetchMsg>,
+    pub ci_fetch_rx: mpsc::Receiver<CiFetchMsg>,
+    pub clean_tx: mpsc::Sender<CleanMsg>,
+    pub clean_rx: mpsc::Receiver<CleanMsg>,
+    pub example_running: Option<String>,
+    pub example_child: Arc<Mutex<Option<u32>>>,
+    pub example_output: Vec<String>,
+    pub example_tx: mpsc::Sender<ExampleMsg>,
+    pub example_rx: mpsc::Receiver<ExampleMsg>,
+    pub last_selected_path: Option<String>,
     pub selected_project_path: Option<String>,
-    pub terminal_dirty:        bool,
-    pub should_quit:           bool,
-    pub should_restart:        bool,
+    collapsed_selection_path: Option<String>,
+    collapsed_anchor_path: Option<String>,
+    running_lint_paths: HashSet<String>,
+    lint_toast: Option<ToastTaskId>,
+    pub terminal_dirty: bool,
+    pub should_quit: bool,
+    pub should_restart: bool,
 
     // Disk watcher
-    pub watch_tx:                     mpsc::Sender<WatchRequest>,
-    pub lint_runtime:                 Option<RuntimeHandle>,
-    pub unreachable_services:         HashSet<ServiceKind>,
-    service_retry_active:             HashSet<ServiceKind>,
+    pub watch_tx: mpsc::Sender<WatchRequest>,
+    pub lint_runtime: Option<RuntimeHandle>,
+    pub unreachable_services: HashSet<ServiceKind>,
+    service_retry_active: HashSet<ServiceKind>,
     #[cfg(test)]
     pub service_retry_spawns_enabled: bool,
 
@@ -346,45 +369,45 @@ pub(super) struct App {
     pub deleted_projects: HashSet<String>,
 
     // Universal finder
-    pub show_finder:       bool,
-    pub finder_query:      String,
-    pub finder_results:    Vec<usize>,
-    pub finder_total:      usize,
-    pub finder_pane:       Pane,
-    pub finder_index:      Vec<FinderItem>,
+    pub show_finder: bool,
+    pub finder_query: String,
+    pub finder_results: Vec<usize>,
+    pub finder_total: usize,
+    pub finder_pane: Pane,
+    pub finder_index: Vec<FinderItem>,
     pub finder_col_widths: [usize; FINDER_COLUMN_COUNT],
-    pub finder_dirty:      bool,
+    pub finder_dirty: bool,
 
     // Caches for per-frame hot paths
-    pub cached_visible_rows:      Vec<VisibleRow>,
-    pub rows_dirty:               bool,
-    pub cached_root_sorted:       Vec<u64>,
-    pub cached_child_sorted:      HashMap<usize, Vec<u64>>,
-    pub disk_cache_dirty:         bool,
-    pub cached_fit_widths:        ResolvedWidths,
-    fit_widths_dirty:             bool,
-    tree_build_tx:                mpsc::Sender<TreeBuildResult>,
-    tree_build_rx:                Receiver<TreeBuildResult>,
-    tree_build_active:            Option<u64>,
-    tree_build_latest:            u64,
-    fit_build_tx:                 mpsc::Sender<FitWidthsBuildResult>,
-    fit_build_rx:                 Receiver<FitWidthsBuildResult>,
-    fit_build_active:             Option<u64>,
-    fit_build_latest:             u64,
-    disk_build_tx:                mpsc::Sender<DiskCacheBuildResult>,
-    disk_build_rx:                Receiver<DiskCacheBuildResult>,
-    disk_build_active:            Option<u64>,
-    disk_build_latest:            u64,
-    pub(super) data_generation:   u64,
+    pub cached_visible_rows: Vec<VisibleRow>,
+    pub rows_dirty: bool,
+    pub cached_root_sorted: Vec<u64>,
+    pub cached_child_sorted: HashMap<usize, Vec<u64>>,
+    pub disk_cache_dirty: bool,
+    pub cached_fit_widths: ResolvedWidths,
+    fit_widths_dirty: bool,
+    tree_build_tx: mpsc::Sender<TreeBuildResult>,
+    tree_build_rx: Receiver<TreeBuildResult>,
+    tree_build_active: Option<u64>,
+    tree_build_latest: u64,
+    fit_build_tx: mpsc::Sender<FitWidthsBuildResult>,
+    fit_build_rx: Receiver<FitWidthsBuildResult>,
+    fit_build_active: Option<u64>,
+    fit_build_latest: u64,
+    disk_build_tx: mpsc::Sender<DiskCacheBuildResult>,
+    disk_build_rx: Receiver<DiskCacheBuildResult>,
+    disk_build_active: Option<u64>,
+    disk_build_latest: u64,
+    pub(super) data_generation: u64,
     pub(super) detail_generation: u64,
-    pub(super) cached_detail:     Option<DetailCache>,
+    pub(super) cached_detail: Option<DetailCache>,
     pub(super) selection_changed: bool,
-    pub(super) layout_cache:      LayoutCache,
+    pub(super) layout_cache: LayoutCache,
 
-    /// Transient message shown in the status bar, auto-cleared after a timeout.
     pub(super) status_flash: Option<(String, std::time::Instant)>,
-    config_path:             Option<PathBuf>,
-    config_last_seen:        Option<ConfigFileStamp>,
+    pub(super) toasts: ToastManager,
+    config_path: Option<PathBuf>,
+    config_last_seen: Option<ConfigFileStamp>,
 }
 
 /// Build the flat list of visible rows from the node tree and expansion state.
@@ -397,21 +420,21 @@ fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> V
                 if group.name.is_empty() {
                     for (mi, _) in group.members.iter().enumerate() {
                         rows.push(VisibleRow::Member {
-                            node_index:   ni,
-                            group_index:  gi,
+                            node_index: ni,
+                            group_index: gi,
                             member_index: mi,
                         });
                     }
                 } else {
                     rows.push(VisibleRow::GroupHeader {
-                        node_index:  ni,
+                        node_index: ni,
                         group_index: gi,
                     });
                     if expanded.contains(&ExpandKey::Group(ni, gi)) {
                         for (mi, _) in group.members.iter().enumerate() {
                             rows.push(VisibleRow::Member {
-                                node_index:   ni,
-                                group_index:  gi,
+                                node_index: ni,
+                                group_index: gi,
                                 member_index: mi,
                             });
                         }
@@ -421,14 +444,14 @@ fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> V
 
             for (vi, _) in node.vendored.iter().enumerate() {
                 rows.push(VisibleRow::Vendored {
-                    node_index:     ni,
+                    node_index: ni,
                     vendored_index: vi,
                 });
             }
 
             for (wi, wt) in node.worktrees.iter().enumerate() {
                 rows.push(VisibleRow::WorktreeEntry {
-                    node_index:     ni,
+                    node_index: ni,
                     worktree_index: wi,
                 });
                 if wt.has_children() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
@@ -436,25 +459,25 @@ fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> V
                         if group.name.is_empty() {
                             for (mi, _) in group.members.iter().enumerate() {
                                 rows.push(VisibleRow::WorktreeMember {
-                                    node_index:     ni,
+                                    node_index: ni,
                                     worktree_index: wi,
-                                    group_index:    gi,
-                                    member_index:   mi,
+                                    group_index: gi,
+                                    member_index: mi,
                                 });
                             }
                         } else {
                             rows.push(VisibleRow::WorktreeGroupHeader {
-                                node_index:     ni,
+                                node_index: ni,
                                 worktree_index: wi,
-                                group_index:    gi,
+                                group_index: gi,
                             });
                             if expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
                                 for (mi, _) in group.members.iter().enumerate() {
                                     rows.push(VisibleRow::WorktreeMember {
-                                        node_index:     ni,
+                                        node_index: ni,
                                         worktree_index: wi,
-                                        group_index:    gi,
-                                        member_index:   mi,
+                                        group_index: gi,
+                                        member_index: mi,
                                     });
                                 }
                             }
@@ -463,7 +486,7 @@ fn build_visible_rows(nodes: &[ProjectNode], expanded: &HashSet<ExpandKey>) -> V
 
                     for (vi, _) in wt.vendored.iter().enumerate() {
                         rows.push(VisibleRow::WorktreeVendored {
-                            node_index:     ni,
+                            node_index: ni,
                             worktree_index: wi,
                             vendored_index: vi,
                         });
@@ -802,12 +825,13 @@ fn initial_list_state(nodes: &[ProjectNode]) -> ListState {
 }
 
 impl App {
-    const TAB_ORDER: [PaneId; 6] = [
+    const TAB_ORDER: [PaneId; 7] = [
         PaneId::ProjectList,
         PaneId::Package,
         PaneId::Git,
         PaneId::Targets,
         PaneId::CiRuns,
+        PaneId::Toasts,
         PaneId::ScanLog,
     ];
 
@@ -830,6 +854,7 @@ impl App {
                         InputContext::CiRuns
                     }
                 },
+                PaneId::Toasts => InputContext::Toasts,
                 PaneId::ScanLog => InputContext::ScanLog,
                 PaneId::Search => InputContext::Searching,
                 PaneId::Settings => InputContext::Settings,
@@ -839,7 +864,9 @@ impl App {
         }
     }
 
-    pub fn is_focused(&self, pane: PaneId) -> bool { self.focused_pane == pane }
+    pub fn is_focused(&self, pane: PaneId) -> bool {
+        self.focused_pane == pane
+    }
 
     pub fn base_focus(&self) -> PaneId {
         if self.focused_pane.is_overlay() {
@@ -889,31 +916,51 @@ impl App {
                 PaneId::CiRuns => self
                     .selected_project()
                     .is_some_and(|project| self.bottom_panel_available(project)),
+                PaneId::Toasts => !self.active_toasts().is_empty(),
                 PaneId::ScanLog | PaneId::Search | PaneId::Settings | PaneId::Finder => false,
             })
             .collect()
     }
 
     pub fn focus_next_pane(&mut self) {
+        self.prune_toasts();
         let panes = self.tabbable_panes();
         if panes.is_empty() {
             return;
         }
         let current = self.base_focus();
+        if current == PaneId::Toasts && self.toast_pane.pos() + 1 < self.active_toasts().len() {
+            self.toast_pane.down();
+            self.focus_pane(PaneId::Toasts);
+            return;
+        }
         let index = panes.iter().position(|pane| *pane == current).unwrap_or(0);
         let next = panes[(index + 1) % panes.len()];
         self.focus_pane(next);
+        if next == PaneId::Toasts {
+            self.toast_pane.home();
+        }
     }
 
     pub fn focus_previous_pane(&mut self) {
+        self.prune_toasts();
         let panes = self.tabbable_panes();
         if panes.is_empty() {
             return;
         }
         let current = self.base_focus();
+        if current == PaneId::Toasts && self.toast_pane.pos() > 0 {
+            self.toast_pane.up();
+            self.focus_pane(PaneId::Toasts);
+            return;
+        }
         let index = panes.iter().position(|pane| *pane == current).unwrap_or(0);
         let prev = panes[(index + panes.len() - 1) % panes.len()];
         self.focus_pane(prev);
+        if prev == PaneId::Toasts {
+            self.toast_pane
+                .set_pos(self.active_toasts().len().saturating_sub(1));
+        }
     }
 
     pub fn reset_project_panes(&mut self) {
@@ -922,13 +969,16 @@ impl App {
         self.targets_pane.home();
         self.ci_pane.home();
         self.port_report_pane.home();
+        self.toast_pane.home();
         self.visited_panes.remove(&PaneId::Package);
         self.visited_panes.remove(&PaneId::Git);
         self.visited_panes.remove(&PaneId::Targets);
         self.visited_panes.remove(&PaneId::CiRuns);
     }
 
-    pub fn remembers_selection(&self, pane: PaneId) -> bool { self.visited_panes.contains(&pane) }
+    pub fn remembers_selection(&self, pane: PaneId) -> bool {
+        self.visited_panes.contains(&pane)
+    }
 
     pub const fn toggle_bottom_panel(&mut self) {
         self.bottom_panel = match self.bottom_panel {
@@ -941,15 +991,25 @@ impl App {
         matches!(self.bottom_panel, BottomPanel::PortReport)
     }
 
-    pub const fn lint_enabled(&self) -> bool { self.current_config.lint.enabled }
+    pub const fn lint_enabled(&self) -> bool {
+        self.current_config.lint.enabled
+    }
 
-    pub const fn invert_scroll(&self) -> ScrollDirection { self.current_config.mouse.invert_scroll }
+    pub const fn invert_scroll(&self) -> ScrollDirection {
+        self.current_config.mouse.invert_scroll
+    }
 
     pub const fn include_non_rust(&self) -> NonRustInclusion {
         self.current_config.tui.include_non_rust
     }
 
-    pub const fn ci_run_count(&self) -> u32 { self.current_config.tui.ci_run_count }
+    pub const fn ci_run_count(&self) -> u32 {
+        self.current_config.tui.ci_run_count
+    }
+
+    pub const fn navigation_keys(&self) -> NavigationKeys {
+        self.current_config.tui.navigation_keys
+    }
 
     fn has_cached_non_rust_projects(&self) -> bool {
         self.all_projects
@@ -976,9 +1036,11 @@ impl App {
         Self::filter_tree_projects(&self.all_projects, self.include_non_rust())
     }
 
-    pub fn editor(&self) -> &str { &self.current_config.tui.editor }
+    pub(super) fn editor(&self) -> &str {
+        &self.current_config.tui.editor
+    }
 
-    pub fn status_flash_millis(&self) -> u64 {
+    fn status_flash_millis(&self) -> u64 {
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -987,6 +1049,63 @@ impl App {
         {
             (self.current_config.tui.status_flash_secs * 1000.0) as u64
         }
+    }
+
+    fn toast_timeout(&self) -> Duration {
+        Duration::from_millis(self.status_flash_millis())
+    }
+
+    pub(super) fn active_toasts(&self) -> Vec<ToastView<'_>> {
+        self.toasts.active(Instant::now())
+    }
+
+    pub(super) fn focused_toast_id(&self) -> Option<u64> {
+        let active = self.active_toasts();
+        active.get(self.toast_pane.pos()).map(ToastView::id)
+    }
+
+    pub(super) fn prune_toasts(&mut self) {
+        self.toasts.prune(Instant::now());
+        self.toast_pane.set_len(self.active_toasts().len());
+        if self.base_focus() == PaneId::Toasts && self.active_toasts().is_empty() {
+            self.focus_pane(PaneId::ProjectList);
+        }
+    }
+
+    pub(super) fn show_timed_toast(&mut self, title: impl Into<String>, body: impl Into<String>) {
+        self.toasts.push_timed(title, body, self.toast_timeout());
+        self.toast_pane.set_len(self.active_toasts().len());
+    }
+
+    pub(super) fn start_task_toast(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> ToastTaskId {
+        let task_id = self.toasts.push_task(title, body);
+        self.toast_pane.set_len(self.active_toasts().len());
+        task_id
+    }
+
+    pub(super) fn finish_task_toast(&mut self, task_id: ToastTaskId) {
+        self.toasts.finish_task(task_id);
+        self.prune_toasts();
+    }
+
+    fn update_task_toast_body(&mut self, task_id: ToastTaskId, body: impl Into<String>) {
+        self.toasts.update_task_body(task_id, body);
+        self.toast_pane.set_len(self.active_toasts().len());
+    }
+
+    pub(super) fn dismiss_focused_toast(&mut self) {
+        if let Some(id) = self.focused_toast_id() {
+            self.dismiss_toast(id);
+        }
+    }
+
+    pub(super) fn dismiss_toast(&mut self, id: u64) {
+        self.toasts.dismiss(id);
+        self.prune_toasts();
     }
 
     pub fn port_report_is_watchable(&self, project: &RustProject) -> bool {
@@ -1021,6 +1140,14 @@ impl App {
     pub fn sync_selected_project(&mut self) {
         self.ensure_visible_rows_cached();
         let current = self.selected_project().map(|project| project.path.clone());
+        if self
+            .collapsed_anchor_path
+            .as_ref()
+            .is_some_and(|anchor| current.as_ref() != Some(anchor))
+        {
+            self.collapsed_selection_path = None;
+            self.collapsed_anchor_path = None;
+        }
         if self.selected_project_path == current {
             return;
         }
@@ -1064,6 +1191,7 @@ impl App {
     ) -> Self {
         let (example_tx, example_rx) = mpsc::channel();
         let (ci_fetch_tx, ci_fetch_rx) = mpsc::channel();
+        let (clean_tx, clean_rx) = mpsc::channel();
         crate::config::set_active_config(cfg);
         let config_path = crate::config::config_path();
         let config_last_seen = config_path.as_deref().and_then(Self::config_file_stamp);
@@ -1133,15 +1261,18 @@ impl App {
             git_pane: Pane::new(),
             targets_pane: Pane::new(),
             ci_pane: Pane::new(),
+            toast_pane: Pane::new(),
             port_report_pane: Pane::new(),
             bottom_panel: BottomPanel::CiRuns,
             pending_example_run: None,
             pending_ci_fetch: None,
-            pending_clean: None,
+            pending_cleans: VecDeque::new(),
             confirm: None,
             animation_started: Instant::now(),
             ci_fetch_tx,
             ci_fetch_rx,
+            clean_tx,
+            clean_rx,
             example_running: None,
             example_child: Arc::new(Mutex::new(None)),
             example_output: Vec::new(),
@@ -1149,6 +1280,10 @@ impl App {
             example_rx,
             last_selected_path: super::terminal::load_last_selected(),
             selected_project_path: None,
+            collapsed_selection_path: None,
+            collapsed_anchor_path: None,
+            running_lint_paths: HashSet::new(),
+            lint_toast: None,
             terminal_dirty: false,
             should_quit: false,
             should_restart: false,
@@ -1198,12 +1333,23 @@ impl App {
             status_flash: lint_warning
                 .clone()
                 .map(|warning| (warning, Instant::now())),
+            toasts: ToastManager::default(),
             config_path,
             config_last_seen,
         };
         if let Some(warning) = lint_warning {
+            app.show_timed_toast("Lint runtime", warning.clone());
             app.scan_log.push(warning);
             app.scan_log_state.select(Some(0));
+        }
+        if app.current_config.tui.include_dirs.is_empty() {
+            app.show_timed_toast(
+                "Scan root",
+                format!(
+                    "Using {}. Set include_dirs in Settings to limit scan scope.",
+                    crate::project::home_relative_path(&app.scan_root)
+                ),
+            );
         }
         app.recompute_cargo_active_paths();
         app.prune_inactive_project_state();
@@ -1252,7 +1398,7 @@ impl App {
                     self.ci_state
                         .entry(member.path.clone())
                         .or_insert_with(|| CiState::Loaded {
-                            runs:      runs.clone(),
+                            runs: runs.clone(),
                             exhausted: false,
                         });
                 }
@@ -1283,13 +1429,15 @@ impl App {
         self.sync_selected_project();
     }
 
-    pub fn rebuild_tree(&mut self) { self.request_tree_rebuild(); }
+    pub fn rebuild_tree(&mut self) {
+        self.request_tree_rebuild();
+    }
 
     fn config_file_stamp(path: &Path) -> Option<ConfigFileStamp> {
         let metadata = std::fs::metadata(path).ok()?;
         Some(ConfigFileStamp {
             modified: metadata.modified().ok(),
-            len:      metadata.len(),
+            len: metadata.len(),
         })
     }
 
@@ -1305,6 +1453,10 @@ impl App {
             "Config reload failed; keeping previous settings".to_string(),
             Instant::now(),
         ));
+        self.show_timed_toast(
+            "Config reload failed",
+            "Keeping previous settings".to_string(),
+        );
         self.scan_log.push(format!("config reload failed: {err}"));
         self.scan_log_state
             .select(Some(self.scan_log.len().saturating_sub(1)));
@@ -1349,7 +1501,7 @@ impl App {
             &self.current_config,
             cfg,
             config_reload::ReloadContext {
-                scan_complete:       self.scan_complete,
+                scan_complete: self.scan_complete,
                 has_cached_non_rust: self.has_cached_non_rust_projects(),
             },
         );
@@ -1387,6 +1539,7 @@ impl App {
         self.detail_generation += 1;
         if let Some(warning) = lint_spawn.warning {
             self.status_flash = Some((warning.clone(), Instant::now()));
+            self.show_timed_toast("Lint runtime", warning.clone());
             self.scan_log.push(warning);
             self.scan_log_state
                 .select(Some(self.scan_log.len().saturating_sub(1)));
@@ -1540,22 +1693,51 @@ impl App {
         });
     }
 
-    fn sync_lint_runtime_projects(&self) { self.sync_lint_runtime_projects_with(false); }
+    fn sync_lint_runtime_projects(&self) {
+        self.sync_lint_runtime_projects_with(false);
+    }
 
-    fn sync_lint_runtime_projects_immediately(&self) { self.sync_lint_runtime_projects_with(true); }
+    fn sync_lint_runtime_projects_immediately(&self) {
+        self.sync_lint_runtime_projects_with(true);
+    }
+
+    fn lint_runtime_root_projects(&self) -> Vec<&RustProject> {
+        let mut projects = Vec::new();
+        let mut seen = HashSet::new();
+
+        for node in &self.nodes {
+            if seen.insert(node.project.path.clone()) {
+                projects.push(&node.project);
+            }
+            for worktree in &node.worktrees {
+                if seen.insert(worktree.project.path.clone()) {
+                    projects.push(&worktree.project);
+                }
+            }
+        }
+
+        if !projects.is_empty() {
+            return projects;
+        }
+
+        self.all_projects
+            .iter()
+            .filter(|project| seen.insert(project.path.clone()))
+            .collect()
+    }
 
     fn lint_runtime_projects_snapshot(&self) -> Vec<RegisterProjectRequest> {
         if !self.scan_complete {
             return Vec::new();
         }
-        self.all_projects
-            .iter()
+        self.lint_runtime_root_projects()
+            .into_iter()
             .filter(|project| !self.deleted_projects.contains(&project.path))
             .filter(|project| self.is_cargo_active_path(&project.path))
             .map(|project| RegisterProjectRequest {
                 project_path: project.path.clone(),
-                abs_path:     PathBuf::from(&project.abs_path),
-                is_rust:      project.is_rust == Rust,
+                abs_path: PathBuf::from(&project.abs_path),
+                is_rust: project.is_rust == Rust,
             })
             .collect()
     }
@@ -1573,51 +1755,55 @@ impl App {
     }
 
     fn initialize_startup_phase_tracker(&mut self) {
-        let repo_expected = self
-            .git_info
-            .values()
-            .filter_map(|info| info.url.as_deref())
-            .filter_map(ci::parse_owner_repo)
-            .map(|(owner, repo)| format!("{owner}/{repo}"))
-            .collect::<HashSet<_>>();
-        let lint_expected = self
-            .lint_runtime_projects_snapshot()
-            .into_iter()
-            .filter_map(|request| {
-                self.lint_status
-                    .get(&request.project_path)
-                    .map(|status| (request.project_path, status))
-            })
-            .filter(|(_, status)| !matches!(status, LintStatus::NoLog))
-            .map(|(path, _)| path)
-            .collect::<HashSet<_>>();
         let disk_expected = initial_disk_batch_count(&self.all_projects);
-        let lint_seen_terminal = lint_expected
+        let git_seen = self
+            .startup_phases
+            .git_expected
             .iter()
-            .filter(|path| {
-                self.lint_status.get(*path).is_some_and(|status| {
-                    matches!(
-                        status,
-                        LintStatus::Passed(_)
-                            | LintStatus::Failed(_)
-                            | LintStatus::Stale
-                            | LintStatus::NoLog
-                    )
-                })
-            })
+            .filter(|path| self.git_info.contains_key(*path))
             .cloned()
             .collect::<HashSet<_>>();
-
+        self.startup_phases.disk_complete_at = None;
         self.startup_phases.scan_complete_at = Some(Instant::now());
         self.startup_phases.disk_expected = Some(disk_expected);
-        self.startup_phases.repo_expected = Some(repo_expected.len());
-        self.startup_phases.lint_expected = Some(lint_expected);
-        self.startup_phases.lint_seen_terminal = lint_seen_terminal;
-
+        self.startup_phases.git_seen = git_seen;
+        self.startup_phases.git_complete_at = None;
+        self.startup_phases.repo_complete_at = None;
+        self.startup_phases.git_toast = None;
+        self.startup_phases.repo_toast = None;
+        self.startup_phases.lint_expected = Some(HashSet::new());
+        self.startup_phases.lint_seen_terminal.clear();
+        self.startup_phases.lint_complete_at = None;
+        self.startup_phases.startup_complete_at = None;
+        let git_remaining = self
+            .startup_phases
+            .git_expected
+            .len()
+            .saturating_sub(self.startup_phases.git_seen.len());
+        if git_remaining > 0 {
+            self.startup_phases.git_toast =
+                Some(self.start_task_toast(
+                    "Scanning local git repos",
+                    self.startup_git_toast_body(),
+                ));
+        }
+        let repo_remaining = self
+            .startup_phases
+            .repo_expected
+            .len()
+            .saturating_sub(self.startup_phases.repo_seen.len());
+        if repo_remaining > 0 {
+            self.startup_phases.repo_toast =
+                Some(self.start_task_toast(
+                    "Retrieving GitHub repo details",
+                    self.startup_repo_toast_body(),
+                ));
+        }
         crate::perf_log::log_event(&format!(
-            "startup_phase_plan disk_expected={} repo_expected={} lint_expected={}",
+            "startup_phase_plan disk_expected={} git_expected={} repo_expected={} lint_expected={}",
             self.startup_phases.disk_expected.unwrap_or(0),
-            self.startup_phases.repo_expected.unwrap_or(0),
+            self.startup_phases.git_expected.len(),
+            self.startup_phases.repo_expected.len(),
             self.startup_phases
                 .lint_expected
                 .as_ref()
@@ -1631,7 +1817,14 @@ impl App {
             return;
         };
         let now = Instant::now();
+        self.maybe_complete_startup_disk(now, scan_complete_at);
+        self.maybe_complete_startup_git(now, scan_complete_at);
+        self.maybe_complete_startup_repo(now, scan_complete_at);
+        self.maybe_complete_startup_lints(now, scan_complete_at);
+        self.maybe_complete_startup_ready(now, scan_complete_at);
+    }
 
+    fn maybe_complete_startup_disk(&mut self, now: Instant, scan_complete_at: Instant) {
         if self.startup_phases.disk_complete_at.is_none()
             && self
                 .startup_phases
@@ -1646,29 +1839,55 @@ impl App {
                 self.startup_phases.disk_expected.unwrap_or(0)
             ));
         }
+    }
 
+    fn maybe_complete_startup_git(&mut self, now: Instant, scan_complete_at: Instant) {
+        if self.startup_phases.git_complete_at.is_none()
+            && self.startup_phases.git_seen.len() >= self.startup_phases.git_expected.len()
+        {
+            self.startup_phases.git_complete_at = Some(now);
+            if let Some(git_toast) = self.startup_phases.git_toast.take() {
+                self.finish_task_toast(git_toast);
+            }
+            crate::perf_log::log_event(&format!(
+                "startup_phase_complete phase=git_local_applied since_scan_complete_ms={} seen={} expected={}",
+                now.duration_since(scan_complete_at).as_millis(),
+                self.startup_phases.git_seen.len(),
+                self.startup_phases.git_expected.len()
+            ));
+        } else if let Some(git_toast) = self.startup_phases.git_toast {
+            self.update_task_toast_body(git_toast, self.startup_git_toast_body());
+        }
+    }
+
+    fn maybe_complete_startup_repo(&mut self, now: Instant, scan_complete_at: Instant) {
         if self.startup_phases.repo_complete_at.is_none()
-            && self
-                .startup_phases
-                .repo_expected
-                .is_some_and(|expected| self.startup_phases.repo_seen.len() >= expected)
+            && self.startup_phases.repo_seen.len() >= self.startup_phases.repo_expected.len()
         {
             self.startup_phases.repo_complete_at = Some(now);
+            if let Some(repo_toast) = self.startup_phases.repo_toast.take() {
+                self.finish_task_toast(repo_toast);
+            }
             crate::perf_log::log_event(&format!(
                 "startup_phase_complete phase=repo_fetch_applied since_scan_complete_ms={} seen={} expected={}",
                 now.duration_since(scan_complete_at).as_millis(),
                 self.startup_phases.repo_seen.len(),
-                self.startup_phases.repo_expected.unwrap_or(0)
+                self.startup_phases.repo_expected.len()
             ));
+        } else if let Some(repo_toast) = self.startup_phases.repo_toast {
+            self.update_task_toast_body(repo_toast, self.startup_repo_toast_body());
         }
+    }
 
+    fn maybe_complete_startup_lints(&mut self, now: Instant, scan_complete_at: Instant) {
         if self.startup_phases.lint_complete_at.is_none()
             && self
                 .startup_phases
                 .lint_expected
                 .as_ref()
                 .is_some_and(|expected| {
-                    self.startup_phases.lint_seen_terminal.len() >= expected.len()
+                    !expected.is_empty()
+                        && self.startup_phases.lint_seen_terminal.len() >= expected.len()
                 })
         {
             self.startup_phases.lint_complete_at = Some(now);
@@ -1682,24 +1901,28 @@ impl App {
                     .map_or(0, HashSet::len)
             ));
         }
+    }
 
+    fn maybe_complete_startup_ready(&mut self, now: Instant, scan_complete_at: Instant) {
         if self.startup_phases.startup_complete_at.is_none() {
             let disk_ready = self.startup_phases.disk_complete_at.is_some();
+            let git_ready = self.startup_phases.git_complete_at.is_some();
             let repo_ready = self.startup_phases.repo_complete_at.is_some();
-            let lint_ready = self
-                .startup_phases
-                .lint_expected
-                .as_ref()
-                .is_none_or(|_| self.startup_phases.lint_complete_at.is_some());
-            if disk_ready && repo_ready && lint_ready {
+            if disk_ready && git_ready && repo_ready {
                 self.startup_phases.startup_complete_at = Some(now);
+                self.show_timed_toast(
+                    "Startup complete",
+                    "Disk, local Git, and GitHub startup activity complete.".to_string(),
+                );
                 crate::perf_log::log_event(&format!(
-                    "startup_complete since_scan_complete_ms={} disk_seen={} disk_expected={} repo_seen={} repo_expected={} lint_seen={} lint_expected={}",
+                    "startup_complete since_scan_complete_ms={} disk_seen={} disk_expected={} git_seen={} git_expected={} repo_seen={} repo_expected={} lint_seen={} lint_expected={}",
                     now.duration_since(scan_complete_at).as_millis(),
                     self.startup_phases.disk_seen.len(),
                     self.startup_phases.disk_expected.unwrap_or(0),
+                    self.startup_phases.git_seen.len(),
+                    self.startup_phases.git_expected.len(),
                     self.startup_phases.repo_seen.len(),
-                    self.startup_phases.repo_expected.unwrap_or(0),
+                    self.startup_phases.repo_expected.len(),
                     self.startup_phases.lint_seen_terminal.len(),
                     self.startup_phases
                         .lint_expected
@@ -1711,6 +1934,68 @@ impl App {
                     now.duration_since(scan_complete_at).as_millis()
                 ));
             }
+        }
+    }
+
+    fn startup_git_toast_body(&self) -> String {
+        Self::startup_remaining_toast_body(
+            &self.startup_phases.git_expected,
+            &self.startup_phases.git_seen,
+        )
+    }
+
+    fn startup_repo_toast_body(&self) -> String {
+        Self::startup_remaining_toast_body(
+            &self.startup_phases.repo_expected,
+            &self.startup_phases.repo_seen,
+        )
+    }
+
+    fn startup_remaining_toast_body(expected: &HashSet<String>, seen: &HashSet<String>) -> String {
+        let Some(current) = expected.iter().find(|path| !seen.contains(*path)) else {
+            return "Complete".to_string();
+        };
+        let remaining = expected.len().saturating_sub(seen.len());
+        if remaining <= 1 {
+            current.clone()
+        } else {
+            format!("{current}\n+ {} others", remaining - 1)
+        }
+    }
+
+    fn startup_lint_toast_body_for(expected: &HashSet<String>, seen: &HashSet<String>) -> String {
+        let mut remaining = expected.iter().filter(|path| !seen.contains(*path));
+        let Some(first) = remaining.next() else {
+            return "Complete".to_string();
+        };
+        let Some(second) = remaining.next() else {
+            return first.clone();
+        };
+        let other_count = remaining.count();
+        if other_count == 0 {
+            format!("{first}\n{second}")
+        } else {
+            format!("{first}\n{second} (+ {other_count} others)")
+        }
+    }
+
+    fn running_lint_toast_body(&self) -> String {
+        Self::startup_lint_toast_body_for(&self.running_lint_paths, &HashSet::new())
+    }
+
+    fn sync_running_lint_toast(&mut self) {
+        if self.running_lint_paths.is_empty() {
+            if let Some(task_id) = self.lint_toast.take() {
+                self.finish_task_toast(task_id);
+            }
+            return;
+        }
+
+        let body = self.running_lint_toast_body();
+        if let Some(task_id) = self.lint_toast {
+            self.update_task_toast_body(task_id, body);
+        } else {
+            self.lint_toast = Some(self.start_task_toast("Lints", body));
         }
     }
 
@@ -1961,73 +2246,15 @@ impl App {
             let Ok(msg) = self.bg_rx.try_recv() else {
                 break;
             };
-            match &msg {
-                BackgroundMsg::DiskUsage { .. } | BackgroundMsg::DiskUsageBatch { .. } => {
-                    stats.disk_usage_msgs += 1;
-                },
-                BackgroundMsg::GitInfo { .. } | BackgroundMsg::GitFirstCommit { .. } => {
-                    stats.git_info_msgs += 1;
-                },
-                BackgroundMsg::GitPathState { .. } => stats.git_path_state_msgs += 1,
-                BackgroundMsg::LintStatus { .. } => stats.lint_status_msgs += 1,
-                BackgroundMsg::CiRuns { .. }
-                | BackgroundMsg::RepoFetchComplete { .. }
-                | BackgroundMsg::CratesIoVersion { .. }
-                | BackgroundMsg::RepoMeta { .. }
-                | BackgroundMsg::ProjectDiscovered { .. }
-                | BackgroundMsg::ProjectRefreshed { .. }
-                | BackgroundMsg::ScanComplete
-                | BackgroundMsg::ServiceReachable { .. }
-                | BackgroundMsg::ServiceRecovered { .. }
-                | BackgroundMsg::ServiceUnreachable { .. } => {},
-            }
+            Self::record_background_msg_kind(&mut stats, &msg);
             msg_count += 1;
             needs_rebuild |= self.handle_bg_msg(msg);
         }
         stats.bg_msgs = msg_count;
-        if msg_count == MAX_MSGS_PER_FRAME {
-            crate::perf_log::log_event(&format!(
-                "poll_background_saturated bg_msgs={} disk_usage_msgs={} git_info_msgs={} git_path_state_msgs={} lint_status_msgs={}",
-                msg_count,
-                stats.disk_usage_msgs,
-                stats.git_info_msgs,
-                stats.git_path_state_msgs,
-                stats.lint_status_msgs
-            ));
-        }
-
-        // Poll CI fetch results
-        while let Ok(msg) = self.ci_fetch_rx.try_recv() {
-            match msg {
-                CiFetchMsg::Complete { path, result, kind } => {
-                    self.handle_ci_fetch_complete(path, result, kind);
-                },
-            }
-            stats.ci_msgs += 1;
-        }
-
-        // Poll example process output
-        while let Ok(msg) = self.example_rx.try_recv() {
-            match msg {
-                ExampleMsg::Output(line) => {
-                    self.example_output.push(line);
-                },
-                ExampleMsg::Progress(line) => {
-                    // Replace the last line (cargo progress bar uses \r)
-                    if let Some(last) = self.example_output.last_mut() {
-                        *last = line;
-                    } else {
-                        self.example_output.push(line);
-                    }
-                },
-                ExampleMsg::Finished => {
-                    self.example_running = None;
-                    self.example_output.push("── done ──".to_string());
-                    self.terminal_dirty = true;
-                },
-            }
-            stats.example_msgs += 1;
-        }
+        Self::log_saturated_background_batch(&stats);
+        stats.ci_msgs = self.poll_ci_fetches();
+        stats.example_msgs = self.poll_example_msgs();
+        self.poll_clean_msgs();
 
         stats.tree_results = self.poll_tree_builds();
         stats.fit_results = self.poll_fit_width_builds();
@@ -2058,6 +2285,95 @@ impl App {
             crate::perf_log::slow_bg_batch_threshold_ms(),
         );
         stats
+    }
+
+    const fn record_background_msg_kind(stats: &mut PollBackgroundStats, msg: &BackgroundMsg) {
+        match msg {
+            BackgroundMsg::DiskUsage { .. } | BackgroundMsg::DiskUsageBatch { .. } => {
+                stats.disk_usage_msgs += 1;
+            },
+            BackgroundMsg::GitInfo { .. } | BackgroundMsg::GitFirstCommit { .. } => {
+                stats.git_info_msgs += 1;
+            },
+            BackgroundMsg::GitPathState { .. } => stats.git_path_state_msgs += 1,
+            BackgroundMsg::LintStatus { .. } => stats.lint_status_msgs += 1,
+            BackgroundMsg::CiRuns { .. }
+            | BackgroundMsg::LocalGitQueued { .. }
+            | BackgroundMsg::RepoFetchQueued { .. }
+            | BackgroundMsg::RepoFetchComplete { .. }
+            | BackgroundMsg::CratesIoVersion { .. }
+            | BackgroundMsg::RepoMeta { .. }
+            | BackgroundMsg::ProjectDiscovered { .. }
+            | BackgroundMsg::ProjectRefreshed { .. }
+            | BackgroundMsg::ScanComplete
+            | BackgroundMsg::ServiceReachable { .. }
+            | BackgroundMsg::ServiceRecovered { .. }
+            | BackgroundMsg::ServiceUnreachable { .. } => {},
+        }
+    }
+
+    fn log_saturated_background_batch(stats: &PollBackgroundStats) {
+        const MAX_MSGS_PER_FRAME: usize = 50;
+        if stats.bg_msgs != MAX_MSGS_PER_FRAME {
+            return;
+        }
+
+        crate::perf_log::log_event(&format!(
+            "poll_background_saturated bg_msgs={} disk_usage_msgs={} git_info_msgs={} git_path_state_msgs={} lint_status_msgs={}",
+            stats.bg_msgs,
+            stats.disk_usage_msgs,
+            stats.git_info_msgs,
+            stats.git_path_state_msgs,
+            stats.lint_status_msgs
+        ));
+    }
+
+    fn poll_ci_fetches(&mut self) -> usize {
+        let mut count = 0;
+        while let Ok(msg) = self.ci_fetch_rx.try_recv() {
+            match msg {
+                CiFetchMsg::Complete { path, result, kind } => {
+                    self.handle_ci_fetch_complete(path, result, kind);
+                },
+            }
+            count += 1;
+        }
+        count
+    }
+
+    fn poll_example_msgs(&mut self) -> usize {
+        let mut count = 0;
+        while let Ok(msg) = self.example_rx.try_recv() {
+            match msg {
+                ExampleMsg::Output(line) => self.example_output.push(line),
+                ExampleMsg::Progress(line) => self.apply_example_progress(line),
+                ExampleMsg::Finished => self.finish_example_run(),
+            }
+            count += 1;
+        }
+        count
+    }
+
+    fn apply_example_progress(&mut self, line: String) {
+        if let Some(last) = self.example_output.last_mut() {
+            *last = line;
+        } else {
+            self.example_output.push(line);
+        }
+    }
+
+    fn finish_example_run(&mut self) {
+        self.example_running = None;
+        self.example_output.push("── done ──".to_string());
+        self.terminal_dirty = true;
+    }
+
+    fn poll_clean_msgs(&mut self) {
+        while let Ok(msg) = self.clean_rx.try_recv() {
+            match msg {
+                CleanMsg::Finished(task_id) => self.finish_task_toast(task_id),
+            }
+        }
     }
 
     fn handle_disk_usage(&mut self, path: String, bytes: u64) {
@@ -2100,6 +2416,7 @@ impl App {
 
     fn handle_git_info(&mut self, path: String, info: GitInfo) {
         self.fit_widths_dirty = true;
+        let seen_path = path.clone();
         let preserved_first_commit = self
             .git_info
             .get(&path)
@@ -2131,6 +2448,10 @@ impl App {
             }
         }
         self.git_info.insert(path, info);
+        if self.scan_complete {
+            self.startup_phases.git_seen.insert(seen_path);
+            self.maybe_log_startup_phase_completions();
+        }
         self.finder_dirty = true;
     }
 
@@ -2296,8 +2617,14 @@ impl App {
                 self.handle_disk_usage_batch(entries);
                 self.maybe_log_startup_phase_completions();
             },
+            BackgroundMsg::LocalGitQueued { path } => {
+                self.startup_phases.git_expected.insert(path);
+            },
             BackgroundMsg::CiRuns { path, runs } => {
                 self.insert_ci_runs(path, runs);
+            },
+            BackgroundMsg::RepoFetchQueued { key } => {
+                self.startup_phases.repo_expected.insert(key);
             },
             BackgroundMsg::RepoFetchComplete { key } => {
                 self.handle_repo_fetch_complete(key);
@@ -2347,6 +2674,7 @@ impl App {
                 }
             },
             BackgroundMsg::LintStatus { path, status } => {
+                let status_started = matches!(status, LintStatus::Running(_));
                 let status_is_terminal = matches!(
                     status,
                     LintStatus::Passed(_)
@@ -2381,17 +2709,36 @@ impl App {
                 } else {
                     self.port_report_runs.remove(&path);
                     self.lint_status.remove(&path);
+                    self.running_lint_paths.remove(&path);
                 }
                 self.update_lint_rollups_for_path(&path);
-                if self.scan_complete
-                    && status_is_terminal
-                    && self
-                        .startup_phases
-                        .lint_expected
-                        .as_ref()
-                        .is_some_and(|expected| expected.contains(&path))
-                {
-                    self.startup_phases.lint_seen_terminal.insert(path);
+                if status_started {
+                    self.running_lint_paths.insert(path.clone());
+                }
+                if status_is_terminal {
+                    self.running_lint_paths.remove(&path);
+                }
+                self.sync_running_lint_toast();
+                if self.scan_complete {
+                    if status_started {
+                        let expected = self
+                            .startup_phases
+                            .lint_expected
+                            .get_or_insert_with(HashSet::new);
+                        let inserted = expected.insert(path.clone());
+                        if inserted {
+                            self.startup_phases.lint_complete_at = None;
+                        }
+                    }
+                    if status_is_terminal
+                        && self
+                            .startup_phases
+                            .lint_expected
+                            .as_ref()
+                            .is_some_and(|expected| expected.contains(&path))
+                    {
+                        self.startup_phases.lint_seen_terminal.insert(path);
+                    }
                     self.maybe_log_startup_phase_completions();
                 }
             },
@@ -2526,6 +2873,7 @@ impl App {
             if matches!(kind, CiFetchKind::Refresh) {
                 self.status_flash =
                     Some(("no new runs found".to_string(), std::time::Instant::now()));
+                self.show_timed_toast("CI", "No new runs found".to_string());
             }
             true
         };
@@ -2574,10 +2922,14 @@ impl App {
     }
 
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
-    pub fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
+    pub fn visible_rows(&self) -> &[VisibleRow] {
+        &self.cached_visible_rows
+    }
 
     /// Keep fit-to-content widths rebuilding in the background, never inline on the UI thread.
-    pub fn ensure_fit_widths_cached(&mut self) { self.request_fit_widths_build(); }
+    pub fn ensure_fit_widths_cached(&mut self) {
+        self.request_fit_widths_build();
+    }
 
     /// Iterate all group members in a node, including those nested under worktree entries.
     fn all_group_members(node: &ProjectNode) -> impl Iterator<Item = &RustProject> {
@@ -2618,7 +2970,9 @@ impl App {
     }
 
     /// Keep disk sort caches rebuilding in the background, never inline on the UI thread.
-    pub fn ensure_disk_cache(&mut self) { self.request_disk_cache_build(); }
+    pub fn ensure_disk_cache(&mut self) {
+        self.request_disk_cache_build();
+    }
 
     /// Ensure the cached `DetailInfo` is up to date for the selected project.
     /// The cache is valid only when the generation AND path both match.
@@ -2634,8 +2988,8 @@ impl App {
 
         self.cached_detail = self.selected_project().map(|p| DetailCache {
             generation: self.detail_generation,
-            selection:  current_selection,
-            info:       super::detail::build_detail_info(self, p),
+            selection: current_selection,
+            info: super::detail::build_detail_info(self, p),
         });
     }
 
@@ -2791,48 +3145,56 @@ impl App {
         }
     }
 
-    pub(super) fn expand(&mut self) {
-        if !self.selected_is_expandable() {
-            return;
-        }
-        let Some(selected) = self.list_state.selected() else {
-            return;
-        };
-        let Some(row) = self.visible_rows().get(selected).copied() else {
-            return;
-        };
+    fn expand_key_for_row(&self, row: VisibleRow) -> Option<ExpandKey> {
         match row {
-            VisibleRow::Root { node_index } => {
-                self.expanded.insert(ExpandKey::Node(node_index));
-            },
+            VisibleRow::Root { node_index } => self.nodes[node_index]
+                .has_children()
+                .then_some(ExpandKey::Node(node_index)),
             VisibleRow::GroupHeader {
                 node_index,
                 group_index,
-            } => {
-                self.expanded
-                    .insert(ExpandKey::Group(node_index, group_index));
-            },
+            } => Some(ExpandKey::Group(node_index, group_index)),
             VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
-            } => {
-                self.expanded
-                    .insert(ExpandKey::Worktree(node_index, worktree_index));
-            },
+            } => self.nodes[node_index].worktrees[worktree_index]
+                .has_children()
+                .then_some(ExpandKey::Worktree(node_index, worktree_index)),
             VisibleRow::WorktreeGroupHeader {
                 node_index,
                 worktree_index,
                 group_index,
-            } => {
-                self.expanded.insert(ExpandKey::WorktreeGroup(
-                    node_index,
-                    worktree_index,
-                    group_index,
-                ));
-            },
-            _ => {},
+            } => Some(ExpandKey::WorktreeGroup(
+                node_index,
+                worktree_index,
+                group_index,
+            )),
+            VisibleRow::Member { .. }
+            | VisibleRow::Vendored { .. }
+            | VisibleRow::WorktreeMember { .. }
+            | VisibleRow::WorktreeVendored { .. } => None,
         }
-        self.rows_dirty = true;
+    }
+
+    pub(super) fn expand(&mut self) -> bool {
+        if !self.selected_is_expandable() {
+            return false;
+        }
+        let Some(selected) = self.list_state.selected() else {
+            return false;
+        };
+        let Some(row) = self.visible_rows().get(selected).copied() else {
+            return false;
+        };
+        let Some(key) = self.expand_key_for_row(row) else {
+            return false;
+        };
+        if self.expanded.insert(key) {
+            self.rows_dirty = true;
+            true
+        } else {
+            false
+        }
     }
 
     /// Remove `key` from expanded, recompute rows, and move cursor to `target`.
@@ -2856,14 +3218,19 @@ impl App {
         }
     }
 
-    pub(super) fn collapse(&mut self) {
+    pub(super) fn collapse(&mut self) -> bool {
         let Some(selected) = self.list_state.selected() else {
-            return;
+            return false;
         };
         let Some(row) = self.visible_rows().get(selected).copied() else {
-            return;
+            return false;
         };
+        let expanded_before = self.expanded.len();
+        let selected_before = self.list_state.selected();
         self.collapse_row(row);
+        self.expanded.len() != expanded_before
+            || self.list_state.selected() != selected_before
+            || self.rows_dirty
     }
 
     fn collapse_row(&mut self, row: VisibleRow) {
@@ -2890,7 +3257,7 @@ impl App {
                     self.collapse_to(
                         &ExpandKey::Group(ni, gi),
                         VisibleRow::GroupHeader {
-                            node_index:  ni,
+                            node_index: ni,
                             group_index: gi,
                         },
                     );
@@ -2916,7 +3283,7 @@ impl App {
                     self.collapse_to(
                         &ExpandKey::Worktree(ni, wi),
                         VisibleRow::WorktreeEntry {
-                            node_index:     ni,
+                            node_index: ni,
                             worktree_index: wi,
                         },
                     );
@@ -2932,7 +3299,7 @@ impl App {
                     self.collapse_to(
                         &ExpandKey::Worktree(ni, wi),
                         VisibleRow::WorktreeEntry {
-                            node_index:     ni,
+                            node_index: ni,
                             worktree_index: wi,
                         },
                     );
@@ -2940,9 +3307,9 @@ impl App {
                     self.collapse_to(
                         &ExpandKey::WorktreeGroup(ni, wi, gi),
                         VisibleRow::WorktreeGroupHeader {
-                            node_index:     ni,
+                            node_index: ni,
                             worktree_index: wi,
-                            group_index:    gi,
+                            group_index: gi,
                         },
                     );
                 }
@@ -2955,7 +3322,7 @@ impl App {
                 self.collapse_to(
                     &ExpandKey::Worktree(ni, wi),
                     VisibleRow::WorktreeEntry {
-                        node_index:     ni,
+                        node_index: ni,
                         worktree_index: wi,
                     },
                 );
@@ -3003,6 +3370,92 @@ impl App {
         let count = self.row_count();
         if count > 0 {
             self.list_state.select(Some(count - 1));
+        }
+    }
+
+    const fn collapse_anchor_row(row: VisibleRow) -> VisibleRow {
+        match row {
+            VisibleRow::GroupHeader { node_index, .. }
+            | VisibleRow::Member { node_index, .. }
+            | VisibleRow::Vendored { node_index, .. } => VisibleRow::Root { node_index },
+            VisibleRow::Root { .. } | VisibleRow::WorktreeEntry { .. } => row,
+            VisibleRow::WorktreeGroupHeader {
+                node_index,
+                worktree_index,
+                ..
+            }
+            | VisibleRow::WorktreeMember {
+                node_index,
+                worktree_index,
+                ..
+            }
+            | VisibleRow::WorktreeVendored {
+                node_index,
+                worktree_index,
+                ..
+            } => VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
+            },
+        }
+    }
+
+    pub(super) fn expand_all(&mut self) {
+        let selected_path = self
+            .collapsed_selection_path
+            .take()
+            .or_else(|| self.selected_project().map(|project| project.path.clone()));
+        self.collapsed_anchor_path = None;
+        for (node_index, node) in self.nodes.iter().enumerate() {
+            if node.has_children() {
+                self.expanded.insert(ExpandKey::Node(node_index));
+            }
+            for (group_index, group) in node.groups.iter().enumerate() {
+                if !group.name.is_empty() {
+                    self.expanded
+                        .insert(ExpandKey::Group(node_index, group_index));
+                }
+            }
+            for (worktree_index, worktree) in node.worktrees.iter().enumerate() {
+                if worktree.has_children() {
+                    self.expanded
+                        .insert(ExpandKey::Worktree(node_index, worktree_index));
+                }
+                for (group_index, group) in worktree.groups.iter().enumerate() {
+                    if !group.name.is_empty() {
+                        self.expanded.insert(ExpandKey::WorktreeGroup(
+                            node_index,
+                            worktree_index,
+                            group_index,
+                        ));
+                    }
+                }
+            }
+        }
+        self.rows_dirty = true;
+        if let Some(path) = selected_path {
+            self.select_project_in_tree(&path);
+        }
+    }
+
+    pub(super) fn collapse_all(&mut self) {
+        let selected_path = self.selected_project().map(|project| project.path.clone());
+        let anchor = self.selected_row().map(Self::collapse_anchor_row);
+        self.expanded.clear();
+        self.rows_dirty = true;
+        self.ensure_visible_rows_cached();
+        if let Some(anchor) = anchor
+            && let Some(pos) = self.visible_rows().iter().position(|row| *row == anchor)
+        {
+            self.list_state.select(Some(pos));
+        }
+        let anchor_path = self.selected_project().map(|project| project.path.clone());
+        if selected_path == anchor_path {
+            self.collapsed_selection_path = None;
+            self.collapsed_anchor_path = None;
+        } else {
+            self.collapsed_selection_path = selected_path;
+            self.collapsed_anchor_path = anchor_path;
         }
     }
 
@@ -3237,7 +3690,9 @@ impl App {
         None
     }
 
-    pub fn is_deleted(&self, path: &str) -> bool { self.deleted_projects.contains(path) }
+    pub fn is_deleted(&self, path: &str) -> bool {
+        self.deleted_projects.contains(path)
+    }
 
     pub fn live_worktree_count(&self, node: &ProjectNode) -> usize {
         node.worktrees
@@ -3255,7 +3710,7 @@ impl App {
         for (node_index, node) in self.nodes.iter().enumerate() {
             registrations.push((
                 LintRollupKey::Root { node_index },
-                Self::lint_paths_for_node(node),
+                Self::lint_root_paths_for_node(node),
             ));
             for (worktree_index, worktree) in node.worktrees.iter().enumerate() {
                 registrations.push((
@@ -3263,7 +3718,7 @@ impl App {
                         node_index,
                         worktree_index,
                     },
-                    Self::lint_paths_for_node(worktree),
+                    Self::lint_root_paths_for_worktree(worktree),
                 ));
             }
         }
@@ -3304,11 +3759,11 @@ impl App {
             self.lint_rollup_status.remove(&key);
             return;
         };
-        let status = LintStatus::aggregate(
-            paths
-                .iter()
-                .filter_map(|path| self.lint_status.get(path).cloned()),
-        );
+        let statuses: Vec<LintStatus> = paths
+            .iter()
+            .filter_map(|path| self.lint_status.get(path).cloned())
+            .collect();
+        let status = Self::aggregate_lint_rollup_statuses(&statuses);
         if matches!(status, LintStatus::NoLog) {
             self.lint_rollup_status.remove(&key);
         } else {
@@ -3316,17 +3771,26 @@ impl App {
         }
     }
 
-    fn lint_paths_for_node(node: &ProjectNode) -> Vec<String> {
-        let mut paths = vec![node.project.path.clone()];
-        for group in &node.groups {
-            for member in &group.members {
-                paths.push(member.path.clone());
-            }
+    fn aggregate_lint_rollup_statuses(statuses: &[LintStatus]) -> LintStatus {
+        let running_statuses: Vec<LintStatus> = statuses
+            .iter()
+            .filter(|status| matches!(status, LintStatus::Running(_)))
+            .cloned()
+            .collect();
+        if !running_statuses.is_empty() {
+            return LintStatus::aggregate(running_statuses);
         }
-        for worktree in &node.worktrees {
-            paths.extend(Self::lint_paths_for_node(worktree));
-        }
-        paths
+        LintStatus::aggregate(statuses.iter().cloned())
+    }
+
+    fn lint_root_paths_for_node(node: &ProjectNode) -> Vec<String> {
+        std::iter::once(node.project.path.clone())
+            .chain(node.worktrees.iter().map(|worktree| worktree.project.path.clone()))
+            .collect()
+    }
+
+    fn lint_root_paths_for_worktree(node: &ProjectNode) -> Vec<String> {
+        vec![node.project.path.clone()]
     }
 
     fn selected_lint_rollup_key(&self) -> Option<LintRollupKey> {
@@ -3355,13 +3819,6 @@ impl App {
 
     fn lint_status_for_rollup_key(&self, key: LintRollupKey) -> Option<&LintStatus> {
         self.lint_rollup_status.get(&key)
-    }
-
-    pub fn live_node_count(&self) -> usize {
-        self.nodes
-            .iter()
-            .filter(|n| !self.is_deleted(&n.project.path))
-            .count()
     }
 
     pub fn formatted_disk(&self, project: &RustProject) -> String {
@@ -3452,7 +3909,9 @@ impl App {
         self.ci_state.get(&project.path)
     }
 
-    pub fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
+    pub fn animation_elapsed(&self) -> Duration {
+        self.animation_started.elapsed()
+    }
 
     /// Lint icon frame for the current animation state, or a blank space if lint is
     /// disabled or no log exists.
@@ -3829,20 +4288,20 @@ mod tests {
 
     fn make_project(name: Option<&str>, path: &str) -> RustProject {
         RustProject {
-            path:                      path.to_string(),
-            abs_path:                  path.to_string(),
-            name:                      name.map(String::from),
-            version:                   None,
-            description:               None,
-            worktree_name:             None,
+            path: path.to_string(),
+            abs_path: path.to_string(),
+            name: name.map(String::from),
+            version: None,
+            description: None,
+            worktree_name: None,
             worktree_primary_abs_path: None,
-            is_workspace:              WorkspaceStatus::Standalone,
-            types:                     Vec::new(),
-            examples:                  Vec::new(),
-            benches:                   Vec::new(),
-            test_count:                0,
-            is_rust:                   ProjectLanguage::Rust,
-            local_dependency_paths:    Vec::new(),
+            is_workspace: WorkspaceStatus::Standalone,
+            types: Vec::new(),
+            examples: Vec::new(),
+            benches: Vec::new(),
+            test_count: 0,
+            is_rust: ProjectLanguage::Rust,
+            local_dependency_paths: Vec::new(),
         }
     }
 
@@ -4065,7 +4524,7 @@ mod tests {
         let mut wt0 = make_node(make_project(None, "~/ws"));
         wt0.project.worktree_name = Some("ws".to_string());
         wt0.groups = vec![MemberGroup {
-            name:    String::new(),
+            name: String::new(),
             members: vec![member_a.clone(), member_b.clone()],
         }];
 
@@ -4073,7 +4532,7 @@ mod tests {
         let mut wt1 = make_node(make_project(None, "~/ws_feat"));
         wt1.project.worktree_name = Some("ws_feat".to_string());
         wt1.groups = vec![MemberGroup {
-            name:    "crates".to_string(),
+            name: "crates".to_string(),
             members: vec![member_a, member_b],
         }];
 
@@ -4104,41 +4563,41 @@ mod tests {
         assert!(matches!(
             rows[1],
             VisibleRow::WorktreeEntry {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 0,
             }
         ));
         assert!(matches!(
             rows[2],
             VisibleRow::WorktreeMember {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 0,
-                group_index:    0,
-                member_index:   0,
+                group_index: 0,
+                member_index: 0,
             }
         ));
         assert!(matches!(
             rows[4],
             VisibleRow::WorktreeEntry {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 1,
             }
         ));
         assert!(matches!(
             rows[5],
             VisibleRow::WorktreeGroupHeader {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 1,
-                group_index:    0,
+                group_index: 0,
             }
         ));
         assert!(matches!(
             rows[7],
             VisibleRow::WorktreeMember {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 1,
-                group_index:    0,
-                member_index:   1,
+                group_index: 0,
+                member_index: 1,
             }
         ));
     }
@@ -4178,7 +4637,7 @@ mod tests {
         let member_b = make_project(Some("b"), "~/ws/b");
         let mut root = make_node(make_project(None, "~/ws"));
         root.groups = vec![MemberGroup {
-            name:    String::new(),
+            name: String::new(),
             members: vec![member_a, member_b],
         }];
 
@@ -4210,7 +4669,7 @@ mod tests {
         let vendored = make_project(Some("vendored"), "~/ws/vendor/helper");
         let mut root = make_node(make_project(None, "~/ws"));
         root.groups = vec![MemberGroup {
-            name:    String::new(),
+            name: String::new(),
             members: vec![member],
         }];
         root.vendored = vec![vendored];
@@ -4224,7 +4683,7 @@ mod tests {
         assert!(matches!(
             rows[2],
             VisibleRow::Vendored {
-                node_index:     0,
+                node_index: 0,
                 vendored_index: 0,
             }
         ));
@@ -4245,15 +4704,11 @@ mod tests {
     }
 
     #[test]
-    fn startup_lint_expectation_only_tracks_existing_lint_statuses() {
+    fn startup_lint_expectation_tracks_running_startup_lints() {
         let project_a = make_project(Some("a"), "~/a");
         let project_b = make_project(Some("b"), "~/b");
-        let mut app = make_app(vec![project_a.clone(), project_b.clone()]);
+        let mut app = make_app(vec![project_a.clone(), project_b]);
         app.scan_complete = true;
-        app.lint_status.insert(
-            project_a.path.clone(),
-            LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")),
-        );
 
         app.initialize_startup_phase_tracker();
 
@@ -4262,14 +4717,174 @@ mod tests {
             .lint_expected
             .as_ref()
             .expect("lint expected");
+        assert!(expected.is_empty());
+        assert!(app.lint_toast.is_none());
+
+        app.handle_bg_msg(BackgroundMsg::LintStatus {
+            path: project_a.path.clone(),
+            status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+        });
+
+        let expected = app
+            .startup_phases
+            .lint_expected
+            .as_ref()
+            .expect("lint expected");
         assert_eq!(expected.len(), 1);
         assert!(expected.contains(&project_a.path));
-        assert!(!expected.contains(&project_b.path));
         assert!(
-            app.startup_phases
+            !app.startup_phases
                 .lint_seen_terminal
                 .contains(&project_a.path)
         );
+        assert!(app.running_lint_paths.contains(&project_a.path));
+        assert!(app.lint_toast.is_some());
+
+        app.handle_bg_msg(BackgroundMsg::LintStatus {
+            path: project_a.path,
+            status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
+        });
+
+        assert!(app.startup_phases.lint_complete_at.is_some());
+        assert!(app.running_lint_paths.is_empty());
+        assert!(app.lint_toast.is_none());
+    }
+
+    #[test]
+    fn startup_lint_toast_body_shows_two_paths_then_others() {
+        let expected = HashSet::from([
+            "~/a".to_string(),
+            "~/b".to_string(),
+            "~/c".to_string(),
+            "~/d".to_string(),
+        ]);
+        let seen = HashSet::from(["~/d".to_string()]);
+
+        let body = App::startup_lint_toast_body_for(&expected, &seen);
+        let lines = body.lines().collect::<Vec<_>>();
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("~/"));
+        assert!(lines[1].starts_with("~/"));
+        assert!(lines[1].contains("(+ 1 others)"));
+    }
+
+    #[test]
+    fn lint_toast_reappears_for_new_running_lints() {
+        let project = make_project(Some("a"), "~/a");
+        let mut app = make_app(vec![project.clone()]);
+        app.scan_complete = true;
+
+        app.handle_bg_msg(BackgroundMsg::LintStatus {
+            path: project.path.clone(),
+            status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
+        });
+        let first_toast = app.lint_toast;
+        assert!(first_toast.is_some());
+
+        app.handle_bg_msg(BackgroundMsg::LintStatus {
+            path: project.path.clone(),
+            status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
+        });
+        assert!(app.lint_toast.is_none());
+
+        app.handle_bg_msg(BackgroundMsg::LintStatus {
+            path: project.path,
+            status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
+        });
+        assert!(app.lint_toast.is_some());
+        assert_ne!(app.lint_toast, first_toast);
+    }
+
+    #[test]
+    fn collapse_all_anchors_member_selection_to_root() {
+        let workspace = make_project(Some("hana"), "~/rust/hana");
+        let member = make_project(Some("hana_core"), "~/rust/hana/crates/hana_core");
+
+        let mut root = make_node(workspace.clone());
+        root.groups = vec![MemberGroup {
+            name: String::new(),
+            members: vec![member.clone()],
+        }];
+
+        let mut app = make_app(vec![workspace, member.clone()]);
+        apply_nodes(&mut app, vec![root]);
+        app.expanded.insert(ExpandKey::Node(0));
+        app.rows_dirty = true;
+        app.select_project_in_tree(&member.path);
+
+        app.collapse_all();
+
+        assert_eq!(app.selected_row(), Some(VisibleRow::Root { node_index: 0 }));
+    }
+
+    #[test]
+    fn expand_all_preserves_selected_project_path() {
+        let workspace = make_project(Some("hana"), "~/rust/hana");
+        let member = make_project(Some("hana_core"), "~/rust/hana/crates/hana_core");
+
+        let mut root = make_node(workspace.clone());
+        root.groups = vec![MemberGroup {
+            name: String::new(),
+            members: vec![member.clone()],
+        }];
+
+        let mut app = make_app(vec![workspace, member.clone()]);
+        apply_nodes(&mut app, vec![root]);
+        app.select_project_in_tree(&member.path);
+        app.collapse_all();
+
+        app.expand_all();
+
+        assert_eq!(
+            app.selected_project().map(|project| project.path.as_str()),
+            Some(member.path.as_str())
+        );
+    }
+
+    #[test]
+    fn lint_runtime_snapshot_uses_workspace_root_not_members() {
+        let mut workspace = make_project(Some("hana"), "~/rust/hana");
+        workspace.is_workspace = WorkspaceStatus::Workspace;
+        let member_a = make_project(Some("hana_core"), "~/rust/hana/crates/hana_core");
+        let member_b = make_project(Some("hana_ui"), "~/rust/hana/crates/hana_ui");
+
+        let mut root = make_node(workspace.clone());
+        root.groups = vec![MemberGroup {
+            name: String::new(),
+            members: vec![member_a.clone(), member_b.clone()],
+        }];
+
+        let mut app = make_app(vec![workspace.clone(), member_a, member_b]);
+        apply_nodes(&mut app, vec![root]);
+        app.scan_complete = true;
+
+        let projects = app.lint_runtime_projects_snapshot();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].project_path, workspace.path);
+    }
+
+    #[test]
+    fn lint_runtime_snapshot_deduplicates_primary_worktree_path() {
+        let root_project = make_project(Some("ws"), "~/ws");
+        let mut root = make_node(root_project.clone());
+
+        let mut primary = make_node(root_project.clone());
+        primary.project.worktree_name = Some("ws".to_string());
+
+        let mut feature = make_node(make_project(Some("ws_feat"), "~/ws_feat"));
+        feature.project.worktree_name = Some("ws_feat".to_string());
+
+        root.worktrees = vec![primary, feature.clone()];
+
+        let mut app = make_app(vec![root_project.clone(), feature.project.clone()]);
+        apply_nodes(&mut app, vec![root]);
+        app.scan_complete = true;
+
+        let projects = app.lint_runtime_projects_snapshot();
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].project_path, root_project.path);
+        assert_eq!(projects[1].project_path, feature.project.path);
     }
 
     #[test]
@@ -4297,16 +4912,16 @@ mod tests {
         app.git_info.insert(
             path.clone(),
             GitInfo {
-                origin:              GitOrigin::Clone,
-                branch:              Some("feat/demo".to_string()),
-                owner:               None,
-                url:                 Some("https://github.com/acme/demo".to_string()),
-                first_commit:        None,
-                last_commit:         None,
-                ahead_behind:        Some((2, 0)),
-                default_branch:      Some("main".to_string()),
+                origin: GitOrigin::Clone,
+                branch: Some("feat/demo".to_string()),
+                owner: None,
+                url: Some("https://github.com/acme/demo".to_string()),
+                first_commit: None,
+                last_commit: None,
+                ahead_behind: Some((2, 0)),
+                default_branch: Some("main".to_string()),
                 ahead_behind_origin: None,
-                ahead_behind_local:  None,
+                ahead_behind_local: None,
             },
         );
 
@@ -4329,24 +4944,26 @@ mod tests {
         let mut project = make_project(Some("demo"), "~/demo");
         project.examples = vec![ExampleGroup {
             category: String::new(),
-            names:    vec!["example".to_string()],
+            names: vec!["example".to_string()],
         }];
 
         let mut app = make_app(vec![project.clone()]);
+        app.toasts = ToastManager::default();
+        app.toast_pane.set_len(0);
         app.scan_complete = true;
         app.git_info.insert(
             project.path,
             GitInfo {
-                origin:              GitOrigin::Clone,
-                branch:              None,
-                owner:               None,
-                url:                 Some("https://github.com/acme/demo".to_string()),
-                first_commit:        None,
-                last_commit:         None,
-                ahead_behind:        None,
-                default_branch:      None,
+                origin: GitOrigin::Clone,
+                branch: None,
+                owner: None,
+                url: Some("https://github.com/acme/demo".to_string()),
+                first_commit: None,
+                last_commit: None,
+                ahead_behind: None,
+                default_branch: None,
                 ahead_behind_origin: None,
-                ahead_behind_local:  None,
+                ahead_behind_local: None,
             },
         );
 
@@ -4361,13 +4978,43 @@ mod tests {
             ]
         );
 
+        app.show_timed_toast("Settings", "Updated");
+        assert_eq!(
+            app.tabbable_panes(),
+            vec![
+                PaneId::ProjectList,
+                PaneId::Package,
+                PaneId::Git,
+                PaneId::Targets,
+                PaneId::CiRuns,
+                PaneId::Toasts,
+            ]
+        );
+
         app.focus_next_pane();
         assert_eq!(app.focused_pane, PaneId::Package);
         app.focus_next_pane();
         assert_eq!(app.focused_pane, PaneId::Git);
         app.focus_next_pane();
         assert_eq!(app.focused_pane, PaneId::Targets);
+        app.focus_next_pane();
+        assert_eq!(app.focused_pane, PaneId::CiRuns);
+        app.focus_next_pane();
+        assert_eq!(app.focused_pane, PaneId::Toasts);
         app.focus_previous_pane();
+        assert_eq!(app.focused_pane, PaneId::CiRuns);
+    }
+
+    #[test]
+    fn new_toasts_do_not_steal_focus() {
+        let project = make_project(Some("demo"), "~/demo");
+        let mut app = make_app(vec![project]);
+        app.focus_pane(PaneId::Git);
+
+        app.show_timed_toast("Settings", "Updated");
+        assert_eq!(app.focused_pane, PaneId::Git);
+
+        let _task = app.start_task_toast("Startup lints", "Running startup lint jobs...");
         assert_eq!(app.focused_pane, PaneId::Git);
     }
 
@@ -4388,7 +5035,7 @@ mod tests {
         let mut refreshed = project;
         refreshed.examples = vec![ExampleGroup {
             category: String::new(),
-            names:    vec!["tracked_row_paths".to_string()],
+            names: vec!["tracked_row_paths".to_string()],
         }];
 
         assert!(app.handle_project_refreshed(&refreshed));
@@ -4519,7 +5166,7 @@ mod tests {
 
         let mut root = make_node(workspace.clone());
         root.groups = vec![MemberGroup {
-            name:    String::new(),
+            name: String::new(),
             members: vec![member.clone()],
         }];
 
@@ -4567,22 +5214,11 @@ mod tests {
     #[test]
     fn lint_rollups_distinguish_root_from_primary_worktree() {
         let mut root = make_node(make_project(None, "~/ws"));
-        let member_a = make_project(Some("a"), "~/ws/a");
-        let member_b = make_project(Some("b"), "~/ws_feat/b");
-
         let mut primary = make_node(make_project(None, "~/ws"));
         primary.project.worktree_name = Some("ws".to_string());
-        primary.groups = vec![MemberGroup {
-            name:    String::new(),
-            members: vec![member_a],
-        }];
 
         let mut feature = make_node(make_project(None, "~/ws_feat"));
         feature.project.worktree_name = Some("ws_feat".to_string());
-        feature.groups = vec![MemberGroup {
-            name:    String::new(),
-            members: vec![member_b],
-        }];
 
         root.worktrees = vec![primary, feature];
 
@@ -4590,11 +5226,11 @@ mod tests {
         app.current_config.lint.enabled = true;
         apply_nodes(&mut app, vec![root]);
         app.lint_status.insert(
-            "~/ws/a".to_string(),
+            "~/ws".to_string(),
             LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")),
         );
         app.lint_status.insert(
-            "~/ws_feat/b".to_string(),
+            "~/ws_feat".to_string(),
             LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
         );
         app.rebuild_lint_rollups();
@@ -4605,17 +5241,83 @@ mod tests {
         ));
         assert!(matches!(
             app.lint_status_for_rollup_key(LintRollupKey::Worktree {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 0,
             }),
             Some(LintStatus::Passed(_))
         ));
         assert!(matches!(
             app.lint_status_for_rollup_key(LintRollupKey::Worktree {
-                node_index:     0,
+                node_index: 0,
                 worktree_index: 1,
             }),
             Some(LintStatus::Failed(_))
+        ));
+    }
+
+    #[test]
+    fn lint_rollup_prefers_running_root_over_member_history() {
+        let mut root = make_node(make_project(None, "~/ws"));
+        let member = make_project(Some("a"), "~/ws/a");
+
+        root.groups = vec![MemberGroup {
+            name: String::new(),
+            members: vec![member],
+        }];
+
+        let mut app = make_app(vec![root.project.clone()]);
+        app.current_config.lint.enabled = true;
+        apply_nodes(&mut app, vec![root]);
+        app.lint_status.insert(
+            "~/ws".to_string(),
+            LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")),
+        );
+        app.lint_status.insert(
+            "~/ws/a".to_string(),
+            LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
+        );
+        app.rebuild_lint_rollups();
+
+        assert!(matches!(
+            app.lint_status_for_rollup_key(LintRollupKey::Root { node_index: 0 }),
+            Some(LintStatus::Running(_))
+        ));
+    }
+
+    #[test]
+    fn lint_rollup_prefers_running_worktree_over_failed_root_history() {
+        let mut root = make_node(make_project(None, "~/ws"));
+        let mut primary = make_node(make_project(None, "~/ws"));
+        primary.project.worktree_name = Some("ws".to_string());
+
+        let mut feature = make_node(make_project(None, "~/ws_feat"));
+        feature.project.worktree_name = Some("ws_feat".to_string());
+
+        root.worktrees = vec![primary, feature];
+
+        let mut app = make_app(vec![root.project.clone()]);
+        app.current_config.lint.enabled = true;
+        apply_nodes(&mut app, vec![root]);
+        app.lint_status.insert(
+            "~/ws".to_string(),
+            LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
+        );
+        app.lint_status.insert(
+            "~/ws_feat".to_string(),
+            LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")),
+        );
+        app.rebuild_lint_rollups();
+
+        assert!(matches!(
+            app.lint_status_for_rollup_key(LintRollupKey::Root { node_index: 0 }),
+            Some(LintStatus::Running(_))
+        ));
+        assert!(matches!(
+            app.lint_status_for_rollup_key(LintRollupKey::Worktree {
+                node_index: 0,
+                worktree_index: 1,
+            }),
+            Some(LintStatus::Running(_))
         ));
     }
 
@@ -4628,14 +5330,14 @@ mod tests {
         let mut primary = make_node(make_project(None, "~/ws"));
         primary.project.worktree_name = Some("ws".to_string());
         primary.groups = vec![MemberGroup {
-            name:    String::new(),
+            name: String::new(),
             members: vec![member_a],
         }];
 
         let mut feature = make_node(make_project(None, "~/ws_feat"));
         feature.project.worktree_name = Some("ws_feat".to_string());
         feature.groups = vec![MemberGroup {
-            name:    String::new(),
+            name: String::new(),
             members: vec![member_b],
         }];
 
@@ -4649,11 +5351,11 @@ mod tests {
         app.ensure_visible_rows_cached();
 
         app.lint_status.insert(
-            "~/ws/a".to_string(),
+            "~/ws".to_string(),
             LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")),
         );
         app.lint_status.insert(
-            "~/ws_feat/b".to_string(),
+            "~/ws_feat".to_string(),
             LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
         );
         app.rebuild_lint_rollups();

@@ -1,23 +1,5 @@
 use std::collections::HashMap;
 
-use ratatui::Frame;
-use ratatui::layout::Constraint;
-use ratatui::layout::Direction;
-use ratatui::layout::Layout;
-use ratatui::layout::Rect;
-use ratatui::style::Color;
-use ratatui::style::Modifier;
-use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::text::Span;
-use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
-use ratatui::widgets::Clear;
-use ratatui::widgets::List;
-use ratatui::widgets::ListItem;
-use ratatui::widgets::Paragraph;
-use unicode_width::UnicodeWidthStr;
-
 use super::app::App;
 use super::app::BottomPanel;
 use super::app::CiState;
@@ -41,6 +23,24 @@ use crate::project;
 use crate::project::GitOrigin;
 use crate::project::ProjectLanguage::Rust;
 use crate::project::RustProject;
+use crate::scan;
+use ratatui::Frame;
+use ratatui::layout::Constraint;
+use ratatui::layout::Direction;
+use ratatui::layout::Layout;
+use ratatui::layout::Rect;
+use ratatui::style::Color;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::widgets::Block;
+use ratatui::widgets::Borders;
+use ratatui::widgets::Clear;
+use ratatui::widgets::List;
+use ratatui::widgets::ListItem;
+use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy)]
 pub(super) enum CiColumn {
@@ -175,6 +175,7 @@ pub(super) fn disk_color(percentile: Option<f64>) -> Style {
 
 pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     app.layout_cache = LayoutCache::default();
+    app.prune_toasts();
 
     let outer_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -191,8 +192,14 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
 
     render_left_panel(frame, app, main_layout[0]);
     render_right_panel(frame, app, main_layout[1]);
-
     render_status_bar(frame, app, outer_layout[1]);
+    app.layout_cache.toast_hitboxes = super::toasts::render_toasts(
+        frame,
+        outer_layout[0],
+        &app.active_toasts(),
+        app.is_focused(PaneId::Toasts),
+        app.focused_toast_id(),
+    );
 
     if app.show_settings {
         super::settings::render_settings_popup(frame, app);
@@ -429,13 +436,10 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     let total_project_rows = items.len();
     let total_bytes: u64 = app.disk_usage.values().sum();
 
-    let node_count = app.live_node_count();
-    let scan_root = project::home_relative_path(&app.scan_root);
-    let name_text = format!("{scan_root} ({node_count})");
-    let header_line = super::columns::header_line(widths, &name_text);
+    let title = project_panel_title(app, area.width.saturating_sub(2).into());
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(header_line)
+        .title(title)
         .border_style(if app.is_focused(PaneId::ProjectList) {
             Style::default().fg(Color::Cyan)
         } else {
@@ -448,21 +452,45 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
         );
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+
+    let header = super::columns::header_line(widths, "Projects");
+    let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
+    frame.render_widget(
+        Paragraph::new(header).style(Style::default().fg(Color::DarkGray)),
+        header_area,
+    );
+
+    let content_area = if inner.height > 1 {
+        Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1)
+    } else {
+        Rect::new(inner.x, inner.y, inner.width, 0)
+    };
+    if content_area.height == 0 {
+        return;
+    }
 
     let total_str = format_bytes(total_bytes);
     let summary = super::columns::build_summary_cells(widths, &total_str);
     let summary_line = Some(super::columns::row_to_line(&summary, widths));
     let pin_summary =
-        should_pin_project_summary(total_project_rows, summary_line.is_some(), inner.height);
+        should_pin_project_summary(total_project_rows, summary_line.is_some(), content_area.height);
 
     if !pin_summary && let Some(ref line) = summary_line {
         items.push(ListItem::new(line.clone()));
     }
 
-    let list_area = if pin_summary && inner.height > 1 {
-        Rect::new(inner.x, inner.y, inner.width, inner.height - 1)
+    let list_area = if pin_summary && content_area.height > 1 {
+        Rect::new(
+            content_area.x,
+            content_area.y,
+            content_area.width,
+            content_area.height - 1,
+        )
     } else {
-        inner
+        content_area
     };
     let project_list = List::new(items).highlight_style(if app.is_focused(PaneId::ProjectList) {
         Style::default()
@@ -479,13 +507,89 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
 
     if pin_summary && let Some(line) = summary_line {
         let footer_area = Rect::new(
-            inner.x,
-            inner.y + inner.height.saturating_sub(1),
-            inner.width,
+            content_area.x,
+            content_area.y + content_area.height.saturating_sub(1),
+            content_area.width,
             1,
         );
         frame.render_widget(Paragraph::new(line), footer_area);
     }
+}
+
+fn project_panel_title(app: &App, max_width: usize) -> String {
+    let prefix = "roots: ";
+    if max_width <= prefix.width() {
+        return truncate_to_width(prefix, max_width);
+    }
+    let roots = scan::resolve_include_dirs(&app.scan_root, &app.current_config.tui.include_dirs)
+        .into_iter()
+        .map(|path| project::home_relative_path(path.as_path()))
+        .collect::<Vec<_>>();
+    format!(
+        "{prefix}{}",
+        truncate_root_title(&roots, max_width.saturating_sub(prefix.width()))
+    )
+}
+
+fn truncate_root_title(roots: &[String], max_width: usize) -> String {
+    if roots.is_empty() || max_width == 0 {
+        return String::new();
+    }
+
+    let ellipsis = "…";
+    let mut title = String::new();
+    for (index, root) in roots.iter().enumerate() {
+        let separator = if index == 0 { "" } else { ", " };
+        let candidate = format!("{title}{separator}{root}");
+        if candidate.width() <= max_width {
+            title = candidate;
+            continue;
+        }
+        if title.is_empty() {
+            return truncate_with_ellipsis(root, max_width, ellipsis);
+        }
+        let remaining = max_width.saturating_sub(title.width() + separator.width());
+        let truncated = truncate_with_ellipsis(root, remaining, ellipsis);
+        if !truncated.is_empty() {
+            return format!("{title}{separator}{truncated}");
+        }
+        let with_ellipsis = format!("{title}{separator}{ellipsis}");
+        if with_ellipsis.width() <= max_width {
+            return with_ellipsis;
+        }
+        return truncate_with_ellipsis(&title, max_width, ellipsis);
+    }
+    title
+}
+
+fn truncate_to_width(text: &str, max_width: usize) -> String {
+    if text.width() <= max_width {
+        return text.to_string();
+    }
+
+    let mut out = String::new();
+    for ch in text.chars() {
+        let next = format!("{out}{ch}");
+        if next.width() > max_width {
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &str) -> String {
+    if text.width() <= max_width {
+        return text.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width <= ellipsis.width() {
+        return ellipsis.to_string();
+    }
+    let prefix = truncate_to_width(text, max_width.saturating_sub(ellipsis.width()));
+    format!("{prefix}{ellipsis}")
 }
 
 fn should_pin_project_summary(project_rows: usize, has_summary: bool, inner_height: u16) -> bool {
@@ -562,36 +666,6 @@ fn shortcut_display_width(shortcuts: &[Shortcut]) -> usize {
 }
 
 pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    // Flash message takes over the entire status bar with a contrasting background.
-    let flash_active = app.status_flash.as_ref().is_some_and(|(_, created)| {
-        created.elapsed().as_millis() < u128::from(app.status_flash_millis())
-    });
-
-    if flash_active {
-        if let Some((ref msg, _)) = app.status_flash {
-            let flash_bar_style = Style::default().bg(Color::Yellow).fg(Color::Black);
-            frame.render_widget(Paragraph::new("").style(flash_bar_style), area);
-
-            let flash_text_style = flash_bar_style.add_modifier(Modifier::BOLD);
-            let total_width = area.width as usize;
-            let flash_width = msg.width();
-            let flash_start = total_width.saturating_sub(flash_width) / 2;
-            let flash_area = Rect {
-                x:      area.x + u16::try_from(flash_start).unwrap_or(u16::MAX),
-                y:      area.y,
-                width:  u16::try_from((total_width - flash_start).min(flash_width + 1))
-                    .unwrap_or(u16::MAX),
-                height: 1,
-            };
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(msg.clone(), flash_text_style)))
-                    .style(flash_bar_style),
-                flash_area,
-            );
-        }
-        return;
-    }
-
     let bar_style = Style::default().bg(Color::DarkGray).fg(Color::White);
 
     // Fill the entire bar with the background color
@@ -622,9 +696,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Left section
     if !left_spans.is_empty() {
         let left_area = Rect {
-            x:      area.x,
-            y:      area.y,
-            width:  area.width,
+            x: area.x,
+            y: area.y,
+            width: area.width,
             height: 1,
         };
         frame.render_widget(
@@ -639,9 +713,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         // Only render if it doesn't overlap with the left section
         if center_start >= left_width {
             let center_area = Rect {
-                x:      area.x + u16::try_from(center_start).unwrap_or(u16::MAX),
-                y:      area.y,
-                width:  u16::try_from((total_width - center_start).min(center_width + 1))
+                x: area.x + u16::try_from(center_start).unwrap_or(u16::MAX),
+                y: area.y,
+                width: u16::try_from((total_width - center_start).min(center_width + 1))
                     .unwrap_or(u16::MAX),
                 height: 1,
             };
@@ -656,9 +730,9 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     if !right_spans.is_empty() {
         let right_start = total_width.saturating_sub(right_width + 1);
         let right_area = Rect {
-            x:      area.x + u16::try_from(right_start).unwrap_or(u16::MAX),
-            y:      area.y,
-            width:  u16::try_from(right_width + 1).unwrap_or(u16::MAX),
+            x: area.x + u16::try_from(right_start).unwrap_or(u16::MAX),
+            y: area.y,
+            width: u16::try_from(right_width + 1).unwrap_or(u16::MAX),
             height: 1,
         };
         frame.render_widget(

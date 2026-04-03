@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Instant;
 
 use crossterm::event::Event;
@@ -8,103 +9,19 @@ use ratatui::layout::Position;
 
 use super::app::App;
 use super::app::ConfirmAction;
+use super::app::PendingClean;
 use super::detail;
 use super::finder;
 use super::settings;
 use super::types::PaneId;
+use crate::project;
 use crate::project::ProjectLanguage;
 
 pub(super) fn handle_event(app: &mut App, event: &Event) {
     let started = Instant::now();
     match event {
-        Event::Key(key) => {
-            // Esc: if running, kill process (keep output). If not running, clear output.
-            if key.code == KeyCode::Esc && app.example_running.is_some() {
-                // First Esc: kill the process, keep output visible
-                let pid = *app
-                    .example_child
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(pid) = pid {
-                    let _ = std::process::Command::new("kill")
-                        .arg(pid.to_string())
-                        .output();
-                }
-                app.example_running = None;
-                app.example_output.push("── killed ──".to_string());
-                app.terminal_dirty = true;
-                return;
-            }
-            if key.code == KeyCode::Esc && !app.example_output.is_empty() {
-                // Second Esc: clear the output panel
-                app.example_output.clear();
-                return;
-            }
-            // Confirmation dialog: y confirms, anything else cancels
-            if app.confirm.is_some() {
-                if key.code == KeyCode::Char('y') {
-                    if let Some(action) = app.confirm.take() {
-                        match action {
-                            ConfirmAction::Clean(abs_path) => {
-                                app.pending_clean = Some(abs_path);
-                            },
-                        }
-                    }
-                } else {
-                    app.confirm = None;
-                }
-                return;
-            }
-            // Text-input contexts consume all keys — dispatch directly
-            if app.show_finder {
-                finder::handle_finder_key(app, key.code);
-            } else if app.show_settings {
-                settings::handle_settings_key(app, key.code);
-            } else if app.searching {
-                handle_search_key(app, key.code);
-            } else if !handle_global_key(app, key.code) {
-                // Global key not consumed — fall through to context handler
-                match app.focused_pane {
-                    PaneId::Package | PaneId::Git | PaneId::Targets => {
-                        detail::handle_detail_key(app, key.code);
-                    },
-                    PaneId::CiRuns => detail::handle_ci_runs_key(app, key.code),
-                    _ => handle_normal_key(app, key.code),
-                }
-            }
-        },
-        Event::Mouse(mouse) => match mouse.kind {
-            MouseEventKind::ScrollUp => {
-                if app.focused_pane == PaneId::ScanLog {
-                    if app.invert_scroll().is_inverted() {
-                        app.scan_log_scroll_down();
-                    } else {
-                        app.scan_log_scroll_up();
-                    }
-                } else if app.invert_scroll().is_inverted() {
-                    app.move_down();
-                } else {
-                    app.move_up();
-                }
-            },
-            MouseEventKind::ScrollDown => {
-                if app.focused_pane == PaneId::ScanLog {
-                    if app.invert_scroll().is_inverted() {
-                        app.scan_log_scroll_up();
-                    } else {
-                        app.scan_log_scroll_down();
-                    }
-                } else if app.invert_scroll().is_inverted() {
-                    app.move_up();
-                } else {
-                    app.move_down();
-                }
-            },
-            MouseEventKind::Down(MouseButton::Left) => {
-                handle_mouse_click(app, mouse.column, mouse.row);
-            },
-            _ => {},
-        },
+        Event::Key(key) => handle_key_event(app, key.code),
+        Event::Mouse(mouse) => handle_mouse_event(app, mouse.kind, mouse.column, mouse.row),
         _ => {},
     }
 
@@ -118,10 +35,152 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
             event_label(event),
             pane_label(app.focused_pane),
             app.scan_complete,
-            app.selected_project().map_or("-", |p| p.path.as_str())
+            app.selected_project()
+                .map_or("-", |project| project.path.as_str())
         ),
         crate::perf_log::slow_input_event_threshold_ms(),
     );
+}
+
+fn handle_key_event(app: &mut App, key: KeyCode) {
+    let key = normalize_key(app, key);
+    if key == KeyCode::Esc && app.example_running.is_some() {
+        let pid = *app
+            .example_child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pid) = pid {
+            let _ = std::process::Command::new("kill")
+                .arg(pid.to_string())
+                .output();
+        }
+        app.example_running = None;
+        app.example_output.push("── killed ──".to_string());
+        app.terminal_dirty = true;
+        return;
+    }
+    if key == KeyCode::Esc && !app.example_output.is_empty() {
+        app.example_output.clear();
+        return;
+    }
+    if handle_confirm_key(app, key) {
+        return;
+    }
+    if app.show_finder {
+        finder::handle_finder_key(app, key);
+        return;
+    }
+    if app.show_settings {
+        settings::handle_settings_key(app, key);
+        return;
+    }
+    if app.searching {
+        handle_search_key(app, key);
+        return;
+    }
+    if handle_global_key(app, key) {
+        return;
+    }
+
+    match app.focused_pane {
+        PaneId::Package | PaneId::Git | PaneId::Targets => detail::handle_detail_key(app, key),
+        PaneId::CiRuns => detail::handle_ci_runs_key(app, key),
+        PaneId::Toasts => handle_toast_key(app, key),
+        _ => handle_normal_key(app, key),
+    }
+}
+
+const fn normalize_key(app: &App, key: KeyCode) -> KeyCode {
+    if app.searching || app.show_finder || (app.show_settings && app.settings_editing) {
+        return key;
+    }
+    let key = if app.navigation_keys().uses_vim() {
+        match app.focused_pane {
+            PaneId::Package | PaneId::Git | PaneId::Targets | PaneId::CiRuns | PaneId::Toasts => {
+                match key {
+                    KeyCode::Char('h' | 'k') => KeyCode::Up,
+                    KeyCode::Char('j' | 'l') => KeyCode::Down,
+                    _ => key,
+                }
+            },
+            _ => match key {
+                KeyCode::Char('h') => KeyCode::Left,
+                KeyCode::Char('j') => KeyCode::Down,
+                KeyCode::Char('k') => KeyCode::Up,
+                KeyCode::Char('l') => KeyCode::Right,
+                _ => key,
+            },
+        }
+    } else {
+        key
+    };
+    match app.focused_pane {
+        PaneId::Package | PaneId::Git | PaneId::Targets | PaneId::CiRuns | PaneId::Toasts => {
+            match key {
+                KeyCode::Left => KeyCode::Up,
+                KeyCode::Right => KeyCode::Down,
+                _ => key,
+            }
+        },
+        _ => key,
+    }
+}
+
+fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
+    let Some(action) = app.confirm.take() else {
+        return false;
+    };
+    if key == KeyCode::Char('y') {
+        match action {
+            ConfirmAction::Clean(abs_path) => {
+                let toast = app.start_task_toast(
+                    "cargo clean",
+                    project::home_relative_path(Path::new(&abs_path)),
+                );
+                app.pending_cleans
+                    .push_back(PendingClean { abs_path, toast });
+            },
+        }
+    }
+    true
+}
+
+fn handle_mouse_event(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
+    match kind {
+        MouseEventKind::ScrollUp => {
+            if app.focused_pane == PaneId::ScanLog {
+                if app.invert_scroll().is_inverted() {
+                    app.scan_log_scroll_down();
+                } else {
+                    app.scan_log_scroll_up();
+                }
+            } else {
+                scroll_main(app, true);
+            }
+        },
+        MouseEventKind::ScrollDown => {
+            if app.focused_pane == PaneId::ScanLog {
+                if app.invert_scroll().is_inverted() {
+                    app.scan_log_scroll_up();
+                } else {
+                    app.scan_log_scroll_down();
+                }
+            } else {
+                scroll_main(app, false);
+            }
+        },
+        MouseEventKind::Down(MouseButton::Left) => handle_mouse_click(app, column, row),
+        _ => {},
+    }
+}
+
+fn scroll_main(app: &mut App, scroll_up: bool) {
+    let up = scroll_up ^ app.invert_scroll().is_inverted();
+    if up {
+        app.move_up();
+    } else {
+        app.move_down();
+    }
 }
 
 const fn pane_label(pane: PaneId) -> &'static str {
@@ -131,6 +190,7 @@ const fn pane_label(pane: PaneId) -> &'static str {
         PaneId::Git => "git",
         PaneId::Targets => "targets",
         PaneId::CiRuns => "ci_runs",
+        PaneId::Toasts => "toasts",
         PaneId::ScanLog => "scan_log",
         PaneId::Search => "search",
         PaneId::Settings => "settings",
@@ -152,7 +212,6 @@ fn event_label(event: &Event) -> String {
 fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     let pos = Position::new(column, row);
 
-    // Popups consume all clicks
     if app.confirm.is_some() {
         return;
     }
@@ -165,62 +224,61 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
+    if handle_toast_click(app, pos) {
+        return;
+    }
+
     let project_list = app.layout_cache.project_list;
     let scan_log = app.layout_cache.scan_log;
     let detail_columns = app.layout_cache.detail_columns.clone();
     let detail_targets_col = app.layout_cache.detail_targets_col;
 
-    // Project list
     if project_list.contains(pos) {
         app.focus_pane(PaneId::ProjectList);
         let inner_y = row.saturating_sub(project_list.y + 1);
-        let scroll_offset = app.list_state.offset();
-        let clicked_index = scroll_offset + inner_y as usize;
+        let clicked_index = app.list_state.offset() + inner_y as usize;
         if clicked_index < app.row_count() {
             app.list_state.select(Some(clicked_index));
         }
         return;
     }
 
-    // Scan log
     if let Some(scan_rect) = scan_log
         && scan_rect.contains(pos)
     {
         app.focus_pane(PaneId::ScanLog);
         let inner_y = row.saturating_sub(scan_rect.y + 1);
-        let scroll_offset = app.scan_log_state.offset();
-        let clicked_index = scroll_offset + inner_y as usize;
+        let clicked_index = app.scan_log_state.offset() + inner_y as usize;
         if clicked_index < app.scan_log.len() {
             app.scan_log_state.select(Some(clicked_index));
         }
         return;
     }
 
-    // Detail columns (project, git, targets)
     for (col_idx, col_rect) in detail_columns.iter().enumerate() {
-        if col_rect.contains(pos) {
-            let pane_id = if Some(col_idx) == detail_targets_col {
-                PaneId::Targets
-            } else if col_idx == 0 {
-                PaneId::Package
-            } else {
-                PaneId::Git
-            };
-            app.focus_pane(pane_id);
-            let pane = match pane_id {
-                PaneId::Targets => &mut app.targets_pane,
-                PaneId::Package => &mut app.package_pane,
-                PaneId::Git => &mut app.git_pane,
-                _ => unreachable!(),
-            };
-            if let Some(clicked_row) = pane.clicked_row(pos) {
-                pane.set_pos(clicked_row);
-            }
-            return;
+        if !col_rect.contains(pos) {
+            continue;
         }
+        let pane_id = if Some(col_idx) == detail_targets_col {
+            PaneId::Targets
+        } else if col_idx == 0 {
+            PaneId::Package
+        } else {
+            PaneId::Git
+        };
+        app.focus_pane(pane_id);
+        let pane = match pane_id {
+            PaneId::Targets => &mut app.targets_pane,
+            PaneId::Package => &mut app.package_pane,
+            PaneId::Git => &mut app.git_pane,
+            _ => unreachable!(),
+        };
+        if let Some(clicked_row) = pane.clicked_row(pos) {
+            pane.set_pos(clicked_row);
+        }
+        return;
     }
 
-    // CI panel
     let clicked_row = if app.showing_port_report() {
         app.port_report_pane.clicked_row(pos)
     } else {
@@ -234,6 +292,25 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
             app.ci_pane.set_pos(clicked_row);
         }
     }
+}
+
+fn handle_toast_click(app: &mut App, pos: Position) -> bool {
+    for hitbox in app.layout_cache.toast_hitboxes.clone() {
+        if hitbox.close_rect.contains(pos) {
+            app.dismiss_toast(hitbox.id);
+            return true;
+        }
+        if !hitbox.card_rect.contains(pos) {
+            continue;
+        }
+        let active = app.active_toasts();
+        if let Some(index) = active.iter().position(|toast| toast.id() == hitbox.id) {
+            app.toast_pane.set_pos(index);
+            app.focus_pane(PaneId::Toasts);
+        }
+        return true;
+    }
+    false
 }
 
 const fn handle_finder_click(app: &mut App, pos: Position) {
@@ -252,16 +329,21 @@ fn open_in_editor(app: &App) {
     let Some(project) = app.selected_project() else {
         return;
     };
-    // For workspace members, open the workspace root instead
     let abs_path = app
         .nodes
         .iter()
-        .find(|n| {
-            n.groups
-                .iter()
-                .any(|g| g.members.iter().any(|m| m.path == project.path))
+        .find(|node| {
+            node.groups.iter().any(|group| {
+                group
+                    .members
+                    .iter()
+                    .any(|member| member.path == project.path)
+            })
         })
-        .map_or_else(|| project.abs_path.clone(), |n| n.project.abs_path.clone());
+        .map_or_else(
+            || project.abs_path.clone(),
+            |node| node.project.abs_path.clone(),
+        );
 
     let _ = std::process::Command::new(app.editor())
         .arg(&abs_path)
@@ -285,8 +367,6 @@ fn open_finder(app: &mut App) {
     app.finder_pane.home();
 }
 
-/// Handle keys that work in every non-text-input context.
-/// Returns `true` if the key was consumed.
 fn handle_global_key(app: &mut App, key: KeyCode) -> bool {
     match key {
         KeyCode::Char('q') => app.should_quit = true,
@@ -338,8 +418,18 @@ fn handle_normal_key(app: &mut App, key: KeyCode) {
             }
         },
         KeyCode::Enter => open_in_editor(app),
-        KeyCode::Right => app.expand(),
-        KeyCode::Left => app.collapse(),
+        KeyCode::Right => {
+            if !app.expand() {
+                app.move_down();
+            }
+        },
+        KeyCode::Left => {
+            if !app.collapse() {
+                app.move_up();
+            }
+        },
+        KeyCode::Char('+' | '=') => app.expand_all(),
+        KeyCode::Char('-') => app.collapse_all(),
         KeyCode::Char('r') => app.rescan(),
         KeyCode::Char('c') => {
             if let Some(project) = app.selected_project()
@@ -348,6 +438,19 @@ fn handle_normal_key(app: &mut App, key: KeyCode) {
                 app.confirm = Some(ConfirmAction::Clean(project.abs_path.clone()));
             }
         },
+        _ => {},
+    }
+}
+
+fn handle_toast_key(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Up => app.toast_pane.up(),
+        KeyCode::Down => app.toast_pane.down(),
+        KeyCode::Home => app.toast_pane.home(),
+        KeyCode::End => app
+            .toast_pane
+            .set_pos(app.active_toasts().len().saturating_sub(1)),
+        KeyCode::Char('x') => app.dismiss_focused_toast(),
         _ => {},
     }
 }

@@ -1,5 +1,4 @@
 use std::io;
-use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
 use std::io::Stdout;
@@ -26,6 +25,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use super::app::App;
+use super::app::PendingClean;
 use super::constants::CI_FETCH_DISPLAY_COUNT;
 use super::constants::FRAME_POLL_MILLIS;
 use super::detail::CiFetchKind;
@@ -43,6 +43,7 @@ use crate::project::RustProject;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
+use super::toasts::ToastTaskId;
 
 pub(super) enum ExampleMsg {
     Output(String),
@@ -55,10 +56,14 @@ pub(super) enum ExampleMsg {
 pub(super) enum CiFetchMsg {
     /// The fetch completed with updated runs for the given project path.
     Complete {
-        path:   String,
+        path: String,
         result: CiFetchResult,
-        kind:   CiFetchKind,
+        kind: CiFetchKind,
     },
+}
+
+pub(super) enum CleanMsg {
+    Finished(ToastTaskId),
 }
 
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
@@ -259,8 +264,8 @@ fn event_loop(
         }
 
         // Spawn a pending cargo clean
-        if let Some(abs_path) = app.pending_clean.take() {
-            spawn_clean_process(app, &abs_path);
+        if let Some(pending) = app.pending_cleans.pop_front() {
+            spawn_clean_process(app, &pending);
         }
 
         // Spawn a pending CI fetch as a background process
@@ -277,7 +282,7 @@ fn event_loop(
             app.ci_state.insert(
                 fetch.project_path.clone(),
                 super::app::CiState::Fetching {
-                    runs:  existing_runs,
+                    runs: existing_runs,
                     count: CI_FETCH_DISPLAY_COUNT,
                 },
             );
@@ -428,56 +433,26 @@ fn read_with_progress(tx: &std::sync::mpsc::Sender<ExampleMsg>, stream: impl io:
     }
 }
 
-fn spawn_clean_process(app: &mut App, abs_path: &str) {
+fn spawn_clean_process(app: &mut App, pending: &PendingClean) {
     let mut cmd = std::process::Command::new("cargo");
     cmd.arg("clean")
-        .current_dir(abs_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .current_dir(&pending.abs_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            app.example_output = vec![format!("Failed to start cargo clean: {e}")];
-            app.example_running = Some("cargo clean".to_string());
+            app.finish_task_toast(pending.toast);
+            app.show_timed_toast("cargo clean failed", e.to_string());
             return;
         },
     };
-
-    let pid = child.id();
-    *app.example_child
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pid);
-
-    app.example_output = vec!["Running cargo clean...".to_string()];
-    app.example_running = Some("cargo clean".to_string());
-
-    let stderr = child.stderr.take();
-    let stdout = child.stdout.take();
-
-    let pid_holder = app.example_child.clone();
-    let tx = app.example_tx.clone();
+    let tx = app.clean_tx.clone();
+    let toast = pending.toast;
     thread::spawn(move || {
-        if let Some(stderr) = stderr {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                let _ = tx.send(ExampleMsg::Output(line));
-            }
-        }
-        if let Some(stdout) = stdout {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
-                let _ = tx.send(ExampleMsg::Output(line));
-            }
-        }
-
-        // Disk usage is updated automatically by the filesystem watcher.
         let _ = child.wait();
-        *pid_holder
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-
-        let _ = tx.send(ExampleMsg::Finished);
+        let _ = tx.send(CleanMsg::Finished(toast));
     });
 }
 
@@ -519,7 +494,9 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     });
 }
 
-fn last_selected_path_file() -> PathBuf { scan::cache_dir().join("last_selected.txt") }
+fn last_selected_path_file() -> PathBuf {
+    scan::cache_dir().join("last_selected.txt")
+}
 
 pub(super) fn load_last_selected() -> Option<String> {
     let path = last_selected_path_file();
@@ -546,7 +523,7 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
 
     thread::spawn(move || {
         let _ = tx.send(BackgroundMsg::GitPathState {
-            path:  project_path.clone(),
+            path: project_path.clone(),
             state: crate::project::detect_git_path_state(&abs),
         });
         // Git detection can be expensive on some repos; keep it off the UI thread.
@@ -589,8 +566,8 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
             scan::emit_service_signal(&tx, signal);
             if let Some(info) = info {
                 let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                    path:      project_path,
-                    version:   info.version,
+                    path: project_path,
+                    version: info.version,
                     downloads: info.downloads,
                 });
             }

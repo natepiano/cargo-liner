@@ -20,15 +20,21 @@ pub enum NonRustInclusion {
 }
 
 impl From<bool> for NonRustInclusion {
-    fn from(b: bool) -> Self { if b { Self::Include } else { Self::Exclude } }
+    fn from(b: bool) -> Self {
+        if b { Self::Include } else { Self::Exclude }
+    }
 }
 
 impl From<NonRustInclusion> for bool {
-    fn from(val: NonRustInclusion) -> Self { matches!(val, NonRustInclusion::Include) }
+    fn from(val: NonRustInclusion) -> Self {
+        matches!(val, NonRustInclusion::Include)
+    }
 }
 
 impl NonRustInclusion {
-    pub const fn includes_non_rust(self) -> bool { matches!(self, Self::Include) }
+    pub const fn includes_non_rust(self) -> bool {
+        matches!(self, Self::Include)
+    }
 
     pub const fn toggle(&mut self) {
         *self = match *self {
@@ -48,20 +54,64 @@ pub enum ScrollDirection {
 }
 
 impl From<bool> for ScrollDirection {
-    fn from(b: bool) -> Self { if b { Self::Inverted } else { Self::Normal } }
+    fn from(b: bool) -> Self {
+        if b { Self::Inverted } else { Self::Normal }
+    }
 }
 
 impl From<ScrollDirection> for bool {
-    fn from(val: ScrollDirection) -> Self { matches!(val, ScrollDirection::Inverted) }
+    fn from(val: ScrollDirection) -> Self {
+        matches!(val, ScrollDirection::Inverted)
+    }
 }
 
 impl ScrollDirection {
-    pub const fn is_inverted(self) -> bool { matches!(self, Self::Inverted) }
+    pub const fn is_inverted(self) -> bool {
+        matches!(self, Self::Inverted)
+    }
 
     pub const fn toggle(&mut self) {
         *self = match *self {
             Self::Normal => Self::Inverted,
             Self::Inverted => Self::Normal,
+        };
+    }
+}
+
+/// Whether `hjkl` should mirror arrow-key navigation in non-text panes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub enum NavigationKeys {
+    #[default]
+    ArrowsOnly,
+    ArrowsAndVim,
+}
+
+impl From<bool> for NavigationKeys {
+    fn from(enabled: bool) -> Self {
+        if enabled {
+            Self::ArrowsAndVim
+        } else {
+            Self::ArrowsOnly
+        }
+    }
+}
+
+impl From<NavigationKeys> for bool {
+    fn from(value: NavigationKeys) -> Self {
+        matches!(value, NavigationKeys::ArrowsAndVim)
+    }
+}
+
+impl NavigationKeys {
+    pub const fn uses_vim(self) -> bool {
+        matches!(self, Self::ArrowsAndVim)
+    }
+
+    pub const fn toggle(&mut self) {
+        *self = match *self {
+            Self::ArrowsOnly => Self::ArrowsAndVim,
+            Self::ArrowsAndVim => Self::ArrowsOnly,
         };
     }
 }
@@ -78,7 +128,7 @@ pub struct CacheConfig {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LintCommandConfig {
     #[serde(default)]
-    pub name:    String,
+    pub name: String,
     #[serde(default)]
     pub command: String,
 }
@@ -128,7 +178,7 @@ pub fn default_clippy_lint_command() -> LintCommandConfig {
 pub fn builtin_lint_command(name: &str) -> Option<LintCommandConfig> {
     match name.trim().to_ascii_lowercase().as_str() {
         "mend" => Some(LintCommandConfig {
-            name:    "mend".to_string(),
+            name: "mend".to_string(),
             command: "cargo mend --manifest-path \"$MANIFEST_PATH\"".to_string(),
         }),
         "clippy" => Some(default_clippy_lint_command()),
@@ -167,7 +217,7 @@ fn normalize_lint_command(command: &LintCommandConfig) -> Option<LintCommandConf
     }
 
     Some(LintCommandConfig {
-        name:    if name.is_empty() {
+        name: if name.is_empty() {
             infer_lint_command_name(command_str)
         } else {
             name.to_string()
@@ -193,9 +243,9 @@ pub struct Config {
     #[config(nested)]
     pub mouse: MouseConfig,
     #[config(nested)]
-    pub tui:   TuiConfig,
+    pub tui: TuiConfig,
     #[config(nested)]
-    pub lint:  LintConfig,
+    pub lint: LintConfig,
 }
 
 /// TUI display and behaviour settings.
@@ -211,6 +261,10 @@ pub struct TuiConfig {
     /// Number of recent CI runs to fetch per project.
     #[config(default = 5)]
     pub ci_run_count: u32,
+
+    /// Whether `hjkl` mirrors arrow navigation in non-text panes.
+    #[config(default = false)]
+    pub navigation_keys: NavigationKeys,
 
     /// Directories to scan for projects (relative to the scan root, or
     /// absolute paths). When empty, the entire scan root is walked.
@@ -234,11 +288,12 @@ pub struct TuiConfig {
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            inline_dirs:       vec!["crates".to_string()],
-            ci_run_count:      5,
-            include_dirs:      Vec::new(),
-            include_non_rust:  NonRustInclusion::Exclude,
-            editor:            "zed".to_string(),
+            inline_dirs: vec!["crates".to_string()],
+            ci_run_count: 5,
+            navigation_keys: NavigationKeys::ArrowsOnly,
+            include_dirs: Vec::new(),
+            include_non_rust: NonRustInclusion::Exclude,
+            editor: "zed".to_string(),
             status_flash_secs: 3.0,
         }
     }
@@ -293,7 +348,9 @@ fn load_from_path(path: &Path) -> Result<Config, String> {
         .map_err(|err| format!("Failed to load config '{}': {err}", path.display()))
 }
 
-pub fn try_load_from_path(path: &Path) -> Result<Config, String> { load_from_path(path) }
+pub fn try_load_from_path(path: &Path) -> Result<Config, String> {
+    load_from_path(path)
+}
 
 pub fn try_load() -> Result<Config, String> {
     let Some(path) = config_path() else {
@@ -376,6 +433,7 @@ mod tests {
             .expect("template should parse");
         assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.tui.ci_run_count, 5);
+        assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert!(cfg.lint.commands.is_empty());
     }
 
@@ -393,6 +451,7 @@ mod tests {
         assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.tui.ci_run_count, 10);
         assert_eq!(cfg.tui.editor, "zed");
+        assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
         assert!(cfg.lint.commands.is_empty());
     }
@@ -411,6 +470,7 @@ mod tests {
         assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.tui.ci_run_count, 5);
         assert_eq!(cfg.tui.editor, "zed");
+        assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert!(cfg.lint.commands.is_empty());
     }
 
@@ -424,6 +484,7 @@ mod tests {
         cfg.cache.root = "/tmp/cargo-port-cache".to_string();
         cfg.tui.ci_run_count = 42;
         cfg.tui.editor = "vim".to_string();
+        cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
         cfg.tui.status_flash_secs = 5.0;
         cfg.mouse.invert_scroll = ScrollDirection::Normal;
 
@@ -437,6 +498,7 @@ mod tests {
         assert_eq!(reloaded.cache.root, "/tmp/cargo-port-cache");
         assert_eq!(reloaded.tui.ci_run_count, 42);
         assert_eq!(reloaded.tui.editor, "vim");
+        assert_eq!(reloaded.tui.navigation_keys, NavigationKeys::ArrowsAndVim);
         assert!((reloaded.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
         assert_eq!(reloaded.mouse.invert_scroll, ScrollDirection::Normal);
         assert!(reloaded.lint.commands.is_empty());
@@ -449,7 +511,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
-            "[mouse]\ninvert_scroll = false\n\n[tui]\ninclude_non_rust = true\n",
+            "[mouse]\ninvert_scroll = false\n\n[tui]\ninclude_non_rust = true\nnavigation_keys = true\n",
         )
         .expect("write");
 
@@ -460,6 +522,7 @@ mod tests {
         assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Normal);
         assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Include);
+        assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsAndVim);
     }
 
     /// Cache root override parses from TOML.
@@ -515,7 +578,7 @@ mod tests {
         let cfg = normalize_config(Config {
             lint: LintConfig {
                 commands: vec![LintCommandConfig {
-                    name:    "clippy".to_string(),
+                    name: "clippy".to_string(),
                     command: String::new(),
                 }],
                 ..LintConfig::default()
@@ -533,7 +596,7 @@ mod tests {
         let cfg = normalize_config(Config {
             lint: LintConfig {
                 commands: vec![LintCommandConfig {
-                    name:    String::new(),
+                    name: String::new(),
                     command: "cargo fmt --check".to_string(),
                 }],
                 ..LintConfig::default()

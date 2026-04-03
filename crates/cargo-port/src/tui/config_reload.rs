@@ -18,62 +18,62 @@ pub(super) enum ConfigKey {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct ReloadActions {
-    pub rebuild_tree:         bool,
-    pub rescan:               bool,
+    pub rebuild_tree: bool,
+    pub rescan: bool,
     pub refresh_lint_runtime: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct ReloadContext {
-    pub scan_complete:       bool,
+    pub scan_complete: bool,
     pub has_cached_non_rust: bool,
 }
 
 #[derive(Clone, Copy)]
 struct ConfigHandler {
-    key:  ConfigKey,
+    key: ConfigKey,
     mark: fn(&mut ReloadActions, &Config, &Config, ReloadContext),
 }
 
 const CONFIG_HANDLERS: &[ConfigHandler] = &[
     ConfigHandler {
-        key:  ConfigKey::InlineDirs,
+        key: ConfigKey::InlineDirs,
         mark: mark_rebuild_tree,
     },
     ConfigHandler {
-        key:  ConfigKey::IncludeNonRust,
+        key: ConfigKey::IncludeNonRust,
         mark: mark_include_non_rust,
     },
     ConfigHandler {
-        key:  ConfigKey::CiRunCount,
+        key: ConfigKey::CiRunCount,
         mark: mark_rescan,
     },
     ConfigHandler {
-        key:  ConfigKey::IncludeDirs,
+        key: ConfigKey::IncludeDirs,
         mark: mark_rescan,
     },
     ConfigHandler {
-        key:  ConfigKey::CacheRoot,
+        key: ConfigKey::CacheRoot,
         mark: mark_rescan,
     },
     ConfigHandler {
-        key:  ConfigKey::CacheRoot,
+        key: ConfigKey::CacheRoot,
         mark: mark_refresh_lint_runtime,
     },
     ConfigHandler {
-        key:  ConfigKey::LintEnabled,
+        key: ConfigKey::LintEnabled,
         mark: mark_refresh_lint_runtime,
     },
     ConfigHandler {
-        key:  ConfigKey::LintInclude,
+        key: ConfigKey::LintInclude,
         mark: mark_refresh_lint_runtime,
     },
     ConfigHandler {
-        key:  ConfigKey::LintExclude,
+        key: ConfigKey::LintExclude,
         mark: mark_refresh_lint_runtime,
     },
     ConfigHandler {
-        key:  ConfigKey::LintCommands,
+        key: ConfigKey::LintCommands,
         mark: mark_refresh_lint_runtime,
     },
 ];
@@ -222,8 +222,8 @@ mod tests {
         assert_eq!(
             collect_reload_actions(&Config::default(), &new, ReloadContext::default()),
             ReloadActions {
-                rebuild_tree:         false,
-                rescan:               true,
+                rebuild_tree: false,
+                rescan: true,
                 refresh_lint_runtime: false,
             }
         );
@@ -241,13 +241,13 @@ mod tests {
                 &old,
                 &new,
                 ReloadContext {
-                    scan_complete:       true,
+                    scan_complete: true,
                     has_cached_non_rust: true,
                 },
             ),
             ReloadActions {
-                rebuild_tree:         true,
-                rescan:               false,
+                rebuild_tree: true,
+                rescan: false,
                 refresh_lint_runtime: false,
             }
         );
@@ -263,13 +263,13 @@ mod tests {
                 &Config::default(),
                 &new,
                 ReloadContext {
-                    scan_complete:       true,
+                    scan_complete: true,
                     has_cached_non_rust: false,
                 },
             ),
             ReloadActions {
-                rebuild_tree:         false,
-                rescan:               true,
+                rebuild_tree: false,
+                rescan: true,
                 refresh_lint_runtime: false,
             }
         );
@@ -285,8 +285,8 @@ mod tests {
         assert_eq!(
             collect_reload_actions(&Config::default(), &new, ReloadContext::default()),
             ReloadActions {
-                rebuild_tree:         false,
-                rescan:               false,
+                rebuild_tree: false,
+                rescan: false,
                 refresh_lint_runtime: true,
             }
         );
@@ -300,8 +300,8 @@ mod tests {
         assert_eq!(
             collect_reload_actions(&Config::default(), &new, ReloadContext::default()),
             ReloadActions {
-                rebuild_tree:         false,
-                rescan:               true,
+                rebuild_tree: false,
+                rescan: true,
                 refresh_lint_runtime: true,
             }
         );

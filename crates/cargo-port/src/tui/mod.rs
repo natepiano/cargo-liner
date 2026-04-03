@@ -10,6 +10,7 @@ mod render;
 mod settings;
 mod shortcuts;
 mod terminal;
+mod toasts;
 mod types;
 
 pub use animation::Icon;

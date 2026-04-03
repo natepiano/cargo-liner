@@ -113,26 +113,28 @@ pub enum PortReportCommandStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PortReportCommand {
-    pub name:        String,
-    pub command:     String,
-    pub status:      PortReportCommandStatus,
+    pub name: String,
+    pub command: String,
+    pub status: PortReportCommandStatus,
     pub duration_ms: Option<u64>,
-    pub exit_code:   Option<i32>,
-    pub log_file:    String,
+    pub exit_code: Option<i32>,
+    pub log_file: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PortReportRun {
-    pub run_id:      String,
-    pub started_at:  String,
+    pub run_id: String,
+    pub started_at: String,
     pub finished_at: Option<String>,
     pub duration_ms: Option<u64>,
-    pub status:      PortReportRunStatus,
-    pub commands:    Vec<PortReportCommand>,
+    pub status: PortReportRunStatus,
+    pub commands: Vec<PortReportCommand>,
 }
 
 /// Canonical cache directory for all per-project lint status files.
-pub fn cache_root() -> PathBuf { cache_paths::port_report_root() }
+pub fn cache_root() -> PathBuf {
+    cache_paths::port_report_root()
+}
 
 /// Stable per-project cache key used by both cargo-port and external scripts.
 pub fn project_key(project_root: &Path) -> String {
@@ -145,7 +147,9 @@ pub fn project_key(project_root: &Path) -> String {
 }
 
 /// Cache-rooted directory for the project's lint watcher protocol files.
-pub fn project_dir(project_root: &Path) -> PathBuf { cache_root().join(project_key(project_root)) }
+pub fn project_dir(project_root: &Path) -> PathBuf {
+    cache_root().join(project_key(project_root))
+}
 
 /// Cache-rooted directory for the project's lint watcher protocol files under
 /// an explicit cache root.
@@ -325,51 +329,43 @@ mod tests {
     // ── parse_run ───────────────────────────────────────────────────
 
     #[test]
-    fn parse_passed() {
-        assert!(matches!(
-            parse_run(&run(PortReportRunStatus::Passed)),
-            LintStatus::Passed(_)
-        ));
-    }
+    fn parse_run_cases() {
+        let mut running = run(PortReportRunStatus::Running);
+        running.started_at = Utc::now().format("%+").to_string();
+        running.finished_at = None;
 
-    #[test]
-    fn parse_failed() {
-        assert!(matches!(
-            parse_run(&run(PortReportRunStatus::Failed)),
-            LintStatus::Failed(_)
-        ));
-    }
+        let mut stale = run(PortReportRunStatus::Running);
+        stale.started_at = "2020-01-01T00:00:00+00:00".to_string();
+        stale.finished_at = None;
 
-    #[test]
-    fn parse_running() {
-        let mut run = run(PortReportRunStatus::Running);
-        run.started_at = Utc::now().format("%+").to_string();
-        run.finished_at = None;
-        assert!(matches!(parse_run(&run), LintStatus::Running(_)));
-    }
+        let mut garbage = run(PortReportRunStatus::Passed);
+        garbage.started_at = "not a valid timestamp".to_string();
+        garbage.finished_at = Some("not a valid timestamp".to_string());
 
-    #[test]
-    fn parse_stale() {
-        let mut run = run(PortReportRunStatus::Running);
-        run.started_at = "2020-01-01T00:00:00+00:00".to_string();
-        run.finished_at = None;
-        assert!(matches!(parse_run(&run), LintStatus::Stale));
-    }
+        let mut empty = run(PortReportRunStatus::Passed);
+        empty.started_at.clear();
+        empty.finished_at = None;
 
-    #[test]
-    fn parse_garbage() {
-        let mut run = run(PortReportRunStatus::Passed);
-        run.started_at = "not a valid timestamp".to_string();
-        run.finished_at = Some("not a valid timestamp".to_string());
-        assert!(matches!(parse_run(&run), LintStatus::NoLog));
-    }
+        let cases = [
+            ("passed", run(PortReportRunStatus::Passed)),
+            ("failed", run(PortReportRunStatus::Failed)),
+            ("running", running),
+            ("stale", stale),
+            ("garbage", garbage),
+            ("empty", empty),
+        ];
 
-    #[test]
-    fn parse_empty_status() {
-        let mut run = run(PortReportRunStatus::Passed);
-        run.started_at.clear();
-        run.finished_at = None;
-        assert!(matches!(parse_run(&run), LintStatus::NoLog));
+        for (name, run) in cases {
+            let status = parse_run(&run);
+            match name {
+                "passed" => assert!(matches!(status, LintStatus::Passed(_)), "{name}"),
+                "failed" => assert!(matches!(status, LintStatus::Failed(_)), "{name}"),
+                "running" => assert!(matches!(status, LintStatus::Running(_)), "{name}"),
+                "stale" => assert!(matches!(status, LintStatus::Stale), "{name}"),
+                "garbage" | "empty" => assert!(matches!(status, LintStatus::NoLog), "{name}"),
+                _ => unreachable!("unexpected case"),
+            }
+        }
     }
 
     #[test]
@@ -399,43 +395,38 @@ mod tests {
     }
 
     #[test]
-    fn read_status_passed() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_latest(dir.path(), &run(PortReportRunStatus::Passed));
-        assert!(matches!(read_status(dir.path()), LintStatus::Passed(_)));
-    }
+    fn read_status_cases() {
+        let mut running = run(PortReportRunStatus::Running);
+        running.started_at = Utc::now().format("%+").to_string();
+        running.finished_at = None;
 
-    #[test]
-    fn read_status_failed() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_latest(dir.path(), &run(PortReportRunStatus::Failed));
-        assert!(matches!(read_status(dir.path()), LintStatus::Failed(_)));
-    }
+        let mut stale = run(PortReportRunStatus::Running);
+        stale.started_at = "2020-01-01T00:00:00+00:00".to_string();
+        stale.finished_at = None;
 
-    #[test]
-    fn read_status_running() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut run = run(PortReportRunStatus::Running);
-        run.started_at = Utc::now().format("%+").to_string();
-        run.finished_at = None;
-        write_latest(dir.path(), &run);
-        assert!(matches!(read_status(dir.path()), LintStatus::Running(_)));
-    }
+        let cases = [
+            ("passed", Some(run(PortReportRunStatus::Passed))),
+            ("failed", Some(run(PortReportRunStatus::Failed))),
+            ("running", Some(running)),
+            ("stale", Some(stale)),
+            ("no_log", None),
+        ];
 
-    #[test]
-    fn read_status_no_log() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        assert!(matches!(read_status(dir.path()), LintStatus::NoLog));
-    }
-
-    #[test]
-    fn read_status_stale_started() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut run = run(PortReportRunStatus::Running);
-        run.started_at = "2020-01-01T00:00:00+00:00".to_string();
-        run.finished_at = None;
-        write_latest(dir.path(), &run);
-        assert!(matches!(read_status(dir.path()), LintStatus::Stale));
+        for (name, latest) in cases {
+            let dir = tempfile::tempdir().expect("tempdir");
+            if let Some(run) = latest.as_ref() {
+                write_latest(dir.path(), run);
+            }
+            let status = read_status(dir.path());
+            match name {
+                "passed" => assert!(matches!(status, LintStatus::Passed(_))),
+                "failed" => assert!(matches!(status, LintStatus::Failed(_))),
+                "running" => assert!(matches!(status, LintStatus::Running(_))),
+                "stale" => assert!(matches!(status, LintStatus::Stale)),
+                "no_log" => assert!(matches!(status, LintStatus::NoLog)),
+                _ => unreachable!("unexpected case"),
+            }
+        }
     }
 
     #[test]
@@ -465,20 +456,20 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("tempdir");
         let completed = PortReportRun {
-            run_id:      "completed".to_string(),
-            started_at:  "2026-04-01T18:00:00-04:00".to_string(),
+            run_id: "completed".to_string(),
+            started_at: "2026-04-01T18:00:00-04:00".to_string(),
             finished_at: Some("2026-04-01T18:00:10-04:00".to_string()),
             duration_ms: Some(10_000),
-            status:      PortReportRunStatus::Passed,
-            commands:    Vec::new(),
+            status: PortReportRunStatus::Passed,
+            commands: Vec::new(),
         };
         let running = PortReportRun {
-            run_id:      "running".to_string(),
-            started_at:  "2026-04-01T18:05:00-04:00".to_string(),
+            run_id: "running".to_string(),
+            started_at: "2026-04-01T18:05:00-04:00".to_string(),
             finished_at: None,
             duration_ms: None,
-            status:      PortReportRunStatus::Running,
-            commands:    Vec::new(),
+            status: PortReportRunStatus::Running,
+            commands: Vec::new(),
         };
 
         append_history_under(cache_dir.path(), project_dir.path(), &completed)
@@ -496,12 +487,12 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("tempdir");
         let running = PortReportRun {
-            run_id:      "running".to_string(),
-            started_at:  Utc::now().format("%+").to_string(),
+            run_id: "running".to_string(),
+            started_at: Utc::now().format("%+").to_string(),
             finished_at: None,
             duration_ms: None,
-            status:      PortReportRunStatus::Running,
-            commands:    Vec::new(),
+            status: PortReportRunStatus::Running,
+            commands: Vec::new(),
         };
         write_latest_under(cache_dir.path(), project_dir.path(), &running).expect("write latest");
 
@@ -517,12 +508,12 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("tempdir");
         let completed = PortReportRun {
-            run_id:      "same-run".to_string(),
-            started_at:  "2026-04-01T18:00:00-04:00".to_string(),
+            run_id: "same-run".to_string(),
+            started_at: "2026-04-01T18:00:00-04:00".to_string(),
             finished_at: Some("2026-04-01T18:00:10-04:00".to_string()),
             duration_ms: Some(10_000),
-            status:      PortReportRunStatus::Passed,
-            commands:    Vec::new(),
+            status: PortReportRunStatus::Passed,
+            commands: Vec::new(),
         };
 
         append_history_under(cache_dir.path(), project_dir.path(), &completed)

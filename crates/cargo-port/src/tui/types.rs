@@ -9,9 +9,13 @@ pub(super) struct ScrollState {
 }
 
 impl ScrollState {
-    pub const fn pos(&self) -> usize { self.pos }
+    pub const fn pos(&self) -> usize {
+        self.pos
+    }
 
-    pub const fn set(&mut self, pos: usize) { self.pos = pos; }
+    pub const fn set(&mut self, pos: usize) {
+        self.pos = pos;
+    }
 
     pub const fn up(&mut self) {
         if self.pos > 0 {
@@ -25,9 +29,13 @@ impl ScrollState {
         }
     }
 
-    pub const fn jump_home(&mut self) { self.pos = 0; }
+    pub const fn jump_home(&mut self) {
+        self.pos = 0;
+    }
 
-    pub const fn jump_end(&mut self, len: usize) { self.pos = len.saturating_sub(1); }
+    pub const fn jump_end(&mut self, len: usize) {
+        self.pos = len.saturating_sub(1);
+    }
 
     /// Clamp position to `0..len`. Useful after the backing list shrinks.
     pub const fn clamp(&mut self, len: usize) {
@@ -45,37 +53,49 @@ impl ScrollState {
 /// region it occupies so navigation and mouse hit-testing are self-contained.
 #[derive(Default, Clone)]
 pub(super) struct Pane {
-    cursor:        ScrollState,
-    len:           usize,
-    content_area:  Rect,
+    cursor: ScrollState,
+    len: usize,
+    content_area: Rect,
     scroll_offset: usize,
 }
 
 impl Pane {
     pub const fn new() -> Self {
         Self {
-            cursor:        ScrollState { pos: 0 },
-            len:           0,
-            content_area:  Rect::new(0, 0, 0, 0),
+            cursor: ScrollState { pos: 0 },
+            len: 0,
+            content_area: Rect::new(0, 0, 0, 0),
             scroll_offset: 0,
         }
     }
 
     // -- navigation (pane knows its own len) --
 
-    pub const fn up(&mut self) { self.cursor.up(); }
+    pub const fn up(&mut self) {
+        self.cursor.up();
+    }
 
-    pub const fn down(&mut self) { self.cursor.down(self.len); }
+    pub const fn down(&mut self) {
+        self.cursor.down(self.len);
+    }
 
-    pub const fn home(&mut self) { self.cursor.jump_home(); }
+    pub const fn home(&mut self) {
+        self.cursor.jump_home();
+    }
 
-    pub const fn end(&mut self) { self.cursor.jump_end(self.len); }
+    pub const fn end(&mut self) {
+        self.cursor.jump_end(self.len);
+    }
 
     // -- position --
 
-    pub const fn pos(&self) -> usize { self.cursor.pos() }
+    pub const fn pos(&self) -> usize {
+        self.cursor.pos()
+    }
 
-    pub const fn set_pos(&mut self, pos: usize) { self.cursor.set(pos); }
+    pub const fn set_pos(&mut self, pos: usize) {
+        self.cursor.set(pos);
+    }
 
     // -- length (auto-clamps cursor) --
 
@@ -86,9 +106,13 @@ impl Pane {
 
     // -- layout --
 
-    pub const fn set_content_area(&mut self, area: Rect) { self.content_area = area; }
+    pub const fn set_content_area(&mut self, area: Rect) {
+        self.content_area = area;
+    }
 
-    pub const fn set_scroll_offset(&mut self, offset: usize) { self.scroll_offset = offset; }
+    pub const fn set_scroll_offset(&mut self, offset: usize) {
+        self.scroll_offset = offset;
+    }
 
     // -- mouse --
 
@@ -113,6 +137,7 @@ pub(super) enum PaneId {
     Git,
     Targets,
     CiRuns,
+    Toasts,
     ScanLog,
     Search,
     Settings,
@@ -125,12 +150,20 @@ impl PaneId {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct ToastHitbox {
+    pub id: u64,
+    pub card_rect: Rect,
+    pub close_rect: Rect,
+}
+
 /// Cached layout rectangles from the last render frame, used for mouse
 /// hit-testing in the event handler.
 #[derive(Default)]
 pub(super) struct LayoutCache {
-    pub project_list:       Rect,
-    pub scan_log:           Option<Rect>,
-    pub detail_columns:     Vec<Rect>,
+    pub project_list: Rect,
+    pub scan_log: Option<Rect>,
+    pub detail_columns: Vec<Rect>,
     pub detail_targets_col: Option<usize>,
+    pub toast_hitboxes: Vec<ToastHitbox>,
 }

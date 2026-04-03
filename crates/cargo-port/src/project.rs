@@ -50,25 +50,25 @@ impl GitOrigin {
 #[derive(Debug, Clone, Serialize)]
 pub struct GitInfo {
     /// Whether this is a clone or a fork.
-    pub origin:              GitOrigin,
+    pub origin: GitOrigin,
     /// The current branch name.
-    pub branch:              Option<String>,
+    pub branch: Option<String>,
     /// The GitHub/GitLab owner (e.g. "natepiano").
-    pub owner:               Option<String>,
+    pub owner: Option<String>,
     /// The HTTPS URL to the repository.
-    pub url:                 Option<String>,
+    pub url: Option<String>,
     /// ISO 8601 date of the first commit (inception).
-    pub first_commit:        Option<String>,
+    pub first_commit: Option<String>,
     /// ISO 8601 date of the most recent commit.
-    pub last_commit:         Option<String>,
+    pub last_commit: Option<String>,
     /// Commits ahead and behind the upstream tracking branch (ahead, behind).
-    pub ahead_behind:        Option<(usize, usize)>,
+    pub ahead_behind: Option<(usize, usize)>,
     /// The repo's default branch name resolved from `origin/HEAD`.
-    pub default_branch:      Option<String>,
+    pub default_branch: Option<String>,
     /// Commits ahead and behind `origin/{default_branch}`.
     pub ahead_behind_origin: Option<(usize, usize)>,
     /// Commits ahead and behind the local `{default_branch}`.
-    pub ahead_behind_local:  Option<(usize, usize)>,
+    pub ahead_behind_local: Option<(usize, usize)>,
 }
 
 impl GitInfo {
@@ -606,11 +606,15 @@ pub enum WorkspaceStatus {
 }
 
 impl From<bool> for WorkspaceStatus {
-    fn from(b: bool) -> Self { if b { Self::Workspace } else { Self::Standalone } }
+    fn from(b: bool) -> Self {
+        if b { Self::Workspace } else { Self::Standalone }
+    }
 }
 
 impl From<WorkspaceStatus> for bool {
-    fn from(val: WorkspaceStatus) -> Self { matches!(val, WorkspaceStatus::Workspace) }
+    fn from(val: WorkspaceStatus) -> Self {
+        matches!(val, WorkspaceStatus::Workspace)
+    }
 }
 
 /// Whether a project is a Rust project (has `Cargo.toml`) or a non-Rust git repo.
@@ -623,11 +627,15 @@ pub enum ProjectLanguage {
 }
 
 impl From<bool> for ProjectLanguage {
-    fn from(b: bool) -> Self { if b { Self::Rust } else { Self::NonRust } }
+    fn from(b: bool) -> Self {
+        if b { Self::Rust } else { Self::NonRust }
+    }
 }
 
 impl From<ProjectLanguage> for bool {
-    fn from(val: ProjectLanguage) -> Self { matches!(val, ProjectLanguage::Rust) }
+    fn from(val: ProjectLanguage) -> Self {
+        matches!(val, ProjectLanguage::Rust)
+    }
 }
 
 /// Whether a project path lives inside a git repository.
@@ -638,7 +646,9 @@ pub enum GitRepoPresence {
 }
 
 impl GitRepoPresence {
-    pub const fn is_in_repo(self) -> bool { matches!(self, Self::InRepo) }
+    pub const fn is_in_repo(self) -> bool {
+        matches!(self, Self::InRepo)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -666,41 +676,43 @@ impl fmt::Display for ProjectType {
 pub struct ExampleGroup {
     /// Subdirectory name, or empty for root-level examples.
     pub category: String,
-    pub names:    Vec<String>,
+    pub names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RustProject {
     /// Display path (e.g. `~/rust/bevy`).
-    pub path:                      String,
+    pub path: String,
     /// Absolute filesystem path for operations that need to access the project on disk.
     #[serde(skip)]
-    pub abs_path:                  String,
-    pub name:                      Option<String>,
-    pub version:                   Option<String>,
-    pub description:               Option<String>,
-    pub worktree_name:             Option<String>,
+    pub abs_path: String,
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub description: Option<String>,
+    pub worktree_name: Option<String>,
     /// Absolute path of the primary git repo root. Shared by primaries and their
     /// worktrees, used as the identity key for grouping worktrees together.
     #[serde(skip)]
     pub worktree_primary_abs_path: Option<String>,
     /// Whether this project has a `[workspace]` section.
     #[serde(default)]
-    pub is_workspace:              WorkspaceStatus,
-    pub types:                     Vec<ProjectType>,
-    pub examples:                  Vec<ExampleGroup>,
-    pub benches:                   Vec<String>,
-    pub test_count:                usize,
+    pub is_workspace: WorkspaceStatus,
+    pub types: Vec<ProjectType>,
+    pub examples: Vec<ExampleGroup>,
+    pub benches: Vec<String>,
+    pub test_count: usize,
     /// Whether this project is a Rust project (has `Cargo.toml`).
     #[serde(default)]
-    pub is_rust:                   ProjectLanguage,
+    pub is_rust: ProjectLanguage,
     #[serde(skip)]
-    pub local_dependency_paths:    Vec<String>,
+    pub local_dependency_paths: Vec<String>,
 }
 
 impl RustProject {
     /// Total number of examples across all groups.
-    pub fn example_count(&self) -> usize { self.examples.iter().map(|g| g.names.len()).sum() }
+    pub fn example_count(&self) -> usize {
+        self.examples.iter().map(|g| g.names.len()).sum()
+    }
 
     /// Language icon for the project list.
     pub const fn lang_icon(&self) -> &'static str {

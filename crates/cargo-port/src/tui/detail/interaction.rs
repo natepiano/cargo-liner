@@ -36,11 +36,11 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
         && let Some(project) = app.selected_project()
     {
         app.pending_example_run = Some(PendingExampleRun {
-            abs_path:     project.abs_path.clone(),
-            target_name:  entry.name.clone(),
+            abs_path: project.abs_path.clone(),
+            target_name: entry.name.clone(),
             package_name: project.name.clone(),
-            kind:         entry.kind,
-            release:      matches!(mode, BuildMode::Release),
+            kind: entry.kind,
+            release: matches!(mode, BuildMode::Release),
         });
     }
 }
@@ -53,8 +53,6 @@ pub fn handle_detail_key(app: &mut App, key: KeyCode) {
         KeyCode::Down => pane.down(),
         KeyCode::Home => pane.home(),
         KeyCode::End => pane.end(),
-        KeyCode::Left => focus_adjacent_detail_pane(app, false),
-        KeyCode::Right => focus_adjacent_detail_pane(app, true),
         KeyCode::Enter => handle_detail_enter(app),
         KeyCode::Char('r') => {
             if app.is_focused(PaneId::Targets) {
@@ -78,37 +76,14 @@ fn active_detail_pane(app: &mut App) -> &mut Pane {
     match app.base_focus() {
         PaneId::Targets => &mut app.targets_pane,
         PaneId::Git => &mut app.git_pane,
-        PaneId::Package | PaneId::ProjectList | PaneId::CiRuns | PaneId::ScanLog => {
-            &mut app.package_pane
-        },
-        PaneId::Search | PaneId::Settings | PaneId::Finder => &mut app.package_pane,
-    }
-}
-
-fn detail_panes(app: &App) -> Vec<PaneId> {
-    app.tabbable_panes()
-        .into_iter()
-        .filter(|pane| matches!(pane, PaneId::Package | PaneId::Git | PaneId::Targets))
-        .collect()
-}
-
-fn focus_adjacent_detail_pane(app: &mut App, forward: bool) {
-    let panes = detail_panes(app);
-    let current = app.base_focus();
-    let Some(index) = panes.iter().position(|pane| *pane == current) else {
-        return;
-    };
-
-    let next = if forward {
-        panes.get(index + 1).copied()
-    } else {
-        index
-            .checked_sub(1)
-            .and_then(|previous| panes.get(previous).copied())
-    };
-
-    if let Some(pane) = next {
-        app.focus_pane(pane);
+        PaneId::Package
+        | PaneId::ProjectList
+        | PaneId::CiRuns
+        | PaneId::Toasts
+        | PaneId::ScanLog
+        | PaneId::Search
+        | PaneId::Settings
+        | PaneId::Finder => &mut app.package_pane,
     }
 }
 
@@ -230,7 +205,7 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
     app.ci_state.insert(
         project_path.to_string(),
         CiState::Loaded {
-            runs:      Vec::new(),
+            runs: Vec::new(),
             exhausted: false,
         },
     );

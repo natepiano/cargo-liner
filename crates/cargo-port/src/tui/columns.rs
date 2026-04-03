@@ -45,10 +45,10 @@ pub(super) enum HeaderMode {
 
 #[derive(Clone, Copy)]
 pub(super) struct ColumnDef {
-    pub header:      &'static str,
-    pub width:       ColumnWidth,
-    pub align:       Align,
-    pub gap:         usize,
+    pub header: &'static str,
+    pub width: ColumnWidth,
+    pub align: Align,
+    pub gap: usize,
     pub header_mode: HeaderMode,
 }
 
@@ -57,18 +57,18 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
     [
         // 0: Name
         ColumnDef {
-            header:      "",
-            width:       ColumnWidth::Fit { min: 10 },
-            align:       Align::Left,
-            gap:         0,
+            header: "",
+            width: ColumnWidth::Fit { min: 10 },
+            align: Align::Left,
+            gap: 0,
             header_mode: HeaderMode::Standard,
         },
         // 1: Lint — borrows "Li" from Name padding
         ColumnDef {
-            header:      if lint_enabled { "Lint" } else { "" },
-            width:       ColumnWidth::Fixed(if lint_enabled { 2 } else { 0 }),
-            align:       Align::Left,
-            gap:         0,
+            header: if lint_enabled { "Lint" } else { "" },
+            width: ColumnWidth::Fixed(if lint_enabled { 2 } else { 0 }),
+            align: Align::Left,
+            gap: 0,
             header_mode: if lint_enabled {
                 HeaderMode::BorrowLeft
             } else {
@@ -77,34 +77,34 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
         },
         // 2: CI
         ColumnDef {
-            header:      "CI",
-            width:       ColumnWidth::Fixed(2),
-            align:       Align::Left,
-            gap:         1,
+            header: "CI",
+            width: ColumnWidth::Fixed(2),
+            align: Align::Left,
+            gap: 1,
             header_mode: HeaderMode::Standard,
         },
         // 3: Lang
         ColumnDef {
-            header:      "",
-            width:       ColumnWidth::Fixed(2),
-            align:       Align::Left,
-            gap:         1,
+            header: "",
+            width: ColumnWidth::Fixed(2),
+            align: Align::Left,
+            gap: 1,
             header_mode: HeaderMode::Hidden,
         },
         // 4: Sync status, labeled as Git in the header.
         ColumnDef {
-            header:      "Git",
-            width:       ColumnWidth::Fit { min: 0 },
-            align:       Align::Left,
-            gap:         1,
-            header_mode: HeaderMode::Standard,
+            header: "Git",
+            width: ColumnWidth::Fit { min: 0 },
+            align: Align::Right,
+            gap: 1,
+            header_mode: HeaderMode::BorrowLeft,
         },
         // 5: Disk
         ColumnDef {
-            header:      "Disk",
-            width:       ColumnWidth::Fit { min: 4 },
-            align:       Align::Right,
-            gap:         1,
+            header: "Disk",
+            width: ColumnWidth::Fit { min: 4 },
+            align: Align::Right,
+            gap: 1,
             header_mode: HeaderMode::Standard,
         },
     ]
@@ -114,41 +114,43 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
 
 #[derive(Default)]
 pub(super) struct CellContent {
-    pub text:           String,
-    pub style:          Style,
+    pub text: String,
+    pub style: Style,
     pub align_override: Option<Align>,
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct ProjectRow<'a> {
-    pub prefix:         &'a str,
-    pub name:           &'a str,
+    pub prefix: &'a str,
+    pub name: &'a str,
     pub git_path_state: GitPathState,
-    pub lint_icon:      &'a str,
-    pub disk:           &'a str,
-    pub disk_style:     Style,
-    pub lang_icon:      &'a str,
-    pub git_sync:       &'a str,
-    pub ci:             Option<Conclusion>,
-    pub deleted:        bool,
+    pub lint_icon: &'a str,
+    pub disk: &'a str,
+    pub disk_style: Style,
+    pub lang_icon: &'a str,
+    pub git_sync: &'a str,
+    pub ci: Option<Conclusion>,
+    pub deleted: bool,
 }
 
 pub(super) struct RowCells {
-    pub cells:   [CellContent; NUM_COLS],
-    pub prefix:  String,
+    pub cells: [CellContent; NUM_COLS],
+    pub prefix: String,
     pub deleted: bool,
 }
 
 // ── Resolved widths ─────────────────────────────────────────────────
 
 pub(super) struct ResolvedWidths {
-    widths:         [usize; NUM_COLS],
-    lint_enabled:   bool,
+    widths: [usize; NUM_COLS],
+    lint_enabled: bool,
     pub generation: u64,
 }
 
 impl Default for ResolvedWidths {
-    fn default() -> Self { Self::new(true) }
+    fn default() -> Self {
+        Self::new(true)
+    }
 }
 
 impl ResolvedWidths {
@@ -183,7 +185,9 @@ impl ResolvedWidths {
     }
 
     /// Get the resolved width for a column.
-    pub(super) const fn get(&self, col: usize) -> usize { self.widths[col] }
+    pub(super) const fn get(&self, col: usize) -> usize {
+        self.widths[col]
+    }
 
     /// Total display width of all columns including gaps.
     pub(super) fn total_width(&self) -> usize {
@@ -195,14 +199,18 @@ impl ResolvedWidths {
         total
     }
 
-    pub(super) const fn lint_enabled(&self) -> bool { self.lint_enabled }
+    pub(super) const fn lint_enabled(&self) -> bool {
+        self.lint_enabled
+    }
 }
 
 // ── Display-width helpers ───────────────────────────────────────────
 
 /// Terminal display width of a string, accounting for multi-byte and wide
 /// characters. Use this for ALL layout calculations — never `.len()`.
-pub(super) fn display_width(s: &str) -> usize { UnicodeWidthStr::width(s) }
+pub(super) fn display_width(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
+}
 
 /// Pad a string to a target display width using trailing spaces (left-aligned).
 pub(super) fn pad_right(s: &str, target: usize) -> String {
@@ -282,44 +290,54 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'stat
 pub(super) fn header_line(widths: &ResolvedWidths, name_text: &str) -> Line<'static> {
     let defs = column_defs(widths.lint_enabled());
     let header_style = Style::default()
-        .fg(Color::Yellow)
+        .fg(Color::DarkGray)
         .add_modifier(Modifier::BOLD);
 
     let mut spans = Vec::with_capacity(NUM_COLS);
+    let mut slot_widths =
+        std::array::from_fn::<usize, NUM_COLS, _>(|i| defs[i].gap + widths.get(i));
 
-    // The borrowing header only needs to steal the part that overflows its
-    // actual column width. For "Lint" over a 2-char column, only 2 chars
-    // borrow from Name.
-    let borrow_overflow: usize = defs
-        .iter()
-        .enumerate()
-        .filter(|(_, def)| def.header_mode == HeaderMode::BorrowLeft)
-        .map(|(i, def)| display_width(def.header).saturating_sub(widths.get(i)))
-        .sum();
+    for (i, def) in defs.iter().enumerate() {
+        if def.header_mode != HeaderMode::BorrowLeft {
+            continue;
+        }
+
+        // Borrow overflow from the nearest columns on the left so headers can
+        // stretch without shifting unrelated columns further left.
+        let mut borrow_needed = display_width(def.header).saturating_sub(widths.get(i));
+        let mut donor = i;
+        while borrow_needed > 0 && donor > 0 {
+            donor -= 1;
+            let borrowed = slot_widths[donor].min(borrow_needed);
+            slot_widths[donor] -= borrowed;
+            slot_widths[i] += borrowed;
+            borrow_needed -= borrowed;
+        }
+    }
+
     for (i, def) in defs.iter().enumerate() {
         let header = def.header;
+        let slot_width = slot_widths[i];
 
         let content = if i == COL_NAME {
-            let available = widths.get(i).saturating_sub(borrow_overflow);
-            pad_right(name_text, available)
+            pad_right(name_text, slot_width)
         } else if def.header_mode == HeaderMode::BorrowLeft {
-            // Borrowing column renders at its full header text width.
-            let header_w = display_width(header);
-            let padded = match def.align {
-                Align::Left => pad_right(header, header_w),
-                Align::Right => pad_left(header, header_w),
-                Align::Center => pad_center(header, header_w),
-            };
-            format!("{}{padded}", " ".repeat(def.gap))
+            match def.align {
+                Align::Left => pad_right(header, slot_width),
+                Align::Right => pad_left(header, slot_width),
+                Align::Center => pad_center(header, slot_width),
+            }
         } else if def.header_mode == HeaderMode::Hidden {
-            " ".repeat(def.gap + widths.get(i))
+            " ".repeat(slot_width)
         } else {
+            let gap = def.gap.min(slot_width);
+            let content_width = slot_width.saturating_sub(gap);
             let padded = match def.align {
-                Align::Left => pad_right(header, widths.get(i)),
-                Align::Right => pad_left(header, widths.get(i)),
-                Align::Center => pad_center(header, widths.get(i)),
+                Align::Left => pad_right(header, content_width),
+                Align::Right => pad_left(header, content_width),
+                Align::Center => pad_center(header, content_width),
             };
-            format!("{}{padded}", " ".repeat(def.gap))
+            format!("{}{padded}", " ".repeat(gap))
         };
 
         spans.push(Span::styled(content, header_style));
@@ -358,33 +376,33 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
 
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
     cells[COL_NAME] = CellContent {
-        text:           String::from(row.name),
-        style:          name_style,
+        text: String::from(row.name),
+        style: name_style,
         align_override: None,
     };
     cells[COL_LINT] = CellContent {
-        text:           String::from(row.lint_icon),
-        style:          Style::default(),
+        text: String::from(row.lint_icon),
+        style: Style::default(),
         align_override: None,
     };
     cells[COL_CI] = CellContent {
-        text:           ci_text,
-        style:          ci_style,
+        text: ci_text,
+        style: ci_style,
         align_override: None,
     };
     cells[COL_LANG] = CellContent {
-        text:           String::from(row.lang_icon),
-        style:          Style::default(),
+        text: String::from(row.lang_icon),
+        style: Style::default(),
         align_override: None,
     };
     cells[COL_SYNC] = CellContent {
-        text:           String::from(row.git_sync),
-        style:          sync_style,
+        text: String::from(row.git_sync),
+        style: sync_style,
         align_override: sync_align,
     };
     cells[COL_DISK] = CellContent {
-        text:           String::from(row.disk),
-        style:          row.disk_style,
+        text: String::from(row.disk),
+        style: row.disk_style,
         align_override: None,
     };
 
@@ -399,8 +417,8 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
 pub(super) fn build_group_header_cells(prefix: &str, label: &str) -> RowCells {
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
     cells[COL_NAME] = CellContent {
-        text:           String::from(label),
-        style:          Style::default().fg(Color::Yellow),
+        text: String::from(label),
+        style: Style::default().fg(Color::Yellow),
         align_override: None,
     };
     RowCells {
@@ -426,19 +444,19 @@ pub(super) fn build_summary_cells(widths: &ResolvedWidths, disk: &str) -> RowCel
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
     let sigma_col = summary_label_col(widths);
     cells[sigma_col] = CellContent {
-        text:           String::from("Σ"),
-        style:          total_style,
+        text: String::from("Σ"),
+        style: total_style,
         align_override: Some(Align::Right),
     };
     cells[COL_DISK] = CellContent {
-        text:           String::from(disk),
-        style:          total_style,
+        text: String::from(disk),
+        style: total_style,
         align_override: None,
     };
     if sigma_col != COL_LANG {
         cells[COL_LANG] = CellContent {
-            text:           String::from("  "),
-            style:          Style::default(),
+            text: String::from("  "),
+            style: Style::default(),
             align_override: None,
         };
     }
@@ -468,7 +486,7 @@ mod tests {
         // Fit columns get their min
         assert_eq!(widths.get(COL_NAME), 10);
         assert_eq!(widths.get(COL_DISK), 4);
-        assert_eq!(widths.get(COL_SYNC), 3);
+        assert_eq!(widths.get(COL_SYNC), 0);
     }
 
     #[test]
@@ -512,6 +530,21 @@ mod tests {
     }
 
     #[test]
+    fn git_header_borrows_from_hidden_lang_column() {
+        let mut widths = ResolvedWidths::new(true);
+        widths.observe(COL_NAME, 30);
+        widths.observe(COL_DISK, 8);
+        widths.observe(COL_SYNC, 2);
+
+        let line = header_line(&widths, "Projects");
+
+        assert_eq!(line.spans[COL_CI].content.as_ref(), " CI");
+        assert_eq!(display_width(line.spans[COL_LANG].content.as_ref()), 2);
+        assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Git");
+        assert_eq!(line.width(), widths.total_width());
+    }
+
+    #[test]
     fn emoji_display_widths() {
         assert_eq!(display_width("🌲"), 2);
         assert_eq!(display_width("🦀"), 2);
@@ -537,28 +570,28 @@ mod tests {
         widths.observe(COL_SYNC, 2);
 
         let row_emoji = build_row_cells(ProjectRow {
-            prefix:         "▶ ",
-            name:           "bevy_brp 🌲:2",
+            prefix: "▶ ",
+            name: "bevy_brp 🌲:2",
             git_path_state: GitPathState::Clean,
-            lint_icon:      crate::constants::LINT_PASSED,
-            disk:           "36.3 GiB",
-            disk_style:     Style::default(),
-            lang_icon:      "🦀",
-            git_sync:       "↑2",
-            ci:             Some(Conclusion::Success),
-            deleted:        false,
+            lint_icon: crate::constants::LINT_PASSED,
+            disk: "36.3 GiB",
+            disk_style: Style::default(),
+            lang_icon: "🦀",
+            git_sync: "↑2",
+            ci: Some(Conclusion::Success),
+            deleted: false,
         });
         let row_ascii = build_row_cells(ProjectRow {
-            prefix:         "▶ ",
-            name:           "bevy_mesh_outline_benchmark",
+            prefix: "▶ ",
+            name: "bevy_mesh_outline_benchmark",
             git_path_state: GitPathState::Clean,
-            lint_icon:      crate::constants::LINT_PASSED,
-            disk:           "36.3 GiB",
-            disk_style:     Style::default(),
-            lang_icon:      "🦀",
-            git_sync:       "↑2",
-            ci:             Some(Conclusion::Success),
-            deleted:        false,
+            lint_icon: crate::constants::LINT_PASSED,
+            disk: "36.3 GiB",
+            disk_style: Style::default(),
+            lang_icon: "🦀",
+            git_sync: "↑2",
+            ci: Some(Conclusion::Success),
+            deleted: false,
         });
 
         let line_emoji = row_to_line(&row_emoji, &widths);
@@ -594,7 +627,7 @@ mod tests {
             line.spans[COL_NAME].content.as_ref(),
             " ".repeat(widths.get(COL_NAME))
         );
-        assert_eq!(line.spans[COL_SYNC].content.as_ref(), "   Σ");
+        assert_eq!(line.spans[COL_SYNC].content.as_ref(), "  Σ");
         assert_eq!(line.spans[COL_CI].content.as_ref(), "   ");
         assert_eq!(line.spans[COL_DISK].content.as_ref(), " 36.3 GiB");
     }
@@ -617,7 +650,7 @@ mod tests {
         assert_eq!(defs[COL_CI].header, "CI");
         assert_eq!(widths.get(COL_CI), 2);
         assert!(header.spans[COL_CI].content.as_ref().ends_with("CI"));
-        assert_eq!(line.spans[COL_SYNC].content.as_ref(), "   Σ");
+        assert_eq!(line.spans[COL_SYNC].content.as_ref(), "  Σ");
     }
 
     #[test]
@@ -628,16 +661,16 @@ mod tests {
         widths.observe(COL_SYNC, 2);
 
         let row = build_row_cells(ProjectRow {
-            prefix:         "▶ ",
-            name:           "demo",
+            prefix: "▶ ",
+            name: "demo",
             git_path_state: GitPathState::Clean,
-            lint_icon:      crate::constants::LINT_PASSED,
-            disk:           "36.3 GiB",
-            disk_style:     Style::default(),
-            lang_icon:      "🦀",
-            git_sync:       "↑2",
-            ci:             Some(Conclusion::Success),
-            deleted:        false,
+            lint_icon: crate::constants::LINT_PASSED,
+            disk: "36.3 GiB",
+            disk_style: Style::default(),
+            lang_icon: "🦀",
+            git_sync: "↑2",
+            ci: Some(Conclusion::Success),
+            deleted: false,
         });
         let line = row_to_line(&row, &widths);
 
@@ -652,30 +685,30 @@ mod tests {
     #[test]
     fn git_path_state_changes_name_style() {
         let modified = build_row_cells(ProjectRow {
-            prefix:         "  ",
-            name:           "demo",
+            prefix: "  ",
+            name: "demo",
             git_path_state: GitPathState::Modified,
-            lint_icon:      " ",
-            disk:           "—",
-            disk_style:     Style::default(),
-            lang_icon:      "🦀",
-            git_sync:       "",
-            ci:             None,
-            deleted:        false,
+            lint_icon: " ",
+            disk: "—",
+            disk_style: Style::default(),
+            lang_icon: "🦀",
+            git_sync: "",
+            ci: None,
+            deleted: false,
         });
         assert_eq!(modified.cells[COL_NAME].style.fg, Some(GIT_MODIFIED_COLOR));
 
         let untracked = build_row_cells(ProjectRow {
-            prefix:         "  ",
-            name:           "demo",
+            prefix: "  ",
+            name: "demo",
             git_path_state: GitPathState::Untracked,
-            lint_icon:      " ",
-            disk:           "—",
-            disk_style:     Style::default(),
-            lang_icon:      "🦀",
-            git_sync:       "",
-            ci:             None,
-            deleted:        false,
+            lint_icon: " ",
+            disk: "—",
+            disk_style: Style::default(),
+            lang_icon: "🦀",
+            git_sync: "",
+            ci: None,
+            deleted: false,
         });
         assert_eq!(
             untracked.cells[COL_NAME].style.fg,
@@ -683,16 +716,16 @@ mod tests {
         );
 
         let ignored = build_row_cells(ProjectRow {
-            prefix:         "  ",
-            name:           "demo",
+            prefix: "  ",
+            name: "demo",
             git_path_state: GitPathState::Ignored,
-            lint_icon:      " ",
-            disk:           "—",
-            disk_style:     Style::default(),
-            lang_icon:      "🦀",
-            git_sync:       "",
-            ci:             None,
-            deleted:        false,
+            lint_icon: " ",
+            disk: "—",
+            disk_style: Style::default(),
+            lang_icon: "🦀",
+            git_sync: "",
+            ci: None,
+            deleted: false,
         });
         assert_eq!(ignored.cells[COL_NAME].style.fg, Some(GIT_IGNORED_COLOR));
     }

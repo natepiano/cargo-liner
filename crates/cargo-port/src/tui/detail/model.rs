@@ -13,13 +13,13 @@ use crate::project::RustProject;
 
 #[derive(Default)]
 pub struct ProjectCounts {
-    pub workspaces:  usize,
-    pub libs:        usize,
-    pub bins:        usize,
+    pub workspaces: usize,
+    pub libs: usize,
+    pub bins: usize,
     pub proc_macros: usize,
-    pub examples:    usize,
-    pub benches:     usize,
-    pub tests:       usize,
+    pub examples: usize,
+    pub benches: usize,
+    pub tests: usize,
 }
 
 impl ProjectCounts {
@@ -98,9 +98,9 @@ impl RunTargetKind {
 }
 
 pub struct TargetEntry {
-    pub name:         String,
+    pub name: String,
     pub display_name: String,
-    pub kind:         RunTargetKind,
+    pub kind: RunTargetKind,
 }
 
 /// Build a flat list of all runnable targets: binaries first, then examples alphabetically,
@@ -113,8 +113,8 @@ pub fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
     {
         entries.push(TargetEntry {
             display_name: name.clone(),
-            name:         name.clone(),
-            kind:         RunTargetKind::Binary,
+            name: name.clone(),
+            kind: RunTargetKind::Binary,
         });
     }
 
@@ -165,11 +165,11 @@ pub fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
 }
 
 pub struct PendingExampleRun {
-    pub abs_path:     String,
-    pub target_name:  String,
+    pub abs_path: String,
+    pub target_name: String,
     pub package_name: Option<String>,
-    pub kind:         RunTargetKind,
-    pub release:      bool,
+    pub kind: RunTargetKind,
+    pub release: bool,
 }
 
 /// Whether a CI fetch should look for older runs or just refresh for new ones.
@@ -183,9 +183,9 @@ pub enum CiFetchKind {
 
 /// A pending request to fetch more CI runs for a project.
 pub struct PendingCiFetch {
-    pub project_path:  String,
+    pub project_path: String,
     pub current_count: u32,
-    pub kind:          CiFetchKind,
+    pub kind: CiFetchKind,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -375,45 +375,45 @@ pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
 
 #[derive(Clone)]
 pub struct DetailInfo {
-    pub package_title:    String,
-    pub name:             String,
-    pub path:             String,
-    pub version:          String,
-    pub description:      Option<String>,
-    pub crates_version:   Option<String>,
+    pub package_title: String,
+    pub name: String,
+    pub path: String,
+    pub version: String,
+    pub description: Option<String>,
+    pub crates_version: Option<String>,
     pub crates_downloads: Option<u64>,
-    pub types:            String,
-    pub disk:             String,
-    pub lint_label:       String,
-    pub ci:               Option<Conclusion>,
-    pub stats_rows:       Vec<(&'static str, usize)>,
-    pub git_branch:       Option<String>,
-    pub git_path:         GitPathState,
-    pub git_sync:         Option<String>,
+    pub types: String,
+    pub disk: String,
+    pub lint_label: String,
+    pub ci: Option<Conclusion>,
+    pub stats_rows: Vec<(&'static str, usize)>,
+    pub git_branch: Option<String>,
+    pub git_path: GitPathState,
+    pub git_sync: Option<String>,
     /// Ahead/behind vs `origin/{default_branch}`.
-    pub git_vs_origin:    Option<String>,
+    pub git_vs_origin: Option<String>,
     /// Ahead/behind vs local `{default_branch}`.
-    pub git_vs_local:     Option<String>,
+    pub git_vs_local: Option<String>,
     /// The repo's default branch name (e.g. "main", "master").
-    pub default_branch:   Option<String>,
-    pub git_origin:       Option<String>,
-    pub git_owner:        Option<String>,
-    pub git_url:          Option<String>,
-    pub git_stars:        Option<u64>,
+    pub default_branch: Option<String>,
+    pub git_origin: Option<String>,
+    pub git_owner: Option<String>,
+    pub git_url: Option<String>,
+    pub git_stars: Option<u64>,
     pub repo_description: Option<String>,
-    pub git_inception:    Option<String>,
-    pub git_last_commit:  Option<String>,
-    pub worktree_label:   Option<String>,
-    pub worktree_names:   Vec<String>,
-    pub is_binary:        bool,
-    pub binary_name:      Option<String>,
-    pub examples:         Vec<ExampleGroup>,
-    pub benches:          Vec<String>,
+    pub git_inception: Option<String>,
+    pub git_last_commit: Option<String>,
+    pub worktree_label: Option<String>,
+    pub worktree_names: Vec<String>,
+    pub is_binary: bool,
+    pub binary_name: Option<String>,
+    pub examples: Vec<ExampleGroup>,
+    pub benches: Vec<String>,
     /// Whether this is a Rust project (has `Cargo.toml`).
-    pub is_rust:          ProjectLanguage,
+    pub is_rust: ProjectLanguage,
     /// Whether this project declares `[package]` (has version/description fields).
-    pub has_package:      bool,
-    pub cargo_active:     bool,
+    pub has_package: bool,
+    pub cargo_active: bool,
 }
 
 /// Resolve the title shown in the `Package` column header.
@@ -457,19 +457,19 @@ fn format_downloads(count: u64) -> String {
 }
 
 struct GitDetailFields {
-    branch:         Option<String>,
-    path:           GitPathState,
-    sync:           Option<String>,
-    vs_origin:      Option<String>,
-    vs_local:       Option<String>,
+    branch: Option<String>,
+    path: GitPathState,
+    sync: Option<String>,
+    vs_origin: Option<String>,
+    vs_local: Option<String>,
     default_branch: Option<String>,
-    origin:         Option<String>,
-    owner:          Option<String>,
-    url:            Option<String>,
-    stars:          Option<u64>,
-    description:    Option<String>,
-    inception:      Option<String>,
-    last_commit:    Option<String>,
+    origin: Option<String>,
+    owner: Option<String>,
+    url: Option<String>,
+    stars: Option<u64>,
+    description: Option<String>,
+    inception: Option<String>,
+    last_commit: Option<String>,
 }
 
 fn build_git_detail_fields(app: &App, project: &RustProject) -> GitDetailFields {

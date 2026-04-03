@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::style::Color;
@@ -23,6 +21,7 @@ use crate::config;
 pub(super) enum SettingOption {
     InvertScroll,
     IncludeNonRust,
+    NavigationKeys,
     CiRunCount,
     Editor,
     IncludeDirs,
@@ -37,18 +36,21 @@ impl SettingOption {
         match i {
             0 => Some(Self::InvertScroll),
             1 => Some(Self::IncludeNonRust),
-            2 => Some(Self::CiRunCount),
-            3 => Some(Self::Editor),
-            4 => Some(Self::IncludeDirs),
-            5 => Some(Self::InlineDirs),
-            6 => Some(Self::PortReportEnabled),
-            7 => Some(Self::PortReportProjects),
-            8 => Some(Self::PortReportCommands),
+            2 => Some(Self::NavigationKeys),
+            3 => Some(Self::CiRunCount),
+            4 => Some(Self::Editor),
+            5 => Some(Self::IncludeDirs),
+            6 => Some(Self::InlineDirs),
+            7 => Some(Self::PortReportEnabled),
+            8 => Some(Self::PortReportProjects),
+            9 => Some(Self::PortReportCommands),
             _ => None,
         }
     }
 
-    pub(super) const fn count() -> usize { 9 }
+    pub(super) const fn count() -> usize {
+        10
+    }
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
@@ -111,6 +113,16 @@ fn settings_rows(app: &App, cfg: &config::Config) -> Vec<SettingsRow> {
             Some(SettingOption::IncludeNonRust),
             "Non-Rust projects",
             if app.include_non_rust().includes_non_rust() {
+                "ON"
+            } else {
+                "OFF"
+            }
+            .to_string(),
+        ),
+        (
+            Some(SettingOption::NavigationKeys),
+            "Vim nav keys",
+            if app.navigation_keys().uses_vim() {
                 "ON"
             } else {
                 "OFF"
@@ -289,7 +301,7 @@ fn save_updated_config(app: &mut App, cfg: &config::Config) -> bool {
     match app.save_and_apply_config(cfg) {
         Ok(()) => true,
         Err(err) => {
-            app.status_flash = Some((format!("Config save failed: {err}"), Instant::now()));
+            app.show_timed_toast("Config save failed", err);
             false
         },
     }
@@ -314,6 +326,13 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
         content_width,
     );
     lines.push(Line::from(""));
+    if !app.settings_editing && app.settings_pane.pos() == 2 {
+        lines.push(Line::from(vec![
+            Span::styled("  Note: ", label_style),
+            Span::styled("maps h/j/k/l to arrow navigation", label_style),
+        ]));
+        lines.push(Line::from(""));
+    }
     if app.settings_editing {
         lines.push(Line::from(vec![
             Span::styled("  Enter", key_style),
@@ -409,11 +428,13 @@ pub(super) fn build_settings_lines(
             );
         } else if setting == Some(SettingOption::InvertScroll)
             || setting == Some(SettingOption::IncludeNonRust)
+            || setting == Some(SettingOption::NavigationKeys)
             || setting == Some(SettingOption::PortReportEnabled)
         {
             let is_on = match setting {
                 Some(SettingOption::InvertScroll) => app.invert_scroll().is_inverted(),
                 Some(SettingOption::IncludeNonRust) => app.include_non_rust().includes_non_rust(),
+                Some(SettingOption::NavigationKeys) => app.navigation_keys().uses_vim(),
                 Some(SettingOption::PortReportEnabled) => app.lint_enabled(),
                 _ => false,
             };
@@ -483,6 +504,11 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
                 cfg.mouse.invert_scroll.toggle();
                 let _ = save_updated_config(app, &cfg);
             },
+            Some(SettingOption::NavigationKeys) => {
+                let mut cfg = app.current_config.clone();
+                cfg.tui.navigation_keys.toggle();
+                let _ = save_updated_config(app, &cfg);
+            },
             Some(SettingOption::CiRunCount) => {
                 let mut cfg = app.current_config.clone();
                 if key == KeyCode::Right {
@@ -506,6 +532,11 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
             Some(SettingOption::InvertScroll) => {
                 let mut cfg = app.current_config.clone();
                 cfg.mouse.invert_scroll.toggle();
+                let _ = save_updated_config(app, &cfg);
+            },
+            Some(SettingOption::NavigationKeys) => {
+                let mut cfg = app.current_config.clone();
+                cfg.tui.navigation_keys.toggle();
                 let _ = save_updated_config(app, &cfg);
             },
             Some(SettingOption::CiRunCount) => {
@@ -591,16 +622,14 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                     let mut cfg = app.current_config.clone();
                     cfg.lint.include = normalize_sorted_list(&value);
                     if save_updated_config(app, &cfg) {
-                        app.status_flash =
-                            Some(("Port Report projects updated".to_string(), Instant::now()));
+                        app.show_timed_toast("Settings", "Port Report projects updated");
                     }
                 },
                 Some(SettingOption::PortReportCommands) => {
                     let mut cfg = app.current_config.clone();
                     cfg.lint.commands = parse_port_report_commands(&value);
                     if save_updated_config(app, &cfg) {
-                        app.status_flash =
-                            Some(("Port Report commands updated".to_string(), Instant::now()));
+                        app.show_timed_toast("Settings", "Port Report commands updated");
                     }
                 },
                 _ => {},
@@ -647,7 +676,8 @@ fn toggle_port_report(app: &mut App) {
     if !save_updated_config(app, &cfg) {
         return;
     }
-    app.status_flash = Some((
+    app.show_timed_toast(
+        "Settings",
         format!(
             "Port Report {}",
             if cfg.lint.enabled {
@@ -656,8 +686,7 @@ fn toggle_port_report(app: &mut App) {
                 "disabled"
             }
         ),
-        std::time::Instant::now(),
-    ));
+    );
 }
 
 #[cfg(test)]
@@ -673,18 +702,22 @@ mod tests {
     #[test]
     fn port_report_setting_has_stable_index() {
         assert_eq!(
-            SettingOption::from_index(6),
-            Some(SettingOption::PortReportEnabled)
+            SettingOption::from_index(2),
+            Some(SettingOption::NavigationKeys)
         );
         assert_eq!(
             SettingOption::from_index(7),
-            Some(SettingOption::PortReportProjects)
+            Some(SettingOption::PortReportEnabled)
         );
         assert_eq!(
             SettingOption::from_index(8),
+            Some(SettingOption::PortReportProjects)
+        );
+        assert_eq!(
+            SettingOption::from_index(9),
             Some(SettingOption::PortReportCommands)
         );
-        assert_eq!(SettingOption::count(), 9);
+        assert_eq!(SettingOption::count(), 10);
     }
 
     #[test]

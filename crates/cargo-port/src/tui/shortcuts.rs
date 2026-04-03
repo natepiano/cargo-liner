@@ -7,6 +7,7 @@ pub(super) enum InputContext {
     DetailFields,
     DetailTargets,
     CiRuns,
+    Toasts,
     PortReport,
     Searching,
     Finder,
@@ -23,78 +24,82 @@ impl InputContext {
 
 /// A keyboard shortcut for display in the status bar.
 pub(super) struct Shortcut {
-    pub key:         &'static str,
+    pub key: &'static str,
     pub description: &'static str,
 }
 
 // ── Reusable shortcut definitions ──────────────────────────────────────
 
 const NAV: Shortcut = Shortcut {
-    key:         "↑/↓",
+    key: "↑/↓",
     description: "nav",
 };
-const ARROWS_COLUMN: Shortcut = Shortcut {
-    key:         "←/→",
-    description: "column",
-};
 const ARROWS_EXPAND: Shortcut = Shortcut {
-    key:         "←/→",
+    key: "←/→",
     description: "expand",
 };
 const ARROWS_TOGGLE: Shortcut = Shortcut {
-    key:         "←/→",
+    key: "←/→",
     description: "toggle",
 };
 const TAB_PANE: Shortcut = Shortcut {
-    key:         "Tab",
+    key: "Tab",
     description: "pane",
 };
 const ESC_BACK: Shortcut = Shortcut {
-    key:         "Esc",
+    key: "Esc",
     description: "back",
 };
 const ESC_CANCEL: Shortcut = Shortcut {
-    key:         "Esc",
+    key: "Esc",
     description: "cancel",
 };
 const ESC_CLOSE: Shortcut = Shortcut {
-    key:         "Esc",
+    key: "Esc",
     description: "close",
 };
 const RELEASE: Shortcut = Shortcut {
-    key:         "r",
+    key: "r",
     description: "release",
 };
 const CLEAN: Shortcut = Shortcut {
-    key:         "c",
+    key: "c",
     description: "clean",
 };
 const CLEAR_CACHE: Shortcut = Shortcut {
-    key:         "c",
+    key: "c",
     description: "clear cache",
 };
 const SWITCH_PANEL: Shortcut = Shortcut {
-    key:         "p",
+    key: "p",
     description: "switch",
 };
+const CLOSE_TOAST: Shortcut = Shortcut {
+    key: "x",
+    description: "close",
+};
 const RESCAN: Shortcut = Shortcut {
-    key:         "r",
+    key: "r",
     description: "rescan",
 };
+const EXPAND_COLLAPSE_ALL: Shortcut = Shortcut {
+    key: "+/-",
+    description: "all",
+};
 const SETTINGS: Shortcut = Shortcut {
-    key:         "s",
+    key: "s",
     description: "settings",
 };
 const FIND: Shortcut = Shortcut {
-    key:         "/",
+    key: "/",
     description: "find",
 };
 const QUIT: Shortcut = Shortcut {
-    key:         "q",
+    key: "q",
     description: "quit",
 };
 const RESTART: Shortcut = Shortcut {
-    key:         "R",
+    key: "R",
     description: "restart",
 };
 
@@ -111,8 +116,8 @@ const fn enter(description: &'static str) -> Shortcut {
 /// right (globals).
 pub(super) struct StatusBarGroups {
     pub navigation: Vec<Shortcut>,
-    pub actions:    Vec<Shortcut>,
-    pub global:     Vec<Shortcut>,
+    pub actions: Vec<Shortcut>,
+    pub global: Vec<Shortcut>,
 }
 
 /// Build all three shortcut groups for the current context.
@@ -129,6 +134,7 @@ pub(super) fn for_status_bar(
             detail_groups(context, enter_action, is_rust)
         },
         InputContext::CiRuns => ci_groups(enter_action),
+        InputContext::Toasts => (vec![NAV, TAB_PANE, ESC_BACK], vec![CLOSE_TOAST]),
         InputContext::PortReport => port_report_groups(enter_action),
         InputContext::ScanLog | InputContext::ProjectList => {
             project_list_groups(enter_action, is_rust)
@@ -155,7 +161,7 @@ fn detail_groups(
     enter_action: Option<&'static str>,
     is_rust: bool,
 ) -> (Vec<Shortcut>, Vec<Shortcut>) {
-    let navigation = vec![NAV, ARROWS_COLUMN, TAB_PANE, ESC_BACK];
+    let navigation = vec![NAV, TAB_PANE, ESC_BACK];
 
     let mut actions = Vec::new();
     if let Some(action) = enter_action {
@@ -200,7 +206,7 @@ fn project_list_groups(
     enter_action: Option<&'static str>,
     is_rust: bool,
 ) -> (Vec<Shortcut>, Vec<Shortcut>) {
-    let navigation = vec![NAV, ARROWS_EXPAND, TAB_PANE];
+    let navigation = vec![NAV, ARROWS_EXPAND, EXPAND_COLLAPSE_ALL, TAB_PANE];
 
     let mut actions = Vec::new();
     if let Some(action) = enter_action {
