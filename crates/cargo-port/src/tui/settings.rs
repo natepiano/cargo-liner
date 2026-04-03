@@ -324,14 +324,14 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
         content_width,
     );
     lines.push(Line::from(""));
-    if !app.settings_editing && app.settings_pane.pos() == 2 {
+    if !app.is_settings_editing() && app.settings_pane.pos() == 2 {
         lines.push(Line::from(vec![
             Span::styled("  Note: ", label_style),
             Span::styled("maps h/j/k/l to arrow navigation", label_style),
         ]));
         lines.push(Line::from(""));
     }
-    if app.settings_editing {
+    if app.is_settings_editing() {
         lines.push(Line::from(vec![
             Span::styled("  Enter", key_style),
             Span::raw(" confirm  "),
@@ -415,7 +415,7 @@ pub(super) fn build_settings_lines(
         let setting = *setting;
         let label = format!("  {cursor}{name:<max_label$}  ");
 
-        if app.settings_editing && is_selected {
+        if app.is_settings_editing() && is_selected {
             push_wrapped_value_row(
                 lines,
                 &label,
@@ -454,7 +454,9 @@ pub(super) fn build_settings_lines(
                 Span::styled((*value).clone(), toggle_style),
                 Span::styled(" >", Style::default().fg(Color::DarkGray)),
             ]));
-        } else if setting == Some(SettingOption::CiRunCount) && is_selected && !app.settings_editing
+        } else if setting == Some(SettingOption::CiRunCount)
+            && is_selected
+            && !app.is_settings_editing()
         {
             lines.push(Line::from(vec![
                 Span::styled(label, highlight_style),
@@ -478,7 +480,7 @@ pub(super) fn build_settings_lines(
 }
 
 pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
-    if app.settings_editing {
+    if app.is_settings_editing() {
         handle_settings_edit_key(app, key);
         return;
     }
@@ -487,7 +489,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
 
     match key {
         KeyCode::Esc | KeyCode::Char('s') => {
-            app.show_settings = false;
+            app.close_settings();
             app.close_overlay();
         },
         KeyCode::Up => {
@@ -539,27 +541,27 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
             },
             Some(SettingOption::CiRunCount) => {
                 app.settings_edit_buf = app.current_config.tui.ci_run_count.to_string();
-                app.settings_editing = true;
+                app.begin_settings_editing();
                 app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::InlineDirs) => {
                 app.settings_edit_buf = app.current_config.tui.inline_dirs.join(", ");
-                app.settings_editing = true;
+                app.begin_settings_editing();
                 app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::IncludeDirs) => {
                 app.settings_edit_buf = app.current_config.tui.include_dirs.join(", ");
-                app.settings_editing = true;
+                app.begin_settings_editing();
                 app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::PortReportProjects) => {
                 app.settings_edit_buf = app.current_config.lint.include.join(", ");
-                app.settings_editing = true;
+                app.begin_settings_editing();
                 app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::PortReportCommands) => {
                 app.settings_edit_buf = format_port_report_commands(&app.current_config);
-                app.settings_editing = true;
+                app.begin_settings_editing();
                 app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             Some(SettingOption::IncludeNonRust) => {
@@ -572,7 +574,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
             },
             Some(SettingOption::Editor) => {
                 app.settings_edit_buf = app.editor().to_string();
-                app.settings_editing = true;
+                app.begin_settings_editing();
                 app.settings_edit_cursor = app.settings_edit_buf.len();
             },
             None => {},
@@ -632,12 +634,12 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                 },
                 _ => {},
             }
-            app.settings_editing = false;
+            app.end_settings_editing();
             app.settings_edit_buf.clear();
             app.settings_edit_cursor = 0;
         },
         KeyCode::Esc => {
-            app.settings_editing = false;
+            app.end_settings_editing();
             app.settings_edit_buf.clear();
             app.settings_edit_cursor = 0;
         },

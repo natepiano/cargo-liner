@@ -991,22 +991,28 @@ pub struct FetchContext {
     pub repo_cache: RepoCache,
 }
 
+pub struct ProjectDetailRequest<'a> {
+    pub tx:            &'a mpsc::Sender<BackgroundMsg>,
+    pub ctx:           &'a FetchContext,
+    pub project_path:  &'a str,
+    pub abs_path:      &'a Path,
+    pub project_name:  Option<&'a str>,
+    pub repo_presence: GitRepoPresence,
+    pub ci_run_count:  u32,
+    pub lint_enabled:  bool,
+}
+
 /// Fetch all details (disk, git, crates.io, CI) for a single project and send
 /// results through the provided channel. Used by both the main scan and priority fetch.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "priority fetch shares the same fully-expanded project detail path as discovery"
-)]
-pub fn fetch_project_details(
-    tx: &mpsc::Sender<BackgroundMsg>,
-    ctx: &FetchContext,
-    project_path: &str,
-    abs_path: &Path,
-    project_name: Option<&String>,
-    repo_presence: GitRepoPresence,
-    ci_run_count: u32,
-    lint_enabled: bool,
-) {
+pub fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
+    let tx = req.tx;
+    let ctx = req.ctx;
+    let project_path = req.project_path;
+    let abs_path = req.abs_path;
+    let project_name = req.project_name;
+    let repo_presence = req.repo_presence;
+    let ci_run_count = req.ci_run_count;
+    let lint_enabled = req.lint_enabled;
     let client = &ctx.client;
     let repo_cache = &ctx.repo_cache;
     let _ = tx.send(BackgroundMsg::GitPathState {
@@ -1275,6 +1281,36 @@ struct Phase1DiscoverResult {
     stats:        Phase1DiscoverStats,
 }
 
+fn discover_non_rust_project(
+    scan_context: &StreamingScanContext,
+    entry_path: &Path,
+    disk_entries: &mut Vec<(String, PathBuf)>,
+    stats: &mut Phase1DiscoverStats,
+) {
+    let project = RustProject::from_git_dir(entry_path);
+    let path = project.path.clone();
+    let abs_path = PathBuf::from(&project.abs_path);
+    stats.projects += 1;
+    stats.non_rust_projects += 1;
+
+    let _ = scan_context
+        .tx
+        .send(BackgroundMsg::ProjectDiscovered { project });
+
+    let discovered = DiscoveredProject {
+        path,
+        abs_path: abs_path.clone(),
+        name: None,
+        repo_url: None,
+        owner_repo: None,
+        branch: None,
+        lint_enabled: scan_context.lint_enabled,
+    };
+    let disk_path = discovered.path.clone();
+    spawn_project_local_work(scan_context, discovered, GitRepoPresence::InRepo);
+    disk_entries.push((disk_path, abs_path));
+}
+
 fn phase1_discover(
     scan_dirs: &[PathBuf],
     non_rust: NonRustInclusion,
@@ -1306,31 +1342,12 @@ fn phase1_discover(
                     && !entry.path().join("Cargo.toml").exists()
                 {
                     iter.skip_current_dir();
-
-                    let project = RustProject::from_git_dir(entry.path());
-                    let abs_path = PathBuf::from(&project.abs_path);
-                    stats.projects += 1;
-                    stats.non_rust_projects += 1;
-
-                    let _ = scan_context.tx.send(BackgroundMsg::ProjectDiscovered {
-                        project: project.clone(),
-                    });
-
-                    let discovered = DiscoveredProject {
-                        path: project.path.clone(),
-                        abs_path,
-                        name: None,
-                        repo_url: None,
-                        owner_repo: None,
-                        branch: None,
-                        lint_enabled: scan_context.lint_enabled,
-                    };
-                    spawn_project_local_work(
+                    discover_non_rust_project(
                         scan_context,
-                        discovered.clone(),
-                        GitRepoPresence::InRepo,
+                        entry.path(),
+                        &mut disk_entries,
+                        &mut stats,
                     );
-                    disk_entries.push((discovered.path.clone(), discovered.abs_path.clone()));
                     continue;
                 }
             }

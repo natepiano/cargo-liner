@@ -26,6 +26,7 @@ use ratatui::backend::CrosstermBackend;
 
 use super::app::App;
 use super::app::PendingClean;
+use super::app::PollBackgroundStats;
 use super::constants::CI_FETCH_DISPLAY_COUNT;
 use super::constants::FRAME_POLL_MILLIS;
 use super::detail::CiFetchKind;
@@ -64,6 +65,20 @@ pub(super) enum CiFetchMsg {
 
 pub(super) enum CleanMsg {
     Finished(ToastTaskId),
+}
+
+#[derive(Clone, Copy)]
+struct FrameMetrics {
+    frame_elapsed:  Duration,
+    input_elapsed:  Duration,
+    bg_elapsed:     Duration,
+    rows_elapsed:   Duration,
+    disk_elapsed:   Duration,
+    fit_elapsed:    Duration,
+    detail_elapsed: Duration,
+    draw_elapsed:   Duration,
+    idle_elapsed:   Duration,
+    input_count:    usize,
 }
 
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
@@ -148,7 +163,7 @@ pub fn run(path: &Path) -> ExitCode {
 
     let result = event_loop(&mut terminal, &mut app, &input_rx);
 
-    let should_restart = app.should_restart;
+    let should_restart = app.should_restart();
     let _ = restore_terminal(&mut terminal);
 
     if should_restart {
@@ -185,10 +200,6 @@ fn spawn_input_thread() -> mpsc::Receiver<Event> {
     rx
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "central TUI loop with timing instrumentation"
-)]
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
@@ -197,137 +208,183 @@ fn event_loop(
     loop {
         let frame_started = Instant::now();
 
-        let input_started = Instant::now();
-        let mut input_count = 0usize;
-        while let Ok(event) = input_rx.try_recv() {
-            input_count += 1;
-            input::handle_event(app, &event);
-            if app.should_quit {
-                return Ok(());
-            }
-        }
-        if input_count == 0 && app.selection_changed {
-            // No events this frame — flush deferred selection save to disk
-            if let Some(path) = &app.last_selected_path {
-                save_last_selected(path);
-            }
-            app.selection_changed = false;
-        }
-        let input_elapsed = input_started.elapsed();
-
-        let bg_started = Instant::now();
-        app.maybe_reload_config_from_disk();
-        let bg_stats = app.poll_background();
-        let bg_elapsed = bg_started.elapsed();
-
-        // A child process may have written to /dev/tty, clobbering the screen.
-        // Clear the actual terminal, then reset ratatui's buffer so it repaints.
-        if app.terminal_dirty {
-            app.terminal_dirty = false;
-            execute!(terminal.backend_mut(), Clear(ClearType::All))?;
-            terminal.clear()?;
+        let (input_count, input_elapsed) = process_input_frame(app, input_rx);
+        if app.should_quit() {
+            return Ok(());
         }
 
-        let rows_started = Instant::now();
-        app.ensure_visible_rows_cached();
-        let rows_elapsed = rows_started.elapsed();
+        let (bg_stats, bg_elapsed) = poll_background_frame(app);
+        clear_terminal_if_dirty(terminal, app)?;
 
-        let disk_started = Instant::now();
-        app.ensure_disk_cache();
-        let disk_elapsed = disk_started.elapsed();
+        let rows_elapsed = measure(|| app.ensure_visible_rows_cached());
+        let disk_elapsed = measure(|| app.ensure_disk_cache());
+        let fit_elapsed = measure(|| app.ensure_fit_widths_cached());
+        let detail_elapsed = measure(|| app.ensure_detail_cached());
+        let draw_elapsed = draw_frame(terminal, app)?;
 
-        let fit_started = Instant::now();
-        app.ensure_fit_widths_cached();
-        let fit_elapsed = fit_started.elapsed();
-
-        let detail_started = Instant::now();
-        app.ensure_detail_cached();
-        let detail_elapsed = detail_started.elapsed();
-
-        let draw_started = Instant::now();
-        terminal.draw(|frame| render::ui(frame, app))?;
-        let draw_elapsed = draw_started.elapsed();
-
-        if app.should_quit {
-            // Flush any pending selection save
-            if app.selection_changed
-                && let Some(path) = &app.last_selected_path
-            {
-                save_last_selected(path);
-            }
+        if app.should_quit() {
+            flush_pending_selection(app);
             break;
         }
 
-        // Spawn a pending example as a background process
-        if let Some(run) = app.pending_example_run.take() {
-            spawn_example_process(app, &run);
-        }
-
-        // Spawn a pending cargo clean
-        if let Some(pending) = app.pending_cleans.pop_front() {
-            spawn_clean_process(app, &pending);
-        }
-
-        // Spawn a pending CI fetch as a background process
-        if let Some(fetch) = app.pending_ci_fetch.take() {
-            // Transition to Fetching state, preserving visible runs
-            let existing_runs = app
-                .ci_state
-                .remove(&fetch.project_path)
-                .map(|s| match s {
-                    super::app::CiState::Fetching { runs, .. }
-                    | super::app::CiState::Loaded { runs, .. } => runs,
-                })
-                .unwrap_or_default();
-            app.ci_state.insert(
-                fetch.project_path.clone(),
-                super::app::CiState::Fetching {
-                    runs:  existing_runs,
-                    count: CI_FETCH_DISPLAY_COUNT,
-                },
-            );
-            app.data_generation += 1;
-            spawn_ci_fetch(app, &fetch);
-        }
-
-        let idle_started = Instant::now();
-        if input_count == 0 {
-            thread::sleep(Duration::from_millis(FRAME_POLL_MILLIS));
-        }
-        let idle_elapsed = idle_started.elapsed();
-
-        let frame_elapsed = frame_started.elapsed();
-        if frame_elapsed.as_millis() >= crate::perf_log::slow_frame_threshold_ms() {
-            crate::perf_log::log_event(&format!(
-                "slow_frame elapsed_ms={} input_ms={} bg_ms={} rows_ms={} disk_ms={} fit_ms={} detail_ms={} draw_ms={} idle_ms={} input_count={} bg_msgs={} disk_usage_msgs={} git_info_msgs={} git_path_state_msgs={} lint_status_msgs={} ci_msgs={} example_msgs={} tree_results={} fit_results={} disk_results={} needs_rebuild={} projects={} nodes={} scan_complete={}",
-                frame_elapsed.as_millis(),
-                input_elapsed.as_millis(),
-                bg_elapsed.as_millis(),
-                rows_elapsed.as_millis(),
-                disk_elapsed.as_millis(),
-                fit_elapsed.as_millis(),
-                detail_elapsed.as_millis(),
-                draw_elapsed.as_millis(),
-                idle_elapsed.as_millis(),
+        spawn_pending_background_tasks(app);
+        let idle_elapsed = idle_if_no_input(input_count);
+        log_slow_frame(
+            app,
+            &bg_stats,
+            &FrameMetrics {
+                frame_elapsed: frame_started.elapsed(),
+                input_elapsed,
+                bg_elapsed,
+                rows_elapsed,
+                disk_elapsed,
+                fit_elapsed,
+                detail_elapsed,
+                draw_elapsed,
+                idle_elapsed,
                 input_count,
-                bg_stats.bg_msgs,
-                bg_stats.disk_usage_msgs,
-                bg_stats.git_info_msgs,
-                bg_stats.git_path_state_msgs,
-                bg_stats.lint_status_msgs,
-                bg_stats.ci_msgs,
-                bg_stats.example_msgs,
-                bg_stats.tree_results,
-                bg_stats.fit_results,
-                bg_stats.disk_results,
-                bg_stats.needs_rebuild,
-                app.all_projects.len(),
-                app.nodes.len(),
-                app.scan_complete
-            ));
-        }
+            },
+        );
     }
     Ok(())
+}
+
+fn process_input_frame(app: &mut App, input_rx: &mpsc::Receiver<Event>) -> (usize, Duration) {
+    let started = Instant::now();
+    let mut input_count = 0usize;
+    while let Ok(event) = input_rx.try_recv() {
+        input_count += 1;
+        input::handle_event(app, &event);
+        if app.should_quit() {
+            break;
+        }
+    }
+    if input_count == 0 {
+        flush_deferred_selection(app);
+    }
+    (input_count, started.elapsed())
+}
+
+fn flush_deferred_selection(app: &mut App) {
+    if app.selection_changed()
+        && let Some(path) = &app.selection_paths.last_selected
+    {
+        save_last_selected(path);
+        app.clear_selection_changed();
+    }
+}
+
+fn flush_pending_selection(app: &App) {
+    if app.selection_changed()
+        && let Some(path) = &app.selection_paths.last_selected
+    {
+        save_last_selected(path);
+    }
+}
+
+fn poll_background_frame(app: &mut App) -> (PollBackgroundStats, Duration) {
+    let started = Instant::now();
+    app.maybe_reload_config_from_disk();
+    let stats = app.poll_background();
+    (stats, started.elapsed())
+}
+
+fn clear_terminal_if_dirty(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut App,
+) -> io::Result<()> {
+    if app.terminal_is_dirty() {
+        app.clear_terminal_dirty();
+        execute!(terminal.backend_mut(), Clear(ClearType::All))?;
+        terminal.clear()?;
+    }
+    Ok(())
+}
+
+fn measure(action: impl FnOnce()) -> Duration {
+    let started = Instant::now();
+    action();
+    started.elapsed()
+}
+
+fn draw_frame(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut App,
+) -> io::Result<Duration> {
+    let started = Instant::now();
+    terminal.draw(|frame| render::ui(frame, app))?;
+    Ok(started.elapsed())
+}
+
+fn spawn_pending_background_tasks(app: &mut App) {
+    if let Some(run) = app.pending_example_run.take() {
+        spawn_example_process(app, &run);
+    }
+
+    if let Some(pending) = app.pending_cleans.pop_front() {
+        spawn_clean_process(app, &pending);
+    }
+
+    if let Some(fetch) = app.pending_ci_fetch.take() {
+        let existing_runs = app
+            .ci_state
+            .remove(&fetch.project_path)
+            .map(|s| match s {
+                super::app::CiState::Fetching { runs, .. }
+                | super::app::CiState::Loaded { runs, .. } => runs,
+            })
+            .unwrap_or_default();
+        app.ci_state.insert(
+            fetch.project_path.clone(),
+            super::app::CiState::Fetching {
+                runs:  existing_runs,
+                count: CI_FETCH_DISPLAY_COUNT,
+            },
+        );
+        app.data_generation += 1;
+        spawn_ci_fetch(app, &fetch);
+    }
+}
+
+fn idle_if_no_input(input_count: usize) -> Duration {
+    let started = Instant::now();
+    if input_count == 0 {
+        thread::sleep(Duration::from_millis(FRAME_POLL_MILLIS));
+    }
+    started.elapsed()
+}
+
+fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetrics) {
+    if metrics.frame_elapsed.as_millis() < crate::perf_log::slow_frame_threshold_ms() {
+        return;
+    }
+    crate::perf_log::log_event(&format!(
+        "slow_frame elapsed_ms={} input_ms={} bg_ms={} rows_ms={} disk_ms={} fit_ms={} detail_ms={} draw_ms={} idle_ms={} input_count={} bg_msgs={} disk_usage_msgs={} git_info_msgs={} git_path_state_msgs={} lint_status_msgs={} ci_msgs={} example_msgs={} tree_results={} fit_results={} disk_results={} needs_rebuild={} projects={} nodes={} scan_complete={}",
+        metrics.frame_elapsed.as_millis(),
+        metrics.input_elapsed.as_millis(),
+        metrics.bg_elapsed.as_millis(),
+        metrics.rows_elapsed.as_millis(),
+        metrics.disk_elapsed.as_millis(),
+        metrics.fit_elapsed.as_millis(),
+        metrics.detail_elapsed.as_millis(),
+        metrics.draw_elapsed.as_millis(),
+        metrics.idle_elapsed.as_millis(),
+        metrics.input_count,
+        bg_stats.bg_msgs,
+        bg_stats.disk_usage_msgs,
+        bg_stats.git_info_msgs,
+        bg_stats.git_path_state_msgs,
+        bg_stats.lint_status_msgs,
+        bg_stats.ci_msgs,
+        bg_stats.example_msgs,
+        bg_stats.tree_results,
+        bg_stats.fit_results,
+        bg_stats.disk_results,
+        bg_stats.needs_rebuild,
+        app.all_projects.len(),
+        app.nodes.len(),
+        app.is_scan_complete()
+    ));
 }
 
 fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {

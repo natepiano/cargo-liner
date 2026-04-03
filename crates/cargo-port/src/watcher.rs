@@ -64,21 +64,31 @@ pub fn spawn_watcher(
     client: HttpClient,
 ) -> mpsc::Sender<WatchRequest> {
     let (watch_tx, watch_rx) = mpsc::channel();
+    let ctx = WatcherLoopContext {
+        scan_root,
+        bg_tx,
+        ci_run_count,
+        non_rust,
+        lint_enabled,
+        include_dirs,
+        client,
+    };
 
     thread::spawn(move || {
-        watcher_loop(
-            &scan_root,
-            &bg_tx,
-            &watch_rx,
-            ci_run_count,
-            non_rust,
-            lint_enabled,
-            &include_dirs,
-            &client,
-        );
+        watcher_loop(&ctx, &watch_rx);
     });
 
     watch_tx
+}
+
+struct WatcherLoopContext {
+    scan_root:    PathBuf,
+    bg_tx:        mpsc::Sender<BackgroundMsg>,
+    ci_run_count: u32,
+    non_rust:     NonRustInclusion,
+    lint_enabled: bool,
+    include_dirs: Vec<String>,
+    client:       HttpClient,
 }
 
 /// Per-project tracking state.
@@ -121,21 +131,8 @@ impl GitRefreshKind {
     const fn refresh_info(self) -> bool { matches!(self, Self::FullMetadata) }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "watcher loop owns the full set of shared scan services and config flags"
-)]
-fn watcher_loop(
-    scan_root: &Path,
-    bg_tx: &mpsc::Sender<BackgroundMsg>,
-    watch_rx: &mpsc::Receiver<WatchRequest>,
-    ci_run_count: u32,
-    non_rust: NonRustInclusion,
-    lint_enabled: bool,
-    include_dirs: &[String],
-    client: &HttpClient,
-) {
-    let watch_dirs = scan::resolve_include_dirs(scan_root, include_dirs);
+fn watcher_loop(ctx: &WatcherLoopContext, watch_rx: &mpsc::Receiver<WatchRequest>) {
+    let watch_dirs = scan::resolve_include_dirs(&ctx.scan_root, &ctx.include_dirs);
     let (notify_tx, notify_rx) = mpsc::channel();
     let handler = move |res| {
         let _ = notify_tx.send(res);
@@ -143,7 +140,7 @@ fn watcher_loop(
     let Ok(mut watcher) = notify::recommended_watcher(handler) else {
         return;
     };
-    register_watch_roots(&mut watcher, &watch_dirs, lint_enabled);
+    register_watch_roots(&mut watcher, &watch_dirs, ctx.lint_enabled);
 
     // `abs_path` → project tracking state
     let mut projects: HashMap<PathBuf, ProjectEntry> = HashMap::new();
@@ -176,12 +173,12 @@ fn watcher_loop(
 
         let dispatch = WatcherDispatchContext {
             event: EventContext {
-                scan_root,
-                projects: &projects,
+                scan_root:       &ctx.scan_root,
+                projects:        &projects,
                 project_parents: &project_parents,
-                discovered: &discovered,
+                discovered:      &discovered,
             },
-            bg_tx,
+            bg_tx: &ctx.bg_tx,
         };
         drain_notify_events(
             &notify_rx,
@@ -199,33 +196,33 @@ fn watcher_loop(
 
         // Fire git refreshes whose debounce has expired.
         fire_git_updates(
-            &client.handle,
+            &ctx.client.handle,
             &git_limit,
             &git_done_tx,
-            bg_tx,
+            &ctx.bg_tx,
             &projects,
             &mut pending_git,
         );
 
         // Fire disk recalculations whose debounce has expired.
         fire_disk_updates(
-            &client.handle,
+            &ctx.client.handle,
             &disk_limit,
             &disk_done_tx,
-            bg_tx,
+            &ctx.bg_tx,
             &projects,
             &mut pending_disk,
         );
 
         // Probe new-project candidates whose debounce has expired.
         probe_new_projects(
-            bg_tx,
+            &ctx.bg_tx,
             &mut pending_new,
             &mut discovered,
-            ci_run_count,
-            non_rust,
-            lint_enabled,
-            client,
+            ctx.ci_run_count,
+            ctx.non_rust,
+            ctx.lint_enabled,
+            &ctx.client,
         );
 
         thread::sleep(POLL_INTERVAL);
@@ -987,16 +984,17 @@ fn probe_new_projects(
             let path = project.path.clone();
             let name = project.name.clone();
             rayon::spawn(move || {
-                scan::fetch_project_details(
-                    &tx,
-                    &task_ctx,
-                    &path,
-                    &abs_path,
-                    name.as_ref(),
+                let request = scan::ProjectDetailRequest {
+                    tx: &tx,
+                    ctx: &task_ctx,
+                    project_path: &path,
+                    abs_path: &abs_path,
+                    project_name: name.as_deref(),
                     repo_presence,
                     ci_run_count,
                     lint_enabled,
-                );
+                };
+                scan::fetch_project_details(&request);
             });
         }
     }
@@ -1072,7 +1070,27 @@ mod tests {
         })
     }
 
-    fn wait_for_messages() { std::thread::sleep(Duration::from_millis(100)); }
+    fn wait_for_completion<T>(rx: &mpsc::Receiver<T>) {
+        rx.recv_timeout(Duration::from_secs(1))
+            .unwrap_or_else(|_| panic!("timed out waiting for background completion"));
+    }
+
+    fn collect_messages_until(
+        rx: &mpsc::Receiver<BackgroundMsg>,
+        predicate: impl Fn(&BackgroundMsg) -> bool,
+    ) -> Vec<BackgroundMsg> {
+        let first = rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap_or_else(|_| panic!("timed out waiting for background message"));
+        let mut messages = vec![first];
+        while !messages.iter().any(&predicate) {
+            let next = rx
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap_or_else(|_| panic!("timed out waiting for expected background message"));
+            messages.push(next);
+        }
+        messages
+    }
 
     // ── project_level_dir ────────────────────────────────────────────
 
@@ -1318,17 +1336,12 @@ edition = "2024"
             &mut pending_git,
             &mut pending_new,
         );
-        wait_for_messages();
-
-        let mut refreshed = None;
-        while let Ok(msg) = bg_rx.try_recv() {
-            if let BackgroundMsg::ProjectRefreshed { project } = msg {
-                refreshed = Some(project);
-                break;
-            }
-        }
-
-        let refreshed = refreshed.expect("project refresh");
+        let BackgroundMsg::ProjectRefreshed { project: refreshed } = bg_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("project refresh message")
+        else {
+            panic!("unexpected background message");
+        };
         assert_eq!(
             refreshed.abs_path,
             project_root.path().display().to_string()
@@ -1400,12 +1413,15 @@ edition = "2024"
             &projects,
             &mut pending_git,
         );
-        wait_for_messages();
+        let messages = collect_messages_until(
+            &bg_rx,
+            |msg| matches!(msg, BackgroundMsg::GitPathState { path, .. } if path == "~/my_project"),
+        );
 
         let mut got_git_info = false;
         let mut got_root_git_state = false;
         let mut got_member_git_state = false;
-        while let Ok(msg) = bg_rx.try_recv() {
+        for msg in messages {
             match msg {
                 BackgroundMsg::GitInfo { .. } => got_git_info = true,
                 BackgroundMsg::GitPathState { path, .. } if path == "~/my_project" => {
@@ -1548,12 +1564,15 @@ edition = "2024"
             &projects,
             &mut pending_git,
         );
-        wait_for_messages();
+        let messages = collect_messages_until(
+            &bg_rx,
+            |msg| matches!(msg, BackgroundMsg::GitPathState { path, .. } if path == "~/my_project"),
+        );
 
         let mut got_git_info = false;
         let mut got_root_git_state = false;
         let mut got_member_git_state = false;
-        while let Ok(msg) = bg_rx.try_recv() {
+        for msg in messages {
             match msg {
                 BackgroundMsg::GitInfo { .. } => got_git_info = true,
                 BackgroundMsg::GitPathState { path, .. } if path == "~/my_project" => {
@@ -1925,7 +1944,7 @@ edition = "2024"
         )]);
 
         let disk_limit = Arc::new(tokio::sync::Semaphore::new(1));
-        let (disk_done_tx, _disk_done_rx) = mpsc::channel();
+        let (disk_done_tx, disk_done_rx) = mpsc::channel();
         fire_disk_updates(
             test_runtime().handle(),
             &disk_limit,
@@ -1934,7 +1953,7 @@ edition = "2024"
             &projects,
             &mut pending,
         );
-        wait_for_messages();
+        wait_for_completion(&disk_done_rx);
 
         let mut got_disk = false;
         let mut got_git = false;
@@ -1983,7 +2002,7 @@ edition = "2024"
         )]);
 
         let disk_limit = Arc::new(tokio::sync::Semaphore::new(1));
-        let (disk_done_tx, _disk_done_rx) = mpsc::channel();
+        let (disk_done_tx, disk_done_rx) = mpsc::channel();
         fire_disk_updates(
             test_runtime().handle(),
             &disk_limit,
@@ -1992,7 +2011,7 @@ edition = "2024"
             &projects,
             &mut pending,
         );
-        wait_for_messages();
+        wait_for_completion(&disk_done_rx);
 
         let mut got_disk = false;
         let mut got_git = false;

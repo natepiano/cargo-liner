@@ -394,40 +394,40 @@ pub(super) fn search_finder(
 pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc => {
-            app.show_finder = false;
-            app.finder_query.clear();
-            app.finder_results.clear();
-            app.finder_pane.home();
+            app.close_finder();
+            app.finder.query.clear();
+            app.finder.results.clear();
+            app.finder.pane.home();
             app.close_overlay();
         },
         KeyCode::Enter => {
             confirm_finder(app);
         },
         KeyCode::Up => {
-            app.finder_pane.up();
+            app.finder.pane.up();
         },
         KeyCode::Down => {
-            app.finder_pane.down();
+            app.finder.pane.down();
         },
         KeyCode::Home => {
-            app.finder_pane.home();
+            app.finder.pane.home();
         },
         KeyCode::End => {
-            app.finder_pane.end();
+            app.finder.pane.end();
         },
         KeyCode::Backspace => {
-            if app.finder_query.is_empty() {
-                app.show_finder = false;
-                app.finder_results.clear();
-                app.finder_pane.home();
+            if app.finder.query.is_empty() {
+                app.close_finder();
+                app.finder.results.clear();
+                app.finder.pane.home();
                 app.close_overlay();
             } else {
-                app.finder_query.pop();
+                app.finder.query.pop();
                 refresh_finder_results(app);
             }
         },
         KeyCode::Char(c) => {
-            app.finder_query.push(c);
+            app.finder.query.push(c);
             refresh_finder_results(app);
         },
         _ => {},
@@ -435,23 +435,23 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
 }
 
 fn refresh_finder_results(app: &mut App) {
-    let (results, total) = search_finder(&app.finder_index, &app.finder_query, MAX_FINDER_RESULTS);
-    app.finder_results = results;
-    app.finder_total = total;
-    app.finder_pane.home();
+    let (results, total) = search_finder(&app.finder.index, &app.finder.query, MAX_FINDER_RESULTS);
+    app.finder.results = results;
+    app.finder.total = total;
+    app.finder.pane.home();
 }
 
 fn confirm_finder(app: &mut App) {
-    let Some(&idx) = app.finder_results.get(app.finder_pane.pos()) else {
+    let Some(&idx) = app.finder.results.get(app.finder.pane.pos()) else {
         return;
     };
-    let item = app.finder_index[idx].clone();
+    let item = app.finder.index[idx].clone();
 
     // Close finder
-    app.show_finder = false;
-    app.finder_query.clear();
-    app.finder_results.clear();
-    app.finder_pane.home();
+    app.close_finder();
+    app.finder.query.clear();
+    app.finder.results.clear();
+    app.finder.pane.home();
     app.close_overlay();
 
     // Navigate to the project
@@ -502,7 +502,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
 
 pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     // Use cached column widths (computed at index build time) for stable popup sizing
-    let col_widths = app.finder_col_widths;
+    let col_widths = app.finder.col_widths;
 
     // Size popup to fit all columns + spacing (4 gaps) + borders (2), capped at terminal width
     let natural_width: usize = col_widths.iter().sum::<usize>() + 4 + 2;
@@ -515,15 +515,15 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     let area = render::centered_rect(popup_width, FINDER_POPUP_HEIGHT, frame.area());
     frame.render_widget(Clear, area);
 
-    let title = if app.finder_query.is_empty() {
+    let title = if app.finder.query.is_empty() {
         " Find Anything ".to_string()
-    } else if app.finder_total <= app.finder_results.len() {
-        format!(" Find Anything ({}) ", app.finder_total)
+    } else if app.finder.total <= app.finder.results.len() {
+        format!(" Find Anything ({}) ", app.finder.total)
     } else {
         format!(
             " Find Anything ({} of {}) ",
-            app.finder_results.len(),
-            app.finder_total
+            app.finder.results.len(),
+            app.finder.total
         )
     };
     let block = Block::default()
@@ -556,7 +556,7 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     let input_line = Line::from(vec![
         Span::styled("  / ", prompt_style),
         Span::styled(
-            format!("{}_", app.finder_query),
+            format!("{}_", app.finder.query),
             Style::default().fg(Color::Yellow),
         ),
     ]);
@@ -586,8 +586,8 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
         height: inner.height.saturating_sub(2),
     };
 
-    app.finder_pane.set_len(app.finder_results.len());
-    app.finder_pane.set_content_area(results_area);
+    app.finder.pane.set_len(app.finder.results.len());
+    app.finder.pane.set_content_area(results_area);
     render_finder_results(frame, app, col_widths, results_area);
 }
 
@@ -597,8 +597,8 @@ fn render_finder_results(
     col_widths: [usize; FINDER_COLUMN_COUNT],
     area: Rect,
 ) {
-    if app.finder_results.is_empty() {
-        let msg = if app.finder_query.is_empty() {
+    if app.finder.results.is_empty() {
+        let msg = if app.finder.query.is_empty() {
             "Type to search projects, examples, benches..."
         } else {
             "No matches"
@@ -615,10 +615,11 @@ fn render_finder_results(
     let parent_style = Style::default().fg(Color::DarkGray);
     let dir_style = Style::default().fg(Color::DarkGray);
     let rows: Vec<Row> = app
-        .finder_results
+        .finder
+        .results
         .iter()
         .map(|&idx| {
-            let item = &app.finder_index[idx];
+            let item = &app.finder.index[idx];
             let kind_style = Style::default()
                 .fg(item.kind.color())
                 .add_modifier(Modifier::BOLD);
@@ -654,9 +655,9 @@ fn render_finder_results(
         .column_spacing(1)
         .row_highlight_style(highlight_style);
 
-    let mut table_state = TableState::default().with_selected(Some(app.finder_pane.pos()));
+    let mut table_state = TableState::default().with_selected(Some(app.finder.pane.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.finder_pane.set_scroll_offset(table_state.offset());
+    app.finder.pane.set_scroll_offset(table_state.offset());
 }
 
 #[cfg(test)]

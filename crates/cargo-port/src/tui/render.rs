@@ -202,10 +202,10 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         app.focused_toast_id(),
     );
 
-    if app.show_settings {
+    if app.is_settings_open() {
         super::settings::render_settings_popup(frame, app);
     }
-    if app.show_finder {
+    if app.is_finder_open() {
         super::finder::render_finder_popup(frame, app);
     }
     if let Some(ref action) = app.confirm {
@@ -242,7 +242,11 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
 }
 
 fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let search_height = if app.searching { SEARCH_BAR_HEIGHT } else { 0 };
+    let search_height = if app.is_searching() {
+        SEARCH_BAR_HEIGHT
+    } else {
+        0
+    };
     let left_constraints = vec![Constraint::Length(search_height), Constraint::Min(1)];
     let left_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -252,7 +256,7 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     app.layout_cache.project_list = left_layout[1];
     app.layout_cache.scan_log = None;
 
-    if app.searching {
+    if app.is_searching() {
         render_search_bar(frame, app, left_layout[0]);
     }
 
@@ -386,7 +390,7 @@ fn render_empty_ci_panel(
         "Not a git repository"
     } else if is_local || !has_url {
         "CI requires a GitHub origin remote"
-    } else if !app.scan_complete {
+    } else if !app.is_scan_complete() {
         "Loading..."
     } else {
         "No CI runs found"
@@ -440,7 +444,7 @@ pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
 pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let widths = &app.cached_fit_widths;
 
-    let mut items: Vec<ListItem> = if app.searching && !app.search_query.is_empty() {
+    let mut items: Vec<ListItem> = if app.is_searching() && !app.search_query.is_empty() {
         render_filtered_items(app, widths)
     } else {
         render_tree_items(app, widths)
@@ -693,7 +697,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let groups = super::shortcuts::for_status_bar(context, enter_action, is_rust);
 
     let mut left_spans = Vec::new();
-    if !app.scan_complete {
+    if !app.is_scan_complete() {
         let key_style = Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD);

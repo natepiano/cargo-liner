@@ -34,7 +34,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
             "kind={} focus={} scan_complete={} selected={}",
             event_label(event),
             pane_label(app.focused_pane),
-            app.scan_complete,
+            app.is_scan_complete(),
             app.selected_project()
                 .map_or("-", |project| project.path.as_str())
         ),
@@ -56,7 +56,7 @@ fn handle_key_event(app: &mut App, key: KeyCode) {
         }
         app.example_running = None;
         app.example_output.push("── killed ──".to_string());
-        app.terminal_dirty = true;
+        app.mark_terminal_dirty();
         return;
     }
     if key == KeyCode::Esc && !app.example_output.is_empty() {
@@ -66,15 +66,15 @@ fn handle_key_event(app: &mut App, key: KeyCode) {
     if handle_confirm_key(app, key) {
         return;
     }
-    if app.show_finder {
+    if app.is_finder_open() {
         finder::handle_finder_key(app, key);
         return;
     }
-    if app.show_settings {
+    if app.is_settings_open() {
         settings::handle_settings_key(app, key);
         return;
     }
-    if app.searching {
+    if app.is_searching() {
         handle_search_key(app, key);
         return;
     }
@@ -91,7 +91,7 @@ fn handle_key_event(app: &mut App, key: KeyCode) {
 }
 
 const fn normalize_key(app: &App, key: KeyCode) -> KeyCode {
-    if app.searching || app.show_finder || (app.show_settings && app.settings_editing) {
+    if app.is_searching() || app.is_finder_open() || app.is_settings_editing() {
         return key;
     }
     let key = if app.navigation_keys().uses_vim() {
@@ -215,11 +215,11 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     if app.confirm.is_some() {
         return;
     }
-    if app.show_finder {
+    if app.is_finder_open() {
         handle_finder_click(app, pos);
         return;
     }
-    if app.show_settings {
+    if app.is_settings_open() {
         handle_settings_click(app, pos);
         return;
     }
@@ -314,8 +314,8 @@ fn handle_toast_click(app: &mut App, pos: Position) -> bool {
 }
 
 const fn handle_finder_click(app: &mut App, pos: Position) {
-    if let Some(clicked_row) = app.finder_pane.clicked_row(pos) {
-        app.finder_pane.set_pos(clicked_row);
+    if let Some(clicked_row) = app.finder.pane.clicked_row(pos) {
+        app.finder.pane.set_pos(clicked_row);
     }
 }
 
@@ -353,31 +353,28 @@ fn open_in_editor(app: &App) {
 }
 
 fn open_finder(app: &mut App) {
-    if app.finder_dirty {
+    if app.dirty.finder.is_dirty() {
         let (index, col_widths) = super::finder::build_finder_index(&app.nodes, &app.git_info);
-        app.finder_index = index;
-        app.finder_col_widths = col_widths;
-        app.finder_dirty = false;
+        app.finder.index = index;
+        app.finder.col_widths = col_widths;
+        app.dirty.finder.mark_clean();
     }
     app.open_overlay(PaneId::Finder);
-    app.show_finder = true;
-    app.finder_query.clear();
-    app.finder_results.clear();
-    app.finder_total = 0;
-    app.finder_pane.home();
+    app.open_finder();
+    app.finder.query.clear();
+    app.finder.results.clear();
+    app.finder.total = 0;
+    app.finder.pane.home();
 }
 
 fn handle_global_key(app: &mut App, key: KeyCode) -> bool {
     match key {
-        KeyCode::Char('q') => app.should_quit = true,
-        KeyCode::Char('R') => {
-            app.should_quit = true;
-            app.should_restart = true;
-        },
+        KeyCode::Char('q') => app.request_quit(),
+        KeyCode::Char('R') => app.request_restart(),
         KeyCode::Char('/') => open_finder(app),
         KeyCode::Char('s') => {
             app.open_overlay(PaneId::Settings);
-            app.show_settings = true;
+            app.open_settings();
         },
         KeyCode::Tab => app.focus_next_pane(),
         KeyCode::BackTab => app.focus_previous_pane(),
