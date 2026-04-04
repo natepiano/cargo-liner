@@ -139,6 +139,7 @@ pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
             KeyCode::Down => app.port_report_pane.down(),
             KeyCode::Home => app.port_report_pane.home(),
             KeyCode::End => app.port_report_pane.end(),
+            KeyCode::Enter => open_lint_run_output(app),
             KeyCode::Char('p') => app.toggle_bottom_panel(),
             _ => {},
         }
@@ -210,6 +211,41 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
     );
     app.ci_pane.home();
     app.data_generation += 1;
+}
+
+fn open_lint_run_output(app: &App) {
+    let Some(project) = app.selected_project() else {
+        return;
+    };
+    let runs = match app.port_report_runs.get(&project.path) {
+        Some(runs) if !runs.is_empty() => runs,
+        _ => return,
+    };
+    let Some(run) = runs.get(app.port_report_pane.pos()) else {
+        return;
+    };
+
+    let project_cache_dir = crate::lint::project_dir(std::path::Path::new(&project.abs_path));
+    let log_paths: Vec<PathBuf> = run
+        .commands
+        .iter()
+        .map(|command| project_cache_dir.join(&command.log_file))
+        .filter(|path| path.exists())
+        .collect();
+
+    if log_paths.is_empty() {
+        return;
+    }
+
+    let mut cmd = std::process::Command::new(app.editor());
+    cmd.arg(&project.abs_path);
+    for path in &log_paths {
+        cmd.arg(path);
+    }
+    let _ = cmd
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 fn open_cargo_toml(app: &App) {
