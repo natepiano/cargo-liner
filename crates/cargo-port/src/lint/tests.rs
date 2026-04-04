@@ -4,8 +4,11 @@ use chrono::DateTime;
 use chrono::Utc;
 
 use super::history;
+use super::paths;
 use super::read_write;
 use super::status;
+use super::types::PortReportCommand;
+use super::types::PortReportCommandStatus;
 use super::*;
 
 fn run(status: PortReportRunStatus) -> PortReportRun {
@@ -231,29 +234,27 @@ fn append_history_prunes_oldest_runs_under_budget() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
 
-    let mut older = run(PortReportRunStatus::Passed);
-    older.run_id = "older".to_string();
-    older.started_at = "2026-04-01T18:00:00-04:00".to_string();
-    older.finished_at = Some("2026-04-01T18:00:10-04:00".to_string());
+    let mut older = run_with_commands("older", "2026-04-01T18:00:00-04:00");
+    let mut newer = run_with_commands("newer", "2026-04-01T19:00:00-04:00");
 
-    let mut newer = run(PortReportRunStatus::Passed);
-    newer.run_id = "newer".to_string();
-    newer.started_at = "2026-04-01T19:00:00-04:00".to_string();
-    newer.finished_at = Some("2026-04-01T19:00:10-04:00".to_string());
-
-    let newer_json = serde_json::to_string(&newer).expect("serialize newer");
-    let budget_bytes = u64::try_from(newer_json.len() + 1).unwrap_or(u64::MAX)
-        + history::total_bytes_under(cache_dir.path());
-
+    // Archive and append the older run without a budget
+    write_fake_logs(cache_dir.path(), project_dir.path(), "older logs");
+    older = history::archive_run_output(cache_dir.path(), project_dir.path(), &older)
+        .expect("archive older");
     history::append_history_under(cache_dir.path(), project_dir.path(), &older, None)
         .expect("append older");
-    history::append_history_under(
-        cache_dir.path(),
-        project_dir.path(),
-        &newer,
-        Some(budget_bytes),
-    )
-    .expect("append newer");
+
+    // Archive the newer run, then set a budget that forces older out
+    write_fake_logs(cache_dir.path(), project_dir.path(), "newer logs");
+    newer = history::archive_run_output(cache_dir.path(), project_dir.path(), &newer)
+        .expect("archive newer");
+
+    let total_before = history::total_bytes_under(cache_dir.path());
+    let newer_line = serde_json::to_string(&newer).expect("serialize").len() as u64 + 1;
+    let budget = total_before + newer_line - 1;
+
+    history::append_history_under(cache_dir.path(), project_dir.path(), &newer, Some(budget))
+        .expect("append newer");
 
     let runs = history::read_history_under(cache_dir.path(), project_dir.path());
     assert_eq!(runs.len(), 1);
@@ -274,4 +275,234 @@ fn retained_history_usage_counts_latest_and_history_bytes() {
     let usage = history::retained_history_usage_under(cache_dir.path(), Some(1024));
     assert!(usage.bytes > 0);
     assert_eq!(usage.budget_bytes, Some(1024));
+}
+
+// ── run archival ────────────────────────────────────────────────
+
+fn run_with_commands(run_id: &str, started_at: &str) -> PortReportRun {
+    PortReportRun {
+        run_id:      run_id.to_string(),
+        started_at:  started_at.to_string(),
+        finished_at: Some(started_at.to_string()),
+        duration_ms: Some(5_000),
+        status:      PortReportRunStatus::Passed,
+        commands:    vec![
+            PortReportCommand {
+                name:        "clippy".to_string(),
+                command:     "cargo clippy".to_string(),
+                status:      PortReportCommandStatus::Passed,
+                duration_ms: Some(3_000),
+                exit_code:   Some(0),
+                log_file:    "port-report/clippy-latest.log".to_string(),
+            },
+            PortReportCommand {
+                name:        "mend".to_string(),
+                command:     "cargo mend".to_string(),
+                status:      PortReportCommandStatus::Passed,
+                duration_ms: Some(2_000),
+                exit_code:   Some(0),
+                log_file:    "port-report/mend-latest.log".to_string(),
+            },
+        ],
+    }
+}
+
+fn write_fake_logs(cache_root: &Path, project_root: &Path, content: &str) {
+    let output_dir = paths::output_dir_under(cache_root, project_root);
+    std::fs::create_dir_all(&output_dir).expect("create output dir");
+    std::fs::write(
+        output_dir.join("clippy-latest.log"),
+        format!("clippy: {content}\n"),
+    )
+    .expect("write clippy log");
+    std::fs::write(
+        output_dir.join("mend-latest.log"),
+        format!("mend: {content}\n"),
+    )
+    .expect("write mend log");
+}
+
+#[test]
+fn archive_run_copies_logs_to_run_id_directory() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let project_dir = tempfile::tempdir().expect("tempdir");
+    let completed = run_with_commands("run-abc", "2026-04-04T10:00:00-04:00");
+
+    write_fake_logs(cache_dir.path(), project_dir.path(), "test output");
+    let archived = history::archive_run_output(cache_dir.path(), project_dir.path(), &completed)
+        .expect("archive");
+
+    // Archived run should have updated log_file paths pointing at runs/{run_id}/
+    assert_eq!(archived.commands.len(), 2);
+    assert_eq!(
+        archived.commands[0].log_file,
+        "port-report/runs/run-abc/clippy.log"
+    );
+    assert_eq!(
+        archived.commands[1].log_file,
+        "port-report/runs/run-abc/mend.log"
+    );
+
+    // Archived files should exist on disk
+    let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
+    let run_dir = project_cache.join("port-report/runs/run-abc");
+    assert!(run_dir.join("clippy.log").exists());
+    assert!(run_dir.join("mend.log").exists());
+
+    // Content should match originals
+    let clippy_content = std::fs::read_to_string(run_dir.join("clippy.log")).expect("read");
+    assert_eq!(clippy_content, "clippy: test output\n");
+
+    // Latest logs should still exist (convenience copies)
+    let output_dir = paths::output_dir_under(cache_dir.path(), project_dir.path());
+    assert!(output_dir.join("clippy-latest.log").exists());
+    assert!(output_dir.join("mend-latest.log").exists());
+}
+
+#[test]
+fn archive_run_with_missing_logs_still_succeeds() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let project_dir = tempfile::tempdir().expect("tempdir");
+    let completed = run_with_commands("run-missing", "2026-04-04T10:00:00-04:00");
+
+    // Don't write any log files — archive should still succeed gracefully
+    let archived = history::archive_run_output(cache_dir.path(), project_dir.path(), &completed)
+        .expect("archive");
+
+    // Paths updated even if files don't exist
+    assert_eq!(
+        archived.commands[0].log_file,
+        "port-report/runs/run-missing/clippy.log"
+    );
+
+    // No archived file on disk (nothing to copy)
+    let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
+    let run_dir = project_cache.join("port-report/runs/run-missing");
+    assert!(!run_dir.join("clippy.log").exists());
+}
+
+// ── run-based pruning ──────────────────────────────────────────
+
+#[test]
+fn prune_removes_oldest_run_directory_and_history_line() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let project_dir = tempfile::tempdir().expect("tempdir");
+
+    let mut older = run_with_commands("run-older", "2026-04-01T18:00:00-04:00");
+    let mut newer = run_with_commands("run-newer", "2026-04-01T19:00:00-04:00");
+
+    // Archive and append the older run (no budget — always succeeds)
+    write_fake_logs(cache_dir.path(), project_dir.path(), "older output");
+    older = history::archive_run_output(cache_dir.path(), project_dir.path(), &older)
+        .expect("archive older");
+    history::append_history_under(cache_dir.path(), project_dir.path(), &older, None)
+        .expect("append older");
+
+    // Archive the newer run (not yet appended to history)
+    write_fake_logs(cache_dir.path(), project_dir.path(), "newer output");
+    newer = history::archive_run_output(cache_dir.path(), project_dir.path(), &newer)
+        .expect("archive newer");
+
+    // Measure total bytes with both runs fully on disk. The budget must be
+    // small enough that keeping both exceeds it, but large enough that the
+    // newer run alone fits. We subtract the older run's archived log bytes
+    // to create that pressure.
+    let total_before_append = history::total_bytes_under(cache_dir.path());
+    let newer_line_bytes = serde_json::to_string(&newer).expect("serialize").len() as u64 + 1;
+    let budget = total_before_append + newer_line_bytes - 1;
+
+    history::append_history_under(cache_dir.path(), project_dir.path(), &newer, Some(budget))
+        .expect("append newer");
+
+    // Only newer run should remain in history
+    let runs = history::read_history_under(cache_dir.path(), project_dir.path());
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].run_id, "run-newer");
+
+    // Older run's archived directory should be deleted
+    let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
+    assert!(
+        !project_cache.join("port-report/runs/run-older").exists(),
+        "older run directory should be pruned"
+    );
+
+    // Newer run's archived directory should still exist
+    assert!(
+        project_cache.join("port-report/runs/run-newer").exists(),
+        "newer run directory should survive"
+    );
+}
+
+#[test]
+fn prune_across_projects_removes_globally_oldest() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let project_a = tempfile::tempdir().expect("tempdir");
+    let project_b = tempfile::tempdir().expect("tempdir");
+
+    let mut old_a = run_with_commands("run-old-a", "2026-04-01T17:00:00-04:00");
+    let mut new_b = run_with_commands("run-new-b", "2026-04-01T20:00:00-04:00");
+
+    // Archive and append run for project A (no budget)
+    write_fake_logs(cache_dir.path(), project_a.path(), "project-a output");
+    old_a =
+        history::archive_run_output(cache_dir.path(), project_a.path(), &old_a).expect("archive a");
+    history::append_history_under(cache_dir.path(), project_a.path(), &old_a, None)
+        .expect("append a");
+
+    // Archive run for project B (not yet appended)
+    write_fake_logs(cache_dir.path(), project_b.path(), "project-b output");
+    new_b =
+        history::archive_run_output(cache_dir.path(), project_b.path(), &new_b).expect("archive b");
+
+    // Budget: total with both archived + room for B's history line, minus 1
+    // byte so the pruner must delete A's run to fit.
+    let total_before_append = history::total_bytes_under(cache_dir.path());
+    let new_b_line_bytes = serde_json::to_string(&new_b).expect("serialize").len() as u64 + 1;
+    let budget = total_before_append + new_b_line_bytes - 1;
+
+    history::append_history_under(cache_dir.path(), project_b.path(), &new_b, Some(budget))
+        .expect("append b");
+
+    // Project A's older run should be pruned
+    let runs_a = history::read_history_under(cache_dir.path(), project_a.path());
+    assert!(runs_a.is_empty(), "older project A run should be pruned");
+
+    // Project B's newer run should survive
+    let runs_b = history::read_history_under(cache_dir.path(), project_b.path());
+    assert_eq!(runs_b.len(), 1);
+    assert_eq!(runs_b[0].run_id, "run-new-b");
+
+    // Project A's archived directory should be deleted
+    let cache_a = paths::project_dir_under(cache_dir.path(), project_a.path());
+    assert!(
+        !cache_a.join("port-report/runs/run-old-a").exists(),
+        "pruned run directory should be deleted"
+    );
+}
+
+#[test]
+fn prune_no_op_when_under_budget() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let project_dir = tempfile::tempdir().expect("tempdir");
+
+    let mut completed = run_with_commands("run-keep", "2026-04-01T18:00:00-04:00");
+    write_fake_logs(cache_dir.path(), project_dir.path(), "keep this output");
+    completed = history::archive_run_output(cache_dir.path(), project_dir.path(), &completed)
+        .expect("archive");
+
+    // Generous budget — nothing should be pruned
+    history::append_history_under(
+        cache_dir.path(),
+        project_dir.path(),
+        &completed,
+        Some(10 * 1024 * 1024),
+    )
+    .expect("append");
+
+    let runs = history::read_history_under(cache_dir.path(), project_dir.path());
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].run_id, "run-keep");
+
+    let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
+    assert!(project_cache.join("port-report/runs/run-keep").exists());
 }

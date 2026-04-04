@@ -493,6 +493,7 @@ pub fn run_commands_for_project(
         PortReportRunStatus::Passed
     };
 
+    run = history::archive_run_output(cache_root, project_root, &run)?;
     read_write::write_latest_under(cache_root, project_root, &run)?;
     history::append_history_under(cache_root, project_root, &run, history_budget_bytes)?;
     let _ = bg_tx.send(BackgroundMsg::LintStatus {

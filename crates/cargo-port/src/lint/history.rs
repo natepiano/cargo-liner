@@ -6,7 +6,6 @@ use std::io::BufReader;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::SystemTime;
 
 use walkdir::WalkDir;
 
@@ -22,17 +21,6 @@ pub struct HistoryUsage {
     pub budget_bytes: Option<u64>,
 }
 
-#[derive(Debug)]
-struct PrunableHistoryLine {
-    path:       PathBuf,
-    line_index: usize,
-    sort_key:   i64,
-    byte_len:   u64,
-}
-
-type HistoryFileLines = (PathBuf, Vec<String>);
-type CollectedHistoryLines = (Vec<PrunableHistoryLine>, Vec<HistoryFileLines>);
-
 pub fn retained_history_usage(history_budget_bytes: Option<u64>) -> HistoryUsage {
     retained_history_usage_under(&paths::cache_root(), history_budget_bytes)
 }
@@ -45,6 +33,44 @@ pub(super) fn retained_history_usage_under(
         bytes:        total_bytes_under(cache_root),
         budget_bytes: history_budget_bytes,
     }
+}
+
+/// Archive command output from rolling `*-latest.log` files into a stable
+/// per-run directory: `port-report/runs/{run_id}/{command_name}.log`.
+///
+/// Returns a clone of the run with `log_file` paths updated to point at the
+/// archived location. The original `*-latest.log` files are left in place as
+/// convenience pointers for the current run.
+pub(super) fn archive_run_output(
+    cache_root: &Path,
+    project_root: &Path,
+    run: &PortReportRun,
+) -> io::Result<PortReportRun> {
+    let project_dir = paths::project_dir_under(cache_root, project_root);
+    let output_dir = paths::output_dir_under(cache_root, project_root);
+    let run_dir = output_dir.join("runs").join(&run.run_id);
+
+    let mut archived = run.clone();
+    let mut any_copied = false;
+
+    for command in &mut archived.commands {
+        let archived_name = format!("{}.log", command.name);
+        let archived_rel = format!("port-report/runs/{}/{archived_name}", run.run_id);
+
+        // Resolve the source from the old relative log_file path
+        let source = project_dir.join(&command.log_file);
+        command.log_file = archived_rel;
+
+        if source.exists() {
+            if !any_copied {
+                std::fs::create_dir_all(&run_dir)?;
+                any_copied = true;
+            }
+            std::fs::copy(&source, run_dir.join(&archived_name))?;
+        }
+    }
+
+    Ok(archived)
 }
 
 pub fn append_history_under(
@@ -92,11 +118,10 @@ fn enforce_history_budget_under(
     cache_root: &Path,
     history_budget_bytes: Option<u64>,
 ) -> io::Result<()> {
-    let Some(history_budget_bytes) = history_budget_bytes else {
+    let Some(budget) = history_budget_bytes else {
         return Ok(());
     };
-    prune_history_lines_under(cache_root, history_budget_bytes)?;
-    prune_legacy_log_files_under(cache_root, history_budget_bytes)
+    prune_runs_under(cache_root, budget)
 }
 
 pub(super) fn total_bytes_under(root: &Path) -> u64 {
@@ -121,9 +146,23 @@ fn history_line_sort_key(run: &PortReportRun) -> i64 {
         .map_or(i64::MIN, |timestamp| timestamp.timestamp_millis())
 }
 
-fn collect_history_lines_under(cache_root: &Path) -> io::Result<CollectedHistoryLines> {
-    let mut entries = Vec::new();
-    let mut files = Vec::new();
+/// A single run in a single history file, with enough context to remove it
+/// and its archived output directory.
+#[derive(Debug)]
+struct PrunableRun {
+    history_path: PathBuf,
+    line_index:   usize,
+    sort_key:     i64,
+    run_id:       String,
+    /// Parent directory of the `runs/{run_id}/` archive, i.e. the
+    /// `port-report/` output dir for this project.
+    output_dir:   PathBuf,
+}
+
+/// Collect all runs across all history files, paired with their archive
+/// output directory.
+fn collect_prunable_runs(cache_root: &Path) -> io::Result<Vec<PrunableRun>> {
+    let mut runs = Vec::new();
 
     for history_path in WalkDir::new(cache_root)
         .into_iter()
@@ -132,138 +171,116 @@ fn collect_history_lines_under(cache_root: &Path) -> io::Result<CollectedHistory
         .filter(|entry| entry.file_name() == PORT_REPORT_HISTORY_JSONL)
         .map(walkdir::DirEntry::into_path)
     {
+        // The output dir is the sibling `port-report/` next to the history
+        // file: `{project_key}/history.jsonl` → `{project_key}/port-report/`
+        let project_cache_dir = history_path.parent().unwrap_or_else(|| Path::new(""));
+        let output_dir = project_cache_dir.join("port-report");
+
         let file = File::open(&history_path)?;
         let reader = BufReader::new(file);
-        let mut lines = Vec::new();
         for (line_index, line) in reader.lines().enumerate() {
             let line = line?;
-            let byte_len = u64::try_from(line.len() + 1).unwrap_or(u64::MAX);
-            let sort_key = serde_json::from_str::<PortReportRun>(&line)
-                .map(|run| history_line_sort_key(&run))
-                .unwrap_or(i64::MIN);
-            entries.push(PrunableHistoryLine {
-                path: history_path.clone(),
+            let Ok(run) = serde_json::from_str::<PortReportRun>(&line) else {
+                continue;
+            };
+            runs.push(PrunableRun {
+                history_path: history_path.clone(),
                 line_index,
-                sort_key,
-                byte_len,
+                sort_key: history_line_sort_key(&run),
+                run_id: run.run_id,
+                output_dir: output_dir.clone(),
             });
-            lines.push(line);
         }
-        files.push((history_path, lines));
     }
 
-    Ok((entries, files))
+    Ok(runs)
 }
 
-fn rewrite_history_file(path: &Path, lines: &[String], removed: &[bool]) -> io::Result<()> {
-    let kept: Vec<&String> = lines
-        .iter()
-        .zip(removed.iter())
-        .filter_map(|(line, is_removed)| (!*is_removed).then_some(line))
-        .collect();
-
-    if kept.is_empty() {
+fn rewrite_history_file(path: &Path, kept_indices: &[usize]) -> io::Result<()> {
+    if kept_indices.is_empty() {
         match std::fs::remove_file(path) {
-            Ok(()) => return Ok(()),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(err) => return Err(err),
+            Ok(()) | Err(_) => return Ok(()),
         }
     }
 
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let all_lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
+
     let tmp_path = path.with_extension("jsonl.tmp");
-    let mut file = File::create(&tmp_path)?;
-    for line in kept {
-        writeln!(file, "{line}")?;
+    let mut out = File::create(&tmp_path)?;
+    for &index in kept_indices {
+        if let Some(line) = all_lines.get(index) {
+            writeln!(out, "{line}")?;
+        }
     }
     std::fs::rename(tmp_path, path)
 }
 
-fn prune_history_lines_under(cache_root: &Path, history_budget_bytes: u64) -> io::Result<()> {
+/// Remove the oldest complete runs (history line + archived output directory)
+/// until total bytes under the cache root are within budget.
+fn prune_runs_under(cache_root: &Path, budget: u64) -> io::Result<()> {
     let mut total_bytes = total_bytes_under(cache_root);
-    if total_bytes <= history_budget_bytes {
+    if total_bytes <= budget {
         return Ok(());
     }
 
-    let (mut entries, files) = collect_history_lines_under(cache_root)?;
-    if entries.is_empty() {
+    let mut runs = collect_prunable_runs(cache_root)?;
+    if runs.is_empty() {
         return Ok(());
     }
 
-    entries.sort_unstable_by(|lhs, rhs| {
+    // Sort oldest first so we remove the least-recent runs first.
+    runs.sort_unstable_by(|lhs, rhs| {
         lhs.sort_key
             .cmp(&rhs.sort_key)
-            .then_with(|| lhs.path.cmp(&rhs.path))
+            .then_with(|| lhs.history_path.cmp(&rhs.history_path))
             .then_with(|| lhs.line_index.cmp(&rhs.line_index))
     });
 
-    let mut removed_by_path = HashMap::<PathBuf, Vec<bool>>::new();
-    for (path, lines) in &files {
-        removed_by_path.insert(path.clone(), vec![false; lines.len()]);
-    }
+    // Track which runs to remove, keyed by history file path.
+    let mut removed: HashMap<PathBuf, Vec<usize>> = HashMap::new();
 
-    for entry in entries {
-        if total_bytes <= history_budget_bytes {
+    for run in &runs {
+        if total_bytes <= budget {
             break;
         }
-        let Some(removed) = removed_by_path.get_mut(&entry.path) else {
-            continue;
-        };
-        if removed.get(entry.line_index).copied().unwrap_or(false) {
-            continue;
+
+        // Remove the archived output directory for this run.
+        let run_dir = run.output_dir.join("runs").join(&run.run_id);
+        if run_dir.is_dir() {
+            let dir_bytes = total_bytes_under(&run_dir);
+            std::fs::remove_dir_all(&run_dir).ok();
+            total_bytes = total_bytes.saturating_sub(dir_bytes);
         }
-        removed[entry.line_index] = true;
-        total_bytes = total_bytes.saturating_sub(entry.byte_len);
+
+        removed
+            .entry(run.history_path.clone())
+            .or_default()
+            .push(run.line_index);
     }
 
-    for (path, lines) in files {
-        let Some(removed) = removed_by_path.get(&path) else {
-            continue;
-        };
-        if removed.iter().all(|is_removed| !*is_removed) {
-            continue;
-        }
-        rewrite_history_file(&path, &lines, removed)?;
-    }
+    // Rewrite each affected history file, keeping only non-removed lines.
+    for (history_path, removed_indices) in &removed {
+        let file = File::open(history_path)?;
+        let reader = BufReader::new(file);
+        let line_count = reader.lines().count();
 
-    Ok(())
-}
+        let removed_set: std::collections::HashSet<usize> =
+            removed_indices.iter().copied().collect();
+        let kept: Vec<usize> = (0..line_count)
+            .filter(|index| !removed_set.contains(index))
+            .collect();
 
-fn prune_legacy_log_files_under(cache_root: &Path, history_budget_bytes: u64) -> io::Result<()> {
-    let mut total_bytes = total_bytes_under(cache_root);
-    if total_bytes <= history_budget_bytes {
-        return Ok(());
-    }
-
-    let mut logs: Vec<(PathBuf, u64, SystemTime)> = WalkDir::new(cache_root)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .filter_map(|entry| {
-            let file_name = entry.file_name().to_string_lossy();
-            (file_name == "port-report.log").then(|| {
-                entry.metadata().ok().map(|metadata| {
-                    (
-                        entry.into_path(),
-                        metadata.len(),
-                        metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                    )
-                })
-            })?
-        })
-        .collect();
-
-    logs.sort_unstable_by(|lhs, rhs| lhs.2.cmp(&rhs.2).then_with(|| lhs.0.cmp(&rhs.0)));
-    for (path, byte_len, _) in logs {
-        if total_bytes <= history_budget_bytes {
-            break;
-        }
-        match std::fs::remove_file(&path) {
-            Ok(()) => {
-                total_bytes = total_bytes.saturating_sub(byte_len);
-            },
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {},
-            Err(err) => return Err(err),
-        }
+        // Subtract the removed history line bytes from total.
+        let file_before = std::fs::metadata(history_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        rewrite_history_file(history_path, &kept)?;
+        let file_after = std::fs::metadata(history_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        total_bytes = total_bytes.saturating_sub(file_before.saturating_sub(file_after));
     }
 
     Ok(())
