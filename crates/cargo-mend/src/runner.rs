@@ -10,7 +10,6 @@ use super::imports::ImportScan;
 use super::imports::ValidatedFixSet;
 use super::inline_path_qualified_type;
 use super::inline_path_qualified_type::InlinePathScan;
-use super::outcome::AnalysisFailure;
 use super::outcome::CompilerFailureCause;
 use super::outcome::ExecutionNotice;
 use super::outcome::ExecutionOutcome;
@@ -32,11 +31,6 @@ use super::selection::Selection;
 pub struct MendRunner<'a> {
     selection: &'a Selection,
     config:    &'a LoadedConfig,
-}
-
-enum BuildReportFailure {
-    Analysis(AnalysisFailure),
-    Unexpected(anyhow::Error),
 }
 
 struct RunPlan {
@@ -64,9 +58,7 @@ impl<'a> MendRunner<'a> {
         } else {
             BuildOutputMode::Full
         };
-        let report = self
-            .build_report(output_mode)
-            .map_err(Self::build_report_failure_into_mend_failure)?;
+        let report = self.build_report(output_mode)?;
         let diagnostics = &self.config.diagnostics;
         let import_scan = (mode.fixes.contains(FixKind::ShortenImport)
             && (diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
@@ -166,9 +158,14 @@ impl<'a> MendRunner<'a> {
                     Ok(()) => RollbackStatus::Restored,
                     Err(_) => RollbackStatus::RestoreFailed,
                 };
+                let cause = match err {
+                    MendFailure::Analysis(a) => a.cause,
+                    MendFailure::Unexpected(e) => CompilerFailureCause::Unexpected(e),
+                    MendFailure::FixValidation(f) => f.cause,
+                };
                 Err(MendFailure::FixValidation(FixValidationFailure {
                     rollback,
-                    cause: Self::build_report_failure_into_cause(err),
+                    cause,
                 }))
             },
         }
@@ -264,25 +261,24 @@ impl<'a> MendRunner<'a> {
         }
     }
 
-    fn build_report(&self, output_mode: BuildOutputMode) -> Result<Report, BuildReportFailure> {
-        let mut report = compiler::run_selection(self.selection, self.config, output_mode)
-            .map_err(Self::mend_failure_into_build_report_failure)?;
+    fn build_report(&self, output_mode: BuildOutputMode) -> Result<Report, MendFailure> {
+        let mut report = compiler::run_selection(self.selection, self.config, output_mode)?;
         let diagnostics = &self.config.diagnostics;
         if diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
             || diagnostics.is_enabled(DiagnosticCode::ReplaceDeepSuperImport)
         {
             let import_scan =
-                imports::scan_selection(self.selection).map_err(BuildReportFailure::Unexpected)?;
+                imports::scan_selection(self.selection).map_err(MendFailure::Unexpected)?;
             report.findings.extend(import_scan.findings);
         }
         if diagnostics.is_enabled(DiagnosticCode::PreferModuleImport) {
             let prefer_module_import_scan = prefer_module_import::scan_selection(self.selection)
-                .map_err(BuildReportFailure::Unexpected)?;
+                .map_err(MendFailure::Unexpected)?;
             report.findings.extend(prefer_module_import_scan.findings);
         }
         if diagnostics.is_enabled(DiagnosticCode::InlinePathQualifiedType) {
             let inline_path_scan = inline_path_qualified_type::scan_selection(self.selection)
-                .map_err(BuildReportFailure::Unexpected)?;
+                .map_err(MendFailure::Unexpected)?;
             report.findings.extend(inline_path_scan.findings);
         }
         report.findings.sort_by(|a, b| {
@@ -323,31 +319,5 @@ impl<'a> MendRunner<'a> {
             .retain(|f| self.config.diagnostics.is_enabled_str(&f.code));
         report.refresh_summary();
         Ok(report)
-    }
-
-    fn mend_failure_into_build_report_failure(error: MendFailure) -> BuildReportFailure {
-        match error {
-            MendFailure::Analysis(analysis) => BuildReportFailure::Analysis(analysis),
-            MendFailure::Unexpected(error) => BuildReportFailure::Unexpected(error),
-            MendFailure::FixValidation(e) => {
-                BuildReportFailure::Unexpected(anyhow::anyhow!(
-                    "unexpected fix-validation failure in build_report: {e}"
-                ))
-            },
-        }
-    }
-
-    fn build_report_failure_into_mend_failure(error: BuildReportFailure) -> MendFailure {
-        match error {
-            BuildReportFailure::Analysis(analysis) => MendFailure::Analysis(analysis),
-            BuildReportFailure::Unexpected(error) => MendFailure::Unexpected(error),
-        }
-    }
-
-    fn build_report_failure_into_cause(error: BuildReportFailure) -> CompilerFailureCause {
-        match error {
-            BuildReportFailure::Analysis(analysis) => analysis.cause,
-            BuildReportFailure::Unexpected(error) => CompilerFailureCause::Unexpected(error),
-        }
     }
 }
