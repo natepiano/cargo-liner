@@ -108,10 +108,10 @@ pub fn spawn(config: &Config, bg_tx: mpsc::Sender<BackgroundMsg>) -> SpawnResult
     }
 
     let cache_root = cache_paths::lint_runs_root_for(config);
-    let history_budget_bytes = config.port_report.history_budget_bytes().unwrap_or(None);
+    let cache_size_bytes = config.port_report.cache_size_bytes().unwrap_or(None);
     let lint = config.lint.clone();
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || supervisor_loop(rx, cache_root, lint, history_budget_bytes, bg_tx));
+    thread::spawn(move || supervisor_loop(rx, cache_root, lint, cache_size_bytes, bg_tx));
     SpawnResult {
         handle:  Some(RuntimeHandle { tx }),
         warning: None,
@@ -126,7 +126,7 @@ fn supervisor_loop(
     rx: mpsc::Receiver<SupervisorMsg>,
     cache_root: PathBuf,
     lint: LintConfig,
-    history_budget_bytes: Option<u64>,
+    cache_size_bytes: Option<u64>,
     bg_tx: mpsc::Sender<BackgroundMsg>,
 ) {
     let commands = lint.resolved_commands();
@@ -148,7 +148,7 @@ fn supervisor_loop(
                     desired,
                     &cache_root,
                     &commands,
-                    history_budget_bytes,
+                    cache_size_bytes,
                     should_trigger_new_runs(initialized, force_immediate_run),
                     &bg_tx,
                 );
@@ -203,7 +203,7 @@ fn reconcile_workers(
     desired: HashMap<PathBuf, RegisterProjectRequest>,
     cache_root: &Path,
     commands: &[LintCommandConfig],
-    history_budget_bytes: Option<u64>,
+    cache_size_bytes: Option<u64>,
     trigger_new_runs: bool,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
 ) {
@@ -224,7 +224,7 @@ fn reconcile_workers(
                 request.abs_path,
                 cache_root.to_path_buf(),
                 commands.to_vec(),
-                history_budget_bytes,
+                cache_size_bytes,
                 trigger_new_runs,
                 bg_tx.clone(),
             )
@@ -242,7 +242,7 @@ fn spawn_project_worker(
     project_root: PathBuf,
     cache_root: PathBuf,
     commands: Vec<LintCommandConfig>,
-    history_budget_bytes: Option<u64>,
+    cache_size_bytes: Option<u64>,
     run_immediately: bool,
     bg_tx: mpsc::Sender<BackgroundMsg>,
 ) -> ProjectWorker {
@@ -295,7 +295,7 @@ fn spawn_project_worker(
                                 &project_path,
                                 &cache_root,
                                 &commands,
-                                history_budget_bytes,
+                                cache_size_bytes,
                                 &bg_tx,
                             );
                         }
@@ -400,7 +400,7 @@ pub fn run_commands_for_project(
     project_path: &str,
     cache_root: &Path,
     commands: &[LintCommandConfig],
-    history_budget_bytes: Option<u64>,
+    cache_size_bytes: Option<u64>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
 ) -> io::Result<()> {
     if !project_still_runnable(project_root) {
@@ -495,7 +495,7 @@ pub fn run_commands_for_project(
 
     run = history::archive_run_output(cache_root, project_root, &run)?;
     read_write::write_latest_under(cache_root, project_root, &run)?;
-    history::append_history_under(cache_root, project_root, &run, history_budget_bytes)?;
+    history::append_history_under(cache_root, project_root, &run, cache_size_bytes)?;
     let _ = bg_tx.send(BackgroundMsg::LintStatus {
         path:   project_path.to_string(),
         status: status::read_status_under(cache_root, project_root),

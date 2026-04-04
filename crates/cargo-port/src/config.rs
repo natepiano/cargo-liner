@@ -217,49 +217,49 @@ pub fn normalize_lint_commands(commands: &[LintCommandConfig]) -> Vec<LintComman
 const BYTES_PER_KIB: u64 = 1024;
 const BYTES_PER_MIB: u64 = BYTES_PER_KIB * 1024;
 const BYTES_PER_GIB: u64 = BYTES_PER_MIB * 1024;
-const DEFAULT_HISTORY_BUDGET: &str = "512 MiB";
+const DEFAULT_CACHE_SIZE: &str = "512 MiB";
 
 #[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
 pub struct PortReportConfig {
     /// Maximum retained size for lint history artifacts. `0` and `unlimited`
     /// disable pruning.
     #[config(default = "512 MiB")]
-    pub history_budget: String,
+    pub cache_size: String,
 }
 
 impl Default for PortReportConfig {
     fn default() -> Self {
         Self {
-            history_budget: DEFAULT_HISTORY_BUDGET.to_string(),
+            cache_size: DEFAULT_CACHE_SIZE.to_string(),
         }
     }
 }
 
 impl PortReportConfig {
-    pub fn history_budget_bytes(&self) -> Result<Option<u64>, String> {
-        parse_history_budget(&self.history_budget).map(|budget| budget.bytes)
+    pub fn cache_size_bytes(&self) -> Result<Option<u64>, String> {
+        parse_cache_size(&self.cache_size).map(|parsed| parsed.bytes)
     }
 
-    pub fn normalized_history_budget(&self) -> Result<String, String> {
-        parse_history_budget(&self.history_budget).map(|budget| budget.normalized)
+    pub fn normalized_cache_size(&self) -> Result<String, String> {
+        parse_cache_size(&self.cache_size).map(|parsed| parsed.normalized)
     }
 }
 
-pub struct ParsedHistoryBudget {
+pub struct ParsedCacheSize {
     pub bytes:      Option<u64>,
     pub normalized: String,
 }
 
-fn normalize_history_budget_number(number: &str) -> Result<String, String> {
+fn normalize_cache_size_number(number: &str) -> Result<String, String> {
     let (whole_raw, fraction_raw) = number
         .split_once('.')
         .map_or((number, None), |(whole, fraction)| (whole, Some(fraction)));
 
     if whole_raw.is_empty() && fraction_raw.is_none() {
-        return Err(format!("Invalid history budget quantity `{number}`"));
+        return Err(format!("Invalid cache size quantity `{number}`"));
     }
     if !whole_raw.is_empty() && !whole_raw.chars().all(|ch| ch.is_ascii_digit()) {
-        return Err(format!("Invalid history budget quantity `{number}`"));
+        return Err(format!("Invalid cache size quantity `{number}`"));
     }
 
     let whole = if whole_raw.is_empty() {
@@ -273,7 +273,7 @@ fn normalize_history_budget_number(number: &str) -> Result<String, String> {
         return Ok(whole.to_string());
     };
     if !fraction_raw.chars().all(|ch| ch.is_ascii_digit()) {
-        return Err(format!("Invalid history budget quantity `{number}`"));
+        return Err(format!("Invalid cache size quantity `{number}`"));
     }
 
     let fraction = fraction_raw.trim_end_matches('0');
@@ -284,12 +284,12 @@ fn normalize_history_budget_number(number: &str) -> Result<String, String> {
     }
 }
 
-fn parse_history_budget_bytes(number: &str, multiplier: u64) -> Result<Option<u64>, String> {
+fn parse_cache_size_bytes(number: &str, multiplier: u64) -> Result<Option<u64>, String> {
     let (whole_raw, fraction_raw) = number
         .split_once('.')
         .map_or((number, None), |(whole, fraction)| (whole, Some(fraction)));
     if whole_raw.is_empty() && fraction_raw.is_none() {
-        return Err(format!("Invalid history budget quantity `{number}`"));
+        return Err(format!("Invalid cache size quantity `{number}`"));
     }
 
     let whole = if whole_raw.is_empty() {
@@ -297,51 +297,51 @@ fn parse_history_budget_bytes(number: &str, multiplier: u64) -> Result<Option<u6
     } else {
         whole_raw
             .parse::<u128>()
-            .map_err(|_| format!("Invalid history budget quantity `{number}`"))?
+            .map_err(|_| format!("Invalid cache size quantity `{number}`"))?
     };
     let multiplier = u128::from(multiplier);
     let whole_bytes = whole
         .checked_mul(multiplier)
-        .ok_or_else(|| "History budget is too large".to_string())?;
+        .ok_or_else(|| "Cache size is too large".to_string())?;
 
     let Some(fraction_raw) = fraction_raw else {
         return u64::try_from(whole_bytes)
             .map(Some)
-            .map_err(|_| "History budget is too large".to_string());
+            .map_err(|_| "Cache size is too large".to_string());
     };
     if !fraction_raw.chars().all(|ch| ch.is_ascii_digit()) {
-        return Err(format!("Invalid history budget quantity `{number}`"));
+        return Err(format!("Invalid cache size quantity `{number}`"));
     }
     if fraction_raw.is_empty() {
         return u64::try_from(whole_bytes)
             .map(Some)
-            .map_err(|_| "History budget is too large".to_string());
+            .map_err(|_| "Cache size is too large".to_string());
     }
 
     let fraction = fraction_raw
         .parse::<u128>()
-        .map_err(|_| format!("Invalid history budget quantity `{number}`"))?;
+        .map_err(|_| format!("Invalid cache size quantity `{number}`"))?;
     let scale = 10_u128
         .checked_pow(u32::try_from(fraction_raw.len()).unwrap_or(u32::MAX))
-        .ok_or_else(|| "History budget is too large".to_string())?;
+        .ok_or_else(|| "Cache size is too large".to_string())?;
     let fraction_bytes = fraction
         .checked_mul(multiplier)
-        .ok_or_else(|| "History budget is too large".to_string())?
+        .ok_or_else(|| "Cache size is too large".to_string())?
         .div_ceil(scale);
     let total = whole_bytes
         .checked_add(fraction_bytes)
-        .ok_or_else(|| "History budget is too large".to_string())?;
+        .ok_or_else(|| "Cache size is too large".to_string())?;
 
     if total == 0 {
         Ok(None)
     } else {
         u64::try_from(total)
             .map(Some)
-            .map_err(|_| "History budget is too large".to_string())
+            .map_err(|_| "Cache size is too large".to_string())
     }
 }
 
-fn canonical_history_budget_unit(unit: &str) -> Option<(&'static str, u64)> {
+fn canonical_cache_size_unit(unit: &str) -> Option<(&'static str, u64)> {
     match unit.trim().to_ascii_lowercase().as_str() {
         "b" | "byte" | "bytes" => Some(("B", 1)),
         "kib" | "kb" => Some(("KiB", BYTES_PER_KIB)),
@@ -351,19 +351,19 @@ fn canonical_history_budget_unit(unit: &str) -> Option<(&'static str, u64)> {
     }
 }
 
-pub fn parse_history_budget(value: &str) -> Result<ParsedHistoryBudget, String> {
+pub fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err("History budget cannot be empty".to_string());
+        return Err("Cache size cannot be empty".to_string());
     }
     if trimmed.eq_ignore_ascii_case("unlimited") {
-        return Ok(ParsedHistoryBudget {
+        return Ok(ParsedCacheSize {
             bytes:      None,
             normalized: "unlimited".to_string(),
         });
     }
     if trimmed == "0" {
-        return Ok(ParsedHistoryBudget {
+        return Ok(ParsedCacheSize {
             bytes:      None,
             normalized: "0".to_string(),
         });
@@ -377,27 +377,27 @@ pub fn parse_history_budget(value: &str) -> Result<ParsedHistoryBudget, String> 
 
     if number.is_empty() || unit.is_empty() {
         return Err(
-            "History budget must include a number and unit like `512 MiB` or `1.5 GiB`".to_string(),
+            "Cache size must include a number and unit like `512 MiB` or `1.5 GiB`".to_string(),
         );
     }
 
-    let Some((canonical_unit, multiplier)) = canonical_history_budget_unit(unit) else {
-        return Err(format!("Unsupported history budget unit `{unit}`"));
+    let Some((canonical_unit, multiplier)) = canonical_cache_size_unit(unit) else {
+        return Err(format!("Unsupported cache size unit `{unit}`"));
     };
     let normalized = format!(
         "{} {}",
-        normalize_history_budget_number(number)?,
+        normalize_cache_size_number(number)?,
         canonical_unit
     );
-    Ok(ParsedHistoryBudget {
-        bytes: parse_history_budget_bytes(number, multiplier)?,
+    Ok(ParsedCacheSize {
+        bytes: parse_cache_size_bytes(number, multiplier)?,
         normalized,
     })
 }
 
 pub fn normalize_config(mut config: Config) -> Result<Config, String> {
     config.lint.commands = normalize_lint_commands(&config.lint.commands);
-    config.port_report.history_budget = config.port_report.normalized_history_budget()?;
+    config.port_report.cache_size = config.port_report.normalized_cache_size()?;
     Ok(config)
 }
 
@@ -581,7 +581,7 @@ mod tests {
         assert!(cfg.lint.include.is_empty());
         assert!(cfg.lint.exclude.is_empty());
         assert!(cfg.lint.commands.is_empty());
-        assert_eq!(cfg.port_report.history_budget, "512 MiB");
+        assert_eq!(cfg.port_report.cache_size, "512 MiB");
     }
 
     /// Generated template parses back into a valid `Config` via confique.
@@ -603,7 +603,7 @@ mod tests {
         assert_eq!(cfg.tui.ci_run_count, 5);
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert!(cfg.lint.commands.is_empty());
-        assert_eq!(cfg.port_report.history_budget, "512 MiB");
+        assert_eq!(cfg.port_report.cache_size, "512 MiB");
     }
 
     /// A partial config file gets defaults for missing fields.
@@ -623,7 +623,7 @@ mod tests {
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
         assert!(cfg.lint.commands.is_empty());
-        assert_eq!(cfg.port_report.history_budget, "512 MiB");
+        assert_eq!(cfg.port_report.cache_size, "512 MiB");
     }
 
     /// An empty config file gets all defaults.
@@ -642,7 +642,7 @@ mod tests {
         assert_eq!(cfg.tui.editor, "zed");
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert!(cfg.lint.commands.is_empty());
-        assert_eq!(cfg.port_report.history_budget, "512 MiB");
+        assert_eq!(cfg.port_report.cache_size, "512 MiB");
     }
 
     /// Saving and reloading preserves all values.
@@ -673,7 +673,7 @@ mod tests {
         assert!((reloaded.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
         assert_eq!(reloaded.mouse.invert_scroll, ScrollDirection::Normal);
         assert!(reloaded.lint.commands.is_empty());
-        assert_eq!(reloaded.port_report.history_budget, "512 MiB");
+        assert_eq!(reloaded.port_report.cache_size, "512 MiB");
     }
 
     /// Bool-based enums deserialize correctly from TOML booleans.
@@ -794,31 +794,31 @@ mod tests {
     }
 
     #[test]
-    fn parse_history_budget_accepts_decimal_binary_units() {
-        let budget = parse_history_budget("1.5 GiB").expect("parse history budget");
-        assert_eq!(budget.normalized, "1.5 GiB");
-        assert_eq!(budget.bytes, Some(1_610_612_736));
+    fn parse_cache_size_accepts_decimal_binary_units() {
+        let parsed = parse_cache_size("1.5 GiB").expect("parse cache size");
+        assert_eq!(parsed.normalized, "1.5 GiB");
+        assert_eq!(parsed.bytes, Some(1_610_612_736));
     }
 
     #[test]
-    fn parse_history_budget_accepts_unlimited_aliases() {
+    fn parse_cache_size_accepts_unlimited_aliases() {
         assert_eq!(
-            parse_history_budget("unlimited").expect("unlimited").bytes,
+            parse_cache_size("unlimited").expect("unlimited").bytes,
             None
         );
-        assert_eq!(parse_history_budget("0").expect("zero").bytes, None);
+        assert_eq!(parse_cache_size("0").expect("zero").bytes, None);
     }
 
     #[test]
-    fn normalize_config_normalizes_history_budget_units() {
+    fn normalize_config_normalizes_cache_size_units() {
         let cfg = normalize_config(Config {
             port_report: PortReportConfig {
-                history_budget: "1.50 gib".to_string(),
+                cache_size: "1.50 gib".to_string(),
             },
             ..Config::default()
         })
         .expect("normalize config");
 
-        assert_eq!(cfg.port_report.history_budget, "1.5 GiB");
+        assert_eq!(cfg.port_report.cache_size, "1.5 GiB");
     }
 }

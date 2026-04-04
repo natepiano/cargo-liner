@@ -16,22 +16,22 @@ use super::types::PortReportRun;
 use crate::constants::LINTS_HISTORY_JSONL;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct HistoryUsage {
-    pub bytes:        u64,
-    pub budget_bytes: Option<u64>,
+pub struct CacheUsage {
+    pub bytes:            u64,
+    pub cache_size_bytes: Option<u64>,
 }
 
-pub fn retained_history_usage(history_budget_bytes: Option<u64>) -> HistoryUsage {
-    retained_history_usage_under(&paths::cache_root(), history_budget_bytes)
+pub fn retained_cache_usage(cache_size_bytes: Option<u64>) -> CacheUsage {
+    retained_cache_usage_under(&paths::cache_root(), cache_size_bytes)
 }
 
-pub(super) fn retained_history_usage_under(
+pub(super) fn retained_cache_usage_under(
     cache_root: &Path,
-    history_budget_bytes: Option<u64>,
-) -> HistoryUsage {
-    HistoryUsage {
-        bytes:        total_bytes_under(cache_root),
-        budget_bytes: history_budget_bytes,
+    cache_size_bytes: Option<u64>,
+) -> CacheUsage {
+    CacheUsage {
+        bytes: total_bytes_under(cache_root),
+        cache_size_bytes,
     }
 }
 
@@ -77,7 +77,7 @@ pub fn append_history_under(
     cache_root: &Path,
     project_root: &Path,
     run: &PortReportRun,
-    history_budget_bytes: Option<u64>,
+    cache_size_bytes: Option<u64>,
 ) -> io::Result<()> {
     let path = paths::history_path_under(cache_root, project_root);
     if let Some(parent) = path.parent() {
@@ -90,7 +90,7 @@ pub fn append_history_under(
     let json = serde_json::to_string(run)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     writeln!(file, "{json}")?;
-    enforce_history_budget_under(cache_root, history_budget_bytes)
+    enforce_cache_size_under(cache_root, cache_size_bytes)
 }
 
 pub fn read_history(project_root: &Path) -> Vec<PortReportRun> {
@@ -114,14 +114,11 @@ pub(super) fn read_history_under(cache_root: &Path, project_root: &Path) -> Vec<
     runs
 }
 
-fn enforce_history_budget_under(
-    cache_root: &Path,
-    history_budget_bytes: Option<u64>,
-) -> io::Result<()> {
-    let Some(budget) = history_budget_bytes else {
+fn enforce_cache_size_under(cache_root: &Path, cache_size_bytes: Option<u64>) -> io::Result<()> {
+    let Some(cache_size) = cache_size_bytes else {
         return Ok(());
     };
-    prune_runs_under(cache_root, budget)
+    prune_runs_under(cache_root, cache_size)
 }
 
 pub(super) fn total_bytes_under(root: &Path) -> u64 {
@@ -214,10 +211,10 @@ fn rewrite_history_file(path: &Path, kept_indices: &[usize]) -> io::Result<()> {
 }
 
 /// Remove the oldest complete runs (history line + archived output directory)
-/// until total bytes under the cache root are within budget.
-fn prune_runs_under(cache_root: &Path, budget: u64) -> io::Result<()> {
+/// until total bytes under the cache root are within the cache size limit.
+fn prune_runs_under(cache_root: &Path, cache_size: u64) -> io::Result<()> {
     let mut total_bytes = total_bytes_under(cache_root);
-    if total_bytes <= budget {
+    if total_bytes <= cache_size {
         return Ok(());
     }
 
@@ -238,7 +235,7 @@ fn prune_runs_under(cache_root: &Path, budget: u64) -> io::Result<()> {
     let mut removed: HashMap<PathBuf, Vec<usize>> = HashMap::new();
 
     for run in &runs {
-        if total_bytes <= budget {
+        if total_bytes <= cache_size {
             break;
         }
 

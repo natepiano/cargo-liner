@@ -268,7 +268,7 @@ impl App {
                 self.port_report_runs.insert(project.path.clone(), runs);
             }
         }
-        self.refresh_lint_history_usage_from_disk();
+        self.refresh_lint_cache_usage_from_disk();
     }
 
     pub(super) fn reload_port_report_history(&mut self, project_path: &str) {
@@ -290,16 +290,16 @@ impl App {
         } else {
             self.port_report_runs.insert(project_path.to_string(), runs);
         }
-        self.refresh_lint_history_usage_from_disk();
+        self.refresh_lint_cache_usage_from_disk();
     }
 
-    pub fn refresh_lint_history_usage_from_disk(&mut self) {
-        let history_budget_bytes = self
+    pub fn refresh_lint_cache_usage_from_disk(&mut self) {
+        let cache_size_bytes = self
             .current_config
             .port_report
-            .history_budget_bytes()
+            .cache_size_bytes()
             .unwrap_or(None);
-        self.lint_history_usage = crate::lint::retained_history_usage(history_budget_bytes);
+        self.lint_cache_usage = crate::lint::retained_cache_usage(cache_size_bytes);
     }
 
     pub(super) fn register_project_background_services(&self, project: &RustProject) {
@@ -873,7 +873,7 @@ impl App {
         self.disk_usage.clear();
         self.ci_state.clear();
         self.lint_status.clear();
-        self.lint_history_usage = crate::lint::HistoryUsage::default();
+        self.lint_cache_usage = crate::lint::CacheUsage::default();
         self.port_report_runs.clear();
         self.git_info.clear();
         self.git_path_states.clear();

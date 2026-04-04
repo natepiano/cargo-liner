@@ -118,17 +118,17 @@ pub fn render_lints_panel(
         let watching = app.port_report_is_watchable(project) && app.lint_runtime.is_some();
         (watching, usize::from(watching))
     });
-    let history_budget = app
-        .lint_history_usage
-        .budget_bytes
+    let cache_size = app
+        .lint_cache_usage
+        .cache_size_bytes
         .map_or_else(|| "unlimited".to_string(), format_bytes);
     let title = format!(
-        " Lints (watching {}, workers {}, runs {}, history {}/{}) ",
+        " Lints (watching {}, workers {}, runs {}, cache {}/{}) ",
         if watching { "yes" } else { "no" },
         worker_count,
         runs.len(),
-        format_bytes(app.lint_history_usage.bytes),
-        history_budget,
+        format_bytes(app.lint_cache_usage.bytes),
+        cache_size,
     );
 
     let block = Block::default()

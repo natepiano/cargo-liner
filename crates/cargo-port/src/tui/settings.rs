@@ -29,7 +29,7 @@ pub(super) enum SettingOption {
     LintsEnabled,
     LintProjects,
     LintCommands,
-    LintHistoryBudget,
+    LintCacheSize,
 }
 
 impl SettingOption {
@@ -45,7 +45,7 @@ impl SettingOption {
             7 => Some(Self::LintsEnabled),
             8 => Some(Self::LintProjects),
             9 => Some(Self::LintCommands),
-            10 => Some(Self::LintHistoryBudget),
+            10 => Some(Self::LintCacheSize),
             _ => None,
         }
     }
@@ -96,9 +96,7 @@ fn format_lint_commands(cfg: &config::Config) -> String {
         .join(", ")
 }
 
-fn format_lint_history_budget(cfg: &config::Config) -> String {
-    cfg.port_report.history_budget.clone()
-}
+fn format_lint_cache_size(cfg: &config::Config) -> String { cfg.port_report.cache_size.clone() }
 
 fn settings_rows(app: &App, cfg: &config::Config) -> Vec<SettingsRow> {
     vec![
@@ -170,9 +168,9 @@ fn settings_rows(app: &App, cfg: &config::Config) -> Vec<SettingsRow> {
             format_lint_commands(cfg),
         ),
         (
-            Some(SettingOption::LintHistoryBudget),
-            "History budget",
-            format_lint_history_budget(cfg),
+            Some(SettingOption::LintCacheSize),
+            "Cache size",
+            format_lint_cache_size(cfg),
         ),
     ]
 }
@@ -306,8 +304,8 @@ fn parse_lint_commands(value: &str) -> Vec<config::LintCommandConfig> {
     )
 }
 
-fn parse_lint_history_budget(value: &str) -> Result<String, String> {
-    config::parse_history_budget(value).map(|budget| budget.normalized)
+fn parse_lint_cache_size(value: &str) -> Result<String, String> {
+    config::parse_cache_size(value).map(|parsed| parsed.normalized)
 }
 
 fn save_updated_config(app: &mut App, cfg: &config::Config) -> bool {
@@ -585,8 +583,8 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
         Some(SettingOption::LintCommands) => {
             begin_settings_edit(app, format_lint_commands(&app.current_config));
         },
-        Some(SettingOption::LintHistoryBudget) => {
-            begin_settings_edit(app, format_lint_history_budget(&app.current_config));
+        Some(SettingOption::LintCacheSize) => {
+            begin_settings_edit(app, format_lint_cache_size(&app.current_config));
         },
         Some(SettingOption::IncludeNonRust) => {
             let mut cfg = app.current_config.clone();
@@ -652,16 +650,16 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                         app.show_timed_toast("Settings", "Lint commands updated");
                     }
                 },
-                Some(SettingOption::LintHistoryBudget) => match parse_lint_history_budget(&value) {
-                    Ok(history_budget) => {
+                Some(SettingOption::LintCacheSize) => match parse_lint_cache_size(&value) {
+                    Ok(cache_size) => {
                         let mut cfg = app.current_config.clone();
-                        cfg.port_report.history_budget = history_budget;
+                        cfg.port_report.cache_size = cache_size;
                         if save_updated_config(app, &cfg) {
-                            app.show_timed_toast("Settings", "Lint history budget updated");
+                            app.show_timed_toast("Settings", "Lint cache size updated");
                         }
                     },
                     Err(err) => {
-                        app.show_timed_toast("Invalid history budget", err);
+                        app.show_timed_toast("Invalid cache size", err);
                         return;
                     },
                 },
@@ -752,7 +750,7 @@ mod tests {
         );
         assert_eq!(
             SettingOption::from_index(10),
-            Some(SettingOption::LintHistoryBudget)
+            Some(SettingOption::LintCacheSize)
         );
         assert_eq!(SettingOption::count(), 11);
     }
@@ -776,9 +774,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_lint_history_budget_normalizes_units() {
+    fn parse_lint_cache_size_normalizes_units() {
         assert_eq!(
-            parse_lint_history_budget("1.5 gib").expect("history budget"),
+            parse_lint_cache_size("1.5 gib").expect("cache size"),
             "1.5 GiB"
         );
     }

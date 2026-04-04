@@ -15,7 +15,7 @@ use crate::ci::CiRun;
 use crate::config::Config;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
-use crate::lint::HistoryUsage;
+use crate::lint::CacheUsage;
 use crate::lint::LintStatus;
 use crate::lint::PortReportRun;
 use crate::lint::RuntimeHandle;
@@ -490,7 +490,7 @@ pub struct App {
     pub disk_usage:               HashMap<String, u64>,
     pub ci_state:                 HashMap<String, CiState>,
     pub lint_status:              HashMap<String, LintStatus>,
-    pub lint_history_usage:       HistoryUsage,
+    pub lint_cache_usage:         CacheUsage,
     pub port_report_runs:         HashMap<String, Vec<PortReportRun>>,
     pub lint_rollup_status:       HashMap<LintRollupKey, LintStatus>,
     pub lint_rollup_paths:        HashMap<LintRollupKey, Vec<String>>,

@@ -14,9 +14,9 @@ mod types;
 )]
 mod tests;
 
-pub use history::HistoryUsage;
+pub use history::CacheUsage;
 pub use history::read_history;
-pub use history::retained_history_usage;
+pub use history::retained_cache_usage;
 pub use paths::cache_root;
 #[cfg(test)]
 pub use paths::latest_path_under;

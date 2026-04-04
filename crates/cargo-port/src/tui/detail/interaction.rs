@@ -224,7 +224,7 @@ fn clear_lint_history(app: &mut App) {
     let path = project.path.clone();
     app.port_report_runs.remove(&path);
     app.port_report_pane.home();
-    app.refresh_lint_history_usage_from_disk();
+    app.refresh_lint_cache_usage_from_disk();
     app.data_generation += 1;
 }
 

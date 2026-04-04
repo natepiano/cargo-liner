@@ -7,8 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- Detect new projects added to the watch directory at runtime
+### Added
+
+#### Lints
+- Built-in lint runtime: watches project files (`.rs`, `Cargo.toml`, `Cargo.lock`) and runs configured commands on change
+- Configure which projects to watch and which commands to run from the settings UI
+- Set a global maximum cache size for lint history — oldest runs are evicted first
+- Lint status rolls up across workspace members and worktrees
+- Lint history shows past runs with per-command status, duration, and archived output
+- Press Enter on a run to open its output in the editor
+
+#### Project Tree
+- Vendored path-dependency crates shown as children of their parent
+- Workspace worktrees grouped under their primary checkout
+- Non-Rust projects toggled without rescanning when already cached
+- New projects detected at runtime; deleted projects excluded automatically
+
+### Changed
+- CI runs scoped to the branch-owning worktree row, not duplicated across members
+- Faster startup and background work through parallelized fetching and decoupled scan phases
 
 ## [0.0.2] - 2026-03-30
 

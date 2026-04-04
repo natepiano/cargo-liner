@@ -213,7 +213,7 @@ impl App {
             disk_usage: HashMap::new(),
             ci_state: HashMap::new(),
             lint_status: HashMap::new(),
-            lint_history_usage: crate::lint::HistoryUsage::default(),
+            lint_cache_usage: crate::lint::CacheUsage::default(),
             port_report_runs: HashMap::new(),
             lint_rollup_status: HashMap::new(),
             lint_rollup_paths: HashMap::new(),

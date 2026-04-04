@@ -65,7 +65,7 @@ In the Settings popup (`s`), the `Lints` section exposes:
 - `Enabled`
 - `Projects`
 - `Commands`
-- `History budget`
+- `Cache size`
 
 `Projects` is an allow-list. If it is empty, Lints watches nothing.
 
@@ -79,14 +79,14 @@ exclude = []
 commands = []
 
 [port_report]
-history_budget = "512 MiB"
+cache_size = "512 MiB"
 ```
 
 Notes:
 - `include` entries can be bare project names, display-path prefixes, or absolute-path prefixes
 - `exclude` is applied after `include`
 - an empty `commands` list uses the built-in default command
-- `port_report.history_budget` caps retained lint-history storage across JSON history and cache artifacts; `0` and `unlimited` disable pruning
+- `port_report.cache_size` caps retained lint run storage across JSON history and cached artifacts; `0` and `unlimited` disable pruning
 
 #### Commands
 
@@ -100,7 +100,7 @@ exclude = []
 commands = []
 
 [port_report]
-history_budget = "512 MiB"
+cache_size = "512 MiB"
 ```
 
 That expands to:
@@ -133,16 +133,16 @@ In the Settings popup, `Commands` accepts a comma-separated list of full shell c
 
 Legacy preset-style entries such as `clippy` or `mend` are normalized to their built-in command definitions when config is loaded or saved.
 
-#### History budget
+#### Cache size
 
-`port_report.history_budget` accepts flexible binary-size strings such as:
+`port_report.cache_size` accepts flexible binary-size strings such as:
 - `512MiB`
 - `512 MiB`
 - `1.5 GiB`
 - `0`
 - `unlimited`
 
-Values are normalized when config is loaded or saved. The budget applies to retained lint-history storage under the shared cache root. When history exceeds the budget, cargo-port prunes the oldest retained history first and keeps current/latest artifacts even if that live floor alone exceeds the configured budget.
+Values are normalized when config is loaded or saved. The cache size caps retained lint run storage under the shared cache root. When stored runs exceed the limit, cargo-port prunes the oldest runs first and keeps current/latest artifacts even if that live floor alone exceeds the configured size.
 
 #### Cache location
 
@@ -164,4 +164,4 @@ Rules:
 - a relative path extends the default cargo-port cache root
 - an absolute path replaces it
 
-Lint history data is currently stored under the legacy `port-report/` cache subtree. CI cache uses the same shared root under `ci/`.
+Lint run data is stored under `lint-runs/` within the cache root. CI cache uses the same shared root under `ci/`.

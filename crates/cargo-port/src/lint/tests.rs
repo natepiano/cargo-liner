@@ -230,31 +230,36 @@ fn latest_final_run_does_not_duplicate_completed_history() {
 }
 
 #[test]
-fn append_history_prunes_oldest_runs_under_budget() {
+fn append_history_prunes_oldest_runs_under_cache_size() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
 
     let mut older = run_with_commands("older", "2026-04-01T18:00:00-04:00");
     let mut newer = run_with_commands("newer", "2026-04-01T19:00:00-04:00");
 
-    // Archive and append the older run without a budget
+    // Archive and append the older run without a size limit
     write_fake_logs(cache_dir.path(), project_dir.path(), "older logs");
     older = history::archive_run_output(cache_dir.path(), project_dir.path(), &older)
         .expect("archive older");
     history::append_history_under(cache_dir.path(), project_dir.path(), &older, None)
         .expect("append older");
 
-    // Archive the newer run, then set a budget that forces older out
+    // Archive the newer run, then set a cache size that forces older out
     write_fake_logs(cache_dir.path(), project_dir.path(), "newer logs");
     newer = history::archive_run_output(cache_dir.path(), project_dir.path(), &newer)
         .expect("archive newer");
 
     let total_before = history::total_bytes_under(cache_dir.path());
     let newer_line = serde_json::to_string(&newer).expect("serialize").len() as u64 + 1;
-    let budget = total_before + newer_line - 1;
+    let cache_size = total_before + newer_line - 1;
 
-    history::append_history_under(cache_dir.path(), project_dir.path(), &newer, Some(budget))
-        .expect("append newer");
+    history::append_history_under(
+        cache_dir.path(),
+        project_dir.path(),
+        &newer,
+        Some(cache_size),
+    )
+    .expect("append newer");
 
     let runs = history::read_history_under(cache_dir.path(), project_dir.path());
     assert_eq!(runs.len(), 1);
@@ -262,7 +267,7 @@ fn append_history_prunes_oldest_runs_under_budget() {
 }
 
 #[test]
-fn retained_history_usage_counts_latest_and_history_bytes() {
+fn retained_cache_usage_counts_latest_and_history_bytes() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
     let completed = run(PortReportRunStatus::Passed);
@@ -272,9 +277,9 @@ fn retained_history_usage_counts_latest_and_history_bytes() {
     history::append_history_under(cache_dir.path(), project_dir.path(), &completed, None)
         .expect("append history");
 
-    let usage = history::retained_history_usage_under(cache_dir.path(), Some(1024));
+    let usage = history::retained_cache_usage_under(cache_dir.path(), Some(1024));
     assert!(usage.bytes > 0);
-    assert_eq!(usage.budget_bytes, Some(1024));
+    assert_eq!(usage.cache_size_bytes, Some(1024));
 }
 
 // ── run archival ────────────────────────────────────────────────
@@ -382,7 +387,7 @@ fn prune_removes_oldest_run_directory_and_history_line() {
     let mut older = run_with_commands("run-older", "2026-04-01T18:00:00-04:00");
     let mut newer = run_with_commands("run-newer", "2026-04-01T19:00:00-04:00");
 
-    // Archive and append the older run (no budget — always succeeds)
+    // Archive and append the older run (no size limit — always succeeds)
     write_fake_logs(cache_dir.path(), project_dir.path(), "older output");
     older = history::archive_run_output(cache_dir.path(), project_dir.path(), &older)
         .expect("archive older");
@@ -394,16 +399,21 @@ fn prune_removes_oldest_run_directory_and_history_line() {
     newer = history::archive_run_output(cache_dir.path(), project_dir.path(), &newer)
         .expect("archive newer");
 
-    // Measure total bytes with both runs fully on disk. The budget must be
+    // Measure total bytes with both runs fully on disk. The cache size must be
     // small enough that keeping both exceeds it, but large enough that the
     // newer run alone fits. We subtract the older run's archived log bytes
     // to create that pressure.
     let total_before_append = history::total_bytes_under(cache_dir.path());
     let newer_line_bytes = serde_json::to_string(&newer).expect("serialize").len() as u64 + 1;
-    let budget = total_before_append + newer_line_bytes - 1;
+    let cache_size = total_before_append + newer_line_bytes - 1;
 
-    history::append_history_under(cache_dir.path(), project_dir.path(), &newer, Some(budget))
-        .expect("append newer");
+    history::append_history_under(
+        cache_dir.path(),
+        project_dir.path(),
+        &newer,
+        Some(cache_size),
+    )
+    .expect("append newer");
 
     // Only newer run should remain in history
     let runs = history::read_history_under(cache_dir.path(), project_dir.path());
@@ -433,7 +443,7 @@ fn prune_across_projects_removes_globally_oldest() {
     let mut old_a = run_with_commands("run-old-a", "2026-04-01T17:00:00-04:00");
     let mut new_b = run_with_commands("run-new-b", "2026-04-01T20:00:00-04:00");
 
-    // Archive and append run for project A (no budget)
+    // Archive and append run for project A (no size limit)
     write_fake_logs(cache_dir.path(), project_a.path(), "project-a output");
     old_a =
         history::archive_run_output(cache_dir.path(), project_a.path(), &old_a).expect("archive a");
@@ -449,9 +459,9 @@ fn prune_across_projects_removes_globally_oldest() {
     // byte so the pruner must delete A's run to fit.
     let total_before_append = history::total_bytes_under(cache_dir.path());
     let new_b_line_bytes = serde_json::to_string(&new_b).expect("serialize").len() as u64 + 1;
-    let budget = total_before_append + new_b_line_bytes - 1;
+    let cache_size = total_before_append + new_b_line_bytes - 1;
 
-    history::append_history_under(cache_dir.path(), project_b.path(), &new_b, Some(budget))
+    history::append_history_under(cache_dir.path(), project_b.path(), &new_b, Some(cache_size))
         .expect("append b");
 
     // Project A's older run should be pruned
@@ -472,7 +482,7 @@ fn prune_across_projects_removes_globally_oldest() {
 }
 
 #[test]
-fn prune_no_op_when_under_budget() {
+fn prune_no_op_when_under_cache_size() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
 
@@ -481,7 +491,7 @@ fn prune_no_op_when_under_budget() {
     completed = history::archive_run_output(cache_dir.path(), project_dir.path(), &completed)
         .expect("archive");
 
-    // Generous budget — nothing should be pruned
+    // Generous cache size — nothing should be pruned
     history::append_history_under(
         cache_dir.path(),
         project_dir.path(),
