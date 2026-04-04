@@ -999,3 +999,69 @@ fn main() { button_zoom_just_pressed(); }
         "function import should not be flagged when `mod` declaration exists in same file"
     );
 }
+
+#[test]
+fn skips_crate_path_module_import() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "crate_path_module_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent/nested")).expect("create dirs");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\n\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/parent/mod.rs"),
+        "mod nested;\nmod consumer;\npub mod support;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/support.rs"),
+        "pub fn helper() -> i32 { 42 }\n",
+    )
+    .expect("write support");
+    fs::write(
+        temp.path().join("src/parent/nested/mod.rs"),
+        "mod leaf;\npub mod child_support;\n",
+    )
+    .expect("write nested mod");
+    fs::write(
+        temp.path().join("src/parent/nested/child_support.rs"),
+        "pub fn nested_helper() -> i32 { 7 }\n",
+    )
+    .expect("write child_support");
+    fs::write(
+        temp.path().join("src/parent/nested/leaf.rs"),
+        "use crate::parent::support;\nuse crate::parent::nested::child_support;\n\nfn example() -> i32 { support::helper() + child_support::nested_helper() }\n",
+    )
+    .expect("write leaf");
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        "use crate::parent::support;\n\nfn example() -> i32 { support::helper() }\n",
+    )
+    .expect("write consumer");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == "prefer_module_import"),
+        "crate:: path importing a module should not be flagged as prefer_module_import, got: {:?}",
+        report
+            .findings
+            .iter()
+            .filter(|f| f.code == "prefer_module_import")
+            .map(|f| &f.path)
+            .collect::<Vec<_>>()
+    );
+}

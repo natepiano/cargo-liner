@@ -94,9 +94,10 @@ fn scan_file(
 
     // Pass 1: detect candidate function imports
     let mut detector = ImportDetector {
+        src_root,
         current_module_path: &current_module_path,
-        declared_modules:    &declared_modules,
-        candidates:          Vec::new(),
+        declared_modules: &declared_modules,
+        candidates: Vec::new(),
     };
     detector.visit_file(&syntax);
 
@@ -237,6 +238,7 @@ fn build_findings_and_fixes(
 // --- Pass 1: Detect function imports ---
 
 struct ImportDetector<'a> {
+    src_root:            &'a Path,
     current_module_path: &'a [String],
     declared_modules:    &'a BTreeSet<String>,
     candidates:          Vec<RawCandidate>,
@@ -244,15 +246,19 @@ struct ImportDetector<'a> {
 
 impl Visit<'_> for ImportDetector<'_> {
     fn visit_item_use(&mut self, node: &ItemUse) {
-        if let Some(candidate) =
-            analyze_function_import(self.current_module_path, self.declared_modules, node)
-        {
+        if let Some(candidate) = analyze_function_import(
+            self.src_root,
+            self.current_module_path,
+            self.declared_modules,
+            node,
+        ) {
             self.candidates.push(candidate);
         }
     }
 }
 
 fn analyze_function_import(
+    src_root: &Path,
     current_module_path: &[String],
     declared_modules: &BTreeSet<String>,
     node: &ItemUse,
@@ -279,6 +285,15 @@ fn analyze_function_import(
     // The leaf must be snake_case (function)
     let leaf = flat.segments.last()?;
     if !is_snake_case_function_name(leaf) {
+        return None;
+    }
+
+    // Resolve the import to absolute module segments for filesystem checks
+    let absolute_segments = resolve_to_absolute(&flat.segments, current_module_path)?;
+
+    // Check if the leaf is actually a module on the filesystem — module names are also
+    // snake_case, so naming alone cannot distinguish them from functions
+    if leaf_is_module(src_root, &absolute_segments) {
         return None;
     }
 
@@ -315,6 +330,41 @@ fn analyze_function_import(
         span_start: span.start(),
         span_end: span.end(),
     })
+}
+
+fn resolve_to_absolute(segments: &[String], current_module_path: &[String]) -> Option<Vec<String>> {
+    let first = segments.first()?;
+    if first == "crate" {
+        Some(segments[1..].to_vec())
+    } else if first == "super" {
+        let super_count = segments.iter().take_while(|s| *s == "super").count();
+        if super_count > current_module_path.len() {
+            return None;
+        }
+        let mut absolute = current_module_path[..current_module_path.len() - super_count].to_vec();
+        absolute.extend(segments[super_count..].iter().cloned());
+        Some(absolute)
+    } else {
+        None
+    }
+}
+
+fn leaf_is_module(src_root: &Path, absolute_segments: &[String]) -> bool {
+    if absolute_segments.is_empty() {
+        return false;
+    }
+    // The parent segments form the directory path, the leaf is the potential module
+    let parent_segments = &absolute_segments[..absolute_segments.len() - 1];
+    let leaf = &absolute_segments[absolute_segments.len() - 1];
+
+    let mut parent_dir = src_root.to_path_buf();
+    for seg in parent_segments {
+        parent_dir.push(seg);
+    }
+
+    // Check for leaf.rs or leaf/mod.rs under the parent directory
+    parent_dir.join(format!("{leaf}.rs")).is_file()
+        || parent_dir.join(leaf).join("mod.rs").is_file()
 }
 
 fn shorten_module_path(current_module_path: &[String], module_segments: &[String]) -> Vec<String> {
