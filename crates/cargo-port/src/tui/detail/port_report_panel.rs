@@ -16,11 +16,11 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
-use super::super::app::App;
-use super::super::types::PaneId;
 use crate::port_report::PortReportCommandStatus;
 use crate::port_report::PortReportRun;
 use crate::port_report::PortReportRunStatus;
+use crate::tui::app::App;
+use crate::tui::types::PaneId;
 
 fn format_port_report_timestamp(timestamp: &str) -> String {
     DateTime::parse_from_rfc3339(timestamp).map_or_else(

@@ -2,11 +2,6 @@ use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
 
-use super::super::app::App;
-use super::super::app::CiState;
-use super::super::app::ConfirmAction;
-use super::super::types::Pane;
-use super::super::types::PaneId;
 use super::CiFetchKind;
 use super::DetailField;
 use super::PendingCiFetch;
@@ -18,6 +13,11 @@ use super::package_fields;
 use crate::ci;
 use crate::project::ProjectLanguage;
 use crate::scan;
+use crate::tui::app::App;
+use crate::tui::app::CiState;
+use crate::tui::app::ConfirmAction;
+use crate::tui::types::Pane;
+use crate::tui::types::PaneId;
 
 /// Whether to build in release or debug mode.
 #[derive(Clone, Copy)]

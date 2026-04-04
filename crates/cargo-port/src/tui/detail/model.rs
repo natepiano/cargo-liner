@@ -1,5 +1,4 @@
-use super::App;
-use super::format_timestamp;
+use super::timestamp;
 use crate::ci::Conclusion;
 use crate::constants::IN_SYNC;
 use crate::constants::SYNC_DOWN;
@@ -10,6 +9,7 @@ use crate::project::GitPathState;
 use crate::project::ProjectLanguage;
 use crate::project::ProjectType;
 use crate::project::RustProject;
+use crate::tui::app::App;
 
 #[derive(Default)]
 pub struct ProjectCounts {
@@ -499,10 +499,10 @@ fn build_git_detail_fields(app: &App, project: &RustProject) -> GitDetailFields 
     let description = app.repo_descriptions.get(&project.path).cloned();
     let inception = git
         .and_then(|info| info.first_commit.as_deref())
-        .map(format_timestamp);
+        .map(timestamp::format_timestamp);
     let last_commit = git
         .and_then(|info| info.last_commit.as_deref())
-        .map(format_timestamp);
+        .map(timestamp::format_timestamp);
     GitDetailFields {
         branch,
         path: app.git_path_state_for(&project.path),

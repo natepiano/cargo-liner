@@ -11,18 +11,18 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
-use super::super::animation::BRAILLE_SPINNER;
-use super::super::app::App;
-use super::super::app::CiState;
-use super::super::constants::CI_EXTRA_ROWS;
-use super::super::constants::CI_TIMESTAMP_WIDTH;
-use super::super::render::CiColumn;
-use super::super::types::PaneId;
-use super::format_timestamp;
+use super::timestamp;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::scan;
+use crate::tui::animation::BRAILLE_SPINNER;
+use crate::tui::app::App;
+use crate::tui::app::CiState;
+use crate::tui::constants::CI_EXTRA_ROWS;
+use crate::tui::constants::CI_TIMESTAMP_WIDTH;
+use crate::tui::render::CiColumn;
+use crate::tui::types::PaneId;
 
 /// Build the header `Row` for the CI table from the given columns.
 fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
@@ -60,7 +60,7 @@ fn build_ci_data_row(
     remembered: bool,
     show_durations: bool,
 ) -> Row<'static> {
-    let timestamp = format_timestamp(&ci_run.created_at);
+    let timestamp = timestamp::format_timestamp(&ci_run.created_at);
     let total_dur = ci_run
         .wall_clock_secs
         .map_or_else(|| "—".to_string(), ci::format_secs);
