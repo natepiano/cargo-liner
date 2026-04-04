@@ -8,20 +8,14 @@ use std::time::Instant;
 
 use ratatui::widgets::ListState;
 
-use super::super::config_reload;
-use super::super::terminal::CiFetchMsg;
-use super::super::terminal::CleanMsg;
-use super::super::terminal::ExampleMsg;
-use super::super::types::PaneId;
-use super::App;
-use super::ConfigFileStamp;
-use super::DiskCacheBuildResult;
-use super::FitWidthsBuildResult;
-use super::PollBackgroundStats;
-use super::ResolvedWidths;
-use super::ScanPhase;
-use super::StartupPhaseTracker;
-use super::TreeBuildResult;
+use super::types::App;
+use super::types::ConfigFileStamp;
+use super::types::DiskCacheBuildResult;
+use super::types::FitWidthsBuildResult;
+use super::types::PollBackgroundStats;
+use super::types::ScanPhase;
+use super::types::StartupPhaseTracker;
+use super::types::TreeBuildResult;
 use crate::config::Config;
 use crate::constants::SERVICE_RETRY_SECS;
 use crate::http::ServiceKind;
@@ -37,6 +31,12 @@ use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::FlatEntry;
 use crate::scan::ProjectNode;
+use crate::tui::columns::ResolvedWidths;
+use crate::tui::config_reload;
+use crate::tui::terminal::CiFetchMsg;
+use crate::tui::terminal::CleanMsg;
+use crate::tui::terminal::ExampleMsg;
+use crate::tui::types::PaneId;
 use crate::watcher;
 use crate::watcher::WatchRequest;
 
@@ -131,7 +131,7 @@ impl App {
             .select(Some(self.scan_log.len().saturating_sub(1)));
     }
 
-    pub(super) fn maybe_reload_config_from_disk_impl(&mut self) {
+    pub fn maybe_reload_config_from_disk(&mut self) {
         let current_stamp = self
             .config_path
             .as_deref()
@@ -154,7 +154,7 @@ impl App {
         }
     }
 
-    pub(super) fn save_and_apply_config_impl(&mut self, cfg: &Config) -> Result<(), String> {
+    pub fn save_and_apply_config(&mut self, cfg: &Config) -> Result<(), String> {
         crate::config::save(cfg)?;
         self.apply_config(cfg);
         self.sync_config_watch_state();
@@ -422,7 +422,7 @@ impl App {
     }
 
     pub(super) fn initialize_startup_phase_tracker(&mut self) {
-        let disk_expected = super::initial_disk_batch_count(&self.all_projects);
+        let disk_expected = super::snapshots::initial_disk_batch_count(&self.all_projects);
         let git_seen = self
             .scan
             .startup_phases
@@ -754,7 +754,7 @@ impl App {
         self.builds.fit.active = Some(build_id);
         std::thread::spawn(move || {
             let started = Instant::now();
-            let widths = super::build_fit_widths_snapshot(
+            let widths = super::snapshots::build_fit_widths_snapshot(
                 &nodes,
                 &disk_usage,
                 &git_info,
@@ -809,7 +809,8 @@ impl App {
         self.builds.disk.active = Some(build_id);
         std::thread::spawn(move || {
             let started = Instant::now();
-            let (root_sorted, child_sorted) = super::build_disk_cache_snapshot(&nodes, &disk_usage);
+            let (root_sorted, child_sorted) =
+                super::snapshots::build_disk_cache_snapshot(&nodes, &disk_usage);
             crate::perf_log::log_duration(
                 "disk_cache_build",
                 started.elapsed(),
@@ -854,7 +855,7 @@ impl App {
         self.request_fit_widths_build();
     }
 
-    pub(super) fn rescan_impl(&mut self) {
+    pub fn rescan(&mut self) {
         self.all_projects.clear();
         self.nodes.clear();
         self.flat_entries.clear();
@@ -915,7 +916,7 @@ impl App {
         self.respawn_watcher();
     }
 
-    pub(super) fn poll_background_impl(&mut self) -> PollBackgroundStats {
+    pub fn poll_background(&mut self) -> PollBackgroundStats {
         const MAX_MSGS_PER_FRAME: usize = 50;
         let mut needs_rebuild = false;
         let mut msg_count = 0;
@@ -1225,7 +1226,7 @@ impl App {
         let mut updated = false;
 
         for node in &mut self.nodes {
-            updated |= super::replace_project_in_node(node, project_path, project);
+            updated |= super::snapshots::replace_project_in_node(node, project_path, project);
         }
 
         updated
@@ -1269,7 +1270,7 @@ impl App {
         self.service_retry_active.remove(&service);
     }
 
-    pub(super) fn unreachable_service_message_impl(&self) -> Option<String> {
+    pub fn unreachable_service_message(&self) -> Option<String> {
         let mut services = Vec::new();
         for service in [ServiceKind::GitHub, ServiceKind::CratesIo] {
             if self.unreachable_services.contains(&service) {

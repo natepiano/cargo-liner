@@ -5,34 +5,34 @@ use nucleo_matcher::pattern::AtomKind;
 use nucleo_matcher::pattern::CaseMatching;
 use nucleo_matcher::pattern::Normalization;
 
-use super::App;
-use super::DetailCache;
-use super::ExpandKey;
-use super::ResolvedWidths;
-use super::SearchMode;
-use super::VisibleRow;
-use super::build_visible_rows;
+use super::snapshots;
+use super::types::App;
+use super::types::DetailCache;
+use super::types::ExpandKey;
+use super::types::SearchMode;
+use super::types::VisibleRow;
 use crate::constants::WORKTREE;
 use crate::project::RustProject;
 use crate::scan::ProjectNode;
 use crate::tui;
 use crate::tui::columns::COL_NAME;
+use crate::tui::columns::ResolvedWidths;
 use crate::tui::render::PREFIX_ROOT_COLLAPSED;
 
 impl App {
-    pub(super) fn ensure_visible_rows_cached_impl(&mut self) {
+    pub fn ensure_visible_rows_cached(&mut self) {
         if !self.dirty.rows.is_dirty() {
             return;
         }
         self.dirty.rows.mark_clean();
-        self.cached_visible_rows = build_visible_rows(&self.nodes, &self.expanded);
+        self.cached_visible_rows = snapshots::build_visible_rows(&self.nodes, &self.expanded);
     }
 
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
-    pub(super) fn visible_rows_impl(&self) -> &[VisibleRow] { &self.cached_visible_rows }
+    pub fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
 
     /// Keep fit-to-content widths rebuilding in the background, never inline on the UI thread.
-    pub(super) fn ensure_fit_widths_cached_impl(&mut self) { self.request_fit_widths_build(); }
+    pub fn ensure_fit_widths_cached(&mut self) { self.request_fit_widths_build(); }
 
     /// Iterate all group members in a node, including those nested under worktree entries.
     pub(super) fn all_group_members(node: &ProjectNode) -> impl Iterator<Item = &RustProject> {
@@ -73,11 +73,11 @@ impl App {
     }
 
     /// Keep disk sort caches rebuilding in the background, never inline on the UI thread.
-    pub(super) fn ensure_disk_cache_impl(&mut self) { self.request_disk_cache_build(); }
+    pub fn ensure_disk_cache(&mut self) { self.request_disk_cache_build(); }
 
     /// Ensure the cached `DetailInfo` is up to date for the selected project.
     /// The cache is valid only when the generation AND path both match.
-    pub(super) fn ensure_detail_cached_impl(&mut self) {
+    pub fn ensure_detail_cached(&mut self) {
         let current_selection = self.current_detail_selection_key();
 
         if let Some(ref cache) = self.cached_detail
@@ -152,14 +152,14 @@ impl App {
     }
 
     /// Returns the `ProjectNode` when a root row is selected (not a member or worktree).
-    pub(super) fn selected_node_impl(&self) -> Option<&ProjectNode> {
+    pub fn selected_node(&self) -> Option<&ProjectNode> {
         match self.selected_row()? {
             VisibleRow::Root { node_index } => self.nodes.get(node_index),
             _ => None,
         }
     }
 
-    pub(super) fn selected_project_impl(&self) -> Option<&RustProject> {
+    pub fn selected_project(&self) -> Option<&RustProject> {
         if self.is_searching() && !self.search_query.is_empty() {
             let selected = self.list_state.selected()?;
             let flat_idx = *self.filtered.get(selected)?;
@@ -277,7 +277,7 @@ impl App {
         }
     }
 
-    pub(super) fn expand_impl(&mut self) -> bool {
+    pub fn expand(&mut self) -> bool {
         if !self.selected_is_expandable() {
             return false;
         }
@@ -319,7 +319,7 @@ impl App {
         }
     }
 
-    pub(super) fn collapse_impl(&mut self) -> bool {
+    pub fn collapse(&mut self) -> bool {
         let Some(selected) = self.list_state.selected() else {
             return false;
         };
@@ -431,7 +431,7 @@ impl App {
         }
     }
 
-    pub(super) fn row_count_impl(&self) -> usize {
+    pub fn row_count(&self) -> usize {
         if self.is_searching() && !self.search_query.is_empty() {
             self.filtered.len()
         } else {
@@ -439,7 +439,7 @@ impl App {
         }
     }
 
-    pub(super) fn move_up_impl(&mut self) {
+    pub fn move_up(&mut self) {
         let count = self.row_count();
         if count == 0 {
             return;
@@ -450,7 +450,7 @@ impl App {
         }
     }
 
-    pub(super) fn move_down_impl(&mut self) {
+    pub fn move_down(&mut self) {
         let count = self.row_count();
         if count == 0 {
             return;
@@ -461,13 +461,13 @@ impl App {
         }
     }
 
-    pub(super) fn move_to_top_impl(&mut self) {
+    pub fn move_to_top(&mut self) {
         if self.row_count() > 0 {
             self.list_state.select(Some(0));
         }
     }
 
-    pub(super) fn move_to_bottom_impl(&mut self) {
+    pub fn move_to_bottom(&mut self) {
         let count = self.row_count();
         if count > 0 {
             self.list_state.select(Some(count - 1));
@@ -501,7 +501,7 @@ impl App {
         }
     }
 
-    pub(super) fn expand_all_impl(&mut self) {
+    pub fn expand_all(&mut self) {
         let selected_path = self
             .selection_paths
             .collapsed_selected
@@ -540,7 +540,7 @@ impl App {
         }
     }
 
-    pub(super) fn collapse_all_impl(&mut self) {
+    pub fn collapse_all(&mut self) {
         let selected_path = self.selected_project().map(|project| project.path.clone());
         let anchor = self.selected_row().map(Self::collapse_anchor_row);
         self.expanded.clear();
@@ -561,7 +561,7 @@ impl App {
         }
     }
 
-    pub(super) fn scan_log_scroll_up_impl(&mut self) {
+    pub fn scan_log_scroll_up(&mut self) {
         if self.scan_log.is_empty() {
             return;
         }
@@ -571,7 +571,7 @@ impl App {
         }
     }
 
-    pub(super) fn scan_log_scroll_down_impl(&mut self) {
+    pub fn scan_log_scroll_down(&mut self) {
         if self.scan_log.is_empty() {
             return;
         }
@@ -581,20 +581,20 @@ impl App {
         }
     }
 
-    pub(super) const fn scan_log_to_top_impl(&mut self) {
+    pub const fn scan_log_to_top(&mut self) {
         if !self.scan_log.is_empty() {
             self.scan_log_state.select(Some(0));
         }
     }
 
-    pub(super) const fn scan_log_to_bottom_impl(&mut self) {
+    pub const fn scan_log_to_bottom(&mut self) {
         if !self.scan_log.is_empty() {
             self.scan_log_state
                 .select(Some(self.scan_log.len().saturating_sub(1)));
         }
     }
 
-    pub(super) fn cancel_search_impl(&mut self) {
+    pub fn cancel_search(&mut self) {
         self.end_search();
         self.search_query.clear();
         self.filtered.clear();
@@ -605,7 +605,7 @@ impl App {
         }
     }
 
-    pub(super) fn confirm_search_impl(&mut self) {
+    pub fn confirm_search(&mut self) {
         let project_path = self.selected_project().map(|p| p.path.clone());
         self.end_search();
         self.search_query.clear();
@@ -717,13 +717,13 @@ impl App {
         }
     }
 
-    pub(super) fn select_project_in_tree_impl(&mut self, target_path: &str) {
+    pub fn select_project_in_tree(&mut self, target_path: &str) {
         self.expand_path_in_tree(target_path);
         self.dirty.rows.mark_dirty();
         self.select_matching_visible_row(target_path);
     }
 
-    pub(super) fn update_search_impl(&mut self, query: &str) {
+    pub fn update_search(&mut self, query: &str) {
         self.search_query = query.to_string();
 
         if query.is_empty() {

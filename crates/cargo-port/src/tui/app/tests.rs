@@ -1,26 +1,36 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::sync::mpsc;
+use std::time::Duration;
+use std::time::Instant;
 
 use chrono::DateTime;
 use crossterm::event::KeyCode;
 
-use super::*;
+use super::snapshots;
+use super::types::*;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::ci::FetchStatus;
 use crate::config::Config;
+use crate::config::NonRustInclusion;
+use crate::config::ScrollDirection;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::port_report::LintStatus;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
+use crate::project::GitPathState;
 use crate::project::ProjectLanguage;
 use crate::project::RustProject;
 use crate::project::WorkspaceStatus;
+use crate::scan::BackgroundMsg;
 use crate::scan::MemberGroup;
 use crate::scan::ProjectNode;
+use crate::tui::shortcuts::InputContext;
+use crate::tui::toasts::ToastManager;
+use crate::tui::types::PaneId;
 
 fn test_http_client() -> HttpClient {
     static TEST_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -318,7 +328,7 @@ fn visible_rows_workspace_with_worktrees() {
     ]
     .into();
 
-    let rows = build_visible_rows(&[root], &expanded);
+    let rows = snapshots::build_visible_rows(&[root], &expanded);
 
     // Expected:
     // 0: Root(0)
@@ -387,7 +397,7 @@ fn visible_rows_non_workspace_worktrees() {
 
     // Standalone project with worktrees — flat, not expandable
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = build_visible_rows(&[build_root()], &expanded);
+    let rows = snapshots::build_visible_rows(&[build_root()], &expanded);
 
     // Root + 2 flat worktree entries
     assert_eq!(rows.len(), 3, "got: {rows:?}");
@@ -397,7 +407,7 @@ fn visible_rows_non_workspace_worktrees() {
 
     // Expanding a worktree with no groups produces no additional rows
     let expanded2: HashSet<ExpandKey> = [ExpandKey::Node(0), ExpandKey::Worktree(0, 0)].into();
-    let rows2 = build_visible_rows(&[build_root()], &expanded2);
+    let rows2 = snapshots::build_visible_rows(&[build_root()], &expanded2);
     assert_eq!(rows2.len(), 3, "no extra rows for non-workspace worktree");
 }
 
@@ -413,7 +423,7 @@ fn visible_rows_workspace_no_worktrees() {
     }];
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = build_visible_rows(&[root], &expanded);
+    let rows = snapshots::build_visible_rows(&[root], &expanded);
 
     // Root + 2 inline members
     assert_eq!(rows.len(), 3, "got: {rows:?}");
@@ -446,7 +456,7 @@ fn visible_rows_include_vendored_children() {
     root.vendored = vec![vendored];
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = build_visible_rows(&[root], &expanded);
+    let rows = snapshots::build_visible_rows(&[root], &expanded);
 
     assert_eq!(rows.len(), 3, "got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -534,7 +544,7 @@ fn non_owner_member_ignores_stale_ci_state_and_cannot_fetch() {
     assert_eq!(app.ci_for(&member), None);
     assert!(!app.bottom_panel_available(&member));
 
-    super::super::detail::handle_ci_runs_key(&mut app, KeyCode::Enter);
+    crate::tui::detail::handle_ci_runs_key(&mut app, KeyCode::Enter);
     assert!(app.pending_ci_fetch.is_none());
 }
 
@@ -994,7 +1004,7 @@ fn initial_disk_batch_count_groups_nested_projects_under_one_root() {
         make_project(Some("hana_core"), "~/rust/hana/crates/hana"),
     ];
 
-    assert_eq!(initial_disk_batch_count(&projects), 2);
+    assert_eq!(snapshots::initial_disk_batch_count(&projects), 2);
 }
 
 #[test]
@@ -1321,7 +1331,7 @@ fn disk_rollup_deduplicates_primary_worktree_path() {
 
     assert_eq!(app.disk_bytes_for_node(&root), Some(36));
     assert_eq!(
-        disk_bytes_for_node_snapshot(&root, &app.disk_usage),
+        snapshots::disk_bytes_for_node_snapshot(&root, &app.disk_usage),
         Some(36)
     );
     assert_eq!(

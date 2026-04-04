@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
-use super::App;
-use super::CiState;
+use super::types::App;
+use super::types::CiState;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::scan;

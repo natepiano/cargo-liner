@@ -1,0 +1,334 @@
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::time::Instant;
+
+use ratatui::widgets::ListState;
+
+use super::types::App;
+use super::types::AsyncBuildState;
+use super::types::BottomPanel;
+use super::types::BuildChannels;
+use super::types::ConfigFileStamp;
+use super::types::DirtyState;
+use super::types::FinderState;
+#[cfg(test)]
+use super::types::RetrySpawnMode;
+use super::types::ScanState;
+use super::types::SelectionPaths;
+use super::types::SelectionSync;
+use super::types::UiModes;
+use crate::config::Config;
+use crate::config::NonRustInclusion;
+use crate::http::HttpClient;
+use crate::lint_runtime;
+use crate::lint_runtime::RuntimeHandle;
+use crate::project::ProjectLanguage::Rust;
+use crate::project::RustProject;
+use crate::scan;
+use crate::scan::BackgroundMsg;
+use crate::scan::FlatEntry;
+use crate::scan::ProjectNode;
+use crate::tui::columns::ResolvedWidths;
+use crate::tui::terminal::CiFetchMsg;
+use crate::tui::terminal::CleanMsg;
+use crate::tui::terminal::ExampleMsg;
+use crate::tui::toasts::ToastManager;
+use crate::tui::types::LayoutCache;
+use crate::tui::types::Pane;
+use crate::tui::types::PaneId;
+use crate::watcher;
+use crate::watcher::WatchRequest;
+
+fn initial_list_state(nodes: &[ProjectNode]) -> ListState {
+    let mut state = ListState::default();
+    if !nodes.is_empty() {
+        state.select(Some(0));
+    }
+    state
+}
+
+pub(super) struct AppChannels {
+    example_tx:  mpsc::Sender<ExampleMsg>,
+    example_rx:  mpsc::Receiver<ExampleMsg>,
+    ci_fetch_tx: mpsc::Sender<CiFetchMsg>,
+    ci_fetch_rx: mpsc::Receiver<CiFetchMsg>,
+    clean_tx:    mpsc::Sender<CleanMsg>,
+    clean_rx:    mpsc::Receiver<CleanMsg>,
+}
+
+impl AppChannels {
+    fn new() -> Self {
+        let (example_tx, example_rx) = mpsc::channel();
+        let (ci_fetch_tx, ci_fetch_rx) = mpsc::channel();
+        let (clean_tx, clean_rx) = mpsc::channel();
+        Self {
+            example_tx,
+            example_rx,
+            ci_fetch_tx,
+            ci_fetch_rx,
+            clean_tx,
+            clean_rx,
+        }
+    }
+}
+
+struct AppInit {
+    config_path:      Option<PathBuf>,
+    config_last_seen: Option<ConfigFileStamp>,
+    lint_warning:     Option<String>,
+    lint_runtime:     Option<RuntimeHandle>,
+    watch_tx:         mpsc::Sender<WatchRequest>,
+    nodes:            Vec<ProjectNode>,
+    flat_entries:     Vec<FlatEntry>,
+    list_state:       ListState,
+}
+
+impl AppInit {
+    fn new(
+        scan_root: &Path,
+        projects: &[RustProject],
+        bg_tx: &mpsc::Sender<BackgroundMsg>,
+        cfg: &Config,
+        http_client: &HttpClient,
+    ) -> Self {
+        crate::config::set_active_config(cfg);
+        let config_path = crate::config::config_path();
+        let config_last_seen = config_path.as_deref().and_then(App::config_file_stamp);
+        let lint_spawn = lint_runtime::spawn(cfg, bg_tx.clone());
+        let watch_tx = watcher::spawn_watcher(
+            scan_root.to_path_buf(),
+            bg_tx.clone(),
+            cfg.tui.ci_run_count,
+            cfg.tui.include_non_rust,
+            cfg.lint.enabled,
+            cfg.tui.include_dirs.clone(),
+            http_client.clone(),
+        );
+        let tree_projects = App::filter_tree_projects(projects, cfg.tui.include_non_rust);
+        let nodes = scan::build_tree(&tree_projects, &cfg.tui.inline_dirs);
+        let flat_entries = scan::build_flat_entries(&nodes);
+        let list_state = initial_list_state(&nodes);
+
+        Self {
+            config_path,
+            config_last_seen,
+            lint_warning: lint_spawn.warning,
+            lint_runtime: lint_spawn.handle,
+            watch_tx,
+            nodes,
+            flat_entries,
+            list_state,
+        }
+    }
+}
+
+struct AppBuildInputs {
+    scan_root:       PathBuf,
+    projects:        Vec<RustProject>,
+    bg_tx:           mpsc::Sender<BackgroundMsg>,
+    bg_rx:           Receiver<BackgroundMsg>,
+    cfg:             Config,
+    http_client:     HttpClient,
+    scan_started_at: Instant,
+    channels:        AppChannels,
+    builds:          AsyncBuildState,
+    init:            AppInit,
+}
+
+impl App {
+    pub fn has_cached_non_rust_projects(&self) -> bool {
+        self.all_projects
+            .iter()
+            .any(|project| project.is_rust != Rust)
+    }
+
+    fn filter_tree_projects(
+        projects: &[RustProject],
+        include_non_rust: NonRustInclusion,
+    ) -> Vec<RustProject> {
+        if include_non_rust.includes_non_rust() {
+            projects.to_vec()
+        } else {
+            projects
+                .iter()
+                .filter(|project| project.is_rust == Rust)
+                .cloned()
+                .collect()
+        }
+    }
+
+    pub fn tree_projects_snapshot(&self) -> Vec<RustProject> {
+        Self::filter_tree_projects(&self.all_projects, self.include_non_rust())
+    }
+
+    fn initial_status_flash(init: &AppInit) -> Option<(String, Instant)> {
+        init.lint_warning
+            .clone()
+            .map(|warning| (warning, Instant::now()))
+    }
+
+    pub fn new(
+        scan_root: PathBuf,
+        projects: Vec<RustProject>,
+        bg_tx: mpsc::Sender<BackgroundMsg>,
+        bg_rx: Receiver<BackgroundMsg>,
+        cfg: &Config,
+        http_client: HttpClient,
+        scan_started_at: Instant,
+    ) -> Self {
+        let channels = AppChannels::new();
+        let builds = BuildChannels::new();
+        let init = AppInit::new(&scan_root, &projects, &bg_tx, cfg, &http_client);
+        let mut app = Self::build_app(AppBuildInputs {
+            scan_root,
+            projects,
+            bg_tx,
+            bg_rx,
+            cfg: cfg.clone(),
+            http_client,
+            scan_started_at,
+            channels,
+            builds: AsyncBuildState::new(builds),
+            init,
+        });
+        app.finish_new();
+        app
+    }
+
+    fn build_app(inputs: AppBuildInputs) -> Self {
+        let AppBuildInputs {
+            scan_root,
+            projects,
+            bg_tx,
+            bg_rx,
+            cfg,
+            http_client,
+            scan_started_at,
+            channels,
+            builds,
+            init,
+        } = inputs;
+        let status_flash = Self::initial_status_flash(&init);
+        Self {
+            current_config: cfg.clone(),
+            scan_root,
+            http_client,
+            all_projects: projects,
+            nodes: init.nodes,
+            flat_entries: init.flat_entries,
+            disk_usage: HashMap::new(),
+            ci_state: HashMap::new(),
+            lint_status: HashMap::new(),
+            port_report_runs: HashMap::new(),
+            lint_rollup_status: HashMap::new(),
+            lint_rollup_paths: HashMap::new(),
+            lint_rollup_keys_by_path: HashMap::new(),
+            git_info: HashMap::new(),
+            git_path_states: HashMap::new(),
+            cargo_active_paths: HashSet::new(),
+            crates_versions: HashMap::new(),
+            crates_downloads: HashMap::new(),
+            stars: HashMap::new(),
+            repo_descriptions: HashMap::new(),
+            bg_tx,
+            bg_rx,
+            fully_loaded: HashSet::new(),
+            priority_fetch_path: None,
+            expanded: HashSet::new(),
+            list_state: init.list_state,
+            search_query: String::new(),
+            filtered: Vec::new(),
+            settings_pane: Pane::new(),
+            settings_edit_buf: String::new(),
+            settings_edit_cursor: 0,
+            scan_log: Vec::new(),
+            scan_log_state: ListState::default(),
+            focused_pane: PaneId::ProjectList,
+            return_focus: None,
+            visited_panes: std::iter::once(PaneId::ProjectList).collect(),
+            package_pane: Pane::new(),
+            git_pane: Pane::new(),
+            targets_pane: Pane::new(),
+            ci_pane: Pane::new(),
+            toast_pane: Pane::new(),
+            port_report_pane: Pane::new(),
+            bottom_panel: BottomPanel::CiRuns,
+            pending_example_run: None,
+            pending_ci_fetch: None,
+            pending_cleans: VecDeque::new(),
+            confirm: None,
+            animation_started: Instant::now(),
+            ci_fetch_tx: channels.ci_fetch_tx,
+            ci_fetch_rx: channels.ci_fetch_rx,
+            clean_tx: channels.clean_tx,
+            clean_rx: channels.clean_rx,
+            example_running: None,
+            example_child: Arc::new(Mutex::new(None)),
+            example_output: Vec::new(),
+            example_tx: channels.example_tx,
+            example_rx: channels.example_rx,
+            running_lint_paths: HashSet::new(),
+            lint_toast: None,
+            watch_tx: init.watch_tx,
+            lint_runtime: init.lint_runtime,
+            unreachable_services: HashSet::new(),
+            service_retry_active: HashSet::new(),
+            #[cfg(test)]
+            retry_spawn_mode: RetrySpawnMode::Enabled,
+            deleted_projects: HashSet::new(),
+            selection_paths: SelectionPaths::new(),
+            finder: FinderState::new(),
+            cached_visible_rows: Vec::new(),
+            cached_root_sorted: Vec::new(),
+            cached_child_sorted: HashMap::new(),
+            cached_fit_widths: ResolvedWidths::new(cfg.lint.enabled),
+            builds,
+            data_generation: 0,
+            detail_generation: 0,
+            cached_detail: None,
+            layout_cache: LayoutCache::default(),
+            status_flash,
+            toasts: ToastManager::default(),
+            config_path: init.config_path,
+            config_last_seen: init.config_last_seen,
+            ui_modes: UiModes::default(),
+            dirty: DirtyState::initial(),
+            scan: ScanState::new(scan_started_at),
+            selection: SelectionSync::Stable,
+        }
+    }
+
+    fn finish_new(&mut self) {
+        if let Some(warning) = self
+            .status_flash
+            .as_ref()
+            .map(|(warning, _)| warning.clone())
+        {
+            self.show_timed_toast("Lint runtime", warning.clone());
+            self.scan_log.push(warning);
+            self.scan_log_state.select(Some(0));
+        }
+        if self.current_config.tui.include_dirs.is_empty() {
+            self.show_timed_toast(
+                "Scan root",
+                format!(
+                    "Using {}. Set include_dirs in Settings to limit scan scope.",
+                    crate::project::home_relative_path(&self.scan_root)
+                ),
+            );
+        }
+        self.recompute_cargo_active_paths();
+        self.prune_inactive_project_state();
+        self.register_existing_projects();
+        self.sync_lint_runtime_projects();
+        self.refresh_port_report_histories_from_disk();
+        self.rebuild_lint_rollups();
+    }
+}
