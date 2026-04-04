@@ -293,7 +293,7 @@ fn run_with_commands(run_id: &str, started_at: &str) -> PortReportRun {
                 status:      PortReportCommandStatus::Passed,
                 duration_ms: Some(3_000),
                 exit_code:   Some(0),
-                log_file:    "port-report/clippy-latest.log".to_string(),
+                log_file:    "clippy-latest.log".to_string(),
             },
             PortReportCommand {
                 name:        "mend".to_string(),
@@ -301,7 +301,7 @@ fn run_with_commands(run_id: &str, started_at: &str) -> PortReportRun {
                 status:      PortReportCommandStatus::Passed,
                 duration_ms: Some(2_000),
                 exit_code:   Some(0),
-                log_file:    "port-report/mend-latest.log".to_string(),
+                log_file:    "mend-latest.log".to_string(),
             },
         ],
     }
@@ -334,18 +334,12 @@ fn archive_run_copies_logs_to_run_id_directory() {
 
     // Archived run should have updated log_file paths pointing at runs/{run_id}/
     assert_eq!(archived.commands.len(), 2);
-    assert_eq!(
-        archived.commands[0].log_file,
-        "port-report/runs/run-abc/clippy.log"
-    );
-    assert_eq!(
-        archived.commands[1].log_file,
-        "port-report/runs/run-abc/mend.log"
-    );
+    assert_eq!(archived.commands[0].log_file, "runs/run-abc/clippy.log");
+    assert_eq!(archived.commands[1].log_file, "runs/run-abc/mend.log");
 
     // Archived files should exist on disk
     let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
-    let run_dir = project_cache.join("port-report/runs/run-abc");
+    let run_dir = project_cache.join("runs/run-abc");
     assert!(run_dir.join("clippy.log").exists());
     assert!(run_dir.join("mend.log").exists());
 
@@ -370,14 +364,11 @@ fn archive_run_with_missing_logs_still_succeeds() {
         .expect("archive");
 
     // Paths updated even if files don't exist
-    assert_eq!(
-        archived.commands[0].log_file,
-        "port-report/runs/run-missing/clippy.log"
-    );
+    assert_eq!(archived.commands[0].log_file, "runs/run-missing/clippy.log");
 
     // No archived file on disk (nothing to copy)
     let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
-    let run_dir = project_cache.join("port-report/runs/run-missing");
+    let run_dir = project_cache.join("runs/run-missing");
     assert!(!run_dir.join("clippy.log").exists());
 }
 
@@ -422,13 +413,13 @@ fn prune_removes_oldest_run_directory_and_history_line() {
     // Older run's archived directory should be deleted
     let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
     assert!(
-        !project_cache.join("port-report/runs/run-older").exists(),
+        !project_cache.join("runs/run-older").exists(),
         "older run directory should be pruned"
     );
 
     // Newer run's archived directory should still exist
     assert!(
-        project_cache.join("port-report/runs/run-newer").exists(),
+        project_cache.join("runs/run-newer").exists(),
         "newer run directory should survive"
     );
 }
@@ -475,7 +466,7 @@ fn prune_across_projects_removes_globally_oldest() {
     // Project A's archived directory should be deleted
     let cache_a = paths::project_dir_under(cache_dir.path(), project_a.path());
     assert!(
-        !cache_a.join("port-report/runs/run-old-a").exists(),
+        !cache_a.join("runs/run-old-a").exists(),
         "pruned run directory should be deleted"
     );
 }
@@ -504,5 +495,5 @@ fn prune_no_op_when_under_budget() {
     assert_eq!(runs[0].run_id, "run-keep");
 
     let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
-    assert!(project_cache.join("port-report/runs/run-keep").exists());
+    assert!(project_cache.join("runs/run-keep").exists());
 }

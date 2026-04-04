@@ -293,7 +293,7 @@ impl App {
         self.refresh_lint_history_usage_from_disk();
     }
 
-    pub(super) fn refresh_lint_history_usage_from_disk(&mut self) {
+    pub fn refresh_lint_history_usage_from_disk(&mut self) {
         let history_budget_bytes = self
             .current_config
             .port_report

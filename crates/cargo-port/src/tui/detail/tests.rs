@@ -197,7 +197,7 @@ fn lint_commands_summary_for_passed_run() {
                 status:      PortReportCommandStatus::Passed,
                 duration_ms: Some(1_000),
                 exit_code:   Some(0),
-                log_file:    "port-report/mend-latest.log".to_string(),
+                log_file:    "mend-latest.log".to_string(),
             },
             PortReportCommand {
                 name:        "clippy".to_string(),
@@ -205,7 +205,7 @@ fn lint_commands_summary_for_passed_run() {
                 status:      PortReportCommandStatus::Passed,
                 duration_ms: Some(2_000),
                 exit_code:   Some(0),
-                log_file:    "port-report/clippy-latest.log".to_string(),
+                log_file:    "clippy-latest.log".to_string(),
             },
         ],
     );
@@ -226,7 +226,7 @@ fn lint_commands_summary_for_failed_run() {
                 status:      PortReportCommandStatus::Passed,
                 duration_ms: Some(1_000),
                 exit_code:   Some(0),
-                log_file:    "port-report/mend-latest.log".to_string(),
+                log_file:    "mend-latest.log".to_string(),
             },
             PortReportCommand {
                 name:        "clippy".to_string(),
@@ -234,7 +234,7 @@ fn lint_commands_summary_for_failed_run() {
                 status:      PortReportCommandStatus::Failed,
                 duration_ms: Some(2_000),
                 exit_code:   Some(101),
-                log_file:    "port-report/clippy-latest.log".to_string(),
+                log_file:    "clippy-latest.log".to_string(),
             },
         ],
     );
@@ -255,7 +255,7 @@ fn lint_commands_summary_for_running_run() {
                 status:      PortReportCommandStatus::Passed,
                 duration_ms: Some(1_000),
                 exit_code:   Some(0),
-                log_file:    "port-report/mend-latest.log".to_string(),
+                log_file:    "mend-latest.log".to_string(),
             },
             PortReportCommand {
                 name:        "clippy".to_string(),
@@ -263,7 +263,7 @@ fn lint_commands_summary_for_running_run() {
                 status:      PortReportCommandStatus::Pending,
                 duration_ms: None,
                 exit_code:   None,
-                log_file:    "port-report/clippy-latest.log".to_string(),
+                log_file:    "clippy-latest.log".to_string(),
             },
         ],
     );

@@ -13,7 +13,7 @@ use super::paths;
 use super::read_write;
 use super::status;
 use super::types::PortReportRun;
-use crate::constants::PORT_REPORT_HISTORY_JSONL;
+use crate::constants::LINTS_HISTORY_JSONL;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HistoryUsage {
@@ -36,7 +36,7 @@ pub(super) fn retained_history_usage_under(
 }
 
 /// Archive command output from rolling `*-latest.log` files into a stable
-/// per-run directory: `port-report/runs/{run_id}/{command_name}.log`.
+/// per-run directory: `runs/{run_id}/{command_name}.log`.
 ///
 /// Returns a clone of the run with `log_file` paths updated to point at the
 /// archived location. The original `*-latest.log` files are left in place as
@@ -55,7 +55,7 @@ pub(super) fn archive_run_output(
 
     for command in &mut archived.commands {
         let archived_name = format!("{}.log", command.name);
-        let archived_rel = format!("port-report/runs/{}/{archived_name}", run.run_id);
+        let archived_rel = format!("runs/{}/{archived_name}", run.run_id);
 
         // Resolve the source from the old relative log_file path
         let source = project_dir.join(&command.log_file);
@@ -150,13 +150,12 @@ fn history_line_sort_key(run: &PortReportRun) -> i64 {
 /// and its archived output directory.
 #[derive(Debug)]
 struct PrunableRun {
-    history_path: PathBuf,
-    line_index:   usize,
-    sort_key:     i64,
-    run_id:       String,
-    /// Parent directory of the `runs/{run_id}/` archive, i.e. the
-    /// `port-report/` output dir for this project.
-    output_dir:   PathBuf,
+    history_path:      PathBuf,
+    line_index:        usize,
+    sort_key:          i64,
+    run_id:            String,
+    /// Project cache directory containing `runs/{run_id}/` archives.
+    project_cache_dir: PathBuf,
 }
 
 /// Collect all runs across all history files, paired with their archive
@@ -168,13 +167,10 @@ fn collect_prunable_runs(cache_root: &Path) -> io::Result<Vec<PrunableRun>> {
         .into_iter()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file())
-        .filter(|entry| entry.file_name() == PORT_REPORT_HISTORY_JSONL)
+        .filter(|entry| entry.file_name() == LINTS_HISTORY_JSONL)
         .map(walkdir::DirEntry::into_path)
     {
-        // The output dir is the sibling `port-report/` next to the history
-        // file: `{project_key}/history.jsonl` → `{project_key}/port-report/`
         let project_cache_dir = history_path.parent().unwrap_or_else(|| Path::new(""));
-        let output_dir = project_cache_dir.join("port-report");
 
         let file = File::open(&history_path)?;
         let reader = BufReader::new(file);
@@ -188,7 +184,7 @@ fn collect_prunable_runs(cache_root: &Path) -> io::Result<Vec<PrunableRun>> {
                 line_index,
                 sort_key: history_line_sort_key(&run),
                 run_id: run.run_id,
-                output_dir: output_dir.clone(),
+                project_cache_dir: project_cache_dir.to_path_buf(),
             });
         }
     }
@@ -247,7 +243,7 @@ fn prune_runs_under(cache_root: &Path, budget: u64) -> io::Result<()> {
         }
 
         // Remove the archived output directory for this run.
-        let run_dir = run.output_dir.join("runs").join(&run.run_id);
+        let run_dir = run.project_cache_dir.join("runs").join(&run.run_id);
         if run_dir.is_dir() {
             let dir_bytes = total_bytes_under(&run_dir);
             std::fs::remove_dir_all(&run_dir).ok();

@@ -140,6 +140,7 @@ pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
             KeyCode::Home => app.port_report_pane.home(),
             KeyCode::End => app.port_report_pane.end(),
             KeyCode::Enter => open_lint_run_output(app),
+            KeyCode::Char('c') => clear_lint_history(app),
             KeyCode::Char('p') => app.toggle_bottom_panel(),
             _ => {},
         }
@@ -210,6 +211,20 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
         },
     );
     app.ci_pane.home();
+    app.data_generation += 1;
+}
+
+fn clear_lint_history(app: &mut App) {
+    let Some(project) = app.selected_project() else {
+        return;
+    };
+    let project_cache_dir = crate::lint::project_dir(std::path::Path::new(&project.abs_path));
+    let _ = std::fs::remove_dir_all(project_cache_dir);
+
+    let path = project.path.clone();
+    app.port_report_runs.remove(&path);
+    app.port_report_pane.home();
+    app.refresh_lint_history_usage_from_disk();
     app.data_generation += 1;
 }
 

@@ -35,7 +35,7 @@ pub const GH_TIMEOUT: Duration = Duration::from_secs(5);
 // ── Cache constants ───────────────────────────────────────────────────
 
 pub const CI_CACHE_DIR: &str = "ci";
-pub const PORT_REPORT_CACHE_DIR: &str = "port-report";
+pub const LINTS_CACHE_DIR: &str = "lint-runs";
 
 // ── Scan constants ────────────────────────────────────────────────────
 
@@ -70,8 +70,8 @@ pub const WATCHER_GIT_CONCURRENCY: usize = 2;
 
 // ── Lint history constants ───────────────────────────────────────────
 
-pub const PORT_REPORT_LATEST_JSON: &str = "latest.json";
-pub const PORT_REPORT_HISTORY_JSONL: &str = "history.jsonl";
+pub const LINTS_LATEST_JSON: &str = "latest.json";
+pub const LINTS_HISTORY_JSONL: &str = "history.jsonl";
 
 /// A `started` entry older than this is considered stale (crashed watcher).
 pub const STALE_TIMEOUT: Duration = Duration::from_secs(30 * 60);

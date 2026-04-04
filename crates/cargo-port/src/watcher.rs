@@ -93,10 +93,10 @@ struct WatcherLoopContext {
 
 /// Per-project tracking state.
 struct ProjectEntry {
-    project_path:         String,
-    abs_path:             PathBuf,
-    repo_root:            Option<PathBuf>,
-    port_report_dir_path: PathBuf,
+    project_path:   String,
+    abs_path:       PathBuf,
+    repo_root:      Option<PathBuf>,
+    lint_cache_dir: PathBuf,
 }
 
 enum DiskState {
@@ -259,10 +259,10 @@ fn drain_watch_requests(
                 projects.insert(
                     req.abs_path.clone(),
                     ProjectEntry {
-                        project_path:         req.project_path,
-                        abs_path:             req.abs_path.clone(),
-                        repo_root:            req.repo_root,
-                        port_report_dir_path: lint::project_dir(&req.abs_path),
+                        project_path:   req.project_path,
+                        abs_path:       req.abs_path.clone(),
+                        repo_root:      req.repo_root,
+                        lint_cache_dir: lint::project_dir(&req.abs_path),
                     },
                 );
             },
@@ -380,7 +380,7 @@ fn handle_event(
     if let Some(entry) = ctx
         .projects
         .values()
-        .find(|entry| event_path.starts_with(&entry.port_report_dir_path))
+        .find(|entry| event_path.starts_with(&entry.lint_cache_dir))
     {
         let status = lint::read_status(&entry.abs_path);
         let _ = bg_tx.send(BackgroundMsg::LintStatus {
@@ -1244,10 +1244,10 @@ mod tests {
         (
             abs_path.to_path_buf(),
             ProjectEntry {
-                project_path:         project_path.to_string(),
-                abs_path:             abs_path.to_path_buf(),
-                repo_root:            None,
-                port_report_dir_path: lint::project_dir(abs_path),
+                project_path:   project_path.to_string(),
+                abs_path:       abs_path.to_path_buf(),
+                repo_root:      None,
+                lint_cache_dir: lint::project_dir(abs_path),
             },
         )
     }
@@ -1365,19 +1365,19 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path:         "~/my_project".to_string(),
-                abs_path:             project_dir.clone(),
-                repo_root:            Some(project_dir.clone()),
-                port_report_dir_path: lint::project_dir(&project_dir),
+                project_path:   "~/my_project".to_string(),
+                abs_path:       project_dir.clone(),
+                repo_root:      Some(project_dir.clone()),
+                lint_cache_dir: lint::project_dir(&project_dir),
             },
         );
         projects.insert(
             member_dir.clone(),
             ProjectEntry {
-                project_path:         "~/my_project/crates/member".to_string(),
-                abs_path:             member_dir.clone(),
-                repo_root:            Some(project_dir.clone()),
-                port_report_dir_path: lint::project_dir(&member_dir),
+                project_path:   "~/my_project/crates/member".to_string(),
+                abs_path:       member_dir.clone(),
+                repo_root:      Some(project_dir.clone()),
+                lint_cache_dir: lint::project_dir(&member_dir),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1469,10 +1469,10 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path:         "~/my_project".to_string(),
-                abs_path:             project_dir.clone(),
-                repo_root:            Some(project_dir.clone()),
-                port_report_dir_path: lint::project_dir(&project_dir),
+                project_path:   "~/my_project".to_string(),
+                abs_path:       project_dir.clone(),
+                repo_root:      Some(project_dir.clone()),
+                lint_cache_dir: lint::project_dir(&project_dir),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1516,19 +1516,19 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path:         "~/my_project".to_string(),
-                abs_path:             project_dir.clone(),
-                repo_root:            Some(project_dir.clone()),
-                port_report_dir_path: lint::project_dir(&project_dir),
+                project_path:   "~/my_project".to_string(),
+                abs_path:       project_dir.clone(),
+                repo_root:      Some(project_dir.clone()),
+                lint_cache_dir: lint::project_dir(&project_dir),
             },
         );
         projects.insert(
             member_dir.clone(),
             ProjectEntry {
-                project_path:         "~/my_project/crates/member".to_string(),
-                abs_path:             member_dir.clone(),
-                repo_root:            Some(project_dir.clone()),
-                port_report_dir_path: lint::project_dir(&member_dir),
+                project_path:   "~/my_project/crates/member".to_string(),
+                abs_path:       member_dir.clone(),
+                repo_root:      Some(project_dir.clone()),
+                lint_cache_dir: lint::project_dir(&member_dir),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1617,7 +1617,7 @@ edition = "2024"
         projects.insert(key, entry);
 
         std::fs::create_dir_all(latest_path.parent().expect("latest file has parent"))
-            .expect("create cache port-report dir");
+            .expect("create cache lint-runs dir");
         std::fs::write(
             &latest_path,
             r#"{"run_id":"run-1","started_at":"2026-03-30T14:22:01-05:00","finished_at":"2026-03-30T14:22:18-05:00","duration_ms":17000,"status":"passed","commands":[]}"#,
@@ -1666,13 +1666,11 @@ edition = "2024"
         let mut projects = HashMap::new();
         let (key, entry) = make_project_entry(project_path, project_root.path());
         let latest_path = lint::latest_path_under(&lint::cache_root(), project_root.path());
-        let child_path = entry
-            .port_report_dir_path
-            .join("port-report/clippy-latest.log");
+        let child_path = entry.lint_cache_dir.join("clippy-latest.log");
         projects.insert(key, entry);
 
         std::fs::create_dir_all(child_path.parent().expect("child file has parent"))
-            .expect("create cache port-report child dir");
+            .expect("create cache lint-runs child dir");
         std::fs::write(
             &latest_path,
             r#"{"run_id":"run-1","started_at":"2026-03-30T14:22:01-05:00","finished_at":"2026-03-30T14:22:18-05:00","duration_ms":17000,"status":"failed","commands":[]}"#,
@@ -1916,10 +1914,10 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path:         "~/my_project".to_string(),
-                abs_path:             project_dir.clone(),
-                repo_root:            Some(project_dir.clone()),
-                port_report_dir_path: lint::project_dir(&project_dir),
+                project_path:   "~/my_project".to_string(),
+                abs_path:       project_dir.clone(),
+                repo_root:      Some(project_dir.clone()),
+                lint_cache_dir: lint::project_dir(&project_dir),
             },
         );
 
@@ -1975,10 +1973,10 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path:         "~/no_git".to_string(),
-                abs_path:             project_dir.clone(),
-                repo_root:            None,
-                port_report_dir_path: lint::project_dir(&project_dir),
+                project_path:   "~/no_git".to_string(),
+                abs_path:       project_dir.clone(),
+                repo_root:      None,
+                lint_cache_dir: lint::project_dir(&project_dir),
             },
         );
 

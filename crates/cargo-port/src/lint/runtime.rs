@@ -107,7 +107,7 @@ pub fn spawn(config: &Config, bg_tx: mpsc::Sender<BackgroundMsg>) -> SpawnResult
         };
     }
 
-    let cache_root = cache_paths::port_report_root_for(config);
+    let cache_root = cache_paths::lint_runs_root_for(config);
     let history_budget_bytes = config.port_report.history_budget_bytes().unwrap_or(None);
     let lint = config.lint.clone();
     let (tx, rx) = mpsc::channel();
@@ -433,7 +433,7 @@ pub fn run_commands_for_project(
                     status:      PortReportCommandStatus::Pending,
                     duration_ms: None,
                     exit_code:   None,
-                    log_file:    format!("port-report/{log_name}-latest.log"),
+                    log_file:    format!("{log_name}-latest.log"),
                 }
             })
             .collect(),
@@ -521,7 +521,7 @@ fn run_command(
         .current_dir(project_root)
         .env("PROJECT_DIR", project_root)
         .env("MANIFEST_PATH", manifest_path)
-        .env("PORT_REPORT_DIR", output_dir)
+        .env("LINT_OUTPUT_DIR", output_dir)
         .output();
 
     let (success, exit_code, bytes) = match shell_output {
@@ -696,7 +696,7 @@ mod tests {
 
         let mut cfg = Config::default();
         cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
-        let cache_root = cache_paths::port_report_root_for(&cfg);
+        let cache_root = cache_paths::lint_runs_root_for(&cfg);
         let commands = vec![LintCommandConfig {
             name:    "echo".to_string(),
             command: "printf 'lint ok\\n'".to_string(),
