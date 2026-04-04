@@ -2265,14 +2265,72 @@ fn impl_item_is_exposed_by_exported_self_type(
                 _ => false,
             };
 
-            if is_target
-                && type_is_exposed_outside_parent(settings, src_root, child_file, &self_type_name)?
-            {
-                return Ok(true);
+            if is_target {
+                let definition_file = find_type_definition_file(child_file, &self_type_name)?;
+                let check_file = definition_file.as_deref().unwrap_or(child_file);
+                if type_is_exposed_outside_parent(settings, src_root, check_file, &self_type_name)?
+                {
+                    return Ok(true);
+                }
             }
         }
     }
 
+    Ok(false)
+}
+
+/// When an `impl` block for a type lives in a different child module than the
+/// type definition (e.g. `impl App` in `focus.rs` while `struct App` is in
+/// `types.rs`), the exposure check must use the definition file — not the impl
+/// file — so that `parent_facade_export_status` resolves the correct child
+/// module name.
+///
+/// Returns `Some(path)` if the type is defined in a sibling file, `None` if it
+/// is defined in `child_file` itself or cannot be located.
+fn find_type_definition_file(child_file: &Path, type_name: &str) -> Result<Option<PathBuf>> {
+    let source = fs::read_to_string(child_file)
+        .with_context(|| format!("failed to read {}", child_file.display()))?;
+    if file_defines_type(&source, type_name)? {
+        return Ok(None);
+    }
+
+    let Some(parent_dir) = child_file.parent() else {
+        return Ok(None);
+    };
+    for entry in fs::read_dir(parent_dir)
+        .with_context(|| format!("failed to read directory {}", parent_dir.display()))?
+    {
+        let path = entry?.path();
+        if path == child_file
+            || path.extension().and_then(|ext| ext.to_str()) != Some("rs")
+            || path.is_dir()
+        {
+            continue;
+        }
+        let sibling_source = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        if file_defines_type(&sibling_source, type_name)? {
+            return Ok(Some(path));
+        }
+    }
+
+    Ok(None)
+}
+
+fn file_defines_type(source: &str, type_name: &str) -> Result<bool> {
+    let file = syn::parse_file(source).context("failed to parse source")?;
+    for item in &file.items {
+        let name = match item {
+            syn::Item::Struct(item) => &item.ident,
+            syn::Item::Enum(item) => &item.ident,
+            syn::Item::Type(item) => &item.ident,
+            syn::Item::Union(item) => &item.ident,
+            _ => continue,
+        };
+        if name == type_name {
+            return Ok(true);
+        }
+    }
     Ok(false)
 }
 

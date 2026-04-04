@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fix `suspicious-pub` false positives for methods on types whose definition and `impl` blocks live in separate child modules
+
 ## [0.3.0] - 2026-04-03
 
 ### Added

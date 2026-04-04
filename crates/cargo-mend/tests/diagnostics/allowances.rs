@@ -1314,3 +1314,88 @@ edition = "2024"
         .collect::<BTreeSet<_>>();
     assert!(codes.contains("wildcard_parent_pub_use"));
 }
+
+#[test]
+fn suspicious_pub_not_triggered_for_impl_methods_on_type_defined_in_sibling_child_module() {
+    let temp = tempdir().expect("create temp fixture dir");
+    fs::create_dir_all(temp.path().join("src/tui/app")).expect("create src/tui/app");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "impl_method_sibling_type_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod tui;
+
+fn main() {
+    let app = tui::app::App::new();
+    tui::run(&app);
+}
+"#,
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/tui.rs"),
+        r#"pub mod app;
+
+pub fn run(app: &app::App) {
+    let _ = app.is_searching();
+}
+"#,
+    )
+    .expect("write tui facade");
+    fs::write(
+        temp.path().join("src/tui/app.rs"),
+        r#"mod types;
+mod focus;
+
+pub use types::App;
+"#,
+    )
+    .expect("write app facade");
+    fs::write(
+        temp.path().join("src/tui/app/types.rs"),
+        r#"pub struct App {
+    pub searching: bool,
+}
+
+impl App {
+    pub fn new() -> Self {
+        Self { searching: false }
+    }
+}
+"#,
+    )
+    .expect("write types child");
+    fs::write(
+        temp.path().join("src/tui/app/focus.rs"),
+        r#"use super::App;
+
+impl App {
+    pub fn is_searching(&self) -> bool {
+        self.searching
+    }
+}
+"#,
+    )
+    .expect("write focus child");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let focus_findings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.code == DiagnosticCode::SuspiciousPub && finding.path == "src/tui/app/focus.rs"
+        })
+        .collect();
+    assert!(
+        focus_findings.is_empty(),
+        "expected no suspicious_pub for impl method on type defined in sibling child module \
+         and re-exported from parent, got: {focus_findings:#?}",
+    );
+}
