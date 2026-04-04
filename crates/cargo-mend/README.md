@@ -551,6 +551,29 @@ Today, that auto-fix mode is intentionally narrow:
 - it preserves the original import visibility (`use`, `pub use`, `pub(crate) use`, and so on)
 - it rolls the edits back automatically if the follow-up `cargo check` fails
 
+<a id="replace-deep-super-import"></a>
+### Replace deep `super::` import
+
+`super::super::` and deeper chains force the reader to count hops to figure out where the import
+lands. When a single `super::` is not enough, a named `crate::` path is immediately clear.
+
+Example:
+
+```rust
+// src/tui/columns/render.rs
+
+// flagged — deep super chain
+use super::super::ResolvedWidths;
+
+// preferred — named crate path
+use crate::tui::ResolvedWidths;
+```
+
+This applies at any depth: `super::super::super::` and beyond are all rewritten to the equivalent
+`crate::` path.
+
+`cargo mend --fix` can rewrite these cases automatically.
+
 <a id="prefer-module-import"></a>
 ### Prefer module import
 

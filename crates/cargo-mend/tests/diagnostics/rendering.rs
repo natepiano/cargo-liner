@@ -36,6 +36,7 @@ fn create_all_diagnostics_fixture() -> tempfile::TempDir {
         "src/type_parent",
         "src/func_parent",
         "src/internal_parent",
+        "src/deep_parent/nested",
     ] {
         fs::create_dir_all(temp.path().join(dir)).expect("create fixture dir");
     }
@@ -58,6 +59,7 @@ mod stale_parent;
 mod wild_parent;
 mod func_parent;
 mod type_parent;
+mod deep_parent;
 pub mod review_mod;
 pub use private_parent::PublicContainer;
 
@@ -160,6 +162,18 @@ pub struct Suspicious;
         "pub struct WildExport;\n",
     )
     .expect("write wildcard child");
+    fs::write(
+        root.join("src/deep_parent/mod.rs"),
+        "mod nested;\npub struct DeepTarget;\n",
+    )
+    .expect("write deep parent mod");
+    fs::write(root.join("src/deep_parent/nested/mod.rs"), "mod leaf;\n")
+        .expect("write deep nested mod");
+    fs::write(
+        root.join("src/deep_parent/nested/leaf.rs"),
+        "use super::super::DeepTarget;\n\nfn use_it(_target: DeepTarget) {}\n",
+    )
+    .expect("write deep leaf");
 }
 
 fn assert_rendered_diagnostics(report: &Report, rendered: &str) {
@@ -233,7 +247,7 @@ fn fixture_renders_every_current_diagnostic() {
         codes, expected_codes,
         "fixture should trigger every diagnostic at least once"
     );
-    assert_eq!(report.findings.len(), 10);
+    assert_eq!(report.findings.len(), 11);
     assert_summary_matches_findings(&report);
 
     let rendered_output = mend_command()

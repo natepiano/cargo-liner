@@ -77,6 +77,14 @@ pub const DIAGNOSTICS: &[DiagnosticSpec] = &[
         fix_support: FixSupport::ShortenImport,
     },
     DiagnosticSpec {
+        code:        "replace_deep_super_import",
+        headline:    "deep `super::` chain should use a `crate::` path",
+        inline_help: None,
+        help_anchor: "replace-deep-super-import",
+        detail_mode: DetailMode::MessageRelatedAndFix,
+        fix_support: FixSupport::ShortenImport,
+    },
+    DiagnosticSpec {
         code:        "wildcard_parent_pub_use",
         headline:    "parent module `pub use *` should be explicit",
         inline_help: Some("consider re-exporting explicit items instead of `*`"),

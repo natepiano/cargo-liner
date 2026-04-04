@@ -25,6 +25,7 @@ pub enum DiagnosticCode {
     PreferModuleImport,
     InlinePathQualifiedType,
     ShortenLocalCrateImport,
+    ReplaceDeepSuperImport,
     WildcardParentPubUse,
     InternalParentPubUseFacade,
 }
@@ -38,6 +39,7 @@ impl DiagnosticCode {
         Self::PreferModuleImport,
         Self::InlinePathQualifiedType,
         Self::ShortenLocalCrateImport,
+        Self::ReplaceDeepSuperImport,
         Self::WildcardParentPubUse,
         Self::InternalParentPubUseFacade,
     ];
@@ -51,6 +53,7 @@ impl DiagnosticCode {
             Self::PreferModuleImport => "prefer_module_import",
             Self::InlinePathQualifiedType => "inline_path_qualified_type",
             Self::ShortenLocalCrateImport => "shorten_local_crate_import",
+            Self::ReplaceDeepSuperImport => "replace_deep_super_import",
             Self::WildcardParentPubUse => "wildcard_parent_pub_use",
             Self::InternalParentPubUseFacade => "internal_parent_pub_use_facade",
         }
@@ -139,6 +142,7 @@ suspicious_pub = true
 prefer_module_import = true
 inline_path_qualified_type = true
 shorten_local_crate_import = true
+replace_deep_super_import = true
 wildcard_parent_pub_use = true
 internal_parent_pub_use_facade = true
 ";

@@ -69,7 +69,8 @@ impl<'a> MendRunner<'a> {
             .map_err(Self::build_report_failure_into_mend_failure)?;
         let diagnostics = &self.config.diagnostics;
         let import_scan = (mode.fixes.contains(FixKind::ShortenImport)
-            && diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport))
+            && (diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
+                || diagnostics.is_enabled(DiagnosticCode::ReplaceDeepSuperImport)))
         .then(|| imports::scan_selection(self.selection))
         .transpose()
         .map_err(MendFailure::Unexpected)?;
@@ -267,7 +268,9 @@ impl<'a> MendRunner<'a> {
         let mut report = compiler::run_selection(self.selection, self.config, output_mode)
             .map_err(Self::mend_failure_into_build_report_failure)?;
         let diagnostics = &self.config.diagnostics;
-        if diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport) {
+        if diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
+            || diagnostics.is_enabled(DiagnosticCode::ReplaceDeepSuperImport)
+        {
             let import_scan =
                 imports::scan_selection(self.selection).map_err(BuildReportFailure::Unexpected)?;
             report.findings.extend(import_scan.findings);

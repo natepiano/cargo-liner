@@ -570,3 +570,167 @@ edition = "2024"
             .any(|finding| finding.code == "shorten_local_crate_import")
     );
 }
+
+#[test]
+fn deep_super_is_flagged_and_fixed() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "deep_super_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/tui/columns")).expect("create src/tui/columns");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod tui;\n\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/tui/mod.rs"),
+        "mod columns;\npub struct ResolvedWidths;\n",
+    )
+    .expect("write tui mod");
+    fs::write(temp.path().join("src/tui/columns/mod.rs"), "mod render;\n")
+        .expect("write columns mod");
+    fs::write(
+        temp.path().join("src/tui/columns/render.rs"),
+        "use super::super::ResolvedWidths;\n\nfn use_it(_widths: ResolvedWidths) {}\n",
+    )
+    .expect("write render");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "replace_deep_super_import"),
+        "deep super::super:: should trigger replace_deep_super_import, got: {:?}",
+        report.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+    );
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let render =
+        fs::read_to_string(temp.path().join("src/tui/columns/render.rs")).expect("read fixed file");
+    assert!(
+        render.contains("use crate::tui::ResolvedWidths;"),
+        "expected crate::tui::ResolvedWidths, got: {render}"
+    );
+    assert!(!render.contains("use super::super::ResolvedWidths;"));
+}
+
+#[test]
+fn triple_super_is_flagged_and_fixed() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "triple_super_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create src/a/b/c");
+    fs::write(temp.path().join("src/main.rs"), "mod a;\n\nfn main() {}\n").expect("write main");
+    fs::write(
+        temp.path().join("src/a/mod.rs"),
+        "mod b;\npub struct Root;\n",
+    )
+    .expect("write a mod");
+    fs::write(temp.path().join("src/a/b/mod.rs"), "mod c;\n").expect("write b mod");
+    fs::write(temp.path().join("src/a/b/c/mod.rs"), "mod leaf;\n").expect("write c mod");
+    fs::write(
+        temp.path().join("src/a/b/c/leaf.rs"),
+        "use super::super::super::Root;\n\nfn use_it(_root: Root) {}\n",
+    )
+    .expect("write leaf");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "replace_deep_super_import"),
+        "super::super::super:: should trigger replace_deep_super_import, got: {:?}",
+        report.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+    );
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let leaf = fs::read_to_string(temp.path().join("src/a/b/c/leaf.rs")).expect("read fixed file");
+    assert!(
+        leaf.contains("use crate::a::Root;"),
+        "expected crate::a::Root, got: {leaf}"
+    );
+    assert!(!leaf.contains("super::super::super::"));
+}
+
+#[test]
+fn single_super_is_not_flagged_as_deep() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "single_super_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/outer")).expect("create src/outer");
+    fs::write(temp.path().join("src/lib.rs"), "mod outer;\n").expect("write lib");
+    fs::write(
+        temp.path().join("src/outer/mod.rs"),
+        "mod child;\nmod sibling;\n",
+    )
+    .expect("write outer mod");
+    fs::write(
+        temp.path().join("src/outer/child.rs"),
+        "pub struct Thing;\n",
+    )
+    .expect("write child");
+    fs::write(
+        temp.path().join("src/outer/sibling.rs"),
+        "use super::child::Thing;\n\nfn use_it(_thing: Thing) {}\n",
+    )
+    .expect("write sibling");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "replace_deep_super_import"),
+        "single super:: should not trigger replace_deep_super_import"
+    );
+}

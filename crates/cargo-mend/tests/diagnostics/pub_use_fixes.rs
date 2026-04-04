@@ -251,15 +251,21 @@ edition = "2024"
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert_eq!(report.summary.errors, 0);
-    assert_eq!(report.summary.warnings, 1);
-    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.warnings, 2);
+    assert_eq!(report.summary.fixable_with_fix, 1);
     assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
     let codes = report
         .findings
         .iter()
         .map(|finding| finding.code.as_str())
         .collect::<BTreeSet<_>>();
-    assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
+    assert_eq!(
+        codes,
+        BTreeSet::from([
+            "replace_deep_super_import",
+            "internal_parent_pub_use_facade"
+        ])
+    );
 }
 
 #[test]

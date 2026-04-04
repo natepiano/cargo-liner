@@ -28,6 +28,8 @@ pub struct ImportScan {
 
 #[derive(Debug, Clone)]
 struct ShortenImportFact {
+    code:          &'static str,
+    message:       &'static str,
     path:          String,
     line:          usize,
     column:        usize,
@@ -120,14 +122,14 @@ impl ShortenImportFact {
         let replacement = self.replacement;
         Finding {
             severity:      Severity::Warning,
-            code:          "shorten_local_crate_import".to_string(),
+            code:          self.code.to_string(),
             path:          self.path,
             line:          self.line,
             column:        self.column,
             highlight_len: self.highlight_len,
             source_line:   self.source_line,
             item:          None,
-            message:       "it stays within the same local module boundary".to_string(),
+            message:       self.message.to_string(),
             suggestion:    Some(format!("consider using: `{replacement}`")),
             fix_support:   FixSupport::ShortenImport,
             related:       None,
@@ -218,18 +220,12 @@ fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>
         }
     }
     findings.sort_by(|a, b| {
-        (
-            &a.fact.path,
-            a.fact.line,
-            a.fact.column,
-            "shorten_local_crate_import",
-        )
-            .cmp(&(
-                &b.fact.path,
-                b.fact.line,
-                b.fact.column,
-                "shorten_local_crate_import",
-            ))
+        (&a.fact.path, a.fact.line, a.fact.column, a.fact.code).cmp(&(
+            &b.fact.path,
+            b.fact.line,
+            b.fact.column,
+            b.fact.code,
+        ))
     });
     findings.dedup_by(|a, b| {
         a.fact.path == b.fact.path && a.fact.line == b.fact.line && a.fact.column == b.fact.column
@@ -278,7 +274,9 @@ impl Visit<'_> for UseVisitor<'_> {
     }
 
     fn visit_item_use(&mut self, node: &ItemUse) {
-        if let Some(candidate) = analyze_use_tree(&self.current_module_path, &node.tree) {
+        let candidate = analyze_use_tree(&self.current_module_path, &node.tree)
+            .or_else(|| analyze_deep_super(&self.current_module_path, &node.tree));
+        if let Some(candidate) = candidate {
             let span = node.span();
             let start = span.start();
             let end = span.end();
@@ -301,6 +299,8 @@ impl Visit<'_> for UseVisitor<'_> {
                 .replace('\\', "/");
             self.findings.push(ImportFinding {
                 fact: ShortenImportFact {
+                    code: candidate.code,
+                    message: candidate.message,
                     path: display_path,
                     line: start.line,
                     column: start.column + 1,
@@ -322,6 +322,8 @@ impl Visit<'_> for UseVisitor<'_> {
 struct ImportCandidate {
     original:    String,
     replacement: String,
+    code:        &'static str,
+    message:     &'static str,
 }
 
 fn analyze_use_tree(current_module_path: &[String], tree: &UseTree) -> Option<ImportCandidate> {
@@ -355,6 +357,33 @@ fn analyze_use_tree(current_module_path: &[String], tree: &UseTree) -> Option<Im
     Some(ImportCandidate {
         original:    import.original,
         replacement: relative,
+        code:        "shorten_local_crate_import",
+        message:     "it stays within the same local module boundary",
+    })
+}
+
+fn analyze_deep_super(current_module_path: &[String], tree: &UseTree) -> Option<ImportCandidate> {
+    let import = flatten_use_tree(tree)?;
+    let super_count = import.segments.iter().take_while(|s| *s == "super").count();
+    if super_count < 2 {
+        return None;
+    }
+    if super_count > current_module_path.len() {
+        return None;
+    }
+
+    let ancestor_path = &current_module_path[..current_module_path.len() - super_count];
+    let remaining = &import.segments[super_count..];
+    let mut replacement_segments = vec!["crate".to_string()];
+    replacement_segments.extend(ancestor_path.iter().cloned());
+    replacement_segments.extend(remaining.iter().cloned());
+    let replacement = format_path(&replacement_segments, import.rename.as_deref());
+
+    Some(ImportCandidate {
+        original: import.original,
+        replacement,
+        code: "replace_deep_super_import",
+        message: "deep `super::` chain is hard to follow — use a named `crate::` path",
     })
 }
 
