@@ -80,8 +80,8 @@ impl App {
                 PaneId::Package | PaneId::Git => InputContext::DetailFields,
                 PaneId::Targets => InputContext::DetailTargets,
                 PaneId::CiRuns => {
-                    if matches!(self.bottom_panel, BottomPanel::PortReport) {
-                        InputContext::PortReport
+                    if matches!(self.bottom_panel, BottomPanel::Lints) {
+                        InputContext::Lints
                     } else {
                         InputContext::CiRuns
                     }
@@ -210,12 +210,10 @@ impl App {
 
     pub const fn toggle_bottom_panel(&mut self) {
         self.bottom_panel = match self.bottom_panel {
-            BottomPanel::CiRuns => BottomPanel::PortReport,
-            BottomPanel::PortReport => BottomPanel::CiRuns,
+            BottomPanel::CiRuns => BottomPanel::Lints,
+            BottomPanel::Lints => BottomPanel::CiRuns,
         };
     }
 
-    pub const fn showing_port_report(&self) -> bool {
-        matches!(self.bottom_panel, BottomPanel::PortReport)
-    }
+    pub const fn showing_lints(&self) -> bool { matches!(self.bottom_panel, BottomPanel::Lints) }
 }

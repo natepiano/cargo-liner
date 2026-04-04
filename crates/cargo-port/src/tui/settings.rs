@@ -26,9 +26,10 @@ pub(super) enum SettingOption {
     Editor,
     IncludeDirs,
     InlineDirs,
-    PortReportEnabled,
-    PortReportProjects,
-    PortReportCommands,
+    LintsEnabled,
+    LintProjects,
+    LintCommands,
+    LintHistoryBudget,
 }
 
 impl SettingOption {
@@ -41,14 +42,15 @@ impl SettingOption {
             4 => Some(Self::Editor),
             5 => Some(Self::IncludeDirs),
             6 => Some(Self::InlineDirs),
-            7 => Some(Self::PortReportEnabled),
-            8 => Some(Self::PortReportProjects),
-            9 => Some(Self::PortReportCommands),
+            7 => Some(Self::LintsEnabled),
+            8 => Some(Self::LintProjects),
+            9 => Some(Self::LintCommands),
+            10 => Some(Self::LintHistoryBudget),
             _ => None,
         }
     }
 
-    pub(super) const fn count() -> usize { 10 }
+    pub(super) const fn count() -> usize { 11 }
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
@@ -61,7 +63,7 @@ fn parse_dir_list(value: &str) -> Vec<String> {
 
 type SettingsRow = (Option<SettingOption>, &'static str, String);
 
-fn format_port_report_projects(cfg: &config::Config) -> String {
+fn format_lint_projects(cfg: &config::Config) -> String {
     if cfg.lint.include.is_empty() {
         "—".to_string()
     } else {
@@ -81,7 +83,7 @@ fn normalize_sorted_list(value: &str) -> Vec<String> {
     entries
 }
 
-fn format_port_report_commands(cfg: &config::Config) -> String {
+fn format_lint_commands(cfg: &config::Config) -> String {
     let commands = if cfg.lint.commands.is_empty() {
         cfg.lint.resolved_commands()
     } else {
@@ -92,6 +94,10 @@ fn format_port_report_commands(cfg: &config::Config) -> String {
         .map(|command| command.command.trim().to_string())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn format_lint_history_budget(cfg: &config::Config) -> String {
+    cfg.port_report.history_budget.clone()
 }
 
 fn settings_rows(app: &App, cfg: &config::Config) -> Vec<SettingsRow> {
@@ -147,21 +153,26 @@ fn settings_rows(app: &App, cfg: &config::Config) -> Vec<SettingsRow> {
             "Inline dirs",
             format_sorted_list(&cfg.tui.inline_dirs),
         ),
-        (None, "Port Report", String::new()),
+        (None, "Lints", String::new()),
         (
-            Some(SettingOption::PortReportEnabled),
+            Some(SettingOption::LintsEnabled),
             "Enabled",
             if app.lint_enabled() { "ON" } else { "OFF" }.to_string(),
         ),
         (
-            Some(SettingOption::PortReportProjects),
+            Some(SettingOption::LintProjects),
             "Projects",
-            format_port_report_projects(cfg),
+            format_lint_projects(cfg),
         ),
         (
-            Some(SettingOption::PortReportCommands),
+            Some(SettingOption::LintCommands),
             "Commands",
-            format_port_report_commands(cfg),
+            format_lint_commands(cfg),
+        ),
+        (
+            Some(SettingOption::LintHistoryBudget),
+            "History budget",
+            format_lint_history_budget(cfg),
         ),
     ]
 }
@@ -283,7 +294,7 @@ fn delete_at_cursor(buf: &mut String, cursor: usize) {
     buf.drain(cursor..next);
 }
 
-fn parse_port_report_commands(value: &str) -> Vec<config::LintCommandConfig> {
+fn parse_lint_commands(value: &str) -> Vec<config::LintCommandConfig> {
     config::normalize_lint_commands(
         &parse_dir_list(value)
             .into_iter()
@@ -293,6 +304,10 @@ fn parse_port_report_commands(value: &str) -> Vec<config::LintCommandConfig> {
             })
             .collect::<Vec<_>>(),
     )
+}
+
+fn parse_lint_history_budget(value: &str) -> Result<String, String> {
+    config::parse_history_budget(value).map(|budget| budget.normalized)
 }
 
 fn save_updated_config(app: &mut App, cfg: &config::Config) -> bool {
@@ -427,13 +442,13 @@ pub(super) fn build_settings_lines(
         } else if setting == Some(SettingOption::InvertScroll)
             || setting == Some(SettingOption::IncludeNonRust)
             || setting == Some(SettingOption::NavigationKeys)
-            || setting == Some(SettingOption::PortReportEnabled)
+            || setting == Some(SettingOption::LintsEnabled)
         {
             let is_on = match setting {
                 Some(SettingOption::InvertScroll) => app.invert_scroll().is_inverted(),
                 Some(SettingOption::IncludeNonRust) => app.include_non_rust().includes_non_rust(),
                 Some(SettingOption::NavigationKeys) => app.navigation_keys().uses_vim(),
-                Some(SettingOption::PortReportEnabled) => app.lint_enabled(),
+                Some(SettingOption::LintsEnabled) => app.lint_enabled(),
                 _ => false,
             };
             let toggle_style = if is_on {
@@ -498,88 +513,93 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         KeyCode::Down => {
             app.settings_pane.down();
         },
-        KeyCode::Left | KeyCode::Right => match setting {
-            Some(SettingOption::InvertScroll) => {
-                let mut cfg = app.current_config.clone();
-                cfg.mouse.invert_scroll.toggle();
-                let _ = save_updated_config(app, &cfg);
-            },
-            Some(SettingOption::NavigationKeys) => {
-                let mut cfg = app.current_config.clone();
-                cfg.tui.navigation_keys.toggle();
-                let _ = save_updated_config(app, &cfg);
-            },
-            Some(SettingOption::CiRunCount) => {
-                let mut cfg = app.current_config.clone();
-                if key == KeyCode::Right {
-                    cfg.tui.ci_run_count = cfg.tui.ci_run_count.saturating_add(1);
-                } else {
-                    cfg.tui.ci_run_count = cfg.tui.ci_run_count.saturating_sub(1).max(1);
-                }
-                let _ = save_updated_config(app, &cfg);
-            },
-            Some(SettingOption::IncludeNonRust) => {
-                let mut cfg = app.current_config.clone();
-                cfg.tui.include_non_rust.toggle();
-                let _ = save_updated_config(app, &cfg);
-            },
-            Some(SettingOption::PortReportEnabled) => {
-                toggle_port_report(app);
-            },
-            _ => {},
+        KeyCode::Left | KeyCode::Right => handle_settings_adjust_key(app, key, setting),
+        KeyCode::Enter | KeyCode::Char(' ') => handle_settings_activate_key(app, setting),
+        _ => {},
+    }
+}
+
+fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<SettingOption>) {
+    match setting {
+        Some(SettingOption::InvertScroll) => {
+            let mut cfg = app.current_config.clone();
+            cfg.mouse.invert_scroll.toggle();
+            let _ = save_updated_config(app, &cfg);
         },
-        KeyCode::Enter | KeyCode::Char(' ') => match setting {
-            Some(SettingOption::InvertScroll) => {
-                let mut cfg = app.current_config.clone();
-                cfg.mouse.invert_scroll.toggle();
-                let _ = save_updated_config(app, &cfg);
-            },
-            Some(SettingOption::NavigationKeys) => {
-                let mut cfg = app.current_config.clone();
-                cfg.tui.navigation_keys.toggle();
-                let _ = save_updated_config(app, &cfg);
-            },
-            Some(SettingOption::CiRunCount) => {
-                app.settings_edit_buf = app.current_config.tui.ci_run_count.to_string();
-                app.begin_settings_editing();
-                app.settings_edit_cursor = app.settings_edit_buf.len();
-            },
-            Some(SettingOption::InlineDirs) => {
-                app.settings_edit_buf = app.current_config.tui.inline_dirs.join(", ");
-                app.begin_settings_editing();
-                app.settings_edit_cursor = app.settings_edit_buf.len();
-            },
-            Some(SettingOption::IncludeDirs) => {
-                app.settings_edit_buf = app.current_config.tui.include_dirs.join(", ");
-                app.begin_settings_editing();
-                app.settings_edit_cursor = app.settings_edit_buf.len();
-            },
-            Some(SettingOption::PortReportProjects) => {
-                app.settings_edit_buf = app.current_config.lint.include.join(", ");
-                app.begin_settings_editing();
-                app.settings_edit_cursor = app.settings_edit_buf.len();
-            },
-            Some(SettingOption::PortReportCommands) => {
-                app.settings_edit_buf = format_port_report_commands(&app.current_config);
-                app.begin_settings_editing();
-                app.settings_edit_cursor = app.settings_edit_buf.len();
-            },
-            Some(SettingOption::IncludeNonRust) => {
-                let mut cfg = app.current_config.clone();
-                cfg.tui.include_non_rust.toggle();
-                let _ = save_updated_config(app, &cfg);
-            },
-            Some(SettingOption::PortReportEnabled) => {
-                toggle_port_report(app);
-            },
-            Some(SettingOption::Editor) => {
-                app.settings_edit_buf = app.editor().to_string();
-                app.begin_settings_editing();
-                app.settings_edit_cursor = app.settings_edit_buf.len();
-            },
-            None => {},
+        Some(SettingOption::NavigationKeys) => {
+            let mut cfg = app.current_config.clone();
+            cfg.tui.navigation_keys.toggle();
+            let _ = save_updated_config(app, &cfg);
+        },
+        Some(SettingOption::CiRunCount) => {
+            let mut cfg = app.current_config.clone();
+            if key == KeyCode::Right {
+                cfg.tui.ci_run_count = cfg.tui.ci_run_count.saturating_add(1);
+            } else {
+                cfg.tui.ci_run_count = cfg.tui.ci_run_count.saturating_sub(1).max(1);
+            }
+            let _ = save_updated_config(app, &cfg);
+        },
+        Some(SettingOption::IncludeNonRust) => {
+            let mut cfg = app.current_config.clone();
+            cfg.tui.include_non_rust.toggle();
+            let _ = save_updated_config(app, &cfg);
+        },
+        Some(SettingOption::LintsEnabled) => {
+            toggle_lints(app);
         },
         _ => {},
+    }
+}
+
+fn begin_settings_edit(app: &mut App, value: String) {
+    app.settings_edit_buf = value;
+    app.begin_settings_editing();
+    app.settings_edit_cursor = app.settings_edit_buf.len();
+}
+
+fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
+    match setting {
+        Some(SettingOption::InvertScroll) => {
+            let mut cfg = app.current_config.clone();
+            cfg.mouse.invert_scroll.toggle();
+            let _ = save_updated_config(app, &cfg);
+        },
+        Some(SettingOption::NavigationKeys) => {
+            let mut cfg = app.current_config.clone();
+            cfg.tui.navigation_keys.toggle();
+            let _ = save_updated_config(app, &cfg);
+        },
+        Some(SettingOption::CiRunCount) => {
+            begin_settings_edit(app, app.current_config.tui.ci_run_count.to_string());
+        },
+        Some(SettingOption::InlineDirs) => {
+            begin_settings_edit(app, app.current_config.tui.inline_dirs.join(", "));
+        },
+        Some(SettingOption::IncludeDirs) => {
+            begin_settings_edit(app, app.current_config.tui.include_dirs.join(", "));
+        },
+        Some(SettingOption::LintProjects) => {
+            begin_settings_edit(app, app.current_config.lint.include.join(", "));
+        },
+        Some(SettingOption::LintCommands) => {
+            begin_settings_edit(app, format_lint_commands(&app.current_config));
+        },
+        Some(SettingOption::LintHistoryBudget) => {
+            begin_settings_edit(app, format_lint_history_budget(&app.current_config));
+        },
+        Some(SettingOption::IncludeNonRust) => {
+            let mut cfg = app.current_config.clone();
+            cfg.tui.include_non_rust.toggle();
+            let _ = save_updated_config(app, &cfg);
+        },
+        Some(SettingOption::LintsEnabled) => {
+            toggle_lints(app);
+        },
+        Some(SettingOption::Editor) => {
+            begin_settings_edit(app, app.editor().to_string());
+        },
+        None => {},
     }
 }
 
@@ -618,19 +638,32 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                         let _ = save_updated_config(app, &cfg);
                     }
                 },
-                Some(SettingOption::PortReportProjects) => {
+                Some(SettingOption::LintProjects) => {
                     let mut cfg = app.current_config.clone();
                     cfg.lint.include = normalize_sorted_list(&value);
                     if save_updated_config(app, &cfg) {
-                        app.show_timed_toast("Settings", "Port Report projects updated");
+                        app.show_timed_toast("Settings", "Lint projects updated");
                     }
                 },
-                Some(SettingOption::PortReportCommands) => {
+                Some(SettingOption::LintCommands) => {
                     let mut cfg = app.current_config.clone();
-                    cfg.lint.commands = parse_port_report_commands(&value);
+                    cfg.lint.commands = parse_lint_commands(&value);
                     if save_updated_config(app, &cfg) {
-                        app.show_timed_toast("Settings", "Port Report commands updated");
+                        app.show_timed_toast("Settings", "Lint commands updated");
                     }
+                },
+                Some(SettingOption::LintHistoryBudget) => match parse_lint_history_budget(&value) {
+                    Ok(history_budget) => {
+                        let mut cfg = app.current_config.clone();
+                        cfg.port_report.history_budget = history_budget;
+                        if save_updated_config(app, &cfg) {
+                            app.show_timed_toast("Settings", "Lint history budget updated");
+                        }
+                    },
+                    Err(err) => {
+                        app.show_timed_toast("Invalid history budget", err);
+                        return;
+                    },
                 },
                 _ => {},
             }
@@ -670,7 +703,7 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
     }
 }
 
-fn toggle_port_report(app: &mut App) {
+fn toggle_lints(app: &mut App) {
     let mut cfg = app.current_config.clone();
     cfg.lint.enabled = !cfg.lint.enabled;
     if !save_updated_config(app, &cfg) {
@@ -679,7 +712,7 @@ fn toggle_port_report(app: &mut App) {
     app.show_timed_toast(
         "Settings",
         format!(
-            "Port Report {}",
+            "Lints {}",
             if cfg.lint.enabled {
                 "enabled"
             } else {
@@ -700,29 +733,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn port_report_setting_has_stable_index() {
+    fn lint_settings_have_stable_indices() {
         assert_eq!(
             SettingOption::from_index(2),
             Some(SettingOption::NavigationKeys)
         );
         assert_eq!(
             SettingOption::from_index(7),
-            Some(SettingOption::PortReportEnabled)
+            Some(SettingOption::LintsEnabled)
         );
         assert_eq!(
             SettingOption::from_index(8),
-            Some(SettingOption::PortReportProjects)
+            Some(SettingOption::LintProjects)
         );
         assert_eq!(
             SettingOption::from_index(9),
-            Some(SettingOption::PortReportCommands)
+            Some(SettingOption::LintCommands)
         );
-        assert_eq!(SettingOption::count(), 10);
+        assert_eq!(
+            SettingOption::from_index(10),
+            Some(SettingOption::LintHistoryBudget)
+        );
+        assert_eq!(SettingOption::count(), 11);
     }
 
     #[test]
-    fn parse_port_report_commands_accepts_builtin_commands() {
-        let commands = parse_port_report_commands(
+    fn parse_lint_commands_accepts_builtin_commands() {
+        let commands = parse_lint_commands(
             "cargo mend --manifest-path \"$MANIFEST_PATH\", cargo clippy --workspace",
         );
         assert_eq!(commands.len(), 2);
@@ -731,11 +768,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_port_report_commands_accepts_arbitrary_shell_commands() {
-        let commands = parse_port_report_commands("something --else");
+    fn parse_lint_commands_accepts_arbitrary_shell_commands() {
+        let commands = parse_lint_commands("something --else");
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].name, "something");
         assert_eq!(commands[0].command, "something --else");
+    }
+
+    #[test]
+    fn parse_lint_history_budget_normalizes_units() {
+        assert_eq!(
+            parse_lint_history_budget("1.5 gib").expect("history budget"),
+            "1.5 GiB"
+        );
     }
 
     #[test]

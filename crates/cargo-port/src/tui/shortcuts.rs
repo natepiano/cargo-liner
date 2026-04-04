@@ -8,7 +8,7 @@ pub(super) enum InputContext {
     DetailTargets,
     CiRuns,
     Toasts,
-    PortReport,
+    Lints,
     Searching,
     Finder,
     Settings,
@@ -135,7 +135,7 @@ pub(super) fn for_status_bar(
         },
         InputContext::CiRuns => ci_groups(enter_action),
         InputContext::Toasts => (vec![NAV, TAB_PANE, ESC_BACK], vec![CLOSE_TOAST]),
-        InputContext::PortReport => port_report_groups(enter_action),
+        InputContext::Lints => lints_groups(enter_action),
         InputContext::ScanLog | InputContext::ProjectList => {
             project_list_groups(enter_action, is_rust)
         },
@@ -190,7 +190,7 @@ fn ci_groups(enter_action: Option<&'static str>) -> (Vec<Shortcut>, Vec<Shortcut
     (navigation, actions)
 }
 
-fn port_report_groups(enter_action: Option<&'static str>) -> (Vec<Shortcut>, Vec<Shortcut>) {
+fn lints_groups(enter_action: Option<&'static str>) -> (Vec<Shortcut>, Vec<Shortcut>) {
     let navigation = vec![NAV, TAB_PANE, ESC_BACK];
 
     let mut actions = Vec::new();

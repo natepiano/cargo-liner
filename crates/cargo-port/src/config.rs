@@ -100,7 +100,7 @@ impl NavigationKeys {
     }
 }
 
-/// Cache storage settings shared by CI and port-report data.
+/// Cache storage settings shared by CI and lint-history data.
 #[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
 pub struct CacheConfig {
     /// Override the app cache root. Empty uses the system cache directory.
@@ -120,7 +120,7 @@ pub struct LintCommandConfig {
 #[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
 pub struct LintConfig {
     /// Show a lint status indicator per project by reading cache-rooted
-    /// Port Report JSON artifacts.
+    /// lint JSON artifacts.
     #[config(default = false)]
     pub enabled: bool,
 
@@ -214,22 +214,206 @@ pub fn normalize_lint_commands(commands: &[LintCommandConfig]) -> Vec<LintComman
     commands.iter().filter_map(normalize_lint_command).collect()
 }
 
-pub fn normalize_config(mut config: Config) -> Config {
+const BYTES_PER_KIB: u64 = 1024;
+const BYTES_PER_MIB: u64 = BYTES_PER_KIB * 1024;
+const BYTES_PER_GIB: u64 = BYTES_PER_MIB * 1024;
+const DEFAULT_HISTORY_BUDGET: &str = "512 MiB";
+
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
+pub struct PortReportConfig {
+    /// Maximum retained size for lint history artifacts. `0` and `unlimited`
+    /// disable pruning.
+    #[config(default = "512 MiB")]
+    pub history_budget: String,
+}
+
+impl Default for PortReportConfig {
+    fn default() -> Self {
+        Self {
+            history_budget: DEFAULT_HISTORY_BUDGET.to_string(),
+        }
+    }
+}
+
+impl PortReportConfig {
+    pub fn history_budget_bytes(&self) -> Result<Option<u64>, String> {
+        parse_history_budget(&self.history_budget).map(|budget| budget.bytes)
+    }
+
+    pub fn normalized_history_budget(&self) -> Result<String, String> {
+        parse_history_budget(&self.history_budget).map(|budget| budget.normalized)
+    }
+}
+
+pub struct ParsedHistoryBudget {
+    pub bytes:      Option<u64>,
+    pub normalized: String,
+}
+
+fn normalize_history_budget_number(number: &str) -> Result<String, String> {
+    let (whole_raw, fraction_raw) = number
+        .split_once('.')
+        .map_or((number, None), |(whole, fraction)| (whole, Some(fraction)));
+
+    if whole_raw.is_empty() && fraction_raw.is_none() {
+        return Err(format!("Invalid history budget quantity `{number}`"));
+    }
+    if !whole_raw.is_empty() && !whole_raw.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(format!("Invalid history budget quantity `{number}`"));
+    }
+
+    let whole = if whole_raw.is_empty() {
+        "0"
+    } else {
+        whole_raw.trim_start_matches('0')
+    };
+    let whole = if whole.is_empty() { "0" } else { whole };
+
+    let Some(fraction_raw) = fraction_raw else {
+        return Ok(whole.to_string());
+    };
+    if !fraction_raw.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(format!("Invalid history budget quantity `{number}`"));
+    }
+
+    let fraction = fraction_raw.trim_end_matches('0');
+    if fraction.is_empty() {
+        Ok(whole.to_string())
+    } else {
+        Ok(format!("{whole}.{fraction}"))
+    }
+}
+
+fn parse_history_budget_bytes(number: &str, multiplier: u64) -> Result<Option<u64>, String> {
+    let (whole_raw, fraction_raw) = number
+        .split_once('.')
+        .map_or((number, None), |(whole, fraction)| (whole, Some(fraction)));
+    if whole_raw.is_empty() && fraction_raw.is_none() {
+        return Err(format!("Invalid history budget quantity `{number}`"));
+    }
+
+    let whole = if whole_raw.is_empty() {
+        0_u128
+    } else {
+        whole_raw
+            .parse::<u128>()
+            .map_err(|_| format!("Invalid history budget quantity `{number}`"))?
+    };
+    let multiplier = u128::from(multiplier);
+    let whole_bytes = whole
+        .checked_mul(multiplier)
+        .ok_or_else(|| "History budget is too large".to_string())?;
+
+    let Some(fraction_raw) = fraction_raw else {
+        return u64::try_from(whole_bytes)
+            .map(Some)
+            .map_err(|_| "History budget is too large".to_string());
+    };
+    if !fraction_raw.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(format!("Invalid history budget quantity `{number}`"));
+    }
+    if fraction_raw.is_empty() {
+        return u64::try_from(whole_bytes)
+            .map(Some)
+            .map_err(|_| "History budget is too large".to_string());
+    }
+
+    let fraction = fraction_raw
+        .parse::<u128>()
+        .map_err(|_| format!("Invalid history budget quantity `{number}`"))?;
+    let scale = 10_u128
+        .checked_pow(u32::try_from(fraction_raw.len()).unwrap_or(u32::MAX))
+        .ok_or_else(|| "History budget is too large".to_string())?;
+    let fraction_bytes = fraction
+        .checked_mul(multiplier)
+        .ok_or_else(|| "History budget is too large".to_string())?
+        .div_ceil(scale);
+    let total = whole_bytes
+        .checked_add(fraction_bytes)
+        .ok_or_else(|| "History budget is too large".to_string())?;
+
+    if total == 0 {
+        Ok(None)
+    } else {
+        u64::try_from(total)
+            .map(Some)
+            .map_err(|_| "History budget is too large".to_string())
+    }
+}
+
+fn canonical_history_budget_unit(unit: &str) -> Option<(&'static str, u64)> {
+    match unit.trim().to_ascii_lowercase().as_str() {
+        "b" | "byte" | "bytes" => Some(("B", 1)),
+        "kib" | "kb" => Some(("KiB", BYTES_PER_KIB)),
+        "mib" | "mb" => Some(("MiB", BYTES_PER_MIB)),
+        "gib" | "gb" => Some(("GiB", BYTES_PER_GIB)),
+        _ => None,
+    }
+}
+
+pub fn parse_history_budget(value: &str) -> Result<ParsedHistoryBudget, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("History budget cannot be empty".to_string());
+    }
+    if trimmed.eq_ignore_ascii_case("unlimited") {
+        return Ok(ParsedHistoryBudget {
+            bytes:      None,
+            normalized: "unlimited".to_string(),
+        });
+    }
+    if trimmed == "0" {
+        return Ok(ParsedHistoryBudget {
+            bytes:      None,
+            normalized: "0".to_string(),
+        });
+    }
+
+    let split_at = trimmed
+        .find(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
+        .unwrap_or(trimmed.len());
+    let number = trimmed[..split_at].trim();
+    let unit = trimmed[split_at..].trim();
+
+    if number.is_empty() || unit.is_empty() {
+        return Err(
+            "History budget must include a number and unit like `512 MiB` or `1.5 GiB`".to_string(),
+        );
+    }
+
+    let Some((canonical_unit, multiplier)) = canonical_history_budget_unit(unit) else {
+        return Err(format!("Unsupported history budget unit `{unit}`"));
+    };
+    let normalized = format!(
+        "{} {}",
+        normalize_history_budget_number(number)?,
+        canonical_unit
+    );
+    Ok(ParsedHistoryBudget {
+        bytes: parse_history_budget_bytes(number, multiplier)?,
+        normalized,
+    })
+}
+
+pub fn normalize_config(mut config: Config) -> Result<Config, String> {
     config.lint.commands = normalize_lint_commands(&config.lint.commands);
-    config
+    config.port_report.history_budget = config.port_report.normalized_history_budget()?;
+    Ok(config)
 }
 
 /// Top-level application configuration.
 #[derive(Clone, Debug, Default, PartialEq, confique::Config, Serialize)]
 pub struct Config {
     #[config(nested)]
-    pub cache: CacheConfig,
+    pub cache:       CacheConfig,
     #[config(nested)]
-    pub mouse: MouseConfig,
+    pub mouse:       MouseConfig,
     #[config(nested)]
-    pub tui:   TuiConfig,
+    pub tui:         TuiConfig,
     #[config(nested)]
-    pub lint:  LintConfig,
+    pub lint:        LintConfig,
+    #[config(nested)]
+    pub port_report: PortReportConfig,
 }
 
 /// TUI display and behaviour settings.
@@ -316,7 +500,7 @@ pub fn active_config() -> Config {
 
 pub fn set_active_config(config: &Config) {
     if let Ok(mut active) = active_config_cell().write() {
-        *active = normalize_config(config.clone());
+        *active = normalize_config(config.clone()).unwrap_or_else(|_| config.clone());
     }
 }
 
@@ -328,7 +512,8 @@ fn load_from_path(path: &Path) -> Result<Config, String> {
     Config::builder()
         .file(path)
         .load()
-        .map(normalize_config)
+        .map_err(|err| format!("Failed to load config '{}': {err}", path.display()))
+        .and_then(normalize_config)
         .map_err(|err| format!("Failed to load config '{}': {err}", path.display()))
 }
 
@@ -363,7 +548,7 @@ pub fn save(config: &Config) -> Result<(), String> {
             .map_err(|e| format!("Failed to create config directory: {e}"))?;
     }
 
-    let config = normalize_config(config.clone());
+    let config = normalize_config(config.clone())?;
     let contents =
         toml::to_string_pretty(&config).map_err(|e| format!("Failed to serialize config: {e}"))?;
 
@@ -396,6 +581,7 @@ mod tests {
         assert!(cfg.lint.include.is_empty());
         assert!(cfg.lint.exclude.is_empty());
         assert!(cfg.lint.commands.is_empty());
+        assert_eq!(cfg.port_report.history_budget, "512 MiB");
     }
 
     /// Generated template parses back into a valid `Config` via confique.
@@ -417,6 +603,7 @@ mod tests {
         assert_eq!(cfg.tui.ci_run_count, 5);
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert!(cfg.lint.commands.is_empty());
+        assert_eq!(cfg.port_report.history_budget, "512 MiB");
     }
 
     /// A partial config file gets defaults for missing fields.
@@ -436,6 +623,7 @@ mod tests {
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
         assert!(cfg.lint.commands.is_empty());
+        assert_eq!(cfg.port_report.history_budget, "512 MiB");
     }
 
     /// An empty config file gets all defaults.
@@ -454,6 +642,7 @@ mod tests {
         assert_eq!(cfg.tui.editor, "zed");
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert!(cfg.lint.commands.is_empty());
+        assert_eq!(cfg.port_report.history_budget, "512 MiB");
     }
 
     /// Saving and reloading preserves all values.
@@ -484,6 +673,7 @@ mod tests {
         assert!((reloaded.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
         assert_eq!(reloaded.mouse.invert_scroll, ScrollDirection::Normal);
         assert!(reloaded.lint.commands.is_empty());
+        assert_eq!(reloaded.port_report.history_budget, "512 MiB");
     }
 
     /// Bool-based enums deserialize correctly from TOML booleans.
@@ -566,7 +756,8 @@ mod tests {
                 ..LintConfig::default()
             },
             ..Config::default()
-        });
+        })
+        .expect("normalize config");
 
         assert_eq!(cfg.lint.commands.len(), 1);
         assert_eq!(cfg.lint.commands[0].name, "clippy");
@@ -584,7 +775,8 @@ mod tests {
                 ..LintConfig::default()
             },
             ..Config::default()
-        });
+        })
+        .expect("normalize config");
 
         assert_eq!(cfg.lint.commands.len(), 1);
         assert_eq!(cfg.lint.commands[0].name, "fmt");
@@ -599,5 +791,34 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].name, "clippy");
         assert!(commands[0].command.contains("cargo clippy"));
+    }
+
+    #[test]
+    fn parse_history_budget_accepts_decimal_binary_units() {
+        let budget = parse_history_budget("1.5 GiB").expect("parse history budget");
+        assert_eq!(budget.normalized, "1.5 GiB");
+        assert_eq!(budget.bytes, Some(1_610_612_736));
+    }
+
+    #[test]
+    fn parse_history_budget_accepts_unlimited_aliases() {
+        assert_eq!(
+            parse_history_budget("unlimited").expect("unlimited").bytes,
+            None
+        );
+        assert_eq!(parse_history_budget("0").expect("zero").bytes, None);
+    }
+
+    #[test]
+    fn normalize_config_normalizes_history_budget_units() {
+        let cfg = normalize_config(Config {
+            port_report: PortReportConfig {
+                history_budget: "1.50 gib".to_string(),
+            },
+            ..Config::default()
+        })
+        .expect("normalize config");
+
+        assert_eq!(cfg.port_report.history_budget, "1.5 GiB");
     }
 }

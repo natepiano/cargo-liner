@@ -129,17 +129,18 @@ impl AppInit {
     }
 }
 
-struct AppBuildInputs {
+struct CoreInputs {
     scan_root:       PathBuf,
     projects:        Vec<RustProject>,
+    http_client:     HttpClient,
     bg_tx:           mpsc::Sender<BackgroundMsg>,
     bg_rx:           Receiver<BackgroundMsg>,
     cfg:             Config,
-    http_client:     HttpClient,
     scan_started_at: Instant,
-    channels:        AppChannels,
     builds:          AsyncBuildState,
+    channels:        AppChannels,
     init:            AppInit,
+    status_flash:    Option<(String, Instant)>,
 }
 
 impl App {
@@ -168,12 +169,6 @@ impl App {
         Self::filter_tree_projects(&self.all_projects, self.include_non_rust())
     }
 
-    fn initial_status_flash(init: &AppInit) -> Option<(String, Instant)> {
-        init.lint_warning
-            .clone()
-            .map(|warning| (warning, Instant::now()))
-    }
-
     pub fn new(
         scan_root: PathBuf,
         projects: Vec<RustProject>,
@@ -184,48 +179,41 @@ impl App {
         scan_started_at: Instant,
     ) -> Self {
         let channels = AppChannels::new();
-        let builds = BuildChannels::new();
+        let builds = AsyncBuildState::new(BuildChannels::new());
         let init = AppInit::new(&scan_root, &projects, &bg_tx, cfg, &http_client);
-        let mut app = Self::build_app(AppBuildInputs {
+        let status_flash = init.lint_warning.clone().map(|w| (w, Instant::now()));
+        let mut app = Self::build_core(CoreInputs {
             scan_root,
             projects,
+            http_client,
             bg_tx,
             bg_rx,
             cfg: cfg.clone(),
-            http_client,
             scan_started_at,
+            builds,
             channels,
-            builds: AsyncBuildState::new(builds),
             init,
+            status_flash,
         });
         app.finish_new();
         app
     }
 
-    fn build_app(inputs: AppBuildInputs) -> Self {
-        let AppBuildInputs {
-            scan_root,
-            projects,
-            bg_tx,
-            bg_rx,
-            cfg,
-            http_client,
-            scan_started_at,
-            channels,
-            builds,
-            init,
-        } = inputs;
-        let status_flash = Self::initial_status_flash(&init);
+    fn build_core(inputs: CoreInputs) -> Self {
+        let init = inputs.init;
+        let channels = inputs.channels;
+        let cached_fit_widths = ResolvedWidths::new(inputs.cfg.lint.enabled);
         Self {
-            current_config: cfg.clone(),
-            scan_root,
-            http_client,
-            all_projects: projects,
+            current_config: inputs.cfg,
+            scan_root: inputs.scan_root,
+            http_client: inputs.http_client,
+            all_projects: inputs.projects,
             nodes: init.nodes,
             flat_entries: init.flat_entries,
             disk_usage: HashMap::new(),
             ci_state: HashMap::new(),
             lint_status: HashMap::new(),
+            lint_history_usage: crate::port_report::HistoryUsage::default(),
             port_report_runs: HashMap::new(),
             lint_rollup_status: HashMap::new(),
             lint_rollup_paths: HashMap::new(),
@@ -237,8 +225,8 @@ impl App {
             crates_downloads: HashMap::new(),
             stars: HashMap::new(),
             repo_descriptions: HashMap::new(),
-            bg_tx,
-            bg_rx,
+            bg_tx: inputs.bg_tx,
+            bg_rx: inputs.bg_rx,
             fully_loaded: HashSet::new(),
             priority_fetch_path: None,
             expanded: HashSet::new(),
@@ -288,19 +276,19 @@ impl App {
             cached_visible_rows: Vec::new(),
             cached_root_sorted: Vec::new(),
             cached_child_sorted: HashMap::new(),
-            cached_fit_widths: ResolvedWidths::new(cfg.lint.enabled),
-            builds,
+            cached_fit_widths,
+            builds: inputs.builds,
             data_generation: 0,
             detail_generation: 0,
             cached_detail: None,
             layout_cache: LayoutCache::default(),
-            status_flash,
+            status_flash: inputs.status_flash,
             toasts: ToastManager::default(),
             config_path: init.config_path,
             config_last_seen: init.config_last_seen,
             ui_modes: UiModes::default(),
             dirty: DirtyState::initial(),
-            scan: ScanState::new(scan_started_at),
+            scan: ScanState::new(inputs.scan_started_at),
             selection: SelectionSync::Stable,
         }
     }

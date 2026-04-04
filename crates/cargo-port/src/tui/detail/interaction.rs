@@ -133,7 +133,7 @@ fn open_url(url: &str) {
 }
 
 pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
-    if app.showing_port_report() {
+    if app.showing_lints() {
         match key {
             KeyCode::Up => app.port_report_pane.up(),
             KeyCode::Down => app.port_report_pane.down(),

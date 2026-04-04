@@ -16,6 +16,7 @@ use crate::config::Config;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::lint_runtime::RuntimeHandle;
+use crate::port_report::HistoryUsage;
 use crate::port_report::LintStatus;
 use crate::port_report::PortReportRun;
 use crate::project::GitInfo;
@@ -43,7 +44,7 @@ use crate::watcher::WatchRequest;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BottomPanel {
     CiRuns,
-    PortReport,
+    Lints,
 }
 
 /// An expand key: a node, group, worktree entry, or group within a worktree.
@@ -489,6 +490,7 @@ pub struct App {
     pub disk_usage:               HashMap<String, u64>,
     pub ci_state:                 HashMap<String, CiState>,
     pub lint_status:              HashMap<String, LintStatus>,
+    pub lint_history_usage:       HistoryUsage,
     pub port_report_runs:         HashMap<String, Vec<PortReportRun>>,
     pub lint_rollup_status:       HashMap<LintRollupKey, LintStatus>,
     pub lint_rollup_paths:        HashMap<LintRollupKey, Vec<String>>,

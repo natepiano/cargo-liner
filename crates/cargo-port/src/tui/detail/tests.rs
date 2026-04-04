@@ -1,9 +1,9 @@
 use super::ci_panel;
 use super::ci_panel::CI_COMPACT_DURATION_WIDTH;
+use super::lints_panel;
 use super::model;
 use super::model::DetailField;
 use super::model::DetailInfo;
-use super::port_report_panel;
 use super::render;
 use crate::ci::CiJob;
 use crate::ci::CiRun;
@@ -187,7 +187,7 @@ fn ci_table_keeps_durations_when_fixed_columns_fit() {
 }
 
 #[test]
-fn port_report_commands_summary_for_passed_run() {
+fn lint_commands_summary_for_passed_run() {
     let run = run_with_commands(
         PortReportRunStatus::Passed,
         vec![
@@ -210,19 +210,13 @@ fn port_report_commands_summary_for_passed_run() {
         ],
     );
 
-    assert_eq!(
-        port_report_panel::format_port_report_commands(&run),
-        "mend, clippy"
-    );
-    assert_eq!(port_report_panel::format_port_report_pending(&run), "0");
-    assert_eq!(
-        port_report_panel::format_port_report_slowest(&run),
-        "clippy 0:02"
-    );
+    assert_eq!(lints_panel::format_lints_commands(&run), "mend, clippy");
+    assert_eq!(lints_panel::format_lints_pending(&run), "0");
+    assert_eq!(lints_panel::format_lints_slowest(&run), "clippy 0:02");
 }
 
 #[test]
-fn port_report_commands_summary_for_failed_run() {
+fn lint_commands_summary_for_failed_run() {
     let run = run_with_commands(
         PortReportRunStatus::Failed,
         vec![
@@ -245,19 +239,13 @@ fn port_report_commands_summary_for_failed_run() {
         ],
     );
 
-    assert_eq!(
-        port_report_panel::format_port_report_commands(&run),
-        "mend, clippy"
-    );
-    assert_eq!(port_report_panel::format_port_report_pending(&run), "0");
-    assert_eq!(
-        port_report_panel::format_port_report_slowest(&run),
-        "clippy 0:02"
-    );
+    assert_eq!(lints_panel::format_lints_commands(&run), "mend, clippy");
+    assert_eq!(lints_panel::format_lints_pending(&run), "0");
+    assert_eq!(lints_panel::format_lints_slowest(&run), "clippy 0:02");
 }
 
 #[test]
-fn port_report_commands_summary_for_running_run() {
+fn lint_commands_summary_for_running_run() {
     let run = run_with_commands(
         PortReportRunStatus::Running,
         vec![
@@ -280,13 +268,7 @@ fn port_report_commands_summary_for_running_run() {
         ],
     );
 
-    assert_eq!(
-        port_report_panel::format_port_report_commands(&run),
-        "mend, clippy"
-    );
-    assert_eq!(port_report_panel::format_port_report_pending(&run), "1");
-    assert_eq!(
-        port_report_panel::format_port_report_slowest(&run),
-        "mend 0:01"
-    );
+    assert_eq!(lints_panel::format_lints_commands(&run), "mend, clippy");
+    assert_eq!(lints_panel::format_lints_pending(&run), "1");
+    assert_eq!(lints_panel::format_lints_slowest(&run), "mend 0:01");
 }

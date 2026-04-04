@@ -313,8 +313,8 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                     render_unreachable_overlay(frame, right_layout[1], &message);
                 }
             },
-            BottomPanel::PortReport => {
-                super::detail::render_port_report_panel(
+            BottomPanel::Lints => {
+                super::detail::render_lints_panel(
                     frame,
                     app,
                     &detail_port_report_runs,

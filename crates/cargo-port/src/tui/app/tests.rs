@@ -1142,7 +1142,7 @@ fn bottom_panel_changes_input_context_for_lower_pane() {
     assert_eq!(app.input_context(), InputContext::CiRuns);
 
     app.toggle_bottom_panel();
-    assert_eq!(app.input_context(), InputContext::PortReport);
+    assert_eq!(app.input_context(), InputContext::Lints);
 }
 
 #[test]

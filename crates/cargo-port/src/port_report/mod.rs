@@ -1,10 +1,9 @@
-//! Reads per-project Port Report state from cache-rooted JSON artifacts.
+//! Reads per-project lint state from cache-rooted JSON artifacts.
 
 use std::fs::File;
 use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -25,7 +24,14 @@ use super::constants::STALE_TIMEOUT;
 use super::tui::Icon;
 use super::tui::LINT_SPINNER;
 
-/// Lint status derived from the latest Port Report run record.
+mod history;
+
+pub use history::HistoryUsage;
+pub use history::append_history_under;
+pub use history::read_history;
+pub use history::retained_history_usage;
+
+/// Lint status derived from the latest lint run record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LintStatus {
     Running(DateTime<FixedOffset>),
@@ -204,50 +210,12 @@ pub fn clear_latest_if_running_under(cache_root: &Path, project_root: &Path) -> 
     Ok(false)
 }
 
-pub fn append_history_under(
-    cache_root: &Path,
-    project_root: &Path,
-    run: &PortReportRun,
-) -> io::Result<()> {
-    let path = history_path_under(cache_root, project_root);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    let json = serde_json::to_string(run)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-    writeln!(file, "{json}")
-}
-
-pub fn read_history(project_root: &Path) -> Vec<PortReportRun> {
-    read_history_under(&cache_root(), project_root)
-}
-
-pub fn read_history_under(cache_root: &Path, project_root: &Path) -> Vec<PortReportRun> {
-    let mut runs = read_history_file(&history_path_under(cache_root, project_root));
-    let latest = read_latest_file(&latest_path_under(cache_root, project_root));
-
-    if let Some(latest_run) = latest
-        && runs
-            .last()
-            .is_none_or(|run| run.run_id != latest_run.run_id)
-    {
-        runs.push(latest_run);
-    }
-
-    runs.reverse();
-    runs
-}
-
-fn read_latest_file(path: &Path) -> Option<PortReportRun> {
+pub fn read_latest_file(path: &Path) -> Option<PortReportRun> {
     let file = File::open(path).ok()?;
     serde_json::from_reader(file).ok()
 }
 
-fn read_history_file(path: &Path) -> Vec<PortReportRun> {
+pub fn read_history_file(path: &Path) -> Vec<PortReportRun> {
     let Ok(file) = File::open(path) else {
         return Vec::new();
     };
@@ -275,7 +243,7 @@ fn read_status_from_path(path: &Path) -> LintStatus {
     parse_run(&run)
 }
 
-fn parse_timestamp(value: &str) -> Option<DateTime<FixedOffset>> {
+pub fn parse_timestamp(value: &str) -> Option<DateTime<FixedOffset>> {
     DateTime::parse_from_rfc3339(value.trim()).ok()
 }
 
@@ -428,8 +396,13 @@ mod tests {
     #[test]
     fn read_status_uses_latest_over_history() {
         let dir = tempfile::tempdir().expect("tempdir");
-        append_history_under(&cache_root(), dir.path(), &run(PortReportRunStatus::Failed))
-            .expect("append history");
+        append_history_under(
+            &cache_root(),
+            dir.path(),
+            &run(PortReportRunStatus::Failed),
+            None,
+        )
+        .expect("append history");
         write_latest(dir.path(), &run(PortReportRunStatus::Passed));
         assert!(
             matches!(read_status(dir.path()), LintStatus::Passed(_)),
@@ -468,11 +441,11 @@ mod tests {
             commands:    Vec::new(),
         };
 
-        append_history_under(cache_dir.path(), project_dir.path(), &completed)
+        append_history_under(cache_dir.path(), project_dir.path(), &completed, None)
             .expect("append history");
         write_latest_under(cache_dir.path(), project_dir.path(), &running).expect("write latest");
 
-        let runs = read_history_under(cache_dir.path(), project_dir.path());
+        let runs = history::read_history_under(cache_dir.path(), project_dir.path());
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].run_id, "running");
         assert_eq!(runs[1].run_id, "completed");
@@ -512,12 +485,61 @@ mod tests {
             commands:    Vec::new(),
         };
 
-        append_history_under(cache_dir.path(), project_dir.path(), &completed)
+        append_history_under(cache_dir.path(), project_dir.path(), &completed, None)
             .expect("append history");
         write_latest_under(cache_dir.path(), project_dir.path(), &completed).expect("write latest");
 
-        let runs = read_history_under(cache_dir.path(), project_dir.path());
+        let runs = history::read_history_under(cache_dir.path(), project_dir.path());
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].run_id, "same-run");
+    }
+
+    #[test]
+    fn append_history_prunes_oldest_runs_under_budget() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+
+        let mut older = run(PortReportRunStatus::Passed);
+        older.run_id = "older".to_string();
+        older.started_at = "2026-04-01T18:00:00-04:00".to_string();
+        older.finished_at = Some("2026-04-01T18:00:10-04:00".to_string());
+
+        let mut newer = run(PortReportRunStatus::Passed);
+        newer.run_id = "newer".to_string();
+        newer.started_at = "2026-04-01T19:00:00-04:00".to_string();
+        newer.finished_at = Some("2026-04-01T19:00:10-04:00".to_string());
+
+        let newer_json = serde_json::to_string(&newer).expect("serialize newer");
+        let budget_bytes = u64::try_from(newer_json.len() + 1).unwrap_or(u64::MAX)
+            + history::total_bytes_under(cache_dir.path());
+
+        append_history_under(cache_dir.path(), project_dir.path(), &older, None)
+            .expect("append older");
+        append_history_under(
+            cache_dir.path(),
+            project_dir.path(),
+            &newer,
+            Some(budget_bytes),
+        )
+        .expect("append newer");
+
+        let runs = history::read_history_under(cache_dir.path(), project_dir.path());
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id, "newer");
+    }
+
+    #[test]
+    fn retained_history_usage_counts_latest_and_history_bytes() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        let completed = run(PortReportRunStatus::Passed);
+
+        write_latest_under(cache_dir.path(), project_dir.path(), &completed).expect("write latest");
+        append_history_under(cache_dir.path(), project_dir.path(), &completed, None)
+            .expect("append history");
+
+        let usage = history::retained_history_usage_under(cache_dir.path(), Some(1024));
+        assert!(usage.bytes > 0);
+        assert_eq!(usage.budget_bytes, Some(1024));
     }
 }

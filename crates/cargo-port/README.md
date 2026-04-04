@@ -55,18 +55,19 @@ include_non_rust = true
 
 These show up with reduced details (no types, version, examples) but can still display disk usage, git info, and CI runs.
 
-### Port Report
+### Lints
 
-Port Report is cargo-port's local lint/watch runtime. When enabled, cargo-port watches only the projects you allow-list, runs configured commands when they change, and shows the current status in the project list.
+Lints is cargo-port's local lint/watch runtime. When enabled, cargo-port watches only the projects you allow-list, runs configured commands when they change, and shows the current status in the project list.
 
-Port Report is off by default.
+Lints is off by default.
 
-In the Settings popup (`s`), the `Port Report` section exposes:
+In the Settings popup (`s`), the `Lints` section exposes:
 - `Enabled`
 - `Projects`
 - `Commands`
+- `History budget`
 
-`Projects` is an allow-list. If it is empty, Port Report watches nothing.
+`Projects` is an allow-list. If it is empty, Lints watches nothing.
 
 #### Basic config
 
@@ -76,12 +77,16 @@ enabled = true
 include = ["cargo-port", "bevy_lagrange"]
 exclude = []
 commands = []
+
+[port_report]
+history_budget = "512 MiB"
 ```
 
 Notes:
 - `include` entries can be bare project names, display-path prefixes, or absolute-path prefixes
 - `exclude` is applied after `include`
 - an empty `commands` list uses the built-in default command
+- `port_report.history_budget` caps retained lint-history storage across JSON history and cache artifacts; `0` and `unlimited` disable pruning
 
 #### Commands
 
@@ -93,6 +98,9 @@ enabled = true
 include = ["cargo-port"]
 exclude = []
 commands = []
+
+[port_report]
+history_budget = "512 MiB"
 ```
 
 That expands to:
@@ -125,9 +133,20 @@ In the Settings popup, `Commands` accepts a comma-separated list of full shell c
 
 Legacy preset-style entries such as `clippy` or `mend` are normalized to their built-in command definitions when config is loaded or saved.
 
+#### History budget
+
+`port_report.history_budget` accepts flexible binary-size strings such as:
+- `512MiB`
+- `512 MiB`
+- `1.5 GiB`
+- `0`
+- `unlimited`
+
+Values are normalized when config is loaded or saved. The budget applies to retained lint-history storage under the shared cache root. When history exceeds the budget, cargo-port prunes the oldest retained history first and keeps current/latest artifacts even if that live floor alone exceeds the configured budget.
+
 #### Cache location
 
-Port Report writes its cache under cargo-port's shared cache root.
+Lints writes its cache under cargo-port's shared cache root.
 
 By default this uses the platform cache directory:
 - macOS: `~/Library/Caches/cargo-port`
@@ -145,4 +164,4 @@ Rules:
 - a relative path extends the default cargo-port cache root
 - an absolute path replaces it
 
-Port Report data is stored under the `port-report/` cache subtree. CI cache uses the same shared root under `ci/`.
+Lint history data is currently stored under the legacy `port-report/` cache subtree. CI cache uses the same shared root under `ci/`.

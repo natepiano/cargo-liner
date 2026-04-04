@@ -14,6 +14,7 @@ pub(super) enum ConfigKey {
     LintInclude,
     LintExclude,
     LintCommands,
+    PortReportHistoryBudget,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -74,6 +75,10 @@ const CONFIG_HANDLERS: &[ConfigHandler] = &[
     },
     ConfigHandler {
         key:  ConfigKey::LintCommands,
+        mark: mark_refresh_lint_runtime,
+    },
+    ConfigHandler {
+        key:  ConfigKey::PortReportHistoryBudget,
         mark: mark_refresh_lint_runtime,
     },
 ];
@@ -163,6 +168,9 @@ pub(super) fn changed_keys(old: &Config, new: &Config) -> Vec<ConfigKey> {
     }
     if old.lint.commands != new.lint.commands {
         keys.push(ConfigKey::LintCommands);
+    }
+    if old.port_report.history_budget != new.port_report.history_budget {
+        keys.push(ConfigKey::PortReportHistoryBudget);
     }
 
     keys

@@ -68,7 +68,7 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
 pub const WATCHER_DISK_CONCURRENCY: usize = 2;
 pub const WATCHER_GIT_CONCURRENCY: usize = 2;
 
-// ── Port-report constants ────────────────────────────────────────────
+// ── Lint history constants ───────────────────────────────────────────
 
 pub const PORT_REPORT_LATEST_JSON: &str = "latest.json";
 pub const PORT_REPORT_HISTORY_JSONL: &str = "history.jsonl";

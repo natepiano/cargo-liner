@@ -1,6 +1,3 @@
-use chrono::DateTime;
-use chrono::FixedOffset;
-use chrono::Local;
 use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::style::Color;
@@ -22,21 +19,40 @@ use crate::port_report::PortReportRunStatus;
 use crate::tui::app::App;
 use crate::tui::types::PaneId;
 
-fn format_port_report_timestamp(timestamp: &str) -> String {
-    DateTime::parse_from_rfc3339(timestamp).map_or_else(
-        |_| timestamp.to_string(),
-        |ts: DateTime<FixedOffset>| {
-            ts.with_timezone(&Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string()
-        },
-    )
+fn format_bytes(bytes: u64) -> String {
+    const BYTES_PER_KIB: u64 = 1024;
+    const BYTES_PER_MIB: u64 = BYTES_PER_KIB * 1024;
+    const BYTES_PER_GIB: u64 = BYTES_PER_MIB * 1024;
+
+    if bytes >= BYTES_PER_GIB {
+        format_decimal_unit(bytes, BYTES_PER_GIB, "GiB")
+    } else if bytes >= BYTES_PER_MIB {
+        format_decimal_unit(bytes, BYTES_PER_MIB, "MiB")
+    } else if bytes >= BYTES_PER_KIB {
+        format_decimal_unit(bytes, BYTES_PER_KIB, "KiB")
+    } else {
+        format!("{bytes} B")
+    }
 }
 
-fn format_port_report_finished(run: &PortReportRun) -> String {
+fn format_decimal_unit(bytes: u64, unit_bytes: u64, unit_label: &str) -> String {
+    let whole = bytes / unit_bytes;
+    let remainder = bytes % unit_bytes;
+    let mut tenths =
+        (u128::from(remainder) * 10 + u128::from(unit_bytes / 2)) / u128::from(unit_bytes);
+    let mut whole = whole;
+    if tenths == 10 {
+        whole += 1;
+        tenths = 0;
+    }
+
+    format!("{whole}.{tenths} {unit_label}")
+}
+
+fn format_lints_finished(run: &PortReportRun) -> String {
     run.finished_at
         .as_deref()
-        .map_or_else(|| "—".to_string(), format_port_report_timestamp)
+        .map_or_else(|| "—".to_string(), super::timestamp::format_timestamp)
 }
 
 fn format_duration_ms(duration_ms: Option<u64>) -> String {
@@ -49,7 +65,7 @@ fn format_duration_ms(duration_ms: Option<u64>) -> String {
     format!("{minutes}:{seconds:02}")
 }
 
-pub(super) fn format_port_report_commands(run: &PortReportRun) -> String {
+pub(super) fn format_lints_commands(run: &PortReportRun) -> String {
     if run.commands.is_empty() {
         return "-".to_string();
     }
@@ -68,7 +84,7 @@ pub(super) fn format_port_report_commands(run: &PortReportRun) -> String {
     }
 }
 
-pub(super) fn format_port_report_pending(run: &PortReportRun) -> String {
+pub(super) fn format_lints_pending(run: &PortReportRun) -> String {
     run.commands
         .iter()
         .filter(|command| matches!(command.status, PortReportCommandStatus::Pending))
@@ -76,7 +92,7 @@ pub(super) fn format_port_report_pending(run: &PortReportRun) -> String {
         .to_string()
 }
 
-pub(super) fn format_port_report_slowest(run: &PortReportRun) -> String {
+pub(super) fn format_lints_slowest(run: &PortReportRun) -> String {
     run.commands
         .iter()
         .filter_map(|command| {
@@ -91,7 +107,7 @@ pub(super) fn format_port_report_slowest(run: &PortReportRun) -> String {
         )
 }
 
-pub fn render_port_report_panel(
+pub fn render_lints_panel(
     frame: &mut Frame,
     app: &mut App,
     runs: &[PortReportRun],
@@ -102,11 +118,17 @@ pub fn render_port_report_panel(
         let watching = app.port_report_is_watchable(project) && app.lint_runtime.is_some();
         (watching, usize::from(watching))
     });
+    let history_budget = app
+        .lint_history_usage
+        .budget_bytes
+        .map_or_else(|| "unlimited".to_string(), format_bytes);
     let title = format!(
-        " Port Report (watching {}, workers {}, runs {}) ",
+        " Lints (watching {}, workers {}, runs {}, history {}/{}) ",
         if watching { "yes" } else { "no" },
         worker_count,
-        runs.len()
+        runs.len(),
+        format_bytes(app.lint_history_usage.bytes),
+        history_budget,
     );
 
     let block = Block::default()
@@ -132,7 +154,7 @@ pub fn render_port_report_panel(
         if area.height > 2 {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    "No local Port Report runs yet",
+                    "No local lint runs yet",
                     Style::default().fg(Color::DarkGray),
                 )))
                 .alignment(ratatui::layout::Alignment::Center),
@@ -151,12 +173,12 @@ pub fn render_port_report_panel(
                 PortReportRunStatus::Failed => Style::default().fg(Color::Red),
             };
             Row::new(vec![
-                Cell::from(format_port_report_timestamp(&run.started_at)),
-                Cell::from(format_port_report_finished(run)),
+                Cell::from(super::timestamp::format_timestamp(&run.started_at)),
+                Cell::from(format_lints_finished(run)),
                 Cell::from(run.status.label()),
-                Cell::from(format_port_report_commands(run)),
-                Cell::from(format_port_report_pending(run)),
-                Cell::from(format_port_report_slowest(run)),
+                Cell::from(format_lints_commands(run)),
+                Cell::from(format_lints_pending(run)),
+                Cell::from(format_lints_slowest(run)),
             ])
             .style(style)
         })
