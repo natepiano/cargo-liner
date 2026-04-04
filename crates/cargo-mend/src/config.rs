@@ -244,6 +244,9 @@ fn fingerprint_for(root: &Path, config: &VisibilityConfig) -> Result<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]
+#[allow(clippy::unwrap_used, reason = "tests should panic on unexpected values")]
+#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use super::DEFAULT_GLOBAL_CONFIG_TOML;
     use super::DiagnosticCode;
@@ -254,9 +257,7 @@ mod tests {
     fn default_global_config_toml_parses_correctly() {
         let result: Result<GlobalConfigFile, _> = toml::from_str(DEFAULT_GLOBAL_CONFIG_TOML);
         assert!(result.is_ok(), "DEFAULT_GLOBAL_CONFIG_TOML should parse");
-        let Ok(cfg) = result else {
-            unreachable!();
-        };
+        let cfg = result.unwrap();
         for (code, enabled) in cfg.diagnostics.entries() {
             assert!(
                 enabled,
@@ -306,9 +307,7 @@ prefer_module_import = false
 ";
         let result: Result<GlobalConfigFile, _> = toml::from_str(toml_str);
         assert!(result.is_ok(), "partial toml should parse");
-        let Ok(cfg) = result else {
-            unreachable!();
-        };
+        let cfg = result.unwrap();
         assert!(
             !cfg.diagnostics
                 .is_enabled(DiagnosticCode::PreferModuleImport)

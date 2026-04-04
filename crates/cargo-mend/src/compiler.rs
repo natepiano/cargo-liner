@@ -1365,25 +1365,8 @@ fn classify_suspicious_pub(
         return Ok(SuspiciousPubAssessment::Allowed(allowance));
     }
 
-    let stale_parent_pub_use = parent_facade_export.as_ref().filter(|status| {
-        matches!(
-            status.usage,
-            ParentFacadeUsage::Unused
-                | ParentFacadeUsage::UsedInsideParentSubtreeByCratePath
-                | ParentFacadeUsage::UsedInsideParentSubtreeByCrateImport
-        )
-    });
-
-    if matches!(input.module_location, ModuleLocation::TopLevelPrivateModule)
-        && stale_parent_pub_use.is_none()
-    {
-        return Ok(SuspiciousPubAssessment::Allowed(
-            AllowanceReason::TopLevelPrivateModulePolicy,
-        ));
-    }
-
-    let related = stale_parent_pub_use.map(|status| {
-        match status.usage {
+    let stale_result = parent_facade_export.as_ref().and_then(|status| {
+        let message = match status.usage {
             ParentFacadeUsage::Unused => format!(
                 "parent module also has an `unused import` warning for this `pub use` at {}:{}",
                 status.parent_rel_path, status.parent_line
@@ -1395,20 +1378,35 @@ fn classify_suspicious_pub(
             ),
             ParentFacadeUsage::UsedInsideParentSubtreeByRelativeImport
             | ParentFacadeUsage::UsedInsideParentSubtreeByRelativePath
-            | ParentFacadeUsage::UsedOutsideParentSubtree => unreachable!(),
-        }
+            | ParentFacadeUsage::UsedOutsideParentSubtree => return None,
+        };
+        Some((message, status))
     });
-    let fix_support = stale_parent_pub_use.map_or(FixSupport::None, |status| {
-        if status.fix_supported {
-            FixSupport::FixPubUse
-        } else {
-            FixSupport::NeedsManualPubUseCleanup
-        }
-    });
+
+    if matches!(input.module_location, ModuleLocation::TopLevelPrivateModule)
+        && stale_result.is_none()
+    {
+        return Ok(SuspiciousPubAssessment::Allowed(
+            AllowanceReason::TopLevelPrivateModulePolicy,
+        ));
+    }
+
+    let (related, fix_support, stale_parent_pub_use) = match stale_result {
+        Some((message, status)) => {
+            let fix = if status.fix_supported {
+                FixSupport::FixPubUse
+            } else {
+                FixSupport::NeedsManualPubUseCleanup
+            };
+            (Some(message), fix, Some(status.clone()))
+        },
+        None => (None, FixSupport::None, None),
+    };
+
     Ok(SuspiciousPubAssessment::Warn {
         fix_support,
         related,
-        stale_parent_pub_use: stale_parent_pub_use.cloned(),
+        stale_parent_pub_use,
     })
 }
 
@@ -3006,6 +3004,9 @@ fn is_boundary_file(src_root: &Path, root_module: &Path, file: &Path) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]
+#[allow(clippy::unwrap_used, reason = "tests should panic on unexpected values")]
+#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use std::fs;
     use std::path::Path;

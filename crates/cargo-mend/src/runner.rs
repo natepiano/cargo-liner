@@ -329,8 +329,10 @@ impl<'a> MendRunner<'a> {
         match error {
             MendFailure::Analysis(analysis) => BuildReportFailure::Analysis(analysis),
             MendFailure::Unexpected(error) => BuildReportFailure::Unexpected(error),
-            MendFailure::FixValidation(_) => {
-                unreachable!("build_report cannot produce fix-validation failures")
+            MendFailure::FixValidation(e) => {
+                BuildReportFailure::Unexpected(anyhow::anyhow!(
+                    "unexpected fix-validation failure in build_report: {e}"
+                ))
             },
         }
     }

@@ -19,6 +19,8 @@ multiple_crate_versions         = "allow"
 nursery                         = { level = "deny", priority = -1 }
 panic                           = "deny"
 pedantic                        = { level = "deny", priority = -1 }
+redundant_pub_crate             = "allow"
+unreachable                     = "deny"
 unwrap_used                     = "deny"
 
 [dependencies]

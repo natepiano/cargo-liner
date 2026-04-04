@@ -112,6 +112,7 @@ pub const DIAGNOSTICS: &[DiagnosticSpec] = &[
     },
 ];
 
+#[allow(clippy::unreachable, reason = "internal invariant: all finding codes must exist in DIAGNOSTICS — will be replaced by enum")]
 pub fn diagnostic_spec(code: &str) -> &'static DiagnosticSpec {
     let Some(spec) = DIAGNOSTICS.iter().find(|candidate| candidate.code == code) else {
         unreachable!("unknown diagnostic code: {code}");
