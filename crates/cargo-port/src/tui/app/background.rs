@@ -20,9 +20,9 @@ use crate::config::Config;
 use crate::constants::SERVICE_RETRY_SECS;
 use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
-use crate::lint_runtime;
-use crate::lint_runtime::RegisterProjectRequest;
-use crate::port_report::LintStatus;
+use crate::lint;
+use crate::lint::LintStatus;
+use crate::lint::RegisterProjectRequest;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
 use crate::project::ProjectLanguage::Rust;
@@ -194,7 +194,7 @@ impl App {
     }
 
     pub(super) fn refresh_lint_runtime_from_config(&mut self, cfg: &Config) {
-        let lint_spawn = lint_runtime::spawn(cfg, self.bg_tx.clone());
+        let lint_spawn = lint::spawn(cfg, self.bg_tx.clone());
         self.lint_runtime = lint_spawn.handle;
         self.register_existing_projects();
         self.sync_lint_runtime_projects_immediately();
@@ -242,7 +242,7 @@ impl App {
             if !self.is_cargo_active_path(&project.path) {
                 continue;
             }
-            if !crate::lint_runtime::project_is_eligible(
+            if !crate::lint::project_is_eligible(
                 &self.current_config.lint,
                 &project.path,
                 &PathBuf::from(&project.abs_path),
@@ -250,7 +250,7 @@ impl App {
             ) {
                 continue;
             }
-            let status = crate::port_report::read_status(&PathBuf::from(&project.abs_path));
+            let status = crate::lint::read_status(&PathBuf::from(&project.abs_path));
             if !matches!(status, LintStatus::NoLog) {
                 self.lint_status.insert(project.path.clone(), status);
             }
@@ -263,7 +263,7 @@ impl App {
             if !self.is_cargo_active_path(&project.path) {
                 continue;
             }
-            let runs = crate::port_report::read_history(&PathBuf::from(&project.abs_path));
+            let runs = crate::lint::read_history(&PathBuf::from(&project.abs_path));
             if !runs.is_empty() {
                 self.port_report_runs.insert(project.path.clone(), runs);
             }
@@ -284,7 +284,7 @@ impl App {
             self.port_report_runs.remove(project_path);
             return;
         }
-        let runs = crate::port_report::read_history(&PathBuf::from(&project.abs_path));
+        let runs = crate::lint::read_history(&PathBuf::from(&project.abs_path));
         if runs.is_empty() {
             self.port_report_runs.remove(project_path);
         } else {
@@ -299,7 +299,7 @@ impl App {
             .port_report
             .history_budget_bytes()
             .unwrap_or(None);
-        self.lint_history_usage = crate::port_report::retained_history_usage(history_budget_bytes);
+        self.lint_history_usage = crate::lint::retained_history_usage(history_budget_bytes);
     }
 
     pub(super) fn register_project_background_services(&self, project: &RustProject) {
@@ -873,7 +873,7 @@ impl App {
         self.disk_usage.clear();
         self.ci_state.clear();
         self.lint_status.clear();
-        self.lint_history_usage = crate::port_report::HistoryUsage::default();
+        self.lint_history_usage = crate::lint::HistoryUsage::default();
         self.port_report_runs.clear();
         self.git_info.clear();
         self.git_path_states.clear();
@@ -1361,7 +1361,7 @@ impl App {
             .iter()
             .find(|project| project.path == path)
             .is_some_and(|project| {
-                crate::lint_runtime::project_is_eligible(
+                crate::lint::project_is_eligible(
                     &self.current_config.lint,
                     &project.path,
                     &PathBuf::from(&project.abs_path),

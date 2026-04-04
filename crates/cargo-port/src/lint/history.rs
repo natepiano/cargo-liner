@@ -10,13 +10,10 @@ use std::time::SystemTime;
 
 use walkdir::WalkDir;
 
-use super::PortReportRun;
-use super::cache_root;
-use super::history_path_under;
-use super::latest_path_under;
-use super::parse_timestamp;
-use super::read_history_file;
-use super::read_latest_file;
+use super::paths;
+use super::read_write;
+use super::status;
+use super::types::PortReportRun;
 use crate::constants::PORT_REPORT_HISTORY_JSONL;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -37,7 +34,7 @@ type HistoryFileLines = (PathBuf, Vec<String>);
 type CollectedHistoryLines = (Vec<PrunableHistoryLine>, Vec<HistoryFileLines>);
 
 pub fn retained_history_usage(history_budget_bytes: Option<u64>) -> HistoryUsage {
-    retained_history_usage_under(&cache_root(), history_budget_bytes)
+    retained_history_usage_under(&paths::cache_root(), history_budget_bytes)
 }
 
 pub(super) fn retained_history_usage_under(
@@ -56,7 +53,7 @@ pub fn append_history_under(
     run: &PortReportRun,
     history_budget_bytes: Option<u64>,
 ) -> io::Result<()> {
-    let path = history_path_under(cache_root, project_root);
+    let path = paths::history_path_under(cache_root, project_root);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -71,12 +68,13 @@ pub fn append_history_under(
 }
 
 pub fn read_history(project_root: &Path) -> Vec<PortReportRun> {
-    read_history_under(&cache_root(), project_root)
+    read_history_under(&paths::cache_root(), project_root)
 }
 
 pub(super) fn read_history_under(cache_root: &Path, project_root: &Path) -> Vec<PortReportRun> {
-    let mut runs = read_history_file(&history_path_under(cache_root, project_root));
-    let latest = read_latest_file(&latest_path_under(cache_root, project_root));
+    let mut runs =
+        read_write::read_history_file(&paths::history_path_under(cache_root, project_root));
+    let latest = read_write::read_latest_file(&paths::latest_path_under(cache_root, project_root));
 
     if let Some(latest_run) = latest
         && runs
@@ -118,8 +116,8 @@ pub(super) fn total_bytes_under(root: &Path) -> u64 {
 fn history_line_sort_key(run: &PortReportRun) -> i64 {
     run.finished_at
         .as_deref()
-        .and_then(parse_timestamp)
-        .or_else(|| parse_timestamp(&run.started_at))
+        .and_then(status::parse_timestamp)
+        .or_else(|| status::parse_timestamp(&run.started_at))
         .map_or(i64::MIN, |timestamp| timestamp.timestamp_millis())
 }
 

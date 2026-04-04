@@ -17,7 +17,7 @@ use crate::config::NonRustInclusion;
 use crate::config::ScrollDirection;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
-use crate::port_report::LintStatus;
+use crate::lint::LintStatus;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;

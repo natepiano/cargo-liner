@@ -13,9 +13,9 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
-use crate::port_report::PortReportCommandStatus;
-use crate::port_report::PortReportRun;
-use crate::port_report::PortReportRunStatus;
+use crate::lint::PortReportCommandStatus;
+use crate::lint::PortReportRun;
+use crate::lint::PortReportRunStatus;
 use crate::tui::app::App;
 use crate::tui::types::PaneId;
 

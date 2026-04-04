@@ -16,11 +16,19 @@ use chrono::Local;
 use notify::RecursiveMode;
 use notify::Watcher;
 
+use super::history;
+use super::paths;
+use super::read_write;
+use super::status;
+use super::types::LintStatus;
+use super::types::PortReportCommand;
+use super::types::PortReportCommandStatus;
+use super::types::PortReportRun;
+use super::types::PortReportRunStatus;
 use crate::cache_paths;
 use crate::config::Config;
 use crate::config::LintCommandConfig;
 use crate::config::LintConfig;
-use crate::port_report;
 use crate::scan::BackgroundMsg;
 
 const LINT_DEBOUNCE: Duration = Duration::from_millis(750);
@@ -166,14 +174,14 @@ fn clear_orphaned_running_statuses(
     bg_tx: &mpsc::Sender<BackgroundMsg>,
 ) {
     for (project_root, request) in desired {
-        let Ok(cleared) = port_report::clear_latest_if_running_under(cache_root, project_root)
+        let Ok(cleared) = read_write::clear_latest_if_running_under(cache_root, project_root)
         else {
             continue;
         };
         if cleared {
             let _ = bg_tx.send(BackgroundMsg::LintStatus {
                 path:   request.project_path.clone(),
-                status: port_report::LintStatus::NoLog,
+                status: LintStatus::NoLog,
             });
         }
     }
@@ -399,30 +407,30 @@ pub fn run_commands_for_project(
         return Ok(());
     }
 
-    let output_dir = port_report::output_dir_under(cache_root, project_root);
+    let output_dir = paths::output_dir_under(cache_root, project_root);
     std::fs::create_dir_all(&output_dir)?;
     let started_at = Local::now();
     let started_at_str = started_at.to_rfc3339();
     let run_started = Instant::now();
-    let mut run = port_report::PortReportRun {
+    let mut run = PortReportRun {
         run_id:      started_at_str.clone(),
         started_at:  started_at_str,
         finished_at: None,
         duration_ms: None,
-        status:      port_report::PortReportRunStatus::Running,
+        status:      PortReportRunStatus::Running,
         commands:    commands
             .iter()
             .enumerate()
             .map(|(index, command)| {
                 let log_name = command_log_name(command, index);
-                port_report::PortReportCommand {
+                PortReportCommand {
                     name:        if command.name.trim().is_empty() {
                         log_name.clone()
                     } else {
                         command.name.trim().to_string()
                     },
                     command:     command.command.clone(),
-                    status:      port_report::PortReportCommandStatus::Pending,
+                    status:      PortReportCommandStatus::Pending,
                     duration_ms: None,
                     exit_code:   None,
                     log_file:    format!("port-report/{log_name}-latest.log"),
@@ -430,7 +438,7 @@ pub fn run_commands_for_project(
             })
             .collect(),
     };
-    port_report::write_latest_under(cache_root, project_root, &run)?;
+    read_write::write_latest_under(cache_root, project_root, &run)?;
     crate::perf_log::log_event(&format!(
         "startup_lint_started path={} abs_path={}",
         project_path,
@@ -438,41 +446,41 @@ pub fn run_commands_for_project(
     ));
     let _ = bg_tx.send(BackgroundMsg::LintStatus {
         path:   project_path.to_string(),
-        status: port_report::read_status_under(cache_root, project_root),
+        status: status::read_status_under(cache_root, project_root),
     });
 
     let manifest_path = project_root.join("Cargo.toml");
     let mut failed = false;
     for (index, command) in commands.iter().enumerate() {
         if !project_still_runnable(project_root) {
-            let _ = port_report::clear_latest_under(cache_root, project_root);
+            let _ = read_write::clear_latest_under(cache_root, project_root);
             let _ = bg_tx.send(BackgroundMsg::LintStatus {
                 path:   project_path.to_string(),
-                status: port_report::LintStatus::NoLog,
+                status: LintStatus::NoLog,
             });
             return Ok(());
         }
         let execution = run_command(project_root, &manifest_path, &output_dir, command, index)?;
         if let Some(command_run) = run.commands.get_mut(index) {
             command_run.status = if execution.success {
-                port_report::PortReportCommandStatus::Passed
+                PortReportCommandStatus::Passed
             } else {
-                port_report::PortReportCommandStatus::Failed
+                PortReportCommandStatus::Failed
             };
             command_run.duration_ms = Some(execution.duration_ms);
             command_run.exit_code = execution.exit_code;
         }
-        port_report::write_latest_under(cache_root, project_root, &run)?;
+        read_write::write_latest_under(cache_root, project_root, &run)?;
         if !execution.success {
             failed = true;
         }
     }
 
     if !project_still_runnable(project_root) {
-        let _ = port_report::clear_latest_under(cache_root, project_root);
+        let _ = read_write::clear_latest_under(cache_root, project_root);
         let _ = bg_tx.send(BackgroundMsg::LintStatus {
             path:   project_path.to_string(),
-            status: port_report::LintStatus::NoLog,
+            status: LintStatus::NoLog,
         });
         return Ok(());
     }
@@ -480,16 +488,16 @@ pub fn run_commands_for_project(
     run.finished_at = Some(Local::now().to_rfc3339());
     run.duration_ms = Some(u64::try_from(run_started.elapsed().as_millis()).unwrap_or(u64::MAX));
     run.status = if failed {
-        port_report::PortReportRunStatus::Failed
+        PortReportRunStatus::Failed
     } else {
-        port_report::PortReportRunStatus::Passed
+        PortReportRunStatus::Passed
     };
 
-    port_report::write_latest_under(cache_root, project_root, &run)?;
-    port_report::append_history_under(cache_root, project_root, &run, history_budget_bytes)?;
+    read_write::write_latest_under(cache_root, project_root, &run)?;
+    history::append_history_under(cache_root, project_root, &run, history_budget_bytes)?;
     let _ = bg_tx.send(BackgroundMsg::LintStatus {
         path:   project_path.to_string(),
-        status: port_report::read_status_under(cache_root, project_root),
+        status: status::read_status_under(cache_root, project_root),
     });
     Ok(())
 }
@@ -704,9 +712,9 @@ mod tests {
         )
         .expect("run commands");
 
-        let report_dir = port_report::output_dir_under(&cache_root, project_dir.path());
-        let latest_path = port_report::latest_path_under(&cache_root, project_dir.path());
-        let history_path = port_report::history_path_under(&cache_root, project_dir.path());
+        let report_dir = paths::output_dir_under(&cache_root, project_dir.path());
+        let latest_path = paths::latest_path_under(&cache_root, project_dir.path());
+        let history_path = paths::history_path_under(&cache_root, project_dir.path());
         let report = std::fs::read_to_string(report_dir.join("echo-latest.log"))
             .expect("read command report");
         let latest = std::fs::read_to_string(latest_path).expect("read latest report");
@@ -792,8 +800,8 @@ mod tests {
         )
         .expect("run commands");
 
-        let latest_path = port_report::latest_path_under(cache_dir.path(), project_dir.path());
-        let history_path = port_report::history_path_under(cache_dir.path(), project_dir.path());
+        let latest_path = paths::latest_path_under(cache_dir.path(), project_dir.path());
+        let history_path = paths::history_path_under(cache_dir.path(), project_dir.path());
         assert!(!latest_path.exists());
         assert!(!history_path.exists());
     }

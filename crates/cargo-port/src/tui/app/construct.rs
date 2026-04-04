@@ -27,8 +27,8 @@ use super::types::UiModes;
 use crate::config::Config;
 use crate::config::NonRustInclusion;
 use crate::http::HttpClient;
-use crate::lint_runtime;
-use crate::lint_runtime::RuntimeHandle;
+use crate::lint;
+use crate::lint::RuntimeHandle;
 use crate::project::ProjectLanguage::Rust;
 use crate::project::RustProject;
 use crate::scan;
@@ -101,7 +101,7 @@ impl AppInit {
         crate::config::set_active_config(cfg);
         let config_path = crate::config::config_path();
         let config_last_seen = config_path.as_deref().and_then(App::config_file_stamp);
-        let lint_spawn = lint_runtime::spawn(cfg, bg_tx.clone());
+        let lint_spawn = lint::spawn(cfg, bg_tx.clone());
         let watch_tx = watcher::spawn_watcher(
             scan_root.to_path_buf(),
             bg_tx.clone(),
@@ -213,7 +213,7 @@ impl App {
             disk_usage: HashMap::new(),
             ci_state: HashMap::new(),
             lint_status: HashMap::new(),
-            lint_history_usage: crate::port_report::HistoryUsage::default(),
+            lint_history_usage: crate::lint::HistoryUsage::default(),
             port_report_runs: HashMap::new(),
             lint_rollup_status: HashMap::new(),
             lint_rollup_paths: HashMap::new(),

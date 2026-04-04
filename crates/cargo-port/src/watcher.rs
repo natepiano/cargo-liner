@@ -32,7 +32,7 @@ use super::constants::POLL_INTERVAL;
 use super::constants::WATCHER_DISK_CONCURRENCY;
 use super::constants::WATCHER_GIT_CONCURRENCY;
 use super::http::HttpClient;
-use super::port_report;
+use super::lint;
 use super::project;
 use super::project::GitInfo;
 use super::project::GitRepoPresence;
@@ -236,7 +236,7 @@ fn register_watch_roots(watcher: &mut impl Watcher, watch_dirs: &[PathBuf], lint
         }
     }
     if lint_enabled {
-        let lint_root = port_report::cache_root();
+        let lint_root = lint::cache_root();
         let _ = std::fs::create_dir_all(&lint_root);
         let _ = watcher.watch(&lint_root, RecursiveMode::Recursive);
     }
@@ -262,7 +262,7 @@ fn drain_watch_requests(
                         project_path:         req.project_path,
                         abs_path:             req.abs_path.clone(),
                         repo_root:            req.repo_root,
-                        port_report_dir_path: port_report::project_dir(&req.abs_path),
+                        port_report_dir_path: lint::project_dir(&req.abs_path),
                     },
                 );
             },
@@ -382,7 +382,7 @@ fn handle_event(
         .values()
         .find(|entry| event_path.starts_with(&entry.port_report_dir_path))
     {
-        let status = port_report::read_status(&entry.abs_path);
+        let status = lint::read_status(&entry.abs_path);
         let _ = bg_tx.send(BackgroundMsg::LintStatus {
             path: entry.project_path.clone(),
             status,
@@ -1247,7 +1247,7 @@ mod tests {
                 project_path:         project_path.to_string(),
                 abs_path:             abs_path.to_path_buf(),
                 repo_root:            None,
-                port_report_dir_path: port_report::project_dir(abs_path),
+                port_report_dir_path: lint::project_dir(abs_path),
             },
         )
     }
@@ -1368,7 +1368,7 @@ edition = "2024"
                 project_path:         "~/my_project".to_string(),
                 abs_path:             project_dir.clone(),
                 repo_root:            Some(project_dir.clone()),
-                port_report_dir_path: port_report::project_dir(&project_dir),
+                port_report_dir_path: lint::project_dir(&project_dir),
             },
         );
         projects.insert(
@@ -1377,7 +1377,7 @@ edition = "2024"
                 project_path:         "~/my_project/crates/member".to_string(),
                 abs_path:             member_dir.clone(),
                 repo_root:            Some(project_dir.clone()),
-                port_report_dir_path: port_report::project_dir(&member_dir),
+                port_report_dir_path: lint::project_dir(&member_dir),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1472,7 +1472,7 @@ edition = "2024"
                 project_path:         "~/my_project".to_string(),
                 abs_path:             project_dir.clone(),
                 repo_root:            Some(project_dir.clone()),
-                port_report_dir_path: port_report::project_dir(&project_dir),
+                port_report_dir_path: lint::project_dir(&project_dir),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1519,7 +1519,7 @@ edition = "2024"
                 project_path:         "~/my_project".to_string(),
                 abs_path:             project_dir.clone(),
                 repo_root:            Some(project_dir.clone()),
-                port_report_dir_path: port_report::project_dir(&project_dir),
+                port_report_dir_path: lint::project_dir(&project_dir),
             },
         );
         projects.insert(
@@ -1528,7 +1528,7 @@ edition = "2024"
                 project_path:         "~/my_project/crates/member".to_string(),
                 abs_path:             member_dir.clone(),
                 repo_root:            Some(project_dir.clone()),
-                port_report_dir_path: port_report::project_dir(&member_dir),
+                port_report_dir_path: lint::project_dir(&member_dir),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1613,8 +1613,7 @@ edition = "2024"
         let project_path = "~/rust/demo";
         let mut projects = HashMap::new();
         let (key, entry) = make_project_entry(project_path, project_root.path());
-        let latest_path =
-            port_report::latest_path_under(&port_report::cache_root(), project_root.path());
+        let latest_path = lint::latest_path_under(&lint::cache_root(), project_root.path());
         projects.insert(key, entry);
 
         std::fs::create_dir_all(latest_path.parent().expect("latest file has parent"))
@@ -1654,10 +1653,7 @@ edition = "2024"
             return;
         };
         assert_eq!(path, project_path);
-        assert!(matches!(
-            status,
-            super::super::port_report::LintStatus::Passed(_)
-        ));
+        assert!(matches!(status, crate::lint::LintStatus::Passed(_)));
         assert!(pending_disk.is_empty());
         assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());
@@ -1669,8 +1665,7 @@ edition = "2024"
         let project_path = "~/rust/demo";
         let mut projects = HashMap::new();
         let (key, entry) = make_project_entry(project_path, project_root.path());
-        let latest_path =
-            port_report::latest_path_under(&port_report::cache_root(), project_root.path());
+        let latest_path = lint::latest_path_under(&lint::cache_root(), project_root.path());
         let child_path = entry
             .port_report_dir_path
             .join("port-report/clippy-latest.log");
@@ -1714,10 +1709,7 @@ edition = "2024"
             return;
         };
         assert_eq!(path, project_path);
-        assert!(matches!(
-            status,
-            super::super::port_report::LintStatus::Failed(_)
-        ));
+        assert!(matches!(status, crate::lint::LintStatus::Failed(_)));
         assert!(pending_disk.is_empty());
         assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());
@@ -1927,7 +1919,7 @@ edition = "2024"
                 project_path:         "~/my_project".to_string(),
                 abs_path:             project_dir.clone(),
                 repo_root:            Some(project_dir.clone()),
-                port_report_dir_path: port_report::project_dir(&project_dir),
+                port_report_dir_path: lint::project_dir(&project_dir),
             },
         );
 
@@ -1986,7 +1978,7 @@ edition = "2024"
                 project_path:         "~/no_git".to_string(),
                 abs_path:             project_dir.clone(),
                 repo_root:            None,
-                port_report_dir_path: port_report::project_dir(&project_dir),
+                port_report_dir_path: lint::project_dir(&project_dir),
             },
         );
 

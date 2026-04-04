@@ -103,7 +103,7 @@ impl App {
         if !self.lint_enabled() {
             return false;
         }
-        crate::lint_runtime::project_is_eligible(
+        crate::lint::project_is_eligible(
             &self.current_config.lint,
             &project.path,
             &PathBuf::from(&project.abs_path),

@@ -25,9 +25,9 @@ use super::constants::SCAN_LOCAL_CONCURRENCY;
 use super::http::HttpClient;
 use super::http::ServiceKind;
 use super::http::ServiceSignal;
+use super::lint;
+use super::lint::LintStatus;
 use super::perf_log;
-use super::port_report;
-use super::port_report::LintStatus;
 use super::project::GitInfo;
 use super::project::GitPathState;
 use super::project::GitRepoPresence;
@@ -1087,7 +1087,7 @@ pub fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
 
     if lint_enabled {
         // Lint status (cheap local file read).
-        let lint = port_report::read_status(abs_path);
+        let lint = lint::read_status(abs_path);
         if !matches!(lint, LintStatus::NoLog) {
             let _ = tx.send(BackgroundMsg::LintStatus {
                 path:   project_path.to_string(),
@@ -1833,7 +1833,7 @@ fn phase1_local_work(
 
     if project.lint_enabled {
         // Lint status (cheap local file read).
-        let lint = port_report::read_status(&project.abs_path);
+        let lint = lint::read_status(&project.abs_path);
         if !matches!(lint, LintStatus::NoLog) {
             let _ = tx.send(BackgroundMsg::LintStatus {
                 path:   project.path.clone(),

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use super::types::App;
 use super::types::LintRollupKey;
 use super::types::VisibleRow;
-use crate::port_report::LintStatus;
+use crate::lint::LintStatus;
 use crate::project::RustProject;
 use crate::scan::ProjectNode;
 
