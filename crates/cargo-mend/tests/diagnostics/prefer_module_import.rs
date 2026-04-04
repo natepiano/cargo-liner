@@ -196,12 +196,12 @@ fn example() -> i32 { do_thing() }
         !report
             .findings
             .iter()
-            .any(|f| f.code == "prefer_module_import"),
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
         "fix should be idempotent — second run should have no prefer_module_import findings, got: {:?}",
         report
             .findings
             .iter()
-            .filter(|f| f.code == "prefer_module_import")
+            .filter(|f| f.code == DiagnosticCode::PreferModuleImport)
             .map(|f| &f.path)
             .collect::<Vec<_>>()
     );
@@ -320,7 +320,7 @@ edition = "2024"
         !report
             .findings
             .iter()
-            .any(|f| f.code == "prefer_module_import"),
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
         "PascalCase imports should not be flagged as prefer_module_import"
     );
 }
@@ -365,7 +365,7 @@ edition = "2024"
         !report
             .findings
             .iter()
-            .any(|f| f.code == "prefer_module_import"),
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
         "UPPER_SNAKE_CASE imports should not be flagged as prefer_module_import"
     );
 }
@@ -410,7 +410,7 @@ edition = "2024"
         !report
             .findings
             .iter()
-            .any(|f| f.code == "prefer_module_import"),
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
         "grouped imports should not be flagged as prefer_module_import"
     );
 }
@@ -455,7 +455,7 @@ edition = "2024"
         !report
             .findings
             .iter()
-            .any(|f| f.code == "prefer_module_import"),
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
         "renamed imports should not be flagged as prefer_module_import"
     );
 }
@@ -492,7 +492,7 @@ fn main() {
         !report
             .findings
             .iter()
-            .any(|f| f.code == "prefer_module_import"),
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
         "std imports should not be flagged as prefer_module_import"
     );
 }
@@ -601,7 +601,7 @@ fn example() -> i32 { do_thing() }
         report
             .findings
             .iter()
-            .any(|f| f.code == "prefer_module_import"),
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
         "read-only mode should report prefer_module_import findings"
     );
 
@@ -635,7 +635,7 @@ edition = "2024"
         !report
             .findings
             .iter()
-            .any(|f| f.code == "prefer_module_import"),
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
         "clean project should not have prefer_module_import findings"
     );
 }
@@ -843,7 +843,7 @@ fn example() -> i32 { utils::do_thing() }
         !report
             .findings
             .iter()
-            .any(|f| f.code == "prefer_module_import"),
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
         "`use super::module;` should not be flagged as prefer_module_import"
     );
 }
@@ -898,7 +898,7 @@ fn example() -> i32 { do_thing() }
         !report
             .findings
             .iter()
-            .any(|f| f.code == "prefer_module_import"),
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
         "disabled diagnostic should produce no findings"
     );
 }
@@ -951,7 +951,7 @@ fn example(_basis: CameraBasis) -> i32 { support::helper() }
     let false_positives: Vec<_> = report
         .findings
         .iter()
-        .filter(|f| f.code == "prefer_module_import" && f.path.contains("convex_hull"))
+        .filter(|f| f.code == DiagnosticCode::PreferModuleImport && f.path.contains("convex_hull"))
         .collect();
     assert!(
         false_positives.is_empty(),
@@ -995,7 +995,7 @@ fn main() { button_zoom_just_pressed(); }
         !report
             .findings
             .iter()
-            .any(|f| f.code == "prefer_module_import"),
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
         "function import should not be flagged when `mod` declaration exists in same file"
     );
 }
@@ -1055,12 +1055,12 @@ edition = "2024"
         !report
             .findings
             .iter()
-            .any(|f| f.code == "prefer_module_import"),
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
         "crate:: path importing a module should not be flagged as prefer_module_import, got: {:?}",
         report
             .findings
             .iter()
-            .filter(|f| f.code == "prefer_module_import")
+            .filter(|f| f.code == DiagnosticCode::PreferModuleImport)
             .map(|f| &f.path)
             .collect::<Vec<_>>()
     );

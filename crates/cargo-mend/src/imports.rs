@@ -15,6 +15,7 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use walkdir::WalkDir;
 
+use super::config::DiagnosticCode;
 use super::diagnostics::Finding;
 use super::diagnostics::Severity;
 use super::fix_support::FixSupport;
@@ -28,7 +29,7 @@ pub struct ImportScan {
 
 #[derive(Debug, Clone)]
 struct ShortenImportFact {
-    code:          &'static str,
+    code:          DiagnosticCode,
     message:       &'static str,
     path:          String,
     line:          usize,
@@ -122,7 +123,7 @@ impl ShortenImportFact {
         let replacement = self.replacement;
         Finding {
             severity:      Severity::Warning,
-            code:          self.code.to_string(),
+            code:          self.code,
             path:          self.path,
             line:          self.line,
             column:        self.column,
@@ -322,7 +323,7 @@ impl Visit<'_> for UseVisitor<'_> {
 struct ImportCandidate {
     original:    String,
     replacement: String,
-    code:        &'static str,
+    code:        DiagnosticCode,
     message:     &'static str,
 }
 
@@ -357,7 +358,7 @@ fn analyze_use_tree(current_module_path: &[String], tree: &UseTree) -> Option<Im
     Some(ImportCandidate {
         original:    import.original,
         replacement: relative,
-        code:        "shorten_local_crate_import",
+        code:        DiagnosticCode::ShortenLocalCrateImport,
         message:     "it stays within the same local module boundary",
     })
 }
@@ -382,7 +383,7 @@ fn analyze_deep_super(current_module_path: &[String], tree: &UseTree) -> Option<
     Some(ImportCandidate {
         original: import.original,
         replacement,
-        code: "replace_deep_super_import",
+        code: DiagnosticCode::ReplaceDeepSuperImport,
         message: "deep `super::` chain is hard to follow — use a named `crate::` path",
     })
 }
@@ -474,8 +475,14 @@ fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]
-#[allow(clippy::unwrap_used, reason = "tests should panic on unexpected values")]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests should panic on unexpected values"
+)]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use std::path::PathBuf;

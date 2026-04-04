@@ -338,7 +338,7 @@ edition = "2024"
         !report
             .findings
             .iter()
-            .any(|f| f.code == "inline_path_qualified_type"),
+            .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
         "std paths should not be flagged"
     );
 }
@@ -383,7 +383,7 @@ edition = "2024"
         !report
             .findings
             .iter()
-            .any(|f| f.code == "inline_path_qualified_type"),
+            .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
         "use statements should not be flagged as inline path types"
     );
 }
@@ -613,7 +613,7 @@ edition = "2024"
         report
             .findings
             .iter()
-            .any(|f| f.code == "inline_path_qualified_type"),
+            .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
         "read-only mode should report inline_path_qualified_type findings"
     );
 }
@@ -639,7 +639,7 @@ edition = "2024"
         !report
             .findings
             .iter()
-            .any(|f| f.code == "inline_path_qualified_type"),
+            .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
         "clean project should not have inline_path_qualified_type findings"
     );
 }

@@ -3,15 +3,10 @@ use crate::common::*;
 #[test]
 fn every_diagnostic_has_a_unique_readme_anchor() {
     let readme = include_str!("../../README.md");
-    let mut seen_codes = BTreeSet::new();
     let mut seen_anchors = BTreeSet::new();
 
-    for spec in diagnostic_specs() {
-        assert!(
-            seen_codes.insert(spec.code),
-            "duplicate diagnostic code: {}",
-            spec.code
-        );
+    for &code in DiagnosticCode::ALL {
+        let spec = diagnostic_spec(code);
         assert!(
             seen_anchors.insert(spec.help_anchor),
             "duplicate README anchor: {}",
@@ -20,8 +15,8 @@ fn every_diagnostic_has_a_unique_readme_anchor() {
         let anchor = format!(r#"<a id="{}"></a>"#, spec.help_anchor);
         assert!(
             readme.contains(&anchor),
-            "README is missing anchor for {}: {}",
-            spec.code,
+            "README is missing anchor for {:?}: {}",
+            code,
             spec.help_anchor
         );
     }
@@ -177,11 +172,11 @@ pub struct Suspicious;
 }
 
 fn assert_rendered_diagnostics(report: &Report, rendered: &str) {
-    for spec in diagnostic_specs() {
+    for &code in DiagnosticCode::ALL {
+        let spec = diagnostic_spec(code);
         assert!(
             rendered.contains(spec.headline),
-            "rendered output is missing headline for {}",
-            spec.code
+            "rendered output is missing headline for {code:?}",
         );
         let help_url = format!(
             "https://github.com/natepiano/cargo-mend#{}",
@@ -189,8 +184,7 @@ fn assert_rendered_diagnostics(report: &Report, rendered: &str) {
         );
         assert!(
             rendered.contains(&help_url),
-            "rendered output is missing help URL for {}",
-            spec.code
+            "rendered output is missing help URL for {code:?}",
         );
     }
 
@@ -203,10 +197,10 @@ fn assert_rendered_diagnostics(report: &Report, rendered: &str) {
         "help: consider removing this parent facade and importing the item from its defining child module"
     ));
     for finding in &report.findings {
-        if let Some(note) = fix_support_for(&finding.code, finding.fix_support).note() {
+        if let Some(note) = fix_support_for(finding.code, finding.fix_support).note() {
             assert!(
                 rendered.contains(note),
-                "rendered output is missing fix note for {}",
+                "rendered output is missing fix note for {:?}",
                 finding.code
             );
         }
@@ -236,12 +230,8 @@ fn fixture_renders_every_current_diagnostic() {
     );
 
     let report: Report = serde_json::from_slice(&output.stdout).expect("parse mend json report");
-    let codes: BTreeSet<_> = report
-        .findings
-        .iter()
-        .map(|finding| finding.code.as_str())
-        .collect();
-    let expected_codes: BTreeSet<_> = diagnostic_specs().iter().map(|spec| spec.code).collect();
+    let codes: BTreeSet<_> = report.findings.iter().map(|finding| finding.code).collect();
+    let expected_codes: BTreeSet<_> = DiagnosticCode::ALL.iter().copied().collect();
 
     assert_eq!(
         codes, expected_codes,
@@ -310,7 +300,8 @@ fn main() {}
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == "review_pub_mod" && finding.path == "src/private_tools/mod.rs"
+            finding.code == DiagnosticCode::ReviewPubMod
+                && finding.path == "src/private_tools/mod.rs"
         }),
         "project-root allow_pub_mod should suppress local pub mod review"
     );
@@ -367,7 +358,8 @@ fn main() {}
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == "review_pub_mod" && finding.path == "mcp/src/private_tools/mod.rs"
+            finding.code == DiagnosticCode::ReviewPubMod
+                && finding.path == "mcp/src/private_tools/mod.rs"
         }),
         "workspace-root allow_pub_mod should suppress member pub mod review"
     );
@@ -442,7 +434,8 @@ edition = "2024"
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == "suspicious_pub" && finding.path == "app/src/tool/field_placement.rs"
+            finding.code == DiagnosticCode::SuspiciousPub
+                && finding.path == "app/src/tool/field_placement.rs"
         }),
         "literal workspace sibling crate paths should preserve the parent facade: {:#?}",
         report.findings

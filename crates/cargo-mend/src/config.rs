@@ -73,13 +73,6 @@ impl DiagnosticsConfig {
         self.rules.get(&code).copied().unwrap_or(true)
     }
 
-    pub fn is_enabled_str(&self, code_str: &str) -> bool {
-        DiagnosticCode::ALL
-            .iter()
-            .find(|c| c.as_str() == code_str)
-            .is_none_or(|code| self.is_enabled(*code))
-    }
-
     pub fn entries(&self) -> Vec<(DiagnosticCode, bool)> {
         DiagnosticCode::ALL
             .iter()
@@ -244,8 +237,14 @@ fn fingerprint_for(root: &Path, config: &VisibilityConfig) -> Result<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]
-#[allow(clippy::unwrap_used, reason = "tests should panic on unexpected values")]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests should panic on unexpected values"
+)]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use super::DEFAULT_GLOBAL_CONFIG_TOML;

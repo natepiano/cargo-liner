@@ -34,6 +34,7 @@ use syn::ItemUse;
 use syn::UseTree;
 use syn::visit::Visit;
 
+use super::config::DiagnosticCode;
 use super::config::LoadedConfig;
 use super::config::VisibilityConfig;
 use super::constants::EXIT_CODE_ERROR;
@@ -103,7 +104,7 @@ struct StoredReport {
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredFinding {
     severity:      Severity,
-    code:          String,
+    code:          DiagnosticCode,
     path:          String,
     line:          usize,
     column:        usize,
@@ -1051,7 +1052,7 @@ fn analyze_item(
             item.span,
             FindingParams {
                 severity:    Severity::Warning,
-                code:        "wildcard_parent_pub_use",
+                code:        DiagnosticCode::WildcardParentPubUse,
                 item:        None,
                 message:     String::new(),
                 suggestion:  None,
@@ -1174,7 +1175,7 @@ fn record_visibility_findings(
             item.highlight_span,
             FindingParams {
                 severity:    Severity::Error,
-                code:        "forbidden_pub_crate",
+                code:        DiagnosticCode::ForbiddenPubCrate,
                 item:        None,
                 message:     "use of `pub(crate)` is forbidden by policy".to_string(),
                 suggestion:  Some(forbidden_pub_crate_help(module_location).to_string()),
@@ -1191,7 +1192,7 @@ fn record_visibility_findings(
             item.highlight_span,
             FindingParams {
                 severity:    Severity::Error,
-                code:        "forbidden_pub_in_crate",
+                code:        DiagnosticCode::ForbiddenPubInCrate,
                 item:        None,
                 message:     "use of `pub(in crate::...)` is forbidden by policy".to_string(),
                 suggestion:  None,
@@ -1216,7 +1217,7 @@ fn record_visibility_findings(
                 item.highlight_span,
                 FindingParams {
                     severity:    Severity::Error,
-                    code:        "review_pub_mod",
+                    code:        DiagnosticCode::ReviewPubMod,
                     item:        item.item_name.map(str::to_owned),
                     message:     "`pub mod` requires explicit review or allowlisting".to_string(),
                     suggestion:  None,
@@ -1274,7 +1275,7 @@ fn maybe_record_suspicious_pub(
                 status.parent_line,
                 FindingParams {
                     severity: Severity::Warning,
-                    code: "internal_parent_pub_use_facade",
+                    code: DiagnosticCode::InternalParentPubUseFacade,
                     item: input.item_name.map(|name| format!("pub use {name}")),
                     message: String::from(
                         "this `pub use` is used inside its parent module subtree",
@@ -1296,7 +1297,7 @@ fn maybe_record_suspicious_pub(
                 input.highlight_span,
                 FindingParams {
                     severity: Severity::Warning,
-                    code: "suspicious_pub",
+                    code: DiagnosticCode::SuspiciousPub,
                     item: input.item_name.map(|name| format!("{kind_label} {name}")),
                     message: suspicious_pub_note(input.crate_kind, kind_label),
                     suggestion: None,
@@ -1493,7 +1494,7 @@ fn assess_signature_exposure_allowance(
 
 struct FindingParams {
     severity:    Severity,
-    code:        &'static str,
+    code:        DiagnosticCode,
     item:        Option<String>,
     message:     String,
     suggestion:  Option<String>,
@@ -1510,7 +1511,7 @@ fn build_finding(
     let display = line_display(tcx, file_path, highlight_span)?;
     Ok(StoredFinding {
         severity:      params.severity,
-        code:          params.code.to_string(),
+        code:          params.code,
         path:          file_path.to_string_lossy().into_owned(),
         line:          display.line,
         column:        display.column,
@@ -1545,7 +1546,7 @@ fn build_line_finding(
 
     Ok(StoredFinding {
         severity: params.severity,
-        code: params.code.to_string(),
+        code: params.code,
         path: file_path.to_string_lossy().into_owned(),
         line,
         column,
@@ -3004,8 +3005,14 @@ fn is_boundary_file(src_root: &Path, root_module: &Path, file: &Path) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]
-#[allow(clippy::unwrap_used, reason = "tests should panic on unexpected values")]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests should panic on unexpected values"
+)]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use std::fs;
@@ -3016,6 +3023,7 @@ mod tests {
 
     use super::CrateKind;
     use super::DiagnosticBlockKind;
+    use super::DiagnosticCode;
     use super::DriverSettings;
     use super::FINDINGS_SCHEMA_VERSION;
     use super::ModuleLocation;
@@ -3234,7 +3242,7 @@ mod tests {
             config_fingerprint:         "expected".to_string(),
             findings:                   vec![StoredFinding {
                 severity:      Severity::Warning,
-                code:          "suspicious_pub".to_string(),
+                code:          DiagnosticCode::SuspiciousPub,
                 path:          "src/lib.rs".to_string(),
                 line:          1,
                 column:        1,

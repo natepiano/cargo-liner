@@ -468,7 +468,7 @@ edition = "2024"
     .expect("write sibling");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let expected_findings: [ExpectedFinding<'_>; 0] = [];
+    let expected_findings: [ExpectedFinding; 0] = [];
     let expected_summary = expected_summary_from_findings(&expected_findings);
     assert_eq!(
         report.summary.fixable_with_fix,
@@ -482,7 +482,7 @@ edition = "2024"
         !report
             .findings
             .iter()
-            .any(|finding| finding.code == "shorten_local_crate_import")
+            .any(|finding| finding.code == DiagnosticCode::ShortenLocalCrateImport)
     );
 }
 
@@ -521,7 +521,7 @@ edition = "2024"
         !report
             .findings
             .iter()
-            .any(|finding| finding.code == "shorten_local_crate_import"),
+            .any(|finding| finding.code == DiagnosticCode::ShortenLocalCrateImport),
         "top-level peer imports should not trigger shorten_local_crate_import"
     );
 }
@@ -553,7 +553,7 @@ edition = "2024"
     .expect("write child");
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let expected_findings: [ExpectedFinding<'_>; 0] = [];
+    let expected_findings: [ExpectedFinding; 0] = [];
     let expected_summary = expected_summary_from_findings(&expected_findings);
     assert_eq!(
         report.summary.fixable_with_fix,
@@ -567,7 +567,7 @@ edition = "2024"
         !report
             .findings
             .iter()
-            .any(|finding| finding.code == "shorten_local_crate_import")
+            .any(|finding| finding.code == DiagnosticCode::ShortenLocalCrateImport)
     );
 }
 
@@ -608,7 +608,7 @@ edition = "2024"
         report
             .findings
             .iter()
-            .any(|finding| finding.code == "replace_deep_super_import"),
+            .any(|finding| finding.code == DiagnosticCode::ReplaceDeepSuperImport),
         "deep super::super:: should trigger replace_deep_super_import, got: {:?}",
         report.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
     );
@@ -668,7 +668,7 @@ edition = "2024"
         report
             .findings
             .iter()
-            .any(|finding| finding.code == "replace_deep_super_import"),
+            .any(|finding| finding.code == DiagnosticCode::ReplaceDeepSuperImport),
         "super::super::super:: should trigger replace_deep_super_import, got: {:?}",
         report.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
     );
@@ -730,7 +730,7 @@ edition = "2024"
         !report
             .findings
             .iter()
-            .any(|finding| finding.code == "replace_deep_super_import"),
+            .any(|finding| finding.code == DiagnosticCode::ReplaceDeepSuperImport),
         "single super:: should not trigger replace_deep_super_import"
     );
 }

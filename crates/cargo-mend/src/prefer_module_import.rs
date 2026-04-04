@@ -14,6 +14,7 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use walkdir::WalkDir;
 
+use super::config::DiagnosticCode;
 use super::diagnostics::Finding;
 use super::diagnostics::Severity;
 use super::fix_support::FixSupport;
@@ -187,7 +188,7 @@ fn build_findings_and_fixes(
 
             findings.push(Finding {
                 severity: Severity::Warning,
-                code: "prefer_module_import".to_string(),
+                code: DiagnosticCode::PreferModuleImport,
                 path: display_path.clone(),
                 line: func.span_start.line,
                 column: func.span_start.column + 1,
@@ -542,8 +543,14 @@ fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]
-#[allow(clippy::unwrap_used, reason = "tests should panic on unexpected values")]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests should panic on unexpected values"
+)]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use super::is_snake_case_function_name;

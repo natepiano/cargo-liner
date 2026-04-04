@@ -6,10 +6,7 @@
     clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
 )]
-#![allow(
-    clippy::panic,
-    reason = "tests should panic on unexpected values"
-)]
+#![allow(clippy::panic, reason = "tests should panic on unexpected values")]
 #![allow(
     clippy::needless_raw_string_hashes,
     reason = "test fixtures use raw strings with varying hash counts for readability"
@@ -24,9 +21,10 @@ use regex::Regex;
 use serde::Deserialize;
 pub use tempfile::tempdir;
 
+pub use self::cargo_mend_tests_support::DiagnosticCode;
 use self::cargo_mend_tests_support::FixSummaryBucket;
 pub use self::cargo_mend_tests_support::FixSupport;
-pub use self::cargo_mend_tests_support::diagnostic_specs;
+pub use self::cargo_mend_tests_support::diagnostic_spec;
 
 pub fn clear_wrappers(command: &mut Command) -> &mut Command {
     command
@@ -57,7 +55,7 @@ pub fn strip_ansi(input: &str) -> String {
 
 #[derive(Debug, Deserialize)]
 pub struct Finding {
-    pub code:        String,
+    pub code:        DiagnosticCode,
     #[serde(default)]
     pub path:        String,
     #[serde(default)]
@@ -85,14 +83,16 @@ pub struct Summary {
 }
 
 #[derive(Clone, Copy)]
-pub struct ExpectedFinding<'a> {
-    pub code:        &'a str,
+pub struct ExpectedFinding {
+    pub code:        DiagnosticCode,
     pub fix_support: FixSupport,
 }
 
-pub fn severity_for_code(code: &str) -> &'static str {
+pub const fn severity_for_code(code: DiagnosticCode) -> &'static str {
     match code {
-        "forbidden_pub_crate" | "forbidden_pub_in_crate" | "review_pub_mod" => "error",
+        DiagnosticCode::ForbiddenPubCrate
+        | DiagnosticCode::ForbiddenPubInCrate
+        | DiagnosticCode::ReviewPubMod => "error",
         _ => "warning",
     }
 }
@@ -106,17 +106,13 @@ pub fn expected_summary(report: &Report) -> Summary {
     };
 
     for finding in &report.findings {
-        match severity_for_code(&finding.code) {
+        match severity_for_code(finding.code) {
             "error" => summary.errors += 1,
             _ => summary.warnings += 1,
         }
 
         let fix_support = if matches!(finding.fix_support, FixSupport::None) {
-            diagnostic_specs()
-                .iter()
-                .find(|spec| spec.code == finding.code)
-                .expect("known diagnostic code")
-                .fix_support
+            diagnostic_spec(finding.code).fix_support
         } else {
             finding.fix_support
         };
@@ -141,19 +137,15 @@ pub fn assert_summary_matches_findings(report: &Report) {
     );
 }
 
-pub fn fix_support_for(code: &str, fix_support: FixSupport) -> FixSupport {
+pub fn fix_support_for(code: DiagnosticCode, fix_support: FixSupport) -> FixSupport {
     if matches!(fix_support, FixSupport::None) {
-        diagnostic_specs()
-            .iter()
-            .find(|spec| spec.code == code)
-            .expect("known diagnostic code")
-            .fix_support
+        diagnostic_spec(code).fix_support
     } else {
         fix_support
     }
 }
 
-pub fn expected_summary_from_findings(expected_findings: &[ExpectedFinding<'_>]) -> Summary {
+pub fn expected_summary_from_findings(expected_findings: &[ExpectedFinding]) -> Summary {
     let mut summary = Summary {
         errors:                   0,
         warnings:                 0,
@@ -224,6 +216,10 @@ pub mod cargo_mend_tests_support {
         reason = "include!() pulls in entire source files; only a subset is re-exported"
     )]
 
+    mod config {
+        include!("../../src/config.rs");
+    }
+
     mod fix_support {
         include!("../../src/fix_support.rs");
     }
@@ -232,9 +228,8 @@ pub mod cargo_mend_tests_support {
         include!("../../src/diagnostics.rs");
     }
 
+    pub use config::DiagnosticCode;
     pub use diagnostics_impl::*;
     pub use fix_support::FixSummaryBucket;
     pub use fix_support::FixSupport;
-
-    pub const fn diagnostic_specs() -> &'static [DiagnosticSpec] { DIAGNOSTICS }
 }

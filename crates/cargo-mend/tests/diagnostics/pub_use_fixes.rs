@@ -583,11 +583,11 @@ edition = "2024"
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     let expected_findings = [
         ExpectedFinding {
-            code:        "suspicious_pub",
+            code:        DiagnosticCode::SuspiciousPub,
             fix_support: FixSupport::FixPubUse,
         },
         ExpectedFinding {
-            code:        "suspicious_pub",
+            code:        DiagnosticCode::SuspiciousPub,
             fix_support: FixSupport::FixPubUse,
         },
     ];
@@ -1007,23 +1007,23 @@ fn fix_pub_use_preserves_exports_used_outside_parent_via_normal_paths() {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     let expected_findings = [
         ExpectedFinding {
-            code:        "suspicious_pub",
+            code:        DiagnosticCode::SuspiciousPub,
             fix_support: FixSupport::FixPubUse,
         },
         ExpectedFinding {
-            code:        "suspicious_pub",
+            code:        DiagnosticCode::SuspiciousPub,
             fix_support: FixSupport::FixPubUse,
         },
         ExpectedFinding {
-            code:        "suspicious_pub",
+            code:        DiagnosticCode::SuspiciousPub,
             fix_support: FixSupport::FixPubUse,
         },
         ExpectedFinding {
-            code:        "suspicious_pub",
+            code:        DiagnosticCode::SuspiciousPub,
             fix_support: FixSupport::FixPubUse,
         },
         ExpectedFinding {
-            code:        "suspicious_pub",
+            code:        DiagnosticCode::SuspiciousPub,
             fix_support: FixSupport::FixPubUse,
         },
     ];
@@ -1134,7 +1134,7 @@ edition = "2024"
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     let expected_findings = [ExpectedFinding {
-        code:        "suspicious_pub",
+        code:        DiagnosticCode::SuspiciousPub,
         fix_support: FixSupport::FixPubUse,
     }];
     let expected_summary = expected_summary_from_findings(&expected_findings);

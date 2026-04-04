@@ -316,7 +316,7 @@ impl<'a> MendRunner<'a> {
         // Filter out disabled diagnostics
         report
             .findings
-            .retain(|f| self.config.diagnostics.is_enabled_str(&f.code));
+            .retain(|f| self.config.diagnostics.is_enabled(f.code));
         report.refresh_summary();
         Ok(report)
     }

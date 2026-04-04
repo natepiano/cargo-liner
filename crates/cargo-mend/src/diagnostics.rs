@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::config::DiagnosticCode;
 use super::fix_support::FixSummaryBucket;
 use super::fix_support::FixSupport;
 
@@ -19,7 +20,6 @@ enum DetailMode {
 
 #[derive(Debug, Clone, Copy)]
 pub struct DiagnosticSpec {
-    pub code:        &'static str,
     pub headline:    &'static str,
     pub inline_help: Option<&'static str>,
     pub help_anchor: &'static str,
@@ -27,73 +27,64 @@ pub struct DiagnosticSpec {
     pub fix_support: FixSupport,
 }
 
-pub const DIAGNOSTICS: &[DiagnosticSpec] = &[
-    DiagnosticSpec {
-        code:        "forbidden_pub_crate",
+pub fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
+    static FORBIDDEN_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
         headline:    "use of `pub(crate)` is forbidden by policy",
         inline_help: None,
         help_anchor: "forbidden-pub-crate",
         detail_mode: DetailMode::None,
         fix_support: FixSupport::None,
-    },
-    DiagnosticSpec {
-        code:        "forbidden_pub_in_crate",
+    };
+    static FORBIDDEN_PUB_IN_CRATE: DiagnosticSpec = DiagnosticSpec {
         headline:    "use of `pub(in crate::...)` is forbidden by policy",
         inline_help: None,
         help_anchor: "forbidden-pub-in-crate",
         detail_mode: DetailMode::None,
         fix_support: FixSupport::None,
-    },
-    DiagnosticSpec {
-        code:        "review_pub_mod",
+    };
+    static REVIEW_PUB_MOD: DiagnosticSpec = DiagnosticSpec {
         headline:    "`pub mod` requires explicit review or allowlisting",
         inline_help: None,
         help_anchor: "review-pub-mod",
         detail_mode: DetailMode::None,
         fix_support: FixSupport::None,
-    },
-    DiagnosticSpec {
-        code:        "prefer_module_import",
+    };
+    static PREFER_MODULE_IMPORT: DiagnosticSpec = DiagnosticSpec {
         headline:    "function import should use module-qualified form",
         inline_help: None,
         help_anchor: "prefer-module-import",
         detail_mode: DetailMode::MessageRelatedAndFix,
         fix_support: FixSupport::PreferModuleImport,
-    },
-    DiagnosticSpec {
-        code:        "inline_path_qualified_type",
+    };
+    static INLINE_PATH_QUALIFIED_TYPE: DiagnosticSpec = DiagnosticSpec {
         headline:    "inline path-qualified type should use a `use` import",
         inline_help: None,
         help_anchor: "inline-path-qualified-type",
         detail_mode: DetailMode::MessageRelatedAndFix,
         fix_support: FixSupport::InlinePathQualifiedType,
-    },
-    DiagnosticSpec {
-        code:        "shorten_local_crate_import",
+    };
+    static SHORTEN_LOCAL_CRATE_IMPORT: DiagnosticSpec = DiagnosticSpec {
         headline:    "crate-relative import can be shortened to a local-relative import",
         inline_help: None,
         help_anchor: "shorten-local-crate-import",
         detail_mode: DetailMode::MessageRelatedAndFix,
         fix_support: FixSupport::ShortenImport,
-    },
-    DiagnosticSpec {
-        code:        "replace_deep_super_import",
+    };
+    static REPLACE_DEEP_SUPER_IMPORT: DiagnosticSpec = DiagnosticSpec {
         headline:    "deep `super::` chain should use a `crate::` path",
         inline_help: None,
         help_anchor: "replace-deep-super-import",
         detail_mode: DetailMode::MessageRelatedAndFix,
         fix_support: FixSupport::ShortenImport,
-    },
-    DiagnosticSpec {
-        code:        "wildcard_parent_pub_use",
+    };
+    static WILDCARD_PARENT_PUB_USE: DiagnosticSpec = DiagnosticSpec {
         headline:    "parent module `pub use *` should be explicit",
         inline_help: Some("consider re-exporting explicit items instead of `*`"),
         help_anchor: "wildcard-parent-pub-use",
         detail_mode: DetailMode::None,
         fix_support: FixSupport::None,
-    },
-    DiagnosticSpec {
-        code:        "internal_parent_pub_use_facade",
+    };
+    static INTERNAL_PARENT_PUB_USE_FACADE: DiagnosticSpec = DiagnosticSpec {
         headline:    "parent module `pub use` is acting as an internal facade",
         inline_help: Some(
             "consider removing this parent facade and importing the item from its defining child module",
@@ -101,29 +92,33 @@ pub const DIAGNOSTICS: &[DiagnosticSpec] = &[
         help_anchor: "internal-parent-pub-use-facade",
         detail_mode: DetailMode::MessageRelatedAndFix,
         fix_support: FixSupport::InternalParentFacade,
-    },
-    DiagnosticSpec {
-        code:        "suspicious_pub",
+    };
+    static SUSPICIOUS_PUB: DiagnosticSpec = DiagnosticSpec {
         headline:    "`pub` is broader than this nested module boundary",
         inline_help: Some("consider using: `pub(super)`"),
         help_anchor: "suspicious-pub",
         detail_mode: DetailMode::MessageRelatedAndFix,
         fix_support: FixSupport::None,
-    },
-];
-
-#[allow(clippy::unreachable, reason = "internal invariant: all finding codes must exist in DIAGNOSTICS — will be replaced by enum")]
-pub fn diagnostic_spec(code: &str) -> &'static DiagnosticSpec {
-    let Some(spec) = DIAGNOSTICS.iter().find(|candidate| candidate.code == code) else {
-        unreachable!("unknown diagnostic code: {code}");
     };
-    spec
+
+    match code {
+        DiagnosticCode::ForbiddenPubCrate => &FORBIDDEN_PUB_CRATE,
+        DiagnosticCode::ForbiddenPubInCrate => &FORBIDDEN_PUB_IN_CRATE,
+        DiagnosticCode::ReviewPubMod => &REVIEW_PUB_MOD,
+        DiagnosticCode::PreferModuleImport => &PREFER_MODULE_IMPORT,
+        DiagnosticCode::InlinePathQualifiedType => &INLINE_PATH_QUALIFIED_TYPE,
+        DiagnosticCode::ShortenLocalCrateImport => &SHORTEN_LOCAL_CRATE_IMPORT,
+        DiagnosticCode::ReplaceDeepSuperImport => &REPLACE_DEEP_SUPER_IMPORT,
+        DiagnosticCode::WildcardParentPubUse => &WILDCARD_PARENT_PUB_USE,
+        DiagnosticCode::InternalParentPubUseFacade => &INTERNAL_PARENT_PUB_USE_FACADE,
+        DiagnosticCode::SuspiciousPub => &SUSPICIOUS_PUB,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
     pub severity:      Severity,
-    pub code:          String,
+    pub code:          DiagnosticCode,
     pub path:          String,
     pub line:          usize,
     pub column:        usize,
@@ -240,18 +235,18 @@ impl Report {
 
 pub fn effective_fix_support(finding: &Finding) -> FixSupport {
     if matches!(finding.fix_support, FixSupport::None) {
-        diagnostic_spec(&finding.code).fix_support
+        diagnostic_spec(finding.code).fix_support
     } else {
         finding.fix_support
     }
 }
 
 pub fn finding_headline(finding: &Finding) -> String {
-    diagnostic_spec(&finding.code).headline.to_string()
+    diagnostic_spec(finding.code).headline.to_string()
 }
 
 pub fn detail_reasons(finding: &Finding) -> Vec<String> {
-    match diagnostic_spec(&finding.code).detail_mode {
+    match diagnostic_spec(finding.code).detail_mode {
         DetailMode::None => Vec::new(),
         DetailMode::MessageRelatedAndFix => {
             let mut reasons = Vec::new();
@@ -270,7 +265,7 @@ pub fn detail_reasons(finding: &Finding) -> Vec<String> {
 }
 
 pub fn inline_help_text(finding: &Finding) -> Option<&'static str> {
-    diagnostic_spec(&finding.code).inline_help
+    diagnostic_spec(finding.code).inline_help
 }
 
 pub fn custom_inline_help_text(finding: &Finding) -> Option<&str> { finding.suggestion.as_deref() }
@@ -278,6 +273,6 @@ pub fn custom_inline_help_text(finding: &Finding) -> Option<&str> { finding.sugg
 pub fn finding_help_url(finding: &Finding) -> String {
     format!(
         "https://github.com/natepiano/cargo-mend#{}",
-        diagnostic_spec(&finding.code).help_anchor
+        diagnostic_spec(finding.code).help_anchor
     )
 }

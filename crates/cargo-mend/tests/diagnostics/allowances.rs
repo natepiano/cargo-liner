@@ -55,7 +55,7 @@ pub fn collect_repository_files() -> RepositoryFiles {
         !report
             .findings
             .iter()
-            .any(|finding| finding.code == "suspicious_pub"
+            .any(|finding| finding.code == DiagnosticCode::SuspiciousPub
                 && finding.path == "src/utils/file_utils.rs"),
         "expected no suspicious_pub for child type exposed by another crate-visible signature, got: {:#?}",
         report.findings
@@ -124,7 +124,7 @@ pub struct LaunchParams {
         !report
             .findings
             .iter()
-            .any(|finding| finding.code == "suspicious_pub"
+            .any(|finding| finding.code == DiagnosticCode::SuspiciousPub
                 && finding.path == "src/app_tools/count.rs"),
         "expected no suspicious_pub for child type exposed by sibling boundary field, got: {:#?}",
         report.findings
@@ -203,7 +203,7 @@ pub struct ClickParams {
         !report
             .findings
             .iter()
-            .any(|finding| finding.code == "suspicious_pub"
+            .any(|finding| finding.code == DiagnosticCode::SuspiciousPub
                 && finding.path == "src/brp_tools/types.rs"),
         "expected no suspicious_pub for child type exposed by sibling boundary field through ancestor re-export, got: {:#?}",
         report.findings
@@ -279,7 +279,7 @@ pub struct ClickParams {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == "suspicious_pub"
+            finding.code == DiagnosticCode::SuspiciousPub
                 && finding.path == "src/brp_tools/types.rs"
                 && finding.item.as_deref() == Some("enum MouseButtonWrapper")
         }),
@@ -349,7 +349,7 @@ pub use tools::brp_execute::BrpExecute;
         !report
             .findings
             .iter()
-            .any(|finding| finding.code == "suspicious_pub"
+            .any(|finding| finding.code == DiagnosticCode::SuspiciousPub
                 && finding.path.contains("brp_execute.rs")),
         "expected no suspicious_pub when grandparent re-exports through pub(super) module, got: {:#?}",
         report.findings
@@ -410,7 +410,7 @@ pub struct TypeGuideSummary {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == "suspicious_pub"
+            finding.code == DiagnosticCode::SuspiciousPub
                 && finding.path == "src/guide/response_types.rs"
                 && finding.item.as_deref() == Some("struct TypeGuideSummary")
         }),
@@ -496,7 +496,7 @@ impl Sha256Cache {
         !report
             .findings
             .iter()
-            .any(|finding| finding.code == "suspicious_pub"
+            .any(|finding| finding.code == DiagnosticCode::SuspiciousPub
                 && finding.path == "src/utils/sha256_cache.rs"),
         "expected no suspicious_pub for child types exposed by exported method signatures, got: {:#?}",
         report.findings
@@ -566,7 +566,7 @@ pub struct ParsedInvalidWikilink;
         !report
             .findings
             .iter()
-            .any(|finding| finding.code == "suspicious_pub"
+            .any(|finding| finding.code == DiagnosticCode::SuspiciousPub
                 && finding.path == "src/wikilink/wikilink_types.rs"),
         "expected no suspicious_pub for child types exposed by parent boundary signatures, got: {:#?}",
         report.findings
@@ -1107,7 +1107,7 @@ pub fn tool_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == "suspicious_pub"
+            finding.code == DiagnosticCode::SuspiciousPub
                 && finding.path == "app/src/tools/list_things.rs"
                 && finding.item.as_deref() == Some("struct ListThingsResult")
         }),
@@ -1163,7 +1163,7 @@ impl super::ToolFn for ListThings {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == "suspicious_pub"
+            finding.code == DiagnosticCode::SuspiciousPub
                 && finding.path == "src/tools/list_things.rs"
                 && finding.item.as_deref() == Some("struct ListThingsResult")
         }),
@@ -1223,7 +1223,7 @@ pub enum ResponseStatus {
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
         !report.findings.iter().any(|finding| {
-            finding.code == "suspicious_pub"
+            finding.code == DiagnosticCode::SuspiciousPub
                 && finding.path == "src/api/types.rs"
                 && finding.item.as_deref() == Some("fn get_message")
         }),

@@ -6,10 +6,7 @@
     clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
 )]
-#![allow(
-    clippy::panic,
-    reason = "tests should panic on unexpected values"
-)]
+#![allow(clippy::panic, reason = "tests should panic on unexpected values")]
 #![allow(
     clippy::needless_raw_string_hashes,
     reason = "test fixtures use raw strings with varying hash counts for readability"
