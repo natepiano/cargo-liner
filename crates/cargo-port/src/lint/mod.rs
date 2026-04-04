@@ -26,9 +26,9 @@ pub use runtime::RuntimeHandle;
 pub use runtime::project_is_eligible;
 pub use runtime::spawn;
 pub use status::read_status;
-pub use types::LintStatus;
 #[cfg(test)]
-pub use types::PortReportCommand;
-pub use types::PortReportCommandStatus;
-pub use types::PortReportRun;
-pub use types::PortReportRunStatus;
+pub use types::LintCommand;
+pub use types::LintCommandStatus;
+pub use types::LintRun;
+pub use types::LintRunStatus;
+pub use types::LintStatus;

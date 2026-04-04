@@ -9,10 +9,10 @@ use crate::ci::CiJob;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::ci::FetchStatus::Fetched;
-use crate::lint::PortReportCommand;
-use crate::lint::PortReportCommandStatus;
-use crate::lint::PortReportRun;
-use crate::lint::PortReportRunStatus;
+use crate::lint::LintCommand;
+use crate::lint::LintCommandStatus;
+use crate::lint::LintRun;
+use crate::lint::LintRunStatus;
 use crate::project::ExampleGroup;
 use crate::project::GitPathState;
 use crate::project::ProjectLanguage;
@@ -71,11 +71,8 @@ fn ci_run_with_jobs(jobs: Vec<CiJob>) -> CiRun {
     }
 }
 
-fn run_with_commands(
-    status: PortReportRunStatus,
-    commands: Vec<PortReportCommand>,
-) -> PortReportRun {
-    PortReportRun {
+fn run_with_commands(status: LintRunStatus, commands: Vec<LintCommand>) -> LintRun {
+    LintRun {
         run_id: "run-1".to_string(),
         started_at: "2026-04-01T21:00:00-04:00".to_string(),
         finished_at: Some("2026-04-01T21:00:10-04:00".to_string()),
@@ -189,20 +186,20 @@ fn ci_table_keeps_durations_when_fixed_columns_fit() {
 #[test]
 fn lint_commands_summary_for_passed_run() {
     let run = run_with_commands(
-        PortReportRunStatus::Passed,
+        LintRunStatus::Passed,
         vec![
-            PortReportCommand {
+            LintCommand {
                 name:        "mend".to_string(),
                 command:     "cargo mend".to_string(),
-                status:      PortReportCommandStatus::Passed,
+                status:      LintCommandStatus::Passed,
                 duration_ms: Some(1_000),
                 exit_code:   Some(0),
                 log_file:    "mend-latest.log".to_string(),
             },
-            PortReportCommand {
+            LintCommand {
                 name:        "clippy".to_string(),
                 command:     "cargo clippy".to_string(),
-                status:      PortReportCommandStatus::Passed,
+                status:      LintCommandStatus::Passed,
                 duration_ms: Some(2_000),
                 exit_code:   Some(0),
                 log_file:    "clippy-latest.log".to_string(),
@@ -218,20 +215,20 @@ fn lint_commands_summary_for_passed_run() {
 #[test]
 fn lint_commands_summary_for_failed_run() {
     let run = run_with_commands(
-        PortReportRunStatus::Failed,
+        LintRunStatus::Failed,
         vec![
-            PortReportCommand {
+            LintCommand {
                 name:        "mend".to_string(),
                 command:     "cargo mend".to_string(),
-                status:      PortReportCommandStatus::Passed,
+                status:      LintCommandStatus::Passed,
                 duration_ms: Some(1_000),
                 exit_code:   Some(0),
                 log_file:    "mend-latest.log".to_string(),
             },
-            PortReportCommand {
+            LintCommand {
                 name:        "clippy".to_string(),
                 command:     "cargo clippy".to_string(),
-                status:      PortReportCommandStatus::Failed,
+                status:      LintCommandStatus::Failed,
                 duration_ms: Some(2_000),
                 exit_code:   Some(101),
                 log_file:    "clippy-latest.log".to_string(),
@@ -247,20 +244,20 @@ fn lint_commands_summary_for_failed_run() {
 #[test]
 fn lint_commands_summary_for_running_run() {
     let run = run_with_commands(
-        PortReportRunStatus::Running,
+        LintRunStatus::Running,
         vec![
-            PortReportCommand {
+            LintCommand {
                 name:        "mend".to_string(),
                 command:     "cargo mend".to_string(),
-                status:      PortReportCommandStatus::Passed,
+                status:      LintCommandStatus::Passed,
                 duration_ms: Some(1_000),
                 exit_code:   Some(0),
                 log_file:    "mend-latest.log".to_string(),
             },
-            PortReportCommand {
+            LintCommand {
                 name:        "clippy".to_string(),
                 command:     "cargo clippy".to_string(),
-                status:      PortReportCommandStatus::Pending,
+                status:      LintCommandStatus::Pending,
                 duration_ms: None,
                 exit_code:   None,
                 log_file:    "clippy-latest.log".to_string(),

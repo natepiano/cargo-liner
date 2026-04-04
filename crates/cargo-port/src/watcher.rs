@@ -1608,7 +1608,7 @@ edition = "2024"
     }
 
     #[test]
-    fn cache_port_report_event_updates_lint_without_recreating_project_activity() {
+    fn cache_lint_event_updates_lint_without_recreating_project_activity() {
         let project_root = tempfile::tempdir().expect("tempdir");
         let project_path = "~/rust/demo";
         let mut projects = HashMap::new();
@@ -1660,7 +1660,7 @@ edition = "2024"
     }
 
     #[test]
-    fn cache_port_report_child_event_updates_lint_without_recreating_project_activity() {
+    fn cache_lint_child_event_updates_lint_without_recreating_project_activity() {
         let project_root = tempfile::tempdir().expect("tempdir");
         let project_path = "~/rust/demo";
         let mut projects = HashMap::new();

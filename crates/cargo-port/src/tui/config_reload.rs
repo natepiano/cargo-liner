@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::CargoPortConfig;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ConfigKey {
@@ -33,7 +33,7 @@ pub(super) struct ReloadContext {
 #[derive(Clone, Copy)]
 struct ConfigHandler {
     key:  ConfigKey,
-    mark: fn(&mut ReloadActions, &Config, &Config, ReloadContext),
+    mark: fn(&mut ReloadActions, &CargoPortConfig, &CargoPortConfig, ReloadContext),
 }
 
 const CONFIG_HANDLERS: &[ConfigHandler] = &[
@@ -85,8 +85,8 @@ const CONFIG_HANDLERS: &[ConfigHandler] = &[
 
 const fn mark_rebuild_tree(
     actions: &mut ReloadActions,
-    _old: &Config,
-    _new: &Config,
+    _old: &CargoPortConfig,
+    _new: &CargoPortConfig,
     _context: ReloadContext,
 ) {
     actions.rebuild_tree = true;
@@ -94,8 +94,8 @@ const fn mark_rebuild_tree(
 
 const fn mark_rescan(
     actions: &mut ReloadActions,
-    _old: &Config,
-    _new: &Config,
+    _old: &CargoPortConfig,
+    _new: &CargoPortConfig,
     _context: ReloadContext,
 ) {
     actions.rescan = true;
@@ -103,8 +103,8 @@ const fn mark_rescan(
 
 const fn mark_refresh_lint_runtime(
     actions: &mut ReloadActions,
-    _old: &Config,
-    _new: &Config,
+    _old: &CargoPortConfig,
+    _new: &CargoPortConfig,
     _context: ReloadContext,
 ) {
     actions.refresh_lint_runtime = true;
@@ -112,8 +112,8 @@ const fn mark_refresh_lint_runtime(
 
 const fn mark_include_non_rust(
     actions: &mut ReloadActions,
-    old: &Config,
-    new: &Config,
+    old: &CargoPortConfig,
+    new: &CargoPortConfig,
     context: ReloadContext,
 ) {
     if !context.scan_complete {
@@ -130,7 +130,7 @@ const fn mark_include_non_rust(
     }
 }
 
-pub(super) fn changed_keys(old: &Config, new: &Config) -> Vec<ConfigKey> {
+pub(super) fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<ConfigKey> {
     let mut keys = Vec::new();
 
     if old.mouse.invert_scroll != new.mouse.invert_scroll {
@@ -169,7 +169,7 @@ pub(super) fn changed_keys(old: &Config, new: &Config) -> Vec<ConfigKey> {
     if old.lint.commands != new.lint.commands {
         keys.push(ConfigKey::LintCommands);
     }
-    if old.port_report.cache_size != new.port_report.cache_size {
+    if old.lint.cache_size != new.lint.cache_size {
         keys.push(ConfigKey::LintCacheSize);
     }
 
@@ -177,8 +177,8 @@ pub(super) fn changed_keys(old: &Config, new: &Config) -> Vec<ConfigKey> {
 }
 
 pub(super) fn collect_reload_actions(
-    old: &Config,
-    new: &Config,
+    old: &CargoPortConfig,
+    new: &CargoPortConfig,
     context: ReloadContext,
 ) -> ReloadActions {
     let mut actions = ReloadActions::default();
@@ -204,31 +204,31 @@ mod tests {
 
     #[test]
     fn changed_keys_include_value_only_settings_without_actions() {
-        let mut new = Config::default();
+        let mut new = CargoPortConfig::default();
         new.mouse.invert_scroll.toggle();
         new.tui.editor = "helix".to_string();
         new.tui.status_flash_secs = 5.0;
 
-        let keys = changed_keys(&Config::default(), &new);
+        let keys = changed_keys(&CargoPortConfig::default(), &new);
 
         assert!(keys.contains(&ConfigKey::InvertScroll));
         assert!(keys.contains(&ConfigKey::Editor));
         assert!(keys.contains(&ConfigKey::StatusFlashSecs));
         assert_eq!(
-            collect_reload_actions(&Config::default(), &new, ReloadContext::default()),
+            collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions::default()
         );
     }
 
     #[test]
     fn reload_actions_coalesce_rescan_triggers() {
-        let mut new = Config::default();
+        let mut new = CargoPortConfig::default();
         new.tui.ci_run_count = 9;
         new.tui.include_dirs = vec!["rust".to_string()];
         new.tui.include_non_rust.toggle();
 
         assert_eq!(
-            collect_reload_actions(&Config::default(), &new, ReloadContext::default()),
+            collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions {
                 rebuild_tree:         false,
                 rescan:               true,
@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn completed_scan_rebuilds_tree_when_hiding_cached_non_rust_projects() {
-        let mut old = Config::default();
+        let mut old = CargoPortConfig::default();
         old.tui.include_non_rust.toggle();
         let mut new = old.clone();
         new.tui.include_non_rust.toggle();
@@ -263,12 +263,12 @@ mod tests {
 
     #[test]
     fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
-        let mut new = Config::default();
+        let mut new = CargoPortConfig::default();
         new.tui.include_non_rust.toggle();
 
         assert_eq!(
             collect_reload_actions(
-                &Config::default(),
+                &CargoPortConfig::default(),
                 &new,
                 ReloadContext {
                     scan_complete:       true,
@@ -285,13 +285,13 @@ mod tests {
 
     #[test]
     fn reload_actions_coalesce_lint_triggers() {
-        let mut new = Config::default();
+        let mut new = CargoPortConfig::default();
         new.lint.enabled = true;
         new.lint.include = vec!["hana".to_string()];
         new.lint.commands = vec![crate::config::default_clippy_lint_command()];
 
         assert_eq!(
-            collect_reload_actions(&Config::default(), &new, ReloadContext::default()),
+            collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions {
                 rebuild_tree:         false,
                 rescan:               false,
@@ -302,11 +302,11 @@ mod tests {
 
     #[test]
     fn cache_root_marks_rescan_and_lint_runtime_refresh() {
-        let mut new = Config::default();
+        let mut new = CargoPortConfig::default();
         new.cache.root = "tmp-cache".to_string();
 
         assert_eq!(
-            collect_reload_actions(&Config::default(), &new, ReloadContext::default()),
+            collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions {
                 rebuild_tree:         false,
                 rescan:               true,

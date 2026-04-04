@@ -5,14 +5,10 @@ use std::io::BufReader;
 use std::path::Path;
 
 use super::paths;
-use super::types::PortReportRun;
-use super::types::PortReportRunStatus;
+use super::types::LintRun;
+use super::types::LintRunStatus;
 
-pub fn write_latest_under(
-    cache_root: &Path,
-    project_root: &Path,
-    run: &PortReportRun,
-) -> io::Result<()> {
+pub fn write_latest_under(cache_root: &Path, project_root: &Path, run: &LintRun) -> io::Result<()> {
     let path = paths::latest_path_under(cache_root, project_root);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -38,19 +34,19 @@ pub fn clear_latest_if_running_under(cache_root: &Path, project_root: &Path) -> 
     let Some(run) = read_latest_file(&path) else {
         return Ok(false);
     };
-    if matches!(run.status, PortReportRunStatus::Running) {
+    if matches!(run.status, LintRunStatus::Running) {
         clear_latest_under(cache_root, project_root)?;
         return Ok(true);
     }
     Ok(false)
 }
 
-pub fn read_latest_file(path: &Path) -> Option<PortReportRun> {
+pub fn read_latest_file(path: &Path) -> Option<LintRun> {
     let file = File::open(path).ok()?;
     serde_json::from_reader(file).ok()
 }
 
-pub fn read_history_file(path: &Path) -> Vec<PortReportRun> {
+pub fn read_history_file(path: &Path) -> Vec<LintRun> {
     let Ok(file) = File::open(path) else {
         return Vec::new();
     };
@@ -58,6 +54,6 @@ pub fn read_history_file(path: &Path) -> Vec<PortReportRun> {
     reader
         .lines()
         .map_while(Result::ok)
-        .filter_map(|line| serde_json::from_str::<PortReportRun>(&line).ok())
+        .filter_map(|line| serde_json::from_str::<LintRun>(&line).ok())
         .collect()
 }

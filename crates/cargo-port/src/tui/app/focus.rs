@@ -198,7 +198,7 @@ impl App {
         self.git_pane.home();
         self.targets_pane.home();
         self.ci_pane.home();
-        self.port_report_pane.home();
+        self.lint_pane.home();
         self.toast_pane.home();
         self.visited_panes.remove(&PaneId::Package);
         self.visited_panes.remove(&PaneId::Git);

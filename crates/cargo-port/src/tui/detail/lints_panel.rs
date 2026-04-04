@@ -13,9 +13,9 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
-use crate::lint::PortReportCommandStatus;
-use crate::lint::PortReportRun;
-use crate::lint::PortReportRunStatus;
+use crate::lint::LintCommandStatus;
+use crate::lint::LintRun;
+use crate::lint::LintRunStatus;
 use crate::tui::app::App;
 use crate::tui::types::PaneId;
 
@@ -49,7 +49,7 @@ fn format_decimal_unit(bytes: u64, unit_bytes: u64, unit_label: &str) -> String 
     format!("{whole}.{tenths} {unit_label}")
 }
 
-fn format_lints_finished(run: &PortReportRun) -> String {
+fn format_lints_finished(run: &LintRun) -> String {
     run.finished_at
         .as_deref()
         .map_or_else(|| "—".to_string(), super::timestamp::format_timestamp)
@@ -65,7 +65,7 @@ fn format_duration_ms(duration_ms: Option<u64>) -> String {
     format!("{minutes}:{seconds:02}")
 }
 
-pub(super) fn format_lints_commands(run: &PortReportRun) -> String {
+pub(super) fn format_lints_commands(run: &LintRun) -> String {
     if run.commands.is_empty() {
         return "-".to_string();
     }
@@ -84,15 +84,15 @@ pub(super) fn format_lints_commands(run: &PortReportRun) -> String {
     }
 }
 
-pub(super) fn format_lints_pending(run: &PortReportRun) -> String {
+pub(super) fn format_lints_pending(run: &LintRun) -> String {
     run.commands
         .iter()
-        .filter(|command| matches!(command.status, PortReportCommandStatus::Pending))
+        .filter(|command| matches!(command.status, LintCommandStatus::Pending))
         .count()
         .to_string()
 }
 
-pub(super) fn format_lints_slowest(run: &PortReportRun) -> String {
+pub(super) fn format_lints_slowest(run: &LintRun) -> String {
     run.commands
         .iter()
         .filter_map(|command| {
@@ -110,12 +110,12 @@ pub(super) fn format_lints_slowest(run: &PortReportRun) -> String {
 pub fn render_lints_panel(
     frame: &mut Frame,
     app: &mut App,
-    runs: &[PortReportRun],
+    runs: &[LintRun],
     area: ratatui::layout::Rect,
 ) {
     let focused = app.is_focused(PaneId::CiRuns);
     let (watching, worker_count) = app.selected_project().map_or((false, 0usize), |project| {
-        let watching = app.port_report_is_watchable(project) && app.lint_runtime.is_some();
+        let watching = app.lint_is_watchable(project) && app.lint_runtime.is_some();
         (watching, usize::from(watching))
     });
     let cache_size = app
@@ -146,8 +146,8 @@ pub fn render_lints_panel(
         });
 
     let inner = block.inner(area);
-    app.port_report_pane.set_len(runs.len());
-    app.port_report_pane.set_content_area(inner);
+    app.lint_pane.set_len(runs.len());
+    app.lint_pane.set_content_area(inner);
 
     if runs.is_empty() {
         frame.render_widget(block, area);
@@ -168,9 +168,9 @@ pub fn render_lints_panel(
         .iter()
         .map(|run| {
             let style = match run.status {
-                PortReportRunStatus::Running => Style::default().fg(Color::Cyan),
-                PortReportRunStatus::Passed => Style::default().fg(Color::Green),
-                PortReportRunStatus::Failed => Style::default().fg(Color::Red),
+                LintRunStatus::Running => Style::default().fg(Color::Cyan),
+                LintRunStatus::Passed => Style::default().fg(Color::Green),
+                LintRunStatus::Failed => Style::default().fg(Color::Red),
             };
             Row::new(vec![
                 Cell::from(super::timestamp::format_timestamp(&run.started_at)),
@@ -213,7 +213,7 @@ pub fn render_lints_panel(
         Style::default()
     });
 
-    let mut table_state = TableState::default().with_selected(Some(app.port_report_pane.pos()));
+    let mut table_state = TableState::default().with_selected(Some(app.lint_pane.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.port_report_pane.set_scroll_offset(table_state.offset());
+    app.lint_pane.set_scroll_offset(table_state.offset());
 }

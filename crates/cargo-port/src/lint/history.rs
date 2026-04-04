@@ -12,13 +12,19 @@ use walkdir::WalkDir;
 use super::paths;
 use super::read_write;
 use super::status;
-use super::types::PortReportRun;
+use super::types::LintRun;
 use crate::constants::LINTS_HISTORY_JSONL;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheUsage {
     pub bytes:            u64,
     pub cache_size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PruneStats {
+    pub runs_evicted:    usize,
+    pub bytes_reclaimed: u64,
 }
 
 pub fn retained_cache_usage(cache_size_bytes: Option<u64>) -> CacheUsage {
@@ -44,8 +50,8 @@ pub(super) fn retained_cache_usage_under(
 pub(super) fn archive_run_output(
     cache_root: &Path,
     project_root: &Path,
-    run: &PortReportRun,
-) -> io::Result<PortReportRun> {
+    run: &LintRun,
+) -> io::Result<LintRun> {
     let project_dir = paths::project_dir_under(cache_root, project_root);
     let output_dir = paths::output_dir_under(cache_root, project_root);
     let run_dir = output_dir.join("runs").join(&run.run_id);
@@ -76,9 +82,9 @@ pub(super) fn archive_run_output(
 pub fn append_history_under(
     cache_root: &Path,
     project_root: &Path,
-    run: &PortReportRun,
+    run: &LintRun,
     cache_size_bytes: Option<u64>,
-) -> io::Result<()> {
+) -> io::Result<PruneStats> {
     let path = paths::history_path_under(cache_root, project_root);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -93,11 +99,11 @@ pub fn append_history_under(
     enforce_cache_size_under(cache_root, cache_size_bytes)
 }
 
-pub fn read_history(project_root: &Path) -> Vec<PortReportRun> {
+pub fn read_history(project_root: &Path) -> Vec<LintRun> {
     read_history_under(&paths::cache_root(), project_root)
 }
 
-pub(super) fn read_history_under(cache_root: &Path, project_root: &Path) -> Vec<PortReportRun> {
+pub(super) fn read_history_under(cache_root: &Path, project_root: &Path) -> Vec<LintRun> {
     let mut runs =
         read_write::read_history_file(&paths::history_path_under(cache_root, project_root));
     let latest = read_write::read_latest_file(&paths::latest_path_under(cache_root, project_root));
@@ -114,9 +120,12 @@ pub(super) fn read_history_under(cache_root: &Path, project_root: &Path) -> Vec<
     runs
 }
 
-fn enforce_cache_size_under(cache_root: &Path, cache_size_bytes: Option<u64>) -> io::Result<()> {
+fn enforce_cache_size_under(
+    cache_root: &Path,
+    cache_size_bytes: Option<u64>,
+) -> io::Result<PruneStats> {
     let Some(cache_size) = cache_size_bytes else {
-        return Ok(());
+        return Ok(PruneStats::default());
     };
     prune_runs_under(cache_root, cache_size)
 }
@@ -135,7 +144,7 @@ pub(super) fn total_bytes_under(root: &Path) -> u64 {
         .sum()
 }
 
-fn history_line_sort_key(run: &PortReportRun) -> i64 {
+fn history_line_sort_key(run: &LintRun) -> i64 {
     run.finished_at
         .as_deref()
         .and_then(status::parse_timestamp)
@@ -173,7 +182,7 @@ fn collect_prunable_runs(cache_root: &Path) -> io::Result<Vec<PrunableRun>> {
         let reader = BufReader::new(file);
         for (line_index, line) in reader.lines().enumerate() {
             let line = line?;
-            let Ok(run) = serde_json::from_str::<PortReportRun>(&line) else {
+            let Ok(run) = serde_json::from_str::<LintRun>(&line) else {
                 continue;
             };
             runs.push(PrunableRun {
@@ -212,15 +221,16 @@ fn rewrite_history_file(path: &Path, kept_indices: &[usize]) -> io::Result<()> {
 
 /// Remove the oldest complete runs (history line + archived output directory)
 /// until total bytes under the cache root are within the cache size limit.
-fn prune_runs_under(cache_root: &Path, cache_size: u64) -> io::Result<()> {
-    let mut total_bytes = total_bytes_under(cache_root);
-    if total_bytes <= cache_size {
-        return Ok(());
+fn prune_runs_under(cache_root: &Path, cache_size: u64) -> io::Result<PruneStats> {
+    let bytes_before = total_bytes_under(cache_root);
+    if bytes_before <= cache_size {
+        return Ok(PruneStats::default());
     }
 
+    let mut total_bytes = bytes_before;
     let mut runs = collect_prunable_runs(cache_root)?;
     if runs.is_empty() {
-        return Ok(());
+        return Ok(PruneStats::default());
     }
 
     // Sort oldest first so we remove the least-recent runs first.
@@ -233,6 +243,7 @@ fn prune_runs_under(cache_root: &Path, cache_size: u64) -> io::Result<()> {
 
     // Track which runs to remove, keyed by history file path.
     let mut removed: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+    let mut runs_evicted: usize = 0;
 
     for run in &runs {
         if total_bytes <= cache_size {
@@ -251,6 +262,7 @@ fn prune_runs_under(cache_root: &Path, cache_size: u64) -> io::Result<()> {
             .entry(run.history_path.clone())
             .or_default()
             .push(run.line_index);
+        runs_evicted += 1;
     }
 
     // Rewrite each affected history file, keeping only non-removed lines.
@@ -276,5 +288,8 @@ fn prune_runs_under(cache_root: &Path, cache_size: u64) -> io::Result<()> {
         total_bytes = total_bytes.saturating_sub(file_before.saturating_sub(file_after));
     }
 
-    Ok(())
+    Ok(PruneStats {
+        runs_evicted,
+        bytes_reclaimed: bytes_before.saturating_sub(total_bytes_under(cache_root)),
+    })
 }

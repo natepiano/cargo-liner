@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::config;
-use crate::config::Config;
+use crate::config::CargoPortConfig;
 use crate::constants::APP_NAME;
 use crate::constants::CI_CACHE_DIR;
 use crate::constants::LINTS_CACHE_DIR;
@@ -13,8 +13,8 @@ pub fn default_app_cache_root() -> PathBuf {
         .join(APP_NAME)
 }
 
-/// Resolve the configured cache root for a given `Config`.
-pub fn configured_app_cache_root_for(cfg: &Config) -> PathBuf {
+/// Resolve the configured cache root for a given `CargoPortConfig`.
+pub fn configured_app_cache_root_for(cfg: &CargoPortConfig) -> PathBuf {
     if cfg.cache.root.is_empty() {
         return default_app_cache_root();
     }
@@ -37,7 +37,7 @@ pub fn app_cache_root() -> PathBuf {
 pub fn ci_cache_root() -> PathBuf { app_cache_root().join(CI_CACHE_DIR) }
 
 /// Cache root for project-keyed lint runs under a specific config.
-pub fn lint_runs_root_for(cfg: &Config) -> PathBuf {
+pub fn lint_runs_root_for(cfg: &CargoPortConfig) -> PathBuf {
     configured_app_cache_root_for(cfg).join(LINTS_CACHE_DIR)
 }
 
@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn empty_cache_root_uses_default() {
-        let cfg = Config::default();
+        let cfg = CargoPortConfig::default();
         assert_eq!(
             configured_app_cache_root_for(&cfg),
             default_app_cache_root()
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn relative_cache_root_extends_default_root() {
-        let mut cfg = Config::default();
+        let mut cfg = CargoPortConfig::default();
         cfg.cache.root = "custom-cache".to_string();
 
         assert_eq!(
@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn absolute_cache_root_replaces_default_root() {
-        let mut cfg = Config::default();
+        let mut cfg = CargoPortConfig::default();
         cfg.cache.root = "/tmp/cargo-port-cache".to_string();
 
         assert_eq!(

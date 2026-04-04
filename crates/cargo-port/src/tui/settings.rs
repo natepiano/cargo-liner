@@ -63,7 +63,7 @@ fn parse_dir_list(value: &str) -> Vec<String> {
 
 type SettingsRow = (Option<SettingOption>, &'static str, String);
 
-fn format_lint_projects(cfg: &config::Config) -> String {
+fn format_lint_projects(cfg: &config::CargoPortConfig) -> String {
     if cfg.lint.include.is_empty() {
         "—".to_string()
     } else {
@@ -83,7 +83,7 @@ fn normalize_sorted_list(value: &str) -> Vec<String> {
     entries
 }
 
-fn format_lint_commands(cfg: &config::Config) -> String {
+fn format_lint_commands(cfg: &config::CargoPortConfig) -> String {
     let commands = if cfg.lint.commands.is_empty() {
         cfg.lint.resolved_commands()
     } else {
@@ -96,9 +96,9 @@ fn format_lint_commands(cfg: &config::Config) -> String {
         .join(", ")
 }
 
-fn format_lint_cache_size(cfg: &config::Config) -> String { cfg.port_report.cache_size.clone() }
+fn format_lint_cache_size(cfg: &config::CargoPortConfig) -> String { cfg.lint.cache_size.clone() }
 
-fn settings_rows(app: &App, cfg: &config::Config) -> Vec<SettingsRow> {
+fn settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
     vec![
         (None, "General", String::new()),
         (
@@ -308,7 +308,7 @@ fn parse_lint_cache_size(value: &str) -> Result<String, String> {
     config::parse_cache_size(value).map(|parsed| parsed.normalized)
 }
 
-fn save_updated_config(app: &mut App, cfg: &config::Config) -> bool {
+fn save_updated_config(app: &mut App, cfg: &config::CargoPortConfig) -> bool {
     match app.save_and_apply_config(cfg) {
         Ok(()) => true,
         Err(err) => {
@@ -653,7 +653,7 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
                 Some(SettingOption::LintCacheSize) => match parse_lint_cache_size(&value) {
                     Ok(cache_size) => {
                         let mut cfg = app.current_config.clone();
-                        cfg.port_report.cache_size = cache_size;
+                        cfg.lint.cache_size = cache_size;
                         if save_updated_config(app, &cfg) {
                             app.show_timed_toast("Settings", "Lint cache size updated");
                         }

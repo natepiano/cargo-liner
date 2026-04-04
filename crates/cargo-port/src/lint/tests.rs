@@ -7,12 +7,12 @@ use super::history;
 use super::paths;
 use super::read_write;
 use super::status;
-use super::types::PortReportCommand;
-use super::types::PortReportCommandStatus;
+use super::types::LintCommand;
+use super::types::LintCommandStatus;
 use super::*;
 
-fn run(status: PortReportRunStatus) -> PortReportRun {
-    PortReportRun {
+fn run(status: LintRunStatus) -> LintRun {
+    LintRun {
         run_id: "run-1".to_string(),
         started_at: "2026-03-30T14:22:01-05:00".to_string(),
         finished_at: Some("2026-03-30T14:22:18-05:00".to_string()),
@@ -26,25 +26,25 @@ fn run(status: PortReportRunStatus) -> PortReportRun {
 
 #[test]
 fn parse_run_cases() {
-    let mut running = run(PortReportRunStatus::Running);
+    let mut running = run(LintRunStatus::Running);
     running.started_at = Utc::now().format("%+").to_string();
     running.finished_at = None;
 
-    let mut stale = run(PortReportRunStatus::Running);
+    let mut stale = run(LintRunStatus::Running);
     stale.started_at = "2020-01-01T00:00:00+00:00".to_string();
     stale.finished_at = None;
 
-    let mut garbage = run(PortReportRunStatus::Passed);
+    let mut garbage = run(LintRunStatus::Passed);
     garbage.started_at = "not a valid timestamp".to_string();
     garbage.finished_at = Some("not a valid timestamp".to_string());
 
-    let mut empty = run(PortReportRunStatus::Passed);
+    let mut empty = run(LintRunStatus::Passed);
     empty.started_at.clear();
     empty.finished_at = None;
 
     let cases = [
-        ("passed", run(PortReportRunStatus::Passed)),
-        ("failed", run(PortReportRunStatus::Failed)),
+        ("passed", run(LintRunStatus::Passed)),
+        ("failed", run(LintRunStatus::Failed)),
         ("running", running),
         ("stale", stale),
         ("garbage", garbage),
@@ -86,23 +86,23 @@ fn aggregate_keeps_latest_timestamp_within_variant() {
 
 // ── read_status (end-to-end) ────────────────────────────────────
 
-fn write_latest(root: &Path, run: &PortReportRun) {
+fn write_latest(root: &Path, run: &LintRun) {
     read_write::write_latest_under(&cache_root(), root, run).expect("write latest");
 }
 
 #[test]
 fn read_status_cases() {
-    let mut running = run(PortReportRunStatus::Running);
+    let mut running = run(LintRunStatus::Running);
     running.started_at = Utc::now().format("%+").to_string();
     running.finished_at = None;
 
-    let mut stale = run(PortReportRunStatus::Running);
+    let mut stale = run(LintRunStatus::Running);
     stale.started_at = "2020-01-01T00:00:00+00:00".to_string();
     stale.finished_at = None;
 
     let cases = [
-        ("passed", Some(run(PortReportRunStatus::Passed))),
-        ("failed", Some(run(PortReportRunStatus::Failed))),
+        ("passed", Some(run(LintRunStatus::Passed))),
+        ("failed", Some(run(LintRunStatus::Failed))),
         ("running", Some(running)),
         ("stale", Some(stale)),
         ("no_log", None),
@@ -128,14 +128,9 @@ fn read_status_cases() {
 #[test]
 fn read_status_uses_latest_over_history() {
     let dir = tempfile::tempdir().expect("tempdir");
-    history::append_history_under(
-        &cache_root(),
-        dir.path(),
-        &run(PortReportRunStatus::Failed),
-        None,
-    )
-    .expect("append history");
-    write_latest(dir.path(), &run(PortReportRunStatus::Passed));
+    history::append_history_under(&cache_root(), dir.path(), &run(LintRunStatus::Failed), None)
+        .expect("append history");
+    write_latest(dir.path(), &run(LintRunStatus::Passed));
     assert!(
         matches!(read_status(dir.path()), LintStatus::Passed(_)),
         "should read latest.json, not older history"
@@ -156,20 +151,20 @@ fn cache_latest_path_does_not_live_under_project_dir() {
 fn history_reads_newest_first_and_includes_latest() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
-    let completed = PortReportRun {
+    let completed = LintRun {
         run_id:      "completed".to_string(),
         started_at:  "2026-04-01T18:00:00-04:00".to_string(),
         finished_at: Some("2026-04-01T18:00:10-04:00".to_string()),
         duration_ms: Some(10_000),
-        status:      PortReportRunStatus::Passed,
+        status:      LintRunStatus::Passed,
         commands:    Vec::new(),
     };
-    let running = PortReportRun {
+    let running = LintRun {
         run_id:      "running".to_string(),
         started_at:  "2026-04-01T18:05:00-04:00".to_string(),
         finished_at: None,
         duration_ms: None,
-        status:      PortReportRunStatus::Running,
+        status:      LintRunStatus::Running,
         commands:    Vec::new(),
     };
 
@@ -188,12 +183,12 @@ fn history_reads_newest_first_and_includes_latest() {
 fn clear_latest_if_running_removes_running_latest() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
-    let running = PortReportRun {
+    let running = LintRun {
         run_id:      "running".to_string(),
         started_at:  Utc::now().format("%+").to_string(),
         finished_at: None,
         duration_ms: None,
-        status:      PortReportRunStatus::Running,
+        status:      LintRunStatus::Running,
         commands:    Vec::new(),
     };
     read_write::write_latest_under(cache_dir.path(), project_dir.path(), &running)
@@ -210,12 +205,12 @@ fn clear_latest_if_running_removes_running_latest() {
 fn latest_final_run_does_not_duplicate_completed_history() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
-    let completed = PortReportRun {
+    let completed = LintRun {
         run_id:      "same-run".to_string(),
         started_at:  "2026-04-01T18:00:00-04:00".to_string(),
         finished_at: Some("2026-04-01T18:00:10-04:00".to_string()),
         duration_ms: Some(10_000),
-        status:      PortReportRunStatus::Passed,
+        status:      LintRunStatus::Passed,
         commands:    Vec::new(),
     };
 
@@ -270,7 +265,7 @@ fn append_history_prunes_oldest_runs_under_cache_size() {
 fn retained_cache_usage_counts_latest_and_history_bytes() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
-    let completed = run(PortReportRunStatus::Passed);
+    let completed = run(LintRunStatus::Passed);
 
     read_write::write_latest_under(cache_dir.path(), project_dir.path(), &completed)
         .expect("write latest");
@@ -284,26 +279,26 @@ fn retained_cache_usage_counts_latest_and_history_bytes() {
 
 // ── run archival ────────────────────────────────────────────────
 
-fn run_with_commands(run_id: &str, started_at: &str) -> PortReportRun {
-    PortReportRun {
+fn run_with_commands(run_id: &str, started_at: &str) -> LintRun {
+    LintRun {
         run_id:      run_id.to_string(),
         started_at:  started_at.to_string(),
         finished_at: Some(started_at.to_string()),
         duration_ms: Some(5_000),
-        status:      PortReportRunStatus::Passed,
+        status:      LintRunStatus::Passed,
         commands:    vec![
-            PortReportCommand {
+            LintCommand {
                 name:        "clippy".to_string(),
                 command:     "cargo clippy".to_string(),
-                status:      PortReportCommandStatus::Passed,
+                status:      LintCommandStatus::Passed,
                 duration_ms: Some(3_000),
                 exit_code:   Some(0),
                 log_file:    "clippy-latest.log".to_string(),
             },
-            PortReportCommand {
+            LintCommand {
                 name:        "mend".to_string(),
                 command:     "cargo mend".to_string(),
-                status:      PortReportCommandStatus::Passed,
+                status:      LintCommandStatus::Passed,
                 duration_ms: Some(2_000),
                 exit_code:   Some(0),
                 log_file:    "mend-latest.log".to_string(),
@@ -506,4 +501,77 @@ fn prune_no_op_when_under_cache_size() {
 
     let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
     assert!(project_cache.join("runs/run-keep").exists());
+}
+
+#[test]
+fn prune_returns_stats_about_evicted_runs() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let project_dir = tempfile::tempdir().expect("tempdir");
+
+    let mut older = run_with_commands("run-older", "2026-04-01T18:00:00-04:00");
+    let mut newer = run_with_commands("run-newer", "2026-04-01T19:00:00-04:00");
+
+    // Archive and append older run (no limit)
+    write_fake_logs(cache_dir.path(), project_dir.path(), "older output");
+    older = history::archive_run_output(cache_dir.path(), project_dir.path(), &older)
+        .expect("archive older");
+    history::append_history_under(cache_dir.path(), project_dir.path(), &older, None)
+        .expect("append older");
+
+    // Archive newer run, set tight cache size
+    write_fake_logs(cache_dir.path(), project_dir.path(), "newer output");
+    newer = history::archive_run_output(cache_dir.path(), project_dir.path(), &newer)
+        .expect("archive newer");
+
+    let total_before = history::total_bytes_under(cache_dir.path());
+    let newer_line = serde_json::to_string(&newer).expect("serialize").len() as u64 + 1;
+    let cache_size = total_before + newer_line - 1;
+
+    let stats = history::append_history_under(
+        cache_dir.path(),
+        project_dir.path(),
+        &newer,
+        Some(cache_size),
+    )
+    .expect("append newer");
+
+    assert_eq!(stats.runs_evicted, 1);
+    assert!(stats.bytes_reclaimed > 0);
+}
+
+#[test]
+fn no_prune_returns_zero_stats() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let project_dir = tempfile::tempdir().expect("tempdir");
+
+    let mut completed = run_with_commands("run-keep", "2026-04-01T18:00:00-04:00");
+    write_fake_logs(cache_dir.path(), project_dir.path(), "keep this");
+    completed = history::archive_run_output(cache_dir.path(), project_dir.path(), &completed)
+        .expect("archive");
+
+    let stats = history::append_history_under(
+        cache_dir.path(),
+        project_dir.path(),
+        &completed,
+        Some(10 * 1024 * 1024),
+    )
+    .expect("append");
+
+    assert_eq!(stats.runs_evicted, 0);
+    assert_eq!(stats.bytes_reclaimed, 0);
+}
+
+#[test]
+fn no_cache_size_returns_zero_stats() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let project_dir = tempfile::tempdir().expect("tempdir");
+
+    let completed = run_with_commands("run-unlimited", "2026-04-01T18:00:00-04:00");
+
+    let stats =
+        history::append_history_under(cache_dir.path(), project_dir.path(), &completed, None)
+            .expect("append");
+
+    assert_eq!(stats.runs_evicted, 0);
+    assert_eq!(stats.bytes_reclaimed, 0);
 }

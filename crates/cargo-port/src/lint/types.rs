@@ -72,13 +72,13 @@ impl LintStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum PortReportRunStatus {
+pub enum LintRunStatus {
     Running,
     Passed,
     Failed,
 }
 
-impl PortReportRunStatus {
+impl LintRunStatus {
     pub const fn label(&self) -> &'static str {
         match self {
             Self::Running => "running",
@@ -90,28 +90,28 @@ impl PortReportRunStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum PortReportCommandStatus {
+pub enum LintCommandStatus {
     Pending,
     Passed,
     Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PortReportCommand {
+pub struct LintCommand {
     pub name:        String,
     pub command:     String,
-    pub status:      PortReportCommandStatus,
+    pub status:      LintCommandStatus,
     pub duration_ms: Option<u64>,
     pub exit_code:   Option<i32>,
     pub log_file:    String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PortReportRun {
+pub struct LintRun {
     pub run_id:      String,
     pub started_at:  String,
     pub finished_at: Option<String>,
     pub duration_ms: Option<u64>,
-    pub status:      PortReportRunStatus,
-    pub commands:    Vec<PortReportCommand>,
+    pub status:      LintRunStatus,
+    pub commands:    Vec<LintCommand>,
 }

@@ -118,6 +118,10 @@ pub enum BackgroundMsg {
         path:   String,
         status: LintStatus,
     },
+    LintCachePruned {
+        runs_evicted:    usize,
+        bytes_reclaimed: u64,
+    },
     ScanComplete,
     ServiceReachable {
         service: ServiceKind,
@@ -149,6 +153,7 @@ impl BackgroundMsg {
             Self::DiskUsageBatch { .. }
             | Self::RepoFetchQueued { .. }
             | Self::RepoFetchComplete { .. }
+            | Self::LintCachePruned { .. }
             | Self::ScanComplete
             | Self::ServiceReachable { .. }
             | Self::ServiceRecovered { .. }

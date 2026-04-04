@@ -6,9 +6,9 @@ use chrono::Utc;
 
 use super::paths;
 use super::read_write;
+use super::types::LintRun;
+use super::types::LintRunStatus;
 use super::types::LintStatus;
-use super::types::PortReportRun;
-use super::types::PortReportRunStatus;
 use crate::constants::STALE_TIMEOUT;
 
 /// Read the last line of the project's lint status log and parse it.
@@ -34,7 +34,7 @@ pub fn parse_timestamp(value: &str) -> Option<DateTime<FixedOffset>> {
     DateTime::parse_from_rfc3339(value.trim()).ok()
 }
 
-pub(super) fn parse_run(run: &PortReportRun) -> LintStatus {
+pub(super) fn parse_run(run: &LintRun) -> LintStatus {
     let timestamp = run
         .finished_at
         .as_deref()
@@ -45,9 +45,9 @@ pub(super) fn parse_run(run: &PortReportRun) -> LintStatus {
     };
 
     match run.status {
-        PortReportRunStatus::Passed => LintStatus::Passed(ts),
-        PortReportRunStatus::Failed => LintStatus::Failed(ts),
-        PortReportRunStatus::Running => {
+        LintRunStatus::Passed => LintStatus::Passed(ts),
+        LintRunStatus::Failed => LintStatus::Failed(ts),
+        LintRunStatus::Running => {
             let elapsed = Utc::now().signed_duration_since(ts);
             if elapsed > chrono::Duration::from_std(STALE_TIMEOUT).unwrap_or_default() {
                 LintStatus::Stale

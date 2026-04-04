@@ -12,7 +12,7 @@ use super::types::*;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::ci::FetchStatus;
-use crate::config::Config;
+use crate::config::CargoPortConfig;
 use crate::config::NonRustInclusion;
 use crate::config::ScrollDirection;
 use crate::http::HttpClient;
@@ -68,10 +68,10 @@ fn make_node(project: RustProject) -> ProjectNode {
 }
 
 fn make_app(projects: Vec<RustProject>) -> App {
-    make_app_with_config(projects, &Config::default())
+    make_app_with_config(projects, &CargoPortConfig::default())
 }
 
-fn make_app_with_config(projects: Vec<RustProject>, cfg: &Config) -> App {
+fn make_app_with_config(projects: Vec<RustProject>, cfg: &CargoPortConfig) -> App {
     let (bg_tx, bg_rx) = mpsc::channel();
     let scan_root =
         std::env::temp_dir().join(format!("cargo-port-polish-test-{}", std::process::id()));
@@ -113,7 +113,7 @@ fn external_config_reload_applies_valid_changes() {
     let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
     let path = dir.path().join("config.toml");
 
-    let mut cfg = Config::default();
+    let mut cfg = CargoPortConfig::default();
     cfg.tui.editor = "helix".to_string();
     cfg.tui.ci_run_count = 9;
     cfg.mouse.invert_scroll = ScrollDirection::Normal;
@@ -140,7 +140,7 @@ fn external_config_reload_keeps_last_good_config_on_parse_error() {
     let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
     let path = dir.path().join("config.toml");
 
-    let mut cfg = Config::default();
+    let mut cfg = CargoPortConfig::default();
     cfg.tui.editor = "zed".to_string();
     std::fs::write(
         &path,
@@ -169,7 +169,7 @@ fn external_config_reload_keeps_last_good_config_on_parse_error() {
 fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     let rust_project = make_project(Some("rust"), "~/rust");
     let non_rust_project = make_non_rust_project(Some("js"), "~/js");
-    let mut cfg = Config::default();
+    let mut cfg = CargoPortConfig::default();
     cfg.tui.include_non_rust = NonRustInclusion::Include;
     let mut app = make_app_with_config(vec![rust_project.clone(), non_rust_project.clone()], &cfg);
     app.scan.phase = ScanPhase::Complete;
@@ -1071,7 +1071,7 @@ fn project_change_resets_project_dependent_panes() {
 #[test]
 fn apply_config_resets_column_layout_flag() {
     let mut app = make_app(vec![make_project(Some("demo"), "~/demo")]);
-    let mut cfg = Config::default();
+    let mut cfg = CargoPortConfig::default();
 
     assert!(!app.cached_fit_widths.lint_enabled());
 

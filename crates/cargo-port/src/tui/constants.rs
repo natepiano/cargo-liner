@@ -1,3 +1,4 @@
+pub(super) const BYTES_PER_KIB: u64 = 1024;
 pub(super) const BYTES_PER_MIB: u64 = 1024 * 1024;
 pub(super) const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 

@@ -117,7 +117,7 @@ pub struct LintCommandConfig {
     pub command: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
 pub struct LintConfig {
     /// Show a lint status indicator per project by reading cache-rooted
     /// lint JSON artifacts.
@@ -138,6 +138,23 @@ pub struct LintConfig {
     /// built-in clippy command.
     #[config(default = [])]
     pub commands: Vec<LintCommandConfig>,
+
+    /// Maximum retained size for lint run artifacts. `0` and `unlimited`
+    /// disable pruning.
+    #[config(default = "512 MiB")]
+    pub cache_size: String,
+}
+
+impl Default for LintConfig {
+    fn default() -> Self {
+        Self {
+            enabled:    false,
+            include:    Vec::new(),
+            exclude:    Vec::new(),
+            commands:   Vec::new(),
+            cache_size: DEFAULT_CACHE_SIZE.to_string(),
+        }
+    }
 }
 
 impl LintConfig {
@@ -147,6 +164,14 @@ impl LintConfig {
             return vec![default_clippy_lint_command()];
         }
         commands
+    }
+
+    pub fn cache_size_bytes(&self) -> Result<Option<u64>, String> {
+        parse_cache_size(&self.cache_size).map(|parsed| parsed.bytes)
+    }
+
+    pub fn normalized_cache_size(&self) -> Result<String, String> {
+        parse_cache_size(&self.cache_size).map(|parsed| parsed.normalized)
     }
 }
 
@@ -218,32 +243,6 @@ const BYTES_PER_KIB: u64 = 1024;
 const BYTES_PER_MIB: u64 = BYTES_PER_KIB * 1024;
 const BYTES_PER_GIB: u64 = BYTES_PER_MIB * 1024;
 const DEFAULT_CACHE_SIZE: &str = "512 MiB";
-
-#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
-pub struct PortReportConfig {
-    /// Maximum retained size for lint history artifacts. `0` and `unlimited`
-    /// disable pruning.
-    #[config(default = "512 MiB")]
-    pub cache_size: String,
-}
-
-impl Default for PortReportConfig {
-    fn default() -> Self {
-        Self {
-            cache_size: DEFAULT_CACHE_SIZE.to_string(),
-        }
-    }
-}
-
-impl PortReportConfig {
-    pub fn cache_size_bytes(&self) -> Result<Option<u64>, String> {
-        parse_cache_size(&self.cache_size).map(|parsed| parsed.bytes)
-    }
-
-    pub fn normalized_cache_size(&self) -> Result<String, String> {
-        parse_cache_size(&self.cache_size).map(|parsed| parsed.normalized)
-    }
-}
 
 pub struct ParsedCacheSize {
     pub bytes:      Option<u64>,
@@ -395,25 +394,23 @@ pub fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
     })
 }
 
-pub fn normalize_config(mut config: Config) -> Result<Config, String> {
+pub fn normalize_config(mut config: CargoPortConfig) -> Result<CargoPortConfig, String> {
     config.lint.commands = normalize_lint_commands(&config.lint.commands);
-    config.port_report.cache_size = config.port_report.normalized_cache_size()?;
+    config.lint.cache_size = config.lint.normalized_cache_size()?;
     Ok(config)
 }
 
 /// Top-level application configuration.
 #[derive(Clone, Debug, Default, PartialEq, confique::Config, Serialize)]
-pub struct Config {
+pub struct CargoPortConfig {
     #[config(nested)]
-    pub cache:       CacheConfig,
+    pub cache: CacheConfig,
     #[config(nested)]
-    pub mouse:       MouseConfig,
+    pub mouse: MouseConfig,
     #[config(nested)]
-    pub tui:         TuiConfig,
+    pub tui:   TuiConfig,
     #[config(nested)]
-    pub lint:        LintConfig,
-    #[config(nested)]
-    pub port_report: PortReportConfig,
+    pub lint:  LintConfig,
 }
 
 /// TUI display and behaviour settings.
@@ -487,29 +484,29 @@ pub fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join(APP_NAME).join(CONFIG_FILE))
 }
 
-fn active_config_cell() -> &'static RwLock<Config> {
-    static ACTIVE_CONFIG: OnceLock<RwLock<Config>> = OnceLock::new();
-    ACTIVE_CONFIG.get_or_init(|| RwLock::new(Config::default()))
+fn active_config_cell() -> &'static RwLock<CargoPortConfig> {
+    static ACTIVE_CONFIG: OnceLock<RwLock<CargoPortConfig>> = OnceLock::new();
+    ACTIVE_CONFIG.get_or_init(|| RwLock::new(CargoPortConfig::default()))
 }
 
-pub fn active_config() -> Config {
+pub fn active_config() -> CargoPortConfig {
     active_config_cell()
         .read()
-        .map_or_else(|_| Config::default(), |cfg| cfg.clone())
+        .map_or_else(|_| CargoPortConfig::default(), |cfg| cfg.clone())
 }
 
-pub fn set_active_config(config: &Config) {
+pub fn set_active_config(config: &CargoPortConfig) {
     if let Ok(mut active) = active_config_cell().write() {
         *active = normalize_config(config.clone()).unwrap_or_else(|_| config.clone());
     }
 }
 
-fn load_from_path(path: &Path) -> Result<Config, String> {
+fn load_from_path(path: &Path) -> Result<CargoPortConfig, String> {
     if !path.exists() {
         create_default_config(path)?;
     }
 
-    Config::builder()
+    CargoPortConfig::builder()
         .file(path)
         .load()
         .map_err(|err| format!("Failed to load config '{}': {err}", path.display()))
@@ -517,11 +514,11 @@ fn load_from_path(path: &Path) -> Result<Config, String> {
         .map_err(|err| format!("Failed to load config '{}': {err}", path.display()))
 }
 
-pub fn try_load_from_path(path: &Path) -> Result<Config, String> { load_from_path(path) }
+pub fn try_load_from_path(path: &Path) -> Result<CargoPortConfig, String> { load_from_path(path) }
 
-pub fn try_load() -> Result<Config, String> {
+pub fn try_load() -> Result<CargoPortConfig, String> {
     let Some(path) = config_path() else {
-        return Ok(Config::default());
+        return Ok(CargoPortConfig::default());
     };
     try_load_from_path(&path)
 }
@@ -532,13 +529,14 @@ fn create_default_config(path: &Path) -> Result<(), String> {
             .map_err(|e| format!("Failed to create config directory: {e}"))?;
     }
 
-    let template = confique::toml::template::<Config>(confique::toml::FormatOptions::default());
+    let template =
+        confique::toml::template::<CargoPortConfig>(confique::toml::FormatOptions::default());
 
     std::fs::write(path, template).map_err(|e| format!("Failed to write config: {e}"))?;
     Ok(())
 }
 
-pub fn save(config: &Config) -> Result<(), String> {
+pub fn save(config: &CargoPortConfig) -> Result<(), String> {
     let Some(path) = config_path() else {
         return Err("Could not determine config directory".to_string());
     };
@@ -568,7 +566,7 @@ mod tests {
     /// `Config::default()` returns correct values for every field.
     #[test]
     fn defaults_are_correct() {
-        let cfg = Config::default();
+        let cfg = CargoPortConfig::default();
         assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.tui.inline_dirs, vec!["crates".to_string()]);
         assert_eq!(cfg.tui.ci_run_count, 5);
@@ -581,13 +579,14 @@ mod tests {
         assert!(cfg.lint.include.is_empty());
         assert!(cfg.lint.exclude.is_empty());
         assert!(cfg.lint.commands.is_empty());
-        assert_eq!(cfg.port_report.cache_size, "512 MiB");
+        assert_eq!(cfg.lint.cache_size, "512 MiB");
     }
 
-    /// Generated template parses back into a valid `Config` via confique.
+    /// Generated template parses back into a valid `CargoPortConfig` via confique.
     #[test]
     fn template_round_trips() {
-        let template = confique::toml::template::<Config>(confique::toml::FormatOptions::default());
+        let template =
+            confique::toml::template::<CargoPortConfig>(confique::toml::FormatOptions::default());
 
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
@@ -595,7 +594,7 @@ mod tests {
 
         // Template has all fields commented out, so loading it should
         // succeed with defaults filling every field.
-        let cfg = Config::builder()
+        let cfg = CargoPortConfig::builder()
             .file(&path)
             .load()
             .expect("template should parse");
@@ -603,7 +602,7 @@ mod tests {
         assert_eq!(cfg.tui.ci_run_count, 5);
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert!(cfg.lint.commands.is_empty());
-        assert_eq!(cfg.port_report.cache_size, "512 MiB");
+        assert_eq!(cfg.lint.cache_size, "512 MiB");
     }
 
     /// A partial config file gets defaults for missing fields.
@@ -613,7 +612,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[tui]\nci_run_count = 10\n").expect("write");
 
-        let cfg = Config::builder()
+        let cfg = CargoPortConfig::builder()
             .file(&path)
             .load()
             .expect("partial config should load");
@@ -623,7 +622,7 @@ mod tests {
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
         assert!(cfg.lint.commands.is_empty());
-        assert_eq!(cfg.port_report.cache_size, "512 MiB");
+        assert_eq!(cfg.lint.cache_size, "512 MiB");
     }
 
     /// An empty config file gets all defaults.
@@ -633,7 +632,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "").expect("write");
 
-        let cfg = Config::builder()
+        let cfg = CargoPortConfig::builder()
             .file(&path)
             .load()
             .expect("empty config should load");
@@ -642,7 +641,7 @@ mod tests {
         assert_eq!(cfg.tui.editor, "zed");
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert!(cfg.lint.commands.is_empty());
-        assert_eq!(cfg.port_report.cache_size, "512 MiB");
+        assert_eq!(cfg.lint.cache_size, "512 MiB");
     }
 
     /// Saving and reloading preserves all values.
@@ -651,7 +650,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
 
-        let mut cfg = Config::default();
+        let mut cfg = CargoPortConfig::default();
         cfg.cache.root = "/tmp/cargo-port-cache".to_string();
         cfg.tui.ci_run_count = 42;
         cfg.tui.editor = "vim".to_string();
@@ -662,7 +661,7 @@ mod tests {
         let contents = toml::to_string_pretty(&cfg).expect("serialize");
         std::fs::write(&path, &contents).expect("write");
 
-        let reloaded = Config::builder()
+        let reloaded = CargoPortConfig::builder()
             .file(&path)
             .load()
             .expect("reloaded config");
@@ -673,7 +672,7 @@ mod tests {
         assert!((reloaded.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
         assert_eq!(reloaded.mouse.invert_scroll, ScrollDirection::Normal);
         assert!(reloaded.lint.commands.is_empty());
-        assert_eq!(reloaded.port_report.cache_size, "512 MiB");
+        assert_eq!(reloaded.lint.cache_size, "512 MiB");
     }
 
     /// Bool-based enums deserialize correctly from TOML booleans.
@@ -687,7 +686,7 @@ mod tests {
         )
         .expect("write");
 
-        let cfg = Config::builder()
+        let cfg = CargoPortConfig::builder()
             .file(&path)
             .load()
             .expect("bool enums should parse");
@@ -704,7 +703,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[cache]\nroot = \"/tmp/cargo-port\"\n").expect("write");
 
-        let cfg = Config::builder()
+        let cfg = CargoPortConfig::builder()
             .file(&path)
             .load()
             .expect("cache root should parse");
@@ -732,7 +731,7 @@ mod tests {
         )
         .expect("write");
 
-        let cfg = Config::builder()
+        let cfg = CargoPortConfig::builder()
             .file(&path)
             .load()
             .expect("lint commands should parse");
@@ -747,7 +746,7 @@ mod tests {
 
     #[test]
     fn normalize_config_resolves_builtin_name_only_commands() {
-        let cfg = normalize_config(Config {
+        let cfg = normalize_config(CargoPortConfig {
             lint: LintConfig {
                 commands: vec![LintCommandConfig {
                     name:    "clippy".to_string(),
@@ -755,7 +754,7 @@ mod tests {
                 }],
                 ..LintConfig::default()
             },
-            ..Config::default()
+            ..CargoPortConfig::default()
         })
         .expect("normalize config");
 
@@ -766,7 +765,7 @@ mod tests {
 
     #[test]
     fn normalize_config_names_raw_commands() {
-        let cfg = normalize_config(Config {
+        let cfg = normalize_config(CargoPortConfig {
             lint: LintConfig {
                 commands: vec![LintCommandConfig {
                     name:    String::new(),
@@ -774,7 +773,7 @@ mod tests {
                 }],
                 ..LintConfig::default()
             },
-            ..Config::default()
+            ..CargoPortConfig::default()
         })
         .expect("normalize config");
 
@@ -786,7 +785,7 @@ mod tests {
     /// Empty lint command config falls back to the built-in clippy command.
     #[test]
     fn resolved_lint_commands_default_to_builtins() {
-        let cfg = Config::default();
+        let cfg = CargoPortConfig::default();
         let commands = cfg.lint.resolved_commands();
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].name, "clippy");
@@ -811,14 +810,15 @@ mod tests {
 
     #[test]
     fn normalize_config_normalizes_cache_size_units() {
-        let cfg = normalize_config(Config {
-            port_report: PortReportConfig {
+        let cfg = normalize_config(CargoPortConfig {
+            lint: LintConfig {
                 cache_size: "1.50 gib".to_string(),
+                ..LintConfig::default()
             },
-            ..Config::default()
+            ..CargoPortConfig::default()
         })
         .expect("normalize config");
 
-        assert_eq!(cfg.port_report.cache_size, "1.5 GiB");
+        assert_eq!(cfg.lint.cache_size, "1.5 GiB");
     }
 }

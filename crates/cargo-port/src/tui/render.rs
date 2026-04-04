@@ -27,6 +27,7 @@ use super::app::ResolvedWidths;
 use super::app::VisibleRow;
 use super::constants::BLOCK_BORDER_WIDTH;
 use super::constants::BYTES_PER_GIB;
+use super::constants::BYTES_PER_KIB;
 use super::constants::BYTES_PER_MIB;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::constants::DETAIL_PANEL_HEIGHT;
@@ -88,8 +89,12 @@ pub(super) fn format_bytes(bytes: u64) -> String {
     )]
     if bytes >= BYTES_PER_GIB {
         format!("{:.1} GiB", bytes as f64 / BYTES_PER_GIB as f64)
-    } else {
+    } else if bytes >= BYTES_PER_MIB {
         format!("{:.1} MiB", bytes as f64 / BYTES_PER_MIB as f64)
+    } else if bytes >= BYTES_PER_KIB {
+        format!("{:.1} KiB", bytes as f64 / BYTES_PER_KIB as f64)
+    } else {
+        format!("{bytes} B")
     }
 }
 
@@ -270,9 +275,9 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let selected_ci_state = app.selected_ci_state();
     let selected_has_ci_owner = app.selected_ci_project().is_some();
     let has_ci = selected_ci_state.is_some();
-    let detail_port_report_runs = app
+    let detail_lint_runs = app
         .selected_project()
-        .and_then(|p| app.port_report_runs.get(&p.path))
+        .and_then(|p| app.lint_runs.get(&p.path))
         .cloned()
         .unwrap_or_default();
     let detail_ci_runs: Vec<CiRun> = selected_ci_state
@@ -314,12 +319,7 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
             },
             BottomPanel::Lints => {
-                super::detail::render_lints_panel(
-                    frame,
-                    app,
-                    &detail_port_report_runs,
-                    right_layout[1],
-                );
+                super::detail::render_lints_panel(frame, app, &detail_lint_runs, right_layout[1]);
             },
         }
     }

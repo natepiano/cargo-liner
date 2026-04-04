@@ -24,7 +24,7 @@ use super::types::ScanState;
 use super::types::SelectionPaths;
 use super::types::SelectionSync;
 use super::types::UiModes;
-use crate::config::Config;
+use crate::config::CargoPortConfig;
 use crate::config::NonRustInclusion;
 use crate::http::HttpClient;
 use crate::lint;
@@ -95,7 +95,7 @@ impl AppInit {
         scan_root: &Path,
         projects: &[RustProject],
         bg_tx: &mpsc::Sender<BackgroundMsg>,
-        cfg: &Config,
+        cfg: &CargoPortConfig,
         http_client: &HttpClient,
     ) -> Self {
         crate::config::set_active_config(cfg);
@@ -135,7 +135,7 @@ struct CoreInputs {
     http_client:     HttpClient,
     bg_tx:           mpsc::Sender<BackgroundMsg>,
     bg_rx:           Receiver<BackgroundMsg>,
-    cfg:             Config,
+    cfg:             CargoPortConfig,
     scan_started_at: Instant,
     builds:          AsyncBuildState,
     channels:        AppChannels,
@@ -174,7 +174,7 @@ impl App {
         projects: Vec<RustProject>,
         bg_tx: mpsc::Sender<BackgroundMsg>,
         bg_rx: Receiver<BackgroundMsg>,
-        cfg: &Config,
+        cfg: &CargoPortConfig,
         http_client: HttpClient,
         scan_started_at: Instant,
     ) -> Self {
@@ -214,7 +214,7 @@ impl App {
             ci_state: HashMap::new(),
             lint_status: HashMap::new(),
             lint_cache_usage: crate::lint::CacheUsage::default(),
-            port_report_runs: HashMap::new(),
+            lint_runs: HashMap::new(),
             lint_rollup_status: HashMap::new(),
             lint_rollup_paths: HashMap::new(),
             lint_rollup_keys_by_path: HashMap::new(),
@@ -246,7 +246,7 @@ impl App {
             targets_pane: Pane::new(),
             ci_pane: Pane::new(),
             toast_pane: Pane::new(),
-            port_report_pane: Pane::new(),
+            lint_pane: Pane::new(),
             bottom_panel: BottomPanel::CiRuns,
             pending_example_run: None,
             pending_ci_fetch: None,
@@ -316,7 +316,7 @@ impl App {
         self.prune_inactive_project_state();
         self.register_existing_projects();
         self.sync_lint_runtime_projects();
-        self.refresh_port_report_histories_from_disk();
+        self.refresh_lint_runs_from_disk();
         self.rebuild_lint_rollups();
     }
 }

@@ -12,12 +12,12 @@ use std::time::SystemTime;
 use ratatui::widgets::ListState;
 
 use crate::ci::CiRun;
-use crate::config::Config;
+use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::lint::CacheUsage;
+use crate::lint::LintRun;
 use crate::lint::LintStatus;
-use crate::lint::PortReportRun;
 use crate::lint::RuntimeHandle;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
@@ -481,7 +481,7 @@ pub struct DetailCache {
 }
 
 pub struct App {
-    pub current_config:           Config,
+    pub current_config:           CargoPortConfig,
     pub scan_root:                PathBuf,
     pub http_client:              HttpClient,
     pub all_projects:             Vec<RustProject>,
@@ -491,7 +491,7 @@ pub struct App {
     pub ci_state:                 HashMap<String, CiState>,
     pub lint_status:              HashMap<String, LintStatus>,
     pub lint_cache_usage:         CacheUsage,
-    pub port_report_runs:         HashMap<String, Vec<PortReportRun>>,
+    pub lint_runs:                HashMap<String, Vec<LintRun>>,
     pub lint_rollup_status:       HashMap<LintRollupKey, LintStatus>,
     pub lint_rollup_paths:        HashMap<LintRollupKey, Vec<String>>,
     pub lint_rollup_keys_by_path: HashMap<String, Vec<LintRollupKey>>,
@@ -523,7 +523,7 @@ pub struct App {
     pub targets_pane:             Pane,
     pub ci_pane:                  Pane,
     pub toast_pane:               Pane,
-    pub port_report_pane:         Pane,
+    pub lint_pane:                Pane,
     pub bottom_panel:             BottomPanel,
     pub pending_example_run:      Option<PendingExampleRun>,
     pub pending_ci_fetch:         Option<PendingCiFetch>,

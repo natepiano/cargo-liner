@@ -20,13 +20,13 @@ use super::history;
 use super::paths;
 use super::read_write;
 use super::status;
+use super::types::LintCommand;
+use super::types::LintCommandStatus;
+use super::types::LintRun;
+use super::types::LintRunStatus;
 use super::types::LintStatus;
-use super::types::PortReportCommand;
-use super::types::PortReportCommandStatus;
-use super::types::PortReportRun;
-use super::types::PortReportRunStatus;
 use crate::cache_paths;
-use crate::config::Config;
+use crate::config::CargoPortConfig;
 use crate::config::LintCommandConfig;
 use crate::config::LintConfig;
 use crate::scan::BackgroundMsg;
@@ -99,7 +99,7 @@ struct ProjectWorker {
     handle: JoinHandle<()>,
 }
 
-pub fn spawn(config: &Config, bg_tx: mpsc::Sender<BackgroundMsg>) -> SpawnResult {
+pub fn spawn(config: &CargoPortConfig, bg_tx: mpsc::Sender<BackgroundMsg>) -> SpawnResult {
     if !config.lint.enabled {
         return SpawnResult {
             handle:  None,
@@ -108,7 +108,7 @@ pub fn spawn(config: &Config, bg_tx: mpsc::Sender<BackgroundMsg>) -> SpawnResult
     }
 
     let cache_root = cache_paths::lint_runs_root_for(config);
-    let cache_size_bytes = config.port_report.cache_size_bytes().unwrap_or(None);
+    let cache_size_bytes = config.lint.cache_size_bytes().unwrap_or(None);
     let lint = config.lint.clone();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || supervisor_loop(rx, cache_root, lint, cache_size_bytes, bg_tx));
@@ -412,25 +412,25 @@ pub fn run_commands_for_project(
     let started_at = Local::now();
     let started_at_str = started_at.to_rfc3339();
     let run_started = Instant::now();
-    let mut run = PortReportRun {
+    let mut run = LintRun {
         run_id:      started_at_str.clone(),
         started_at:  started_at_str,
         finished_at: None,
         duration_ms: None,
-        status:      PortReportRunStatus::Running,
+        status:      LintRunStatus::Running,
         commands:    commands
             .iter()
             .enumerate()
             .map(|(index, command)| {
                 let log_name = command_log_name(command, index);
-                PortReportCommand {
+                LintCommand {
                     name:        if command.name.trim().is_empty() {
                         log_name.clone()
                     } else {
                         command.name.trim().to_string()
                     },
                     command:     command.command.clone(),
-                    status:      PortReportCommandStatus::Pending,
+                    status:      LintCommandStatus::Pending,
                     duration_ms: None,
                     exit_code:   None,
                     log_file:    format!("{log_name}-latest.log"),
@@ -463,9 +463,9 @@ pub fn run_commands_for_project(
         let execution = run_command(project_root, &manifest_path, &output_dir, command, index)?;
         if let Some(command_run) = run.commands.get_mut(index) {
             command_run.status = if execution.success {
-                PortReportCommandStatus::Passed
+                LintCommandStatus::Passed
             } else {
-                PortReportCommandStatus::Failed
+                LintCommandStatus::Failed
             };
             command_run.duration_ms = Some(execution.duration_ms);
             command_run.exit_code = execution.exit_code;
@@ -488,14 +488,21 @@ pub fn run_commands_for_project(
     run.finished_at = Some(Local::now().to_rfc3339());
     run.duration_ms = Some(u64::try_from(run_started.elapsed().as_millis()).unwrap_or(u64::MAX));
     run.status = if failed {
-        PortReportRunStatus::Failed
+        LintRunStatus::Failed
     } else {
-        PortReportRunStatus::Passed
+        LintRunStatus::Passed
     };
 
     run = history::archive_run_output(cache_root, project_root, &run)?;
     read_write::write_latest_under(cache_root, project_root, &run)?;
-    history::append_history_under(cache_root, project_root, &run, cache_size_bytes)?;
+    let prune_stats =
+        history::append_history_under(cache_root, project_root, &run, cache_size_bytes)?;
+    if prune_stats.runs_evicted > 0 {
+        let _ = bg_tx.send(BackgroundMsg::LintCachePruned {
+            runs_evicted:    prune_stats.runs_evicted,
+            bytes_reclaimed: prune_stats.bytes_reclaimed,
+        });
+    }
     let _ = bg_tx.send(BackgroundMsg::LintStatus {
         path:   project_path.to_string(),
         status: status::read_status_under(cache_root, project_root),
@@ -586,7 +593,7 @@ fn sanitize_name(name: &str) -> String {
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::CargoPortConfig;
 
     fn request(path: &str, abs_path: &Path, is_rust: bool) -> RegisterProjectRequest {
         RegisterProjectRequest {
@@ -605,10 +612,11 @@ mod tests {
         )
         .expect("write manifest");
         let lint = LintConfig {
-            enabled:  true,
-            include:  vec!["~/rust/demo".to_string()],
-            exclude:  vec![project_dir.path().to_string_lossy().to_string()],
+            enabled: true,
+            include: vec!["~/rust/demo".to_string()],
+            exclude: vec![project_dir.path().to_string_lossy().to_string()],
             commands: Vec::new(),
+            ..LintConfig::default()
         };
 
         let req = request("~/rust/demo", project_dir.path(), true);
@@ -631,10 +639,11 @@ mod tests {
         .expect("write manifest");
 
         let lint = LintConfig {
-            enabled:  true,
-            include:  vec!["bevy_lagrange".to_string()],
-            exclude:  Vec::new(),
+            enabled: true,
+            include: vec!["bevy_lagrange".to_string()],
+            exclude: Vec::new(),
             commands: Vec::new(),
+            ..LintConfig::default()
         };
 
         let direct = request("~/rust/bevy_lagrange", project_dir.path(), true);
@@ -694,7 +703,7 @@ mod tests {
         )
         .expect("write manifest");
 
-        let mut cfg = Config::default();
+        let mut cfg = CargoPortConfig::default();
         cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
         let cache_root = cache_paths::lint_runs_root_for(&cfg);
         let commands = vec![LintCommandConfig {
@@ -735,10 +744,11 @@ mod tests {
         )
         .expect("write manifest");
         let lint = LintConfig {
-            enabled:  true,
-            include:  vec!["~/rust/demo".to_string()],
-            exclude:  vec!["~/rust/demo/excluded".to_string()],
+            enabled: true,
+            include: vec!["~/rust/demo".to_string()],
+            exclude: vec!["~/rust/demo/excluded".to_string()],
             commands: Vec::new(),
+            ..LintConfig::default()
         };
 
         let desired = desired_projects(

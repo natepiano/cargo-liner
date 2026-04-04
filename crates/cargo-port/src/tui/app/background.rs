@@ -16,7 +16,7 @@ use super::types::PollBackgroundStats;
 use super::types::ScanPhase;
 use super::types::StartupPhaseTracker;
 use super::types::TreeBuildResult;
-use crate::config::Config;
+use crate::config::CargoPortConfig;
 use crate::constants::SERVICE_RETRY_SECS;
 use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
@@ -154,14 +154,14 @@ impl App {
         }
     }
 
-    pub fn save_and_apply_config(&mut self, cfg: &Config) -> Result<(), String> {
+    pub fn save_and_apply_config(&mut self, cfg: &CargoPortConfig) -> Result<(), String> {
         crate::config::save(cfg)?;
         self.apply_config(cfg);
         self.sync_config_watch_state();
         Ok(())
     }
 
-    pub(super) fn apply_config(&mut self, cfg: &Config) {
+    pub(super) fn apply_config(&mut self, cfg: &CargoPortConfig) {
         if self.current_config == *cfg {
             return;
         }
@@ -193,13 +193,13 @@ impl App {
         }
     }
 
-    pub(super) fn refresh_lint_runtime_from_config(&mut self, cfg: &Config) {
+    pub(super) fn refresh_lint_runtime_from_config(&mut self, cfg: &CargoPortConfig) {
         let lint_spawn = lint::spawn(cfg, self.bg_tx.clone());
         self.lint_runtime = lint_spawn.handle;
         self.register_existing_projects();
         self.sync_lint_runtime_projects_immediately();
         self.refresh_lint_statuses_from_disk();
-        self.refresh_port_report_histories_from_disk();
+        self.refresh_lint_runs_from_disk();
         self.rebuild_lint_rollups();
         self.cached_fit_widths = ResolvedWidths::new(self.lint_enabled());
         self.dirty.rows.mark_dirty();
@@ -257,48 +257,44 @@ impl App {
         }
     }
 
-    pub(super) fn refresh_port_report_histories_from_disk(&mut self) {
-        self.port_report_runs.clear();
+    pub(super) fn refresh_lint_runs_from_disk(&mut self) {
+        self.lint_runs.clear();
         for project in &self.all_projects {
             if !self.is_cargo_active_path(&project.path) {
                 continue;
             }
             let runs = crate::lint::read_history(&PathBuf::from(&project.abs_path));
             if !runs.is_empty() {
-                self.port_report_runs.insert(project.path.clone(), runs);
+                self.lint_runs.insert(project.path.clone(), runs);
             }
         }
         self.refresh_lint_cache_usage_from_disk();
     }
 
-    pub(super) fn reload_port_report_history(&mut self, project_path: &str) {
+    pub(super) fn reload_lint_history(&mut self, project_path: &str) {
         let Some(project) = self
             .all_projects
             .iter()
             .find(|project| project.path == project_path)
         else {
-            self.port_report_runs.remove(project_path);
+            self.lint_runs.remove(project_path);
             return;
         };
         if !self.is_cargo_active_path(project_path) {
-            self.port_report_runs.remove(project_path);
+            self.lint_runs.remove(project_path);
             return;
         }
         let runs = crate::lint::read_history(&PathBuf::from(&project.abs_path));
         if runs.is_empty() {
-            self.port_report_runs.remove(project_path);
+            self.lint_runs.remove(project_path);
         } else {
-            self.port_report_runs.insert(project_path.to_string(), runs);
+            self.lint_runs.insert(project_path.to_string(), runs);
         }
         self.refresh_lint_cache_usage_from_disk();
     }
 
     pub fn refresh_lint_cache_usage_from_disk(&mut self) {
-        let cache_size_bytes = self
-            .current_config
-            .port_report
-            .cache_size_bytes()
-            .unwrap_or(None);
+        let cache_size_bytes = self.current_config.lint.cache_size_bytes().unwrap_or(None);
         self.lint_cache_usage = crate::lint::retained_cache_usage(cache_size_bytes);
     }
 
@@ -874,7 +870,7 @@ impl App {
         self.ci_state.clear();
         self.lint_status.clear();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
-        self.port_report_runs.clear();
+        self.lint_runs.clear();
         self.git_info.clear();
         self.git_path_states.clear();
         self.cargo_active_paths.clear();
@@ -1001,6 +997,7 @@ impl App {
             | BackgroundMsg::RepoMeta { .. }
             | BackgroundMsg::ProjectDiscovered { .. }
             | BackgroundMsg::ProjectRefreshed { .. }
+            | BackgroundMsg::LintCachePruned { .. }
             | BackgroundMsg::ScanComplete
             | BackgroundMsg::ServiceReachable { .. }
             | BackgroundMsg::ServiceRecovered { .. }
@@ -1352,7 +1349,7 @@ impl App {
             LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog
         );
         if !self.is_cargo_active_path(&path) {
-            self.port_report_runs.remove(&path);
+            self.lint_runs.remove(&path);
             self.lint_status.remove(&path);
             return;
         }
@@ -1369,14 +1366,14 @@ impl App {
                 )
             });
         if eligible {
-            self.reload_port_report_history(&path);
+            self.reload_lint_history(&path);
             if matches!(status, LintStatus::NoLog) {
                 self.lint_status.remove(&path);
             } else {
                 self.lint_status.insert(path.clone(), status);
             }
         } else {
-            self.port_report_runs.remove(&path);
+            self.lint_runs.remove(&path);
             self.lint_status.remove(&path);
             self.running_lint_paths.remove(&path);
         }
@@ -1483,6 +1480,20 @@ impl App {
                 if self.handle_project_refreshed(&project) {
                     return true;
                 }
+            },
+            BackgroundMsg::LintCachePruned {
+                runs_evicted,
+                bytes_reclaimed,
+            } => {
+                self.show_timed_toast(
+                    "Lint cache",
+                    format!(
+                        "Evicted {runs_evicted} {}, reclaimed {}",
+                        if runs_evicted == 1 { "run" } else { "runs" },
+                        crate::tui::render::format_bytes(bytes_reclaimed),
+                    ),
+                );
+                self.refresh_lint_cache_usage_from_disk();
             },
             BackgroundMsg::LintStatus { path, status } => self.handle_lint_status_msg(path, status),
             BackgroundMsg::ScanComplete => self.handle_scan_complete_msg(),

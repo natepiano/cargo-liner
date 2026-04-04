@@ -99,7 +99,7 @@ impl App {
         self.prune_toasts();
     }
 
-    pub fn port_report_is_watchable(&self, project: &RustProject) -> bool {
+    pub fn lint_is_watchable(&self, project: &RustProject) -> bool {
         if !self.lint_enabled() {
             return false;
         }
@@ -120,12 +120,12 @@ impl App {
                     .git_info
                     .get(&project.path)
                     .is_some_and(|info| info.url.is_some()));
-        let has_port_report = self
-            .port_report_runs
+        let has_lint_runs = self
+            .lint_runs
             .get(&project.path)
             .is_some_and(|runs| !runs.is_empty())
-            || self.port_report_is_watchable(project);
-        has_ci || has_port_report
+            || self.lint_is_watchable(project);
+        has_ci || has_lint_runs
     }
 
     pub fn sync_selected_project(&mut self) {
@@ -159,7 +159,7 @@ impl App {
         if let Some(path) = current
             && self.selection_paths.last_selected.as_ref() != Some(&path)
         {
-            self.reload_port_report_history(&path);
+            self.reload_lint_history(&path);
             self.data_generation += 1;
             self.detail_generation += 1;
             self.selection_paths.last_selected = Some(path);
@@ -404,7 +404,7 @@ impl App {
             self.ci_state.remove(&path);
             self.crates_versions.remove(&path);
             self.crates_downloads.remove(&path);
-            self.port_report_runs.remove(&path);
+            self.lint_runs.remove(&path);
             self.lint_status.remove(&path);
         }
     }

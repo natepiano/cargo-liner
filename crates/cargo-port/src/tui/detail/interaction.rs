@@ -135,10 +135,10 @@ fn open_url(url: &str) {
 pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
     if app.showing_lints() {
         match key {
-            KeyCode::Up => app.port_report_pane.up(),
-            KeyCode::Down => app.port_report_pane.down(),
-            KeyCode::Home => app.port_report_pane.home(),
-            KeyCode::End => app.port_report_pane.end(),
+            KeyCode::Up => app.lint_pane.up(),
+            KeyCode::Down => app.lint_pane.down(),
+            KeyCode::Home => app.lint_pane.home(),
+            KeyCode::End => app.lint_pane.end(),
             KeyCode::Enter => open_lint_run_output(app),
             KeyCode::Char('c') => clear_lint_history(app),
             KeyCode::Char('p') => app.toggle_bottom_panel(),
@@ -222,8 +222,8 @@ fn clear_lint_history(app: &mut App) {
     let _ = std::fs::remove_dir_all(project_cache_dir);
 
     let path = project.path.clone();
-    app.port_report_runs.remove(&path);
-    app.port_report_pane.home();
+    app.lint_runs.remove(&path);
+    app.lint_pane.home();
     app.refresh_lint_cache_usage_from_disk();
     app.data_generation += 1;
 }
@@ -232,11 +232,11 @@ fn open_lint_run_output(app: &App) {
     let Some(project) = app.selected_project() else {
         return;
     };
-    let runs = match app.port_report_runs.get(&project.path) {
+    let runs = match app.lint_runs.get(&project.path) {
         Some(runs) if !runs.is_empty() => runs,
         _ => return,
     };
-    let Some(run) = runs.get(app.port_report_pane.pos()) else {
+    let Some(run) = runs.get(app.lint_pane.pos()) else {
         return;
     };
 
