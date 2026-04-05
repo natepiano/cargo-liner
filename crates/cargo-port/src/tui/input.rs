@@ -147,28 +147,8 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
 
 fn handle_mouse_event(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
     match kind {
-        MouseEventKind::ScrollUp => {
-            if app.focused_pane == PaneId::ScanLog {
-                if app.invert_scroll().is_inverted() {
-                    app.scan_log_scroll_down();
-                } else {
-                    app.scan_log_scroll_up();
-                }
-            } else {
-                scroll_main(app, true);
-            }
-        },
-        MouseEventKind::ScrollDown => {
-            if app.focused_pane == PaneId::ScanLog {
-                if app.invert_scroll().is_inverted() {
-                    app.scan_log_scroll_up();
-                } else {
-                    app.scan_log_scroll_down();
-                }
-            } else {
-                scroll_main(app, false);
-            }
-        },
+        MouseEventKind::ScrollUp => scroll_main(app, true),
+        MouseEventKind::ScrollDown => scroll_main(app, false),
         MouseEventKind::Down(MouseButton::Left) => handle_mouse_click(app, column, row),
         _ => {},
     }
@@ -191,7 +171,6 @@ const fn pane_label(pane: PaneId) -> &'static str {
         PaneId::Targets => "targets",
         PaneId::CiRuns => "ci_runs",
         PaneId::Toasts => "toasts",
-        PaneId::ScanLog => "scan_log",
         PaneId::Search => "search",
         PaneId::Settings => "settings",
         PaneId::Finder => "finder",
@@ -229,28 +208,15 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     }
 
     let project_list = app.layout_cache.project_list;
-    let scan_log = app.layout_cache.scan_log;
     let detail_columns = app.layout_cache.detail_columns.clone();
     let detail_targets_col = app.layout_cache.detail_targets_col;
 
     if project_list.contains(pos) {
         app.focus_pane(PaneId::ProjectList);
-        let inner_y = row.saturating_sub(project_list.y + 1);
-        let clicked_index = app.list_state.offset() + inner_y as usize;
+        let inner_y = (row - project_list.y) as usize;
+        let clicked_index = app.layout_cache.project_list_offset + inner_y;
         if clicked_index < app.row_count() {
             app.list_state.select(Some(clicked_index));
-        }
-        return;
-    }
-
-    if let Some(scan_rect) = scan_log
-        && scan_rect.contains(pos)
-    {
-        app.focus_pane(PaneId::ScanLog);
-        let inner_y = row.saturating_sub(scan_rect.y + 1);
-        let clicked_index = app.scan_log_state.offset() + inner_y as usize;
-        if clicked_index < app.scan_log.len() {
-            app.scan_log_state.select(Some(clicked_index));
         }
         return;
     }
@@ -386,34 +352,10 @@ fn handle_global_key(app: &mut App, key: KeyCode) -> bool {
 
 fn handle_normal_key(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Up => {
-            if app.focused_pane == PaneId::ScanLog {
-                app.scan_log_scroll_up();
-            } else {
-                app.move_up();
-            }
-        },
-        KeyCode::Down => {
-            if app.focused_pane == PaneId::ScanLog {
-                app.scan_log_scroll_down();
-            } else {
-                app.move_down();
-            }
-        },
-        KeyCode::Home => {
-            if app.focused_pane == PaneId::ScanLog {
-                app.scan_log_to_top();
-            } else {
-                app.move_to_top();
-            }
-        },
-        KeyCode::End => {
-            if app.focused_pane == PaneId::ScanLog {
-                app.scan_log_to_bottom();
-            } else {
-                app.move_to_bottom();
-            }
-        },
+        KeyCode::Up => app.move_up(),
+        KeyCode::Down => app.move_down(),
+        KeyCode::Home => app.move_to_top(),
+        KeyCode::End => app.move_to_bottom(),
         KeyCode::Enter => open_in_editor(app),
         KeyCode::Right => {
             if !app.expand() {

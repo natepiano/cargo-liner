@@ -561,39 +561,6 @@ impl App {
         }
     }
 
-    pub fn scan_log_scroll_up(&mut self) {
-        if self.scan_log.is_empty() {
-            return;
-        }
-        let current = self.scan_log_state.selected().unwrap_or(0);
-        if current > 0 {
-            self.scan_log_state.select(Some(current - 1));
-        }
-    }
-
-    pub fn scan_log_scroll_down(&mut self) {
-        if self.scan_log.is_empty() {
-            return;
-        }
-        let current = self.scan_log_state.selected().unwrap_or(0);
-        if current < self.scan_log.len() - 1 {
-            self.scan_log_state.select(Some(current + 1));
-        }
-    }
-
-    pub const fn scan_log_to_top(&mut self) {
-        if !self.scan_log.is_empty() {
-            self.scan_log_state.select(Some(0));
-        }
-    }
-
-    pub const fn scan_log_to_bottom(&mut self) {
-        if !self.scan_log.is_empty() {
-            self.scan_log_state
-                .select(Some(self.scan_log.len().saturating_sub(1)));
-        }
-    }
-
     pub fn cancel_search(&mut self) {
         self.end_search();
         self.search_query.clear();

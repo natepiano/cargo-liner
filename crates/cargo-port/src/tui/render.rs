@@ -258,9 +258,6 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         .constraints(left_constraints)
         .split(area);
 
-    app.layout_cache.project_list = left_layout[1];
-    app.layout_cache.scan_log = None;
-
     if app.is_searching() {
         render_search_bar(frame, app, left_layout[0]);
     }
@@ -470,6 +467,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
+        app.layout_cache.project_list = Rect::ZERO;
         return;
     }
 
@@ -486,6 +484,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
         Rect::new(inner.x, inner.y, inner.width, 0)
     };
     if content_area.height == 0 {
+        app.layout_cache.project_list = Rect::ZERO;
         return;
     }
 
@@ -524,6 +523,8 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     });
 
     frame.render_stateful_widget(project_list, list_area, &mut app.list_state);
+    app.layout_cache.project_list = list_area;
+    app.layout_cache.project_list_offset = app.list_state.offset();
 
     if pin_summary && let Some(line) = summary_line {
         let footer_area = Rect::new(

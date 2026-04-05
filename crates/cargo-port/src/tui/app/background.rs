@@ -50,7 +50,7 @@ impl App {
             .selected_project()
             .map(|p| p.path.clone())
             .or_else(|| self.selection_paths.last_selected.clone());
-        let should_focus_project_list = self.focused_pane == PaneId::ScanLog && !nodes.is_empty();
+        let should_focus_project_list = false;
         self.nodes = nodes;
         self.flat_entries = flat_entries;
         self.dirty.finder.mark_dirty();
@@ -122,13 +122,7 @@ impl App {
             "Config reload failed; keeping previous settings".to_string(),
             Instant::now(),
         ));
-        self.show_timed_toast(
-            "Config reload failed",
-            "Keeping previous settings".to_string(),
-        );
-        self.scan_log.push(format!("config reload failed: {err}"));
-        self.scan_log_state
-            .select(Some(self.scan_log.len().saturating_sub(1)));
+        self.show_timed_toast("Config reload failed", err.to_string());
     }
 
     pub fn maybe_reload_config_from_disk(&mut self) {
@@ -208,10 +202,7 @@ impl App {
         self.detail_generation += 1;
         if let Some(warning) = lint_spawn.warning {
             self.status_flash = Some((warning.clone(), Instant::now()));
-            self.show_timed_toast("Lint runtime", warning.clone());
-            self.scan_log.push(warning);
-            self.scan_log_state
-                .select(Some(self.scan_log.len().saturating_sub(1)));
+            self.show_timed_toast("Lint runtime", warning);
         }
     }
 
@@ -878,8 +869,6 @@ impl App {
         self.crates_downloads.clear();
         self.stars.clear();
         self.repo_descriptions.clear();
-        self.scan_log.clear();
-        self.scan_log_state = ListState::default();
         self.scan.phase = ScanPhase::Running;
         self.scan.started_at = Instant::now();
         self.scan.run_count += 1;
@@ -1433,9 +1422,6 @@ impl App {
         self.sync_lint_runtime_projects_immediately();
         self.schedule_git_path_state_refreshes();
         self.schedule_git_first_commit_refreshes();
-        if self.focused_pane == PaneId::ScanLog {
-            self.focus_pane(PaneId::ProjectList);
-        }
     }
 
     /// Handle a single `BackgroundMsg`. Returns `true` if the tree needs rebuilding.

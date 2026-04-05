@@ -513,8 +513,6 @@ pub struct App {
     pub settings_pane:            Pane,
     pub settings_edit_buf:        String,
     pub settings_edit_cursor:     usize,
-    pub scan_log:                 Vec<String>,
-    pub scan_log_state:           ListState,
     pub focused_pane:             PaneId,
     pub return_focus:             Option<PaneId>,
     pub visited_panes:            HashSet<PaneId>,

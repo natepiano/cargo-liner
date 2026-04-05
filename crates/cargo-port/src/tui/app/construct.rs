@@ -236,8 +236,6 @@ impl App {
             settings_pane: Pane::new(),
             settings_edit_buf: String::new(),
             settings_edit_cursor: 0,
-            scan_log: Vec::new(),
-            scan_log_state: ListState::default(),
             focused_pane: PaneId::ProjectList,
             return_focus: None,
             visited_panes: std::iter::once(PaneId::ProjectList).collect(),
@@ -299,9 +297,7 @@ impl App {
             .as_ref()
             .map(|(warning, _)| warning.clone())
         {
-            self.show_timed_toast("Lint runtime", warning.clone());
-            self.scan_log.push(warning);
-            self.scan_log_state.select(Some(0));
+            self.show_timed_toast("Lint runtime", warning);
         }
         if self.current_config.tui.include_dirs.is_empty() {
             self.show_timed_toast(

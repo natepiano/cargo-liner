@@ -436,7 +436,7 @@ impl App {
     /// only show Enter when it's actionable.
     pub fn enter_action(&self) -> Option<&'static str> {
         match self.input_context() {
-            InputContext::ProjectList | InputContext::ScanLog => Some("open"),
+            InputContext::ProjectList => Some("open"),
             InputContext::DetailTargets => Some("run"),
             InputContext::DetailFields => {
                 if self.base_focus() == PaneId::Package {

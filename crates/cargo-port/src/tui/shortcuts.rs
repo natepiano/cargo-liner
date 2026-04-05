@@ -3,7 +3,6 @@
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(super) enum InputContext {
     ProjectList,
-    ScanLog,
     DetailFields,
     DetailTargets,
     CiRuns,
@@ -136,9 +135,7 @@ pub(super) fn for_status_bar(
         InputContext::CiRuns => ci_groups(enter_action),
         InputContext::Toasts => (vec![NAV, TAB_PANE, ESC_BACK], vec![CLOSE_TOAST]),
         InputContext::Lints => lints_groups(enter_action),
-        InputContext::ScanLog | InputContext::ProjectList => {
-            project_list_groups(enter_action, is_rust)
-        },
+        InputContext::ProjectList => project_list_groups(enter_action, is_rust),
     };
 
     let global = if context.is_text_input() {

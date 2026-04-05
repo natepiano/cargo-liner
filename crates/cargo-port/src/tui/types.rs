@@ -114,7 +114,6 @@ pub(super) enum PaneId {
     Targets,
     CiRuns,
     Toasts,
-    ScanLog,
     Search,
     Settings,
     Finder,
@@ -137,9 +136,9 @@ pub(super) struct ToastHitbox {
 /// hit-testing in the event handler.
 #[derive(Default)]
 pub(super) struct LayoutCache {
-    pub project_list:       Rect,
-    pub scan_log:           Option<Rect>,
-    pub detail_columns:     Vec<Rect>,
-    pub detail_targets_col: Option<usize>,
-    pub toast_hitboxes:     Vec<ToastHitbox>,
+    pub project_list:        Rect,
+    pub project_list_offset: usize,
+    pub detail_columns:      Vec<Rect>,
+    pub detail_targets_col:  Option<usize>,
+    pub toast_hitboxes:      Vec<ToastHitbox>,
 }

@@ -986,8 +986,6 @@ fn project_refresh_updates_selected_tree_project_targets() {
 fn first_non_empty_tree_build_focuses_project_list() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(vec![project.clone()]);
-    app.focus_pane(PaneId::ScanLog);
-
     apply_nodes(&mut app, vec![make_node(project)]);
 
     assert_eq!(app.focused_pane, PaneId::ProjectList);

@@ -80,7 +80,6 @@ fn active_detail_pane(app: &mut App) -> &mut Pane {
         | PaneId::ProjectList
         | PaneId::CiRuns
         | PaneId::Toasts
-        | PaneId::ScanLog
         | PaneId::Search
         | PaneId::Settings
         | PaneId::Finder => &mut app.package_pane,

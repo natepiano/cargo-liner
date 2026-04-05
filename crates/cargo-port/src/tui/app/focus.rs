@@ -9,14 +9,13 @@ use crate::tui::shortcuts::InputContext;
 use crate::tui::types::PaneId;
 
 impl App {
-    const TAB_ORDER: [PaneId; 7] = [
+    const TAB_ORDER: [PaneId; 6] = [
         PaneId::ProjectList,
         PaneId::Package,
         PaneId::Git,
         PaneId::Targets,
         PaneId::CiRuns,
         PaneId::Toasts,
-        PaneId::ScanLog,
     ];
 
     pub const fn is_searching(&self) -> bool { self.ui_modes.search.is_active() }
@@ -87,7 +86,6 @@ impl App {
                     }
                 },
                 PaneId::Toasts => InputContext::Toasts,
-                PaneId::ScanLog => InputContext::ScanLog,
                 PaneId::Search => InputContext::Searching,
                 PaneId::Settings => InputContext::Settings,
                 PaneId::Finder => InputContext::Finder,
@@ -147,7 +145,7 @@ impl App {
                     .selected_project()
                     .is_some_and(|project| self.bottom_panel_available(project)),
                 PaneId::Toasts => !self.active_toasts().is_empty(),
-                PaneId::ScanLog | PaneId::Search | PaneId::Settings | PaneId::Finder => false,
+                PaneId::Search | PaneId::Settings | PaneId::Finder => false,
             })
             .collect()
     }

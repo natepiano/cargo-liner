@@ -8,11 +8,17 @@ use crate::constants::LINTS_LATEST_JSON;
 /// Canonical cache directory for all per-project lint status files.
 pub fn cache_root() -> PathBuf { cache_paths::lint_runs_root() }
 
-/// Stable per-project cache key: `{name}-{hash}` where name is the last
-/// path component and hash is 8 hex chars derived from the full path.
+/// Stable per-project cache key: `{name}-{sha256_prefix}` where name is the
+/// last path component and the suffix is the first 16 hex chars of the SHA-256
+/// digest of the full path. This is trivially reproducible in any language:
+///
+/// ```bash
+/// echo -n "/path/to/project" | shasum -a 256 | cut -c1-16
+/// ```
+///
+/// SYNC: must match `project_key()` in `~/.claude/scripts/clippy/check_cache.sh`.
 pub fn project_key(project_root: &Path) -> String {
-    use std::hash::Hash as _;
-    use std::hash::Hasher as _;
+    use sha2::Digest as _;
 
     let path_str = project_root.to_string_lossy();
     let name = project_root
@@ -20,11 +26,17 @@ pub fn project_key(project_root: &Path) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or("project");
 
-    let mut hasher = std::hash::DefaultHasher::new();
-    path_str.hash(&mut hasher);
-    let hash = hasher.finish();
+    let digest = sha2::Sha256::digest(path_str.as_bytes());
+    let hex = digest
+        .iter()
+        .take(8)
+        .fold(String::with_capacity(16), |mut acc, b| {
+            use std::fmt::Write as _;
+            let _ = write!(acc, "{b:02x}");
+            acc
+        });
 
-    format!("{name}-{hash:08x}")
+    format!("{name}-{hex}")
 }
 
 /// Cache-rooted directory for the project's lint watcher protocol files.
@@ -49,4 +61,18 @@ pub fn latest_path_under(cache_root: &Path, project_root: &Path) -> PathBuf {
 
 pub fn history_path_under(cache_root: &Path, project_root: &Path) -> PathBuf {
     project_dir_under(cache_root, project_root).join(LINTS_HISTORY_JSONL)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_key_matches_shasum_cli() {
+        // echo -n "/Users/natemccoy/rust/cargo-mend" | shasum -a 256 | cut -c1-16
+        // => c76947976a369618
+        let key = project_key(Path::new("/Users/natemccoy/rust/cargo-mend"));
+        assert_eq!(key, "cargo-mend-c76947976a369618");
+    }
 }
