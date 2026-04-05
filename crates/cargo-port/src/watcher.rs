@@ -727,13 +727,6 @@ fn fire_git_updates(
         .collect();
 
     for (repo_root, refresh_info) in ready {
-        pending_git.insert(
-            repo_root.clone(),
-            GitState::Running {
-                dirty_since_start: false,
-                refresh_info:      false,
-            },
-        );
         let affected: Vec<(String, String)> = projects
             .values()
             .filter(|entry| entry.repo_root.as_deref() == Some(repo_root.as_path()))
@@ -745,8 +738,16 @@ fn fire_git_updates(
             })
             .collect();
         if affected.is_empty() {
+            pending_git.remove(&repo_root);
             continue;
         }
+        pending_git.insert(
+            repo_root.clone(),
+            GitState::Running {
+                dirty_since_start: false,
+                refresh_info:      false,
+            },
+        );
         spawn_git_refresh(
             handle,
             git_limit,
