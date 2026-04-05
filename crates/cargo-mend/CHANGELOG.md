@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `suspicious-pub` no longer flags `pub(crate)` in top-level private modules of binary crates
+
 ## [0.3.1] - 2026-04-04
 
 ### Fixed

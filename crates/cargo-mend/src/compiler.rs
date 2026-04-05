@@ -2855,7 +2855,7 @@ const fn allow_pub_crate_by_policy(
 ) -> bool {
     match (crate_kind, module_location) {
         (CrateKind::Library, ModuleLocation::CrateRoot) => true,
-        (CrateKind::Library, ModuleLocation::TopLevelPrivateModule) => !parent_is_public,
+        (_, ModuleLocation::TopLevelPrivateModule) => !parent_is_public,
         _ => false,
     }
 }
@@ -3142,6 +3142,24 @@ mod tests {
             CrateKind::Binary,
             ModuleLocation::CrateRoot,
             true
+        ));
+    }
+
+    #[test]
+    fn allow_pub_crate_allows_top_level_private_binary_modules() {
+        assert!(allow_pub_crate_by_policy(
+            CrateKind::Binary,
+            ModuleLocation::TopLevelPrivateModule,
+            false
+        ));
+    }
+
+    #[test]
+    fn allow_pub_crate_rejects_binary_nested_modules() {
+        assert!(!allow_pub_crate_by_policy(
+            CrateKind::Binary,
+            ModuleLocation::NestedModule,
+            false
         ));
     }
 
