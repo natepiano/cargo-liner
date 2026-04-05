@@ -237,15 +237,7 @@ fn fingerprint_for(root: &Path, config: &VisibilityConfig) -> Result<String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "tests should panic on unexpected values"
-)]
-#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
+#[allow(clippy::unwrap_used, reason = "tests should panic on unexpected values")]
 mod tests {
     use super::DEFAULT_GLOBAL_CONFIG_TOML;
     use super::DiagnosticCode;

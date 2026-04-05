@@ -138,15 +138,6 @@ fn color_output_enabled() -> bool {
 
 #[cfg(test)]
 #[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "tests should panic on unexpected values"
-)]
-#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
-#[allow(
     clippy::used_underscore_binding,
     reason = "RAII guards use _ prefix but are held for Drop"
 )]

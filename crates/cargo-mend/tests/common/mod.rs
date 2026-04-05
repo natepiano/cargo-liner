@@ -229,7 +229,7 @@ pub mod cargo_mend_tests_support {
     }
 
     pub use config::DiagnosticCode;
-    pub use diagnostics_impl::*;
+    pub use diagnostics_impl::diagnostic_spec;
     pub use fix_support::FixSummaryBucket;
     pub use fix_support::FixSupport;
 }
