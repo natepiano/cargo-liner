@@ -218,16 +218,9 @@ impl<'a> MendRunner<'a> {
         pub_use_scan: Option<&PubUseFixScan>,
     ) -> Option<ExecutionNotice> {
         let mut notices = Vec::new();
-        let mut import_fix_count = 0;
-        if let Some(scan) = import_scan {
-            import_fix_count += scan.findings.len();
-        }
-        if let Some(scan) = prefer_module_import_scan {
-            import_fix_count += scan.findings.len();
-        }
-        if let Some(scan) = inline_path_scan {
-            import_fix_count += scan.findings.len();
-        }
+        let import_fix_count = import_scan.map_or(0, |s| s.findings.len())
+            + prefer_module_import_scan.map_or(0, |s| s.findings.len())
+            + inline_path_scan.map_or(0, |s| s.findings.len());
         if import_scan.is_some()
             || prefer_module_import_scan.is_some()
             || inline_path_scan.is_some()

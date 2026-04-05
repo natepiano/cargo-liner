@@ -83,13 +83,13 @@ fn scan_file(
         .items
         .iter()
         .filter_map(|item| {
-            if let syn::Item::Mod(item_mod) = item {
-                // Only external `mod foo;` declarations (no inline body)
-                if item_mod.content.is_none() {
-                    return Some(item_mod.ident.to_string());
-                }
+            if let syn::Item::Mod(item_mod) = item
+                && item_mod.content.is_none()
+            {
+                Some(item_mod.ident.to_string())
+            } else {
+                None
             }
-            None
         })
         .collect();
 
@@ -543,15 +543,6 @@ fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "tests should panic on unexpected values"
-)]
-#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use super::is_snake_case_function_name;
 

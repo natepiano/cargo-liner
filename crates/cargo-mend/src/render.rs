@@ -128,8 +128,8 @@ fn summary_line(
     color: ColorMode,
 ) -> String {
     let mut parts = vec![
-        format!("{} error(s)", error_count),
-        format!("{} warning(s)", warn_count),
+        format!("{error_count} error(s)"),
+        format!("{warn_count} warning(s)"),
     ];
 
     if fixable_with_fix_count > 0 {

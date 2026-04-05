@@ -12,7 +12,7 @@ Mapping between `nate_style/rust/` entries and `cargo-mend` as of 2026-03-29.
 | `no-pubin-cratepath` | `forbidden_pub_in_crate` | error | -- |
 | `never-use-pub-mod` | `review_pub_mod` | error | -- |
 | `leaf-module-visibility` | `suspicious_pub` | warning | `--fix-pub-use` (conditional) |
-| `facade-first-visibility` | `internal_parent_pub_use_facade` | warning | `--fix-pub-use` |
+| `module-roots-as-table-of-contents` | `internal_parent_pub_use_facade` | warning | `--fix-pub-use` |
 | `no-wildcard-reexports` | `wildcard_parent_pub_use` | warning | -- |
 | `import-the-module-for-functions-not-the-function-itself` | `prefer_module_import` | warning | `--fix` |
 | `import-types-directly` | `inline_path_qualified_type` | warning | `--fix` |
