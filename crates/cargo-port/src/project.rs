@@ -335,6 +335,29 @@ pub fn git_repo_root(project_dir: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+/// Resolve the on-disk git directory for a repo root.
+///
+/// For normal repos, returns `repo_root/.git`.
+/// For worktrees, `.git` is a file containing `gitdir: <path>` — this
+/// function reads that file and returns the resolved path.
+pub fn resolve_git_dir(repo_root: &Path) -> Option<PathBuf> {
+    let git_path = repo_root.join(".git");
+    if git_path.is_dir() {
+        return Some(git_path);
+    }
+    if git_path.is_file() {
+        let contents = std::fs::read_to_string(&git_path).ok()?;
+        let target = contents.strip_prefix("gitdir: ")?.trim();
+        let resolved = if Path::new(target).is_absolute() {
+            PathBuf::from(target)
+        } else {
+            repo_root.join(target)
+        };
+        return Some(resolved.canonicalize().ok().unwrap_or(resolved));
+    }
+    None
+}
+
 pub fn detect_git_path_states_batch(projects: &[ProjectPathEntry]) -> GitPathStatesByProject {
     let started = std::time::Instant::now();
     let (mut states, repos) = partition_projects_by_repo(projects);
@@ -1231,6 +1254,10 @@ fn count_rs_files_recursive(dir: &Path) -> usize {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::*;
 
@@ -1255,5 +1282,43 @@ mod tests {
             .unwrap_or_else(|_| std::process::abort());
 
         assert_eq!(git_repo_root(&nested).as_deref(), Some(repo_root.as_path()));
+    }
+
+    #[test]
+    fn resolve_git_dir_returns_dot_git_for_normal_repo() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap_or_else(|_| std::process::abort());
+
+        assert_eq!(
+            resolve_git_dir(&repo).as_deref(),
+            Some(repo.join(".git").as_path())
+        );
+    }
+
+    #[test]
+    fn resolve_git_dir_follows_worktree_gitdir_file() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let main_git = tmp
+            .path()
+            .join("main")
+            .join(".git")
+            .join("worktrees")
+            .join("wt");
+        std::fs::create_dir_all(&main_git).unwrap_or_else(|_| std::process::abort());
+
+        let wt = tmp.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap_or_else(|_| std::process::abort());
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", main_git.display()))
+            .unwrap_or_else(|_| std::process::abort());
+
+        let resolved = resolve_git_dir(&wt).expect("should resolve");
+        assert_eq!(resolved.canonicalize().ok(), main_git.canonicalize().ok());
+    }
+
+    #[test]
+    fn resolve_git_dir_returns_none_without_git() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        assert_eq!(resolve_git_dir(tmp.path()), None);
     }
 }

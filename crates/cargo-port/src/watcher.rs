@@ -96,6 +96,10 @@ struct ProjectEntry {
     project_path:   String,
     abs_path:       PathBuf,
     repo_root:      Option<PathBuf>,
+    /// The resolved on-disk git directory. For normal repos this is
+    /// `repo_root/.git`; for worktrees it follows the `.git` file to the
+    /// real directory (e.g. `<main-repo>/.git/worktrees/<name>`).
+    git_dir:        Option<PathBuf>,
     lint_cache_dir: PathBuf,
 }
 
@@ -255,13 +259,15 @@ fn drain_watch_requests(
                 if let Some(parent) = req.abs_path.parent() {
                     project_parents.insert(parent.to_path_buf());
                 }
-                watch_git_metadata_paths(watcher, &req, watched_git_metadata);
+                let git_dir = req.repo_root.as_deref().and_then(project::resolve_git_dir);
+                watch_git_metadata_paths(watcher, &req, git_dir.as_deref(), watched_git_metadata);
                 projects.insert(
                     req.abs_path.clone(),
                     ProjectEntry {
-                        project_path:   req.project_path,
-                        abs_path:       req.abs_path.clone(),
-                        repo_root:      req.repo_root,
+                        project_path: req.project_path,
+                        abs_path: req.abs_path.clone(),
+                        repo_root: req.repo_root,
+                        git_dir,
                         lint_cache_dir: lint::project_dir(&req.abs_path),
                     },
                 );
@@ -314,6 +320,7 @@ fn drain_completed_refreshes(
 fn watch_git_metadata_paths(
     watcher: &mut impl Watcher,
     req: &WatchRequest,
+    git_dir: Option<&Path>,
     watched_git_metadata: &mut HashSet<PathBuf>,
 ) {
     let started = Instant::now();
@@ -321,7 +328,7 @@ fn watch_git_metadata_paths(
         return;
     };
 
-    let metadata_paths = git_metadata_watch_paths(repo_root);
+    let metadata_paths = git_metadata_watch_paths(repo_root, git_dir);
     let mut added = 0;
     for path in metadata_paths {
         if watched_git_metadata.insert(path.clone()) {
@@ -342,14 +349,14 @@ fn watch_git_metadata_paths(
     );
 }
 
-fn git_metadata_watch_paths(repo_root: &Path) -> Vec<PathBuf> {
+fn git_metadata_watch_paths(repo_root: &Path, git_dir: Option<&Path>) -> Vec<PathBuf> {
     let mut paths = vec![repo_root.join(".gitignore")];
-    let git_path = repo_root.join(".git");
-    if git_path.is_dir() {
-        paths.push(git_path.join("HEAD"));
-        paths.push(git_path.join("index"));
-        paths.push(git_path.join("info"));
-        paths.push(git_path.join("info").join("exclude"));
+    if let Some(git_dir) = git_dir {
+        paths.push(git_dir.join("HEAD"));
+        paths.push(git_dir.join("index"));
+        let info = git_dir.join("info");
+        paths.push(info.join("exclude"));
+        paths.push(info);
     }
     paths
 }
@@ -426,10 +433,10 @@ fn handle_event(
         if is_target_metadata_event(event_path, entry.abs_path.as_path()) {
             spawn_project_refresh(bg_tx.clone(), entry.abs_path.clone());
         }
-        if let Some(repo_root) = &entry.repo_root
-            && is_internal_git_path(event_path, repo_root)
-        {
-            if let Some(refresh_kind) = classify_internal_git_event(event_path, repo_root) {
+        if is_internal_git_path(event_path, entry) {
+            if let Some(repo_root) = &entry.repo_root
+                && let Some(refresh_kind) = classify_internal_git_event(event_path, entry)
+            {
                 enqueue_git_refresh(
                     pending_git,
                     repo_root.clone(),
@@ -453,7 +460,7 @@ fn handle_event(
                 repo_root.clone(),
                 now,
                 false,
-                classify_internal_git_event(event_path, repo_root)
+                classify_internal_git_event(event_path, entry)
                     .is_some_and(GitRefreshKind::refresh_info),
                 "project_event",
             );
@@ -543,39 +550,46 @@ fn handle_git_completion(pending_git: &mut HashMap<PathBuf, GitState>, repo_root
 
 fn classify_fast_git_event(event_path: &Path, entry: &ProjectEntry) -> Option<GitRefreshKind> {
     let repo_root = entry.repo_root.as_deref()?;
-    let repo_git = repo_root.join(".git");
+    let git_dir = entry.git_dir.as_deref()?;
     if event_path == repo_root.join(".gitignore")
-        || event_path == repo_git.join("index")
-        || event_path == repo_git.join("info").join("exclude")
+        || event_path == git_dir.join("index")
+        || event_path == git_dir.join("info").join("exclude")
     {
         Some(GitRefreshKind::PathStateOnly)
-    } else if event_path == repo_git.join("HEAD") {
+    } else if event_path == git_dir.join("HEAD") {
         Some(GitRefreshKind::FullMetadata)
     } else {
         None
     }
 }
 
-fn is_internal_git_path(event_path: &Path, repo_root: &Path) -> bool {
-    event_path.starts_with(repo_root.join(".git"))
+fn is_internal_git_path(event_path: &Path, entry: &ProjectEntry) -> bool {
+    let repo_root = entry.repo_root.as_deref();
+    let git_dir = entry.git_dir.as_deref();
+    // Match events under the resolved git dir (handles worktrees) or
+    // under repo_root/.git (handles normal repos where git_dir ==
+    // repo_root/.git, but also catches events like refs/heads updates
+    // that live in the common git dir rather than the worktree git dir).
+    git_dir.is_some_and(|d| event_path.starts_with(d))
+        || repo_root.is_some_and(|r| event_path.starts_with(r.join(".git")))
 }
 
-fn classify_internal_git_event(event_path: &Path, repo_root: &Path) -> Option<GitRefreshKind> {
-    let git_path = repo_root.join(".git");
+fn classify_internal_git_event(event_path: &Path, entry: &ProjectEntry) -> Option<GitRefreshKind> {
+    let git_dir = entry.git_dir.as_deref()?;
+    let repo_root = entry.repo_root.as_deref()?;
     if event_path == repo_root.join(".gitignore")
-        || event_path == git_path.join("index")
-        || event_path == git_path.join("index.lock")
-        || event_path == git_path.join("info").join("exclude")
+        || event_path == git_dir.join("index")
+        || event_path == git_dir.join("index.lock")
+        || event_path == git_dir.join("info").join("exclude")
     {
         Some(GitRefreshKind::PathStateOnly)
-    } else if event_path == repo_root.join(".git")
-        || event_path == git_path.join("HEAD")
-        || event_path == git_path.join("FETCH_HEAD")
-        || event_path == git_path.join("ORIG_HEAD")
-        || event_path == git_path.join("config")
-        || event_path == git_path.join("packed-refs")
-        || event_path.starts_with(git_path.join("refs").join("heads"))
-        || event_path.starts_with(git_path.join("refs").join("remotes"))
+    } else if event_path == git_dir.join("HEAD")
+        || event_path == git_dir.join("FETCH_HEAD")
+        || event_path == git_dir.join("ORIG_HEAD")
+        || event_path == git_dir.join("config")
+        || event_path == git_dir.join("packed-refs")
+        || event_path.starts_with(git_dir.join("refs").join("heads"))
+        || event_path.starts_with(git_dir.join("refs").join("remotes"))
     {
         Some(GitRefreshKind::FullMetadata)
     } else {
@@ -1248,6 +1262,7 @@ mod tests {
                 project_path:   project_path.to_string(),
                 abs_path:       abs_path.to_path_buf(),
                 repo_root:      None,
+                git_dir:        None,
                 lint_cache_dir: lint::project_dir(abs_path),
             },
         )
@@ -1369,6 +1384,7 @@ edition = "2024"
                 project_path:   "~/my_project".to_string(),
                 abs_path:       project_dir.clone(),
                 repo_root:      Some(project_dir.clone()),
+                git_dir:        Some(project_dir.join(".git")),
                 lint_cache_dir: lint::project_dir(&project_dir),
             },
         );
@@ -1378,6 +1394,7 @@ edition = "2024"
                 project_path:   "~/my_project/crates/member".to_string(),
                 abs_path:       member_dir.clone(),
                 repo_root:      Some(project_dir.clone()),
+                git_dir:        Some(project_dir.join(".git")),
                 lint_cache_dir: lint::project_dir(&member_dir),
             },
         );
@@ -1473,6 +1490,7 @@ edition = "2024"
                 project_path:   "~/my_project".to_string(),
                 abs_path:       project_dir.clone(),
                 repo_root:      Some(project_dir.clone()),
+                git_dir:        Some(project_dir.join(".git")),
                 lint_cache_dir: lint::project_dir(&project_dir),
             },
         );
@@ -1520,6 +1538,7 @@ edition = "2024"
                 project_path:   "~/my_project".to_string(),
                 abs_path:       project_dir.clone(),
                 repo_root:      Some(project_dir.clone()),
+                git_dir:        Some(project_dir.join(".git")),
                 lint_cache_dir: lint::project_dir(&project_dir),
             },
         );
@@ -1529,6 +1548,7 @@ edition = "2024"
                 project_path:   "~/my_project/crates/member".to_string(),
                 abs_path:       member_dir.clone(),
                 repo_root:      Some(project_dir.clone()),
+                git_dir:        Some(project_dir.join(".git")),
                 lint_cache_dir: lint::project_dir(&member_dir),
             },
         );
@@ -1606,6 +1626,140 @@ edition = "2024"
             "repo refresh should stay queued for child rows"
         );
         assert!(pending_new.is_empty());
+    }
+
+    /// Worktree projects have `.git` as a file (not a directory) that
+    /// points to a git dir elsewhere. Commit events fire under that
+    /// real git dir, not under `repo_root/.git`. Verify the watcher
+    /// recognises these events and enqueues a git refresh.
+    #[test]
+    fn worktree_index_event_enqueues_git_refresh() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // Worktree git dir (simulates <main-repo>/.git/worktrees/<name>).
+        let wt_git_dir = tmp
+            .path()
+            .join("main_repo_git")
+            .join("worktrees")
+            .join("wt");
+        std::fs::create_dir_all(&wt_git_dir).expect("create worktree git dir");
+        std::fs::write(wt_git_dir.join("HEAD"), "ref: refs/heads/wt-branch\n").expect("write HEAD");
+        std::fs::write(wt_git_dir.join("index"), "fake-index").expect("write index");
+
+        // Worktree project root — `.git` is a file pointing to wt_git_dir.
+        let wt_root = tmp.path().join("main_repo_style_fix");
+        std::fs::create_dir_all(&wt_root).expect("create worktree root");
+        std::fs::write(
+            wt_root.join(".git"),
+            format!("gitdir: {}\n", wt_git_dir.display()),
+        )
+        .expect("write .git file");
+
+        let mut projects = HashMap::new();
+        projects.insert(
+            wt_root.clone(),
+            ProjectEntry {
+                project_path:   "~/main_repo_style_fix".to_string(),
+                abs_path:       wt_root.clone(),
+                repo_root:      Some(wt_root.clone()),
+                git_dir:        Some(wt_git_dir.clone()),
+                lint_cache_dir: lint::project_dir(&wt_root),
+            },
+        );
+        let scan_root = tmp.path().to_path_buf();
+        let project_parents = HashSet::from([scan_root.clone()]);
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, _bg_rx) = mpsc::channel();
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        // Simulate the index write that happens during a commit.
+        // The event fires under the real git dir, not under wt_root/.git.
+        handle_event(
+            &wt_git_dir.join("index"),
+            &ctx,
+            &bg_tx,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        assert!(
+            pending_git.contains_key(&wt_root),
+            "worktree index event should enqueue a git refresh for the worktree project"
+        );
+    }
+
+    #[test]
+    fn worktree_noise_under_real_git_dir_is_ignored() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        let wt_git_dir = tmp
+            .path()
+            .join("main_repo_git")
+            .join("worktrees")
+            .join("wt");
+        std::fs::create_dir_all(&wt_git_dir).expect("create worktree git dir");
+
+        let wt_root = tmp.path().join("main_repo_style_fix");
+        std::fs::create_dir_all(&wt_root).expect("create worktree root");
+        std::fs::write(
+            wt_root.join(".git"),
+            format!("gitdir: {}\n", wt_git_dir.display()),
+        )
+        .expect("write .git file");
+
+        let mut projects = HashMap::new();
+        projects.insert(
+            wt_root.clone(),
+            ProjectEntry {
+                project_path:   "~/main_repo_style_fix".to_string(),
+                abs_path:       wt_root.clone(),
+                repo_root:      Some(wt_root.clone()),
+                git_dir:        Some(wt_git_dir.clone()),
+                lint_cache_dir: lint::project_dir(&wt_root),
+            },
+        );
+        let scan_root = tmp.path().to_path_buf();
+        let project_parents = HashSet::from([scan_root.clone()]);
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, _bg_rx) = mpsc::channel();
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        // An event for objects/pack.tmp under the worktree git dir
+        // should not enqueue a git refresh or disk refresh.
+        handle_event(
+            &wt_git_dir.join("objects").join("pack.tmp"),
+            &ctx,
+            &bg_tx,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        assert!(
+            pending_git.is_empty(),
+            "objects noise should not enqueue git refresh"
+        );
+        assert!(
+            pending_disk.is_empty(),
+            "objects noise should not enqueue disk refresh"
+        );
     }
 
     #[test]
@@ -1918,6 +2072,7 @@ edition = "2024"
                 project_path:   "~/my_project".to_string(),
                 abs_path:       project_dir.clone(),
                 repo_root:      Some(project_dir.clone()),
+                git_dir:        Some(project_dir.join(".git")),
                 lint_cache_dir: lint::project_dir(&project_dir),
             },
         );
@@ -1977,6 +2132,7 @@ edition = "2024"
                 project_path:   "~/no_git".to_string(),
                 abs_path:       project_dir.clone(),
                 repo_root:      None,
+                git_dir:        None,
                 lint_cache_dir: lint::project_dir(&project_dir),
             },
         );

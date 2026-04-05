@@ -99,24 +99,22 @@ struct DetailLayoutSpec {
 }
 
 fn detail_layout_spec(git: GitPresence, targets: TargetPresence) -> DetailLayoutSpec {
+    let has_git = matches!(git, GitPresence::Available);
     let has_targets = matches!(targets, TargetPresence::Available);
-    match git {
-        GitPresence::Available => DetailLayoutSpec {
-            constraints: vec![
-                Constraint::Percentage(37),
-                Constraint::Percentage(37),
-                Constraint::Percentage(26),
-            ],
-            git_col:     Some(1),
-            targets_col: Some(2),
-            max_col:     1 + usize::from(has_targets),
-        },
-        GitPresence::Missing => DetailLayoutSpec {
-            constraints: vec![Constraint::Percentage(74), Constraint::Percentage(26)],
-            git_col:     None,
-            targets_col: Some(1),
-            max_col:     usize::from(has_targets),
-        },
+    let max_col = match (has_git, has_targets) {
+        (false, false) => 0,
+        (true, false) | (false, true) => 1,
+        (true, true) => 2,
+    };
+    DetailLayoutSpec {
+        constraints: vec![
+            Constraint::Percentage(40),
+            Constraint::Percentage(40),
+            Constraint::Percentage(20),
+        ],
+        git_col: Some(1),
+        targets_col: Some(2),
+        max_col,
     }
 }
 
@@ -408,25 +406,34 @@ pub fn render_detail_panel(
         render_project_panel(frame, app, info, &styles, columns[0]);
 
         if let Some(col) = spec.git_col {
-            app.git_pane.set_len(git.len());
-            let focus = ColumnFocus {
-                active:     app.is_focused(PaneId::Git),
-                remembered: app.remembers_selection(PaneId::Git),
-                cursor:     app.git_pane.pos(),
-            };
-            let git_block = Block::default()
-                .borders(Borders::ALL)
-                .title(" Git ")
-                .title_style(styles.title)
-                .border_style(if focus.active {
-                    styles.active_border
-                } else {
-                    styles.inactive_border
-                });
-            let git_inner = git_block.inner(columns[col]);
-            app.git_pane.set_content_area(git_inner);
-            frame.render_widget(git_block, columns[col]);
-            render_git_column_inner(frame, info, &git, &focus, &styles, git_inner);
+            if git.is_empty() {
+                let empty_git = Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Not a git repo ")
+                    .title_style(Style::default().fg(Color::DarkGray))
+                    .border_style(Style::default().fg(Color::DarkGray));
+                frame.render_widget(empty_git, columns[col]);
+            } else {
+                app.git_pane.set_len(git.len());
+                let focus = ColumnFocus {
+                    active:     app.is_focused(PaneId::Git),
+                    remembered: app.remembers_selection(PaneId::Git),
+                    cursor:     app.git_pane.pos(),
+                };
+                let git_block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Git ")
+                    .title_style(styles.title)
+                    .border_style(if focus.active {
+                        styles.active_border
+                    } else {
+                        styles.inactive_border
+                    });
+                let git_inner = git_block.inner(columns[col]);
+                app.git_pane.set_content_area(git_inner);
+                frame.render_widget(git_block, columns[col]);
+                render_git_column_inner(frame, info, &git, &focus, &styles, git_inner);
+            }
         }
 
         if let Some(col) = spec.targets_col {
