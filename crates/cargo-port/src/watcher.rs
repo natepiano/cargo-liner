@@ -8,9 +8,8 @@
 //! app can mark them as deleted.
 //!
 //! On macOS (`FSEvents`) this is a small fixed set of kernel subscriptions
-//! regardless of tree size: one for the scan roots plus one for the shared
-//! cache-rooted lint status directory. Linux / Windows may want a different
-//! approach in the future to avoid inotify watch limits.
+//! regardless of tree size: one for the scan roots. Linux / Windows may want
+//! a different approach in the future to avoid inotify watch limits.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -32,7 +31,6 @@ use super::constants::POLL_INTERVAL;
 use super::constants::WATCHER_DISK_CONCURRENCY;
 use super::constants::WATCHER_GIT_CONCURRENCY;
 use super::http::HttpClient;
-use super::lint;
 use super::project;
 use super::project::GitInfo;
 use super::project::GitRepoPresence;
@@ -59,7 +57,6 @@ pub fn spawn_watcher(
     bg_tx: mpsc::Sender<BackgroundMsg>,
     ci_run_count: u32,
     non_rust: NonRustInclusion,
-    lint_enabled: bool,
     include_dirs: Vec<String>,
     client: HttpClient,
 ) -> mpsc::Sender<WatchRequest> {
@@ -69,7 +66,6 @@ pub fn spawn_watcher(
         bg_tx,
         ci_run_count,
         non_rust,
-        lint_enabled,
         include_dirs,
         client,
     };
@@ -86,21 +82,19 @@ struct WatcherLoopContext {
     bg_tx:        mpsc::Sender<BackgroundMsg>,
     ci_run_count: u32,
     non_rust:     NonRustInclusion,
-    lint_enabled: bool,
     include_dirs: Vec<String>,
     client:       HttpClient,
 }
 
 /// Per-project tracking state.
 struct ProjectEntry {
-    project_path:   String,
-    abs_path:       PathBuf,
-    repo_root:      Option<PathBuf>,
+    project_path: String,
+    abs_path:     PathBuf,
+    repo_root:    Option<PathBuf>,
     /// The resolved on-disk git directory. For normal repos this is
     /// `repo_root/.git`; for worktrees it follows the `.git` file to the
     /// real directory (e.g. `<main-repo>/.git/worktrees/<name>`).
-    git_dir:        Option<PathBuf>,
-    lint_cache_dir: PathBuf,
+    git_dir:      Option<PathBuf>,
 }
 
 enum DiskState {
@@ -144,7 +138,7 @@ fn watcher_loop(ctx: &WatcherLoopContext, watch_rx: &mpsc::Receiver<WatchRequest
     let Ok(mut watcher) = notify::recommended_watcher(handler) else {
         return;
     };
-    register_watch_roots(&mut watcher, &watch_dirs, ctx.lint_enabled);
+    register_watch_roots(&mut watcher, &watch_dirs);
 
     // `abs_path` → project tracking state
     let mut projects: HashMap<PathBuf, ProjectEntry> = HashMap::new();
@@ -225,7 +219,6 @@ fn watcher_loop(ctx: &WatcherLoopContext, watch_rx: &mpsc::Receiver<WatchRequest
             &mut discovered,
             ctx.ci_run_count,
             ctx.non_rust,
-            ctx.lint_enabled,
             &ctx.client,
         );
 
@@ -233,16 +226,11 @@ fn watcher_loop(ctx: &WatcherLoopContext, watch_rx: &mpsc::Receiver<WatchRequest
     }
 }
 
-fn register_watch_roots(watcher: &mut impl Watcher, watch_dirs: &[PathBuf], lint_enabled: bool) {
+fn register_watch_roots(watcher: &mut impl Watcher, watch_dirs: &[PathBuf]) {
     for dir in watch_dirs {
         if dir.is_dir() {
             let _ = watcher.watch(dir, RecursiveMode::Recursive);
         }
-    }
-    if lint_enabled {
-        let lint_root = lint::cache_root();
-        let _ = std::fs::create_dir_all(&lint_root);
-        let _ = watcher.watch(&lint_root, RecursiveMode::Recursive);
     }
 }
 
@@ -268,7 +256,6 @@ fn drain_watch_requests(
                         abs_path: req.abs_path.clone(),
                         repo_root: req.repo_root,
                         git_dir,
-                        lint_cache_dir: lint::project_dir(&req.abs_path),
                     },
                 );
             },
@@ -383,19 +370,6 @@ fn handle_event(
     pending_new: &mut HashMap<PathBuf, Instant>,
 ) {
     let now = Instant::now();
-
-    if let Some(entry) = ctx
-        .projects
-        .values()
-        .find(|entry| event_path.starts_with(&entry.lint_cache_dir))
-    {
-        let status = lint::read_status(&entry.abs_path);
-        let _ = bg_tx.send(BackgroundMsg::LintStatus {
-            path: entry.project_path.clone(),
-            status,
-        });
-        return;
-    }
 
     if let Some((entry, refresh_kind)) = ctx.projects.values().find_map(|entry| {
         classify_fast_git_event(event_path, entry).map(|refresh_kind| (entry, refresh_kind))
@@ -952,7 +926,6 @@ fn probe_new_projects(
     discovered: &mut HashSet<PathBuf>,
     ci_run_count: u32,
     non_rust: NonRustInclusion,
-    lint_enabled: bool,
     client: &HttpClient,
 ) {
     let now = Instant::now();
@@ -1007,7 +980,6 @@ fn probe_new_projects(
                     project_name: name.as_deref(),
                     repo_presence,
                     ci_run_count,
-                    lint_enabled,
                 };
                 scan::fetch_project_details(&request);
             });
@@ -1077,6 +1049,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::lint;
 
     fn test_runtime() -> &'static tokio::runtime::Runtime {
         static TEST_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -1259,11 +1232,10 @@ mod tests {
         (
             abs_path.to_path_buf(),
             ProjectEntry {
-                project_path:   project_path.to_string(),
-                abs_path:       abs_path.to_path_buf(),
-                repo_root:      None,
-                git_dir:        None,
-                lint_cache_dir: lint::project_dir(abs_path),
+                project_path: project_path.to_string(),
+                abs_path:     abs_path.to_path_buf(),
+                repo_root:    None,
+                git_dir:      None,
             },
         )
     }
@@ -1381,21 +1353,20 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path:   "~/my_project".to_string(),
-                abs_path:       project_dir.clone(),
-                repo_root:      Some(project_dir.clone()),
-                git_dir:        Some(project_dir.join(".git")),
-                lint_cache_dir: lint::project_dir(&project_dir),
+                project_path: "~/my_project".to_string(),
+                abs_path:     project_dir.clone(),
+                repo_root:    Some(project_dir.clone()),
+                git_dir:      Some(project_dir.join(".git")),
             },
         );
+        let member_key = member_dir.clone();
         projects.insert(
-            member_dir.clone(),
+            member_key,
             ProjectEntry {
-                project_path:   "~/my_project/crates/member".to_string(),
-                abs_path:       member_dir.clone(),
-                repo_root:      Some(project_dir.clone()),
-                git_dir:        Some(project_dir.join(".git")),
-                lint_cache_dir: lint::project_dir(&member_dir),
+                project_path: "~/my_project/crates/member".to_string(),
+                abs_path:     member_dir,
+                repo_root:    Some(project_dir.clone()),
+                git_dir:      Some(project_dir.join(".git")),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1487,11 +1458,10 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path:   "~/my_project".to_string(),
-                abs_path:       project_dir.clone(),
-                repo_root:      Some(project_dir.clone()),
-                git_dir:        Some(project_dir.join(".git")),
-                lint_cache_dir: lint::project_dir(&project_dir),
+                project_path: "~/my_project".to_string(),
+                abs_path:     project_dir.clone(),
+                repo_root:    Some(project_dir.clone()),
+                git_dir:      Some(project_dir.join(".git")),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1535,21 +1505,20 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path:   "~/my_project".to_string(),
-                abs_path:       project_dir.clone(),
-                repo_root:      Some(project_dir.clone()),
-                git_dir:        Some(project_dir.join(".git")),
-                lint_cache_dir: lint::project_dir(&project_dir),
+                project_path: "~/my_project".to_string(),
+                abs_path:     project_dir.clone(),
+                repo_root:    Some(project_dir.clone()),
+                git_dir:      Some(project_dir.join(".git")),
             },
         );
+        let member_key = member_dir.clone();
         projects.insert(
-            member_dir.clone(),
+            member_key,
             ProjectEntry {
-                project_path:   "~/my_project/crates/member".to_string(),
-                abs_path:       member_dir.clone(),
-                repo_root:      Some(project_dir.clone()),
-                git_dir:        Some(project_dir.join(".git")),
-                lint_cache_dir: lint::project_dir(&member_dir),
+                project_path: "~/my_project/crates/member".to_string(),
+                abs_path:     member_dir,
+                repo_root:    Some(project_dir.clone()),
+                git_dir:      Some(project_dir.join(".git")),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1659,11 +1628,10 @@ edition = "2024"
         projects.insert(
             wt_root.clone(),
             ProjectEntry {
-                project_path:   "~/main_repo_style_fix".to_string(),
-                abs_path:       wt_root.clone(),
-                repo_root:      Some(wt_root.clone()),
-                git_dir:        Some(wt_git_dir.clone()),
-                lint_cache_dir: lint::project_dir(&wt_root),
+                project_path: "~/main_repo_style_fix".to_string(),
+                abs_path:     wt_root.clone(),
+                repo_root:    Some(wt_root.clone()),
+                git_dir:      Some(wt_git_dir.clone()),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1717,14 +1685,15 @@ edition = "2024"
         .expect("write .git file");
 
         let mut projects = HashMap::new();
+        let wt_key = wt_root.clone();
+        let wt_abs = wt_root.clone();
         projects.insert(
-            wt_root.clone(),
+            wt_key,
             ProjectEntry {
-                project_path:   "~/main_repo_style_fix".to_string(),
-                abs_path:       wt_root.clone(),
-                repo_root:      Some(wt_root.clone()),
-                git_dir:        Some(wt_git_dir.clone()),
-                lint_cache_dir: lint::project_dir(&wt_root),
+                project_path: "~/main_repo_style_fix".to_string(),
+                abs_path:     wt_abs,
+                repo_root:    Some(wt_root),
+                git_dir:      Some(wt_git_dir.clone()),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1763,7 +1732,7 @@ edition = "2024"
     }
 
     #[test]
-    fn cache_lint_event_updates_lint_without_recreating_project_activity() {
+    fn cache_lint_event_is_ignored_by_project_watcher() {
         let project_root = tempfile::tempdir().expect("tempdir");
         let project_path = "~/rust/demo";
         let mut projects = HashMap::new();
@@ -1802,26 +1771,21 @@ edition = "2024"
             &mut pending_new,
         );
 
-        let message = bg_rx.try_recv().expect("lint status message");
-        assert!(matches!(message, BackgroundMsg::LintStatus { .. }));
-        let BackgroundMsg::LintStatus { path, status } = message else {
-            return;
-        };
-        assert_eq!(path, project_path);
-        assert!(matches!(status, crate::lint::LintStatus::Passed(_)));
+        assert!(bg_rx.try_recv().is_err());
         assert!(pending_disk.is_empty());
         assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());
     }
 
     #[test]
-    fn cache_lint_child_event_updates_lint_without_recreating_project_activity() {
+    fn cache_lint_child_event_is_ignored_by_project_watcher() {
         let project_root = tempfile::tempdir().expect("tempdir");
         let project_path = "~/rust/demo";
         let mut projects = HashMap::new();
         let (key, entry) = make_project_entry(project_path, project_root.path());
+        let lint_cache_dir = lint::project_dir(project_root.path());
         let latest_path = lint::latest_path_under(&lint::cache_root(), project_root.path());
-        let child_path = entry.lint_cache_dir.join("clippy-latest.log");
+        let child_path = lint_cache_dir.join("clippy-latest.log");
         projects.insert(key, entry);
 
         std::fs::create_dir_all(child_path.parent().expect("child file has parent"))
@@ -1856,13 +1820,7 @@ edition = "2024"
             &mut pending_new,
         );
 
-        let message = bg_rx.try_recv().expect("lint status message");
-        assert!(matches!(message, BackgroundMsg::LintStatus { .. }));
-        let BackgroundMsg::LintStatus { path, status } = message else {
-            return;
-        };
-        assert_eq!(path, project_path);
-        assert!(matches!(status, crate::lint::LintStatus::Failed(_)));
+        assert!(bg_rx.try_recv().is_err());
         assert!(pending_disk.is_empty());
         assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());
@@ -2069,11 +2027,10 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path:   "~/my_project".to_string(),
-                abs_path:       project_dir.clone(),
-                repo_root:      Some(project_dir.clone()),
-                git_dir:        Some(project_dir.join(".git")),
-                lint_cache_dir: lint::project_dir(&project_dir),
+                project_path: "~/my_project".to_string(),
+                abs_path:     project_dir.clone(),
+                repo_root:    Some(project_dir.clone()),
+                git_dir:      Some(project_dir.join(".git")),
             },
         );
 
@@ -2126,14 +2083,14 @@ edition = "2024"
 
         let (tx, rx) = mpsc::channel();
         let mut projects = HashMap::new();
+        let dir_key = project_dir.clone();
         projects.insert(
-            project_dir.clone(),
+            dir_key,
             ProjectEntry {
-                project_path:   "~/no_git".to_string(),
-                abs_path:       project_dir.clone(),
-                repo_root:      None,
-                git_dir:        None,
-                lint_cache_dir: lint::project_dir(&project_dir),
+                project_path: "~/no_git".to_string(),
+                abs_path:     project_dir,
+                repo_root:    None,
+                git_dir:      None,
             },
         );
 

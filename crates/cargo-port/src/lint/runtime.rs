@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -31,6 +31,7 @@ use crate::config::CargoPortConfig;
 use crate::config::DiscoveryLint;
 use crate::config::LintCommandConfig;
 use crate::config::LintConfig;
+use crate::constants::LINTS_LATEST_JSON;
 use crate::scan::BackgroundMsg;
 
 const LINT_DEBOUNCE: Duration = Duration::from_millis(750);
@@ -65,17 +66,7 @@ pub struct RuntimeHandle {
 
 impl RuntimeHandle {
     pub fn sync_projects(&self, projects: Vec<RegisterProjectRequest>) {
-        let _ = self.tx.send(SupervisorMsg::SyncProjects {
-            projects,
-            force_immediate_run: false,
-        });
-    }
-
-    pub fn sync_projects_immediately(&self, projects: Vec<RegisterProjectRequest>) {
-        let _ = self.tx.send(SupervisorMsg::SyncProjects {
-            projects,
-            force_immediate_run: true,
-        });
+        let _ = self.tx.send(SupervisorMsg::SyncProjects { projects });
     }
 }
 
@@ -90,15 +81,15 @@ pub struct SpawnResult {
 
 enum SupervisorMsg {
     SyncProjects {
-        projects:            Vec<RegisterProjectRequest>,
-        force_immediate_run: bool,
+        projects: Vec<RegisterProjectRequest>,
     },
     Shutdown,
 }
 
 struct ProjectWorker {
-    stop:   Arc<AtomicBool>,
-    handle: JoinHandle<()>,
+    project_path: String,
+    stop:         Arc<AtomicBool>,
+    handle:       JoinHandle<()>,
 }
 
 pub fn spawn(config: &CargoPortConfig, bg_tx: mpsc::Sender<BackgroundMsg>) -> SpawnResult {
@@ -131,29 +122,23 @@ fn supervisor_loop(
     cache_size_bytes: Option<u64>,
     bg_tx: mpsc::Sender<BackgroundMsg>,
 ) {
-    let commands = lint.resolved_commands();
     let mut workers: HashMap<PathBuf, ProjectWorker> = HashMap::new();
-    let mut initialized = false;
-    let mut cleared: HashSet<PathBuf> = HashSet::new();
+    let _ = read_write::clear_running_latest_files_under(&cache_root);
+    let status_cache = Arc::new(Mutex::new(hydrate_status_cache(&cache_root)));
+    let worker_config = WorkerConfig {
+        cache_root,
+        commands: lint.resolved_commands(),
+        cache_size_bytes,
+        on_discovery: lint.on_discovery,
+        status_cache: Arc::clone(&status_cache),
+    };
 
     loop {
         match rx.recv() {
-            Ok(SupervisorMsg::SyncProjects {
-                projects,
-                force_immediate_run,
-            }) => {
+            Ok(SupervisorMsg::SyncProjects { projects }) => {
                 let desired = desired_projects(&lint, projects);
-                clear_orphaned_running_statuses(&desired, &cache_root, &bg_tx, &mut cleared);
-                reconcile_workers(
-                    &mut workers,
-                    desired,
-                    &cache_root,
-                    &commands,
-                    cache_size_bytes,
-                    should_trigger_new_runs(initialized, force_immediate_run, lint.on_discovery),
-                    &bg_tx,
-                );
-                initialized = true;
+                emit_current_statuses(&desired, &status_cache, &bg_tx);
+                reconcile_workers(&mut workers, desired, &worker_config, &bg_tx);
             },
             Ok(SupervisorMsg::Shutdown) | Err(_) => {
                 for (_, worker) in workers.drain() {
@@ -165,38 +150,47 @@ fn supervisor_loop(
     }
 }
 
-const fn should_trigger_new_runs(
-    initialized: bool,
-    force_immediate_run: bool,
-    on_discovery: DiscoveryLint,
-) -> bool {
-    match on_discovery {
-        DiscoveryLint::Immediate => initialized || force_immediate_run,
-        DiscoveryLint::Deferred => false,
+fn hydrate_status_cache(cache_root: &Path) -> HashMap<String, LintStatus> {
+    let Ok(entries) = std::fs::read_dir(cache_root) else {
+        return HashMap::new();
+    };
+
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path().join(LINTS_LATEST_JSON);
+            let run = read_write::read_latest_file(&path)?;
+            let status = status::parse_run(&run);
+            if matches!(status, LintStatus::NoLog) {
+                return None;
+            }
+            Some((entry.file_name().to_string_lossy().to_string(), status))
+        })
+        .collect()
+}
+
+fn emit_current_statuses(
+    desired: &HashMap<PathBuf, RegisterProjectRequest>,
+    status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
+    bg_tx: &mpsc::Sender<BackgroundMsg>,
+) {
+    for request in desired.values() {
+        let _ = bg_tx.send(BackgroundMsg::LintStatus {
+            path:   request.project_path.clone(),
+            status: cached_status_for_project(status_cache, &request.abs_path),
+        });
     }
 }
 
-fn clear_orphaned_running_statuses(
-    desired: &HashMap<PathBuf, RegisterProjectRequest>,
-    cache_root: &Path,
-    bg_tx: &mpsc::Sender<BackgroundMsg>,
-    cleared: &mut HashSet<PathBuf>,
-) {
-    for (project_root, request) in desired {
-        if !cleared.insert(project_root.clone()) {
-            continue;
-        }
-        let Ok(was_running) = read_write::clear_latest_if_running_under(cache_root, project_root)
-        else {
-            continue;
-        };
-        if was_running {
-            let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                path:   request.project_path.clone(),
-                status: LintStatus::NoLog,
-            });
-        }
-    }
+fn cached_status_for_project(
+    status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
+    project_root: &Path,
+) -> LintStatus {
+    status_cache
+        .lock()
+        .ok()
+        .and_then(|statuses| statuses.get(&paths::project_key(project_root)).cloned())
+        .unwrap_or(LintStatus::NoLog)
 }
 
 fn desired_projects(
@@ -210,13 +204,19 @@ fn desired_projects(
         .collect()
 }
 
+/// Shared configuration for spawning lint workers.
+struct WorkerConfig {
+    cache_root:       PathBuf,
+    commands:         Vec<LintCommandConfig>,
+    cache_size_bytes: Option<u64>,
+    on_discovery:     DiscoveryLint,
+    status_cache:     Arc<Mutex<HashMap<String, LintStatus>>>,
+}
+
 fn reconcile_workers(
     workers: &mut HashMap<PathBuf, ProjectWorker>,
     desired: HashMap<PathBuf, RegisterProjectRequest>,
-    cache_root: &Path,
-    commands: &[LintCommandConfig],
-    cache_size_bytes: Option<u64>,
-    trigger_new_runs: bool,
+    config: &WorkerConfig,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
 ) {
     let stale: Vec<PathBuf> = workers
@@ -226,7 +226,12 @@ fn reconcile_workers(
         .collect();
     for path in stale {
         if let Some(worker) = workers.remove(&path) {
+            let project_path = worker.project_path.clone();
             stop_worker(worker);
+            let _ = bg_tx.send(BackgroundMsg::LintStatus {
+                path:   project_path,
+                status: LintStatus::NoLog,
+            });
         }
     }
     for (path, request) in desired {
@@ -234,10 +239,7 @@ fn reconcile_workers(
             spawn_project_worker(
                 request.project_path,
                 request.abs_path,
-                cache_root.to_path_buf(),
-                commands.to_vec(),
-                cache_size_bytes,
-                trigger_new_runs,
+                config,
                 bg_tx.clone(),
             )
         });
@@ -252,14 +254,17 @@ fn stop_worker(worker: ProjectWorker) {
 fn spawn_project_worker(
     project_path: String,
     project_root: PathBuf,
-    cache_root: PathBuf,
-    commands: Vec<LintCommandConfig>,
-    cache_size_bytes: Option<u64>,
-    run_immediately: bool,
+    config: &WorkerConfig,
     bg_tx: mpsc::Sender<BackgroundMsg>,
 ) -> ProjectWorker {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::clone(&stop);
+    let worker_project_path = project_path.clone();
+    let cache_root = config.cache_root.clone();
+    let commands = config.commands.clone();
+    let cache_size_bytes = config.cache_size_bytes;
+    let status_cache = Arc::clone(&config.status_cache);
+    let run_immediately = matches!(config.on_discovery, DiscoveryLint::Immediate);
     let handle = thread::spawn(move || {
         let (event_tx, event_rx) = mpsc::channel();
         let handler = move |res| {
@@ -304,10 +309,11 @@ fn spawn_project_worker(
                         if project_still_runnable(&project_root) {
                             let _ = run_commands_for_project(
                                 &project_root,
-                                &project_path,
+                                &worker_project_path,
                                 &cache_root,
                                 &commands,
                                 cache_size_bytes,
+                                &status_cache,
                                 &bg_tx,
                             );
                         }
@@ -318,7 +324,11 @@ fn spawn_project_worker(
             }
         }
     });
-    ProjectWorker { stop, handle }
+    ProjectWorker {
+        project_path,
+        stop,
+        handle,
+    }
 }
 
 fn should_watch_project(lint: &LintConfig, request: &RegisterProjectRequest) -> bool {
@@ -413,6 +423,7 @@ pub fn run_commands_for_project(
     cache_root: &Path,
     commands: &[LintCommandConfig],
     cache_size_bytes: Option<u64>,
+    status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
 ) -> io::Result<()> {
     if !project_still_runnable(project_root) {
@@ -456,53 +467,32 @@ pub fn run_commands_for_project(
         project_path,
         project_root.display()
     ));
-    let _ = bg_tx.send(BackgroundMsg::LintStatus {
-        path:   project_path.to_string(),
-        status: status::read_status_under(cache_root, project_root),
-    });
+    publish_status(
+        status_cache,
+        project_root,
+        project_path,
+        status::read_status_under(cache_root, project_root),
+        bg_tx,
+    );
 
-    let manifest_path = project_root.join("Cargo.toml");
-    let mut failed = false;
-    for (index, command) in commands.iter().enumerate() {
-        if !project_still_runnable(project_root) {
-            let _ = read_write::clear_latest_under(cache_root, project_root);
-            let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                path:   project_path.to_string(),
-                status: LintStatus::NoLog,
-            });
-            return Ok(());
-        }
-        let execution = run_command(project_root, &manifest_path, &output_dir, command, index)?;
-        if let Some(command_run) = run.commands.get_mut(index) {
-            command_run.status = if execution.success {
-                LintCommandStatus::Passed
-            } else {
-                LintCommandStatus::Failed
-            };
-            command_run.duration_ms = Some(execution.duration_ms);
-            command_run.exit_code = execution.exit_code;
-        }
-        read_write::write_latest_under(cache_root, project_root, &run)?;
-        if !execution.success {
-            failed = true;
-        }
-    }
-
-    if !project_still_runnable(project_root) {
+    let result = execute_commands(project_root, cache_root, commands, &output_dir, &mut run)?;
+    if matches!(result, CommandsResult::ProjectRemoved) {
         let _ = read_write::clear_latest_under(cache_root, project_root);
-        let _ = bg_tx.send(BackgroundMsg::LintStatus {
-            path:   project_path.to_string(),
-            status: LintStatus::NoLog,
-        });
+        publish_status(
+            status_cache,
+            project_root,
+            project_path,
+            LintStatus::NoLog,
+            bg_tx,
+        );
         return Ok(());
     }
 
     run.finished_at = Some(Local::now().to_rfc3339());
     run.duration_ms = Some(u64::try_from(run_started.elapsed().as_millis()).unwrap_or(u64::MAX));
-    run.status = if failed {
-        LintRunStatus::Failed
-    } else {
-        LintRunStatus::Passed
+    run.status = match result {
+        CommandsResult::AllPassed => LintRunStatus::Passed,
+        CommandsResult::SomeFailed | CommandsResult::ProjectRemoved => LintRunStatus::Failed,
     };
 
     run = history::archive_run_output(cache_root, project_root, &run)?;
@@ -515,11 +505,79 @@ pub fn run_commands_for_project(
             bytes_reclaimed: prune_stats.bytes_reclaimed,
         });
     }
-    let _ = bg_tx.send(BackgroundMsg::LintStatus {
-        path:   project_path.to_string(),
-        status: status::read_status_under(cache_root, project_root),
-    });
+    publish_status(
+        status_cache,
+        project_root,
+        project_path,
+        status::read_status_under(cache_root, project_root),
+        bg_tx,
+    );
     Ok(())
+}
+
+enum CommandsResult {
+    AllPassed,
+    SomeFailed,
+    ProjectRemoved,
+}
+
+fn execute_commands(
+    project_root: &Path,
+    cache_root: &Path,
+    commands: &[LintCommandConfig],
+    output_dir: &Path,
+    run: &mut LintRun,
+) -> io::Result<CommandsResult> {
+    let manifest_path = project_root.join("Cargo.toml");
+    let mut failed = false;
+    for (index, command) in commands.iter().enumerate() {
+        if !project_still_runnable(project_root) {
+            return Ok(CommandsResult::ProjectRemoved);
+        }
+        let execution = run_command(project_root, &manifest_path, output_dir, command, index)?;
+        if let Some(command_run) = run.commands.get_mut(index) {
+            command_run.status = if execution.success {
+                LintCommandStatus::Passed
+            } else {
+                LintCommandStatus::Failed
+            };
+            command_run.duration_ms = Some(execution.duration_ms);
+            command_run.exit_code = execution.exit_code;
+        }
+        read_write::write_latest_under(cache_root, project_root, run)?;
+        if !execution.success {
+            failed = true;
+        }
+    }
+    if !project_still_runnable(project_root) {
+        return Ok(CommandsResult::ProjectRemoved);
+    }
+    if failed {
+        Ok(CommandsResult::SomeFailed)
+    } else {
+        Ok(CommandsResult::AllPassed)
+    }
+}
+
+fn publish_status(
+    status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
+    project_root: &Path,
+    project_path: &str,
+    status: LintStatus,
+    bg_tx: &mpsc::Sender<BackgroundMsg>,
+) {
+    if let Ok(mut statuses) = status_cache.lock() {
+        let key = paths::project_key(project_root);
+        if matches!(status, LintStatus::NoLog) {
+            statuses.remove(&key);
+        } else {
+            statuses.insert(key, status.clone());
+        }
+    }
+    let _ = bg_tx.send(BackgroundMsg::LintStatus {
+        path: project_path.to_string(),
+        status,
+    });
 }
 
 fn run_command(
@@ -730,6 +788,7 @@ mod tests {
             &cache_root,
             &commands,
             None,
+            &Arc::new(Mutex::new(HashMap::new())),
             &tx,
         )
         .expect("run commands");
@@ -819,6 +878,7 @@ mod tests {
             cache_dir.path(),
             &commands,
             None,
+            &Arc::new(Mutex::new(HashMap::new())),
             &tx,
         )
         .expect("run commands");
@@ -835,20 +895,26 @@ mod tests {
         let mut workers = HashMap::new();
         let (worker, exited) = dummy_worker();
         workers.insert(path, worker);
-        let (bg_tx, _bg_rx) = mpsc::channel();
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let config = WorkerConfig {
+            cache_root:       PathBuf::from("/tmp/cache"),
+            commands:         Vec::new(),
+            cache_size_bytes: None,
+            on_discovery:     DiscoveryLint::Deferred,
+            status_cache:     Arc::new(Mutex::new(HashMap::new())),
+        };
 
-        reconcile_workers(
-            &mut workers,
-            HashMap::new(),
-            Path::new("/tmp/cache"),
-            &Vec::new(),
-            None,
-            false,
-            &bg_tx,
-        );
+        reconcile_workers(&mut workers, HashMap::new(), &config, &bg_tx);
 
         assert!(workers.is_empty());
         assert!(exited.load(Ordering::Relaxed));
+        assert!(matches!(
+            bg_rx.try_recv(),
+            Ok(BackgroundMsg::LintStatus {
+                status: LintStatus::NoLog,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -864,67 +930,19 @@ mod tests {
 
         let mut workers = HashMap::new();
         let (bg_tx, _bg_rx) = mpsc::channel();
-        reconcile_workers(
-            &mut workers,
-            desired,
-            Path::new("/tmp/cache"),
-            &Vec::new(),
-            None,
-            true,
-            &bg_tx,
-        );
+        let config = WorkerConfig {
+            cache_root:       PathBuf::from("/tmp/cache"),
+            commands:         Vec::new(),
+            cache_size_bytes: None,
+            on_discovery:     DiscoveryLint::Immediate,
+            status_cache:     Arc::new(Mutex::new(HashMap::new())),
+        };
+        reconcile_workers(&mut workers, desired, &config, &bg_tx);
 
         assert_eq!(workers.len(), 1);
         for (_, worker) in workers.drain() {
             stop_worker(worker);
         }
-    }
-
-    #[test]
-    fn force_immediate_run_overrides_first_sync_cold_start() {
-        // Immediate: initialized || force
-        assert!(!should_trigger_new_runs(
-            false,
-            false,
-            DiscoveryLint::Immediate
-        ));
-        assert!(should_trigger_new_runs(
-            false,
-            true,
-            DiscoveryLint::Immediate
-        ));
-        assert!(should_trigger_new_runs(
-            true,
-            false,
-            DiscoveryLint::Immediate
-        ));
-        assert!(should_trigger_new_runs(
-            true,
-            true,
-            DiscoveryLint::Immediate
-        ));
-
-        // Deferred: never trigger, wait for disk events
-        assert!(!should_trigger_new_runs(
-            false,
-            false,
-            DiscoveryLint::Deferred
-        ));
-        assert!(!should_trigger_new_runs(
-            false,
-            true,
-            DiscoveryLint::Deferred
-        ));
-        assert!(!should_trigger_new_runs(
-            true,
-            false,
-            DiscoveryLint::Deferred
-        ));
-        assert!(!should_trigger_new_runs(
-            true,
-            true,
-            DiscoveryLint::Deferred
-        ));
     }
 
     fn dummy_worker() -> (ProjectWorker, Arc<AtomicBool>) {
@@ -938,6 +956,13 @@ mod tests {
             }
             exited_flag.store(true, Ordering::Relaxed);
         });
-        (ProjectWorker { stop, handle }, exited)
+        (
+            ProjectWorker {
+                project_path: "~/rust/demo".to_string(),
+                stop,
+                handle,
+            },
+            exited,
+        )
     }
 }

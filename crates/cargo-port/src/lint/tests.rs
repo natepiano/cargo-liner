@@ -202,6 +202,36 @@ fn clear_latest_if_running_removes_running_latest() {
 }
 
 #[test]
+fn clear_running_latest_files_clears_orphans_across_cache_root() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let running_project = tempfile::tempdir().expect("tempdir");
+    let passed_project = tempfile::tempdir().expect("tempdir");
+    let running = LintRun {
+        run_id:      "running".to_string(),
+        started_at:  Utc::now().format("%+").to_string(),
+        finished_at: None,
+        duration_ms: None,
+        status:      LintRunStatus::Running,
+        commands:    Vec::new(),
+    };
+
+    read_write::write_latest_under(cache_dir.path(), running_project.path(), &running)
+        .expect("write running latest");
+    read_write::write_latest_under(
+        cache_dir.path(),
+        passed_project.path(),
+        &run(LintRunStatus::Passed),
+    )
+    .expect("write passed latest");
+
+    let cleared = read_write::clear_running_latest_files_under(cache_dir.path()).expect("clear");
+
+    assert_eq!(cleared, 1);
+    assert!(!latest_path_under(cache_dir.path(), running_project.path()).exists());
+    assert!(latest_path_under(cache_dir.path(), passed_project.path()).exists());
+}
+
+#[test]
 fn latest_final_run_does_not_duplicate_completed_history() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");

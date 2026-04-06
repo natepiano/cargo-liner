@@ -7,6 +7,7 @@ use std::path::Path;
 use super::paths;
 use super::types::LintRun;
 use super::types::LintRunStatus;
+use crate::constants::LINTS_LATEST_JSON;
 
 pub fn write_latest_under(cache_root: &Path, project_root: &Path, run: &LintRun) -> io::Result<()> {
     let path = paths::latest_path_under(cache_root, project_root);
@@ -29,6 +30,7 @@ pub fn clear_latest_under(cache_root: &Path, project_root: &Path) -> io::Result<
     }
 }
 
+#[cfg(test)]
 pub fn clear_latest_if_running_under(cache_root: &Path, project_root: &Path) -> io::Result<bool> {
     let path = paths::latest_path_under(cache_root, project_root);
     let Some(run) = read_latest_file(&path) else {
@@ -39,6 +41,43 @@ pub fn clear_latest_if_running_under(cache_root: &Path, project_root: &Path) -> 
         return Ok(true);
     }
     Ok(false)
+}
+
+pub fn clear_running_latest_files_under(cache_root: &Path) -> io::Result<usize> {
+    let entries = match std::fs::read_dir(cache_root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(err),
+    };
+
+    let mut cleared = 0;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let latest_path = entry.path().join(LINTS_LATEST_JSON);
+        let Some(run) = read_latest_file(&latest_path) else {
+            continue;
+        };
+        if !matches!(run.status, LintRunStatus::Running) {
+            continue;
+        }
+
+        match std::fs::remove_file(&latest_path) {
+            Ok(()) => cleared += 1,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {},
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(cleared)
 }
 
 pub fn read_latest_file(path: &Path) -> Option<LintRun> {

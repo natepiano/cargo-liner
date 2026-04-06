@@ -175,8 +175,10 @@ pub struct LintConfig {
     #[config(default = "512 MiB")]
     pub cache_size: String,
 
-    /// Whether newly discovered projects trigger an immediate lint run or
-    /// wait for a real file-system change.
+    /// Run lints immediately when a new project appears (`true`), or wait
+    /// for an actual file change before linting (`false`). When `false`,
+    /// startup and new-project discovery only set up file watchers — lints
+    /// run only after you edit code.
     #[config(default = false)]
     pub on_discovery: DiscoveryLint,
 }

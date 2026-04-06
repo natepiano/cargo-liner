@@ -108,7 +108,6 @@ impl AppInit {
             bg_tx.clone(),
             cfg.tui.ci_run_count,
             cfg.tui.include_non_rust,
-            cfg.lint.enabled,
             cfg.tui.include_dirs.clone(),
             http_client.clone(),
         );

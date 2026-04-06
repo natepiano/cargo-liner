@@ -17,6 +17,7 @@ mod tests;
 pub use history::CacheUsage;
 pub use history::read_history;
 pub use history::retained_cache_usage;
+#[cfg(test)]
 pub use paths::cache_root;
 #[cfg(test)]
 pub use paths::latest_path_under;
@@ -25,6 +26,7 @@ pub use runtime::RegisterProjectRequest;
 pub use runtime::RuntimeHandle;
 pub use runtime::project_is_eligible;
 pub use runtime::spawn;
+#[cfg(test)]
 pub use status::read_status;
 #[cfg(test)]
 pub use types::LintCommand;

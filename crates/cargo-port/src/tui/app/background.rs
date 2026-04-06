@@ -299,9 +299,11 @@ impl App {
     pub(super) fn refresh_lint_runtime_from_config(&mut self, cfg: &CargoPortConfig) {
         let lint_spawn = lint::spawn(cfg, self.bg_tx.clone());
         self.lint_runtime = lint_spawn.handle;
+        self.lint_status.clear();
+        self.running_lint_paths.clear();
+        self.sync_running_lint_toast();
         self.register_existing_projects();
-        self.sync_lint_runtime_projects_immediately();
-        self.refresh_lint_statuses_from_disk();
+        self.sync_lint_runtime_projects();
         self.refresh_lint_runs_from_disk();
         self.rebuild_lint_rollups();
         self.cached_fit_widths = ResolvedWidths::new(self.lint_enabled());
@@ -321,7 +323,6 @@ impl App {
             self.bg_tx.clone(),
             self.ci_run_count(),
             self.include_non_rust(),
-            self.lint_enabled(),
             self.current_config.tui.include_dirs.clone(),
             self.http_client.clone(),
         );
@@ -330,31 +331,6 @@ impl App {
     pub(super) fn register_existing_projects(&self) {
         for project in &self.all_projects {
             self.register_project_background_services(project);
-        }
-    }
-
-    pub(super) fn refresh_lint_statuses_from_disk(&mut self) {
-        self.lint_status.clear();
-        if !self.lint_enabled() {
-            return;
-        }
-        for project in &self.all_projects {
-            if !self.is_cargo_active_path(&project.path) {
-                continue;
-            }
-            if !crate::lint::project_is_eligible(
-                &self.current_config.lint,
-                &project.path,
-                &PathBuf::from(&project.abs_path),
-                project.is_rust == Rust,
-            ) {
-                continue;
-            }
-            let status = crate::lint::read_status(&PathBuf::from(&project.abs_path));
-            if matches!(status, LintStatus::NoLog | LintStatus::Running(_)) {
-                continue;
-            }
-            self.lint_status.insert(project.path.clone(), status);
         }
     }
 
@@ -470,12 +446,6 @@ impl App {
         });
     }
 
-    pub(super) fn sync_lint_runtime_projects(&self) { self.sync_lint_runtime_projects_with(false); }
-
-    pub(super) fn sync_lint_runtime_projects_immediately(&self) {
-        self.sync_lint_runtime_projects_with(true);
-    }
-
     pub(super) fn lint_runtime_root_projects(&self) -> Vec<&RustProject> {
         let mut projects = Vec::new();
         let mut seen = HashSet::new();
@@ -517,16 +487,11 @@ impl App {
             .collect()
     }
 
-    pub(super) fn sync_lint_runtime_projects_with(&self, force_immediate_run: bool) {
+    pub(super) fn sync_lint_runtime_projects(&self) {
         let Some(runtime) = &self.lint_runtime else {
             return;
         };
-        let projects = self.lint_runtime_projects_snapshot();
-        if force_immediate_run {
-            runtime.sync_projects_immediately(projects);
-        } else {
-            runtime.sync_projects(projects);
-        }
+        runtime.sync_projects(self.lint_runtime_projects_snapshot());
     }
 
     pub(super) fn initialize_startup_phase_tracker(&mut self) {
@@ -1037,12 +1002,13 @@ impl App {
             self.ci_run_count(),
             &self.current_config.tui.include_dirs,
             self.include_non_rust(),
-            self.lint_enabled(),
             self.http_client.clone(),
         );
         self.bg_tx = tx;
         self.bg_rx = rx;
         self.respawn_watcher();
+        let current_config = self.current_config.clone();
+        self.refresh_lint_runtime_from_config(&current_config);
     }
 
     pub fn poll_background(&mut self) -> PollBackgroundStats {
@@ -1564,7 +1530,7 @@ impl App {
         );
         self.scan.phase = ScanPhase::Complete;
         self.initialize_startup_phase_tracker();
-        self.sync_lint_runtime_projects_immediately();
+        self.sync_lint_runtime_projects();
         self.schedule_git_path_state_refreshes();
         self.schedule_git_first_commit_refreshes();
     }

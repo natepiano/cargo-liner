@@ -11,6 +11,7 @@ use super::types::LintRunStatus;
 use super::types::LintStatus;
 use crate::constants::STALE_TIMEOUT;
 
+#[cfg(test)]
 /// Read the last line of the project's lint status log and parse it.
 pub fn read_status(project_root: &Path) -> LintStatus {
     read_status_from_path(&paths::latest_path_under(

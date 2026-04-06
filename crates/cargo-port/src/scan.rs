@@ -25,7 +25,6 @@ use super::constants::SCAN_LOCAL_CONCURRENCY;
 use super::http::HttpClient;
 use super::http::ServiceKind;
 use super::http::ServiceSignal;
-use super::lint;
 use super::lint::LintStatus;
 use super::perf_log;
 use super::project::GitInfo;
@@ -1004,7 +1003,6 @@ pub struct ProjectDetailRequest<'a> {
     pub project_name:  Option<&'a str>,
     pub repo_presence: GitRepoPresence,
     pub ci_run_count:  u32,
-    pub lint_enabled:  bool,
 }
 
 /// Fetch all details (disk, git, crates.io, CI) for a single project and send
@@ -1017,7 +1015,6 @@ pub fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let project_name = req.project_name;
     let repo_presence = req.repo_presence;
     let ci_run_count = req.ci_run_count;
-    let lint_enabled = req.lint_enabled;
     let client = &ctx.client;
     let repo_cache = &ctx.repo_cache;
     let _ = tx.send(BackgroundMsg::GitPathState {
@@ -1090,17 +1087,6 @@ pub fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         }
     }
 
-    if lint_enabled {
-        // Lint status (cheap local file read).
-        let lint = lint::read_status(abs_path);
-        if !matches!(lint, LintStatus::NoLog) {
-            let _ = tx.send(BackgroundMsg::LintStatus {
-                path:   project_path.to_string(),
-                status: lint,
-            });
-        }
-    }
-
     // Disk usage last — walking large `target/` dirs is the slowest
     // local operation and doesn't block anything else.
     let bytes = dir_size(abs_path);
@@ -1164,13 +1150,12 @@ fn expand_home_path(raw: &str) -> PathBuf {
 /// used to drive async HTTP dispatch and disk usage.
 #[derive(Clone)]
 struct DiscoveredProject {
-    path:         String,
-    abs_path:     PathBuf,
-    name:         Option<String>,
-    repo_url:     Option<String>,
-    owner_repo:   Option<(String, String)>,
-    branch:       Option<String>,
-    lint_enabled: bool,
+    path:       String,
+    abs_path:   PathBuf,
+    name:       Option<String>,
+    repo_url:   Option<String>,
+    owner_repo: Option<(String, String)>,
+    branch:     Option<String>,
 }
 
 enum RepoDispatchState {
@@ -1192,7 +1177,6 @@ struct StreamingScanContext {
     client:         HttpClient,
     tx:             mpsc::Sender<BackgroundMsg>,
     ci_run_count:   u32,
-    lint_enabled:   bool,
     disk_limit:     Arc<tokio::sync::Semaphore>,
     http_limit:     Arc<tokio::sync::Semaphore>,
     local_limit:    Arc<tokio::sync::Semaphore>,
@@ -1213,8 +1197,8 @@ struct RepoFetchRequest {
 ///
 /// - **Discovery (scan thread):** Walk the directory tree, discover projects, and emit rows
 ///   quickly.
-/// - **Local enrichment (tokio blocking pool):** Git info and lint status run behind their own
-///   semaphore so they do not block discovery.
+/// - **Local enrichment (tokio blocking pool):** Git info runs behind its own semaphore so it does
+///   not block discovery.
 /// - **Disk usage (tokio blocking pool):** `dir_size()` runs behind its own semaphore so disk walks
 ///   cannot monopolize startup.
 /// - **HTTP (tokio):** CI runs, repo metadata, crates.io info, and connectivity checks run on the
@@ -1227,7 +1211,6 @@ pub fn spawn_streaming_scan(
     ci_run_count: u32,
     include_dirs: &[String],
     non_rust: NonRustInclusion,
-    lint_enabled: bool,
     client: HttpClient,
 ) -> (mpsc::Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
     let (tx, rx) = mpsc::channel();
@@ -1240,7 +1223,6 @@ pub fn spawn_streaming_scan(
             client,
             tx: scan_tx.clone(),
             ci_run_count,
-            lint_enabled,
             disk_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_DISK_CONCURRENCY)),
             http_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_HTTP_CONCURRENCY)),
             local_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_LOCAL_CONCURRENCY)),
@@ -1309,7 +1291,6 @@ fn discover_non_rust_project(
         repo_url: None,
         owner_repo: None,
         branch: None,
-        lint_enabled: scan_context.lint_enabled,
     };
     let disk_path = discovered.path.clone();
     spawn_project_local_work(scan_context, discovered, GitRepoPresence::InRepo);
@@ -1398,7 +1379,6 @@ fn phase1_discover(
                     repo_url: None,
                     owner_repo: None,
                     branch: None,
-                    lint_enabled: scan_context.lint_enabled,
                 };
                 spawn_project_local_work(scan_context, discovered.clone(), repo_presence);
                 disk_entries.push((discovered.path.clone(), discovered.abs_path.clone()));
@@ -1815,7 +1795,7 @@ fn spawn_crates_fetch(
     });
 }
 
-/// Phase 1 local work: git info + lint status for a single project.
+/// Phase 1 local work: git info for a single project.
 /// Returns the discovered repo metadata needed for async HTTP dispatch.
 fn phase1_local_work(
     tx: &mpsc::Sender<BackgroundMsg>,
@@ -1836,17 +1816,6 @@ fn phase1_local_work(
         });
     }
 
-    if project.lint_enabled {
-        // Lint status (cheap local file read).
-        let lint = lint::read_status(&project.abs_path);
-        if !matches!(lint, LintStatus::NoLog) {
-            let _ = tx.send(BackgroundMsg::LintStatus {
-                path:   project.path.clone(),
-                status: lint,
-            });
-        }
-    }
-
     project.repo_url = git_info.as_ref().and_then(|g| g.url.clone());
     project.owner_repo = project
         .repo_url
@@ -1857,12 +1826,11 @@ fn phase1_local_work(
         "phase1_local_work",
         started.elapsed(),
         &format!(
-            "path={} in_repo={} has_git_info={} branch={} lint_enabled={}",
+            "path={} in_repo={} has_git_info={} branch={}",
             project.path,
             repo_presence.is_in_repo(),
             git_info.is_some(),
-            project.branch.as_deref().unwrap_or("-"),
-            project.lint_enabled
+            project.branch.as_deref().unwrap_or("-")
         ),
         0,
     );
