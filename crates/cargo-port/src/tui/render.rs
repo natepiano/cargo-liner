@@ -199,13 +199,17 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     render_left_panel(frame, app, main_layout[0]);
     render_right_panel(frame, app, main_layout[1]);
     render_status_bar(frame, app, outer_layout[1]);
-    app.layout_cache.toast_hitboxes = super::toasts::render_toasts(
+    let toast_result = super::toasts::render_toasts(
         frame,
         outer_layout[0],
         &app.active_toasts(),
         app.is_focused(PaneId::Toasts),
         app.focused_toast_id(),
     );
+    app.layout_cache
+        .dismiss_hitboxes
+        .extend(toast_result.dismiss_actions);
+    app.layout_cache.toast_cards = toast_result.card_hitboxes;
 
     if app.is_settings_open() {
         super::settings::render_settings_popup(frame, app);
@@ -797,17 +801,29 @@ fn render_root_item(
     } else {
         PREFIX_ROOT_LEAF
     };
+    let deleted = app.is_deleted(&project.path);
+    let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
+        (
+            "0.0",
+            Some(" [x]"),
+            Some(Style::default().fg(Color::DarkGray)),
+        )
+    } else {
+        (disk.as_str(), None, None)
+    };
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name: &name,
         git_path_state: app.git_path_state_for(&project.path),
         lint_icon: lint,
-        disk: &disk,
+        disk: disk_text,
         disk_style: ds,
+        disk_suffix,
+        disk_suffix_style,
         lang_icon: lang,
         git_sync: &sync,
         ci,
-        deleted: app.is_deleted(&project.path),
+        deleted,
     });
     ListItem::new(super::columns::row_to_line(&row, widths))
 }
@@ -844,17 +860,29 @@ fn render_child_item(
     } else {
         app.git_sync(project)
     };
+    let deleted = app.is_deleted(&project.path);
+    let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
+        (
+            "0.0",
+            Some(" [x]"),
+            Some(Style::default().fg(Color::DarkGray)),
+        )
+    } else {
+        (disk.as_str(), None, None)
+    };
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name,
         git_path_state: app.git_path_state_for(&project.path),
         lint_icon: lint,
-        disk: &disk,
+        disk: disk_text,
         disk_style: ds,
+        disk_suffix,
+        disk_suffix_style,
         lang_icon: lang,
         git_sync: &sync,
         ci,
-        deleted: app.is_deleted(&project.path),
+        deleted,
     });
     ListItem::new(super::columns::row_to_line(&row, widths))
 }
@@ -891,17 +919,29 @@ fn render_worktree_entry<'a>(
     let lint = app.lint_icon_for_worktree(ni, wi);
     let ci = app.ci_for(&wt.project);
     let sync = app.git_sync(&wt.project);
+    let deleted = app.is_deleted(&wt.project.path);
+    let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
+        (
+            "0.0",
+            Some(" [x]"),
+            Some(Style::default().fg(Color::DarkGray)),
+        )
+    } else {
+        (disk.as_str(), None, None)
+    };
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name: &name,
         git_path_state: app.git_path_state_for(&wt.project.path),
         lint_icon: lint,
-        disk: &disk,
+        disk: disk_text,
         disk_style: ds,
+        disk_suffix,
+        disk_suffix_style,
         lang_icon: lang,
         git_sync: &sync,
         ci,
-        deleted: app.is_deleted(&wt.project.path),
+        deleted,
     });
     ListItem::new(super::columns::row_to_line(&row, widths))
 }
@@ -1073,17 +1113,29 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             } else {
                 app.git_sync(project)
             };
+            let deleted = app.is_deleted(&project.path);
+            let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
+                (
+                    "0.0",
+                    Some(" [x]"),
+                    Some(Style::default().fg(Color::DarkGray)),
+                )
+            } else {
+                (disk.as_str(), None, None)
+            };
             let row = super::columns::build_row_cells(super::columns::ProjectRow {
                 prefix: "  ",
                 name: &entry.name,
                 git_path_state: app.git_path_state_for(&project.path),
                 lint_icon: lint,
-                disk: &disk,
+                disk: disk_text,
                 disk_style: ds,
+                disk_suffix,
+                disk_suffix_style,
                 lang_icon: lang,
                 git_sync: &sync,
                 ci,
-                deleted: app.is_deleted(&project.path),
+                deleted,
             });
             Some(ListItem::new(super::columns::row_to_line(&row, widths)))
         })

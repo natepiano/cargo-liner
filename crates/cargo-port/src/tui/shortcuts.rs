@@ -7,7 +7,6 @@ use crate::keymap::PackageAction;
 use crate::keymap::ProjectListAction;
 use crate::keymap::ResolvedKeymap;
 use crate::keymap::TargetsAction;
-use crate::keymap::ToastsAction;
 
 /// The current input context, derived from app state. Determines which
 /// shortcuts are shown in the status bar and how keys are dispatched.
@@ -60,7 +59,6 @@ const NAV: Shortcut = Shortcut::fixed("↑/↓", "nav");
 const ARROWS_EXPAND: Shortcut = Shortcut::fixed("←/→", "expand");
 const ARROWS_TOGGLE: Shortcut = Shortcut::fixed("←/→", "toggle");
 const TAB_PANE: Shortcut = Shortcut::fixed("Tab", "pane");
-const ESC_BACK: Shortcut = Shortcut::fixed("Esc", "back");
 const ESC_CANCEL: Shortcut = Shortcut::fixed("Esc", "cancel");
 const ESC_CLOSE: Shortcut = Shortcut::fixed("Esc", "close");
 const EXPAND_COLLAPSE_ALL: Shortcut = Shortcut::fixed("+/-", "all");
@@ -106,6 +104,10 @@ pub(super) fn for_status_bar(
                 km.global.display_key_for(GlobalAction::Settings),
                 "settings",
             ),
+            Shortcut::from_keymap(
+                km.global.display_key_for(GlobalAction::OpenKeymap),
+                "keymap",
+            ),
             Shortcut::from_keymap(km.global.display_key_for(GlobalAction::Quit), "quit"),
             Shortcut::from_keymap(km.global.display_key_for(GlobalAction::Restart), "restart"),
         ]
@@ -126,7 +128,7 @@ fn detail_groups(
     is_rust: bool,
     km: &ResolvedKeymap,
 ) -> (Vec<Shortcut>, Vec<Shortcut>) {
-    let navigation = vec![NAV, TAB_PANE, ESC_BACK];
+    let navigation = vec![NAV, TAB_PANE];
 
     let mut actions = Vec::new();
     if let Some(action) = enter_action {
@@ -153,7 +155,7 @@ fn ci_groups(
     enter_action: Option<&'static str>,
     km: &ResolvedKeymap,
 ) -> (Vec<Shortcut>, Vec<Shortcut>) {
-    let navigation = vec![NAV, TAB_PANE, ESC_BACK];
+    let navigation = vec![NAV, TAB_PANE];
 
     let mut actions = Vec::new();
     if let Some(action) = enter_action {
@@ -173,10 +175,10 @@ fn ci_groups(
 
 fn toast_groups(km: &ResolvedKeymap) -> (Vec<Shortcut>, Vec<Shortcut>) {
     (
-        vec![NAV, TAB_PANE, ESC_BACK],
+        vec![NAV, TAB_PANE],
         vec![Shortcut::from_keymap(
-            km.toasts.display_key_for(ToastsAction::Dismiss),
-            "close",
+            km.global.display_key_for(GlobalAction::Dismiss),
+            "dismiss",
         )],
     )
 }
@@ -185,7 +187,7 @@ fn lints_groups(
     enter_action: Option<&'static str>,
     km: &ResolvedKeymap,
 ) -> (Vec<Shortcut>, Vec<Shortcut>) {
-    let navigation = vec![NAV, TAB_PANE, ESC_BACK];
+    let navigation = vec![NAV, TAB_PANE];
 
     let mut actions = Vec::new();
     if let Some(action) = enter_action {

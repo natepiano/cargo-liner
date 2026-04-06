@@ -565,6 +565,9 @@ pub struct App {
     // Projects whose directories have been deleted from disk.
     pub deleted_projects: HashSet<String>,
 
+    // Projects the user has explicitly dismissed via [x].
+    pub dismissed_projects: HashSet<String>,
+
     // Universal finder
     pub selection_paths: SelectionPaths,
     pub finder:          FinderState,

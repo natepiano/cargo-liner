@@ -13,9 +13,11 @@ use ratatui::widgets::Wrap;
 
 use super::manager::ToastStyle;
 use super::manager::ToastView;
+use crate::tui::app::ClickAction;
+use crate::tui::app::DismissTarget;
 use crate::tui::constants::TOAST_GAP;
 use crate::tui::constants::TOAST_WIDTH;
-use crate::tui::types::ToastHitbox;
+use crate::tui::types::ToastCardHitbox;
 
 fn truncate(text: &str, width: usize) -> String {
     let mut out = String::new();
@@ -31,22 +33,31 @@ fn truncate(text: &str, width: usize) -> String {
     out
 }
 
+pub struct ToastRenderResult {
+    pub dismiss_actions: Vec<ClickAction>,
+    pub card_hitboxes:   Vec<ToastCardHitbox>,
+}
+
 pub fn render_toasts(
     frame: &mut Frame,
     area: Rect,
     toasts: &[ToastView<'_>],
     pane_focused: bool,
     focused_toast_id: Option<u64>,
-) -> Vec<ToastHitbox> {
+) -> ToastRenderResult {
     if toasts.is_empty() {
-        return Vec::new();
+        return ToastRenderResult {
+            dismiss_actions: Vec::new(),
+            card_hitboxes:   Vec::new(),
+        };
     }
 
     let width = TOAST_WIDTH.min(area.width);
 
     // Stack toasts from the bottom of the area upward. Each toast may
     // have a different height due to entrance/exit animation.
-    let mut hitboxes = Vec::with_capacity(toasts.len());
+    let mut dismiss_actions = Vec::with_capacity(toasts.len());
+    let mut card_hitboxes = Vec::with_capacity(toasts.len());
     let mut cursor_y = area.y.saturating_add(area.height);
     for toast in toasts.iter().rev() {
         let card_height = toast.visible_lines();
@@ -67,15 +78,22 @@ pub fn render_toasts(
 
         frame.render_widget(Clear, card);
         let close_rect = render_toast_card(frame, card, toast, pane_focused, focused_toast_id);
-        hitboxes.push(ToastHitbox {
-            id: toast.id(),
+        dismiss_actions.push(ClickAction {
+            rect:   close_rect,
+            target: DismissTarget::Toast(toast.id()),
+        });
+        card_hitboxes.push(ToastCardHitbox {
+            id:        toast.id(),
             card_rect: card,
-            close_rect,
         });
     }
 
-    hitboxes.reverse();
-    hitboxes
+    dismiss_actions.reverse();
+    card_hitboxes.reverse();
+    ToastRenderResult {
+        dismiss_actions,
+        card_hitboxes,
+    }
 }
 
 /// Render a single toast card and return the close-button rect for hit-testing.

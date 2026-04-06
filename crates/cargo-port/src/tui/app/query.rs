@@ -88,12 +88,6 @@ impl App {
         self.toast_pane.set_len(self.active_toasts().len());
     }
 
-    pub fn dismiss_focused_toast(&mut self) {
-        if let Some(id) = self.focused_toast_id() {
-            self.dismiss_toast(id);
-        }
-    }
-
     pub fn dismiss_toast(&mut self, id: u64) {
         self.toasts.dismiss(id);
         self.prune_toasts();

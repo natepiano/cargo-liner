@@ -20,7 +20,6 @@ use super::types::PaneId;
 use crate::keymap::GlobalAction;
 use crate::keymap::KeyBind;
 use crate::keymap::ProjectListAction;
-use crate::keymap::ToastsAction;
 use crate::project;
 use crate::project::ProjectLanguage;
 
@@ -236,7 +235,11 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    if handle_toast_click(app, pos) {
+    if handle_dismiss_click(app, pos) {
+        return;
+    }
+
+    if handle_toast_card_click(app, pos) {
         return;
     }
 
@@ -293,12 +296,24 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     }
 }
 
-fn handle_toast_click(app: &mut App, pos: Position) -> bool {
-    for hitbox in app.layout_cache.toast_hitboxes.clone() {
-        if hitbox.close_rect.contains(pos) {
-            app.dismiss_toast(hitbox.id);
-            return true;
-        }
+/// Shared dismiss click handler — checks all [x] hitboxes (toasts + deleted projects).
+fn handle_dismiss_click(app: &mut App, pos: Position) -> bool {
+    let hit = app
+        .layout_cache
+        .dismiss_hitboxes
+        .iter()
+        .find(|action| action.rect.contains(pos))
+        .cloned();
+    if let Some(action) = hit {
+        app.dismiss(action.target);
+        return true;
+    }
+    false
+}
+
+/// Toast card click — focuses the toast pane and selects the clicked card.
+fn handle_toast_card_click(app: &mut App, pos: Position) -> bool {
+    for hitbox in &app.layout_cache.toast_cards {
         if !hitbox.card_rect.contains(pos) {
             continue;
         }
@@ -381,12 +396,16 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
         },
         GlobalAction::NextPane => app.focus_next_pane(),
         GlobalAction::PrevPane => app.focus_previous_pane(),
-        GlobalAction::FocusList => app.focus_pane(PaneId::ProjectList),
         GlobalAction::OpenKeymap => {
             app.open_overlay(PaneId::Keymap);
             app.open_keymap();
             app.keymap_pane
                 .set_len(super::keymap_ui::selectable_row_count());
+        },
+        GlobalAction::Dismiss => {
+            if let Some(target) = app.focused_dismiss_target() {
+                app.dismiss(target);
+            }
         },
     }
     true
@@ -435,16 +454,13 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
 }
 
 fn handle_toast_key(app: &mut App, event: &KeyEvent) {
-    // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.toast_pane.up(),
-        KeyCode::Down => return app.toast_pane.down(),
-        KeyCode::Home => return app.toast_pane.home(),
-        KeyCode::End => {
-            app.toast_pane
-                .set_pos(app.active_toasts().len().saturating_sub(1));
-            return;
-        },
+        KeyCode::Up => app.toast_pane.up(),
+        KeyCode::Down => app.toast_pane.down(),
+        KeyCode::Home => app.toast_pane.home(),
+        KeyCode::End => app
+            .toast_pane
+            .set_pos(app.active_toasts().len().saturating_sub(1)),
         KeyCode::Enter => {
             // Open action_path if the focused toast has one.
             if let Some(toast) = app.active_toasts().into_iter().nth(app.toast_pane.pos())
@@ -456,17 +472,8 @@ fn handle_toast_key(app: &mut App, event: &KeyEvent) {
                     let _ = std::process::Command::new(&editor).arg(&path).spawn();
                 });
             }
-            return;
         },
         _ => {},
-    }
-
-    // Action keys through keymap.
-    let bind = bind_from(event);
-    if let Some(action) = app.current_keymap.toasts.action_for(&bind) {
-        match action {
-            ToastsAction::Dismiss => app.dismiss_focused_toast(),
-        }
     }
 }
 

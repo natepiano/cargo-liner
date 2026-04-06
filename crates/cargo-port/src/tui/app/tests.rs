@@ -328,7 +328,7 @@ fn visible_rows_workspace_with_worktrees() {
     ]
     .into();
 
-    let rows = snapshots::build_visible_rows(&[root], &expanded);
+    let rows = snapshots::build_visible_rows(&[root], &expanded, &HashSet::new());
 
     // Expected:
     // 0: Root(0)
@@ -397,7 +397,7 @@ fn visible_rows_non_workspace_worktrees() {
 
     // Standalone project with worktrees — flat, not expandable
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&[build_root()], &expanded);
+    let rows = snapshots::build_visible_rows(&[build_root()], &expanded, &HashSet::new());
 
     // Root + 2 flat worktree entries
     assert_eq!(rows.len(), 3, "got: {rows:?}");
@@ -407,7 +407,7 @@ fn visible_rows_non_workspace_worktrees() {
 
     // Expanding a worktree with no groups produces no additional rows
     let expanded2: HashSet<ExpandKey> = [ExpandKey::Node(0), ExpandKey::Worktree(0, 0)].into();
-    let rows2 = snapshots::build_visible_rows(&[build_root()], &expanded2);
+    let rows2 = snapshots::build_visible_rows(&[build_root()], &expanded2, &HashSet::new());
     assert_eq!(rows2.len(), 3, "no extra rows for non-workspace worktree");
 }
 
@@ -423,7 +423,7 @@ fn visible_rows_workspace_no_worktrees() {
     }];
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&[root], &expanded);
+    let rows = snapshots::build_visible_rows(&[root], &expanded, &HashSet::new());
 
     // Root + 2 inline members
     assert_eq!(rows.len(), 3, "got: {rows:?}");
@@ -456,7 +456,7 @@ fn visible_rows_include_vendored_children() {
     root.vendored = vec![vendored];
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&[root], &expanded);
+    let rows = snapshots::build_visible_rows(&[root], &expanded, &HashSet::new());
 
     assert_eq!(rows.len(), 3, "got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { .. }));

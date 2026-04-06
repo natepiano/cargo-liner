@@ -1,6 +1,7 @@
 mod background;
 mod ci_state;
 mod construct;
+mod dismiss;
 mod focus;
 mod lint;
 mod query;
@@ -20,6 +21,8 @@ mod types;
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests;
 
+pub(super) use dismiss::ClickAction;
+pub(super) use dismiss::DismissTarget;
 pub(super) use types::App;
 pub(super) use types::BottomPanel;
 pub(super) use types::CiState;

@@ -270,6 +270,7 @@ impl App {
             #[cfg(test)]
             retry_spawn_mode: RetrySpawnMode::Enabled,
             deleted_projects: HashSet::new(),
+            dismissed_projects: HashSet::new(),
             selection_paths: SelectionPaths::new(),
             finder: FinderState::new(),
             cached_visible_rows: Vec::new(),

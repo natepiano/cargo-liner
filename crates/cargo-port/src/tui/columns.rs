@@ -117,20 +117,24 @@ pub(super) struct CellContent {
     pub text:           String,
     pub style:          Style,
     pub align_override: Option<Align>,
+    pub suffix:         Option<String>,
+    pub suffix_style:   Option<Style>,
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct ProjectRow<'a> {
-    pub prefix:         &'a str,
-    pub name:           &'a str,
-    pub git_path_state: GitPathState,
-    pub lint_icon:      &'a str,
-    pub disk:           &'a str,
-    pub disk_style:     Style,
-    pub lang_icon:      &'a str,
-    pub git_sync:       &'a str,
-    pub ci:             Option<Conclusion>,
-    pub deleted:        bool,
+    pub prefix:            &'a str,
+    pub name:              &'a str,
+    pub git_path_state:    GitPathState,
+    pub lint_icon:         &'a str,
+    pub disk:              &'a str,
+    pub disk_style:        Style,
+    pub disk_suffix:       Option<&'a str>,
+    pub disk_suffix_style: Option<Style>,
+    pub lang_icon:         &'a str,
+    pub git_sync:          &'a str,
+    pub ci:                Option<Conclusion>,
+    pub deleted:           bool,
 }
 
 pub(super) struct RowCells {
@@ -234,19 +238,36 @@ fn pad_center(s: &str, target: usize) -> String {
 pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'static> {
     let defs = column_defs(widths.lint_enabled());
     let mut spans = Vec::with_capacity(NUM_COLS);
+    // Track which span indices are suffix spans (exempt from strikethrough).
+    let mut suffix_indices: Vec<usize> = Vec::new();
 
     for (i, cell) in row.cells.iter().enumerate() {
         let col_width = widths.get(i);
         let align = cell.align_override.unwrap_or(defs[i].align);
 
-        let content = if col_width == 0 {
-            String::new()
-        } else if i == COL_NAME {
+        if col_width == 0 {
+            spans.push(Span::styled(String::new(), cell.style));
+            continue;
+        }
+
+        // Suffix handling: split the column into text + suffix spans.
+        if let Some(suffix) = &cell.suffix {
+            let suffix_w = display_width(suffix);
+            let text_w = col_width.saturating_sub(suffix_w);
+            let text_padded = pad_left(&cell.text, text_w);
+            let gap = " ".repeat(defs[i].gap);
+            spans.push(Span::styled(format!("{gap}{text_padded}"), cell.style));
+            let suffix_style = cell.suffix_style.unwrap_or(cell.style);
+            suffix_indices.push(spans.len());
+            spans.push(Span::styled(suffix.clone(), suffix_style));
+            continue;
+        }
+
+        let content = if i == COL_NAME {
             let prefix_w = display_width(&row.prefix);
             let available = col_width.saturating_sub(prefix_w);
             format!("{}{}", row.prefix, pad_right(&cell.text, available))
         } else if i == COL_SYNC && cell.text == IN_SYNC {
-            // IN_SYNC gets special centering treatment
             let padded = if col_width <= 2 {
                 pad_left(&cell.text, col_width)
             } else {
@@ -269,8 +290,10 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'stat
         let strike = Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::CROSSED_OUT);
-        for span in &mut spans {
-            span.style = strike;
+        for (i, span) in spans.iter_mut().enumerate() {
+            if !suffix_indices.contains(&i) {
+                span.style = strike;
+            }
         }
     }
 
@@ -368,34 +391,41 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
 
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
     cells[COL_NAME] = CellContent {
-        text:           String::from(row.name),
-        style:          name_style,
+        text: String::from(row.name),
+        style: name_style,
         align_override: None,
+        ..CellContent::default()
     };
     cells[COL_LINT] = CellContent {
-        text:           String::from(row.lint_icon),
-        style:          Style::default(),
+        text: String::from(row.lint_icon),
+        style: Style::default(),
         align_override: None,
+        ..CellContent::default()
     };
     cells[COL_CI] = CellContent {
-        text:           ci_text,
-        style:          ci_style,
+        text: ci_text,
+        style: ci_style,
         align_override: None,
+        ..CellContent::default()
     };
     cells[COL_LANG] = CellContent {
-        text:           String::from(row.lang_icon),
-        style:          Style::default(),
+        text: String::from(row.lang_icon),
+        style: Style::default(),
         align_override: None,
+        ..CellContent::default()
     };
     cells[COL_SYNC] = CellContent {
-        text:           String::from(row.git_sync),
-        style:          sync_style,
+        text: String::from(row.git_sync),
+        style: sync_style,
         align_override: sync_align,
+        ..CellContent::default()
     };
     cells[COL_DISK] = CellContent {
         text:           String::from(row.disk),
         style:          row.disk_style,
         align_override: None,
+        suffix:         row.disk_suffix.map(String::from),
+        suffix_style:   row.disk_suffix_style,
     };
 
     RowCells {
@@ -409,9 +439,10 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
 pub(super) fn build_group_header_cells(prefix: &str, label: &str) -> RowCells {
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
     cells[COL_NAME] = CellContent {
-        text:           String::from(label),
-        style:          Style::default().fg(Color::Yellow),
+        text: String::from(label),
+        style: Style::default().fg(Color::Yellow),
         align_override: None,
+        ..CellContent::default()
     };
     RowCells {
         cells,
@@ -436,20 +467,23 @@ pub(super) fn build_summary_cells(widths: &ResolvedWidths, disk: &str) -> RowCel
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
     let sigma_col = summary_label_col(widths);
     cells[sigma_col] = CellContent {
-        text:           String::from("Σ"),
-        style:          total_style,
+        text: String::from("Σ"),
+        style: total_style,
         align_override: Some(Align::Right),
+        ..CellContent::default()
     };
     cells[COL_DISK] = CellContent {
-        text:           String::from(disk),
-        style:          total_style,
+        text: String::from(disk),
+        style: total_style,
         align_override: None,
+        ..CellContent::default()
     };
     if sigma_col != COL_LANG {
         cells[COL_LANG] = CellContent {
-            text:           String::from("  "),
-            style:          Style::default(),
+            text: String::from("  "),
+            style: Style::default(),
             align_override: None,
+            ..CellContent::default()
         };
     }
     RowCells {
@@ -562,28 +596,32 @@ mod tests {
         widths.observe(COL_SYNC, 2);
 
         let row_emoji = build_row_cells(ProjectRow {
-            prefix:         "▶ ",
-            name:           "bevy_brp 🌲:2",
-            git_path_state: GitPathState::Clean,
-            lint_icon:      crate::constants::LINT_PASSED,
-            disk:           "36.3 GiB",
-            disk_style:     Style::default(),
-            lang_icon:      "🦀",
-            git_sync:       "↑2",
-            ci:             Some(Conclusion::Success),
-            deleted:        false,
+            prefix:            "▶ ",
+            name:              "bevy_brp 🌲:2",
+            git_path_state:    GitPathState::Clean,
+            lint_icon:         crate::constants::LINT_PASSED,
+            disk:              "36.3 GiB",
+            disk_style:        Style::default(),
+            disk_suffix:       None,
+            disk_suffix_style: None,
+            lang_icon:         "🦀",
+            git_sync:          "↑2",
+            ci:                Some(Conclusion::Success),
+            deleted:           false,
         });
         let row_ascii = build_row_cells(ProjectRow {
-            prefix:         "▶ ",
-            name:           "bevy_mesh_outline_benchmark",
-            git_path_state: GitPathState::Clean,
-            lint_icon:      crate::constants::LINT_PASSED,
-            disk:           "36.3 GiB",
-            disk_style:     Style::default(),
-            lang_icon:      "🦀",
-            git_sync:       "↑2",
-            ci:             Some(Conclusion::Success),
-            deleted:        false,
+            prefix:            "▶ ",
+            name:              "bevy_mesh_outline_benchmark",
+            git_path_state:    GitPathState::Clean,
+            lint_icon:         crate::constants::LINT_PASSED,
+            disk:              "36.3 GiB",
+            disk_style:        Style::default(),
+            disk_suffix:       None,
+            disk_suffix_style: None,
+            lang_icon:         "🦀",
+            git_sync:          "↑2",
+            ci:                Some(Conclusion::Success),
+            deleted:           false,
         });
 
         let line_emoji = row_to_line(&row_emoji, &widths);
@@ -653,16 +691,18 @@ mod tests {
         widths.observe(COL_SYNC, 2);
 
         let row = build_row_cells(ProjectRow {
-            prefix:         "▶ ",
-            name:           "demo",
-            git_path_state: GitPathState::Clean,
-            lint_icon:      crate::constants::LINT_PASSED,
-            disk:           "36.3 GiB",
-            disk_style:     Style::default(),
-            lang_icon:      "🦀",
-            git_sync:       "↑2",
-            ci:             Some(Conclusion::Success),
-            deleted:        false,
+            prefix:            "▶ ",
+            name:              "demo",
+            git_path_state:    GitPathState::Clean,
+            lint_icon:         crate::constants::LINT_PASSED,
+            disk:              "36.3 GiB",
+            disk_style:        Style::default(),
+            disk_suffix:       None,
+            disk_suffix_style: None,
+            lang_icon:         "🦀",
+            git_sync:          "↑2",
+            ci:                Some(Conclusion::Success),
+            deleted:           false,
         });
         let line = row_to_line(&row, &widths);
 
@@ -677,30 +717,34 @@ mod tests {
     #[test]
     fn git_path_state_changes_name_style() {
         let modified = build_row_cells(ProjectRow {
-            prefix:         "  ",
-            name:           "demo",
-            git_path_state: GitPathState::Modified,
-            lint_icon:      " ",
-            disk:           "—",
-            disk_style:     Style::default(),
-            lang_icon:      "🦀",
-            git_sync:       "",
-            ci:             None,
-            deleted:        false,
+            prefix:            "  ",
+            name:              "demo",
+            git_path_state:    GitPathState::Modified,
+            lint_icon:         " ",
+            disk:              "—",
+            disk_style:        Style::default(),
+            disk_suffix:       None,
+            disk_suffix_style: None,
+            lang_icon:         "🦀",
+            git_sync:          "",
+            ci:                None,
+            deleted:           false,
         });
         assert_eq!(modified.cells[COL_NAME].style.fg, Some(GIT_MODIFIED_COLOR));
 
         let untracked = build_row_cells(ProjectRow {
-            prefix:         "  ",
-            name:           "demo",
-            git_path_state: GitPathState::Untracked,
-            lint_icon:      " ",
-            disk:           "—",
-            disk_style:     Style::default(),
-            lang_icon:      "🦀",
-            git_sync:       "",
-            ci:             None,
-            deleted:        false,
+            prefix:            "  ",
+            name:              "demo",
+            git_path_state:    GitPathState::Untracked,
+            lint_icon:         " ",
+            disk:              "—",
+            disk_style:        Style::default(),
+            disk_suffix:       None,
+            disk_suffix_style: None,
+            lang_icon:         "🦀",
+            git_sync:          "",
+            ci:                None,
+            deleted:           false,
         });
         assert_eq!(
             untracked.cells[COL_NAME].style.fg,
@@ -708,16 +752,18 @@ mod tests {
         );
 
         let ignored = build_row_cells(ProjectRow {
-            prefix:         "  ",
-            name:           "demo",
-            git_path_state: GitPathState::Ignored,
-            lint_icon:      " ",
-            disk:           "—",
-            disk_style:     Style::default(),
-            lang_icon:      "🦀",
-            git_sync:       "",
-            ci:             None,
-            deleted:        false,
+            prefix:            "  ",
+            name:              "demo",
+            git_path_state:    GitPathState::Ignored,
+            lint_icon:         " ",
+            disk:              "—",
+            disk_style:        Style::default(),
+            disk_suffix:       None,
+            disk_suffix_style: None,
+            lang_icon:         "🦀",
+            git_sync:          "",
+            ci:                None,
+            deleted:           false,
         });
         assert_eq!(ignored.cells[COL_NAME].style.fg, Some(GIT_IGNORED_COLOR));
     }

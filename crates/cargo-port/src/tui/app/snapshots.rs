@@ -34,9 +34,13 @@ use crate::tui::render::PREFIX_WT_VENDORED;
 pub(super) fn build_visible_rows(
     nodes: &[ProjectNode],
     expanded: &HashSet<ExpandKey>,
+    dismissed: &HashSet<String>,
 ) -> Vec<VisibleRow> {
     let mut rows = Vec::new();
     for (ni, node) in nodes.iter().enumerate() {
+        if dismissed.contains(&node.project.path) {
+            continue;
+        }
         rows.push(VisibleRow::Root { node_index: ni });
         if expanded.contains(&ExpandKey::Node(ni)) {
             for (gi, group) in node.groups.iter().enumerate() {

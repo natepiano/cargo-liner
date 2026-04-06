@@ -255,8 +255,8 @@ action_enum! {
         Settings   => "settings",    "Open settings";
         NextPane   => "next_pane",   "Focus next pane";
         PrevPane   => "prev_pane",   "Focus previous pane";
-        FocusList  => "focus_list",  "Focus project list";
         OpenKeymap => "open_keymap", "Open keymap";
+        Dismiss    => "dismiss",     "Dismiss focused item";
     }
 }
 
@@ -314,13 +314,6 @@ action_enum! {
     }
 }
 
-action_enum! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub enum ToastsAction {
-        Dismiss => "dismiss", "Dismiss toast";
-    }
-}
-
 // ── Scope map ────────────────────────────────────────────────────────
 
 /// Bidirectional map for a single scope: key→action for dispatch,
@@ -372,7 +365,6 @@ pub struct ResolvedKeymap {
     pub targets:      ScopeMap<TargetsAction>,
     pub ci_runs:      ScopeMap<CiRunsAction>,
     pub lints:        ScopeMap<LintsAction>,
-    pub toasts:       ScopeMap<ToastsAction>,
 }
 
 impl ResolvedKeymap {
@@ -395,12 +387,12 @@ impl ResolvedKeymap {
             KeyBind::new(KeyCode::BackTab, KeyModifiers::SHIFT),
             GlobalAction::PrevPane,
         );
-        km.global
-            .insert(KeyBind::plain(KeyCode::Esc), GlobalAction::FocusList);
         km.global.insert(
             KeyBind::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
             GlobalAction::OpenKeymap,
         );
+        km.global
+            .insert(KeyBind::plain(KeyCode::Char('x')), GlobalAction::Dismiss);
 
         // Project list
         km.project_list.insert(
@@ -463,10 +455,6 @@ impl ResolvedKeymap {
         );
         km.lints
             .insert(KeyBind::plain(KeyCode::Char('p')), LintsAction::TogglePanel);
-
-        // Toasts
-        km.toasts
-            .insert(KeyBind::plain(KeyCode::Char('x')), ToastsAction::Dismiss);
 
         km
     }
@@ -549,13 +537,6 @@ impl ResolvedKeymap {
             LintsAction::ALL,
             LintsAction::toml_key,
         );
-        write_scope(
-            &mut out,
-            "toasts",
-            &km.toasts,
-            ToastsAction::ALL,
-            ToastsAction::toml_key,
-        );
 
         out
     }
@@ -629,13 +610,6 @@ impl ResolvedKeymap {
             LintsAction::ALL,
             LintsAction::toml_key,
         );
-        write_scope(
-            &mut out,
-            "toasts",
-            &km.toasts,
-            ToastsAction::ALL,
-            ToastsAction::toml_key,
-        );
         out
     }
 }
@@ -643,8 +617,9 @@ impl ResolvedKeymap {
 // ── Loading & validation ─────────────────────────────────────────────
 
 pub struct KeymapLoadResult {
-    pub keymap: ResolvedKeymap,
-    pub errors: Vec<KeymapError>,
+    pub keymap:          ResolvedKeymap,
+    pub errors:          Vec<KeymapError>,
+    pub missing_actions: Vec<String>,
 }
 
 pub struct KeymapError {
@@ -669,6 +644,7 @@ pub enum KeymapErrorReason {
     ConflictWithGlobal(String),
     ConflictWithinScope(String),
     ReservedForVimMode,
+    ReservedForNavigation,
     UnknownAction,
 }
 
@@ -679,6 +655,7 @@ impl fmt::Display for KeymapErrorReason {
             Self::ConflictWithGlobal(action) => write!(f, "conflicts with global.{action}"),
             Self::ConflictWithinScope(action) => write!(f, "conflicts with {action}"),
             Self::ReservedForVimMode => write!(f, "reserved for vim navigation"),
+            Self::ReservedForNavigation => write!(f, "reserved for navigation"),
             Self::UnknownAction => write!(f, "unknown action (ignored)"),
         }
     }
@@ -696,8 +673,9 @@ pub fn keymap_path() -> Option<PathBuf> {
 pub fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
     let Some(path) = keymap_path() else {
         return KeymapLoadResult {
-            keymap: ResolvedKeymap::defaults(),
-            errors: Vec::new(),
+            keymap:          ResolvedKeymap::defaults(),
+            errors:          Vec::new(),
+            missing_actions: Vec::new(),
         };
     };
 
@@ -707,8 +685,9 @@ pub fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
         }
         let _ = std::fs::write(&path, ResolvedKeymap::default_toml());
         return KeymapLoadResult {
-            keymap: ResolvedKeymap::defaults(),
-            errors: Vec::new(),
+            keymap:          ResolvedKeymap::defaults(),
+            errors:          Vec::new(),
+            missing_actions: Vec::new(),
         };
     }
 
@@ -716,13 +695,14 @@ pub fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
         Ok(c) => c,
         Err(e) => {
             return KeymapLoadResult {
-                keymap: ResolvedKeymap::defaults(),
-                errors: vec![KeymapError {
+                keymap:          ResolvedKeymap::defaults(),
+                errors:          vec![KeymapError {
                     scope:  String::new(),
                     action: String::new(),
                     key:    String::new(),
                     reason: KeymapErrorReason::ParseError(format!("read error: {e}")),
                 }],
+                missing_actions: Vec::new(),
             };
         },
     };
@@ -731,18 +711,27 @@ pub fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
         Ok(t) => t,
         Err(e) => {
             return KeymapLoadResult {
-                keymap: ResolvedKeymap::defaults(),
-                errors: vec![KeymapError {
+                keymap:          ResolvedKeymap::defaults(),
+                errors:          vec![KeymapError {
                     scope:  String::new(),
                     action: String::new(),
                     key:    String::new(),
                     reason: KeymapErrorReason::ParseError(format!("TOML parse error: {e}")),
                 }],
+                missing_actions: Vec::new(),
             };
         },
     };
 
-    resolve_from_table(&table, vim_mode)
+    let result = resolve_from_table(&table, vim_mode);
+
+    // Backfill missing entries into the file.
+    if !result.missing_actions.is_empty() {
+        let content = ResolvedKeymap::default_toml_from(&result.keymap);
+        let _ = std::fs::write(&path, content);
+    }
+
+    result
 }
 
 /// Load keymap from a TOML string (for testing and hot-reload).
@@ -751,13 +740,14 @@ pub fn load_keymap_from_str(toml_str: &str, vim_mode: NavigationKeys) -> KeymapL
         Ok(t) => t,
         Err(e) => {
             return KeymapLoadResult {
-                keymap: ResolvedKeymap::defaults(),
-                errors: vec![KeymapError {
+                keymap:          ResolvedKeymap::defaults(),
+                errors:          vec![KeymapError {
                     scope:  String::new(),
                     action: String::new(),
                     key:    String::new(),
                     reason: KeymapErrorReason::ParseError(format!("TOML parse error: {e}")),
                 }],
+                missing_actions: Vec::new(),
             };
         },
     };
@@ -838,13 +828,6 @@ pub fn vim_mode_conflicts(keymap: &ResolvedKeymap) -> Vec<String> {
         LintsAction::toml_key,
         &mut conflicts,
     );
-    check_scope(
-        "toasts",
-        &keymap.toasts,
-        &vim_keys,
-        ToastsAction::toml_key,
-        &mut conflicts,
-    );
 
     conflicts
 }
@@ -858,20 +841,35 @@ const VIM_RESERVED: [KeyCode; 4] = [
     KeyCode::Char('l'),
 ];
 
+const NAVIGATION_RESERVED: [KeyCode; 6] = [
+    KeyCode::Up,
+    KeyCode::Down,
+    KeyCode::Left,
+    KeyCode::Right,
+    KeyCode::Home,
+    KeyCode::End,
+];
+
 fn is_vim_reserved(bind: &KeyBind, vim_mode: NavigationKeys) -> bool {
     vim_mode.uses_vim() && bind.modifiers == KeyModifiers::NONE && VIM_RESERVED.contains(&bind.code)
+}
+
+fn is_navigation_reserved(bind: &KeyBind) -> bool {
+    bind.modifiers == KeyModifiers::NONE && NAVIGATION_RESERVED.contains(&bind.code)
 }
 
 fn resolve_from_table(table: &toml::Table, vim_mode: NavigationKeys) -> KeymapLoadResult {
     let defaults = ResolvedKeymap::defaults();
     let mut keymap = ResolvedKeymap::default();
     let mut errors = Vec::new();
+    let mut missing_actions = Vec::new();
     let no_globals = HashMap::new();
 
     // Phase 1: resolve globals (with intra-scope duplicate check).
     let mut ctx = ScopeResolveContext {
         table,
         errors: &mut errors,
+        missing_actions: &mut missing_actions,
         global_keys: &no_globals,
         vim_mode,
     };
@@ -895,7 +893,11 @@ fn resolve_from_table(table: &toml::Table, vim_mode: NavigationKeys) -> KeymapLo
     ctx.global_keys = &global_keys;
     resolve_pane_scopes(&mut ctx, &defaults, &mut keymap);
 
-    KeymapLoadResult { keymap, errors }
+    KeymapLoadResult {
+        keymap,
+        errors,
+        missing_actions,
+    }
 }
 
 fn resolve_pane_scopes(
@@ -957,22 +959,14 @@ fn resolve_pane_scopes(
         &defaults.lints,
         &mut keymap.lints,
     );
-    resolve_scope(
-        ctx,
-        "toasts",
-        ToastsAction::ALL,
-        ToastsAction::from_toml_key,
-        ToastsAction::toml_key,
-        &defaults.toasts,
-        &mut keymap.toasts,
-    );
 }
 
 struct ScopeResolveContext<'a> {
-    table:       &'a toml::Table,
-    errors:      &'a mut Vec<KeymapError>,
-    global_keys: &'a HashMap<KeyBind, String>,
-    vim_mode:    NavigationKeys,
+    table:           &'a toml::Table,
+    errors:          &'a mut Vec<KeymapError>,
+    missing_actions: &'a mut Vec<String>,
+    global_keys:     &'a HashMap<KeyBind, String>,
+    vim_mode:        NavigationKeys,
 }
 
 fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
@@ -1012,7 +1006,9 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
         let (bind, error) = match bind_result {
             Some(Ok(bind)) => {
                 // Validate the parsed binding.
-                if is_vim_reserved(&bind, ctx.vim_mode) {
+                if is_navigation_reserved(&bind) {
+                    (None, Some(KeymapErrorReason::ReservedForNavigation))
+                } else if is_vim_reserved(&bind, ctx.vim_mode) {
                     (None, Some(KeymapErrorReason::ReservedForVimMode))
                 } else if let Some(global_action) = ctx.global_keys.get(&bind) {
                     (
@@ -1031,7 +1027,11 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
                 }
             },
             Some(Err(e)) => (None, Some(KeymapErrorReason::ParseError(e))),
-            None => (None, None), // key missing from TOML — use default silently
+            None => {
+                // Key missing from TOML — record and use default.
+                ctx.missing_actions.push(format!("{scope_name}.{toml_key}"));
+                (None, None)
+            },
         };
 
         if let Some(reason) = error {
@@ -1252,7 +1252,6 @@ mod tests {
         check(&km.targets, TargetsAction::ALL);
         check(&km.ci_runs, CiRunsAction::ALL);
         check(&km.lints, LintsAction::ALL);
-        check(&km.toasts, ToastsAction::ALL);
     }
 
     #[test]
@@ -1266,7 +1265,6 @@ mod tests {
         assert!(table.contains_key("targets"));
         assert!(table.contains_key("ci_runs"));
         assert!(table.contains_key("lints"));
-        assert!(table.contains_key("toasts"));
     }
 
     // ── Validation tests ─────────────────────────────────────────────
@@ -1296,7 +1294,6 @@ find = "/"
 settings = "s"
 next_pane = "Tab"
 prev_pane = "Shift+Tab"
-focus_list = "Esc"
 open_keymap = "Ctrl+k"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
@@ -1319,7 +1316,6 @@ find = "/"
 settings = "s"
 next_pane = "Tab"
 prev_pane = "Shift+Tab"
-focus_list = "Esc"
 open_keymap = "Ctrl+k"
 
 [project_list]
@@ -1345,7 +1341,6 @@ find = "/"
 settings = "s"
 next_pane = "Tab"
 prev_pane = "Shift+Tab"
-focus_list = "Esc"
 open_keymap = "Ctrl+k"
 
 [project_list]
@@ -1374,7 +1369,6 @@ find = "/"
 settings = "s"
 next_pane = "Tab"
 prev_pane = "Shift+Tab"
-focus_list = "Esc"
 open_keymap = "Ctrl+k"
 
 [project_list]
@@ -1387,6 +1381,50 @@ rescan = "h"
                 .iter()
                 .any(|e| matches!(e.reason, KeymapErrorReason::ReservedForVimMode)),
             "expected vim reservation error for 'h'"
+        );
+    }
+
+    #[test]
+    fn navigation_key_reserved() {
+        let toml = r#"
+[global]
+quit = "Up"
+restart = "Shift+r"
+find = "/"
+settings = "s"
+next_pane = "Tab"
+prev_pane = "Shift+Tab"
+open_keymap = "Ctrl+k"
+"#;
+        let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e.reason, KeymapErrorReason::ReservedForNavigation)),
+            "expected navigation reservation error for 'Up'"
+        );
+    }
+
+    #[test]
+    fn navigation_key_with_modifier_allowed() {
+        let toml = r#"
+[global]
+quit = "Ctrl+Up"
+restart = "Shift+r"
+find = "/"
+settings = "s"
+next_pane = "Tab"
+prev_pane = "Shift+Tab"
+open_keymap = "Ctrl+k"
+"#;
+        let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
+        assert!(
+            !result
+                .errors
+                .iter()
+                .any(|e| matches!(e.reason, KeymapErrorReason::ReservedForNavigation)),
+            "Ctrl+Up should be allowed"
         );
     }
 
@@ -1442,7 +1480,6 @@ find = "/"
 settings = "s"
 next_pane = "Tab"
 prev_pane = "Shift+Tab"
-focus_list = "Esc"
 open_keymap = "Ctrl+k"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
@@ -1487,7 +1524,6 @@ find = "/"
 settings = "h"
 next_pane = "Tab"
 prev_pane = "Shift+Tab"
-focus_list = "Esc"
 open_keymap = "Ctrl+k"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
@@ -1501,5 +1537,66 @@ open_keymap = "Ctrl+k"
         let km = ResolvedKeymap::defaults();
         assert_eq!(km.global.display_key_for(GlobalAction::Quit), "q");
         assert_eq!(km.global.display_key_for(GlobalAction::OpenKeymap), "⌃k");
+    }
+
+    #[test]
+    fn missing_action_detected() {
+        // Omit `quit` from globals — should appear in missing_actions.
+        let toml = r#"
+[global]
+restart = "R"
+find = "/"
+settings = "s"
+next_pane = "Tab"
+prev_pane = "Shift+Tab"
+open_keymap = "Ctrl+k"
+"#;
+        let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
+        assert!(
+            result.missing_actions.iter().any(|m| m == "global.quit"),
+            "expected global.quit in missing_actions: {:?}",
+            result.missing_actions
+        );
+        // Default should still be applied.
+        assert_eq!(
+            result.keymap.global.key_for(GlobalAction::Quit),
+            Some(&KeyBind::plain(KeyCode::Char('q')))
+        );
+    }
+
+    #[test]
+    fn complete_keymap_has_no_missing() {
+        let toml_str = ResolvedKeymap::default_toml();
+        let result = load_keymap_from_str(&toml_str, NavigationKeys::ArrowsOnly);
+        assert!(
+            result.missing_actions.is_empty(),
+            "default toml should have no missing actions: {:?}",
+            result.missing_actions
+        );
+    }
+
+    #[test]
+    fn missing_entire_scope_detected() {
+        // No [lints] section at all — its actions should appear in missing.
+        let toml = r#"
+[global]
+quit = "q"
+restart = "R"
+find = "/"
+settings = "s"
+next_pane = "Tab"
+prev_pane = "Shift+Tab"
+dismiss = "x"
+open_keymap = "Ctrl+k"
+"#;
+        let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
+        assert!(
+            result
+                .missing_actions
+                .iter()
+                .any(|m| m.starts_with("lints.")),
+            "expected lints actions in missing: {:?}",
+            result.missing_actions
+        );
     }
 }

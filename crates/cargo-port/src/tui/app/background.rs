@@ -137,6 +137,15 @@ impl App {
         if !result.errors.is_empty() {
             self.show_keymap_diagnostics(&result.errors);
         }
+        if !result.missing_actions.is_empty() {
+            self.show_timed_toast(
+                "Keymap updated",
+                format!(
+                    "Defaults written for missing entries:\n{}",
+                    result.missing_actions.join(", ")
+                ),
+            );
+        }
     }
 
     pub fn maybe_reload_keymap_from_disk(&mut self) {
@@ -173,6 +182,22 @@ impl App {
             self.dismiss_keymap_diagnostics();
         } else {
             self.show_keymap_diagnostics(&result.errors);
+        }
+
+        if !result.missing_actions.is_empty() {
+            if let Some(path) = &self.keymap_path {
+                let content =
+                    crate::keymap::ResolvedKeymap::default_toml_from(&self.current_keymap);
+                let _ = std::fs::write(path, content);
+                self.sync_keymap_watch_state();
+            }
+            self.show_timed_toast(
+                "Keymap updated",
+                format!(
+                    "Defaults written for missing entries:\n{}",
+                    result.missing_actions.join(", ")
+                ),
+            );
         }
     }
 

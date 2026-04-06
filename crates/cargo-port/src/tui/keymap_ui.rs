@@ -24,7 +24,6 @@ use crate::keymap::ProjectListAction;
 use crate::keymap::ResolvedKeymap;
 use crate::keymap::ScopeMap;
 use crate::keymap::TargetsAction;
-use crate::keymap::ToastsAction;
 
 // ── Row model ────────────────────────────────────────────────────────
 
@@ -72,18 +71,40 @@ fn push_scope<A: Copy + Eq + std::hash::Hash>(
     scope_map: &ScopeMap<A>,
 ) {
     rows.push(header(scope_name));
-    for &a in actions {
-        rows.push(action_row(scope_key, a, toml_key, description, scope_map));
-    }
+    let mut section: Vec<KeymapRow> = actions
+        .iter()
+        .map(|&a| action_row(scope_key, a, toml_key, description, scope_map))
+        .collect();
+    section.sort_by_key(|r| r.description);
+    rows.extend(section);
 }
+
+const GLOBAL_NAV: &[GlobalAction] = &[GlobalAction::NextPane, GlobalAction::PrevPane];
+const GLOBAL_SHORTCUTS: &[GlobalAction] = &[
+    GlobalAction::Quit,
+    GlobalAction::Restart,
+    GlobalAction::Find,
+    GlobalAction::Settings,
+    GlobalAction::OpenKeymap,
+    GlobalAction::Dismiss,
+];
 
 fn build_rows(km: &ResolvedKeymap) -> Vec<KeymapRow> {
     let mut rows = Vec::new();
     push_scope(
         &mut rows,
-        "Global",
+        "Global Navigation",
         "global",
-        GlobalAction::ALL,
+        GLOBAL_NAV,
+        GlobalAction::toml_key,
+        GlobalAction::description,
+        &km.global,
+    );
+    push_scope(
+        &mut rows,
+        "Global Shortcuts",
+        "global",
+        GLOBAL_SHORTCUTS,
         GlobalAction::toml_key,
         GlobalAction::description,
         &km.global,
@@ -142,15 +163,6 @@ fn build_rows(km: &ResolvedKeymap) -> Vec<KeymapRow> {
         LintsAction::description,
         &km.lints,
     );
-    push_scope(
-        &mut rows,
-        "Toasts",
-        "toasts",
-        ToastsAction::ALL,
-        ToastsAction::toml_key,
-        ToastsAction::description,
-        &km.toasts,
-    );
     rows
 }
 
@@ -163,7 +175,6 @@ pub(super) const fn selectable_row_count() -> usize {
         + TargetsAction::ALL.len()
         + CiRunsAction::ALL.len()
         + LintsAction::ALL.len()
-        + ToastsAction::ALL.len()
 }
 
 // ── Key handling ─────────────────────────────────────────────────────
@@ -205,6 +216,22 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     let Some(row) = selectable.get(app.keymap_pane.pos()) else {
         return;
     };
+
+    // Check navigation reservation.
+    if bind.modifiers == KeyModifiers::NONE
+        && matches!(
+            bind.code,
+            KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Home
+                | KeyCode::End
+        )
+    {
+        app.keymap_conflict = Some(format!("\"{}\" reserved for navigation", bind.display()));
+        return;
+    }
 
     // Check vim reservation.
     if app.navigation_keys().uses_vim()
@@ -311,13 +338,6 @@ fn check_scope_conflict(
             LintsAction::toml_key,
             "Lints",
         ),
-        "toasts" => check(
-            &km.toasts,
-            current_action,
-            bind,
-            ToastsAction::toml_key,
-            "Toasts",
-        ),
         _ => None,
     }
 }
@@ -381,12 +401,6 @@ fn apply_rebind(app: &mut App, scope: &str, action: &str, bind: KeyBind) {
             action,
             bind,
             LintsAction::from_toml_key,
-        ),
-        "toasts" => rebind(
-            &mut app.current_keymap.toasts,
-            action,
-            bind,
-            ToastsAction::from_toml_key,
         ),
         _ => {},
     }

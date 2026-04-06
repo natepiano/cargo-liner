@@ -1,6 +1,8 @@
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
+use super::app::ClickAction;
+
 /// A bounded cursor for scrollable lists. Replaces raw `usize` index + manual
 /// bounds checking with a single type that enforces invariants.
 #[derive(Default, Clone)]
@@ -129,11 +131,11 @@ impl PaneId {
     }
 }
 
+/// Toast card focus hitbox (separate from dismiss — card click changes focus).
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct ToastHitbox {
-    pub id:         u64,
-    pub card_rect:  Rect,
-    pub close_rect: Rect,
+pub(super) struct ToastCardHitbox {
+    pub id:        u64,
+    pub card_rect: Rect,
 }
 
 /// Cached layout rectangles from the last render frame, used for mouse
@@ -144,5 +146,6 @@ pub(super) struct LayoutCache {
     pub project_list_offset: usize,
     pub detail_columns:      Vec<Rect>,
     pub detail_targets_col:  Option<usize>,
-    pub toast_hitboxes:      Vec<ToastHitbox>,
+    pub dismiss_hitboxes:    Vec<ClickAction>,
+    pub toast_cards:         Vec<ToastCardHitbox>,
 }
