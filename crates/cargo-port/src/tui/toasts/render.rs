@@ -13,7 +13,6 @@ use ratatui::widgets::Wrap;
 
 use super::manager::ToastView;
 use crate::tui::constants::TOAST_GAP;
-use crate::tui::constants::TOAST_HEIGHT;
 use crate::tui::constants::TOAST_WIDTH;
 use crate::tui::types::ToastHitbox;
 
@@ -43,28 +42,26 @@ pub fn render_toasts(
     }
 
     let width = TOAST_WIDTH.min(area.width);
-    let step = TOAST_HEIGHT + TOAST_GAP;
-    let max_cards = usize::from((area.height + TOAST_GAP) / step).max(1);
-    let visible = if toasts.len() > max_cards {
-        &toasts[toasts.len() - max_cards..]
-    } else {
-        toasts
-    };
 
-    let mut hitboxes = Vec::with_capacity(visible.len());
-    for (stack_index, toast) in visible.iter().rev().enumerate() {
-        let offset = u16::try_from(stack_index).unwrap_or(u16::MAX);
-        let y = area
-            .y
-            .saturating_add(area.height)
-            .saturating_sub(TOAST_HEIGHT)
-            .saturating_sub(offset.saturating_mul(step));
+    // Stack toasts from the bottom of the area upward. Each toast may
+    // have a different height due to entrance/exit animation.
+    let mut hitboxes = Vec::with_capacity(toasts.len());
+    let mut cursor_y = area.y.saturating_add(area.height);
+    for toast in toasts.iter().rev() {
+        let card_height = toast.visible_lines();
+        if card_height == 0 {
+            continue;
+        }
+        cursor_y = cursor_y.saturating_sub(card_height + TOAST_GAP);
+        if cursor_y < area.y {
+            break;
+        }
         let x = area.x + area.width.saturating_sub(width);
         let card = Rect {
             x,
-            y,
+            y: cursor_y,
             width,
-            height: TOAST_HEIGHT,
+            height: card_height,
         };
 
         frame.render_widget(Clear, card);
@@ -81,51 +78,65 @@ pub fn render_toasts(
         let inner = block.inner(card);
         frame.render_widget(block, card);
 
-        let close_text = "[x]";
-        let close_width = u16::try_from(close_text.len()).unwrap_or(u16::MAX);
-        let close_rect = Rect {
-            x:      card.x + card.width.saturating_sub(close_width + 2),
-            y:      card.y,
-            width:  close_width + 1,
-            height: 1,
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                close_text,
-                border_style.add_modifier(Modifier::BOLD),
-            ))),
-            close_rect,
-        );
-
-        let title_width = usize::from(inner.width.saturating_sub(close_width + 1));
-        let title = truncate(toast.title(), title_width);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                title,
-                border_style.add_modifier(Modifier::BOLD),
-            ))),
-            Rect {
-                x:      inner.x,
-                y:      inner.y,
-                width:  inner.width.saturating_sub(close_width + 1),
+        // Only render content if there is inner space.
+        if inner.height > 0 {
+            let close_text = "[x]";
+            let close_width = u16::try_from(close_text.len()).unwrap_or(u16::MAX);
+            let close_rect = Rect {
+                x:      card.x + card.width.saturating_sub(close_width + 2),
+                y:      card.y,
+                width:  close_width + 1,
                 height: 1,
-            },
-        );
-        frame.render_widget(
-            Paragraph::new(toast.body()).wrap(Wrap { trim: false }),
-            Rect {
-                x:      inner.x,
-                y:      inner.y.saturating_add(1),
-                width:  inner.width,
-                height: inner.height.saturating_sub(1),
-            },
-        );
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    close_text,
+                    border_style.add_modifier(Modifier::BOLD),
+                ))),
+                close_rect,
+            );
 
-        hitboxes.push(ToastHitbox {
-            id: toast.id(),
-            card_rect: card,
-            close_rect,
-        });
+            let title_width = usize::from(inner.width.saturating_sub(close_width + 1));
+            let title = truncate(toast.title(), title_width);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    title,
+                    border_style.add_modifier(Modifier::BOLD),
+                ))),
+                Rect {
+                    x:      inner.x,
+                    y:      inner.y,
+                    width:  inner.width.saturating_sub(close_width + 1),
+                    height: 1,
+                },
+            );
+
+            if inner.height > 1 {
+                frame.render_widget(
+                    Paragraph::new(toast.body()).wrap(Wrap { trim: false }),
+                    Rect {
+                        x:      inner.x,
+                        y:      inner.y.saturating_add(1),
+                        width:  inner.width,
+                        height: inner.height.saturating_sub(1),
+                    },
+                );
+            }
+
+            hitboxes.push(ToastHitbox {
+                id: toast.id(),
+                card_rect: card,
+                close_rect,
+            });
+        } else {
+            // During animation the card may be too small for content but
+            // still needs a hitbox for layout purposes.
+            hitboxes.push(ToastHitbox {
+                id:         toast.id(),
+                card_rect:  card,
+                close_rect: card,
+            });
+        }
     }
 
     hitboxes.reverse();

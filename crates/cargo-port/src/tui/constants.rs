@@ -17,6 +17,8 @@ pub(super) const CI_TIMESTAMP_WIDTH: u16 = 16;
 pub(super) const TOAST_WIDTH: u16 = 40;
 pub(super) const TOAST_HEIGHT: u16 = 5;
 pub(super) const TOAST_GAP: u16 = 0;
+/// Milliseconds between each line reveal/collapse during toast animation.
+pub(super) const TOAST_LINE_REVEAL_MS: u64 = 200;
 
 pub(super) const MAX_FINDER_RESULTS: usize = 50;
 

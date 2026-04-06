@@ -1,33 +1,88 @@
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::tui::constants::TOAST_HEIGHT;
+use crate::tui::constants::TOAST_LINE_REVEAL_MS;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ToastTaskId(pub u64);
 
 #[derive(Clone, Debug)]
 struct Toast {
-    id:            u64,
-    title:         String,
-    body:          String,
-    timeout_at:    Option<Instant>,
-    task_id:       Option<ToastTaskId>,
-    dismissed:     bool,
-    finished_task: bool,
+    id:              u64,
+    title:           String,
+    body:            String,
+    timeout_at:      Option<Instant>,
+    task_id:         Option<ToastTaskId>,
+    dismissed:       bool,
+    finished_task:   bool,
+    created_at:      Instant,
+    exit_started_at: Option<Instant>,
 }
 
 impl Toast {
-    fn is_active(&self, now: Instant) -> bool {
-        !self.dismissed
-            && !self.finished_task
-            && self.timeout_at.is_none_or(|deadline| deadline > now)
+    /// A toast is alive while it is entering, fully visible, or animating
+    /// out.  It becomes dead only once the exit animation finishes.
+    fn is_alive(&self, now: Instant) -> bool {
+        self.exit_started_at.map_or_else(
+            || {
+                !self.dismissed
+                    && !self.finished_task
+                    && self.timeout_at.is_none_or(|deadline| deadline > now)
+            },
+            |exit_start| exit_lines(now, exit_start) > 0,
+        )
     }
+
+    /// Should this toast begin its exit animation right now?
+    fn should_exit(&self, now: Instant) -> bool {
+        self.exit_started_at.is_none()
+            && (self.dismissed
+                || self.finished_task
+                || self.timeout_at.is_some_and(|deadline| now >= deadline))
+    }
+
+    fn current_visible_lines(&self, now: Instant) -> u16 {
+        if let Some(exit_start) = self.exit_started_at {
+            return exit_lines(now, exit_start);
+        }
+        let elapsed_lines = elapsed_line_count(now.duration_since(self.created_at));
+        // Start at 2 (top+bottom border) — height=1 renders a stray
+        // corner glyph that clashes with the window border.
+        (2 + elapsed_lines).min(TOAST_HEIGHT)
+    }
+}
+
+fn exit_lines(now: Instant, exit_start: Instant) -> u16 {
+    if now >= exit_start {
+        let remaining =
+            TOAST_HEIGHT.saturating_sub(elapsed_line_count(now.duration_since(exit_start)));
+        // Skip height=1: a single-line Block renders a stray corner glyph
+        // that clashes with the window border. Jump from 2 → 0.
+        if remaining == 1 { 0 } else { remaining }
+    } else {
+        TOAST_HEIGHT
+    }
+}
+
+/// How many full `TOAST_LINE_REVEAL_MS` intervals fit in `elapsed`.
+///
+/// Uses `as_secs()` + `subsec_millis()` to stay within u64 arithmetic
+/// and avoid truncation casts from `as_millis() -> u128`.
+fn elapsed_line_count(elapsed: Duration) -> u16 {
+    let ms = elapsed
+        .as_secs()
+        .saturating_mul(1000)
+        .saturating_add(u64::from(elapsed.subsec_millis()));
+    u16::try_from(ms / TOAST_LINE_REVEAL_MS).unwrap_or(u16::MAX)
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct ToastView<'a> {
-    id:    u64,
-    title: &'a str,
-    body:  &'a str,
+    id:            u64,
+    title:         &'a str,
+    body:          &'a str,
+    visible_lines: u16,
 }
 
 impl<'a> ToastView<'a> {
@@ -36,6 +91,8 @@ impl<'a> ToastView<'a> {
     pub const fn title(&self) -> &'a str { self.title }
 
     pub const fn body(&self) -> &'a str { self.body }
+
+    pub const fn visible_lines(&self) -> u16 { self.visible_lines }
 }
 
 #[derive(Default)]
@@ -58,14 +115,17 @@ impl ToastManager {
         timeout: Duration,
     ) -> u64 {
         let id = self.alloc_id();
+        let now = Instant::now();
         self.toasts.push(Toast {
             id,
             title: title.into(),
             body: body.into(),
-            timeout_at: Some(Instant::now() + timeout),
+            timeout_at: Some(now + timeout),
             task_id: None,
             dismissed: false,
             finished_task: false,
+            created_at: now,
+            exit_started_at: None,
         });
         id
     }
@@ -73,6 +133,7 @@ impl ToastManager {
     pub fn push_task(&mut self, title: impl Into<String>, body: impl Into<String>) -> ToastTaskId {
         let id = self.alloc_id();
         let task_id = ToastTaskId(id);
+        let now = Instant::now();
         self.toasts.push(Toast {
             id,
             title: title.into(),
@@ -81,6 +142,8 @@ impl ToastManager {
             task_id: Some(task_id),
             dismissed: false,
             finished_task: false,
+            created_at: now,
+            exit_started_at: None,
         });
         task_id
     }
@@ -108,16 +171,26 @@ impl ToastManager {
         }
     }
 
-    pub fn prune(&mut self, now: Instant) { self.toasts.retain(|toast| toast.is_active(now)); }
+    pub fn prune(&mut self, now: Instant) {
+        // Start exit animations for toasts that should begin exiting.
+        for toast in &mut self.toasts {
+            if toast.should_exit(now) {
+                toast.exit_started_at = Some(now);
+            }
+        }
+        // Remove toasts whose exit animation has completed.
+        self.toasts.retain(|toast| toast.is_alive(now));
+    }
 
     pub fn active(&self, now: Instant) -> Vec<ToastView<'_>> {
         self.toasts
             .iter()
-            .filter(|toast| toast.is_active(now))
+            .filter(|toast| toast.is_alive(now))
             .map(|toast| ToastView {
-                id:    toast.id,
-                title: &toast.title,
-                body:  &toast.body,
+                id:            toast.id,
+                title:         &toast.title,
+                body:          &toast.body,
+                visible_lines: toast.current_visible_lines(now),
             })
             .collect()
     }
@@ -129,13 +202,25 @@ mod tests {
 
     use super::*;
 
+    /// Duration long enough for the full exit animation to complete.
+    const EXIT_ANIMATION: Duration =
+        Duration::from_millis(TOAST_HEIGHT as u64 * TOAST_LINE_REVEAL_MS + 1);
+
     #[test]
     fn timed_toast_expires() {
         let mut manager = ToastManager::default();
         manager.push_timed("settings", "updated", Duration::from_millis(10));
         assert_eq!(manager.active(Instant::now()).len(), 1);
-        manager.prune(Instant::now() + Duration::from_millis(20));
-        assert!(manager.active(Instant::now()).is_empty());
+
+        // Prune after timeout — starts exit animation but toast is still alive.
+        let after_timeout = Instant::now() + Duration::from_millis(20);
+        manager.prune(after_timeout);
+        assert_eq!(manager.active(after_timeout).len(), 1);
+
+        // After the exit animation completes, the toast is fully removed.
+        let after_exit = after_timeout + EXIT_ANIMATION;
+        manager.prune(after_exit);
+        assert!(manager.active(after_exit).is_empty());
     }
 
     #[test]
@@ -143,9 +228,16 @@ mod tests {
         let mut manager = ToastManager::default();
         let task = manager.push_task("cargo clean", "~/rust/bevy");
         assert_eq!(manager.active(Instant::now()).len(), 1);
+
         manager.finish_task(task);
-        manager.prune(Instant::now());
-        assert!(manager.active(Instant::now()).is_empty());
+        let now = Instant::now();
+        manager.prune(now);
+        // Still alive during exit animation.
+        assert_eq!(manager.active(now).len(), 1);
+
+        let after_exit = now + EXIT_ANIMATION;
+        manager.prune(after_exit);
+        assert!(manager.active(after_exit).is_empty());
     }
 
     #[test]
