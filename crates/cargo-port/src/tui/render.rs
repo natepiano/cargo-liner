@@ -40,8 +40,8 @@ use crate::ci::Conclusion;
 use crate::constants::WORKTREE;
 use crate::project;
 use crate::project::GitOrigin;
-use crate::project::ProjectLanguage::Rust;
 use crate::project::Project;
+use crate::project::ProjectLanguage::Rust;
 use crate::scan;
 
 #[derive(Clone, Copy)]

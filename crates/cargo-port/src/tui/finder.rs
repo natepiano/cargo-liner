@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
 use crossterm::event::KeyCode;
+use nucleo_matcher::Matcher;
+use nucleo_matcher::Utf32Str;
 use nucleo_matcher::pattern::Atom;
 use nucleo_matcher::pattern::AtomKind;
 use nucleo_matcher::pattern::CaseMatching;
 use nucleo_matcher::pattern::Normalization;
-use nucleo_matcher::Matcher;
-use nucleo_matcher::Utf32Str;
+use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -18,7 +19,6 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
-use ratatui::Frame;
 
 use super::app::App;
 use super::constants::FINDER_POPUP_HEIGHT;

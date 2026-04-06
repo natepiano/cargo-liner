@@ -6,9 +6,9 @@ use crate::constants::SYNC_UP;
 use crate::project::ExampleGroup;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
+use crate::project::Project;
 use crate::project::ProjectLanguage;
 use crate::project::ProjectType;
-use crate::project::Project;
 use crate::tui::app::App;
 
 #[derive(Default)]

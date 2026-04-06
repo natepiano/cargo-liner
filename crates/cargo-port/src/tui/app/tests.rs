@@ -1,6 +1,6 @@
 use std::collections::HashSet;
-use std::sync::mpsc;
 use std::sync::OnceLock;
+use std::sync::mpsc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -158,10 +158,11 @@ fn external_config_reload_keeps_last_good_config_on_parse_error() {
 
     assert_eq!(app.editor(), "zed");
     assert_eq!(app.current_config.tui.editor, "zed");
-    assert!(app
-        .status_flash
-        .as_ref()
-        .is_some_and(|(msg, _)| msg.contains("Config reload failed")));
+    assert!(
+        app.status_flash
+            .as_ref()
+            .is_some_and(|(msg, _)| msg.contains("Config reload failed"))
+    );
 }
 
 #[test]
@@ -192,10 +193,11 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     assert_eq!(app.all_projects.len(), 2);
     assert!(app.is_scan_complete());
     assert_eq!(app.nodes.len(), 2);
-    assert!(app
-        .nodes
-        .iter()
-        .any(|node| node.project.path == non_rust_project.path));
+    assert!(
+        app.nodes
+            .iter()
+            .any(|node| node.project.path == non_rust_project.path)
+    );
 }
 
 #[test]
@@ -731,11 +733,12 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(&project_a.path));
-    assert!(!app
-        .scan
-        .startup_phases
-        .lint_seen_terminal
-        .contains(&project_a.path));
+    assert!(
+        !app.scan
+            .startup_phases
+            .lint_seen_terminal
+            .contains(&project_a.path)
+    );
     assert!(app.running_lint_paths.contains(&project_a.path));
     assert!(app.lint_toast.is_some());
 

@@ -15,9 +15,9 @@ use crate::project::Project;
 use crate::scan::MemberGroup;
 use crate::scan::ProjectNode;
 use crate::tui::columns;
-use crate::tui::columns::ResolvedWidths;
 use crate::tui::columns::COL_DISK;
 use crate::tui::columns::COL_SYNC;
+use crate::tui::columns::ResolvedWidths;
 use crate::tui::render;
 use crate::tui::render::PREFIX_GROUP_COLLAPSED;
 use crate::tui::render::PREFIX_MEMBER_INLINE;
@@ -144,11 +144,7 @@ pub(super) fn live_worktree_count_for_node(
                 && !dismissed_projects.contains(&wt.project.path)
         })
         .count();
-    if live <= 1 {
-        0
-    } else {
-        live
-    }
+    if live <= 1 { 0 } else { live }
 }
 
 pub(super) fn unique_node_paths(node: &ProjectNode) -> Vec<&str> {
@@ -181,11 +177,7 @@ pub(super) fn disk_bytes_for_node_snapshot(
             any_data = true;
         }
     }
-    if any_data {
-        Some(total)
-    } else {
-        None
-    }
+    if any_data { Some(total) } else { None }
 }
 
 pub(super) fn formatted_disk_snapshot(disk_usage: &HashMap<String, u64>, path: &str) -> String {
