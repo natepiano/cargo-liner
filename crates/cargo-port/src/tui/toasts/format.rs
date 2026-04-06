@@ -110,9 +110,8 @@ fn truncate_to_width(text: &str, target_width: usize, add_ellipsis: bool) -> Str
 #[allow(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
-    use crate::tui::toasts::toast_body_width;
 
-    fn width() -> usize { toast_body_width() }
+    fn width() -> usize { usize::from(crate::tui::constants::TOAST_WIDTH.saturating_sub(2)) }
 
     #[test]
     fn single_short_item_unchanged() {
