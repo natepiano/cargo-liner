@@ -526,6 +526,7 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
             app.finder.total
         )
     };
+    let border_style = Style::default().fg(Color::Cyan);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
@@ -534,7 +535,8 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )
-        .border_style(Style::default().fg(Color::Cyan));
+        .title_top(Line::from(Span::styled(" Esc to close", border_style)).right_aligned())
+        .border_style(border_style);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);

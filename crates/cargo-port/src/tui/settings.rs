@@ -392,6 +392,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
 
     frame.render_widget(Clear, area);
 
+    let border_style = Style::default().fg(Color::Cyan);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Settings ")
@@ -400,7 +401,8 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )
-        .border_style(Style::default().fg(Color::Cyan));
+        .title_top(Line::from(Span::styled(" Esc to close", border_style)).right_aligned())
+        .border_style(border_style);
 
     app.settings_pane.set_content_area(block.inner(area));
 

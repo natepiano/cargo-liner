@@ -2,7 +2,6 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use ratatui::Frame;
-use ratatui::layout::Alignment;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
@@ -422,11 +421,12 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     let popup = Rect::new(x, y, width, height);
 
     frame.render_widget(Clear, popup);
+    let border_style = Style::default().fg(Color::Cyan);
     let block = Block::default()
-        .title(" Keymap ")
-        .title_alignment(Alignment::Center)
+        .title(Line::from(" Keymap ").centered())
+        .title_top(Line::from(Span::styled(" Esc to close", border_style)).right_aligned())
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(border_style);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
