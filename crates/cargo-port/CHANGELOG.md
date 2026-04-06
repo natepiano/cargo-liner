@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Lint history shows past runs with per-command status, duration, and archived output
 - Press Enter on a run to open its output in the editor
 
+#### Keybindings
+- Customizable keyboard shortcuts via `keymap.toml` with hot-reload
+- Keymap UI overlay (Ctrl-K) for browsing and rebinding keys inline
+- Conflict detection: global, intra-scope, and vim hjkl reservation
+- Partial acceptance: valid bindings apply immediately, invalid ones fall back to defaults with a diagnostic toast
+- Modifier support: Ctrl, Alt, Shift combos fully distinguished
+
 #### Project Tree
 - Vendored path-dependency crates shown as children of their parent
 - Workspace worktrees grouped under their primary checkout

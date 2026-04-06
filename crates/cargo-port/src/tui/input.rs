@@ -77,7 +77,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         return;
     }
     if app.is_keymap_open() {
-        super::keymap_ui::handle_keymap_key(app, &normalized);
+        super::keymap_ui::handle_keymap_key(app, raw, &normalized);
         return;
     }
     if app.is_finder_open() {

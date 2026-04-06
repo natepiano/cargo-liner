@@ -169,13 +169,16 @@ pub(super) const fn selectable_row_count() -> usize {
 
 // ── Key handling ─────────────────────────────────────────────────────
 
-pub(super) fn handle_keymap_key(app: &mut App, event: &KeyEvent) {
+pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyEvent) {
     if app.ui_modes.keymap.is_awaiting_key() {
-        handle_awaiting_key(app, event);
+        // Awaiting mode uses the raw event so vim-normalized keys
+        // don't interfere with the user's intended binding.
+        handle_awaiting_key(app, raw);
         return;
     }
 
-    match event.code {
+    // Navigation uses the normalized event (vim hjkl → arrows).
+    match normalized.code {
         KeyCode::Esc => {
             app.close_keymap();
             app.close_overlay();
