@@ -18,7 +18,7 @@ use crate::constants::SYNC_UP;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::ProjectLanguage::Rust;
-use crate::project::RustProject;
+use crate::project::Project;
 use crate::scan::ProjectNode;
 use crate::tui::detail::DetailField;
 use crate::tui::detail::ProjectCounts;
@@ -103,7 +103,7 @@ impl App {
         self.prune_toasts();
     }
 
-    pub fn lint_is_watchable(&self, project: &RustProject) -> bool {
+    pub fn lint_is_watchable(&self, project: &Project) -> bool {
         if !self.lint_enabled() {
             return false;
         }
@@ -115,7 +115,7 @@ impl App {
         )
     }
 
-    pub fn bottom_panel_available(&self, project: &RustProject) -> bool {
+    pub fn bottom_panel_available(&self, project: &Project) -> bool {
         let has_ci = self.is_ci_owner_path(&project.path)
             && (self
                 .ci_state_for(project)
@@ -172,7 +172,7 @@ impl App {
         }
     }
 
-    pub fn workspace_counts(&self, project: &RustProject) -> Option<ProjectCounts> {
+    pub fn workspace_counts(&self, project: &Project) -> Option<ProjectCounts> {
         // Check top-level nodes first
         if let Some(node) = self.nodes.iter().find(|n| n.project.path == project.path)
             && node.has_members()
@@ -212,14 +212,14 @@ impl App {
         )
     }
 
-    pub fn formatted_disk(&self, project: &RustProject) -> String {
+    pub fn formatted_disk(&self, project: &Project) -> String {
         match self.disk_usage.get(&project.path) {
             Some(&bytes) => crate::tui::render::format_bytes(bytes),
             None => crate::tui::render::format_bytes(0),
         }
     }
 
-    pub fn selected_ci_project(&self) -> Option<&RustProject> {
+    pub fn selected_ci_project(&self) -> Option<&Project> {
         self.selected_project()
             .filter(|project| self.is_ci_owner_path(&project.path))
     }
@@ -229,7 +229,7 @@ impl App {
             .and_then(|project| self.ci_state.get(&project.path))
     }
 
-    pub fn ci_for(&self, project: &RustProject) -> Option<Conclusion> {
+    pub fn ci_for(&self, project: &Project) -> Option<Conclusion> {
         self.ci_state_for(project)
             .and_then(|_| self.latest_ci_run_for_path(&project.path))
             .map(|run| run.conclusion)
@@ -303,7 +303,7 @@ impl App {
         }
     }
 
-    pub fn ci_state_for(&self, project: &RustProject) -> Option<&CiState> {
+    pub fn ci_state_for(&self, project: &Project) -> Option<&CiState> {
         self.is_ci_owner_path(&project.path)
             .then(|| self.ci_state.get(&project.path))
             .flatten()
@@ -338,7 +338,7 @@ impl App {
         })
     }
 
-    pub fn project_by_path(&self, path: &str) -> Option<&RustProject> {
+    pub fn project_by_path(&self, path: &str) -> Option<&Project> {
         self.all_projects
             .iter()
             .find(|project| project.path == path)
@@ -415,7 +415,7 @@ impl App {
     }
 
     /// Formatted ahead/behind sync status for the project list columns.
-    pub fn git_sync(&self, project: &RustProject) -> String {
+    pub fn git_sync(&self, project: &Project) -> String {
         if matches!(
             self.git_path_state_for(&project.path),
             GitPathState::Untracked | GitPathState::Ignored

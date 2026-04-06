@@ -41,7 +41,7 @@ use crate::constants::WORKTREE;
 use crate::project;
 use crate::project::GitOrigin;
 use crate::project::ProjectLanguage::Rust;
-use crate::project::RustProject;
+use crate::project::Project;
 use crate::scan;
 
 #[derive(Clone, Copy)]
@@ -357,7 +357,7 @@ fn render_unreachable_overlay(frame: &mut Frame, area: Rect, msg: &str) {
 fn render_empty_ci_panel(
     frame: &mut Frame,
     app: &App,
-    project: Option<&RustProject>,
+    project: Option<&Project>,
     selected_has_ci_owner: bool,
     area: Rect,
 ) {
@@ -831,7 +831,7 @@ fn render_root_item(
 /// Build a `ListItem` for a child project (workspace member or worktree).
 fn render_child_item(
     app: &App,
-    project: &RustProject,
+    project: &Project,
     name: &str,
     child_sorted: &[u64],
     prefix: &'static str,

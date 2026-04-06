@@ -34,7 +34,7 @@ use super::http::HttpClient;
 use super::project;
 use super::project::GitInfo;
 use super::project::GitRepoPresence;
-use super::project::RustProject;
+use super::project::Project;
 use super::scan;
 use super::scan::BackgroundMsg;
 use crate::perf_log;
@@ -592,7 +592,7 @@ fn is_target_metadata_event(event_path: &Path, project_root: &Path) -> bool {
 fn spawn_project_refresh(bg_tx: mpsc::Sender<BackgroundMsg>, project_root: PathBuf) {
     rayon::spawn(move || {
         let cargo_toml = project_root.join("Cargo.toml");
-        let Ok(project) = RustProject::from_cargo_toml(&cargo_toml) else {
+        let Ok(project) = Project::from_cargo_toml(&cargo_toml) else {
             return;
         };
         let _ = bg_tx.send(BackgroundMsg::ProjectRefreshed { project });
@@ -1021,13 +1021,13 @@ fn project_level_dir(
 
 /// Check if a directory is a project (has `Cargo.toml`, or `.git` when
 /// `include_non_rust` is enabled).
-fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<RustProject> {
+fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<Project> {
     let cargo_toml = dir.join("Cargo.toml");
     if cargo_toml.exists() {
-        return RustProject::from_cargo_toml(&cargo_toml).ok();
+        return Project::from_cargo_toml(&cargo_toml).ok();
     }
     if non_rust.includes_non_rust() && dir.join(".git").is_dir() {
-        return Some(RustProject::from_git_dir(dir));
+        return Some(Project::from_git_dir(dir));
     }
     None
 }

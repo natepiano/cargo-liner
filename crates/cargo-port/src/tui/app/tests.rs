@@ -1,6 +1,6 @@
 use std::collections::HashSet;
-use std::sync::OnceLock;
 use std::sync::mpsc;
+use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -22,8 +22,8 @@ use crate::project::ExampleGroup;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
+use crate::project::Project;
 use crate::project::ProjectLanguage;
-use crate::project::RustProject;
 use crate::project::WorkspaceStatus;
 use crate::scan::BackgroundMsg;
 use crate::scan::MemberGroup;
@@ -39,8 +39,8 @@ fn test_http_client() -> HttpClient {
     HttpClient::new(rt.handle().clone()).unwrap_or_else(|| std::process::abort())
 }
 
-fn make_project(name: Option<&str>, path: &str) -> RustProject {
-    RustProject {
+fn make_project(name: Option<&str>, path: &str) -> Project {
+    Project {
         path:                      path.to_string(),
         abs_path:                  path.to_string(),
         name:                      name.map(String::from),
@@ -58,7 +58,7 @@ fn make_project(name: Option<&str>, path: &str) -> RustProject {
     }
 }
 
-fn make_node(project: RustProject) -> ProjectNode {
+fn make_node(project: Project) -> ProjectNode {
     ProjectNode {
         project,
         groups: Vec::new(),
@@ -67,11 +67,11 @@ fn make_node(project: RustProject) -> ProjectNode {
     }
 }
 
-fn make_app(projects: Vec<RustProject>) -> App {
+fn make_app(projects: Vec<Project>) -> App {
     make_app_with_config(projects, &CargoPortConfig::default())
 }
 
-fn make_app_with_config(projects: Vec<RustProject>, cfg: &CargoPortConfig) -> App {
+fn make_app_with_config(projects: Vec<Project>, cfg: &CargoPortConfig) -> App {
     let (bg_tx, bg_rx) = mpsc::channel();
     let scan_root =
         std::env::temp_dir().join(format!("cargo-port-polish-test-{}", std::process::id()));
@@ -90,7 +90,7 @@ fn make_app_with_config(projects: Vec<RustProject>, cfg: &CargoPortConfig) -> Ap
     app
 }
 
-fn make_non_rust_project(name: Option<&str>, path: &str) -> RustProject {
+fn make_non_rust_project(name: Option<&str>, path: &str) -> Project {
     let mut project = make_project(name, path);
     project.is_rust = ProjectLanguage::NonRust;
     project
@@ -158,11 +158,10 @@ fn external_config_reload_keeps_last_good_config_on_parse_error() {
 
     assert_eq!(app.editor(), "zed");
     assert_eq!(app.current_config.tui.editor, "zed");
-    assert!(
-        app.status_flash
-            .as_ref()
-            .is_some_and(|(msg, _)| msg.contains("Config reload failed"))
-    );
+    assert!(app
+        .status_flash
+        .as_ref()
+        .is_some_and(|(msg, _)| msg.contains("Config reload failed")));
 }
 
 #[test]
@@ -193,11 +192,10 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     assert_eq!(app.all_projects.len(), 2);
     assert!(app.is_scan_complete());
     assert_eq!(app.nodes.len(), 2);
-    assert!(
-        app.nodes
-            .iter()
-            .any(|node| node.project.path == non_rust_project.path)
-    );
+    assert!(app
+        .nodes
+        .iter()
+        .any(|node| node.project.path == non_rust_project.path));
 }
 
 #[test]
@@ -733,12 +731,11 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(&project_a.path));
-    assert!(
-        !app.scan
-            .startup_phases
-            .lint_seen_terminal
-            .contains(&project_a.path)
-    );
+    assert!(!app
+        .scan
+        .startup_phases
+        .lint_seen_terminal
+        .contains(&project_a.path));
     assert!(app.running_lint_paths.contains(&project_a.path));
     assert!(app.lint_toast.is_some());
 
@@ -1030,10 +1027,7 @@ fn project_refresh_updates_selected_tree_project_targets() {
     app.list_state.select(Some(0));
     app.sync_selected_project();
 
-    assert_eq!(
-        app.selected_project().map(RustProject::example_count),
-        Some(0)
-    );
+    assert_eq!(app.selected_project().map(Project::example_count), Some(0));
     assert!(!app.tabbable_panes().contains(&PaneId::Targets));
 
     let mut refreshed = project;
@@ -1045,10 +1039,7 @@ fn project_refresh_updates_selected_tree_project_targets() {
     assert!(app.handle_project_refreshed(&refreshed));
     app.sync_selected_project();
 
-    assert_eq!(
-        app.selected_project().map(RustProject::example_count),
-        Some(1)
-    );
+    assert_eq!(app.selected_project().map(Project::example_count), Some(1));
     assert!(app.tabbable_panes().contains(&PaneId::Targets));
 }
 

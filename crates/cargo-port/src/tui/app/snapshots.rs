@@ -11,13 +11,13 @@ use crate::constants::SYNC_UP;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
-use crate::project::RustProject;
+use crate::project::Project;
 use crate::scan::MemberGroup;
 use crate::scan::ProjectNode;
 use crate::tui::columns;
+use crate::tui::columns::ResolvedWidths;
 use crate::tui::columns::COL_DISK;
 use crate::tui::columns::COL_SYNC;
-use crate::tui::columns::ResolvedWidths;
 use crate::tui::render;
 use crate::tui::render::PREFIX_GROUP_COLLAPSED;
 use crate::tui::render::PREFIX_MEMBER_INLINE;
@@ -144,7 +144,11 @@ pub(super) fn live_worktree_count_for_node(
                 && !dismissed_projects.contains(&wt.project.path)
         })
         .count();
-    if live <= 1 { 0 } else { live }
+    if live <= 1 {
+        0
+    } else {
+        live
+    }
 }
 
 pub(super) fn unique_node_paths(node: &ProjectNode) -> Vec<&str> {
@@ -177,7 +181,11 @@ pub(super) fn disk_bytes_for_node_snapshot(
             any_data = true;
         }
     }
-    if any_data { Some(total) } else { None }
+    if any_data {
+        Some(total)
+    } else {
+        None
+    }
 }
 
 pub(super) fn formatted_disk_snapshot(disk_usage: &HashMap<String, u64>, path: &str) -> String {
@@ -326,7 +334,7 @@ pub(super) fn observe_member_group_fit_widths(
 
 pub(super) fn observe_vendored_fit_widths(
     widths: &mut ResolvedWidths,
-    vendored: &[RustProject],
+    vendored: &[Project],
     disk_usage: &HashMap<String, u64>,
     prefix: &str,
 ) {
@@ -456,7 +464,7 @@ pub(super) fn build_disk_cache_snapshot(
 pub(super) fn replace_project_in_node(
     node: &mut ProjectNode,
     project_path: &str,
-    project: &RustProject,
+    project: &Project,
 ) -> bool {
     let updated = if node.project.path == project_path {
         node.project = project.clone();
@@ -509,7 +517,7 @@ pub(super) fn replace_project_in_node(
     updated
 }
 
-pub(super) fn initial_disk_batch_count(projects: &[RustProject]) -> usize {
+pub(super) fn initial_disk_batch_count(projects: &[Project]) -> usize {
     let mut abs_paths: Vec<&str> = projects
         .iter()
         .map(|project| project.abs_path.as_str())

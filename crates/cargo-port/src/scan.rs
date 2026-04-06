@@ -30,7 +30,7 @@ use super::perf_log;
 use super::project::GitInfo;
 use super::project::GitPathState;
 use super::project::GitRepoPresence;
-use super::project::RustProject;
+use super::project::Project;
 
 /// Members within a workspace are organized into groups by their first subdirectory.
 /// The "inline" group (empty name) contains members directly under the workspace root
@@ -38,15 +38,15 @@ use super::project::RustProject;
 #[derive(Clone)]
 pub struct MemberGroup {
     pub name:    String,
-    pub members: Vec<RustProject>,
+    pub members: Vec<Project>,
 }
 
 #[derive(Clone)]
 pub struct ProjectNode {
-    pub project:   RustProject,
+    pub project:   Project,
     pub groups:    Vec<MemberGroup>,
     pub worktrees: Vec<Self>,
-    pub vendored:  Vec<RustProject>,
+    pub vendored:  Vec<Project>,
 }
 
 impl ProjectNode {
@@ -108,10 +108,10 @@ pub enum BackgroundMsg {
         description: Option<String>,
     },
     ProjectDiscovered {
-        project: RustProject,
+        project: Project,
     },
     ProjectRefreshed {
-        project: RustProject,
+        project: Project,
     },
     LintStatus {
         path:   String,
@@ -520,7 +520,7 @@ pub fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
-pub fn build_tree(projects: &[RustProject], inline_dirs: &[String]) -> Vec<ProjectNode> {
+pub fn build_tree(projects: &[Project], inline_dirs: &[String]) -> Vec<ProjectNode> {
     let workspace_paths: Vec<String> = projects
         .iter()
         .filter(|p| p.is_workspace())
@@ -545,7 +545,7 @@ pub fn build_tree(projects: &[RustProject], inline_dirs: &[String]) -> Vec<Proje
     for (i, project) in projects.iter().enumerate() {
         if top_level_workspaces.contains(&i) {
             let member_paths = workspace_member_paths(project, projects);
-            let mut all_members: Vec<RustProject> = projects
+            let mut all_members: Vec<Project> = projects
                 .iter()
                 .enumerate()
                 .filter(|(j, p)| {
@@ -600,7 +600,7 @@ pub fn build_tree(projects: &[RustProject], inline_dirs: &[String]) -> Vec<Proje
     nodes
 }
 
-fn workspace_member_paths(workspace: &RustProject, projects: &[RustProject]) -> HashSet<String> {
+fn workspace_member_paths(workspace: &Project, projects: &[Project]) -> HashSet<String> {
     let manifest = Path::new(&workspace.abs_path).join("Cargo.toml");
     let Some((members, excludes)) = workspace_member_patterns(&manifest) else {
         return projects
@@ -663,7 +663,7 @@ fn workspace_member_patterns(manifest_path: &Path) -> Option<(Vec<String>, Vec<S
     Some((members, excludes))
 }
 
-fn workspace_relative_path(workspace: &RustProject, project: &RustProject) -> Option<String> {
+fn workspace_relative_path(workspace: &Project, project: &Project) -> Option<String> {
     Path::new(&project.abs_path)
         .strip_prefix(&workspace.abs_path)
         .ok()
@@ -852,7 +852,7 @@ fn extract_vendored(nodes: &mut Vec<ProjectNode>) {
     }
 
     // Extract vendored projects (iterate in reverse to preserve indices)
-    let mut vendored_projects: Vec<(usize, Option<usize>, RustProject)> = Vec::new();
+    let mut vendored_projects: Vec<(usize, Option<usize>, Project)> = Vec::new();
     let mut remove_indices: Vec<usize> = vendored_map.iter().map(|&(vi, _, _)| vi).collect();
     remove_indices.sort_unstable();
     remove_indices.dedup();
@@ -892,12 +892,12 @@ fn extract_vendored(nodes: &mut Vec<ProjectNode>) {
 
 pub fn group_members(
     workspace_path: &str,
-    members: Vec<RustProject>,
+    members: Vec<Project>,
     inline_dirs: &[String],
 ) -> Vec<MemberGroup> {
     let prefix = format!("{workspace_path}/");
 
-    let mut group_map: HashMap<String, Vec<RustProject>> = HashMap::new();
+    let mut group_map: HashMap<String, Vec<Project>> = HashMap::new();
 
     for member in members {
         let relative = member.path.strip_prefix(&prefix).unwrap_or(&member.path);
@@ -1274,7 +1274,7 @@ fn discover_non_rust_project(
     disk_entries: &mut Vec<(String, PathBuf)>,
     stats: &mut Phase1DiscoverStats,
 ) {
-    let project = RustProject::from_git_dir(entry_path);
+    let project = Project::from_git_dir(entry_path);
     let path = project.path.clone();
     let abs_path = PathBuf::from(&project.abs_path);
     stats.projects += 1;
@@ -1340,7 +1340,7 @@ fn phase1_discover(
             if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
                 stats.manifests += 1;
                 let manifest_started = std::time::Instant::now();
-                let Ok(project) = RustProject::from_cargo_toml(entry.path()) else {
+                let Ok(project) = Project::from_cargo_toml(entry.path()) else {
                     continue;
                 };
                 perf_log::log_duration(
@@ -1883,8 +1883,8 @@ mod tests {
         worktree_name: Option<&str>,
         primary_abs: Option<&str>,
         is_workspace: WorkspaceStatus,
-    ) -> RustProject {
-        RustProject {
+    ) -> Project {
+        Project {
             path: path.to_string(),
             abs_path: abs_path.to_string(),
             name: name.map(String::from),
@@ -1902,7 +1902,7 @@ mod tests {
         }
     }
 
-    fn make_node(project: RustProject) -> ProjectNode {
+    fn make_node(project: Project) -> ProjectNode {
         ProjectNode {
             project,
             groups: Vec::new(),
@@ -1911,7 +1911,7 @@ mod tests {
         }
     }
 
-    fn make_node_with_groups(project: RustProject, groups: Vec<MemberGroup>) -> ProjectNode {
+    fn make_node_with_groups(project: Project, groups: Vec<MemberGroup>) -> ProjectNode {
         ProjectNode {
             project,
             groups,

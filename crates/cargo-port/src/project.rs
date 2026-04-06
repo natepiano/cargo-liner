@@ -693,7 +693,7 @@ pub struct ExampleGroup {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RustProject {
+pub struct Project {
     /// Display path (e.g. `~/rust/bevy`).
     pub path:                      String,
     /// Absolute filesystem path for operations that need to access the project on disk.
@@ -721,7 +721,7 @@ pub struct RustProject {
     pub local_dependency_paths:    Vec<String>,
 }
 
-impl RustProject {
+impl Project {
     /// Total number of examples across all groups.
     pub fn example_count(&self) -> usize { self.examples.iter().map(|g| g.names.len()).sum() }
 
@@ -757,7 +757,7 @@ impl fmt::Display for ProjectParseError {
     }
 }
 
-impl RustProject {
+impl Project {
     pub fn from_cargo_toml(cargo_toml_path: &Path) -> Result<Self, ProjectParseError> {
         let contents =
             std::fs::read_to_string(cargo_toml_path).map_err(ProjectParseError::ReadError)?;

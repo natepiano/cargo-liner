@@ -4,7 +4,7 @@ use super::types::App;
 use super::types::LintRollupKey;
 use super::types::VisibleRow;
 use crate::lint::LintStatus;
-use crate::project::RustProject;
+use crate::project::Project;
 use crate::scan::ProjectNode;
 
 impl App {
@@ -134,7 +134,7 @@ impl App {
 
     /// Lint icon frame for the current animation state, or a blank space if lint is
     /// disabled or no log exists.
-    pub fn lint_icon(&self, project: &RustProject) -> &'static str {
+    pub fn lint_icon(&self, project: &Project) -> &'static str {
         use crate::constants::LINT_NO_LOG;
 
         if !self.lint_enabled() {
@@ -174,7 +174,7 @@ impl App {
         status.icon().frame_at(self.animation_elapsed())
     }
 
-    pub fn selected_lint_icon(&self, project: &RustProject) -> Option<&'static str> {
+    pub fn selected_lint_icon(&self, project: &Project) -> Option<&'static str> {
         if !self.lint_enabled() {
             return None;
         }

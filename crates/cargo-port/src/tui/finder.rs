@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 
 use crossterm::event::KeyCode;
-use nucleo_matcher::Matcher;
-use nucleo_matcher::Utf32Str;
 use nucleo_matcher::pattern::Atom;
 use nucleo_matcher::pattern::AtomKind;
 use nucleo_matcher::pattern::CaseMatching;
 use nucleo_matcher::pattern::Normalization;
-use ratatui::Frame;
+use nucleo_matcher::Matcher;
+use nucleo_matcher::Utf32Str;
 use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -19,6 +18,7 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use ratatui::Frame;
 
 use super::app::App;
 use super::constants::FINDER_POPUP_HEIGHT;
@@ -26,8 +26,8 @@ use super::constants::MAX_FINDER_RESULTS;
 use super::detail::RunTargetKind;
 use super::types::PaneId;
 use crate::project::GitInfo;
+use crate::project::Project;
 use crate::project::ProjectType;
-use crate::project::RustProject;
 use crate::scan::ProjectNode;
 
 /// A searchable item in the universal finder.
@@ -161,7 +161,7 @@ pub(super) fn build_finder_index(
     (items, col_widths)
 }
 
-fn add_project_items(items: &mut Vec<FinderItem>, project: &RustProject, branch: &str) {
+fn add_project_items(items: &mut Vec<FinderItem>, project: &Project, branch: &str) {
     let project_name = project
         .name
         .as_deref()
@@ -240,7 +240,7 @@ fn add_project_items(items: &mut Vec<FinderItem>, project: &RustProject, branch:
     }
 }
 
-fn add_vendored_items(items: &mut Vec<FinderItem>, project: &RustProject, parent: &RustProject) {
+fn add_vendored_items(items: &mut Vec<FinderItem>, project: &Project, parent: &Project) {
     let project_name = project
         .name
         .as_deref()
@@ -655,8 +655,8 @@ mod tests {
     use crate::project::ProjectLanguage;
     use crate::project::WorkspaceStatus;
 
-    fn make_project(name: Option<&str>, path: &str) -> RustProject {
-        RustProject {
+    fn make_project(name: Option<&str>, path: &str) -> Project {
+        Project {
             path:                      path.to_string(),
             abs_path:                  path.to_string(),
             name:                      name.map(str::to_string),

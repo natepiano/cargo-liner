@@ -28,7 +28,7 @@ use crate::lint::RegisterProjectRequest;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
 use crate::project::ProjectLanguage::Rust;
-use crate::project::RustProject;
+use crate::project::Project;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::FlatEntry;
@@ -375,7 +375,7 @@ impl App {
         self.lint_cache_usage = crate::lint::retained_cache_usage(cache_size_bytes);
     }
 
-    pub(super) fn register_project_background_services(&self, project: &RustProject) {
+    pub(super) fn register_project_background_services(&self, project: &Project) {
         let started = Instant::now();
         let abs_path = PathBuf::from(&project.abs_path);
         let repo_root = crate::project::git_repo_root(&abs_path);
@@ -446,7 +446,7 @@ impl App {
         });
     }
 
-    pub(super) fn lint_runtime_root_projects(&self) -> Vec<&RustProject> {
+    pub(super) fn lint_runtime_root_projects(&self) -> Vec<&Project> {
         let mut projects = Vec::new();
         let mut seen = HashSet::new();
 
@@ -1282,7 +1282,7 @@ impl App {
         }
     }
 
-    pub(super) fn handle_project_discovered(&mut self, project: RustProject) -> bool {
+    pub(super) fn handle_project_discovered(&mut self, project: Project) -> bool {
         if self
             .all_projects
             .iter()
@@ -1299,7 +1299,7 @@ impl App {
         true
     }
 
-    pub(super) fn handle_project_refreshed(&mut self, project: &RustProject) -> bool {
+    pub(super) fn handle_project_refreshed(&mut self, project: &Project) -> bool {
         let project_path = project.path.clone();
         let updated_in_all_projects = self
             .all_projects
@@ -1330,7 +1330,7 @@ impl App {
     pub(super) fn replace_project_in_nodes(
         &mut self,
         project_path: &str,
-        project: &RustProject,
+        project: &Project,
     ) -> bool {
         let mut updated = false;
 

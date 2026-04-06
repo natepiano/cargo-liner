@@ -12,7 +12,7 @@ use super::types::ExpandKey;
 use super::types::SearchMode;
 use super::types::VisibleRow;
 use crate::constants::WORKTREE;
-use crate::project::RustProject;
+use crate::project::Project;
 use crate::scan::ProjectNode;
 use crate::tui;
 use crate::tui::columns::COL_NAME;
@@ -40,7 +40,7 @@ impl App {
     pub fn ensure_fit_widths_cached(&mut self) { self.request_fit_widths_build(); }
 
     /// Iterate all group members in a node, including those nested under worktree entries.
-    pub(super) fn all_group_members(node: &ProjectNode) -> impl Iterator<Item = &RustProject> {
+    pub(super) fn all_group_members(node: &ProjectNode) -> impl Iterator<Item = &Project> {
         let direct = node.groups.iter().flat_map(|g| g.members.iter());
         let wt = node
             .worktrees
@@ -49,7 +49,7 @@ impl App {
         direct.chain(wt)
     }
 
-    pub(super) fn all_vendored_projects(node: &ProjectNode) -> impl Iterator<Item = &RustProject> {
+    pub(super) fn all_vendored_projects(node: &ProjectNode) -> impl Iterator<Item = &Project> {
         let direct = node.vendored.iter();
         let wt = node
             .worktrees
@@ -164,7 +164,7 @@ impl App {
         }
     }
 
-    pub fn selected_project(&self) -> Option<&RustProject> {
+    pub fn selected_project(&self) -> Option<&Project> {
         if self.is_searching() && !self.search_query.is_empty() {
             let selected = self.list_state.selected()?;
             let flat_idx = *self.filtered.get(selected)?;

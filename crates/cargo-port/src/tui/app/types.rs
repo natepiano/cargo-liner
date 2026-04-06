@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Instant;
 use std::time::SystemTime;
 
@@ -22,7 +22,7 @@ use crate::lint::LintStatus;
 use crate::lint::RuntimeHandle;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
-use crate::project::RustProject;
+use crate::project::Project;
 use crate::scan::BackgroundMsg;
 use crate::scan::FlatEntry;
 use crate::scan::ProjectNode;
@@ -30,8 +30,8 @@ use crate::tui::columns::ResolvedWidths;
 use crate::tui::detail::DetailInfo;
 use crate::tui::detail::PendingCiFetch;
 use crate::tui::detail::PendingExampleRun;
-use crate::tui::finder::FINDER_COLUMN_COUNT;
 use crate::tui::finder::FinderItem;
+use crate::tui::finder::FINDER_COLUMN_COUNT;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -500,7 +500,7 @@ pub struct App {
     pub current_config:           CargoPortConfig,
     pub scan_root:                PathBuf,
     pub http_client:              HttpClient,
-    pub all_projects:             Vec<RustProject>,
+    pub all_projects:             Vec<Project>,
     pub nodes:                    Vec<ProjectNode>,
     pub flat_entries:             Vec<FlatEntry>,
     pub disk_usage:               HashMap<String, u64>,

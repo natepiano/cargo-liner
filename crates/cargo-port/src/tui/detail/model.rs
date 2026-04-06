@@ -8,7 +8,7 @@ use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::ProjectLanguage;
 use crate::project::ProjectType;
-use crate::project::RustProject;
+use crate::project::Project;
 use crate::tui::app::App;
 
 #[derive(Default)]
@@ -23,7 +23,7 @@ pub struct ProjectCounts {
 }
 
 impl ProjectCounts {
-    pub fn add_project(&mut self, project: &RustProject) {
+    pub fn add_project(&mut self, project: &Project) {
         if project.is_workspace() {
             self.workspaces += 1;
         }
@@ -417,7 +417,7 @@ pub struct DetailInfo {
 }
 
 /// Resolve the title shown in the `Package` column header.
-fn resolve_package_title(app: &App, project: &RustProject) -> String {
+fn resolve_package_title(app: &App, project: &Project) -> String {
     if project.is_rust == ProjectLanguage::NonRust {
         return "Project".to_string();
     }
@@ -472,7 +472,7 @@ struct GitDetailFields {
     last_commit:    Option<String>,
 }
 
-fn build_git_detail_fields(app: &App, project: &RustProject) -> GitDetailFields {
+fn build_git_detail_fields(app: &App, project: &Project) -> GitDetailFields {
     let git = app.git_info.get(&project.path);
     let branch = git.and_then(|info| info.branch.clone());
     let sync = git
@@ -520,7 +520,7 @@ fn build_git_detail_fields(app: &App, project: &RustProject) -> GitDetailFields 
     }
 }
 
-pub fn build_detail_info(app: &App, project: &RustProject) -> DetailInfo {
+pub fn build_detail_info(app: &App, project: &Project) -> DetailInfo {
     let mut counts = app.workspace_counts(project).unwrap_or_else(|| {
         let mut counts = ProjectCounts::default();
         counts.add_project(project);
