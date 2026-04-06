@@ -12,12 +12,12 @@ const ANSI_BOLD_BLUE: &str = "1;34";
 const ANSI_DIM: &str = "2";
 
 #[derive(Debug, Clone, Copy)]
-pub enum ColorMode {
+pub(crate) enum ColorMode {
     Enabled,
     Disabled,
 }
 
-pub fn render_human_report(report: &Report, color: ColorMode) -> String {
+pub(crate) fn render_human_report(report: &Report, color: ColorMode) -> String {
     if report.findings.is_empty() {
         return "No findings.\n".to_string();
     }

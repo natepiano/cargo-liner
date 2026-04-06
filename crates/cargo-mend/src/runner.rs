@@ -28,7 +28,7 @@ use super::run_mode::OperationIntent;
 use super::run_mode::OperationMode;
 use super::selection::Selection;
 
-pub struct MendRunner<'a> {
+pub(crate) struct MendRunner<'a> {
     selection: &'a Selection,
     config:    &'a LoadedConfig,
 }
@@ -177,7 +177,7 @@ impl<'a> MendRunner<'a> {
         inline_path_scan: Option<&InlinePathScan>,
         pub_use_scan: Option<&PubUseFixScan>,
     ) -> Result<ValidatedFixSet, MendFailure> {
-        // Collect prefer_module_import fix ranges for deconfliction with ShortenImport
+        // Collect `prefer_module_import` fix ranges for deconfliction with `ShortenImport`
         let prefer_ranges: Vec<(&std::path::Path, usize, usize)> = prefer_module_import_scan
             .iter()
             .flat_map(|scan| scan.fixes.iter())
@@ -186,7 +186,7 @@ impl<'a> MendRunner<'a> {
 
         let mut fixes = Vec::new();
 
-        // Add ShortenImport fixes, filtering out any that overlap with PreferModuleImport
+        // Add `ShortenImport` fixes, filtering out any that overlap with `PreferModuleImport`
         if let Some(scan) = import_scan {
             for fix in scan.fixes.iter() {
                 let overlaps = prefer_ranges.iter().any(|(path, start, end)| {

@@ -8,32 +8,32 @@ use super::diagnostics::Report;
 use super::run_mode::OperationIntent;
 
 #[derive(Debug)]
-pub struct ExecutionOutcome {
+pub(crate) struct ExecutionOutcome {
     pub report: Report,
     pub notice: Option<ExecutionNotice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExecutionNotice {
+pub(crate) struct ExecutionNotice {
     kinds: Vec<NoticeKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NoticeKind {
+pub(crate) enum NoticeKind {
     ImportFixes(FixNotice),
     PubUseFixes(PubUseNotice),
     ImportCleanupSuggested,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FixNotice {
+pub(crate) enum FixNotice {
     NoneAvailable,
     PreviewApplied(usize),
     Applied(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PubUseNotice {
+pub(crate) enum PubUseNotice {
     NoneAvailable {
         skipped_unsupported: usize,
     },
@@ -48,14 +48,14 @@ pub enum PubUseNotice {
 }
 
 #[derive(Debug)]
-pub enum MendFailure {
+pub(crate) enum MendFailure {
     Analysis(AnalysisFailure),
     FixValidation(FixValidationFailure),
     Unexpected(Error),
 }
 
 #[derive(Debug)]
-pub enum CompilerFailureCause {
+pub(crate) enum CompilerFailureCause {
     CargoCheck,
     CargoRustcRefresh { package: String },
     DriverSetup(Error),
@@ -64,18 +64,18 @@ pub enum CompilerFailureCause {
 }
 
 #[derive(Debug)]
-pub struct AnalysisFailure {
+pub(crate) struct AnalysisFailure {
     pub cause: CompilerFailureCause,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RollbackStatus {
+pub(crate) enum RollbackStatus {
     Restored,
     RestoreFailed,
 }
 
 #[derive(Debug)]
-pub struct FixValidationFailure {
+pub(crate) struct FixValidationFailure {
     pub rollback: RollbackStatus,
     pub cause:    CompilerFailureCause,
 }

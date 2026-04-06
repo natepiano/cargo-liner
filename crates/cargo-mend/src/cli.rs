@@ -8,7 +8,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(name = "mend")]
 #[command(about = "Audit Rust visibility patterns against a stricter house style")]
-pub struct Cli {
+pub(crate) struct Cli {
     #[arg(long)]
     pub manifest_path: Option<PathBuf>,
 
@@ -25,7 +25,7 @@ pub struct Cli {
     pub fix: FixCli,
 }
 
-pub fn parse(after_help: &str) -> Cli {
+pub(crate) fn parse(after_help: &str) -> Cli {
     let matches = Cli::command()
         .after_long_help(after_help.to_string())
         .get_matches_from(normalized_args());
@@ -33,7 +33,7 @@ pub fn parse(after_help: &str) -> Cli {
 }
 
 #[derive(Args, Debug)]
-pub struct FixCli {
+pub(crate) struct FixCli {
     #[arg(long)]
     pub fix: bool,
 

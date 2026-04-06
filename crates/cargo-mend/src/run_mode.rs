@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use super::cli::FixCli;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum FixKind {
+pub(crate) enum FixKind {
     ShortenImport,
     PreferModuleImport,
     InlinePathQualifiedType,
@@ -11,7 +11,7 @@ pub enum FixKind {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FixSelection {
+pub(crate) struct FixSelection {
     kinds: BTreeSet<FixKind>,
 }
 
@@ -44,14 +44,14 @@ impl FixSelection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OperationIntent {
+pub(crate) enum OperationIntent {
     ReadOnly,
     DryRun,
     Apply,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationMode {
+pub(crate) struct OperationMode {
     pub intent: OperationIntent,
     pub fixes:  FixSelection,
 }

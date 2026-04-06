@@ -70,7 +70,7 @@ fn current_analysis_fingerprint() -> String {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuildOutputMode {
+pub(crate) enum BuildOutputMode {
     Full,
     SuppressUnusedImportWarnings,
 }
@@ -214,7 +214,7 @@ impl Callbacks for AnalysisCallbacks {
     }
 }
 
-pub fn run_selection(
+pub(crate) fn run_selection(
     selection: &Selection,
     loaded_config: &LoadedConfig,
     output_mode: BuildOutputMode,
@@ -293,7 +293,7 @@ pub fn run_selection(
     Ok(report)
 }
 
-pub fn driver_main() -> ExitCode {
+pub(crate) fn driver_main() -> ExitCode {
     match driver_main_impl() {
         Ok(code) => code,
         Err(err) => {

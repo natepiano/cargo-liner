@@ -11,13 +11,13 @@ use cargo_metadata::Target;
 use cargo_metadata::TargetKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelectionScope {
+pub(crate) enum SelectionScope {
     Workspace,
     SinglePackage,
 }
 
 #[derive(Debug)]
-pub struct Selection {
+pub(crate) struct Selection {
     pub manifest_path:    PathBuf,
     pub manifest_dir:     PathBuf,
     pub workspace_root:   PathBuf,
@@ -29,7 +29,7 @@ pub struct Selection {
 }
 
 #[derive(Debug, Clone)]
-pub struct SelectedPackage {
+pub(crate) struct SelectedPackage {
     pub name:          String,
     pub manifest_path: PathBuf,
     pub root:          PathBuf,
@@ -38,7 +38,7 @@ pub struct SelectedPackage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TargetSelector {
+pub(crate) enum TargetSelector {
     Implicit,
     Lib,
     Bin(String),
@@ -60,7 +60,7 @@ impl TargetSelector {
     }
 }
 
-pub fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<Selection> {
+pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<Selection> {
     let manifest_path = match explicit_manifest_path {
         Some(path) => path
             .canonicalize()
@@ -228,10 +228,6 @@ fn find_nearest_manifest(start: &Path) -> Result<PathBuf> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "tests should panic on unexpected values"
-)]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use std::fs;

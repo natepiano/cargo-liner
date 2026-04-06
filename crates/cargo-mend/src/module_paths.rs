@@ -1,6 +1,6 @@
 use std::path::Path;
 
-pub fn file_module_path(src_root: &Path, path: &Path) -> Option<Vec<String>> {
+pub(crate) fn file_module_path(src_root: &Path, path: &Path) -> Option<Vec<String>> {
     let relative = path.strip_prefix(src_root).ok()?;
     let mut result: Vec<String> = relative
         .parent()
@@ -16,7 +16,7 @@ pub fn file_module_path(src_root: &Path, path: &Path) -> Option<Vec<String>> {
     Some(result)
 }
 
-pub fn module_name_for_child_boundary_file(child_file: &Path) -> Option<&str> {
+pub(crate) fn module_name_for_child_boundary_file(child_file: &Path) -> Option<&str> {
     match module_name_for_boundary_file(child_file)? {
         BoundaryModuleName::Named(name) => Some(name),
         BoundaryModuleName::Root => None,

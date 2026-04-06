@@ -63,7 +63,7 @@ impl DiagnosticCode {
 // --- Diagnostics config ---
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DiagnosticsConfig {
+pub(crate) struct DiagnosticsConfig {
     #[serde(flatten)]
     rules: BTreeMap<DiagnosticCode, bool>,
 }
@@ -97,11 +97,11 @@ struct GlobalConfigFile {
     diagnostics: DiagnosticsConfig,
 }
 
-pub fn global_config_path() -> Option<PathBuf> {
+pub(crate) fn global_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join(APP_NAME).join(GLOBAL_CONFIG_FILE))
 }
 
-pub fn load_global_diagnostics() -> DiagnosticsConfig {
+pub(crate) fn load_global_diagnostics() -> DiagnosticsConfig {
     let Some(path) = global_config_path() else {
         return DiagnosticsConfig::default();
     };
@@ -161,7 +161,7 @@ struct ConfigFile {
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
-pub struct VisibilityConfig {
+pub(crate) struct VisibilityConfig {
     #[serde(default)]
     pub allow_pub_mod:   Vec<String>,
     #[serde(default)]
@@ -169,14 +169,14 @@ pub struct VisibilityConfig {
 }
 
 #[derive(Debug)]
-pub struct LoadedConfig {
+pub(crate) struct LoadedConfig {
     pub config:      VisibilityConfig,
     pub diagnostics: DiagnosticsConfig,
     pub root:        PathBuf,
     pub fingerprint: String,
 }
 
-pub fn load_config(
+pub(crate) fn load_config(
     manifest_dir: &Path,
     workspace_root: &Path,
     explicit: Option<&Path>,

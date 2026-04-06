@@ -20,7 +20,7 @@ use super::imports::ValidatedFixSet;
 use super::module_paths;
 use super::selection::Selection;
 
-pub struct PubUseFixScan {
+pub(crate) struct PubUseFixScan {
     pub fixes:         ValidatedFixSet,
     pub applied_count: usize,
     pub skipped_count: usize,
@@ -71,7 +71,7 @@ enum CandidateScreening {
     Skip,
 }
 
-pub fn scan_selection(selection: &Selection, report: &Report) -> Result<PubUseFixScan> {
+pub(crate) fn scan_selection(selection: &Selection, report: &Report) -> Result<PubUseFixScan> {
     let mut fixes = Vec::new();
     let facts = collect_pub_use_fix_facts(selection, report);
     let analysis = analyze_pub_use_candidates(&facts)?;

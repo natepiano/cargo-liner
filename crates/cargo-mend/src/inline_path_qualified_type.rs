@@ -22,12 +22,12 @@ use super::imports::UseFix;
 use super::imports::ValidatedFixSet;
 use super::selection::Selection;
 
-pub struct InlinePathScan {
+pub(crate) struct InlinePathScan {
     pub findings: Vec<Finding>,
     pub fixes:    ValidatedFixSet,
 }
 
-pub fn scan_selection(selection: &Selection) -> Result<InlinePathScan> {
+pub(crate) fn scan_selection(selection: &Selection) -> Result<InlinePathScan> {
     let mut all_findings = Vec::new();
     let mut all_fixes = Vec::new();
     for package_root in &selection.package_roots {

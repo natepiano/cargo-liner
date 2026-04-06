@@ -22,7 +22,7 @@ use super::fix_support::FixSupport;
 use super::module_paths;
 use super::selection::Selection;
 
-pub struct ImportScan {
+pub(crate) struct ImportScan {
     pub findings: Vec<Finding>,
     pub fixes:    ValidatedFixSet,
 }
@@ -40,7 +40,7 @@ struct ShortenImportFact {
 }
 
 #[derive(Debug, Clone)]
-pub struct UseFix {
+pub(crate) struct UseFix {
     pub path:        PathBuf,
     pub start:       usize,
     pub end:         usize,
@@ -48,7 +48,7 @@ pub struct UseFix {
 }
 
 #[derive(Debug, Clone)]
-pub struct ValidatedFixSet {
+pub(crate) struct ValidatedFixSet {
     fixes: Vec<UseFix>,
 }
 
@@ -138,7 +138,7 @@ impl ShortenImportFact {
     }
 }
 
-pub fn scan_selection(selection: &Selection) -> Result<ImportScan> {
+pub(crate) fn scan_selection(selection: &Selection) -> Result<ImportScan> {
     let findings_with_fixes = scan_selection_with_fixes(selection)?;
     let fixes = ValidatedFixSet::from_vec(
         findings_with_fixes
@@ -155,7 +155,7 @@ pub fn scan_selection(selection: &Selection) -> Result<ImportScan> {
     })
 }
 
-pub fn apply_fixes(fixes: &ValidatedFixSet) -> Result<usize> {
+pub(crate) fn apply_fixes(fixes: &ValidatedFixSet) -> Result<usize> {
     let mut by_file: BTreeMap<&Path, Vec<&UseFix>> = BTreeMap::new();
     for fix in fixes.iter() {
         by_file.entry(fix.path.as_path()).or_default().push(fix);
@@ -177,7 +177,7 @@ pub fn apply_fixes(fixes: &ValidatedFixSet) -> Result<usize> {
     Ok(applied)
 }
 
-pub fn snapshot_files(fixes: &ValidatedFixSet) -> Result<Vec<(PathBuf, String)>> {
+pub(crate) fn snapshot_files(fixes: &ValidatedFixSet) -> Result<Vec<(PathBuf, String)>> {
     let mut unique_paths = BTreeSet::new();
     for fix in fixes.iter() {
         unique_paths.insert(fix.path.clone());
@@ -192,7 +192,7 @@ pub fn snapshot_files(fixes: &ValidatedFixSet) -> Result<Vec<(PathBuf, String)>>
     Ok(snapshots)
 }
 
-pub fn restore_files(snapshots: &[(PathBuf, String)]) -> Result<()> {
+pub(crate) fn restore_files(snapshots: &[(PathBuf, String)]) -> Result<()> {
     for (path, text) in snapshots {
         fs::write(path, text).with_context(|| format!("failed to restore {}", path.display()))?;
     }

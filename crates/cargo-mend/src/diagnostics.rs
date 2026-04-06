@@ -7,7 +7,7 @@ use super::fix_support::FixSupport;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Severity {
+pub(crate) enum Severity {
     Error,
     Warning,
 }
@@ -116,7 +116,7 @@ pub fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Finding {
+pub(crate) struct Finding {
     pub severity:      Severity,
     pub code:          DiagnosticCode,
     pub path:          String,
@@ -134,7 +134,7 @@ pub struct Finding {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub struct Report {
+pub(crate) struct Report {
     pub root:     String,
     pub summary:  ReportSummary,
     pub findings: Vec<Finding>,
@@ -143,7 +143,7 @@ pub struct Report {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub struct ReportSummary {
+pub(crate) struct ReportSummary {
     #[serde(rename = "error_count")]
     pub errors:                   usize,
     #[serde(rename = "warning_count")]
@@ -155,7 +155,7 @@ pub struct ReportSummary {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ReportFacts {
+pub(crate) struct ReportFacts {
     #[serde(default)]
     pub pub_use:           PubUseFixFacts,
     #[serde(default)]
@@ -163,7 +163,7 @@ pub struct ReportFacts {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PubUseFixFact {
+pub(crate) struct PubUseFixFact {
     pub child_path:      String,
     pub child_line:      usize,
     pub child_item_name: String,
@@ -173,7 +173,7 @@ pub struct PubUseFixFact {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PubUseFixFacts {
+pub(crate) struct PubUseFixFacts {
     #[serde(default)]
     facts: Vec<PubUseFixFact>,
 }
@@ -186,7 +186,7 @@ impl PubUseFixFacts {
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CompilerWarningFacts {
+pub(crate) enum CompilerWarningFacts {
     #[default]
     None,
     UnusedImportWarnings,
@@ -233,7 +233,7 @@ impl Report {
     }
 }
 
-pub fn effective_fix_support(finding: &Finding) -> FixSupport {
+pub(crate) fn effective_fix_support(finding: &Finding) -> FixSupport {
     if matches!(finding.fix_support, FixSupport::None) {
         diagnostic_spec(finding.code).fix_support
     } else {
@@ -241,11 +241,11 @@ pub fn effective_fix_support(finding: &Finding) -> FixSupport {
     }
 }
 
-pub fn finding_headline(finding: &Finding) -> String {
+pub(crate) fn finding_headline(finding: &Finding) -> String {
     diagnostic_spec(finding.code).headline.to_string()
 }
 
-pub fn detail_reasons(finding: &Finding) -> Vec<String> {
+pub(crate) fn detail_reasons(finding: &Finding) -> Vec<String> {
     match diagnostic_spec(finding.code).detail_mode {
         DetailMode::None => Vec::new(),
         DetailMode::MessageRelatedAndFix => {
@@ -264,13 +264,15 @@ pub fn detail_reasons(finding: &Finding) -> Vec<String> {
     }
 }
 
-pub fn inline_help_text(finding: &Finding) -> Option<&'static str> {
+pub(crate) fn inline_help_text(finding: &Finding) -> Option<&'static str> {
     diagnostic_spec(finding.code).inline_help
 }
 
-pub fn custom_inline_help_text(finding: &Finding) -> Option<&str> { finding.suggestion.as_deref() }
+pub(crate) fn custom_inline_help_text(finding: &Finding) -> Option<&str> {
+    finding.suggestion.as_deref()
+}
 
-pub fn finding_help_url(finding: &Finding) -> String {
+pub(crate) fn finding_help_url(finding: &Finding) -> String {
     format!(
         "https://github.com/natepiano/cargo-mend#{}",
         diagnostic_spec(finding.code).help_anchor
