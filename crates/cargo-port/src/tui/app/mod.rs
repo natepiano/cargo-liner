@@ -1,11 +1,11 @@
-mod background;
+mod async_tasks;
 mod ci_state;
 mod construct;
 mod dismiss;
 mod focus;
 mod lint;
+mod navigation;
 mod query;
-mod selection;
 mod snapshots;
 mod types;
 
