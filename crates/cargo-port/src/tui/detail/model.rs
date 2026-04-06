@@ -331,6 +331,12 @@ pub fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
 /// Git fields (right column). Only includes fields that have data.
 pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     let mut fields = Vec::new();
+    if info.git_url.is_some() {
+        fields.push(DetailField::Repo);
+    }
+    if info.git_owner.is_some() {
+        fields.push(DetailField::Owner);
+    }
     if info.git_branch.is_some() {
         fields.push(DetailField::Branch);
     }
@@ -351,12 +357,6 @@ pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     }
     if info.git_origin.is_some() {
         fields.push(DetailField::Origin);
-    }
-    if info.git_url.is_some() {
-        fields.push(DetailField::Repo);
-    }
-    if info.git_owner.is_some() {
-        fields.push(DetailField::Owner);
     }
     if info.git_stars.is_some() {
         fields.push(DetailField::Stars);

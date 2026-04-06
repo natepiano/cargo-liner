@@ -21,7 +21,7 @@ pub const LINT_NO_LOG: &str = " ";
 // ── Git UI constants ─────────────────────────────────────────────────
 
 pub const GIT_LOCAL: &str = "📁";
-pub const GIT_CLONE: &str = "📥";
+pub const GIT_CLONE: &str = "👯";
 pub const GIT_FORK: &str = "🔱";
 pub const WORKTREE: &str = "🌲";
 pub const GIT_MODIFIED_COLOR: Color = Color::Indexed(208);
