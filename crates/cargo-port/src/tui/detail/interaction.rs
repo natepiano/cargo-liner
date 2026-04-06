@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
 
 use super::CiFetchKind;
 use super::DetailField;
@@ -51,11 +52,11 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
     }
 }
 
-pub fn handle_detail_key(app: &mut App, key: KeyCode) {
+pub fn handle_detail_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     {
         let pane = active_detail_pane(app);
-        match key {
+        match event.code {
             KeyCode::Up => return pane.up(),
             KeyCode::Down => return pane.down(),
             KeyCode::Home => return pane.home(),
@@ -65,7 +66,7 @@ pub fn handle_detail_key(app: &mut App, key: KeyCode) {
     }
 
     // Action keys through per-pane keymap.
-    let bind = KeyBind::plain(key);
+    let bind = KeyBind::new(event.code, event.modifiers);
     match app.base_focus() {
         PaneId::Targets => {
             if let Some(action) = app.current_keymap.targets.action_for(&bind) {
@@ -166,14 +167,14 @@ fn open_url(url: &str) {
     .spawn();
 }
 
-pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
+pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     if app.showing_lints() {
-        handle_lints_key(app, key);
+        handle_lints_key(app, event);
         return;
     }
 
     // Navigation keys stay hardcoded.
-    match key {
+    match event.code {
         KeyCode::Up => return app.ci_pane.up(),
         KeyCode::Down => return app.ci_pane.down(),
         KeyCode::Home => return app.ci_pane.home(),
@@ -182,7 +183,7 @@ pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
     }
 
     // Action keys through keymap.
-    let bind = KeyBind::plain(key);
+    let bind = KeyBind::new(event.code, event.modifiers);
     let Some(action) = app.current_keymap.ci_runs.action_for(&bind) else {
         return;
     };
@@ -229,9 +230,9 @@ fn handle_ci_enter(app: &mut App) {
     }
 }
 
-fn handle_lints_key(app: &mut App, key: KeyCode) {
+fn handle_lints_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
-    match key {
+    match event.code {
         KeyCode::Up => return app.lint_pane.up(),
         KeyCode::Down => return app.lint_pane.down(),
         KeyCode::Home => return app.lint_pane.home(),
@@ -240,7 +241,7 @@ fn handle_lints_key(app: &mut App, key: KeyCode) {
     }
 
     // Action keys through keymap.
-    let bind = KeyBind::plain(key);
+    let bind = KeyBind::new(event.code, event.modifiers);
     let Some(action) = app.current_keymap.lints.action_for(&bind) else {
         return;
     };

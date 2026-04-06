@@ -544,7 +544,10 @@ fn non_owner_member_ignores_stale_ci_state_and_cannot_fetch() {
     assert_eq!(app.ci_for(&member), None);
     assert!(!app.bottom_panel_available(&member));
 
-    crate::tui::detail::handle_ci_runs_key(&mut app, KeyCode::Enter);
+    crate::tui::detail::handle_ci_runs_key(
+        &mut app,
+        &crossterm::event::KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE),
+    );
     assert!(app.pending_ci_fetch.is_none());
 }
 

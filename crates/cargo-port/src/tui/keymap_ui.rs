@@ -1,4 +1,5 @@
 use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use ratatui::Frame;
 use ratatui::layout::Alignment;
@@ -169,13 +170,13 @@ pub(super) fn selectable_row_count(km: &ResolvedKeymap) -> usize {
 
 // ── Key handling ─────────────────────────────────────────────────────
 
-pub(super) fn handle_keymap_key(app: &mut App, key: KeyCode) {
+pub(super) fn handle_keymap_key(app: &mut App, event: &KeyEvent) {
     if app.ui_modes.keymap.is_awaiting_key() {
-        handle_awaiting_key(app, key);
+        handle_awaiting_key(app, event);
         return;
     }
 
-    match key {
+    match event.code {
         KeyCode::Esc => {
             app.close_keymap();
             app.close_overlay();
@@ -191,13 +192,13 @@ pub(super) fn handle_keymap_key(app: &mut App, key: KeyCode) {
     }
 }
 
-fn handle_awaiting_key(app: &mut App, key: KeyCode) {
-    if key == KeyCode::Esc {
+fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
+    if event.code == KeyCode::Esc {
         app.keymap_end_awaiting();
         return;
     }
 
-    let bind = KeyBind::new(key, KeyModifiers::NONE);
+    let bind = KeyBind::new(event.code, event.modifiers);
     let rows = build_rows(&app.current_keymap);
     let selectable: Vec<&KeymapRow> = rows.iter().filter(|r| !r.is_header).collect();
     let Some(row) = selectable.get(app.keymap_pane.pos()) else {

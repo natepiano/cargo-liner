@@ -3,7 +3,9 @@ use std::time::Instant;
 
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
 use crossterm::event::MouseButton;
 use crossterm::event::MouseEventKind;
 use ratatui::layout::Position;
@@ -25,7 +27,7 @@ use crate::project::ProjectLanguage;
 pub(super) fn handle_event(app: &mut App, event: &Event) {
     let started = Instant::now();
     match event {
-        Event::Key(key) if key.kind == KeyEventKind::Press => handle_key_event(app, key.code),
+        Event::Key(key) if key.kind == KeyEventKind::Press => handle_key_event(app, key),
         Event::Mouse(mouse) => handle_mouse_event(app, mouse.kind, mouse.column, mouse.row),
         _ => {},
     }
@@ -47,9 +49,12 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
     );
 }
 
-fn handle_key_event(app: &mut App, key: KeyCode) {
-    let key = normalize_key(app, key);
-    if key == KeyCode::Esc && app.example_running.is_some() {
+fn handle_key_event(app: &mut App, raw: &KeyEvent) {
+    let normalized = normalize_nav(app, raw);
+    let code = normalized.code;
+
+    // Structural keys checked by code only (modifiers irrelevant).
+    if code == KeyCode::Esc && app.example_running.is_some() {
         let pid = *app
             .example_child
             .lock()
@@ -64,75 +69,93 @@ fn handle_key_event(app: &mut App, key: KeyCode) {
         app.mark_terminal_dirty();
         return;
     }
-    if key == KeyCode::Esc && !app.example_output.is_empty() {
+    if code == KeyCode::Esc && !app.example_output.is_empty() {
         app.example_output.clear();
         return;
     }
-    if handle_confirm_key(app, key) {
+    if handle_confirm_key(app, code) {
         return;
     }
     if app.is_keymap_open() {
-        super::keymap_ui::handle_keymap_key(app, key);
+        super::keymap_ui::handle_keymap_key(app, &normalized);
         return;
     }
     if app.is_finder_open() {
-        finder::handle_finder_key(app, key);
+        finder::handle_finder_key(app, code);
         return;
     }
     if app.is_settings_open() {
-        settings::handle_settings_key(app, key);
+        settings::handle_settings_key(app, code);
         return;
     }
     if app.is_searching() {
-        handle_search_key(app, key);
+        handle_search_key(app, code);
         return;
     }
-    if handle_global_key(app, key) {
+    if handle_global_key(app, &normalized) {
         return;
     }
 
     match app.focused_pane {
-        PaneId::Package | PaneId::Git | PaneId::Targets => detail::handle_detail_key(app, key),
-        PaneId::CiRuns => detail::handle_ci_runs_key(app, key),
-        PaneId::Toasts => handle_toast_key(app, key),
-        _ => handle_normal_key(app, key),
+        PaneId::Package | PaneId::Git | PaneId::Targets => {
+            detail::handle_detail_key(app, &normalized);
+        },
+        PaneId::CiRuns => detail::handle_ci_runs_key(app, &normalized),
+        PaneId::Toasts => handle_toast_key(app, &normalized),
+        _ => handle_normal_key(app, &normalized),
     }
 }
 
-const fn normalize_key(app: &App, key: KeyCode) -> KeyCode {
+/// Build a `KeyBind` from a `KeyEvent`, applying `=`/`+` and `BackTab`
+/// normalization.
+fn bind_from(event: &KeyEvent) -> KeyBind { KeyBind::new(event.code, event.modifiers) }
+
+/// Normalize navigation keys only. Vim hjkl conversion applies only when
+/// no modifiers are held (so `Ctrl+k` is never eaten by vim mode).
+/// Arrow remapping in list panes also only applies to bare arrows.
+fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
     if app.is_searching() || app.is_finder_open() || app.is_settings_editing() {
-        return key;
+        return *raw;
     }
-    let key = if app.navigation_keys().uses_vim() {
+
+    let code = if raw.modifiers == KeyModifiers::NONE && app.navigation_keys().uses_vim() {
         match app.focused_pane {
             PaneId::Package | PaneId::Git | PaneId::Targets | PaneId::CiRuns | PaneId::Toasts => {
-                match key {
+                match raw.code {
                     KeyCode::Char('h' | 'k') => KeyCode::Up,
                     KeyCode::Char('j' | 'l') => KeyCode::Down,
-                    _ => key,
+                    _ => raw.code,
                 }
             },
-            _ => match key {
+            _ => match raw.code {
                 KeyCode::Char('h') => KeyCode::Left,
                 KeyCode::Char('j') => KeyCode::Down,
                 KeyCode::Char('k') => KeyCode::Up,
                 KeyCode::Char('l') => KeyCode::Right,
-                _ => key,
+                _ => raw.code,
             },
         }
     } else {
-        key
+        raw.code
     };
-    match app.focused_pane {
-        PaneId::Package | PaneId::Git | PaneId::Targets | PaneId::CiRuns | PaneId::Toasts => {
-            match key {
-                KeyCode::Left => KeyCode::Up,
-                KeyCode::Right => KeyCode::Down,
-                _ => key,
-            }
-        },
-        _ => key,
-    }
+
+    // In list panes, bare left/right map to up/down.
+    let code = if raw.modifiers == KeyModifiers::NONE {
+        match app.focused_pane {
+            PaneId::Package | PaneId::Git | PaneId::Targets | PaneId::CiRuns | PaneId::Toasts => {
+                match code {
+                    KeyCode::Left => KeyCode::Up,
+                    KeyCode::Right => KeyCode::Down,
+                    _ => code,
+                }
+            },
+            _ => code,
+        }
+    } else {
+        code
+    };
+
+    KeyEvent::new(code, raw.modifiers)
 }
 
 fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
@@ -343,8 +366,8 @@ fn open_finder(app: &mut App) {
     app.finder.pane.home();
 }
 
-fn handle_global_key(app: &mut App, key: KeyCode) -> bool {
-    let bind = KeyBind::plain(key);
+fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
+    let bind = bind_from(event);
     let Some(action) = app.current_keymap.global.action_for(&bind) else {
         return false;
     };
@@ -369,9 +392,9 @@ fn handle_global_key(app: &mut App, key: KeyCode) -> bool {
     true
 }
 
-fn handle_normal_key(app: &mut App, key: KeyCode) {
+fn handle_normal_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
-    match key {
+    match event.code {
         KeyCode::Up => return app.move_up(),
         KeyCode::Down => return app.move_down(),
         KeyCode::Home => return app.move_to_top(),
@@ -392,7 +415,7 @@ fn handle_normal_key(app: &mut App, key: KeyCode) {
     }
 
     // Action keys through keymap.
-    let bind = KeyBind::plain(key);
+    let bind = bind_from(event);
     let Some(action) = app.current_keymap.project_list.action_for(&bind) else {
         return;
     };
@@ -411,9 +434,9 @@ fn handle_normal_key(app: &mut App, key: KeyCode) {
     }
 }
 
-fn handle_toast_key(app: &mut App, key: KeyCode) {
+fn handle_toast_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
-    match key {
+    match event.code {
         KeyCode::Up => return app.toast_pane.up(),
         KeyCode::Down => return app.toast_pane.down(),
         KeyCode::Home => return app.toast_pane.home(),
@@ -439,7 +462,7 @@ fn handle_toast_key(app: &mut App, key: KeyCode) {
     }
 
     // Action keys through keymap.
-    let bind = KeyBind::plain(key);
+    let bind = bind_from(event);
     if let Some(action) = app.current_keymap.toasts.action_for(&bind) {
         match action {
             ToastsAction::Dismiss => app.dismiss_focused_toast(),
