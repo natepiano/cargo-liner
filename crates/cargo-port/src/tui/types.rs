@@ -120,6 +120,7 @@ pub(super) enum PaneId {
     Search,
     Settings,
     Finder,
+    Keymap,
 }
 
 impl PaneId {

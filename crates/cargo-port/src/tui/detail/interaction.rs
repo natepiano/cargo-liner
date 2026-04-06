@@ -116,7 +116,8 @@ fn active_detail_pane(app: &mut App) -> &mut Pane {
         | PaneId::Toasts
         | PaneId::Search
         | PaneId::Settings
-        | PaneId::Finder => &mut app.package_pane,
+        | PaneId::Finder
+        | PaneId::Keymap => &mut app.package_pane,
     }
 }
 

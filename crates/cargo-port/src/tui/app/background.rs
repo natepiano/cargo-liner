@@ -175,6 +175,8 @@ impl App {
         }
     }
 
+    pub fn sync_keymap_stamp(&mut self) { self.sync_keymap_watch_state(); }
+
     fn sync_keymap_watch_state(&mut self) {
         self.keymap_last_seen = self
             .keymap_path

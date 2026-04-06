@@ -164,6 +164,20 @@ impl SettingsMode {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeymapMode {
+    #[default]
+    Hidden,
+    Browsing,
+    AwaitingKey,
+}
+
+impl KeymapMode {
+    pub const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
+
+    pub const fn is_awaiting_key(self) -> bool { matches!(self, Self::AwaitingKey) }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ScanPhase {
     #[default]
     Running,
@@ -238,6 +252,7 @@ pub struct UiModes {
     pub search:   SearchMode,
     pub finder:   FinderMode,
     pub settings: SettingsMode,
+    pub keymap:   KeymapMode,
     pub exit:     ExitMode,
 }
 
@@ -573,6 +588,8 @@ pub struct App {
     pub keymap_path:           Option<PathBuf>,
     pub keymap_last_seen:      Option<ConfigFileStamp>,
     pub keymap_diagnostics_id: Option<u64>,
+    pub keymap_pane:           Pane,
+    pub keymap_conflict:       Option<String>,
     pub ui_modes:              UiModes,
     pub dirty:                 DirtyState,
     pub scan:                  ScanState,

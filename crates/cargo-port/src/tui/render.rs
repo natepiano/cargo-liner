@@ -210,6 +210,9 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     if app.is_settings_open() {
         super::settings::render_settings_popup(frame, app);
     }
+    if app.is_keymap_open() {
+        super::keymap_ui::render_keymap_popup(frame, app);
+    }
     if app.is_finder_open() {
         super::finder::render_finder_popup(frame, app);
     }
@@ -695,7 +698,8 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let context = app.input_context();
     let enter_action = app.enter_action();
     let is_rust = app.selected_project().is_some_and(|p| p.is_rust == Rust);
-    let groups = super::shortcuts::for_status_bar(context, enter_action, is_rust);
+    let groups =
+        super::shortcuts::for_status_bar(context, enter_action, is_rust, &app.current_keymap);
 
     let mut left_spans = Vec::new();
     if !app.is_scan_complete() {

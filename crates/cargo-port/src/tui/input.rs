@@ -71,6 +71,10 @@ fn handle_key_event(app: &mut App, key: KeyCode) {
     if handle_confirm_key(app, key) {
         return;
     }
+    if app.is_keymap_open() {
+        super::keymap_ui::handle_keymap_key(app, key);
+        return;
+    }
     if app.is_finder_open() {
         finder::handle_finder_key(app, key);
         return;
@@ -179,6 +183,7 @@ const fn pane_label(pane: PaneId) -> &'static str {
         PaneId::Search => "search",
         PaneId::Settings => "settings",
         PaneId::Finder => "finder",
+        PaneId::Keymap => "keymap",
     }
 }
 
@@ -355,7 +360,10 @@ fn handle_global_key(app: &mut App, key: KeyCode) -> bool {
         GlobalAction::PrevPane => app.focus_previous_pane(),
         GlobalAction::FocusList => app.focus_pane(PaneId::ProjectList),
         GlobalAction::OpenKeymap => {
-            // TODO(phase 7): open keymap UI overlay
+            app.open_overlay(PaneId::Keymap);
+            app.open_keymap();
+            app.keymap_pane
+                .set_len(super::keymap_ui::selectable_row_count(&app.current_keymap));
         },
     }
     true

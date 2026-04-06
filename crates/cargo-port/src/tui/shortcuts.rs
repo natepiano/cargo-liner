@@ -1,3 +1,14 @@
+use std::borrow::Cow;
+
+use crate::keymap::CiRunsAction;
+use crate::keymap::GlobalAction;
+use crate::keymap::LintsAction;
+use crate::keymap::PackageAction;
+use crate::keymap::ProjectListAction;
+use crate::keymap::ResolvedKeymap;
+use crate::keymap::TargetsAction;
+use crate::keymap::ToastsAction;
+
 /// The current input context, derived from app state. Determines which
 /// shortcuts are shown in the status bar and how keys are dispatched.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -23,91 +34,38 @@ impl InputContext {
 
 /// A keyboard shortcut for display in the status bar.
 pub(super) struct Shortcut {
-    pub key:         &'static str,
+    pub key:         Cow<'static, str>,
     pub description: &'static str,
 }
 
-// ── Reusable shortcut definitions ──────────────────────────────────────
+impl Shortcut {
+    const fn fixed(key: &'static str, description: &'static str) -> Self {
+        Self {
+            key: Cow::Borrowed(key),
+            description,
+        }
+    }
 
-const NAV: Shortcut = Shortcut {
-    key:         "↑/↓",
-    description: "nav",
-};
-const ARROWS_EXPAND: Shortcut = Shortcut {
-    key:         "←/→",
-    description: "expand",
-};
-const ARROWS_TOGGLE: Shortcut = Shortcut {
-    key:         "←/→",
-    description: "toggle",
-};
-const TAB_PANE: Shortcut = Shortcut {
-    key:         "Tab",
-    description: "pane",
-};
-const ESC_BACK: Shortcut = Shortcut {
-    key:         "Esc",
-    description: "back",
-};
-const ESC_CANCEL: Shortcut = Shortcut {
-    key:         "Esc",
-    description: "cancel",
-};
-const ESC_CLOSE: Shortcut = Shortcut {
-    key:         "Esc",
-    description: "close",
-};
-const RELEASE: Shortcut = Shortcut {
-    key:         "r",
-    description: "release",
-};
-const CLEAN: Shortcut = Shortcut {
-    key:         "c",
-    description: "clean",
-};
-const CLEAR_CACHE: Shortcut = Shortcut {
-    key:         "c",
-    description: "clear cache",
-};
-const SWITCH_PANEL: Shortcut = Shortcut {
-    key:         "p",
-    description: "switch",
-};
-const CLOSE_TOAST: Shortcut = Shortcut {
-    key:         "x",
-    description: "close",
-};
-const RESCAN: Shortcut = Shortcut {
-    key:         "r",
-    description: "rescan",
-};
-const EXPAND_COLLAPSE_ALL: Shortcut = Shortcut {
-    key:         "+/-",
-    description: "all",
-};
-const SETTINGS: Shortcut = Shortcut {
-    key:         "s",
-    description: "settings",
-};
-const FIND: Shortcut = Shortcut {
-    key:         "/",
-    description: "find",
-};
-const QUIT: Shortcut = Shortcut {
-    key:         "q",
-    description: "quit",
-};
-const RESTART: Shortcut = Shortcut {
-    key:         "R",
-    description: "restart",
-};
-
-const fn enter(description: &'static str) -> Shortcut {
-    Shortcut {
-        key: "Enter",
-        description,
+    fn from_keymap(key: String, description: &'static str) -> Self {
+        Self {
+            key: Cow::Owned(key),
+            description,
+        }
     }
 }
+
+// ── Static navigation shortcuts ──────────────────────────────────────
+
+const NAV: Shortcut = Shortcut::fixed("↑/↓", "nav");
+const ARROWS_EXPAND: Shortcut = Shortcut::fixed("←/→", "expand");
+const ARROWS_TOGGLE: Shortcut = Shortcut::fixed("←/→", "toggle");
+const TAB_PANE: Shortcut = Shortcut::fixed("Tab", "pane");
+const ESC_BACK: Shortcut = Shortcut::fixed("Esc", "back");
+const ESC_CANCEL: Shortcut = Shortcut::fixed("Esc", "cancel");
+const ESC_CLOSE: Shortcut = Shortcut::fixed("Esc", "close");
+const EXPAND_COLLAPSE_ALL: Shortcut = Shortcut::fixed("+/-", "all");
+
+fn enter(description: &'static str) -> Shortcut { Shortcut::fixed("Enter", description) }
 
 // ── Public API ─────────────────────────────────────────────────────────
 
@@ -124,24 +82,33 @@ pub(super) fn for_status_bar(
     context: InputContext,
     enter_action: Option<&'static str>,
     is_rust: bool,
+    km: &ResolvedKeymap,
 ) -> StatusBarGroups {
     let (navigation, actions) = match context {
         InputContext::Searching => (vec![NAV], vec![enter("select"), ESC_CANCEL]),
         InputContext::Finder => (vec![NAV], vec![enter("go to"), ESC_CLOSE]),
         InputContext::Settings => (vec![NAV, ARROWS_TOGGLE], vec![enter("edit"), ESC_CLOSE]),
         InputContext::DetailFields | InputContext::DetailTargets => {
-            detail_groups(context, enter_action, is_rust)
+            detail_groups(context, enter_action, is_rust, km)
         },
-        InputContext::CiRuns => ci_groups(enter_action),
-        InputContext::Toasts => (vec![NAV, TAB_PANE, ESC_BACK], vec![CLOSE_TOAST]),
-        InputContext::Lints => lints_groups(enter_action),
-        InputContext::ProjectList => project_list_groups(enter_action, is_rust),
+        InputContext::CiRuns => ci_groups(enter_action, km),
+        InputContext::Toasts => toast_groups(km),
+        InputContext::Lints => lints_groups(enter_action, km),
+        InputContext::ProjectList => project_list_groups(enter_action, is_rust, km),
     };
 
     let global = if context.is_text_input() {
         vec![]
     } else {
-        vec![FIND, SETTINGS, QUIT, RESTART]
+        vec![
+            Shortcut::from_keymap(km.global.display_key_for(GlobalAction::Find), "find"),
+            Shortcut::from_keymap(
+                km.global.display_key_for(GlobalAction::Settings),
+                "settings",
+            ),
+            Shortcut::from_keymap(km.global.display_key_for(GlobalAction::Quit), "quit"),
+            Shortcut::from_keymap(km.global.display_key_for(GlobalAction::Restart), "restart"),
+        ]
     };
 
     StatusBarGroups {
@@ -157,6 +124,7 @@ fn detail_groups(
     context: InputContext,
     enter_action: Option<&'static str>,
     is_rust: bool,
+    km: &ResolvedKeymap,
 ) -> (Vec<Shortcut>, Vec<Shortcut>) {
     let navigation = vec![NAV, TAB_PANE, ESC_BACK];
 
@@ -165,36 +133,68 @@ fn detail_groups(
         actions.push(enter(action));
     }
     if context == InputContext::DetailTargets {
-        actions.push(RELEASE);
+        actions.push(Shortcut::from_keymap(
+            km.targets.display_key_for(TargetsAction::ReleaseBuild),
+            "release",
+        ));
     }
     if is_rust {
-        actions.push(CLEAN);
+        // All detail panes share the same default key for clean.
+        actions.push(Shortcut::from_keymap(
+            km.package.display_key_for(PackageAction::Clean),
+            "clean",
+        ));
     }
 
     (navigation, actions)
 }
 
-fn ci_groups(enter_action: Option<&'static str>) -> (Vec<Shortcut>, Vec<Shortcut>) {
+fn ci_groups(
+    enter_action: Option<&'static str>,
+    km: &ResolvedKeymap,
+) -> (Vec<Shortcut>, Vec<Shortcut>) {
     let navigation = vec![NAV, TAB_PANE, ESC_BACK];
 
     let mut actions = Vec::new();
     if let Some(action) = enter_action {
         actions.push(enter(action));
     }
-    actions.push(CLEAR_CACHE);
-    actions.push(SWITCH_PANEL);
+    actions.push(Shortcut::from_keymap(
+        km.ci_runs.display_key_for(CiRunsAction::ClearCache),
+        "clear cache",
+    ));
+    actions.push(Shortcut::from_keymap(
+        km.ci_runs.display_key_for(CiRunsAction::TogglePanel),
+        "switch",
+    ));
 
     (navigation, actions)
 }
 
-fn lints_groups(enter_action: Option<&'static str>) -> (Vec<Shortcut>, Vec<Shortcut>) {
+fn toast_groups(km: &ResolvedKeymap) -> (Vec<Shortcut>, Vec<Shortcut>) {
+    (
+        vec![NAV, TAB_PANE, ESC_BACK],
+        vec![Shortcut::from_keymap(
+            km.toasts.display_key_for(ToastsAction::Dismiss),
+            "close",
+        )],
+    )
+}
+
+fn lints_groups(
+    enter_action: Option<&'static str>,
+    km: &ResolvedKeymap,
+) -> (Vec<Shortcut>, Vec<Shortcut>) {
     let navigation = vec![NAV, TAB_PANE, ESC_BACK];
 
     let mut actions = Vec::new();
     if let Some(action) = enter_action {
         actions.push(enter(action));
     }
-    actions.push(SWITCH_PANEL);
+    actions.push(Shortcut::from_keymap(
+        km.lints.display_key_for(LintsAction::TogglePanel),
+        "switch",
+    ));
 
     (navigation, actions)
 }
@@ -202,6 +202,7 @@ fn lints_groups(enter_action: Option<&'static str>) -> (Vec<Shortcut>, Vec<Short
 fn project_list_groups(
     enter_action: Option<&'static str>,
     is_rust: bool,
+    km: &ResolvedKeymap,
 ) -> (Vec<Shortcut>, Vec<Shortcut>) {
     let navigation = vec![NAV, ARROWS_EXPAND, EXPAND_COLLAPSE_ALL, TAB_PANE];
 
@@ -210,9 +211,15 @@ fn project_list_groups(
         actions.push(enter(action));
     }
     if is_rust {
-        actions.push(CLEAN);
+        actions.push(Shortcut::from_keymap(
+            km.project_list.display_key_for(ProjectListAction::Clean),
+            "clean",
+        ));
     }
-    actions.push(RESCAN);
+    actions.push(Shortcut::from_keymap(
+        km.project_list.display_key_for(ProjectListAction::Rescan),
+        "rescan",
+    ));
 
     (navigation, actions)
 }

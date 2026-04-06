@@ -2,6 +2,7 @@ use super::types::App;
 use super::types::BottomPanel;
 use super::types::ExitMode;
 use super::types::FinderMode;
+use super::types::KeymapMode;
 use super::types::SearchMode;
 use super::types::SelectionSync;
 use super::types::SettingsMode;
@@ -52,6 +53,25 @@ impl App {
 
     pub const fn close_settings(&mut self) { self.ui_modes.settings = SettingsMode::Hidden; }
 
+    pub const fn is_keymap_open(&self) -> bool { self.ui_modes.keymap.is_visible() }
+
+    pub const fn open_keymap(&mut self) { self.ui_modes.keymap = KeymapMode::Browsing; }
+
+    pub fn close_keymap(&mut self) {
+        self.ui_modes.keymap = KeymapMode::Hidden;
+        self.keymap_conflict = None;
+    }
+
+    pub fn keymap_begin_awaiting(&mut self) {
+        self.ui_modes.keymap = KeymapMode::AwaitingKey;
+        self.keymap_conflict = None;
+    }
+
+    pub fn keymap_end_awaiting(&mut self) {
+        self.ui_modes.keymap = KeymapMode::Browsing;
+        self.keymap_conflict = None;
+    }
+
     pub const fn begin_settings_editing(&mut self) {
         self.ui_modes.settings = SettingsMode::Editing;
     }
@@ -89,7 +109,7 @@ impl App {
                 PaneId::Search => InputContext::Searching,
                 PaneId::Settings => InputContext::Settings,
                 PaneId::Finder => InputContext::Finder,
-                PaneId::ProjectList => InputContext::ProjectList,
+                PaneId::Keymap | PaneId::ProjectList => InputContext::ProjectList,
             }
         }
     }
@@ -145,7 +165,7 @@ impl App {
                     .selected_project()
                     .is_some_and(|project| self.bottom_panel_available(project)),
                 PaneId::Toasts => !self.active_toasts().is_empty(),
-                PaneId::Search | PaneId::Settings | PaneId::Finder => false,
+                PaneId::Search | PaneId::Settings | PaneId::Finder | PaneId::Keymap => false,
             })
             .collect()
     }
