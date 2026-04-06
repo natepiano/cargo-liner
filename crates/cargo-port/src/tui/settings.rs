@@ -5,16 +5,12 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
-use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
 use super::constants::SETTINGS_POPUP_WIDTH;
-use super::render;
 use crate::config;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +23,7 @@ pub(super) enum SettingOption {
     IncludeDirs,
     InlineDirs,
     LintsEnabled,
+    LintOnDiscovery,
     LintProjects,
     LintCommands,
     LintCacheSize,
@@ -43,14 +40,15 @@ impl SettingOption {
             5 => Some(Self::IncludeDirs),
             6 => Some(Self::InlineDirs),
             7 => Some(Self::LintsEnabled),
-            8 => Some(Self::LintProjects),
-            9 => Some(Self::LintCommands),
-            10 => Some(Self::LintCacheSize),
+            8 => Some(Self::LintOnDiscovery),
+            9 => Some(Self::LintProjects),
+            10 => Some(Self::LintCommands),
+            11 => Some(Self::LintCacheSize),
             _ => None,
         }
     }
 
-    pub(super) const fn count() -> usize { 11 }
+    pub(super) const fn count() -> usize { 12 }
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
@@ -156,6 +154,16 @@ fn settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
             Some(SettingOption::LintsEnabled),
             "Enabled",
             if app.lint_enabled() { "ON" } else { "OFF" }.to_string(),
+        ),
+        (
+            Some(SettingOption::LintOnDiscovery),
+            "Lint on discovery",
+            if cfg.lint.on_discovery.is_immediate() {
+                "ON"
+            } else {
+                "OFF"
+            }
+            .to_string(),
         ),
         (
             Some(SettingOption::LintProjects),
@@ -338,9 +346,6 @@ fn save_updated_config(app: &mut App, cfg: &config::CargoPortConfig) -> bool {
 
 pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     let rows = settings_rows(app, &app.current_config);
-    let key_style = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
     let label_style = Style::default().fg(Color::DarkGray);
     let highlight_style = Style::default().fg(Color::Black).bg(Color::Cyan);
     let content_width = usize::from(SETTINGS_POPUP_WIDTH.saturating_sub(2));
@@ -360,54 +365,27 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
             Span::styled("  Note: ", label_style),
             Span::styled("maps h/j/k/l to arrow navigation", label_style),
         ]));
-        lines.push(Line::from(""));
-    }
-    if app.is_settings_editing() {
-        lines.push(Line::from(vec![
-            Span::styled("  Enter", key_style),
-            Span::raw(" confirm  "),
-            Span::styled("Esc", key_style),
-            Span::raw(" cancel"),
-        ]));
-    } else {
-        lines.push(Line::from(vec![
-            Span::styled("  ↑/↓", key_style),
-            Span::raw(" nav  "),
-            Span::styled("Enter", key_style),
-            Span::raw(" edit  "),
-            Span::styled("←/→", key_style),
-            Span::raw(" toggle  "),
-            Span::styled("Esc", key_style),
-            Span::raw(" close"),
-        ]));
     }
 
     let popup_height = u16::try_from(lines.len())
         .unwrap_or(u16::MAX)
         .saturating_add(2)
         .saturating_add(1);
-    let area = render::centered_rect(SETTINGS_POPUP_WIDTH, popup_height, frame.area());
 
     app.settings_pane.set_len(SettingOption::count());
 
-    frame.render_widget(Clear, area);
+    let inner = super::popup::PopupFrame {
+        title:        Some(" Settings ".to_string()),
+        border_color: Color::Cyan,
+        width:        SETTINGS_POPUP_WIDTH,
+        height:       popup_height,
+    }
+    .render(frame);
 
-    let border_style = Style::default().fg(Color::Cyan);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Settings ")
-        .title_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-        .title_top(Line::from(Span::styled(" Esc to close", border_style)).right_aligned())
-        .border_style(border_style);
+    app.settings_pane.set_content_area(inner);
 
-    app.settings_pane.set_content_area(block.inner(area));
-
-    let paragraph = Paragraph::new(lines).block(block);
-    frame.render_widget(paragraph, area);
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
 }
 
 pub(super) fn build_settings_lines(
@@ -461,12 +439,16 @@ pub(super) fn build_settings_lines(
             || setting == Some(SettingOption::IncludeNonRust)
             || setting == Some(SettingOption::NavigationKeys)
             || setting == Some(SettingOption::LintsEnabled)
+            || setting == Some(SettingOption::LintOnDiscovery)
         {
             let is_on = match setting {
                 Some(SettingOption::InvertScroll) => app.invert_scroll().is_inverted(),
                 Some(SettingOption::IncludeNonRust) => app.include_non_rust().includes_non_rust(),
                 Some(SettingOption::NavigationKeys) => app.navigation_keys().uses_vim(),
                 Some(SettingOption::LintsEnabled) => app.lint_enabled(),
+                Some(SettingOption::LintOnDiscovery) => {
+                    app.current_config.lint.on_discovery.is_immediate()
+                },
                 _ => false,
             };
             let toggle_style = if is_on {
@@ -564,6 +546,11 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
         Some(SettingOption::LintsEnabled) => {
             toggle_lints(app);
         },
+        Some(SettingOption::LintOnDiscovery) => {
+            let mut cfg = app.current_config.clone();
+            cfg.lint.on_discovery.toggle();
+            let _ = save_updated_config(app, &cfg);
+        },
         _ => {},
     }
 }
@@ -609,6 +596,11 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
         },
         Some(SettingOption::LintsEnabled) => {
             toggle_lints(app);
+        },
+        Some(SettingOption::LintOnDiscovery) => {
+            let mut cfg = app.current_config.clone();
+            cfg.lint.on_discovery.toggle();
+            let _ = save_updated_config(app, &cfg);
         },
         Some(SettingOption::Editor) => {
             begin_settings_edit(app, app.editor().to_string());
@@ -758,17 +750,21 @@ mod tests {
         );
         assert_eq!(
             SettingOption::from_index(8),
-            Some(SettingOption::LintProjects)
+            Some(SettingOption::LintOnDiscovery)
         );
         assert_eq!(
             SettingOption::from_index(9),
-            Some(SettingOption::LintCommands)
+            Some(SettingOption::LintProjects)
         );
         assert_eq!(
             SettingOption::from_index(10),
+            Some(SettingOption::LintCommands)
+        );
+        assert_eq!(
+            SettingOption::from_index(11),
             Some(SettingOption::LintCacheSize)
         );
-        assert_eq!(SettingOption::count(), 11);
+        assert_eq!(SettingOption::count(), 12);
     }
 
     #[test]

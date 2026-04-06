@@ -164,12 +164,12 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
     if key == KeyCode::Char('y') {
         match action {
             ConfirmAction::Clean(abs_path) => {
-                let toast = app.start_task_toast(
-                    "cargo clean",
-                    project::home_relative_path(Path::new(&abs_path)),
-                );
-                app.pending_cleans
-                    .push_back(PendingClean { abs_path, toast });
+                let project_path = project::home_relative_path(Path::new(&abs_path));
+                app.start_clean(&project_path);
+                app.pending_cleans.push_back(PendingClean {
+                    abs_path,
+                    project_path,
+                });
             },
         }
     }
@@ -177,6 +177,10 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
 }
 
 fn handle_mouse_event(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
+    // Block mouse interaction with background panes while an overlay is open.
+    if app.input_context().is_overlay() || app.confirm.is_some() {
+        return;
+    }
     match kind {
         MouseEventKind::ScrollUp => scroll_main(app, true),
         MouseEventKind::ScrollDown => scroll_main(app, false),

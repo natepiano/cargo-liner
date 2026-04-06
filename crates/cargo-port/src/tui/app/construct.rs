@@ -261,6 +261,8 @@ impl App {
             example_output: Vec::new(),
             example_tx: channels.example_tx,
             example_rx: channels.example_rx,
+            running_clean_paths: HashSet::new(),
+            clean_toast: None,
             running_lint_paths: HashSet::new(),
             lint_toast: None,
             watch_tx: init.watch_tx,

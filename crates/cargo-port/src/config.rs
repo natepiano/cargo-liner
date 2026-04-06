@@ -66,6 +66,37 @@ impl ScrollDirection {
     }
 }
 
+/// Whether newly discovered projects trigger an immediate lint run or wait
+/// for a real file-system change event.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub enum DiscoveryLint {
+    /// Run lints immediately when a new project appears after the initial scan.
+    Immediate,
+    /// Wait for an actual disk event before running lints on new projects.
+    #[default]
+    Deferred,
+}
+
+impl From<bool> for DiscoveryLint {
+    fn from(b: bool) -> Self { if b { Self::Immediate } else { Self::Deferred } }
+}
+
+impl From<DiscoveryLint> for bool {
+    fn from(val: DiscoveryLint) -> Self { matches!(val, DiscoveryLint::Immediate) }
+}
+
+impl DiscoveryLint {
+    pub const fn is_immediate(self) -> bool { matches!(self, Self::Immediate) }
+
+    pub const fn toggle(&mut self) {
+        *self = match *self {
+            Self::Immediate => Self::Deferred,
+            Self::Deferred => Self::Immediate,
+        };
+    }
+}
+
 /// Whether `hjkl` should mirror arrow-key navigation in non-text panes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
@@ -143,16 +174,22 @@ pub struct LintConfig {
     /// disable pruning.
     #[config(default = "512 MiB")]
     pub cache_size: String,
+
+    /// Whether newly discovered projects trigger an immediate lint run or
+    /// wait for a real file-system change.
+    #[config(default = false)]
+    pub on_discovery: DiscoveryLint,
 }
 
 impl Default for LintConfig {
     fn default() -> Self {
         Self {
-            enabled:    false,
-            include:    Vec::new(),
-            exclude:    Vec::new(),
-            commands:   Vec::new(),
-            cache_size: DEFAULT_CACHE_SIZE.to_string(),
+            enabled:      false,
+            include:      Vec::new(),
+            exclude:      Vec::new(),
+            commands:     Vec::new(),
+            cache_size:   DEFAULT_CACHE_SIZE.to_string(),
+            on_discovery: DiscoveryLint::Deferred,
         }
     }
 }

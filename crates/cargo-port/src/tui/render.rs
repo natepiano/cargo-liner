@@ -232,14 +232,14 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
 
     let text = format!(" {prompt}  (y/n) ");
     let width = u16::try_from(text.len() + 4).unwrap_or(u16::MAX);
-    let area = centered_rect(width, CONFIRM_DIALOG_HEIGHT, frame.area());
-    frame.render_widget(Clear, area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = super::popup::PopupFrame {
+        title: None,
+        border_color: Color::Yellow,
+        width,
+        height: CONFIRM_DIALOG_HEIGHT,
+    }
+    .render(frame);
 
     let line = Line::from(vec![
         Span::styled(format!(" {prompt}  "), Style::default().fg(Color::White)),

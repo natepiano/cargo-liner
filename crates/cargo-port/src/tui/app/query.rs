@@ -88,6 +88,16 @@ impl App {
         self.toast_pane.set_len(self.active_toasts().len());
     }
 
+    pub fn start_clean(&mut self, project_path: &str) {
+        self.running_clean_paths.insert(project_path.to_string());
+        self.sync_running_clean_toast();
+    }
+
+    pub fn clean_spawn_failed(&mut self, project_path: &str) {
+        self.running_clean_paths.remove(project_path);
+        self.sync_running_clean_toast();
+    }
+
     pub fn dismiss_toast(&mut self, id: u64) {
         self.toasts.dismiss(id);
         self.prune_toasts();
@@ -195,10 +205,11 @@ impl App {
     pub fn is_deleted(&self, path: &str) -> bool { self.deleted_projects.contains(path) }
 
     pub fn live_worktree_count(&self, node: &ProjectNode) -> usize {
-        node.worktrees
-            .iter()
-            .filter(|wt| !self.is_deleted(&wt.project.path))
-            .count()
+        super::snapshots::live_worktree_count_for_node(
+            node,
+            &self.deleted_projects,
+            &self.dismissed_projects,
+        )
     }
 
     pub fn formatted_disk(&self, project: &RustProject) -> String {

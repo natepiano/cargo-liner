@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
@@ -27,6 +28,7 @@ use super::types::LintRunStatus;
 use super::types::LintStatus;
 use crate::cache_paths;
 use crate::config::CargoPortConfig;
+use crate::config::DiscoveryLint;
 use crate::config::LintCommandConfig;
 use crate::config::LintConfig;
 use crate::scan::BackgroundMsg;
@@ -132,6 +134,7 @@ fn supervisor_loop(
     let commands = lint.resolved_commands();
     let mut workers: HashMap<PathBuf, ProjectWorker> = HashMap::new();
     let mut initialized = false;
+    let mut cleared: HashSet<PathBuf> = HashSet::new();
 
     loop {
         match rx.recv() {
@@ -140,16 +143,14 @@ fn supervisor_loop(
                 force_immediate_run,
             }) => {
                 let desired = desired_projects(&lint, projects);
-                if !initialized {
-                    clear_orphaned_running_statuses(&desired, &cache_root, &bg_tx);
-                }
+                clear_orphaned_running_statuses(&desired, &cache_root, &bg_tx, &mut cleared);
                 reconcile_workers(
                     &mut workers,
                     desired,
                     &cache_root,
                     &commands,
                     cache_size_bytes,
-                    should_trigger_new_runs(initialized, force_immediate_run),
+                    should_trigger_new_runs(initialized, force_immediate_run, lint.on_discovery),
                     &bg_tx,
                 );
                 initialized = true;
@@ -164,21 +165,32 @@ fn supervisor_loop(
     }
 }
 
-const fn should_trigger_new_runs(initialized: bool, force_immediate_run: bool) -> bool {
-    initialized || force_immediate_run
+const fn should_trigger_new_runs(
+    initialized: bool,
+    force_immediate_run: bool,
+    on_discovery: DiscoveryLint,
+) -> bool {
+    match on_discovery {
+        DiscoveryLint::Immediate => initialized || force_immediate_run,
+        DiscoveryLint::Deferred => false,
+    }
 }
 
 fn clear_orphaned_running_statuses(
     desired: &HashMap<PathBuf, RegisterProjectRequest>,
     cache_root: &Path,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
+    cleared: &mut HashSet<PathBuf>,
 ) {
     for (project_root, request) in desired {
-        let Ok(cleared) = read_write::clear_latest_if_running_under(cache_root, project_root)
+        if !cleared.insert(project_root.clone()) {
+            continue;
+        }
+        let Ok(was_running) = read_write::clear_latest_if_running_under(cache_root, project_root)
         else {
             continue;
         };
-        if cleared {
+        if was_running {
             let _ = bg_tx.send(BackgroundMsg::LintStatus {
                 path:   request.project_path.clone(),
                 status: LintStatus::NoLog,
@@ -870,10 +882,49 @@ mod tests {
 
     #[test]
     fn force_immediate_run_overrides_first_sync_cold_start() {
-        assert!(!should_trigger_new_runs(false, false));
-        assert!(should_trigger_new_runs(false, true));
-        assert!(should_trigger_new_runs(true, false));
-        assert!(should_trigger_new_runs(true, true));
+        // Immediate: initialized || force
+        assert!(!should_trigger_new_runs(
+            false,
+            false,
+            DiscoveryLint::Immediate
+        ));
+        assert!(should_trigger_new_runs(
+            false,
+            true,
+            DiscoveryLint::Immediate
+        ));
+        assert!(should_trigger_new_runs(
+            true,
+            false,
+            DiscoveryLint::Immediate
+        ));
+        assert!(should_trigger_new_runs(
+            true,
+            true,
+            DiscoveryLint::Immediate
+        ));
+
+        // Deferred: never trigger, wait for disk events
+        assert!(!should_trigger_new_runs(
+            false,
+            false,
+            DiscoveryLint::Deferred
+        ));
+        assert!(!should_trigger_new_runs(
+            false,
+            true,
+            DiscoveryLint::Deferred
+        ));
+        assert!(!should_trigger_new_runs(
+            true,
+            false,
+            DiscoveryLint::Deferred
+        ));
+        assert!(!should_trigger_new_runs(
+            true,
+            true,
+            DiscoveryLint::Deferred
+        ));
     }
 
     fn dummy_worker() -> (ProjectWorker, Arc<AtomicBool>) {

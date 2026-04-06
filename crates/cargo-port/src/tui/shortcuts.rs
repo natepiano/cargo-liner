@@ -21,13 +21,38 @@ pub(super) enum InputContext {
     Searching,
     Finder,
     Settings,
+    SettingsEditing,
+    Keymap,
+    KeymapAwaiting,
+    KeymapConflict,
 }
 
 impl InputContext {
     /// Text-input contexts consume all `Char` keys, so global shortcuts
     /// (which are letter-based) must not be shown or dispatched.
     pub const fn is_text_input(self) -> bool {
-        matches!(self, Self::Searching | Self::Finder | Self::Settings)
+        matches!(
+            self,
+            Self::Searching
+                | Self::Finder
+                | Self::Settings
+                | Self::SettingsEditing
+                | Self::KeymapAwaiting
+                | Self::KeymapConflict
+        )
+    }
+
+    /// Overlay contexts own total focus — global shortcuts are hidden.
+    pub const fn is_overlay(self) -> bool {
+        matches!(
+            self,
+            Self::Finder
+                | Self::Settings
+                | Self::SettingsEditing
+                | Self::Keymap
+                | Self::KeymapAwaiting
+                | Self::KeymapConflict
+        )
     }
 }
 
@@ -86,6 +111,10 @@ pub(super) fn for_status_bar(
         InputContext::Searching => (vec![NAV], vec![enter("select"), ESC_CANCEL]),
         InputContext::Finder => (vec![NAV], vec![enter("go to"), ESC_CLOSE]),
         InputContext::Settings => (vec![NAV, ARROWS_TOGGLE], vec![enter("edit"), ESC_CLOSE]),
+        InputContext::SettingsEditing => (vec![], vec![enter("confirm"), ESC_CANCEL]),
+        InputContext::Keymap => (vec![NAV], vec![enter("edit"), ESC_CLOSE]),
+        InputContext::KeymapAwaiting => (vec![], vec![ESC_CANCEL]),
+        InputContext::KeymapConflict => (vec![], vec![enter("clear"), ESC_CANCEL]),
         InputContext::DetailFields | InputContext::DetailTargets => {
             detail_groups(context, enter_action, is_rust, km)
         },
@@ -95,7 +124,7 @@ pub(super) fn for_status_bar(
         InputContext::ProjectList => project_list_groups(enter_action, is_rust, km),
     };
 
-    let global = if context.is_text_input() {
+    let global = if context.is_overlay() || context.is_text_input() {
         vec![]
     } else {
         vec![

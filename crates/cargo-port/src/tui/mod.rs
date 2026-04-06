@@ -7,6 +7,7 @@ mod detail;
 mod finder;
 mod input;
 mod keymap_ui;
+mod popup;
 mod render;
 mod settings;
 mod shortcuts;

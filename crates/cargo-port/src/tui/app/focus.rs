@@ -88,8 +88,16 @@ impl App {
 
     /// Derive the current input context from app state.
     pub const fn input_context(&self) -> InputContext {
-        if self.ui_modes.finder.is_visible() {
+        if self.ui_modes.keymap.is_awaiting_key() && self.keymap_conflict.is_some() {
+            InputContext::KeymapConflict
+        } else if self.ui_modes.keymap.is_awaiting_key() {
+            InputContext::KeymapAwaiting
+        } else if self.ui_modes.keymap.is_visible() {
+            InputContext::Keymap
+        } else if self.ui_modes.finder.is_visible() {
             InputContext::Finder
+        } else if self.is_settings_editing() {
+            InputContext::SettingsEditing
         } else if self.ui_modes.settings.is_visible() {
             InputContext::Settings
         } else if self.ui_modes.search.is_active() {

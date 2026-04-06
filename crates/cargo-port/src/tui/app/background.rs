@@ -351,9 +351,10 @@ impl App {
                 continue;
             }
             let status = crate::lint::read_status(&PathBuf::from(&project.abs_path));
-            if !matches!(status, LintStatus::NoLog) {
-                self.lint_status.insert(project.path.clone(), status);
+            if matches!(status, LintStatus::NoLog | LintStatus::Running(_)) {
+                continue;
             }
+            self.lint_status.insert(project.path.clone(), status);
         }
     }
 
@@ -766,6 +767,31 @@ impl App {
         Self::startup_lint_toast_body_for(&self.running_lint_paths, &HashSet::new())
     }
 
+    pub(super) fn sync_running_clean_toast(&mut self) {
+        if self.running_clean_paths.is_empty() {
+            if let Some(task_id) = self.clean_toast.take() {
+                self.finish_task_toast(task_id);
+            }
+            return;
+        }
+
+        let body = self.running_clean_toast_body();
+        if let Some(task_id) = self.clean_toast {
+            self.update_task_toast_body(task_id, body);
+        } else {
+            self.clean_toast = Some(self.start_task_toast("cargo clean", body));
+        }
+    }
+
+    fn running_clean_toast_body(&self) -> String {
+        let items: Vec<&str> = self
+            .running_clean_paths
+            .iter()
+            .map(String::as_str)
+            .collect();
+        crate::tui::toasts::format_toast_items(&items, crate::tui::toasts::toast_body_width())
+    }
+
     pub(super) fn sync_running_lint_toast(&mut self) {
         if self.running_lint_paths.is_empty() {
             if let Some(task_id) = self.lint_toast.take() {
@@ -853,19 +879,20 @@ impl App {
         let git_info = self.git_info.clone();
         let git_path_states = self.git_path_states.clone();
         let deleted_projects = self.deleted_projects.clone();
+        let dismissed_projects = self.dismissed_projects.clone();
         let lint_enabled = self.lint_enabled();
         self.builds.fit.active = Some(build_id);
         std::thread::spawn(move || {
             let started = Instant::now();
-            let widths = super::snapshots::build_fit_widths_snapshot(
-                &nodes,
-                &disk_usage,
-                &git_info,
-                &git_path_states,
-                &deleted_projects,
-                lint_enabled,
-                build_id,
-            );
+            let state = super::snapshots::FitWidthsState {
+                disk_usage:         &disk_usage,
+                git_info:           &git_info,
+                git_path_states:    &git_path_states,
+                deleted_projects:   &deleted_projects,
+                dismissed_projects: &dismissed_projects,
+            };
+            let widths =
+                super::snapshots::build_fit_widths_snapshot(&nodes, &state, lint_enabled, build_id);
             crate::perf_log::log_duration(
                 "fit_widths_build",
                 started.elapsed(),
@@ -1158,12 +1185,25 @@ impl App {
     pub(super) fn poll_clean_msgs(&mut self) {
         while let Ok(msg) = self.clean_rx.try_recv() {
             match msg {
-                CleanMsg::Finished(task_id) => self.finish_task_toast(task_id),
+                CleanMsg::Finished(path) => {
+                    // Process exited. Toast persists until `DiskUsage`
+                    // arrives so the user sees the updated size. If the
+                    // project already shows 0 bytes (no-op clean, or
+                    // DiskUsage already arrived), remove immediately.
+                    let already_zero = self.disk_usage.get(&path).is_none_or(|&bytes| bytes == 0);
+                    if already_zero {
+                        self.running_clean_paths.remove(&path);
+                        self.sync_running_clean_toast();
+                    }
+                },
             }
         }
     }
 
     pub(super) fn handle_disk_usage(&mut self, path: String, bytes: u64) {
+        if self.running_clean_paths.remove(&path) {
+            self.sync_running_clean_toast();
+        }
         self.apply_disk_usage(path, bytes, self.is_scan_complete());
     }
 

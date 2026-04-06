@@ -15,6 +15,7 @@ pub(super) enum ConfigKey {
     LintExclude,
     LintCommands,
     LintCacheSize,
+    LintOnDiscovery,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -79,6 +80,10 @@ const CONFIG_HANDLERS: &[ConfigHandler] = &[
     },
     ConfigHandler {
         key:  ConfigKey::LintCacheSize,
+        mark: mark_refresh_lint_runtime,
+    },
+    ConfigHandler {
+        key:  ConfigKey::LintOnDiscovery,
         mark: mark_refresh_lint_runtime,
     },
 ];
@@ -171,6 +176,9 @@ pub(super) fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<
     }
     if old.lint.cache_size != new.lint.cache_size {
         keys.push(ConfigKey::LintCacheSize);
+    }
+    if old.lint.on_discovery != new.lint.on_discovery {
+        keys.push(ConfigKey::LintOnDiscovery);
     }
 
     keys

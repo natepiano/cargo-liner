@@ -15,10 +15,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
 use ratatui::widgets::Cell;
-use ratatui::widgets::Clear;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
@@ -27,7 +24,6 @@ use super::app::App;
 use super::constants::FINDER_POPUP_HEIGHT;
 use super::constants::MAX_FINDER_RESULTS;
 use super::detail::RunTargetKind;
-use super::render;
 use super::types::PaneId;
 use crate::project::GitInfo;
 use crate::project::ProjectType;
@@ -512,9 +508,6 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
         .unwrap_or(u16::MAX)
         .clamp(min_popup_width, max_popup_width);
 
-    let area = render::centered_rect(popup_width, FINDER_POPUP_HEIGHT, frame.area());
-    frame.render_widget(Clear, area);
-
     let title = if app.finder.query.is_empty() {
         " Find Anything ".to_string()
     } else if app.finder.total <= app.finder.results.len() {
@@ -526,20 +519,14 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
             app.finder.total
         )
     };
-    let border_style = Style::default().fg(Color::Cyan);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-        .title_top(Line::from(Span::styled(" Esc to close", border_style)).right_aligned())
-        .border_style(border_style);
 
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = super::popup::PopupFrame {
+        title:        Some(title),
+        border_color: Color::Cyan,
+        width:        popup_width,
+        height:       FINDER_POPUP_HEIGHT,
+    }
+    .render(frame);
 
     if inner.height < 3 {
         return;

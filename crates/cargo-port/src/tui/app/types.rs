@@ -65,8 +65,8 @@ pub enum ConfirmAction {
 
 #[derive(Clone)]
 pub struct PendingClean {
-    pub abs_path: String,
-    pub toast:    ToastTaskId,
+    pub abs_path:     String,
+    pub project_path: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -553,6 +553,8 @@ pub struct App {
     pub example_output:           Vec<String>,
     pub example_tx:               mpsc::Sender<ExampleMsg>,
     pub example_rx:               mpsc::Receiver<ExampleMsg>,
+    pub running_clean_paths:      HashSet<String>,
+    pub clean_toast:              Option<ToastTaskId>,
     pub running_lint_paths:       HashSet<String>,
     pub lint_toast:               Option<ToastTaskId>,
 

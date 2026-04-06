@@ -8,9 +8,6 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
-use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 
 use super::app::App;
@@ -210,6 +207,12 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
         return;
     }
 
+    // Enter clears a conflict message so the user can try another key.
+    if event.code == KeyCode::Enter && app.keymap_conflict.is_some() {
+        app.keymap_conflict = None;
+        return;
+    }
+
     let bind = KeyBind::new(event.code, event.modifiers);
     let rows = build_rows(&app.current_keymap);
     let selectable: Vec<&KeymapRow> = rows.iter().filter(|r| !r.is_header).collect();
@@ -254,6 +257,15 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
             bind.display(),
             global_action.toml_key()
         ));
+        return;
+    }
+
+    // Check pane conflicts (if global scope) — a global key that
+    // shadows a pane binding would silently steal the key.
+    if row.scope == "global"
+        && let Some(msg) = check_pane_conflict(&app.current_keymap, &bind)
+    {
+        app.keymap_conflict = Some(msg);
         return;
     }
 
@@ -340,6 +352,39 @@ fn check_scope_conflict(
         ),
         _ => None,
     }
+}
+
+/// Check whether `bind` would shadow a key in any pane scope.
+fn check_pane_conflict(km: &ResolvedKeymap, bind: &KeyBind) -> Option<String> {
+    fn hit<A: Copy + Eq + std::hash::Hash>(
+        scope_map: &ScopeMap<A>,
+        bind: &KeyBind,
+        toml_key: fn(A) -> &'static str,
+        scope_label: &str,
+    ) -> Option<String> {
+        scope_map.action_for(bind).map(|a| {
+            format!(
+                "\"{}\" used by {} → {}",
+                bind.display(),
+                scope_label,
+                toml_key(a),
+            )
+        })
+    }
+
+    None.or_else(|| {
+        hit(
+            &km.project_list,
+            bind,
+            ProjectListAction::toml_key,
+            "Project List",
+        )
+    })
+    .or_else(|| hit(&km.package, bind, PackageAction::toml_key, "Package"))
+    .or_else(|| hit(&km.git, bind, GitAction::toml_key, "Git"))
+    .or_else(|| hit(&km.targets, bind, TargetsAction::toml_key, "Targets"))
+    .or_else(|| hit(&km.ci_runs, bind, CiRunsAction::toml_key, "CI Runs"))
+    .or_else(|| hit(&km.lints, bind, LintsAction::toml_key, "Lints"))
 }
 
 fn apply_rebind(app: &mut App, scope: &str, action: &str, bind: KeyBind) {
@@ -534,19 +579,14 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     // Dynamic height: rows + 2 for top/bottom border.
     let content_height = u16::try_from(rows.len()).unwrap_or(u16::MAX);
     let height = (content_height + 2).min(area.height.saturating_sub(2));
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let popup = Rect::new(x, y, width, height);
 
-    frame.render_widget(Clear, popup);
-    let border_style = Style::default().fg(Color::Cyan);
-    let block = Block::default()
-        .title(Line::from(" Keymap ").centered())
-        .title_top(Line::from(Span::styled(" Esc to close", border_style)).right_aligned())
-        .borders(Borders::ALL)
-        .border_style(border_style);
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
+    let inner = super::popup::PopupFrame {
+        title: Some(" Keymap ".to_string()),
+        border_color: Color::Cyan,
+        width,
+        height,
+    }
+    .render(frame);
 
     let selected_pos = app.keymap_pane.pos();
     let is_awaiting = app.ui_modes.keymap.is_awaiting_key();

@@ -1,6 +1,7 @@
 use ratatui::layout::Rect;
 
 use super::types::App;
+use super::types::VisibleRow;
 use crate::tui::types::PaneId;
 
 // ── Dismiss target ──────────────────────────────────────────────
@@ -44,17 +45,44 @@ impl App {
         match target {
             DismissTarget::Toast(id) => self.dismiss_toast(id),
             DismissTarget::DeletedProject(path) => {
+                let parent_node_index = self.worktree_parent_node_index(&path);
                 self.dismissed_projects.insert(path.clone());
                 self.deleted_projects.remove(&path);
                 self.dirty.rows.mark_dirty();
                 self.ensure_visible_rows_cached();
-                let count = self.row_count();
-                if let Some(selected) = self.list_state.selected()
-                    && selected >= count
-                {
-                    self.list_state.select(Some(count.saturating_sub(1)));
+                if let Some(ni) = parent_node_index {
+                    self.select_root_row(ni);
+                } else {
+                    let count = self.row_count();
+                    if let Some(selected) = self.list_state.selected()
+                        && selected >= count
+                    {
+                        self.list_state.select(Some(count.saturating_sub(1)));
+                    }
                 }
             },
+        }
+    }
+
+    /// If `path` is a worktree entry's project path, return the parent
+    /// node index so the selection can jump to the Root row after dismiss.
+    fn worktree_parent_node_index(&self, path: &str) -> Option<usize> {
+        self.nodes.iter().enumerate().find_map(|(ni, node)| {
+            node.worktrees
+                .iter()
+                .any(|wt| wt.project.path == path)
+                .then_some(ni)
+        })
+    }
+
+    /// Select the `Root` row for the given node index.
+    fn select_root_row(&mut self, node_index: usize) {
+        let rows = self.visible_rows();
+        if let Some(pos) = rows
+            .iter()
+            .position(|row| matches!(row, VisibleRow::Root { node_index: ni } if *ni == node_index))
+        {
+            self.list_state.select(Some(pos));
         }
     }
 }

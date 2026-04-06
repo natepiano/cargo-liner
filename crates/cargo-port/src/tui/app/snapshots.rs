@@ -34,6 +34,7 @@ use crate::tui::render::PREFIX_WT_VENDORED;
 pub(super) fn build_visible_rows(
     nodes: &[ProjectNode],
     expanded: &HashSet<ExpandKey>,
+    deleted: &HashSet<String>,
     dismissed: &HashSet<String>,
 ) -> Vec<VisibleRow> {
     let mut rows = Vec::new();
@@ -76,29 +77,18 @@ pub(super) fn build_visible_rows(
                 });
             }
 
-            for (wi, wt) in node.worktrees.iter().enumerate() {
-                rows.push(VisibleRow::WorktreeEntry {
-                    node_index:     ni,
-                    worktree_index: wi,
-                });
-                if wt.has_children() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
-                    for (gi, group) in wt.groups.iter().enumerate() {
-                        if group.name.is_empty() {
-                            for (mi, _) in group.members.iter().enumerate() {
-                                rows.push(VisibleRow::WorktreeMember {
-                                    node_index:     ni,
-                                    worktree_index: wi,
-                                    group_index:    gi,
-                                    member_index:   mi,
-                                });
-                            }
-                        } else {
-                            rows.push(VisibleRow::WorktreeGroupHeader {
-                                node_index:     ni,
-                                worktree_index: wi,
-                                group_index:    gi,
-                            });
-                            if expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
+            if live_worktree_count_for_node(node, deleted, dismissed) > 1 {
+                for (wi, wt) in node.worktrees.iter().enumerate() {
+                    if dismissed.contains(&wt.project.path) {
+                        continue;
+                    }
+                    rows.push(VisibleRow::WorktreeEntry {
+                        node_index:     ni,
+                        worktree_index: wi,
+                    });
+                    if wt.has_children() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
+                        for (gi, group) in wt.groups.iter().enumerate() {
+                            if group.name.is_empty() {
                                 for (mi, _) in group.members.iter().enumerate() {
                                     rows.push(VisibleRow::WorktreeMember {
                                         node_index:     ni,
@@ -107,16 +97,32 @@ pub(super) fn build_visible_rows(
                                         member_index:   mi,
                                     });
                                 }
+                            } else {
+                                rows.push(VisibleRow::WorktreeGroupHeader {
+                                    node_index:     ni,
+                                    worktree_index: wi,
+                                    group_index:    gi,
+                                });
+                                if expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
+                                    for (mi, _) in group.members.iter().enumerate() {
+                                        rows.push(VisibleRow::WorktreeMember {
+                                            node_index:     ni,
+                                            worktree_index: wi,
+                                            group_index:    gi,
+                                            member_index:   mi,
+                                        });
+                                    }
+                                }
                             }
                         }
-                    }
 
-                    for (vi, _) in wt.vendored.iter().enumerate() {
-                        rows.push(VisibleRow::WorktreeVendored {
-                            node_index:     ni,
-                            worktree_index: wi,
-                            vendored_index: vi,
-                        });
+                        for (vi, _) in wt.vendored.iter().enumerate() {
+                            rows.push(VisibleRow::WorktreeVendored {
+                                node_index:     ni,
+                                worktree_index: wi,
+                                vendored_index: vi,
+                            });
+                        }
                     }
                 }
             }
@@ -128,11 +134,17 @@ pub(super) fn build_visible_rows(
 pub(super) fn live_worktree_count_for_node(
     node: &ProjectNode,
     deleted_projects: &HashSet<String>,
+    dismissed_projects: &HashSet<String>,
 ) -> usize {
-    node.worktrees
+    let live = node
+        .worktrees
         .iter()
-        .filter(|wt| !deleted_projects.contains(&wt.project.path))
-        .count()
+        .filter(|wt| {
+            !deleted_projects.contains(&wt.project.path)
+                && !dismissed_projects.contains(&wt.project.path)
+        })
+        .count();
+    if live <= 1 { 0 } else { live }
 }
 
 pub(super) fn unique_node_paths(node: &ProjectNode) -> Vec<&str> {
@@ -210,26 +222,25 @@ pub(super) fn git_sync_snapshot(
     }
 }
 
+/// Snapshot of project state needed for fit-width calculations.
+pub(super) struct FitWidthsState<'a> {
+    pub disk_usage:         &'a HashMap<String, u64>,
+    pub git_info:           &'a HashMap<String, GitInfo>,
+    pub git_path_states:    &'a HashMap<String, GitPathState>,
+    pub deleted_projects:   &'a HashSet<String>,
+    pub dismissed_projects: &'a HashSet<String>,
+}
+
 pub(super) fn build_fit_widths_snapshot(
     nodes: &[ProjectNode],
-    disk_usage: &HashMap<String, u64>,
-    git_info: &HashMap<String, GitInfo>,
-    git_path_states: &HashMap<String, GitPathState>,
-    deleted_projects: &HashSet<String>,
+    state: &FitWidthsState<'_>,
     lint_enabled: bool,
     generation: u64,
 ) -> ResolvedWidths {
     let mut widths = ResolvedWidths::new(lint_enabled);
 
     for node in nodes {
-        observe_node_fit_widths(
-            &mut widths,
-            node,
-            disk_usage,
-            git_info,
-            git_path_states,
-            deleted_projects,
-        );
+        observe_node_fit_widths(&mut widths, node, state);
     }
 
     widths.generation = generation;
@@ -239,33 +250,45 @@ pub(super) fn build_fit_widths_snapshot(
 pub(super) fn observe_node_fit_widths(
     widths: &mut ResolvedWidths,
     node: &ProjectNode,
-    disk_usage: &HashMap<String, u64>,
-    git_info: &HashMap<String, GitInfo>,
-    git_path_states: &HashMap<String, GitPathState>,
-    deleted_projects: &HashSet<String>,
+    state: &FitWidthsState<'_>,
 ) {
     let dw = columns::display_width;
     App::observe_name_width(
         widths,
-        App::fit_name_for_node(node, live_worktree_count_for_node(node, deleted_projects)),
+        App::fit_name_for_node(
+            node,
+            live_worktree_count_for_node(node, state.deleted_projects, state.dismissed_projects),
+        ),
     );
     widths.observe(
         COL_DISK,
-        dw(&formatted_disk_for_node_snapshot(node, disk_usage)),
+        dw(&formatted_disk_for_node_snapshot(node, state.disk_usage)),
     );
     widths.observe(
         COL_SYNC,
         dw(&git_sync_snapshot(
-            git_info,
-            git_path_states,
+            state.git_info,
+            state.git_path_states,
             &node.project.path,
         )),
     );
 
-    observe_member_group_fit_widths(widths, &node.groups, disk_usage, git_info, git_path_states);
-    observe_vendored_fit_widths(widths, &node.vendored, disk_usage, PREFIX_VENDORED);
+    observe_member_group_fit_widths(
+        widths,
+        &node.groups,
+        state.disk_usage,
+        state.git_info,
+        state.git_path_states,
+    );
+    observe_vendored_fit_widths(widths, &node.vendored, state.disk_usage, PREFIX_VENDORED);
     for worktree in &node.worktrees {
-        observe_worktree_fit_widths(widths, worktree, disk_usage, git_info, git_path_states);
+        observe_worktree_fit_widths(
+            widths,
+            worktree,
+            state.disk_usage,
+            state.git_info,
+            state.git_path_states,
+        );
     }
 }
 

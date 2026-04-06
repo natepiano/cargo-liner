@@ -35,7 +35,6 @@ use super::detail::PendingExampleRun;
 use super::detail::RunTargetKind;
 use super::input;
 use super::render;
-use super::toasts::ToastTaskId;
 use crate::ci;
 use crate::config;
 use crate::http::HttpClient;
@@ -64,7 +63,7 @@ pub(super) enum CiFetchMsg {
 }
 
 pub(super) enum CleanMsg {
-    Finished(ToastTaskId),
+    Finished(String),
 }
 
 #[derive(Clone, Copy)]
@@ -501,16 +500,16 @@ fn spawn_clean_process(app: &mut App, pending: &PendingClean) {
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            app.finish_task_toast(pending.toast);
+            app.clean_spawn_failed(&pending.project_path);
             app.show_timed_toast("cargo clean failed", e.to_string());
             return;
         },
     };
     let tx = app.clean_tx.clone();
-    let toast = pending.toast;
+    let project_path = pending.project_path.clone();
     thread::spawn(move || {
         let _ = child.wait();
-        let _ = tx.send(CleanMsg::Finished(toast));
+        let _ = tx.send(CleanMsg::Finished(project_path));
     });
 }
 
