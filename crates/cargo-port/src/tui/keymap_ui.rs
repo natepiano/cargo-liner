@@ -425,47 +425,19 @@ fn save_keymap_to_disk(app: &mut App) {
 
 const BASE_POPUP_WIDTH: u16 = 48;
 
-pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
-    let area = frame.area();
-    let rows = build_rows(&app.current_keymap);
-
-    // Dynamic width: base fits all normal keys, expands for conflict messages.
-    let content_width = if let Some(msg) = &app.keymap_conflict {
-        // 2 indent + 25 desc + msg len + 2 pad
-        let needed = (2 + 25 + msg.len() + 2) as u16;
-        BASE_POPUP_WIDTH.max(needed)
-    } else {
-        BASE_POPUP_WIDTH
-    };
-    // +2 for left/right border
-    let width = (content_width + 2).min(area.width.saturating_sub(4));
-
-    // Dynamic height: rows + 2 for top/bottom border.
-    let content_height = rows.len() as u16;
-    let height = (content_height + 2).min(area.height.saturating_sub(2));
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let popup = Rect::new(x, y, width, height);
-
-    frame.render_widget(Clear, popup);
-    let border_style = Style::default().fg(Color::Cyan);
-    let block = Block::default()
-        .title(Line::from(" Keymap ").centered())
-        .title_top(Line::from(Span::styled(" Esc to close", border_style)).right_aligned())
-        .borders(Borders::ALL)
-        .border_style(border_style);
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-
-    let is_awaiting = app.ui_modes.keymap.is_awaiting_key();
-    let selected_pos = app.keymap_pane.pos();
-
+fn build_lines<'a>(
+    rows: &[KeymapRow],
+    app: &App,
+    inner: Rect,
+    selected_pos: usize,
+    is_awaiting: bool,
+) -> Vec<Line<'a>> {
+    let inner_w = usize::from(inner.width);
     let mut selectable_index = 0usize;
     let mut lines = Vec::new();
 
-    for row in &rows {
+    for row in rows {
         if row.is_header {
-            let inner_w = usize::from(inner.width);
             let label = format!(" {} ", row.scope);
             let label_len = label.len();
             let dash_total = inner_w.saturating_sub(label_len);
@@ -540,6 +512,46 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
         selectable_index += 1;
     }
 
+    lines
+}
+
+pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let rows = build_rows(&app.current_keymap);
+
+    // Dynamic width: base fits all normal keys, expands for conflict messages.
+    let content_width = app
+        .keymap_conflict
+        .as_ref()
+        .map_or(BASE_POPUP_WIDTH, |msg| {
+            // 2 indent + 25 desc + msg len + 2 pad
+            let needed = u16::try_from(2 + 25 + msg.len() + 2).unwrap_or(u16::MAX);
+            BASE_POPUP_WIDTH.max(needed)
+        });
+    // +2 for left/right border
+    let width = (content_width + 2).min(area.width.saturating_sub(4));
+
+    // Dynamic height: rows + 2 for top/bottom border.
+    let content_height = u16::try_from(rows.len()).unwrap_or(u16::MAX);
+    let height = (content_height + 2).min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup);
+    let border_style = Style::default().fg(Color::Cyan);
+    let block = Block::default()
+        .title(Line::from(" Keymap ").centered())
+        .title_top(Line::from(Span::styled(" Esc to close", border_style)).right_aligned())
+        .borders(Borders::ALL)
+        .border_style(border_style);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let selected_pos = app.keymap_pane.pos();
+    let is_awaiting = app.ui_modes.keymap.is_awaiting_key();
+    let lines = build_lines(&rows, app, inner, selected_pos, is_awaiting);
+
     // Scroll to keep selection visible.
     let visible_height = usize::from(inner.height);
     let scroll_offset = if selected_pos >= visible_height {
@@ -548,8 +560,6 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
         0
     };
 
-    // We need to account for headers in the scroll. Build a flat index
-    // mapping selectable positions to line indices.
     let para = Paragraph::new(lines).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
     frame.render_widget(para, inner);
 }
