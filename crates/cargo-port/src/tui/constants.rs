@@ -14,12 +14,12 @@ pub(super) const FINDER_POPUP_HEIGHT: u16 = 28;
 pub(super) const SETTINGS_POPUP_WIDTH: u16 = 90;
 pub(super) const CONFIRM_DIALOG_HEIGHT: u16 = 3;
 pub(super) const CI_TIMESTAMP_WIDTH: u16 = 16;
-pub(super) const TOAST_WIDTH: u16 = 60;
+pub(super) const TOAST_WIDTH: u16 = 50;
 pub(super) const TOAST_MIN_HEIGHT: u16 = 5;
 pub(super) const TOAST_MAX_HEIGHT: u16 = 12;
 pub(super) const TOAST_GAP: u16 = 0;
 /// Milliseconds between each line reveal/collapse during toast animation.
-pub(super) const TOAST_LINE_REVEAL_MS: u64 = 100;
+pub(super) const TOAST_LINE_REVEAL_MS: u64 = 150;
 
 pub(super) const MAX_FINDER_RESULTS: usize = 50;
 

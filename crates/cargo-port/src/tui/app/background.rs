@@ -38,6 +38,7 @@ use crate::tui::config_reload;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
+use crate::tui::toasts;
 use crate::tui::toasts::ToastStyle::Error;
 use crate::tui::types::PaneId;
 use crate::watcher;
@@ -710,34 +711,30 @@ impl App {
         expected: &HashSet<String>,
         seen: &HashSet<String>,
     ) -> String {
-        let Some(current) = expected.iter().find(|path| !seen.contains(*path)) else {
+        let items: Vec<&str> = expected
+            .iter()
+            .filter(|path| !seen.contains(*path))
+            .map(String::as_str)
+            .collect();
+        if items.is_empty() {
             return "Complete".to_string();
-        };
-        let remaining = expected.len().saturating_sub(seen.len());
-        if remaining <= 1 {
-            current.clone()
-        } else {
-            format!("{current}\n+ {} others", remaining - 1)
         }
+        toasts::format_toast_items(&items, toasts::toast_body_width())
     }
 
     pub(super) fn startup_lint_toast_body_for(
         expected: &HashSet<String>,
         seen: &HashSet<String>,
     ) -> String {
-        let mut remaining = expected.iter().filter(|path| !seen.contains(*path));
-        let Some(first) = remaining.next() else {
+        let items: Vec<&str> = expected
+            .iter()
+            .filter(|path| !seen.contains(*path))
+            .map(String::as_str)
+            .collect();
+        if items.is_empty() {
             return "Complete".to_string();
-        };
-        let Some(second) = remaining.next() else {
-            return first.clone();
-        };
-        let other_count = remaining.count();
-        if other_count == 0 {
-            format!("{first}\n{second}")
-        } else {
-            format!("{first}\n{second} (+ {other_count} others)")
         }
+        toasts::format_toast_items(&items, toasts::toast_body_width())
     }
 
     pub(super) fn running_lint_toast_body(&self) -> String {

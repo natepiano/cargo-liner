@@ -24,10 +24,24 @@ pub struct KeyBind {
 impl KeyBind {
     pub fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
         // BackTab implies Shift — normalise to Tab + SHIFT.
-        let modifiers = if matches!(code, KeyCode::BackTab) {
-            modifiers | KeyModifiers::SHIFT
-        } else {
-            modifiers
+        // Uppercase Char implies Shift — strip SHIFT since it's
+        // encoded in the character itself (`Char('R')` already means
+        // Shift+r).  This ensures the binding `"R"` matches the
+        // crossterm event `Char('R') + SHIFT`.
+        // Normalise Shift + lowercase letter → uppercase letter with
+        // SHIFT stripped, so `Shift+r` and `R` produce the same KeyBind.
+        let (code, modifiers) = match code {
+            KeyCode::BackTab => (code, modifiers | KeyModifiers::SHIFT),
+            KeyCode::Char(c)
+                if c.is_ascii_lowercase() && modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                (
+                    KeyCode::Char(c.to_ascii_uppercase()),
+                    modifiers - KeyModifiers::SHIFT,
+                )
+            },
+            KeyCode::Char(c) if c.is_ascii_uppercase() => (code, modifiers - KeyModifiers::SHIFT),
+            _ => (code, modifiers),
         };
         Self {
             code: normalize_code(code),
@@ -1087,10 +1101,11 @@ mod tests {
 
     #[test]
     fn parse_multiple_modifiers() {
+        // Shift+x normalizes to Char('X') with SHIFT stripped.
         let kb: KeyBind = "Ctrl+Shift+x".parse().unwrap();
-        assert_eq!(kb.code, KeyCode::Char('x'));
+        assert_eq!(kb.code, KeyCode::Char('X'));
         assert!(kb.modifiers.contains(KeyModifiers::CONTROL));
-        assert!(kb.modifiers.contains(KeyModifiers::SHIFT));
+        assert!(!kb.modifiers.contains(KeyModifiers::SHIFT));
     }
 
     #[test]
@@ -1118,6 +1133,58 @@ mod tests {
         let plus: KeyBind = "+".parse().unwrap();
         let equals: KeyBind = "=".parse().unwrap();
         assert_eq!(plus, equals);
+    }
+
+    #[test]
+    fn uppercase_char_strips_shift() {
+        // Crossterm delivers Shift+R as Char('R') + SHIFT.
+        // Our normalization strips SHIFT since uppercase encodes it.
+        let from_event = KeyBind::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
+        let from_toml = KeyBind::plain(KeyCode::Char('R'));
+        assert_eq!(from_event, from_toml);
+        assert_eq!(from_event.modifiers, KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn shift_plus_lowercase_becomes_uppercase() {
+        // TOML "Shift+r" should match bare "R".
+        let shift_r: KeyBind = "Shift+r".parse().unwrap();
+        let bare_r: KeyBind = "R".parse().unwrap();
+        assert_eq!(shift_r, bare_r);
+        assert_eq!(shift_r.code, KeyCode::Char('R'));
+        assert_eq!(shift_r.modifiers, KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn ctrl_shift_letter_keeps_ctrl() {
+        // Ctrl+Shift+r → Char('R') + CONTROL (SHIFT stripped).
+        let kb = KeyBind::new(
+            KeyCode::Char('r'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(kb.code, KeyCode::Char('R'));
+        assert!(kb.modifiers.contains(KeyModifiers::CONTROL));
+        assert!(!kb.modifiers.contains(KeyModifiers::SHIFT));
+    }
+
+    #[test]
+    fn lowercase_without_shift_unchanged() {
+        let kb = KeyBind::plain(KeyCode::Char('r'));
+        assert_eq!(kb.code, KeyCode::Char('r'));
+        assert_eq!(kb.modifiers, KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn restart_default_matches_crossterm_event() {
+        // The default keymap binds restart to Char('R') with NONE modifiers.
+        // Crossterm sends Char('R') with SHIFT. They must match.
+        let default_bind = ResolvedKeymap::defaults()
+            .global
+            .key_for(GlobalAction::Restart)
+            .unwrap()
+            .clone();
+        let crossterm_event = KeyBind::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
+        assert_eq!(default_bind, crossterm_event);
     }
 
     #[test]

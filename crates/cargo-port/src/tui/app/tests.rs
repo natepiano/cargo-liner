@@ -688,22 +688,24 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
 }
 
 #[test]
-fn startup_lint_toast_body_shows_two_paths_then_others() {
+fn startup_lint_toast_body_shows_paths_then_others() {
     let expected = HashSet::from([
         "~/a".to_string(),
         "~/b".to_string(),
         "~/c".to_string(),
         "~/d".to_string(),
+        "~/e".to_string(),
     ]);
-    let seen = HashSet::from(["~/d".to_string()]);
+    let seen = HashSet::from(["~/e".to_string()]);
 
     let body = App::startup_lint_toast_body_for(&expected, &seen);
     let lines = body.lines().collect::<Vec<_>>();
 
-    assert_eq!(lines.len(), 2);
+    // 4 remaining, 3 visible + suffix on last.
+    assert_eq!(lines.len(), 3);
     assert!(lines[0].starts_with("~/"));
     assert!(lines[1].starts_with("~/"));
-    assert!(lines[1].contains("(+ 1 others)"));
+    assert!(lines[2].contains("(+ 1 others)"));
 }
 
 #[test]

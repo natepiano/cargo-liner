@@ -285,8 +285,8 @@ impl ToastManager {
 }
 
 /// Compute the target (fully-revealed) height for a toast based on its
-/// body content.  Height = 2 (borders) + 1 (title row) + body lines,
-/// clamped to `[TOAST_MIN_HEIGHT, TOAST_MAX_HEIGHT]`.
+/// body content.  Height = 2 (borders, title is on the top border) +
+/// body lines, clamped to `[TOAST_MIN_HEIGHT, TOAST_MAX_HEIGHT]`.
 fn compute_target_height(body: &str) -> u16 {
     // Inner width is toast width minus 2 for borders.
     let inner_width = usize::from(TOAST_WIDTH.saturating_sub(2));
@@ -304,7 +304,7 @@ fn compute_target_height(body: &str) -> u16 {
             })
             .sum::<usize>()
     };
-    let raw = u16::try_from(2 + 1 + body_lines).unwrap_or(u16::MAX);
+    let raw = u16::try_from(2 + body_lines).unwrap_or(u16::MAX);
     raw.clamp(TOAST_MIN_HEIGHT, TOAST_MAX_HEIGHT)
 }
 
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn variable_height_multiline_body() {
         let body = "line1\nline2\nline3";
-        // 2 + 1 + 3 = 6
-        assert_eq!(compute_target_height(body), 6);
+        // 2 (borders, title on top border) + 3 body lines = 5
+        assert_eq!(compute_target_height(body), 5);
     }
 }

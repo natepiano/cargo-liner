@@ -100,18 +100,21 @@ fn render_toast_card(
     } else {
         border_style.add_modifier(Modifier::BOLD)
     };
+
+    // Title on the top border line, close button on the right.
+    let close_text = "[x]";
+    let close_width = u16::try_from(close_text.len()).unwrap_or(u16::MAX);
+    let title_max = usize::from(card.width.saturating_sub(close_width + 4));
+    let title = truncate(toast.title(), title_max);
+
     let block = Block::default()
+        .title(Span::styled(format!(" {title} "), text_style))
         .borders(Borders::ALL)
         .border_style(border_style);
     let inner = block.inner(card);
     frame.render_widget(block, card);
 
-    if inner.height == 0 {
-        return card;
-    }
-
-    let close_text = "[x]";
-    let close_width = u16::try_from(close_text.len()).unwrap_or(u16::MAX);
+    // Close button on the top border row.
     let close_rect = Rect {
         x:      card.x + card.width.saturating_sub(close_width + 2),
         y:      card.y,
@@ -123,32 +126,17 @@ fn render_toast_card(
         close_rect,
     );
 
-    let title_width = usize::from(inner.width.saturating_sub(close_width + 1));
-    let title = truncate(toast.title(), title_width);
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(title, text_style))),
-        Rect {
-            x:      inner.x,
-            y:      inner.y,
-            width:  inner.width.saturating_sub(close_width + 1),
-            height: 1,
-        },
-    );
-
-    if inner.height > 1 {
-        let body_style = if is_error {
-            Style::default().fg(Color::Red)
-        } else {
-            Style::default()
-        };
-        let body_area = Rect {
-            x:      inner.x,
-            y:      inner.y.saturating_add(1),
-            width:  inner.width,
-            height: inner.height.saturating_sub(1),
-        };
-        render_toast_body(frame, toast, body_style, body_area);
+    if inner.height == 0 {
+        return close_rect;
     }
+
+    // Full inner area is body content (title is on border, not inner).
+    let body_style = if is_error {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default()
+    };
+    render_toast_body(frame, toast, body_style, inner);
 
     close_rect
 }
