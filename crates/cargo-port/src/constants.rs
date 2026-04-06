@@ -80,3 +80,4 @@ pub const STALE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 pub const APP_NAME: &str = "cargo-port";
 pub const CONFIG_FILE: &str = "config.toml";
+pub const KEYMAP_FILE: &str = "keymap.toml";

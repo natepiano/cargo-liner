@@ -20,6 +20,8 @@ use crate::config::CargoPortConfig;
 use crate::constants::SERVICE_RETRY_SECS;
 use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
+use crate::keymap::KeymapError;
+use crate::keymap::KeymapErrorReason::ParseError;
 use crate::lint;
 use crate::lint::LintStatus;
 use crate::lint::RegisterProjectRequest;
@@ -36,6 +38,7 @@ use crate::tui::config_reload;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
+use crate::tui::toasts::ToastStyle::Error;
 use crate::tui::types::PaneId;
 use crate::watcher;
 use crate::watcher::WatchRequest;
@@ -123,6 +126,84 @@ impl App {
             Instant::now(),
         ));
         self.show_timed_toast("Config reload failed", err.to_string());
+    }
+
+    pub fn load_initial_keymap(&mut self) {
+        let vim_mode = self.current_config.tui.navigation_keys;
+        let result = crate::keymap::load_keymap(vim_mode);
+        self.current_keymap = result.keymap;
+        self.sync_keymap_watch_state();
+        if !result.errors.is_empty() {
+            self.show_keymap_diagnostics(&result.errors);
+        }
+    }
+
+    pub fn maybe_reload_keymap_from_disk(&mut self) {
+        let current_stamp = self
+            .keymap_path
+            .as_deref()
+            .and_then(Self::config_file_stamp);
+        if current_stamp == self.keymap_last_seen {
+            return;
+        }
+        self.keymap_last_seen = current_stamp;
+
+        let Some(path) = &self.keymap_path else {
+            return;
+        };
+        let contents = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                self.show_keymap_diagnostics(&[crate::keymap::KeymapError {
+                    scope:  String::new(),
+                    action: String::new(),
+                    key:    String::new(),
+                    reason: ParseError(format!("read error: {e}")),
+                }]);
+                return;
+            },
+        };
+
+        let vim_mode = self.current_config.tui.navigation_keys;
+        let result = crate::keymap::load_keymap_from_str(&contents, vim_mode);
+        self.current_keymap = result.keymap;
+
+        if result.errors.is_empty() {
+            self.dismiss_keymap_diagnostics();
+        } else {
+            self.show_keymap_diagnostics(&result.errors);
+        }
+    }
+
+    fn sync_keymap_watch_state(&mut self) {
+        self.keymap_last_seen = self
+            .keymap_path
+            .as_deref()
+            .and_then(Self::config_file_stamp);
+    }
+
+    fn show_keymap_diagnostics(&mut self, errors: &[KeymapError]) {
+        // Dismiss previous diagnostics toast if any.
+        self.dismiss_keymap_diagnostics();
+
+        let body = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let action_path = self.keymap_path.clone();
+
+        let id =
+            self.toasts
+                .push_persistent("Keymap errors (using defaults)", body, Error, action_path);
+        self.keymap_diagnostics_id = Some(id);
+        self.toast_pane.set_len(self.active_toasts().len());
+    }
+
+    fn dismiss_keymap_diagnostics(&mut self) {
+        if let Some(id) = self.keymap_diagnostics_id.take() {
+            self.toasts.dismiss(id);
+        }
     }
 
     pub fn maybe_reload_config_from_disk(&mut self) {

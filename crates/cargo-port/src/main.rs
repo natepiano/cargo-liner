@@ -10,6 +10,7 @@ mod ci;
 mod config;
 mod constants;
 mod http;
+mod keymap;
 mod lint;
 mod perf_log;
 mod project;

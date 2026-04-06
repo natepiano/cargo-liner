@@ -11,6 +11,12 @@ use super::build_target_list;
 use super::git_fields;
 use super::package_fields;
 use crate::ci;
+use crate::keymap::CiRunsAction;
+use crate::keymap::GitAction;
+use crate::keymap::KeyBind;
+use crate::keymap::LintsAction;
+use crate::keymap::PackageAction;
+use crate::keymap::TargetsAction;
 use crate::project::ProjectLanguage;
 use crate::scan;
 use crate::tui::app::App;
@@ -46,27 +52,55 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
 }
 
 pub fn handle_detail_key(app: &mut App, key: KeyCode) {
-    let pane = active_detail_pane(app);
+    // Navigation keys stay hardcoded.
+    {
+        let pane = active_detail_pane(app);
+        match key {
+            KeyCode::Up => return pane.up(),
+            KeyCode::Down => return pane.down(),
+            KeyCode::Home => return pane.home(),
+            KeyCode::End => return pane.end(),
+            _ => {},
+        }
+    }
 
-    match key {
-        KeyCode::Up => pane.up(),
-        KeyCode::Down => pane.down(),
-        KeyCode::Home => pane.home(),
-        KeyCode::End => pane.end(),
-        KeyCode::Enter => handle_detail_enter(app),
-        KeyCode::Char('r') => {
-            if app.is_focused(PaneId::Targets) {
-                handle_target_action(app, BuildMode::Release);
+    // Action keys through per-pane keymap.
+    let bind = KeyBind::plain(key);
+    match app.base_focus() {
+        PaneId::Targets => {
+            if let Some(action) = app.current_keymap.targets.action_for(&bind) {
+                match action {
+                    TargetsAction::Activate => handle_detail_enter(app),
+                    TargetsAction::ReleaseBuild => handle_target_action(app, BuildMode::Release),
+                    TargetsAction::Clean => request_clean(app),
+                }
             }
         },
-        KeyCode::Char('c') => {
-            if let Some(project) = app.selected_project()
-                && project.is_rust == ProjectLanguage::Rust
-            {
-                app.confirm = Some(ConfirmAction::Clean(project.abs_path.clone()));
+        PaneId::Git => {
+            if let Some(action) = app.current_keymap.git.action_for(&bind) {
+                match action {
+                    GitAction::Activate => handle_detail_enter(app),
+                    GitAction::Clean => request_clean(app),
+                }
             }
         },
-        _ => {},
+        _ => {
+            // Package pane (default detail pane).
+            if let Some(action) = app.current_keymap.package.action_for(&bind) {
+                match action {
+                    PackageAction::Activate => handle_detail_enter(app),
+                    PackageAction::Clean => request_clean(app),
+                }
+            }
+        },
+    }
+}
+
+fn request_clean(app: &mut App) {
+    if let Some(project) = app.selected_project()
+        && project.is_rust == ProjectLanguage::Rust
+    {
+        app.confirm = Some(ConfirmAction::Clean(project.abs_path.clone()));
     }
 }
 
@@ -133,62 +167,86 @@ fn open_url(url: &str) {
 
 pub fn handle_ci_runs_key(app: &mut App, key: KeyCode) {
     if app.showing_lints() {
-        match key {
-            KeyCode::Up => app.lint_pane.up(),
-            KeyCode::Down => app.lint_pane.down(),
-            KeyCode::Home => app.lint_pane.home(),
-            KeyCode::End => app.lint_pane.end(),
-            KeyCode::Enter => open_lint_run_output(app),
-            KeyCode::Char('c') => clear_lint_history(app),
-            KeyCode::Char('p') => app.toggle_bottom_panel(),
-            _ => {},
-        }
+        handle_lints_key(app, key);
         return;
     }
 
-    let ci_state = app.selected_ci_state();
-    let run_count = ci_state.map_or(0, |state| state.runs().len());
-    let is_fetching = ci_state.is_some_and(CiState::is_fetching);
-    let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
-
+    // Navigation keys stay hardcoded.
     match key {
-        KeyCode::Up => app.ci_pane.up(),
-        KeyCode::Down => app.ci_pane.down(),
-        KeyCode::Home => app.ci_pane.home(),
-        KeyCode::End => app.ci_pane.end(),
-        KeyCode::Enter => {
-            let cursor_pos = app.ci_pane.pos();
-            if cursor_pos < run_count {
-                if let Some(runs) = ci_state.map(CiState::runs)
-                    && let Some(run) = runs.get(cursor_pos)
-                {
-                    open_url(&run.url);
-                }
-            } else if cursor_pos == run_count
-                && !is_fetching
-                && let Some(project) = app.selected_ci_project()
-            {
-                let current_count = u32::try_from(run_count).unwrap_or(u32::MAX);
-                let kind = if is_exhausted {
-                    CiFetchKind::Refresh
-                } else {
-                    CiFetchKind::FetchOlder
-                };
-                app.pending_ci_fetch = Some(PendingCiFetch {
-                    project_path: project.path.clone(),
-                    current_count,
-                    kind,
-                });
-            }
-        },
-        KeyCode::Char('c') => {
+        KeyCode::Up => return app.ci_pane.up(),
+        KeyCode::Down => return app.ci_pane.down(),
+        KeyCode::Home => return app.ci_pane.home(),
+        KeyCode::End => return app.ci_pane.end(),
+        _ => {},
+    }
+
+    // Action keys through keymap.
+    let bind = KeyBind::plain(key);
+    let Some(action) = app.current_keymap.ci_runs.action_for(&bind) else {
+        return;
+    };
+    match action {
+        CiRunsAction::Activate => handle_ci_enter(app),
+        CiRunsAction::ClearCache => {
             if let Some(project) = app.selected_ci_project() {
                 let path = project.path.clone();
                 clear_ci_cache(app, &path);
             }
         },
-        KeyCode::Char('p') => app.toggle_bottom_panel(),
+        CiRunsAction::TogglePanel => app.toggle_bottom_panel(),
+    }
+}
+
+fn handle_ci_enter(app: &mut App) {
+    let ci_state = app.selected_ci_state();
+    let run_count = ci_state.map_or(0, |state| state.runs().len());
+    let is_fetching = ci_state.is_some_and(CiState::is_fetching);
+    let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
+
+    let cursor_pos = app.ci_pane.pos();
+    if cursor_pos < run_count {
+        if let Some(runs) = ci_state.map(CiState::runs)
+            && let Some(run) = runs.get(cursor_pos)
+        {
+            open_url(&run.url);
+        }
+    } else if cursor_pos == run_count
+        && !is_fetching
+        && let Some(project) = app.selected_ci_project()
+    {
+        let current_count = u32::try_from(run_count).unwrap_or(u32::MAX);
+        let kind = if is_exhausted {
+            CiFetchKind::Refresh
+        } else {
+            CiFetchKind::FetchOlder
+        };
+        app.pending_ci_fetch = Some(PendingCiFetch {
+            project_path: project.path.clone(),
+            current_count,
+            kind,
+        });
+    }
+}
+
+fn handle_lints_key(app: &mut App, key: KeyCode) {
+    // Navigation keys stay hardcoded.
+    match key {
+        KeyCode::Up => return app.lint_pane.up(),
+        KeyCode::Down => return app.lint_pane.down(),
+        KeyCode::Home => return app.lint_pane.home(),
+        KeyCode::End => return app.lint_pane.end(),
         _ => {},
+    }
+
+    // Action keys through keymap.
+    let bind = KeyBind::plain(key);
+    let Some(action) = app.current_keymap.lints.action_for(&bind) else {
+        return;
+    };
+    match action {
+        LintsAction::Activate => open_lint_run_output(app),
+        LintsAction::ClearHistory => clear_lint_history(app),
+        LintsAction::TogglePanel => app.toggle_bottom_panel(),
     }
 }
 

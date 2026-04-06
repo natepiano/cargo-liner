@@ -11,6 +11,7 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 
+use super::manager::ToastStyle;
 use super::manager::ToastView;
 use crate::tui::constants::TOAST_GAP;
 use crate::tui::constants::TOAST_WIDTH;
@@ -65,80 +66,125 @@ pub fn render_toasts(
         };
 
         frame.render_widget(Clear, card);
-
-        let focused = pane_focused && focused_toast_id == Some(toast.id());
-        let border_style = if focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(border_style);
-        let inner = block.inner(card);
-        frame.render_widget(block, card);
-
-        // Only render content if there is inner space.
-        if inner.height > 0 {
-            let close_text = "[x]";
-            let close_width = u16::try_from(close_text.len()).unwrap_or(u16::MAX);
-            let close_rect = Rect {
-                x:      card.x + card.width.saturating_sub(close_width + 2),
-                y:      card.y,
-                width:  close_width + 1,
-                height: 1,
-            };
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    close_text,
-                    border_style.add_modifier(Modifier::BOLD),
-                ))),
-                close_rect,
-            );
-
-            let title_width = usize::from(inner.width.saturating_sub(close_width + 1));
-            let title = truncate(toast.title(), title_width);
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    title,
-                    border_style.add_modifier(Modifier::BOLD),
-                ))),
-                Rect {
-                    x:      inner.x,
-                    y:      inner.y,
-                    width:  inner.width.saturating_sub(close_width + 1),
-                    height: 1,
-                },
-            );
-
-            if inner.height > 1 {
-                frame.render_widget(
-                    Paragraph::new(toast.body()).wrap(Wrap { trim: false }),
-                    Rect {
-                        x:      inner.x,
-                        y:      inner.y.saturating_add(1),
-                        width:  inner.width,
-                        height: inner.height.saturating_sub(1),
-                    },
-                );
-            }
-
-            hitboxes.push(ToastHitbox {
-                id: toast.id(),
-                card_rect: card,
-                close_rect,
-            });
-        } else {
-            // During animation the card may be too small for content but
-            // still needs a hitbox for layout purposes.
-            hitboxes.push(ToastHitbox {
-                id:         toast.id(),
-                card_rect:  card,
-                close_rect: card,
-            });
-        }
+        let close_rect = render_toast_card(frame, card, toast, pane_focused, focused_toast_id);
+        hitboxes.push(ToastHitbox {
+            id: toast.id(),
+            card_rect: card,
+            close_rect,
+        });
     }
 
     hitboxes.reverse();
     hitboxes
+}
+
+/// Render a single toast card and return the close-button rect for hit-testing.
+fn render_toast_card(
+    frame: &mut Frame,
+    card: Rect,
+    toast: &ToastView<'_>,
+    pane_focused: bool,
+    focused_toast_id: Option<u64>,
+) -> Rect {
+    let focused = pane_focused && focused_toast_id == Some(toast.id());
+    let is_error = toast.style() == ToastStyle::Error;
+    let border_style = if focused {
+        Style::default().fg(Color::Cyan)
+    } else if is_error {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let text_style = if is_error {
+        border_style
+    } else {
+        border_style.add_modifier(Modifier::BOLD)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style);
+    let inner = block.inner(card);
+    frame.render_widget(block, card);
+
+    if inner.height == 0 {
+        return card;
+    }
+
+    let close_text = "[x]";
+    let close_width = u16::try_from(close_text.len()).unwrap_or(u16::MAX);
+    let close_rect = Rect {
+        x:      card.x + card.width.saturating_sub(close_width + 2),
+        y:      card.y,
+        width:  close_width + 1,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(close_text, text_style))),
+        close_rect,
+    );
+
+    let title_width = usize::from(inner.width.saturating_sub(close_width + 1));
+    let title = truncate(toast.title(), title_width);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(title, text_style))),
+        Rect {
+            x:      inner.x,
+            y:      inner.y,
+            width:  inner.width.saturating_sub(close_width + 1),
+            height: 1,
+        },
+    );
+
+    if inner.height > 1 {
+        let body_style = if is_error {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default()
+        };
+        let body_area = Rect {
+            x:      inner.x,
+            y:      inner.y.saturating_add(1),
+            width:  inner.width,
+            height: inner.height.saturating_sub(1),
+        };
+        render_toast_body(frame, toast, body_style, body_area);
+    }
+
+    close_rect
+}
+
+fn render_toast_body(frame: &mut Frame, toast: &ToastView<'_>, body_style: Style, body_area: Rect) {
+    if toast.action_path().is_some() && body_area.height >= 2 {
+        let text_area = Rect {
+            height: body_area.height.saturating_sub(1),
+            ..body_area
+        };
+        frame.render_widget(
+            Paragraph::new(toast.body())
+                .style(body_style)
+                .wrap(Wrap { trim: false }),
+            text_area,
+        );
+        let hint_area = Rect {
+            y: body_area.y + body_area.height.saturating_sub(1),
+            height: 1,
+            ..body_area
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "⏎ open",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ))),
+            hint_area,
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(toast.body())
+                .style(body_style)
+                .wrap(Wrap { trim: false }),
+            body_area,
+        );
+    }
 }

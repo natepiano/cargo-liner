@@ -27,6 +27,7 @@ use super::types::UiModes;
 use crate::config::CargoPortConfig;
 use crate::config::NonRustInclusion;
 use crate::http::HttpClient;
+use crate::keymap;
 use crate::lint;
 use crate::lint::RuntimeHandle;
 use crate::project::ProjectLanguage::Rust;
@@ -284,6 +285,10 @@ impl App {
             toasts: ToastManager::default(),
             config_path: init.config_path,
             config_last_seen: init.config_last_seen,
+            current_keymap: keymap::ResolvedKeymap::defaults(),
+            keymap_path: keymap::keymap_path(),
+            keymap_last_seen: None,
+            keymap_diagnostics_id: None,
             ui_modes: UiModes::default(),
             dirty: DirtyState::initial(),
             scan: ScanState::new(inputs.scan_started_at),
@@ -292,6 +297,7 @@ impl App {
     }
 
     fn finish_new(&mut self) {
+        self.load_initial_keymap();
         if let Some(warning) = self
             .status_flash
             .as_ref()

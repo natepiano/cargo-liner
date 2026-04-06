@@ -15,6 +15,7 @@ use crate::ci::CiRun;
 use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
+use crate::keymap::ResolvedKeymap;
 use crate::lint::CacheUsage;
 use crate::lint::LintRun;
 use crate::lint::LintStatus;
@@ -564,14 +565,18 @@ pub struct App {
     pub cached_detail:       Option<DetailCache>,
     pub layout_cache:        LayoutCache,
 
-    pub status_flash:     Option<(String, std::time::Instant)>,
-    pub toasts:           ToastManager,
-    pub config_path:      Option<PathBuf>,
-    pub config_last_seen: Option<ConfigFileStamp>,
-    pub ui_modes:         UiModes,
-    pub dirty:            DirtyState,
-    pub scan:             ScanState,
-    pub selection:        SelectionSync,
+    pub status_flash:          Option<(String, std::time::Instant)>,
+    pub toasts:                ToastManager,
+    pub config_path:           Option<PathBuf>,
+    pub config_last_seen:      Option<ConfigFileStamp>,
+    pub current_keymap:        ResolvedKeymap,
+    pub keymap_path:           Option<PathBuf>,
+    pub keymap_last_seen:      Option<ConfigFileStamp>,
+    pub keymap_diagnostics_id: Option<u64>,
+    pub ui_modes:              UiModes,
+    pub dirty:                 DirtyState,
+    pub scan:                  ScanState,
+    pub selection:             SelectionSync,
     #[cfg(test)]
-    pub retry_spawn_mode: RetrySpawnMode,
+    pub retry_spawn_mode:      RetrySpawnMode,
 }

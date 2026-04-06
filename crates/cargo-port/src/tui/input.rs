@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
+use crossterm::event::KeyEventKind;
 use crossterm::event::MouseButton;
 use crossterm::event::MouseEventKind;
 use ratatui::layout::Position;
@@ -14,13 +15,17 @@ use super::detail;
 use super::finder;
 use super::settings;
 use super::types::PaneId;
+use crate::keymap::GlobalAction;
+use crate::keymap::KeyBind;
+use crate::keymap::ProjectListAction;
+use crate::keymap::ToastsAction;
 use crate::project;
 use crate::project::ProjectLanguage;
 
 pub(super) fn handle_event(app: &mut App, event: &Event) {
     let started = Instant::now();
     match event {
-        Event::Key(key) => handle_key_event(app, key.code),
+        Event::Key(key) if key.kind == KeyEventKind::Press => handle_key_event(app, key.code),
         Event::Mouse(mouse) => handle_mouse_event(app, mouse.kind, mouse.column, mouse.row),
         _ => {},
     }
@@ -334,63 +339,103 @@ fn open_finder(app: &mut App) {
 }
 
 fn handle_global_key(app: &mut App, key: KeyCode) -> bool {
-    match key {
-        KeyCode::Char('q') => app.request_quit(),
-        KeyCode::Char('R') => app.request_restart(),
-        KeyCode::Char('/') => open_finder(app),
-        KeyCode::Char('s') => {
+    let bind = KeyBind::plain(key);
+    let Some(action) = app.current_keymap.global.action_for(&bind) else {
+        return false;
+    };
+    match action {
+        GlobalAction::Quit => app.request_quit(),
+        GlobalAction::Restart => app.request_restart(),
+        GlobalAction::Find => open_finder(app),
+        GlobalAction::Settings => {
             app.open_overlay(PaneId::Settings);
             app.open_settings();
         },
-        KeyCode::Tab => app.focus_next_pane(),
-        KeyCode::BackTab => app.focus_previous_pane(),
-        KeyCode::Esc => app.focus_pane(PaneId::ProjectList),
-        _ => return false,
+        GlobalAction::NextPane => app.focus_next_pane(),
+        GlobalAction::PrevPane => app.focus_previous_pane(),
+        GlobalAction::FocusList => app.focus_pane(PaneId::ProjectList),
+        GlobalAction::OpenKeymap => {
+            // TODO(phase 7): open keymap UI overlay
+        },
     }
     true
 }
 
 fn handle_normal_key(app: &mut App, key: KeyCode) {
+    // Navigation keys stay hardcoded.
     match key {
-        KeyCode::Up => app.move_up(),
-        KeyCode::Down => app.move_down(),
-        KeyCode::Home => app.move_to_top(),
-        KeyCode::End => app.move_to_bottom(),
-        KeyCode::Enter => open_in_editor(app),
+        KeyCode::Up => return app.move_up(),
+        KeyCode::Down => return app.move_down(),
+        KeyCode::Home => return app.move_to_top(),
+        KeyCode::End => return app.move_to_bottom(),
         KeyCode::Right => {
             if !app.expand() {
                 app.move_down();
             }
+            return;
         },
         KeyCode::Left => {
             if !app.collapse() {
                 app.move_up();
             }
+            return;
         },
-        KeyCode::Char('+' | '=') => app.expand_all(),
-        KeyCode::Char('-') => app.collapse_all(),
-        KeyCode::Char('r') => app.rescan(),
-        KeyCode::Char('c') => {
+        _ => {},
+    }
+
+    // Action keys through keymap.
+    let bind = KeyBind::plain(key);
+    let Some(action) = app.current_keymap.project_list.action_for(&bind) else {
+        return;
+    };
+    match action {
+        ProjectListAction::OpenEditor => open_in_editor(app),
+        ProjectListAction::ExpandAll => app.expand_all(),
+        ProjectListAction::CollapseAll => app.collapse_all(),
+        ProjectListAction::Rescan => app.rescan(),
+        ProjectListAction::Clean => {
             if let Some(project) = app.selected_project()
                 && project.is_rust == ProjectLanguage::Rust
             {
                 app.confirm = Some(ConfirmAction::Clean(project.abs_path.clone()));
             }
         },
-        _ => {},
     }
 }
 
 fn handle_toast_key(app: &mut App, key: KeyCode) {
+    // Navigation keys stay hardcoded.
     match key {
-        KeyCode::Up => app.toast_pane.up(),
-        KeyCode::Down => app.toast_pane.down(),
-        KeyCode::Home => app.toast_pane.home(),
-        KeyCode::End => app
-            .toast_pane
-            .set_pos(app.active_toasts().len().saturating_sub(1)),
-        KeyCode::Char('x') => app.dismiss_focused_toast(),
+        KeyCode::Up => return app.toast_pane.up(),
+        KeyCode::Down => return app.toast_pane.down(),
+        KeyCode::Home => return app.toast_pane.home(),
+        KeyCode::End => {
+            app.toast_pane
+                .set_pos(app.active_toasts().len().saturating_sub(1));
+            return;
+        },
+        KeyCode::Enter => {
+            // Open action_path if the focused toast has one.
+            if let Some(toast) = app.active_toasts().into_iter().nth(app.toast_pane.pos())
+                && let Some(path) = toast.action_path()
+            {
+                let editor = app.editor().to_string();
+                let path = path.to_path_buf();
+                std::thread::spawn(move || {
+                    let _ = std::process::Command::new(&editor).arg(&path).spawn();
+                });
+            }
+            return;
+        },
         _ => {},
+    }
+
+    // Action keys through keymap.
+    let bind = KeyBind::plain(key);
+    if let Some(action) = app.current_keymap.toasts.action_for(&bind) {
+        match action {
+            ToastsAction::Dismiss => app.dismiss_focused_toast(),
+        }
     }
 }
 
