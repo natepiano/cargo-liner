@@ -386,7 +386,7 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
             app.open_overlay(PaneId::Keymap);
             app.open_keymap();
             app.keymap_pane
-                .set_len(super::keymap_ui::selectable_row_count(&app.current_keymap));
+                .set_len(super::keymap_ui::selectable_row_count());
         },
     }
     true

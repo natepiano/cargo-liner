@@ -308,6 +308,24 @@ fn parse_lint_cache_size(value: &str) -> Result<String, String> {
     config::parse_cache_size(value).map(|parsed| parsed.normalized)
 }
 
+fn toggle_vim_mode(app: &mut App) {
+    if !app.navigation_keys().uses_vim() {
+        // Enabling vim mode — check for hjkl conflicts.
+        let conflicts = crate::keymap::vim_mode_conflicts(&app.current_keymap);
+        if !conflicts.is_empty() {
+            let msg = format!(
+                "Cannot enable vim mode — these bindings use h/j/k/l:\n{}",
+                conflicts.join(", ")
+            );
+            app.show_timed_toast("Vim mode blocked", msg);
+            return;
+        }
+    }
+    let mut cfg = app.current_config.clone();
+    cfg.tui.navigation_keys.toggle();
+    let _ = save_updated_config(app, &cfg);
+}
+
 fn save_updated_config(app: &mut App, cfg: &config::CargoPortConfig) -> bool {
     match app.save_and_apply_config(cfg) {
         Ok(()) => true,
@@ -525,9 +543,7 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
             let _ = save_updated_config(app, &cfg);
         },
         Some(SettingOption::NavigationKeys) => {
-            let mut cfg = app.current_config.clone();
-            cfg.tui.navigation_keys.toggle();
-            let _ = save_updated_config(app, &cfg);
+            toggle_vim_mode(app);
         },
         Some(SettingOption::CiRunCount) => {
             let mut cfg = app.current_config.clone();
@@ -564,9 +580,7 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
             let _ = save_updated_config(app, &cfg);
         },
         Some(SettingOption::NavigationKeys) => {
-            let mut cfg = app.current_config.clone();
-            cfg.tui.navigation_keys.toggle();
-            let _ = save_updated_config(app, &cfg);
+            toggle_vim_mode(app);
         },
         Some(SettingOption::CiRunCount) => {
             begin_settings_edit(app, app.current_config.tui.ci_run_count.to_string());

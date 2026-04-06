@@ -23,6 +23,7 @@ use crate::keymap::LintsAction;
 use crate::keymap::PackageAction;
 use crate::keymap::ProjectListAction;
 use crate::keymap::ResolvedKeymap;
+use crate::keymap::ScopeMap;
 use crate::keymap::TargetsAction;
 use crate::keymap::ToastsAction;
 
@@ -36,128 +37,126 @@ struct KeymapRow {
     is_header:   bool,
 }
 
+const fn header(scope: &'static str) -> KeymapRow {
+    KeymapRow {
+        scope,
+        action: "",
+        description: "",
+        key_display: String::new(),
+        is_header: true,
+    }
+}
+
+fn action_row<A: Copy + Eq + std::hash::Hash>(
+    scope: &'static str,
+    action: A,
+    toml_key: fn(A) -> &'static str,
+    description: fn(A) -> &'static str,
+    scope_map: &ScopeMap<A>,
+) -> KeymapRow {
+    KeymapRow {
+        scope,
+        action: toml_key(action),
+        description: description(action),
+        key_display: scope_map.display_key_for(action),
+        is_header: false,
+    }
+}
+
+fn push_scope<A: Copy + Eq + std::hash::Hash>(
+    rows: &mut Vec<KeymapRow>,
+    scope_name: &'static str,
+    scope_key: &'static str,
+    actions: &[A],
+    toml_key: fn(A) -> &'static str,
+    description: fn(A) -> &'static str,
+    scope_map: &ScopeMap<A>,
+) {
+    rows.push(header(scope_name));
+    for &a in actions {
+        rows.push(action_row(scope_key, a, toml_key, description, scope_map));
+    }
+}
+
 fn build_rows(km: &ResolvedKeymap) -> Vec<KeymapRow> {
     let mut rows = Vec::new();
-
-    fn header(scope: &'static str) -> KeymapRow {
-        KeymapRow {
-            scope,
-            action: "",
-            description: "",
-            key_display: String::new(),
-            is_header: true,
-        }
-    }
-
-    fn action_row<A: Copy + Eq + std::hash::Hash>(
-        scope: &'static str,
-        action: A,
-        toml_key: fn(A) -> &'static str,
-        description: fn(A) -> &'static str,
-        scope_map: &crate::keymap::ScopeMap<A>,
-    ) -> KeymapRow {
-        KeymapRow {
-            scope,
-            action: toml_key(action),
-            description: description(action),
-            key_display: scope_map.display_key_for(action),
-            is_header: false,
-        }
-    }
-
-    rows.push(header("Global"));
-    for &a in GlobalAction::ALL {
-        rows.push(action_row(
-            "global",
-            a,
-            GlobalAction::toml_key,
-            GlobalAction::description,
-            &km.global,
-        ));
-    }
-
-    rows.push(header("Project List"));
-    for &a in ProjectListAction::ALL {
-        rows.push(action_row(
-            "project_list",
-            a,
-            ProjectListAction::toml_key,
-            ProjectListAction::description,
-            &km.project_list,
-        ));
-    }
-
-    rows.push(header("Package"));
-    for &a in PackageAction::ALL {
-        rows.push(action_row(
-            "package",
-            a,
-            PackageAction::toml_key,
-            PackageAction::description,
-            &km.package,
-        ));
-    }
-
-    rows.push(header("Git"));
-    for &a in GitAction::ALL {
-        rows.push(action_row(
-            "git",
-            a,
-            GitAction::toml_key,
-            GitAction::description,
-            &km.git,
-        ));
-    }
-
-    rows.push(header("Targets"));
-    for &a in TargetsAction::ALL {
-        rows.push(action_row(
-            "targets",
-            a,
-            TargetsAction::toml_key,
-            TargetsAction::description,
-            &km.targets,
-        ));
-    }
-
-    rows.push(header("CI Runs"));
-    for &a in CiRunsAction::ALL {
-        rows.push(action_row(
-            "ci_runs",
-            a,
-            CiRunsAction::toml_key,
-            CiRunsAction::description,
-            &km.ci_runs,
-        ));
-    }
-
-    rows.push(header("Lints"));
-    for &a in LintsAction::ALL {
-        rows.push(action_row(
-            "lints",
-            a,
-            LintsAction::toml_key,
-            LintsAction::description,
-            &km.lints,
-        ));
-    }
-
-    rows.push(header("Toasts"));
-    for &a in ToastsAction::ALL {
-        rows.push(action_row(
-            "toasts",
-            a,
-            ToastsAction::toml_key,
-            ToastsAction::description,
-            &km.toasts,
-        ));
-    }
-
+    push_scope(
+        &mut rows,
+        "Global",
+        "global",
+        GlobalAction::ALL,
+        GlobalAction::toml_key,
+        GlobalAction::description,
+        &km.global,
+    );
+    push_scope(
+        &mut rows,
+        "Project List",
+        "project_list",
+        ProjectListAction::ALL,
+        ProjectListAction::toml_key,
+        ProjectListAction::description,
+        &km.project_list,
+    );
+    push_scope(
+        &mut rows,
+        "Package",
+        "package",
+        PackageAction::ALL,
+        PackageAction::toml_key,
+        PackageAction::description,
+        &km.package,
+    );
+    push_scope(
+        &mut rows,
+        "Git",
+        "git",
+        GitAction::ALL,
+        GitAction::toml_key,
+        GitAction::description,
+        &km.git,
+    );
+    push_scope(
+        &mut rows,
+        "Targets",
+        "targets",
+        TargetsAction::ALL,
+        TargetsAction::toml_key,
+        TargetsAction::description,
+        &km.targets,
+    );
+    push_scope(
+        &mut rows,
+        "CI Runs",
+        "ci_runs",
+        CiRunsAction::ALL,
+        CiRunsAction::toml_key,
+        CiRunsAction::description,
+        &km.ci_runs,
+    );
+    push_scope(
+        &mut rows,
+        "Lints",
+        "lints",
+        LintsAction::ALL,
+        LintsAction::toml_key,
+        LintsAction::description,
+        &km.lints,
+    );
+    push_scope(
+        &mut rows,
+        "Toasts",
+        "toasts",
+        ToastsAction::ALL,
+        ToastsAction::toml_key,
+        ToastsAction::description,
+        &km.toasts,
+    );
     rows
 }
 
 /// Total number of selectable (non-header) rows.
-pub(super) fn selectable_row_count(km: &ResolvedKeymap) -> usize {
+pub(super) const fn selectable_row_count() -> usize {
     GlobalAction::ALL.len()
         + ProjectListAction::ALL.len()
         + PackageAction::ALL.len()
@@ -186,7 +185,7 @@ pub(super) fn handle_keymap_key(app: &mut App, event: &KeyEvent) {
         KeyCode::Home => app.keymap_pane.home(),
         KeyCode::End => app
             .keymap_pane
-            .set_pos(selectable_row_count(&app.current_keymap).saturating_sub(1)),
+            .set_pos(selectable_row_count().saturating_sub(1)),
         KeyCode::Enter => app.keymap_begin_awaiting(),
         _ => {},
     }
@@ -208,10 +207,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     // Check vim reservation.
     if app.navigation_keys().uses_vim()
         && bind.modifiers == KeyModifiers::NONE
-        && matches!(
-            bind.code,
-            KeyCode::Char('h') | KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('l')
-        )
+        && matches!(bind.code, KeyCode::Char('h' | 'j' | 'k' | 'l'))
     {
         app.keymap_conflict = Some(format!(
             "\"{}\" reserved for vim navigation",
@@ -221,15 +217,15 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     }
 
     // Check global conflict (if pane scope).
-    if row.scope != "global" {
-        if let Some(global_action) = app.current_keymap.global.action_for(&bind) {
-            app.keymap_conflict = Some(format!(
-                "\"{}\" used by Global → {}",
-                bind.display(),
-                global_action.toml_key()
-            ));
-            return;
-        }
+    if row.scope != "global"
+        && let Some(global_action) = app.current_keymap.global.action_for(&bind)
+    {
+        app.keymap_conflict = Some(format!(
+            "\"{}\" used by Global → {}",
+            bind.display(),
+            global_action.toml_key()
+        ));
+        return;
     }
 
     // Check intra-scope conflict.
@@ -251,7 +247,7 @@ fn check_scope_conflict(
     bind: &KeyBind,
 ) -> Option<String> {
     fn check<A: Copy + Eq + std::hash::Hash>(
-        scope_map: &crate::keymap::ScopeMap<A>,
+        scope_map: &ScopeMap<A>,
         current_action: &str,
         bind: &KeyBind,
         toml_key: fn(A) -> &'static str,
@@ -326,7 +322,7 @@ fn check_scope_conflict(
 
 fn apply_rebind(app: &mut App, scope: &str, action: &str, bind: KeyBind) {
     fn rebind<A: Copy + Eq + std::hash::Hash>(
-        scope_map: &mut crate::keymap::ScopeMap<A>,
+        scope_map: &mut ScopeMap<A>,
         action_key: &str,
         bind: KeyBind,
         from_toml_key: fn(&str) -> Option<A>,
@@ -414,7 +410,7 @@ fn save_keymap_to_disk(app: &mut App) {
 const POPUP_WIDTH: u16 = 70;
 const POPUP_HEIGHT: u16 = 40;
 
-pub(super) fn render_keymap_popup(frame: &mut Frame, app: &mut App) {
+pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let width = POPUP_WIDTH.min(area.width.saturating_sub(4));
     let height = POPUP_HEIGHT.min(area.height.saturating_sub(2));
@@ -451,11 +447,9 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &mut App) {
 
         let is_selected = selectable_index == selected_pos;
         let key_text = if is_selected && is_awaiting {
-            if let Some(conflict) = &app.keymap_conflict {
-                conflict.clone()
-            } else {
-                "Press key...".to_string()
-            }
+            app.keymap_conflict
+                .as_ref()
+                .map_or_else(|| "Press key...".to_string(), Clone::clone)
         } else {
             row.key_display.clone()
         };

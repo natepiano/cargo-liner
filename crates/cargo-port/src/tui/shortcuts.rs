@@ -46,7 +46,7 @@ impl Shortcut {
         }
     }
 
-    fn from_keymap(key: String, description: &'static str) -> Self {
+    const fn from_keymap(key: String, description: &'static str) -> Self {
         Self {
             key: Cow::Owned(key),
             description,
@@ -65,7 +65,7 @@ const ESC_CANCEL: Shortcut = Shortcut::fixed("Esc", "cancel");
 const ESC_CLOSE: Shortcut = Shortcut::fixed("Esc", "close");
 const EXPAND_COLLAPSE_ALL: Shortcut = Shortcut::fixed("+/-", "all");
 
-fn enter(description: &'static str) -> Shortcut { Shortcut::fixed("Enter", description) }
+const fn enter(description: &'static str) -> Shortcut { Shortcut::fixed("Enter", description) }
 
 // ── Public API ─────────────────────────────────────────────────────────
 
