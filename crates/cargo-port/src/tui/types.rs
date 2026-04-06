@@ -105,6 +105,9 @@ impl Pane {
     }
 }
 
+/// Format a 1-based scroll position as `"{pos+1} of {len}"`.
+pub(super) fn scroll_indicator(pos: usize, len: usize) -> String { format!("{} of {len}", pos + 1) }
+
 #[derive(Default, PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub(super) enum PaneId {
     #[default]

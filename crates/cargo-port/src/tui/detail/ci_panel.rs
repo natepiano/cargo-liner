@@ -237,10 +237,16 @@ fn ci_panel_title(
     is_fetching: bool,
     fetch_count: u32,
     elapsed: std::time::Duration,
+    focused_pos: Option<usize>,
 ) -> String {
     if is_fetching {
         let spinner = BRAILLE_SPINNER.frame_at(elapsed);
         format!(" CI Runs {spinner} fetching {fetch_count} more… ")
+    } else if let Some(pos) = focused_pos
+        && pos < total
+    {
+        let indicator = crate::tui::types::scroll_indicator(pos, total);
+        format!(" CI Runs ({indicator}) ")
     } else {
         format!(" CI Runs (cached {cached}, total {total}) ")
     }
@@ -269,6 +275,19 @@ fn build_fetch_row(
     Row::new(fetch_cells)
 }
 
+fn cached_run_count(app: &App) -> usize {
+    app.selected_ci_project()
+        .and_then(|project| app.git_info.get(&project.path))
+        .and_then(|git| {
+            git.url.as_ref().and_then(|url| {
+                ci::parse_owner_repo(url).map(|(owner, repo)| {
+                    scan::count_cached_runs(&owner, &repo, git.branch.as_deref())
+                })
+            })
+        })
+        .unwrap_or(0)
+}
+
 pub fn render_ci_panel(
     frame: &mut Frame,
     app: &mut App,
@@ -278,24 +297,26 @@ pub fn render_ci_panel(
     let ci_focused = app.is_focused(PaneId::CiRuns);
 
     let total = ci_runs.len();
-    let cached = app
-        .selected_ci_project()
-        .and_then(|project| app.git_info.get(&project.path))
-        .and_then(|git| {
-            git.url.as_ref().and_then(|url| {
-                ci::parse_owner_repo(url).map(|(owner, repo)| {
-                    scan::count_cached_runs(&owner, &repo, git.branch.as_deref())
-                })
-            })
-        })
-        .unwrap_or(0);
+    let cached = cached_run_count(app);
 
     let ci_state = selected_ci_state(app);
     let is_fetching = ci_state.is_some_and(CiState::is_fetching);
     let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
     let fetch_count = ci_state.map_or(0, CiState::fetch_count);
     let elapsed = app.animation_elapsed();
-    let title = ci_panel_title(total, cached, is_fetching, fetch_count, elapsed);
+    let focused_pos = if ci_focused {
+        Some(app.ci_pane.pos())
+    } else {
+        None
+    };
+    let title = ci_panel_title(
+        total,
+        cached,
+        is_fetching,
+        fetch_count,
+        elapsed,
+        focused_pos,
+    );
 
     let ci_block = Block::default()
         .borders(Borders::ALL)

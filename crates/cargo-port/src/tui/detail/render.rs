@@ -526,19 +526,37 @@ fn render_targets_panel(
     let bin_count: usize = usize::from(info.is_binary);
     let ex_count: usize = info.examples.iter().map(|group| group.names.len()).sum();
     let bench_count = info.benches.len();
-    let mut title_parts = Vec::new();
-    if bin_count > 0 {
-        title_parts.push(format!("Binary ({bin_count})"));
-    }
-    if ex_count > 0 {
-        title_parts.push(format!("Examples ({ex_count})"));
-    }
-    if bench_count > 0 {
-        title_parts.push(format!("Benches ({bench_count})"));
-    }
-    let targets_title = format!(" {} ", title_parts.join(" / "));
 
     let is_active = app.is_focused(PaneId::Targets);
+    let cursor = app.targets_pane.pos();
+
+    let targets_title = {
+        let mut parts = Vec::new();
+        let section_indicator = |section_start: usize, section_len: usize| -> String {
+            if is_active && cursor >= section_start && cursor < section_start + section_len {
+                crate::tui::types::scroll_indicator(cursor - section_start, section_len)
+            } else {
+                section_len.to_string()
+            }
+        };
+        if bin_count > 0 {
+            parts.push(format!("Binary ({})", section_indicator(0, bin_count)));
+        }
+        if ex_count > 0 {
+            parts.push(format!(
+                "Examples ({})",
+                section_indicator(bin_count, ex_count)
+            ));
+        }
+        if bench_count > 0 {
+            parts.push(format!(
+                "Benches ({})",
+                section_indicator(bin_count + ex_count, bench_count)
+            ));
+        }
+        format!(" {} ", parts.join(" / "))
+    };
+
     let targets_block = Block::default()
         .borders(Borders::ALL)
         .title(targets_title)
@@ -551,24 +569,33 @@ fn render_targets_panel(
 
     let entries = model::build_target_list(info);
     app.targets_pane.set_len(entries.len());
-    app.targets_pane.set_content_area(targets_block.inner(area));
+    let content_inner = targets_block.inner(area);
+    app.targets_pane.set_content_area(content_inner);
+
+    let kind_col_width: usize = 7;
+    let col_spacing: usize = 1;
+    let name_max_width =
+        (content_inner.width as usize).saturating_sub(kind_col_width + col_spacing);
 
     let rows: Vec<Row> = entries
         .iter()
         .enumerate()
         .map(|(i, entry)| {
-            let name_style = if i == app.targets_pane.pos()
-                && !is_active
-                && app.remembers_selection(PaneId::Targets)
-            {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+            let name_style =
+                if i == cursor && !is_active && app.remembers_selection(PaneId::Targets) {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+            let display = crate::tui::render::truncate_with_ellipsis(
+                &entry.display_name,
+                name_max_width,
+                "\u{2026}",
+            );
             Row::new(vec![
-                Cell::from(entry.display_name.clone()).style(name_style),
+                Cell::from(display).style(name_style),
                 Cell::from(Line::from(entry.kind.label()).alignment(Alignment::Right))
                     .style(Style::default().fg(entry.kind.color())),
             ])
@@ -587,11 +614,7 @@ fn render_targets_panel(
         .column_spacing(1)
         .row_highlight_style(highlight_style);
 
-    let selected = if is_active {
-        Some(app.targets_pane.pos())
-    } else {
-        None
-    };
+    let selected = if is_active { Some(cursor) } else { None };
     let mut table_state = TableState::default().with_selected(selected);
     frame.render_stateful_widget(table, area, &mut table_state);
     app.targets_pane.set_scroll_offset(table_state.offset());

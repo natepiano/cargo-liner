@@ -107,13 +107,11 @@ pub(super) fn format_lints_slowest(run: &LintRun) -> String {
         )
 }
 
-pub fn render_lints_panel(
-    frame: &mut Frame,
-    app: &mut App,
-    runs: &[LintRun],
-    area: ratatui::layout::Rect,
-) {
-    let focused = app.is_focused(PaneId::CiRuns);
+fn lints_panel_title(app: &App, runs: &[LintRun], focused: bool) -> String {
+    if focused && !runs.is_empty() {
+        let indicator = crate::tui::types::scroll_indicator(app.lint_pane.pos(), runs.len());
+        return format!(" Lints ({indicator}) ");
+    }
     let (watching, worker_count) = app.selected_project().map_or((false, 0usize), |project| {
         let watching = app.lint_is_watchable(project) && app.lint_runtime.is_some();
         (watching, usize::from(watching))
@@ -122,14 +120,24 @@ pub fn render_lints_panel(
         .lint_cache_usage
         .cache_size_bytes
         .map_or_else(|| "unlimited".to_string(), format_bytes);
-    let title = format!(
+    format!(
         " Lints (watching {}, workers {}, runs {}, cache {}/{}) ",
         if watching { "yes" } else { "no" },
         worker_count,
         runs.len(),
         format_bytes(app.lint_cache_usage.bytes),
         cache_size,
-    );
+    )
+}
+
+pub fn render_lints_panel(
+    frame: &mut Frame,
+    app: &mut App,
+    runs: &[LintRun],
+    area: ratatui::layout::Rect,
+) {
+    let focused = app.is_focused(PaneId::CiRuns);
+    let title = lints_panel_title(app, runs, focused);
 
     let block = Block::default()
         .borders(Borders::ALL)

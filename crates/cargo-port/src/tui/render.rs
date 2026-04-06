@@ -583,7 +583,7 @@ fn truncate_root_title(roots: &[String], max_width: usize) -> String {
     title
 }
 
-fn truncate_to_width(text: &str, max_width: usize) -> String {
+pub(super) fn truncate_to_width(text: &str, max_width: usize) -> String {
     if text.width() <= max_width {
         return text.to_string();
     }
@@ -599,7 +599,7 @@ fn truncate_to_width(text: &str, max_width: usize) -> String {
     out
 }
 
-fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &str) -> String {
+pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &str) -> String {
     if text.width() <= max_width {
         return text.to_string();
     }
