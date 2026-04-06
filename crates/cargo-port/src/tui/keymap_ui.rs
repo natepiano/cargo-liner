@@ -423,13 +423,26 @@ fn save_keymap_to_disk(app: &mut App) {
 
 // ── Rendering ────────────────────────────────────────────────────────
 
-const POPUP_WIDTH: u16 = 70;
-const POPUP_HEIGHT: u16 = 40;
+const BASE_POPUP_WIDTH: u16 = 48;
 
 pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let width = POPUP_WIDTH.min(area.width.saturating_sub(4));
-    let height = POPUP_HEIGHT.min(area.height.saturating_sub(2));
+    let rows = build_rows(&app.current_keymap);
+
+    // Dynamic width: base fits all normal keys, expands for conflict messages.
+    let content_width = if let Some(msg) = &app.keymap_conflict {
+        // 2 indent + 25 desc + msg len + 2 pad
+        let needed = (2 + 25 + msg.len() + 2) as u16;
+        BASE_POPUP_WIDTH.max(needed)
+    } else {
+        BASE_POPUP_WIDTH
+    };
+    // +2 for left/right border
+    let width = (content_width + 2).min(area.width.saturating_sub(4));
+
+    // Dynamic height: rows + 2 for top/bottom border.
+    let content_height = rows.len() as u16;
+    let height = (content_height + 2).min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let popup = Rect::new(x, y, width, height);
@@ -444,7 +457,6 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let rows = build_rows(&app.current_keymap);
     let is_awaiting = app.ui_modes.keymap.is_awaiting_key();
     let selected_pos = app.keymap_pane.pos();
 
@@ -453,8 +465,19 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
 
     for row in &rows {
         if row.is_header {
+            let inner_w = usize::from(inner.width);
+            let label = format!(" {} ", row.scope);
+            let label_len = label.len();
+            let dash_total = inner_w.saturating_sub(label_len);
+            let left_dashes = dash_total / 2;
+            let right_dashes = dash_total - left_dashes;
             lines.push(Line::from(Span::styled(
-                format!("── {} ──", row.scope),
+                format!(
+                    "{}{}{}",
+                    "─".repeat(left_dashes),
+                    label,
+                    "─".repeat(right_dashes),
+                ),
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::BOLD),
