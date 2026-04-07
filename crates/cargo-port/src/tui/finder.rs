@@ -726,7 +726,7 @@ mod tests {
     use crate::project::LegacyProject;
     use crate::project::ProjectLanguage;
     use crate::project::WorkspaceStatus;
-    use crate::scan::ProjectNode;
+    use crate::scan::ProjectEntry;
 
     fn make_project(name: Option<&str>, path: &str) -> LegacyProject {
         crate::project::LegacyProject {
@@ -749,7 +749,7 @@ mod tests {
 
     #[test]
     fn build_finder_index_includes_vendored_projects() {
-        let mut node = ProjectNode {
+        let mut node = ProjectEntry {
             project:   make_project(Some("hana"), "~/rust/hana"),
             groups:    Vec::new(),
             worktrees: Vec::new(),

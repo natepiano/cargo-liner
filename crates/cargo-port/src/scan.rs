@@ -52,14 +52,14 @@ pub(crate) struct LegacyMemberGroup {
 }
 
 #[derive(Clone)]
-pub(crate) struct ProjectNode {
+pub(crate) struct ProjectEntry {
     pub project:   LegacyProject,
     pub groups:    Vec<LegacyMemberGroup>,
     pub worktrees: Vec<Self>,
     pub vendored:  Vec<LegacyProject>,
 }
 
-impl ProjectNode {
+impl ProjectEntry {
     pub(crate) fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members.is_empty()) }
 }
 
@@ -526,14 +526,14 @@ pub(crate) fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
-pub(crate) fn build_tree(projects: &[LegacyProject], inline_dirs: &[String]) -> Vec<ProjectNode> {
+pub(crate) fn build_tree(projects: &[LegacyProject], inline_dirs: &[String]) -> Vec<ProjectEntry> {
     let workspace_paths: Vec<String> = projects
         .iter()
         .filter(|p| p.is_workspace())
         .map(|p| p.path.clone())
         .collect();
 
-    let mut nodes: Vec<ProjectNode> = Vec::new();
+    let mut nodes: Vec<ProjectEntry> = Vec::new();
     let mut consumed: HashSet<usize> = HashSet::new();
 
     let top_level_workspaces: HashSet<usize> = projects
@@ -572,7 +572,7 @@ pub(crate) fn build_tree(projects: &[LegacyProject], inline_dirs: &[String]) -> 
             let groups = group_members(&project.path, all_members, inline_dirs);
 
             consumed.insert(i);
-            nodes.push(ProjectNode {
+            nodes.push(ProjectEntry {
                 project: project.clone(),
                 groups,
                 worktrees: Vec::new(),
@@ -585,7 +585,7 @@ pub(crate) fn build_tree(projects: &[LegacyProject], inline_dirs: &[String]) -> 
         if consumed.contains(&i) {
             continue;
         }
-        nodes.push(ProjectNode {
+        nodes.push(ProjectEntry {
             project:   project.clone(),
             groups:    Vec::new(),
             worktrees: Vec::new(),
@@ -736,7 +736,7 @@ fn workspace_pattern_matches_segment(pattern: &str, value: &str) -> bool {
 /// Group worktree nodes under their primary (non-worktree) project.
 /// Projects match when they share the same `worktree_primary_abs_path` (git repo identity).
 /// The primary itself is also listed as a worktree entry (using its directory name).
-fn merge_worktrees(nodes: &mut Vec<ProjectNode>) {
+fn merge_worktrees(nodes: &mut Vec<ProjectEntry>) {
     let mut primary_indices: HashMap<String, usize> = HashMap::new();
     let mut worktree_indices: Vec<usize> = Vec::new();
 
@@ -769,7 +769,7 @@ fn merge_worktrees(nodes: &mut Vec<ProjectNode>) {
         .collect();
     moves.sort_by(|a, b| b.0.cmp(&a.0));
 
-    let mut extracted: Vec<(ProjectNode, String)> = Vec::new();
+    let mut extracted: Vec<(ProjectEntry, String)> = Vec::new();
     for (wi, id) in moves {
         let wt_node = nodes.remove(wi);
         extracted.push((wt_node, id));
@@ -810,7 +810,7 @@ fn merge_worktrees(nodes: &mut Vec<ProjectNode>) {
             let primary_groups = std::mem::take(&mut primary.groups);
             primary.worktrees.insert(
                 0,
-                ProjectNode {
+                ProjectEntry {
                     project:   primary_as_wt,
                     groups:    primary_groups,
                     worktrees: Vec::new(),
@@ -823,7 +823,7 @@ fn merge_worktrees(nodes: &mut Vec<ProjectNode>) {
 
 /// Find standalone nodes whose path lives inside another node's directory
 /// (or inside a worktree's directory) and move them into that node's `vendored` list.
-fn extract_vendored(nodes: &mut Vec<ProjectNode>) {
+fn extract_vendored(nodes: &mut Vec<ProjectEntry>) {
     // Collect abs_paths of all nodes and their worktrees
     let mut parent_paths: Vec<(usize, Option<usize>, String)> = Vec::new();
     for (ni, node) in nodes.iter().enumerate() {
@@ -942,7 +942,7 @@ pub(crate) fn group_members(
     groups
 }
 
-pub(crate) fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
+pub(crate) fn build_flat_entries(nodes: &[ProjectEntry]) -> Vec<FlatEntry> {
     let mut entries = Vec::new();
     for node in nodes {
         entries.push(FlatEntry {
@@ -1058,9 +1058,9 @@ fn convert_member_groups(groups: &[LegacyMemberGroup]) -> Vec<MemberGroup> {
         .collect()
 }
 
-/// Build `Vec<ProjectListItem>` from existing `ProjectNode` tree.
+/// Build `Vec<ProjectListItem>` from existing `ProjectEntry` tree.
 /// This bridges the old and new type systems during migration.
-pub(crate) fn build_project_list(nodes: &[ProjectNode]) -> Vec<ProjectListItem> {
+pub(crate) fn build_project_list(nodes: &[ProjectEntry]) -> Vec<ProjectListItem> {
     let mut items = Vec::new();
     for node in nodes {
         let is_rust = matches!(node.project.is_rust, ProjectLanguage::Rust);
@@ -2044,8 +2044,8 @@ mod tests {
         }
     }
 
-    fn make_node(project: LegacyProject) -> ProjectNode {
-        ProjectNode {
+    fn make_node(project: LegacyProject) -> ProjectEntry {
+        ProjectEntry {
             project,
             groups: Vec::new(),
             worktrees: Vec::new(),
@@ -2056,8 +2056,8 @@ mod tests {
     fn make_node_with_groups(
         project: LegacyProject,
         groups: Vec<LegacyMemberGroup>,
-    ) -> ProjectNode {
-        ProjectNode {
+    ) -> ProjectEntry {
+        ProjectEntry {
             project,
             groups,
             worktrees: Vec::new(),

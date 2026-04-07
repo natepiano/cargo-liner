@@ -29,7 +29,7 @@ use crate::project::Visibility::Dismissed;
 use crate::project::WorkspaceStatus;
 use crate::scan::BackgroundMsg;
 use crate::scan::LegacyMemberGroup;
-use crate::scan::ProjectNode;
+use crate::scan::ProjectEntry;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastManager;
 use crate::tui::types::PaneId;
@@ -60,8 +60,8 @@ fn make_project(name: Option<&str>, path: &str) -> LegacyProject {
     }
 }
 
-fn make_node(project: LegacyProject) -> ProjectNode {
-    ProjectNode {
+fn make_node(project: LegacyProject) -> ProjectEntry {
+    ProjectEntry {
         project,
         groups: Vec::new(),
         worktrees: Vec::new(),
@@ -69,8 +69,8 @@ fn make_node(project: LegacyProject) -> ProjectNode {
     }
 }
 
-/// Convert a slice of `ProjectNode` to `Vec<ProjectListItem>` for tests.
-fn to_items(nodes: &[ProjectNode]) -> Vec<ProjectListItem> {
+/// Convert a slice of `ProjectEntry` to `Vec<ProjectListItem>` for tests.
+fn to_items(nodes: &[ProjectEntry]) -> Vec<ProjectListItem> {
     crate::scan::build_project_list(nodes)
 }
 
@@ -221,7 +221,7 @@ fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
     assert!(!app.is_scan_complete());
 }
 
-fn apply_nodes(app: &mut App, nodes: &[ProjectNode]) {
+fn apply_nodes(app: &mut App, nodes: &[ProjectEntry]) {
     let flat_entries = crate::scan::build_flat_entries(nodes);
     let project_list_items = crate::scan::build_project_list(nodes);
     app.apply_tree_build(flat_entries, project_list_items);
