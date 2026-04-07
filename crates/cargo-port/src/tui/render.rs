@@ -779,7 +779,6 @@ fn render_root_item(
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
     let item = &app.project_list_items[node_index];
-    let display_path = item.display_path();
     let mut name = item.display_name();
     let live_wt = App::live_worktree_count_for_item(item);
     if live_wt > 0 {
@@ -801,7 +800,7 @@ fn render_root_item(
     } else {
         PREFIX_ROOT_LEAF
     };
-    let deleted = app.is_deleted(&display_path);
+    let deleted = app.is_deleted(item.path());
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         (
             "0.0",
@@ -857,7 +856,7 @@ fn render_child_item(
     } else {
         app.git_sync(path)
     };
-    let deleted = app.is_deleted(&project.display_path());
+    let deleted = app.is_deleted(project.path());
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         (
             "0.0",
@@ -955,7 +954,7 @@ fn render_worktree_entry<'a>(
     let lint = app.lint_icon_for_worktree(ni, wi);
     let ci = app.ci_for(wt_abs);
     let sync = app.git_sync(wt_abs);
-    let deleted = app.is_deleted(&dp);
+    let deleted = app.is_deleted(wt_abs);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         (
             "0.0",
@@ -1281,7 +1280,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             } else {
                 app.git_sync(abs)
             };
-            let deleted = app.is_deleted(&item.display_path());
+            let deleted = app.is_deleted(abs);
             let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
                 (
                     "0.0",

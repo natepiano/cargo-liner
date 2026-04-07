@@ -1481,46 +1481,6 @@ impl ProjectListItem {
         )
     }
 
-    /// Check if any project in the hierarchy matches the display path and visibility.
-    pub(crate) fn has_project_with_visibility(&self, display_path: &str, v: Visibility) -> bool {
-        match self {
-            Self::Workspace(p) => {
-                if p.display_path() == display_path && p.visibility() == v {
-                    return true;
-                }
-                p.groups().iter().any(|g| {
-                    g.members()
-                        .iter()
-                        .any(|m| m.display_path() == display_path && m.visibility() == v)
-                }) || p
-                    .vendored()
-                    .iter()
-                    .any(|v_proj| v_proj.display_path() == display_path && v_proj.visibility() == v)
-            },
-            Self::Package(p) => {
-                if p.display_path() == display_path && p.visibility() == v {
-                    return true;
-                }
-                p.vendored()
-                    .iter()
-                    .any(|v_proj| v_proj.display_path() == display_path && v_proj.visibility() == v)
-            },
-            Self::NonRust(p) => p.display_path() == display_path && p.visibility() == v,
-            Self::WorkspaceWorktrees(g) => {
-                (g.primary().display_path() == display_path && g.primary().visibility() == v)
-                    || g.linked()
-                        .iter()
-                        .any(|l| l.display_path() == display_path && l.visibility() == v)
-            },
-            Self::PackageWorktrees(g) => {
-                (g.primary().display_path() == display_path && g.primary().visibility() == v)
-                    || g.linked()
-                        .iter()
-                        .any(|l| l.display_path() == display_path && l.visibility() == v)
-            },
-        }
-    }
-
     /// Check if any project in the hierarchy matches the absolute path and visibility.
     pub fn has_project_with_visibility_by_path(&self, path: &Path, v: Visibility) -> bool {
         match self {

@@ -64,7 +64,6 @@ impl App {
         self.dirty.fit_widths.mark_dirty();
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
-        self.sync_lint_runtime_projects();
         self.rebuild_lint_rollups();
         self.data_generation += 1;
         self.detail_generation += 1;
@@ -536,6 +535,40 @@ impl App {
             return;
         };
         runtime.sync_projects(self.lint_runtime_projects_snapshot());
+    }
+
+    fn register_lint_project_if_eligible(&self, item: &ProjectListItem) {
+        if !item.is_rust() {
+            crate::perf_log::log_event(&format!(
+                "lint_register_skip reason=not_rust path={}",
+                item.display_path()
+            ));
+            return;
+        }
+        let Some(runtime) = &self.lint_runtime else {
+            crate::perf_log::log_event(&format!(
+                "lint_register_skip reason=no_runtime path={}",
+                item.display_path()
+            ));
+            return;
+        };
+        let path = item.path();
+        crate::perf_log::log_event(&format!("lint_register path={}", item.display_path()));
+        runtime.register_project(crate::lint::RegisterProjectRequest {
+            project_path: item.display_path(),
+            abs_path:     path.to_path_buf(),
+            is_rust:      true,
+        });
+    }
+
+    fn register_lint_for_path(&self, display_path: &str) {
+        if let Some(item) = self
+            .project_list_items
+            .iter()
+            .find(|i| i.display_path() == display_path)
+        {
+            self.register_lint_project_if_eligible(item);
+        }
     }
 
     pub(super) fn initialize_startup_phase_tracker(&mut self) {
@@ -1038,7 +1071,6 @@ impl App {
         self.builds.fit.latest = 0;
         self.builds.disk.active = None;
         self.builds.disk.latest = 0;
-        self.sync_lint_runtime_projects();
         self.data_generation += 1;
         self.detail_generation += 1;
         let (tx, rx) = scan::spawn_streaming_scan(
@@ -1254,7 +1286,15 @@ impl App {
             }
         }
         if lint_runtime_changed {
-            self.sync_lint_runtime_projects();
+            if let Some(runtime) = &self.lint_runtime {
+                if bytes == 0 {
+                    runtime.unregister_project(path.to_path_buf());
+                }
+            }
+            // Project restored — re-register if eligible
+            if bytes > 0 {
+                self.register_lint_for_path(&display);
+            }
         }
     }
 
@@ -1385,10 +1425,8 @@ impl App {
         }
 
         self.register_item_background_services(&item);
+        self.register_lint_project_if_eligible(&item);
         self.discovered_projects.push(item);
-        if self.is_scan_complete() {
-            self.sync_lint_runtime_projects();
-        }
         true
     }
 
@@ -1411,7 +1449,6 @@ impl App {
         self.rebuild_tree();
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
-        self.sync_lint_runtime_projects();
         self.cached_detail = None;
         self.dirty.finder.mark_dirty();
         self.dirty.rows.mark_dirty();
@@ -1616,7 +1653,6 @@ impl App {
         );
         self.scan.phase = ScanPhase::Complete;
         self.initialize_startup_phase_tracker();
-        self.sync_lint_runtime_projects();
         self.schedule_git_path_state_refreshes();
         self.schedule_git_first_commit_refreshes();
     }

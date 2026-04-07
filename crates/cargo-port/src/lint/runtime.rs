@@ -68,6 +68,14 @@ impl RuntimeHandle {
     pub fn sync_projects(&self, projects: Vec<RegisterProjectRequest>) {
         let _ = self.tx.send(SupervisorMsg::SyncProjects { projects });
     }
+
+    pub fn register_project(&self, project: RegisterProjectRequest) {
+        let _ = self.tx.send(SupervisorMsg::RegisterProject { project });
+    }
+
+    pub fn unregister_project(&self, abs_path: PathBuf) {
+        let _ = self.tx.send(SupervisorMsg::UnregisterProject { abs_path });
+    }
 }
 
 impl Drop for RuntimeHandle {
@@ -82,6 +90,12 @@ pub struct SpawnResult {
 enum SupervisorMsg {
     SyncProjects {
         projects: Vec<RegisterProjectRequest>,
+    },
+    RegisterProject {
+        project: RegisterProjectRequest,
+    },
+    UnregisterProject {
+        abs_path: PathBuf,
     },
     Shutdown,
 }
@@ -139,6 +153,34 @@ fn supervisor_loop(
                 let desired = desired_projects(&lint, projects);
                 emit_current_statuses(&desired, &status_cache, &bg_tx);
                 reconcile_workers(&mut workers, desired, &worker_config, &bg_tx);
+            },
+            Ok(SupervisorMsg::RegisterProject { project }) => {
+                if should_watch_project(&lint, &project) {
+                    let abs_path = project.abs_path.clone();
+                    let project_path = project.project_path.clone();
+                    workers.entry(abs_path.clone()).or_insert_with(|| {
+                        spawn_project_worker(
+                            project_path,
+                            abs_path.clone(),
+                            &worker_config,
+                            bg_tx.clone(),
+                        )
+                    });
+                    let _ = bg_tx.send(BackgroundMsg::LintStatus {
+                        path:   abs_path.to_string_lossy().into_owned(),
+                        status: cached_status_for_project(&status_cache, &abs_path),
+                    });
+                }
+            },
+            Ok(SupervisorMsg::UnregisterProject { abs_path }) => {
+                if let Some(worker) = workers.remove(&abs_path) {
+                    let project_path = worker.project_path.clone();
+                    stop_worker(worker);
+                    let _ = bg_tx.send(BackgroundMsg::LintStatus {
+                        path:   project_path,
+                        status: LintStatus::NoLog,
+                    });
+                }
             },
             Ok(SupervisorMsg::Shutdown) | Err(_) => {
                 for (_, worker) in workers.drain() {

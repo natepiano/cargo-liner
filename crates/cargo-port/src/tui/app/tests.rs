@@ -1548,14 +1548,13 @@ fn is_deleted_does_not_allocate_display_paths() {
         app.project_list_items.push(item);
     }
     // Mark one as deleted
-    app.project_list_items[100].set_visibility_by_path(
-        &app.project_list_items[100].display_path(),
-        crate::project::Visibility::Deleted,
-    );
+    let dp = app.project_list_items[100].display_path();
+    app.project_list_items[100].set_visibility_by_path(&dp, crate::project::Visibility::Deleted);
 
+    let target = app.project_list_items[100].path().to_path_buf();
     let start = std::time::Instant::now();
     for _ in 0..1000 {
-        let _ = app.is_deleted(&app.project_list_items[100].path().to_path_buf());
+        let _ = app.is_deleted(&target);
     }
     let elapsed = start.elapsed();
     // 1000 lookups across 200 items should be well under 100ms with Path comparison.
