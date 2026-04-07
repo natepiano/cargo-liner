@@ -61,7 +61,7 @@ const CONFIG_JSON_ENV: &str = "MEND_CONFIG_JSON";
 const CONFIG_FINGERPRINT_ENV: &str = "MEND_CONFIG_FINGERPRINT";
 const FINDINGS_DIR_ENV: &str = "MEND_FINDINGS_DIR";
 const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
-const FINDINGS_SCHEMA_VERSION: u32 = 12;
+const FINDINGS_SCHEMA_VERSION: u32 = 13;
 fn current_analysis_fingerprint() -> String {
     let version = env!("CARGO_PKG_VERSION");
     let git_hash = option_env!("MEND_GIT_HASH").unwrap_or("nogit");
@@ -1004,6 +1004,7 @@ struct ItemInfo<'a> {
     item_name:      Option<&'a str>,
     highlight_span: Span,
     is_module_item: bool,
+    impl_self_name: Option<String>,
 }
 
 struct SuspiciousPubInput<'a> {
@@ -1075,6 +1076,7 @@ fn analyze_item(
                 item.kind.ident().map(|ident| ident.span),
             ),
             is_module_item: matches!(item.kind, ItemKind::Mod(..)),
+            impl_self_name: None,
         },
         sink,
     )
@@ -1100,16 +1102,19 @@ fn analyze_impl_item(
 
     let item_name = item.ident.to_string();
 
+    let impl_self_name = impl_self_type_name_from_tcx(ctx.tcx, item.owner_id.def_id);
+
     record_visibility_findings(
         ctx,
         &ItemInfo {
-            def_id:         item.owner_id.def_id,
-            file_path:      &file_path,
-            vis_text:       &vis_text,
-            kind_label:     Some(impl_item_kind_label(item.kind)),
-            item_name:      Some(item_name.as_str()),
+            def_id: item.owner_id.def_id,
+            file_path: &file_path,
+            vis_text: &vis_text,
+            kind_label: Some(impl_item_kind_label(item.kind)),
+            item_name: Some(item_name.as_str()),
             highlight_span: highlight_span(vis_span, Some(item.ident.span)),
             is_module_item: false,
+            impl_self_name,
         },
         sink,
     )
@@ -1142,6 +1147,7 @@ fn analyze_foreign_item(
             item_name:      Some(item_name.as_str()),
             highlight_span: highlight_span(item.vis_span, Some(item.ident.span)),
             is_module_item: false,
+            impl_self_name: None,
         },
         sink,
     )
@@ -1228,6 +1234,13 @@ fn record_visibility_findings(
         }
     }
 
+    if item.vis_text == "pub"
+        && !parent_is_public
+        && is_top_level_module_file(ctx.src_root, ctx.root_module, item.file_path)
+    {
+        maybe_record_narrow_to_pub_crate(ctx, item, sink)?;
+    }
+
     if item.vis_text == "pub" && !is_boundary_file(ctx.src_root, ctx.root_module, item.file_path) {
         maybe_record_suspicious_pub(
             ctx,
@@ -1245,6 +1258,44 @@ fn record_visibility_findings(
             sink,
         )?;
     }
+    Ok(())
+}
+
+fn maybe_record_narrow_to_pub_crate(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+    sink: &mut FindingsSink,
+) -> Result<()> {
+    let (Some(item_name), Some(kind_label)) = (item.item_name, item.kind_label) else {
+        return Ok(());
+    };
+    // Check if the item itself is re-exported by the crate root.
+    if root_module_exports_item(ctx.root_module, item.file_path, item_name)? {
+        return Ok(());
+    }
+    // For impl items (methods, consts, types), also check if the self type
+    // is re-exported — pub methods on re-exported types must stay pub.
+    if let Some(self_name) = &item.impl_self_name
+        && root_module_exports_item(ctx.root_module, item.file_path, self_name)?
+    {
+        return Ok(());
+    }
+    sink.findings.push(build_finding(
+        ctx.tcx,
+        item.file_path,
+        item.highlight_span,
+        FindingParams {
+            severity:    Severity::Warning,
+            code:        DiagnosticCode::NarrowToPubCrate,
+            item:        Some(format!("{kind_label} {item_name}")),
+            message:     String::from(
+                "item is not re-exported by the crate root — use `pub(crate)`",
+            ),
+            suggestion:  Some(String::from("consider using: `pub(crate)`")),
+            fix_support: FixSupport::NarrowToPubCrate,
+            related:     None,
+        },
+    )?);
     Ok(())
 }
 
@@ -1593,6 +1644,23 @@ fn resolve_module_location(tcx: TyCtxt<'_>, parent_def: LocalDefId) -> ModuleLoc
         grandparent_is_crate_root,
         great_grandparent_is_crate_root,
     )
+}
+
+/// Check whether `root_module` (lib.rs / main.rs) re-exports `item_name`
+/// from the child module that `child_file` belongs to.
+fn root_module_exports_item(
+    root_module: &Path,
+    child_file: &Path,
+    item_name: &str,
+) -> Result<bool> {
+    let Some(child_module_name) = module_paths::module_name_for_child_boundary_file(child_file)
+    else {
+        return Ok(false);
+    };
+    let source = fs::read_to_string(root_module)
+        .with_context(|| format!("failed to read root module {}", root_module.display()))?;
+    let exports = exported_names_from_parent_boundary(&source, child_module_name, item_name)?;
+    Ok(!exports.explicit.is_empty())
 }
 
 fn parent_facade_export_status(
@@ -3050,6 +3118,45 @@ const fn foreign_item_kind_label(kind: ForeignItemKind<'_>) -> &'static str {
         ForeignItemKind::Static(..) => "static",
         ForeignItemKind::Type => "type",
     }
+}
+
+/// Extract the self type name for an impl item via the compiler.
+///
+/// Given an impl item's `LocalDefId`, walks up to the parent impl block
+/// and returns the last path segment of the self type (e.g., `"MyStruct"`).
+fn impl_self_type_name_from_tcx(tcx: TyCtxt<'_>, impl_item_def: LocalDefId) -> Option<String> {
+    let hir_id = tcx.local_def_id_to_hir_id(impl_item_def);
+    let parent_id = tcx.hir_get_parent_item(hir_id);
+    let parent_node = tcx.hir_node_by_def_id(parent_id.def_id);
+    let rustc_hir::Node::Item(parent_item) = parent_node else {
+        return None;
+    };
+    let ItemKind::Impl(impl_block) = parent_item.kind else {
+        return None;
+    };
+    let rustc_hir::TyKind::Path(rustc_hir::QPath::Resolved(_, path)) = impl_block.self_ty.kind
+    else {
+        return None;
+    };
+    path.segments.last().map(|seg| seg.ident.to_string())
+}
+
+/// True when `file` is part of a top-level module — either `src/foo.rs` or
+/// `src/foo/mod.rs` — but NOT the root module itself (lib.rs / main.rs).
+fn is_top_level_module_file(src_root: &Path, root_module: &Path, file: &Path) -> bool {
+    if file == root_module {
+        return false;
+    }
+    let Ok(relative) = file.strip_prefix(src_root) else {
+        return false;
+    };
+    let count = relative.components().count();
+    // src/foo.rs → 1 component
+    if count == 1 {
+        return true;
+    }
+    // src/foo/mod.rs → 2 components, last is "mod.rs"
+    count == 2 && relative.file_name().and_then(|name| name.to_str()) == Some("mod.rs")
 }
 
 fn is_boundary_file(src_root: &Path, root_module: &Path, file: &Path) -> bool {

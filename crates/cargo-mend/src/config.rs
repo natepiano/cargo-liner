@@ -28,6 +28,7 @@ pub enum DiagnosticCode {
     ReplaceDeepSuperImport,
     WildcardParentPubUse,
     InternalParentPubUseFacade,
+    NarrowToPubCrate,
 }
 
 impl DiagnosticCode {
@@ -42,6 +43,7 @@ impl DiagnosticCode {
         Self::ReplaceDeepSuperImport,
         Self::WildcardParentPubUse,
         Self::InternalParentPubUseFacade,
+        Self::NarrowToPubCrate,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -56,6 +58,7 @@ impl DiagnosticCode {
             Self::ReplaceDeepSuperImport => "replace_deep_super_import",
             Self::WildcardParentPubUse => "wildcard_parent_pub_use",
             Self::InternalParentPubUseFacade => "internal_parent_pub_use_facade",
+            Self::NarrowToPubCrate => "narrow_to_pub_crate",
         }
     }
 }
@@ -138,6 +141,7 @@ shorten_local_crate_import = true
 replace_deep_super_import = true
 wildcard_parent_pub_use = true
 internal_parent_pub_use_facade = true
+narrow_to_pub_crate = true
 ";
 
 fn create_default_global_config(path: &Path) -> Result<()> {

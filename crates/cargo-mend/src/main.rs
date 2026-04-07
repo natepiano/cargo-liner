@@ -15,6 +15,7 @@ mod fix_support;
 mod imports;
 mod inline_path_qualified_type;
 mod module_paths;
+mod narrow_pub_crate;
 mod outcome;
 mod prefer_module_import;
 mod pub_use_fixes;

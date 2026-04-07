@@ -7,6 +7,7 @@ pub(crate) enum FixKind {
     ShortenImport,
     PreferModuleImport,
     InlinePathQualifiedType,
+    NarrowToPubCrate,
     FixPubUse,
 }
 
@@ -22,6 +23,7 @@ impl FixSelection {
             kinds.insert(FixKind::ShortenImport);
             kinds.insert(FixKind::PreferModuleImport);
             kinds.insert(FixKind::InlinePathQualifiedType);
+            kinds.insert(FixKind::NarrowToPubCrate);
         }
         if fix_cli.fix_pub_use {
             kinds.insert(FixKind::FixPubUse);
@@ -34,6 +36,7 @@ impl FixSelection {
         kinds.insert(FixKind::ShortenImport);
         kinds.insert(FixKind::PreferModuleImport);
         kinds.insert(FixKind::InlinePathQualifiedType);
+        kinds.insert(FixKind::NarrowToPubCrate);
         kinds.insert(FixKind::FixPubUse);
         Self { kinds }
     }
@@ -115,6 +118,7 @@ mod tests {
         assert!(mode.fixes.contains(FixKind::ShortenImport));
         assert!(mode.fixes.contains(FixKind::PreferModuleImport));
         assert!(mode.fixes.contains(FixKind::InlinePathQualifiedType));
+        assert!(mode.fixes.contains(FixKind::NarrowToPubCrate));
         assert!(mode.fixes.contains(FixKind::FixPubUse));
     }
 
@@ -128,6 +132,7 @@ mod tests {
         let mode = OperationMode::from_cli(&cli);
         assert_eq!(mode.intent, OperationIntent::DryRun);
         assert!(mode.fixes.contains(FixKind::ShortenImport));
+        assert!(mode.fixes.contains(FixKind::NarrowToPubCrate));
         assert!(mode.fixes.contains(FixKind::FixPubUse));
     }
 
@@ -141,6 +146,7 @@ mod tests {
         let mode = OperationMode::from_cli(&cli);
         assert_eq!(mode.intent, OperationIntent::Apply);
         assert!(mode.fixes.contains(FixKind::ShortenImport));
+        assert!(mode.fixes.contains(FixKind::NarrowToPubCrate));
         assert!(mode.fixes.contains(FixKind::FixPubUse));
     }
 }

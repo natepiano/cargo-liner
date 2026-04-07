@@ -19,6 +19,8 @@ mod common;
 mod import_fixes;
 #[path = "diagnostics/inline_path_fixes.rs"]
 mod inline_path_fixes;
+#[path = "diagnostics/narrow_pub_crate.rs"]
+mod narrow_pub_crate;
 #[path = "diagnostics/prefer_module_import.rs"]
 mod prefer_module_import;
 #[path = "diagnostics/pub_use_fixes.rs"]

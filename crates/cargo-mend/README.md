@@ -345,6 +345,30 @@ That is sometimes exactly what you want. It is also easy to do by accident.
 
 This tool asks you to review that choice explicitly instead of letting it slip in unnoticed.
 
+<a id="narrow-to-pub-crate"></a>
+### Narrow `pub` to `pub(crate)`
+
+This warning flags `pub` items in top-level private modules that are not re-exported by the crate
+root (`lib.rs` or `main.rs`).
+
+In a top-level private module, `pub` and `pub(crate)` have the same effect — but `pub` misleadingly
+suggests the item is part of the public API. Using `pub(crate)` makes the intent explicit: the item
+is shared within the crate, not exported.
+
+Example:
+
+```rust
+// src/lib.rs
+mod helpers;       // private module — not `pub mod`
+pub use helpers::publicly_exported_fn;
+
+// src/helpers.rs
+pub fn publicly_exported_fn() {}  // re-exported → must stay `pub`
+pub fn internal_fn() {}           // NOT re-exported → should be `pub(crate)`
+```
+
+Run `cargo mend --fix` to auto-fix these items to `pub(crate)`.
+
 <a id="suspicious-pub"></a>
 ### Suspicious `pub`
 

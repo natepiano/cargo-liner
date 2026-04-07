@@ -1080,8 +1080,11 @@ edition = "2024"
         .iter()
         .map(|finding| finding.code.as_str())
         .collect::<BTreeSet<_>>();
-    assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
-    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(
+        codes,
+        BTreeSet::from(["internal_parent_pub_use_facade", "narrow_to_pub_crate"])
+    );
+    assert_eq!(report.summary.fixable_with_fix, 1);
     assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 

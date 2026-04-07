@@ -55,6 +55,7 @@ mod wild_parent;
 mod func_parent;
 mod type_parent;
 mod deep_parent;
+mod narrow_mod;
 pub mod review_mod;
 pub use private_parent::PublicContainer;
 
@@ -63,6 +64,11 @@ fn main() {}
     )
     .expect("write fixture main");
     fs::write(temp.path().join("src/review_mod.rs"), "\n").expect("write review mod");
+    fs::write(
+        temp.path().join("src/narrow_mod.rs"),
+        "pub fn unexported_top_level() {}\n",
+    )
+    .expect("write narrow mod");
     write_diagnostic_fixture_modules(temp.path());
 
     temp
@@ -189,6 +195,7 @@ fn assert_rendered_diagnostics(report: &Report, rendered: &str) {
     }
 
     assert!(rendered.contains("help: consider using just `pub` or removing `pub(crate)` entirely"));
+    assert!(rendered.contains("help: consider using: `pub(crate)`"));
     assert!(rendered.contains("help: consider using: `pub(super)`"));
     assert!(
         rendered.contains("help: consider using: `use super::PublicContainer as ParentContainer;`")
@@ -237,7 +244,7 @@ fn fixture_renders_every_current_diagnostic() {
         codes, expected_codes,
         "fixture should trigger every diagnostic at least once"
     );
-    assert_eq!(report.findings.len(), 11);
+    assert_eq!(report.findings.len(), 13);
     assert_summary_matches_findings(&report);
 
     let rendered_output = mend_command()

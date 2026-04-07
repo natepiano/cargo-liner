@@ -12,6 +12,7 @@ pub enum FixSupport {
     FixPubUse,
     NeedsManualPubUseCleanup,
     InternalParentFacade,
+    NarrowToPubCrate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +25,10 @@ impl FixSupport {
     pub const fn note(self) -> Option<&'static str> {
         match self {
             Self::None | Self::NeedsManualPubUseCleanup | Self::InternalParentFacade => None,
-            Self::ShortenImport | Self::PreferModuleImport | Self::InlinePathQualifiedType => {
+            Self::ShortenImport
+            | Self::PreferModuleImport
+            | Self::InlinePathQualifiedType
+            | Self::NarrowToPubCrate => {
                 Some("this warning is auto-fixable with `cargo mend --fix`")
             },
             Self::FixPubUse => Some("this warning is auto-fixable with `cargo mend --fix-pub-use`"),
@@ -34,9 +38,10 @@ impl FixSupport {
     pub const fn summary_bucket(self) -> Option<FixSummaryBucket> {
         match self {
             Self::None | Self::NeedsManualPubUseCleanup | Self::InternalParentFacade => None,
-            Self::ShortenImport | Self::PreferModuleImport | Self::InlinePathQualifiedType => {
-                Some(FixSummaryBucket::Fix)
-            },
+            Self::ShortenImport
+            | Self::PreferModuleImport
+            | Self::InlinePathQualifiedType
+            | Self::NarrowToPubCrate => Some(FixSummaryBucket::Fix),
             Self::FixPubUse => Some(FixSummaryBucket::FixPubUse),
         }
     }

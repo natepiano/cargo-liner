@@ -100,6 +100,13 @@ pub fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         detail_mode: DetailMode::MessageRelatedAndFix,
         fix_support: FixSupport::None,
     };
+    static NARROW_TO_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
+        headline:    "`pub` in top-level private module should be `pub(crate)`",
+        inline_help: Some("consider using: `pub(crate)`"),
+        help_anchor: "narrow-to-pub-crate",
+        detail_mode: DetailMode::MessageRelatedAndFix,
+        fix_support: FixSupport::NarrowToPubCrate,
+    };
 
     match code {
         DiagnosticCode::ForbiddenPubCrate => &FORBIDDEN_PUB_CRATE,
@@ -112,6 +119,7 @@ pub fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         DiagnosticCode::WildcardParentPubUse => &WILDCARD_PARENT_PUB_USE,
         DiagnosticCode::InternalParentPubUseFacade => &INTERNAL_PARENT_PUB_USE_FACADE,
         DiagnosticCode::SuspiciousPub => &SUSPICIOUS_PUB,
+        DiagnosticCode::NarrowToPubCrate => &NARROW_TO_PUB_CRATE,
     }
 }
 
