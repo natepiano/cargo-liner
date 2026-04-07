@@ -30,35 +30,35 @@ struct PubUseFixFact {
     child_file:      PathBuf,
     child_line:      usize,
     child_item_name: String,
-    parent_mod:      PathBuf,
+    parent_module:   PathBuf,
     parent_line:     usize,
     child_module:    String,
 }
 
 struct PubUseCandidate {
-    child_file:       PathBuf,
-    child_line:       usize,
-    child_module:     String,
-    exported_name:    String,
-    parent_mod_path:  Vec<String>,
-    target_item_path: Vec<String>,
+    child_file:         PathBuf,
+    child_line:         usize,
+    child_module:       String,
+    exported_name:      String,
+    parent_module_path: Vec<String>,
+    target_item_path:   Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ParentBoundaryKey {
-    parent_mod: PathBuf,
-    item_start: usize,
-    item_end:   usize,
+    parent_module: PathBuf,
+    item_start:    usize,
+    item_end:      usize,
 }
 
 struct ValidatedPubUsePlan {
-    parent_boundary:  ParentBoundaryKey,
-    child_file:       PathBuf,
-    child_module:     String,
-    exported_name:    String,
-    parent_mod_path:  Vec<String>,
-    target_item_path: Vec<String>,
-    child_narrowing:  UseFix,
+    parent_boundary:    ParentBoundaryKey,
+    child_file:         PathBuf,
+    child_module:       String,
+    exported_name:      String,
+    parent_module_path: Vec<String>,
+    target_item_path:   Vec<String>,
+    child_narrowing:    UseFix,
 }
 
 struct PubUseAnalysis {
@@ -108,7 +108,7 @@ fn collect_pub_use_fix_facts(selection: &Selection, report: &Report) -> Vec<PubU
             child_file:      selection.analysis_root.join(&child_rel),
             child_line:      fact.child_line,
             child_item_name: fact.child_item_name.clone(),
-            parent_mod:      selection.analysis_root.join(&parent_rel),
+            parent_module:   selection.analysis_root.join(&parent_rel),
             parent_line:     fact.parent_line,
             child_module:    fact.child_module.clone(),
         });
@@ -123,8 +123,8 @@ fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis>
     for fact in facts {
         let child_source = fs::read_to_string(&fact.child_file)
             .with_context(|| format!("failed to read {}", fact.child_file.display()))?;
-        let parent_source = fs::read_to_string(&fact.parent_mod)
-            .with_context(|| format!("failed to read {}", fact.parent_mod.display()))?;
+        let parent_source = fs::read_to_string(&fact.parent_module)
+            .with_context(|| format!("failed to read {}", fact.parent_module.display()))?;
         let Some(parent_export) = resolve_parent_pub_use_export(
             &parent_source,
             fact.parent_line,
@@ -134,7 +134,7 @@ fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis>
         .with_context(|| {
             format!(
                 "failed to resolve exported item from {}:{}",
-                fact.parent_mod.display(),
+                fact.parent_module.display(),
                 fact.parent_line
             )
         })?
@@ -143,17 +143,17 @@ fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis>
             continue;
         };
 
-        let src_root = find_src_root(&fact.parent_mod)
+        let src_root = find_src_root(&fact.parent_module)
             .context("failed to determine src root for parent module")?;
 
-        let parent_mod_path = module_path_from_boundary_file(&src_root, &fact.parent_mod)
+        let parent_module_path = module_path_from_boundary_file(&src_root, &fact.parent_module)
             .context("failed to determine parent module path")?;
-        let mut target_item_path = parent_mod_path.clone();
+        let mut target_item_path = parent_module_path.clone();
         target_item_path.push(fact.child_module.clone());
         target_item_path.push(fact.child_item_name.clone());
 
         let parent_boundary = ParentBoundaryKey {
-            parent_mod: fact.parent_mod.clone(),
+            parent_module: fact.parent_module.clone(),
             ..parent_export.parent_boundary
         };
         let candidate = PubUseCandidate {
@@ -161,7 +161,7 @@ fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis>
             child_line: fact.child_line,
             child_module: fact.child_module.clone(),
             exported_name: parent_export.exported_name,
-            parent_mod_path,
+            parent_module_path,
             target_item_path,
         };
         match screen_candidate(candidate, &fact.child_item_name, &child_source)? {
@@ -222,7 +222,7 @@ fn build_validated_plan(
         child_file: candidate.child_file,
         child_module: candidate.child_module,
         exported_name: candidate.exported_name,
-        parent_mod_path: candidate.parent_mod_path,
+        parent_module_path: candidate.parent_module_path,
         target_item_path: candidate.target_item_path,
         child_narrowing,
     })
@@ -232,8 +232,8 @@ fn build_parent_pub_use_edit_for_exports(
     parent_boundary: &ParentBoundaryKey,
     exports: &[(String, String)],
 ) -> Result<UseFix> {
-    let source = fs::read_to_string(&parent_boundary.parent_mod)
-        .with_context(|| format!("failed to read {}", parent_boundary.parent_mod.display()))?;
+    let source = fs::read_to_string(&parent_boundary.parent_module)
+        .with_context(|| format!("failed to read {}", parent_boundary.parent_module.display()))?;
     let file = parse_file(&source).context("failed to parse parent module file")?;
     let offsets = line_offsets(&source);
     for item in file.items {
@@ -252,7 +252,7 @@ fn build_parent_pub_use_edit_for_exports(
         let replacement =
             rewrite_parent_pub_use_item_for_exports(&item_use, exports, &local_exports)?;
         return Ok(UseFix {
-            path: parent_boundary.parent_mod.clone(),
+            path: parent_boundary.parent_module.clone(),
             start,
             end,
             replacement,
@@ -261,7 +261,7 @@ fn build_parent_pub_use_edit_for_exports(
 
     anyhow::bail!(
         "matching parent `pub use` item not found in {} for span {}..{}",
-        parent_boundary.parent_mod.display(),
+        parent_boundary.parent_module.display(),
         parent_boundary.item_start,
         parent_boundary.item_end
     )
@@ -299,18 +299,18 @@ fn rewrite_subtree_imports_for_plans(
     let mut plan_groups: BTreeMap<PathBuf, Vec<&ValidatedPubUsePlan>> = BTreeMap::new();
     for plan in plans {
         plan_groups
-            .entry(plan.parent_boundary.parent_mod.clone())
+            .entry(plan.parent_boundary.parent_module.clone())
             .or_default()
             .push(plan);
     }
 
     let mut fixes = Vec::new();
-    for (parent_mod, parent_plans) in plan_groups {
-        let parent_dir = parent_mod
+    for (parent_module, parent_plans) in plan_groups {
+        let parent_dir = parent_module
             .parent()
             .context("candidate parent boundary had no parent directory")?;
         for file in rust_source_files(parent_dir)? {
-            if file == parent_mod {
+            if file == parent_module {
                 continue;
             }
             if parent_plans.iter().any(|plan| plan.child_file == file) {
@@ -487,7 +487,7 @@ fn collect_group_rewrite_targets_inner(
     match leaf {
         UseTree::Name(name) => {
             if let Some(plan) = plans.iter().find(|plan| {
-                plan.parent_mod_path == absolute_base && name.ident == plan.exported_name
+                plan.parent_module_path == absolute_base && name.ident == plan.exported_name
             }) {
                 targets.push(GroupedRewriteTarget {
                     original_name: name.ident.to_string(),
@@ -498,7 +498,7 @@ fn collect_group_rewrite_targets_inner(
         },
         UseTree::Rename(rename) => {
             if let Some(plan) = plans.iter().find(|plan| {
-                plan.parent_mod_path == absolute_base && rename.rename == plan.exported_name
+                plan.parent_module_path == absolute_base && rename.rename == plan.exported_name
             }) {
                 targets.push(GroupedRewriteTarget {
                     original_name: rename.ident.to_string(),
@@ -737,7 +737,7 @@ fn resolve_parent_pub_use_export(
             return Ok(Some(ParentExportResolution {
                 exported_name:   item_name.to_string(),
                 parent_boundary: ParentBoundaryKey {
-                    parent_mod: PathBuf::new(),
+                    parent_module: PathBuf::new(),
                     item_start,
                     item_end,
                 },

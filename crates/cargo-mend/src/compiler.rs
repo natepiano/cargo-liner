@@ -83,22 +83,22 @@ enum DiagnosticBlockKind {
 
 #[derive(Debug, Clone, Copy)]
 struct CommandOutcome {
-    status:                    std::process::ExitStatus,
-    saw_unused_import_warning: bool,
+    status:            std::process::ExitStatus,
+    compiler_warnings: CompilerWarningFacts,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredReport {
-    version:                    u32,
+    version:              u32,
     #[serde(default)]
-    analysis_fingerprint:       String,
-    package_root:               String,
-    config_fingerprint:         String,
-    findings:                   Vec<StoredFinding>,
+    analysis_fingerprint: String,
+    package_root:         String,
+    config_fingerprint:   String,
+    findings:             Vec<StoredFinding>,
     #[serde(default)]
-    pub_use_fix_facts:          Vec<StoredPubUseFixFact>,
+    pub_use_fix_facts:    Vec<StoredPubUseFixFact>,
     #[serde(default)]
-    saw_unused_import_warnings: bool,
+    compiler_warnings:    CompilerWarningFacts,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -267,7 +267,9 @@ pub(crate) fn run_selection(
                     cause: CompilerFailureCause::DriverSetup(err),
                 })
             })?;
-            command_outcome.saw_unused_import_warning |= status.saw_unused_import_warning;
+            if status.compiler_warnings.saw_unused_import_warnings() {
+                command_outcome.compiler_warnings = CompilerWarningFacts::UnusedImportWarnings;
+            }
             if !status.status.success() {
                 return Err(MendFailure::Analysis(AnalysisFailure {
                     cause: CompilerFailureCause::CargoRustcRefresh {
@@ -285,11 +287,7 @@ pub(crate) fn run_selection(
     })?;
 
     let mut report = report;
-    report.facts.compiler_warnings = if command_outcome.saw_unused_import_warning {
-        CompilerWarningFacts::UnusedImportWarnings
-    } else {
-        CompilerWarningFacts::None
-    };
+    report.facts.compiler_warnings = command_outcome.compiler_warnings;
     Ok(report)
 }
 
@@ -416,7 +414,7 @@ fn run_cargo_check(
         },
     }
 
-    let tc_override = toolchain_override();
+    let toolchain_override = toolchain_override();
 
     command
         .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
@@ -431,7 +429,7 @@ fn run_cargo_check(
         .env(FINDINGS_DIR_ENV, findings_dir)
         .stdin(Stdio::inherit());
 
-    if let Some(tc) = &tc_override {
+    if let Some(tc) = &toolchain_override {
         tc.apply(&mut command, &selection.target_directory);
     }
 
@@ -459,7 +457,7 @@ fn run_cargo_rustc_for_package(
         command.arg(arg);
     }
 
-    let tc_override = toolchain_override();
+    let toolchain_override = toolchain_override();
 
     command
         .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
@@ -474,7 +472,7 @@ fn run_cargo_rustc_for_package(
         .env(FINDINGS_DIR_ENV, findings_dir)
         .stdin(Stdio::inherit());
 
-    if let Some(tc) = &tc_override {
+    if let Some(tc) = &toolchain_override {
         tc.apply(&mut command, target_directory);
     }
 
@@ -505,13 +503,13 @@ fn run_cargo_command(
     let status = child.wait().context("failed to wait for cargo command")?;
     Ok(CommandOutcome {
         status,
-        saw_unused_import_warning: stderr_outcome.saw_unused_import_warning,
+        compiler_warnings: stderr_outcome.compiler_warnings,
     })
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 struct StderrObservation {
-    saw_unused_import_warning: bool,
+    compiler_warnings: CompilerWarningFacts,
 }
 
 fn stream_cargo_stderr(
@@ -522,7 +520,7 @@ fn stream_cargo_stderr(
     let mut line = String::new();
     let mut block = Vec::new();
     let mut printed_suppression_notice = false;
-    let mut saw_unused_import_warning = false;
+    let mut compiler_warnings = CompilerWarningFacts::None;
 
     loop {
         line.clear();
@@ -531,7 +529,7 @@ fn stream_cargo_stderr(
             flush_diagnostic_block(
                 &mut block,
                 &mut printed_suppression_notice,
-                &mut saw_unused_import_warning,
+                &mut compiler_warnings,
                 output_mode,
             );
             break;
@@ -542,7 +540,7 @@ fn stream_cargo_stderr(
             flush_diagnostic_block(
                 &mut block,
                 &mut printed_suppression_notice,
-                &mut saw_unused_import_warning,
+                &mut compiler_warnings,
                 output_mode,
             );
             eprint!("{current}");
@@ -554,7 +552,7 @@ fn stream_cargo_stderr(
             flush_diagnostic_block(
                 &mut block,
                 &mut printed_suppression_notice,
-                &mut saw_unused_import_warning,
+                &mut compiler_warnings,
                 output_mode,
             );
         } else {
@@ -562,9 +560,7 @@ fn stream_cargo_stderr(
         }
     }
 
-    Ok(StderrObservation {
-        saw_unused_import_warning,
-    })
+    Ok(StderrObservation { compiler_warnings })
 }
 
 fn is_progress_line(line: &str) -> bool {
@@ -630,7 +626,7 @@ fn classify_diagnostic_block(
 fn flush_diagnostic_block(
     block: &mut Vec<String>,
     printed_suppression_notice: &mut bool,
-    saw_unused_import_warning: &mut bool,
+    compiler_warnings: &mut CompilerWarningFacts,
     output_mode: BuildOutputMode,
 ) {
     if block.is_empty() {
@@ -639,7 +635,7 @@ fn flush_diagnostic_block(
 
     match classify_diagnostic_block(block, *printed_suppression_notice) {
         DiagnosticBlockKind::SuppressedUnusedImport => {
-            *saw_unused_import_warning = true;
+            *compiler_warnings = CompilerWarningFacts::UnusedImportWarnings;
             match output_mode {
                 BuildOutputMode::SuppressUnusedImportWarnings if !*printed_suppression_notice => {
                     eprintln!(
@@ -956,13 +952,13 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
     }
 
     let report = StoredReport {
-        version:                    FINDINGS_SCHEMA_VERSION,
-        analysis_fingerprint:       settings.analysis_fingerprint.clone(),
-        package_root:               settings.package_root.to_string_lossy().into_owned(),
-        config_fingerprint:         settings.config_fingerprint.clone(),
-        findings:                   sink.findings,
-        pub_use_fix_facts:          sink.pub_use_fix_facts,
-        saw_unused_import_warnings: false,
+        version:              FINDINGS_SCHEMA_VERSION,
+        analysis_fingerprint: settings.analysis_fingerprint.clone(),
+        package_root:         settings.package_root.to_string_lossy().into_owned(),
+        config_fingerprint:   settings.config_fingerprint.clone(),
+        findings:             sink.findings,
+        pub_use_fix_facts:    sink.pub_use_fix_facts,
+        compiler_warnings:    CompilerWarningFacts::None,
     };
     fs::write(&output_path, serde_json::to_vec_pretty(&report)?)
         .with_context(|| format!("failed to write findings file {}", output_path.display()))?;
@@ -3214,6 +3210,7 @@ mod tests {
     use super::suspicious_pub_note;
     use crate::config::LoadedConfig;
     use crate::config::VisibilityConfig;
+    use crate::diagnostics::CompilerWarningFacts;
     use crate::fix_support::FixSupport;
 
     #[test]
@@ -3419,11 +3416,11 @@ mod tests {
         let source_root = package_root.join("src");
         let cache_path = temp_dir.join(cache_filename_for(package_root));
         let stale = StoredReport {
-            version:                    FINDINGS_SCHEMA_VERSION - 1,
-            analysis_fingerprint:       current_analysis_fingerprint(),
-            package_root:               package_root.to_string_lossy().into_owned(),
-            config_fingerprint:         "expected".to_string(),
-            findings:                   vec![StoredFinding {
+            version:              FINDINGS_SCHEMA_VERSION - 1,
+            analysis_fingerprint: current_analysis_fingerprint(),
+            package_root:         package_root.to_string_lossy().into_owned(),
+            config_fingerprint:   "expected".to_string(),
+            findings:             vec![StoredFinding {
                 severity:      Severity::Warning,
                 code:          DiagnosticCode::SuspiciousPub,
                 path:          "src/lib.rs".to_string(),
@@ -3437,8 +3434,8 @@ mod tests {
                 fix_support:   FixSupport::None,
                 related:       None,
             }],
-            pub_use_fix_facts:          Vec::new(),
-            saw_unused_import_warnings: false,
+            pub_use_fix_facts:    Vec::new(),
+            compiler_warnings:    CompilerWarningFacts::None,
         };
         fs::write(&cache_path, serde_json::to_vec(&stale)?)?;
 
@@ -3477,13 +3474,13 @@ mod tests {
         fs::create_dir_all(&findings_dir)?;
         let cache_path = findings_dir.join(cache_filename_for(&package_root));
         let report = StoredReport {
-            version:                    FINDINGS_SCHEMA_VERSION,
-            analysis_fingerprint:       current_analysis_fingerprint(),
-            package_root:               package_root.to_string_lossy().into_owned(),
-            config_fingerprint:         "expected".to_string(),
-            findings:                   Vec::new(),
-            pub_use_fix_facts:          Vec::new(),
-            saw_unused_import_warnings: false,
+            version:              FINDINGS_SCHEMA_VERSION,
+            analysis_fingerprint: current_analysis_fingerprint(),
+            package_root:         package_root.to_string_lossy().into_owned(),
+            config_fingerprint:   "expected".to_string(),
+            findings:             Vec::new(),
+            pub_use_fix_facts:    Vec::new(),
+            compiler_warnings:    CompilerWarningFacts::None,
         };
         fs::write(&cache_path, serde_json::to_vec(&report)?)?;
 
@@ -3535,13 +3532,13 @@ mod tests {
         fs::create_dir_all(&findings_dir)?;
         let cache_path = findings_dir.join(cache_filename_for(&package_root));
         let report = StoredReport {
-            version:                    FINDINGS_SCHEMA_VERSION,
-            analysis_fingerprint:       current_analysis_fingerprint(),
-            package_root:               package_root.to_string_lossy().into_owned(),
-            config_fingerprint:         "old-config".to_string(),
-            findings:                   Vec::new(),
-            pub_use_fix_facts:          Vec::new(),
-            saw_unused_import_warnings: false,
+            version:              FINDINGS_SCHEMA_VERSION,
+            analysis_fingerprint: current_analysis_fingerprint(),
+            package_root:         package_root.to_string_lossy().into_owned(),
+            config_fingerprint:   "old-config".to_string(),
+            findings:             Vec::new(),
+            pub_use_fix_facts:    Vec::new(),
+            compiler_warnings:    CompilerWarningFacts::None,
         };
         fs::write(&cache_path, serde_json::to_vec(&report)?)?;
 
@@ -3581,13 +3578,13 @@ mod tests {
         fs::create_dir_all(&findings_dir)?;
         let cache_path = findings_dir.join(cache_filename_for(&package_root));
         let report = StoredReport {
-            version:                    FINDINGS_SCHEMA_VERSION,
-            analysis_fingerprint:       "old-analysis".to_string(),
-            package_root:               package_root.to_string_lossy().into_owned(),
-            config_fingerprint:         "expected".to_string(),
-            findings:                   Vec::new(),
-            pub_use_fix_facts:          Vec::new(),
-            saw_unused_import_warnings: false,
+            version:              FINDINGS_SCHEMA_VERSION,
+            analysis_fingerprint: "old-analysis".to_string(),
+            package_root:         package_root.to_string_lossy().into_owned(),
+            config_fingerprint:   "expected".to_string(),
+            findings:             Vec::new(),
+            pub_use_fix_facts:    Vec::new(),
+            compiler_warnings:    CompilerWarningFacts::None,
         };
         fs::write(&cache_path, serde_json::to_vec(&report)?)?;
 
@@ -3629,13 +3626,13 @@ mod tests {
         fs::create_dir_all(&findings_dir)?;
         let cache_path = findings_dir.join(cache_filename_for(&package_root));
         let report = StoredReport {
-            version:                    FINDINGS_SCHEMA_VERSION,
-            analysis_fingerprint:       current_analysis_fingerprint(),
-            package_root:               package_root.to_string_lossy().into_owned(),
-            config_fingerprint:         "expected".to_string(),
-            findings:                   Vec::new(),
-            pub_use_fix_facts:          Vec::new(),
-            saw_unused_import_warnings: false,
+            version:              FINDINGS_SCHEMA_VERSION,
+            analysis_fingerprint: current_analysis_fingerprint(),
+            package_root:         package_root.to_string_lossy().into_owned(),
+            config_fingerprint:   "expected".to_string(),
+            findings:             Vec::new(),
+            pub_use_fix_facts:    Vec::new(),
+            compiler_warnings:    CompilerWarningFacts::None,
         };
         fs::write(&cache_path, serde_json::to_vec(&report)?)?;
 
