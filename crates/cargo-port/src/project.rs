@@ -1285,21 +1285,33 @@ impl ProjectKind for NonRust {
 /// Shared Cargo fields extracted from `Cargo.toml`.
 #[derive(Clone, Debug)]
 pub(crate) struct Cargo {
-    types:    Vec<ProjectType>,
-    examples: Vec<ExampleGroup>,
-    benches:  Vec<String>,
+    version:                Option<String>,
+    description:            Option<String>,
+    types:                  Vec<ProjectType>,
+    examples:               Vec<ExampleGroup>,
+    benches:                Vec<String>,
+    test_count:             usize,
+    local_dependency_paths: Vec<String>,
 }
 
 impl Cargo {
     pub(crate) const fn new(
+        version: Option<String>,
+        description: Option<String>,
         types: Vec<ProjectType>,
         examples: Vec<ExampleGroup>,
         benches: Vec<String>,
+        test_count: usize,
+        local_dependency_paths: Vec<String>,
     ) -> Self {
         Self {
+            version,
+            description,
             types,
             examples,
             benches,
+            test_count,
+            local_dependency_paths,
         }
     }
 
@@ -1308,6 +1320,22 @@ impl Cargo {
     pub(crate) fn examples(&self) -> &[ExampleGroup] { &self.examples }
 
     pub(crate) fn benches(&self) -> &[String] { &self.benches }
+
+    pub(crate) fn version(&self) -> Option<&str> { self.version.as_deref() }
+
+    pub(crate) fn description(&self) -> Option<&str> { self.description.as_deref() }
+
+    pub(crate) const fn test_count(&self) -> usize { self.test_count }
+
+    pub(crate) fn local_dependency_paths(&self) -> &[String] { &self.local_dependency_paths }
+
+    pub(crate) fn example_count(&self) -> usize {
+        self.examples.iter().map(|g| g.names.len()).sum()
+    }
+
+    pub(crate) fn is_binary(&self) -> bool {
+        self.types.iter().any(|t| matches!(t, ProjectType::Binary))
+    }
 }
 
 /// The core project type, parameterized by kind.
@@ -1372,11 +1400,17 @@ impl Clone for Project<NonRust> {
 impl<Kind: ProjectKind> Project<Kind> {
     pub(crate) fn path(&self) -> &Path { &self.path }
 
+    pub(crate) fn name(&self) -> Option<&str> { self.name.as_deref() }
+
     pub(crate) const fn visibility(&self) -> Visibility { self.visibility }
 
     pub(crate) const fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
 
     pub(crate) fn worktree_name(&self) -> Option<&str> { self.worktree_name.as_deref() }
+
+    pub(crate) fn worktree_primary_abs_path(&self) -> Option<&Path> {
+        self.worktree_primary_abs_path.as_deref()
+    }
 
     /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
     pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }

@@ -1005,7 +1005,15 @@ fn old_project_to_package(p: &LegacyProject) -> Project<Package> {
     Project::<Package>::new(
         PathBuf::from(&p.abs_path),
         p.name.clone(),
-        Cargo::new(p.types.clone(), p.examples.clone(), p.benches.clone()),
+        Cargo::new(
+            p.version.clone(),
+            p.description.clone(),
+            p.types.clone(),
+            p.examples.clone(),
+            p.benches.clone(),
+            p.test_count,
+            p.local_dependency_paths.clone(),
+        ),
         Vec::new(),
         p.worktree_name.clone(),
         p.worktree_primary_abs_path.as_ref().map(PathBuf::from),
@@ -1021,7 +1029,15 @@ fn old_project_to_workspace(
     Project::<Workspace>::new(
         PathBuf::from(&p.abs_path),
         p.name.clone(),
-        Cargo::new(p.types.clone(), p.examples.clone(), p.benches.clone()),
+        Cargo::new(
+            p.version.clone(),
+            p.description.clone(),
+            p.types.clone(),
+            p.examples.clone(),
+            p.benches.clone(),
+            p.test_count,
+            p.local_dependency_paths.clone(),
+        ),
         groups,
         vendored,
         p.worktree_name.clone(),
