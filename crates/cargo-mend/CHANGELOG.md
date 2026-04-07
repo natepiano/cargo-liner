@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- New `narrow_to_pub_crate` diagnostic: warns when `pub` items in top-level private modules are not re-exported by the crate root, and auto-fixes them to `pub(crate)`
+
 ## [0.3.2] - 2026-04-05
 
 ### Fixed
