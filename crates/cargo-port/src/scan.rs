@@ -28,40 +28,16 @@ use super::http::ServiceSignal;
 use super::lint::LintStatus;
 use super::perf_log;
 use super::project::Cargo;
+use super::project::CargoProject;
 use super::project::GitInfo;
 use super::project::GitPathState;
 use super::project::GitRepoPresence;
-use super::project::LegacyProject;
 use super::project::MemberGroup;
-use super::project::NonRust;
 use super::project::Package;
 use super::project::Project;
-use super::project::ProjectLanguage;
 use super::project::ProjectListItem;
 use super::project::Workspace;
-use super::project::WorkspaceStatus;
 use super::project::WorktreeGroup;
-
-/// Members within a workspace are organized into groups by their first subdirectory.
-/// The "inline" group (empty name) contains members directly under the workspace root
-/// or under the primary `crates/` directory -- these are shown without a folder header.
-#[derive(Clone)]
-pub(crate) struct LegacyMemberGroup {
-    pub name:    String,
-    pub members: Vec<LegacyProject>,
-}
-
-#[derive(Clone)]
-pub(crate) struct ProjectEntry {
-    pub project:   LegacyProject,
-    pub groups:    Vec<LegacyMemberGroup>,
-    pub worktrees: Vec<Self>,
-    pub vendored:  Vec<LegacyProject>,
-}
-
-impl ProjectEntry {
-    pub(crate) fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members.is_empty()) }
-}
 
 /// A flattened entry for fuzzy search.
 pub(crate) struct FlatEntry {
@@ -115,10 +91,10 @@ pub(crate) enum BackgroundMsg {
         description: Option<String>,
     },
     ProjectDiscovered {
-        project: LegacyProject,
+        item: ProjectListItem,
     },
     ProjectRefreshed {
-        project: LegacyProject,
+        item: ProjectListItem,
     },
     LintStatus {
         path:   String,
@@ -153,8 +129,8 @@ impl BackgroundMsg {
             | Self::CratesIoVersion { path, .. }
             | Self::RepoMeta { path, .. }
             | Self::LintStatus { path, .. } => Some(path),
-            Self::ProjectDiscovered { project } | Self::ProjectRefreshed { project } => {
-                Some(&project.path)
+            Self::ProjectDiscovered { item } | Self::ProjectRefreshed { item } => {
+                Some(item.path().to_str().unwrap_or(""))
             },
             Self::DiskUsageBatch { .. }
             | Self::RepoFetchQueued { .. }
@@ -527,112 +503,130 @@ pub(crate) fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
-pub(crate) fn build_tree(projects: &[LegacyProject], inline_dirs: &[String]) -> Vec<ProjectEntry> {
-    let workspace_paths: Vec<String> = projects
+/// Build a project tree from a flat list of discovered `ProjectListItem`s.
+///
+/// The input must contain only `Workspace`, `Package`, and `NonRust` variants
+/// (discovery does not produce worktree groups). This function:
+/// 1. Nests workspace members into their parent workspace's `groups`
+/// 2. Detects vendored crates nested inside other projects
+/// 3. Merges worktree checkouts into `WorktreeGroup` variants
+pub(crate) fn build_tree(
+    items: &[ProjectListItem],
+    inline_dirs: &[String],
+) -> Vec<ProjectListItem> {
+    let workspace_paths: Vec<PathBuf> = items
         .iter()
-        .filter(|p| p.is_workspace())
-        .map(|p| p.path.clone())
+        .filter(|item| matches!(item, ProjectListItem::Workspace(_)))
+        .map(|item| item.path().to_path_buf())
         .collect();
 
-    let mut nodes: Vec<ProjectEntry> = Vec::new();
+    let mut result: Vec<ProjectListItem> = Vec::new();
     let mut consumed: HashSet<usize> = HashSet::new();
 
-    let top_level_workspaces: HashSet<usize> = projects
+    // Identify top-level workspaces (not nested inside another workspace).
+    let top_level_workspaces: HashSet<usize> = items
         .iter()
         .enumerate()
-        .filter(|(_, p)| {
-            p.is_workspace()
+        .filter(|(_, item)| {
+            matches!(item, ProjectListItem::Workspace(_))
                 && !workspace_paths
                     .iter()
-                    .any(|ws| *ws != p.path && p.path.starts_with(&format!("{ws}/")))
+                    .any(|ws| *ws != item.path() && item.path().starts_with(ws))
         })
         .map(|(i, _)| i)
         .collect();
 
-    for (i, project) in projects.iter().enumerate() {
-        if top_level_workspaces.contains(&i) {
-            let member_paths = workspace_member_paths(project, projects);
-            let mut all_members: Vec<LegacyProject> = projects
-                .iter()
-                .enumerate()
-                .filter(|(j, p)| {
-                    *j != i && !top_level_workspaces.contains(j) && member_paths.contains(&p.path)
-                })
-                .map(|(j, p)| {
-                    consumed.insert(j);
-                    p.clone()
-                })
-                .collect();
-
-            all_members.sort_by(|a, b| {
-                let name_a = a.name.as_deref().unwrap_or(&a.path);
-                let name_b = b.name.as_deref().unwrap_or(&b.path);
-                name_a.cmp(name_b)
-            });
-
-            let groups = group_members(&project.path, all_members, inline_dirs);
-
-            consumed.insert(i);
-            nodes.push(ProjectEntry {
-                project: project.clone(),
-                groups,
-                worktrees: Vec::new(),
-                vendored: Vec::new(),
-            });
+    for (i, item) in items.iter().enumerate() {
+        if !top_level_workspaces.contains(&i) {
+            continue;
         }
+        let ProjectListItem::Workspace(ws) = item else {
+            continue;
+        };
+        let ws_path = ws.path().to_path_buf();
+        let member_paths = workspace_member_paths_new(&ws_path, items);
+
+        let mut all_members: Vec<Project<Package>> = items
+            .iter()
+            .enumerate()
+            .filter(|(j, candidate)| {
+                *j != i
+                    && !top_level_workspaces.contains(j)
+                    && member_paths.contains(&candidate.path().to_path_buf())
+            })
+            .filter_map(|(j, candidate)| {
+                consumed.insert(j);
+                if let ProjectListItem::Package(pkg) = candidate {
+                    Some(pkg.clone())
+                } else if let ProjectListItem::Workspace(nested_ws) = candidate {
+                    // Nested workspace treated as a package member
+                    Some(Project::<Package>::new(
+                        nested_ws.path().to_path_buf(),
+                        nested_ws.name().map(str::to_string),
+                        nested_ws.cargo().clone(),
+                        Vec::new(),
+                        nested_ws.worktree_name().map(str::to_string),
+                        nested_ws.worktree_primary_abs_path().map(Path::to_path_buf),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        all_members.sort_by(|a, b| {
+            let name_a = a.name().unwrap_or_else(|| a.path().to_str().unwrap_or(""));
+            let name_b = b.name().unwrap_or_else(|| b.path().to_str().unwrap_or(""));
+            name_a.cmp(name_b)
+        });
+
+        let groups = group_members_new(&ws_path, all_members, inline_dirs);
+
+        let mut new_ws = ws.clone();
+        *new_ws.groups_mut() = groups;
+        consumed.insert(i);
+        result.push(ProjectListItem::Workspace(new_ws));
     }
 
-    for (i, project) in projects.iter().enumerate() {
+    for (i, item) in items.iter().enumerate() {
         if consumed.contains(&i) {
             continue;
         }
-        nodes.push(ProjectEntry {
-            project:   project.clone(),
-            groups:    Vec::new(),
-            worktrees: Vec::new(),
-            vendored:  Vec::new(),
-        });
+        result.push(item.clone());
     }
 
-    nodes.sort_by(|a, b| a.project.path.cmp(&b.project.path));
+    result.sort_by(|a, b| a.path().cmp(b.path()));
 
-    // Detect vendored crates first, before worktree merging.
-    // This catches crates like clay-layout that live inside worktree directories.
-    extract_vendored(&mut nodes);
+    extract_vendored_new(&mut result);
+    merge_worktrees_new(&mut result);
 
-    // Merge worktree nodes into their primary project.
-    // A worktree has `worktree_name = Some(...)`, the primary has `None`.
-    merge_worktrees(&mut nodes);
-
-    nodes
+    result
 }
 
-fn workspace_member_paths(
-    workspace: &LegacyProject,
-    projects: &[LegacyProject],
-) -> HashSet<String> {
-    let manifest = Path::new(&workspace.abs_path).join("Cargo.toml");
+fn workspace_member_paths_new(ws_path: &Path, items: &[ProjectListItem]) -> HashSet<PathBuf> {
+    let manifest = ws_path.join("Cargo.toml");
     let Some((members, excludes)) = workspace_member_patterns(&manifest) else {
-        return projects
+        return items
             .iter()
-            .filter(|project| project.path.starts_with(&format!("{}/", workspace.path)))
-            .map(|project| project.path.clone())
+            .filter(|item| item.path().starts_with(ws_path) && item.path() != ws_path)
+            .map(|item| item.path().to_path_buf())
             .collect();
     };
 
-    projects
+    items
         .iter()
-        .filter(|project| project.path.starts_with(&format!("{}/", workspace.path)))
-        .filter_map(|project| {
-            workspace_relative_path(workspace, project).and_then(|relative| {
+        .filter(|item| item.path().starts_with(ws_path) && item.path() != ws_path)
+        .filter_map(|item| {
+            item.path().strip_prefix(ws_path).ok().and_then(|relative| {
+                let relative_str = normalize_workspace_path(relative);
                 let included = members
                     .iter()
-                    .any(|pattern| workspace_pattern_matches(pattern, &relative));
+                    .any(|pattern| workspace_pattern_matches(pattern, &relative_str));
                 let is_excluded = excludes
                     .iter()
-                    .any(|pattern| workspace_pattern_matches(pattern, &relative));
+                    .any(|pattern| workspace_pattern_matches(pattern, &relative_str));
                 if included && !is_excluded {
-                    Some(project.path.clone())
+                    Some(item.path().to_path_buf())
                 } else {
                     None
                 }
@@ -671,13 +665,6 @@ fn workspace_member_patterns(manifest_path: &Path) -> Option<(Vec<String>, Vec<S
         .unwrap_or_default();
 
     Some((members, excludes))
-}
-
-fn workspace_relative_path(workspace: &LegacyProject, project: &LegacyProject) -> Option<String> {
-    Path::new(&project.abs_path)
-        .strip_prefix(&workspace.abs_path)
-        .ok()
-        .map(normalize_workspace_path)
 }
 
 fn normalize_workspace_path(path: &Path) -> String {
@@ -734,124 +721,161 @@ fn workspace_pattern_matches_segment(pattern: &str, value: &str) -> bool {
     matches(pattern.as_bytes(), value.as_bytes())
 }
 
-/// Group worktree nodes under their primary (non-worktree) project.
-/// Projects match when they share the same `worktree_primary_abs_path` (git repo identity).
-/// The primary itself is also listed as a worktree entry (using its directory name).
-fn merge_worktrees(nodes: &mut Vec<ProjectEntry>) {
-    let mut primary_indices: HashMap<String, usize> = HashMap::new();
+/// Group worktree checkouts under their primary project.
+///
+/// Projects sharing the same `worktree_primary_abs_path` are grouped.
+/// Workspaces → `WorkspaceWorktrees`, Packages → `PackageWorktrees`.
+/// `NonRust` projects are not grouped into worktree variants.
+fn item_worktree_identity(item: &ProjectListItem) -> Option<&Path> {
+    match item {
+        ProjectListItem::Workspace(p) => p.worktree_primary_abs_path(),
+        ProjectListItem::Package(p) => p.worktree_primary_abs_path(),
+        ProjectListItem::NonRust(p) => p.worktree_primary_abs_path(),
+        _ => None,
+    }
+}
+
+fn item_is_linked(item: &ProjectListItem) -> bool {
+    match item {
+        ProjectListItem::Workspace(p) => p.worktree_name().is_some(),
+        ProjectListItem::Package(p) => p.worktree_name().is_some(),
+        ProjectListItem::NonRust(p) => p.worktree_name().is_some(),
+        _ => false,
+    }
+}
+
+fn merge_worktrees_new(items: &mut Vec<ProjectListItem>) {
+    let mut primary_indices: HashMap<PathBuf, usize> = HashMap::new();
     let mut worktree_indices: Vec<usize> = Vec::new();
 
-    for (i, node) in nodes.iter().enumerate() {
-        let Some(identity) = &node.project.worktree_primary_abs_path else {
+    for (i, item) in items.iter().enumerate() {
+        let Some(identity) = item_worktree_identity(item) else {
             continue;
         };
-        if node.project.worktree_name.is_some() {
+        let is_linked = item_is_linked(item);
+        if is_linked {
             worktree_indices.push(i);
         } else {
-            primary_indices.insert(identity.clone(), i);
+            primary_indices.insert(identity.to_path_buf(), i);
         }
     }
 
-    // Identities that actually have worktrees
-    let identities_with_worktrees: HashSet<String> = worktree_indices
-        .iter()
-        .filter_map(|&wi| nodes[wi].project.worktree_primary_abs_path.clone())
-        .filter(|id| primary_indices.contains_key(id))
-        .collect();
-
-    // Collect worktree nodes to move (highest index first to preserve lower indices)
-    let mut moves: Vec<(usize, String)> = worktree_indices
+    let identities_with_worktrees: HashSet<PathBuf> = worktree_indices
         .iter()
         .filter_map(|&wi| {
-            let id = nodes[wi].project.worktree_primary_abs_path.clone()?;
+            item_worktree_identity(&items[wi])
+                .filter(|id| primary_indices.contains_key(*id))
+                .map(Path::to_path_buf)
+        })
+        .collect();
+
+    if identities_with_worktrees.is_empty() {
+        return;
+    }
+
+    // Extract worktree items (highest index first to preserve lower indices)
+    let mut moves: Vec<(usize, PathBuf)> = worktree_indices
+        .iter()
+        .filter_map(|&wi| {
+            let id = item_worktree_identity(&items[wi])?.to_path_buf();
             primary_indices.get(&id)?;
             Some((wi, id))
         })
         .collect();
     moves.sort_by(|a, b| b.0.cmp(&a.0));
 
-    let mut extracted: Vec<(ProjectEntry, String)> = Vec::new();
+    let mut extracted: Vec<(ProjectListItem, PathBuf)> = Vec::new();
     for (wi, id) in moves {
-        let wt_node = nodes.remove(wi);
-        extracted.push((wt_node, id));
+        let item = items.remove(wi);
+        extracted.push((item, id));
     }
 
-    // Insert worktree nodes into their primaries
-    for (wt_node, id) in extracted {
-        if let Some(primary) = nodes.iter_mut().find(|n| {
-            n.project
-                .worktree_primary_abs_path
-                .as_ref()
-                .is_some_and(|p| *p == id)
-                && n.project.worktree_name.is_none()
-        }) {
-            primary.worktrees.push(wt_node);
+    // Rebuild primary_indices after removals
+    let mut primary_map: HashMap<PathBuf, usize> = HashMap::new();
+    for (i, item) in items.iter().enumerate() {
+        if let Some(id) = item_worktree_identity(item)
+            .filter(|id| identities_with_worktrees.contains(*id))
+            .filter(|_| !item_is_linked(item))
+        {
+            primary_map.insert(id.to_path_buf(), i);
         }
     }
 
-    // Add the primary directory itself as the first worktree entry,
-    // transferring the primary's groups so they appear under the worktree entry.
-    for id in &identities_with_worktrees {
-        if let Some(primary) = nodes.iter_mut().find(|n| {
-            n.project
-                .worktree_primary_abs_path
-                .as_ref()
-                .is_some_and(|p| p == id)
-                && n.project.worktree_name.is_none()
-        }) {
-            let dir_name = primary
-                .project
-                .path
-                .rsplit('/')
-                .next()
-                .unwrap_or(&primary.project.path)
-                .to_string();
-            let mut primary_as_wt = primary.project.clone();
-            primary_as_wt.worktree_name = Some(dir_name);
-            let primary_groups = std::mem::take(&mut primary.groups);
-            primary.worktrees.insert(
-                0,
-                ProjectEntry {
-                    project:   primary_as_wt,
-                    groups:    primary_groups,
-                    worktrees: Vec::new(),
-                    vendored:  Vec::new(),
-                },
-            );
-        }
+    // Group linked worktrees by identity, preserving order
+    let mut linked_by_id: HashMap<PathBuf, Vec<ProjectListItem>> = HashMap::new();
+    for (item, id) in extracted {
+        linked_by_id.entry(id).or_default().push(item);
+    }
+
+    // Replace each primary with its WorktreeGroup variant
+    // Process in reverse to avoid index shifting
+    let mut replacements: Vec<(usize, ProjectListItem)> = Vec::new();
+    for (id, idx) in &primary_map {
+        let linked = linked_by_id.remove(id).unwrap_or_default();
+        let primary_item = &items[*idx];
+        let replacement = match primary_item {
+            ProjectListItem::Workspace(ws) => {
+                let linked_ws: Vec<Project<Workspace>> = linked
+                    .into_iter()
+                    .filter_map(|item| {
+                        if let ProjectListItem::Workspace(linked_ws) = item {
+                            Some(linked_ws)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                ProjectListItem::WorkspaceWorktrees(WorktreeGroup::new(ws.clone(), linked_ws))
+            },
+            ProjectListItem::Package(pkg) => {
+                let linked_pkg: Vec<Project<Package>> = linked
+                    .into_iter()
+                    .filter_map(|item| {
+                        if let ProjectListItem::Package(linked_pkg) = item {
+                            Some(linked_pkg)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                ProjectListItem::PackageWorktrees(WorktreeGroup::new(pkg.clone(), linked_pkg))
+            },
+            _ => continue,
+        };
+        replacements.push((*idx, replacement));
+    }
+
+    for (idx, replacement) in replacements {
+        items[idx] = replacement;
     }
 }
 
-/// Find standalone nodes whose path lives inside another node's directory
-/// (or inside a worktree's directory) and move them into that node's `vendored` list.
-fn extract_vendored(nodes: &mut Vec<ProjectEntry>) {
-    // Collect abs_paths of all nodes and their worktrees
-    let mut parent_paths: Vec<(usize, Option<usize>, String)> = Vec::new();
-    for (ni, node) in nodes.iter().enumerate() {
-        parent_paths.push((ni, None, node.project.abs_path.clone()));
-        for (wi, wt) in node.worktrees.iter().enumerate() {
-            parent_paths.push((ni, Some(wi), wt.project.abs_path.clone()));
-        }
-    }
+/// Find standalone items whose path lives inside another item's directory
+/// and move them into that item's `vendored` list.
+fn extract_vendored_new(items: &mut Vec<ProjectListItem>) {
+    let parent_paths: Vec<(usize, PathBuf)> = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| (i, item.path().to_path_buf()))
+        .collect();
 
-    // Find which top-level nodes are vendored inside another
-    let mut vendored_map: Vec<(usize, usize, Option<usize>)> = Vec::new(); // (vendored_node_idx, parent_node_idx, parent_wt_idx)
+    let mut vendored_map: Vec<(usize, usize)> = Vec::new();
 
-    for (vi, vnode) in nodes.iter().enumerate() {
-        // Skip nodes that have workspace members or worktrees — they're real projects
-        if vnode.has_members() || !vnode.worktrees.is_empty() {
+    for (vi, vitem) in items.iter().enumerate() {
+        let has_structure = match vitem {
+            ProjectListItem::Workspace(ws) => ws.groups().iter().any(|g| !g.members().is_empty()),
+            ProjectListItem::WorkspaceWorktrees(_) | ProjectListItem::PackageWorktrees(_) => true,
+            _ => false,
+        };
+        if has_structure {
             continue;
         }
-        for &(ni, wt_idx, ref parent_abs) in &parent_paths {
+        for &(ni, ref parent_path) in &parent_paths {
             if ni == vi {
                 continue;
             }
-            if vnode
-                .project
-                .abs_path
-                .starts_with(&format!("{parent_abs}/"))
-            {
-                vendored_map.push((vi, ni, wt_idx));
+            if vitem.path().starts_with(parent_path) && vitem.path() != parent_path {
+                vendored_map.push((vi, ni));
                 break;
             }
         }
@@ -861,60 +885,82 @@ fn extract_vendored(nodes: &mut Vec<ProjectEntry>) {
         return;
     }
 
-    // Extract vendored projects (iterate in reverse to preserve indices)
-    let mut vendored_projects: Vec<(usize, Option<usize>, LegacyProject)> = Vec::new();
-    let mut remove_indices: Vec<usize> = vendored_map.iter().map(|&(vi, _, _)| vi).collect();
+    let mut remove_indices: Vec<usize> = vendored_map.iter().map(|&(vi, _)| vi).collect();
     remove_indices.sort_unstable();
     remove_indices.dedup();
 
-    for &(vi, ni, wt_idx) in &vendored_map {
-        vendored_projects.push((ni, wt_idx, nodes[vi].project.clone()));
+    // Convert vendored items to Project<Package>
+    let mut vendored_projects: Vec<(usize, Project<Package>)> = Vec::new();
+    for &(vi, ni) in &vendored_map {
+        let pkg = match &items[vi] {
+            ProjectListItem::Package(p) => p.clone(),
+            ProjectListItem::Workspace(ws) => Project::<Package>::new(
+                ws.path().to_path_buf(),
+                ws.name().map(str::to_string),
+                ws.cargo().clone(),
+                Vec::new(),
+                ws.worktree_name().map(str::to_string),
+                ws.worktree_primary_abs_path().map(Path::to_path_buf),
+            ),
+            ProjectListItem::NonRust(nr) => Project::<Package>::new(
+                nr.path().to_path_buf(),
+                nr.name().map(str::to_string),
+                Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+                Vec::new(),
+                nr.worktree_name().map(str::to_string),
+                nr.worktree_primary_abs_path().map(Path::to_path_buf),
+            ),
+            _ => continue,
+        };
+        vendored_projects.push((ni, pkg));
     }
 
-    // Remove vendored nodes from the top level (reverse order)
     for &idx in remove_indices.iter().rev() {
-        nodes.remove(idx);
+        items.remove(idx);
     }
 
-    // Adjust parent indices after removal
-    for (ni, wt_idx, project) in vendored_projects {
+    for (ni, pkg) in vendored_projects {
         let adjusted_ni = remove_indices.iter().filter(|&&r| r < ni).count();
         let target_ni = ni - adjusted_ni;
-        if let Some(node) = nodes.get_mut(target_ni) {
-            if let Some(wi) = wt_idx {
-                if let Some(wt) = node.worktrees.get_mut(wi) {
-                    wt.vendored.push(project);
-                }
-            } else {
-                node.vendored.push(project);
+        if let Some(item) = items.get_mut(target_ni) {
+            match item {
+                ProjectListItem::Workspace(ws) => ws.vendored_mut().push(pkg),
+                ProjectListItem::Package(p) => p.vendored_mut().push(pkg),
+                _ => {},
             }
         }
     }
 
     // Sort vendored lists
-    for node in nodes {
-        node.vendored.sort_by(|a, b| a.path.cmp(&b.path));
-        for wt in &mut node.worktrees {
-            wt.vendored.sort_by(|a, b| a.path.cmp(&b.path));
+    for item in items {
+        match item {
+            ProjectListItem::Workspace(ws) => {
+                ws.vendored_mut().sort_by(|a, b| a.path().cmp(b.path()));
+            },
+            ProjectListItem::Package(pkg) => {
+                pkg.vendored_mut().sort_by(|a, b| a.path().cmp(b.path()));
+            },
+            _ => {},
         }
     }
 }
 
-pub(crate) fn group_members(
-    workspace_path: &str,
-    members: Vec<LegacyProject>,
+fn group_members_new(
+    workspace_path: &Path,
+    members: Vec<Project<Package>>,
     inline_dirs: &[String],
-) -> Vec<LegacyMemberGroup> {
-    let prefix = format!("{workspace_path}/");
-
-    let mut group_map: HashMap<String, Vec<LegacyProject>> = HashMap::new();
+) -> Vec<MemberGroup> {
+    let mut group_map: HashMap<String, Vec<Project<Package>>> = HashMap::new();
 
     for member in members {
-        let relative = member.path.strip_prefix(&prefix).unwrap_or(&member.path);
+        let relative = member
+            .path()
+            .strip_prefix(workspace_path)
+            .ok()
+            .map(normalize_workspace_path)
+            .unwrap_or_default();
         let subdir = relative.split('/').next().unwrap_or("").to_string();
 
-        // Members in configured inline dirs or directly in the workspace root are shown inline.
-        // Everything else gets grouped by first subdirectory.
         let group_name = if inline_dirs.contains(&subdir) || !relative.contains('/') {
             String::new()
         } else {
@@ -924,307 +970,129 @@ pub(crate) fn group_members(
         group_map.entry(group_name).or_default().push(member);
     }
 
-    let mut groups: Vec<LegacyMemberGroup> = group_map
+    let mut groups: Vec<MemberGroup> = group_map
         .into_iter()
-        .map(|(name, members)| LegacyMemberGroup { name, members })
+        .map(|(name, members)| {
+            if name.is_empty() {
+                MemberGroup::Inline { members }
+            } else {
+                MemberGroup::Named { name, members }
+            }
+        })
         .collect();
 
-    // Sort: named directories first (alphabetically), then inline group last
     groups.sort_by(|a, b| {
-        let a_inline = a.name.is_empty();
-        let b_inline = b.name.is_empty();
+        let a_inline = a.group_name().is_empty();
+        let b_inline = b.group_name().is_empty();
         match (a_inline, b_inline) {
             (true, false) => std::cmp::Ordering::Greater,
             (false, true) => std::cmp::Ordering::Less,
-            _ => a.name.cmp(&b.name),
+            _ => a.group_name().cmp(b.group_name()),
         }
     });
 
     groups
 }
 
-pub(crate) fn build_flat_entries(nodes: &[ProjectEntry]) -> Vec<FlatEntry> {
+/// Build a flat list of entries for fuzzy search from the project tree.
+pub(crate) fn build_flat_entries(items: &[ProjectListItem]) -> Vec<FlatEntry> {
     let mut entries = Vec::new();
-    for node in nodes {
+    for item in items {
         entries.push(FlatEntry {
-            path:     node.project.path.clone(),
-            abs_path: PathBuf::from(&node.project.abs_path),
-            name:     node.project.display_name(),
+            path:     item.display_path(),
+            abs_path: item.path().to_path_buf(),
+            name:     item.display_name(),
         });
 
-        for group in &node.groups {
-            for member in &group.members {
-                entries.push(FlatEntry {
-                    path:     member.path.clone(),
-                    abs_path: PathBuf::from(&member.abs_path),
-                    name:     member.display_name(),
-                });
-            }
-        }
-
-        for vendored in &node.vendored {
-            entries.push(FlatEntry {
-                path:     vendored.path.clone(),
-                abs_path: PathBuf::from(&vendored.abs_path),
-                name:     format!("{} (vendored)", vendored.display_name()),
-            });
-        }
-
-        for worktree in &node.worktrees {
-            if worktree.project.path != node.project.path {
-                entries.push(FlatEntry {
-                    path:     worktree.project.path.clone(),
-                    abs_path: PathBuf::from(&worktree.project.abs_path),
-                    name:     worktree
-                        .project
-                        .worktree_name
-                        .clone()
-                        .unwrap_or_else(|| worktree.project.display_name()),
-                });
-            }
-
-            for group in &worktree.groups {
-                for member in &group.members {
+        match item {
+            ProjectListItem::Workspace(ws) => {
+                for group in ws.groups() {
+                    for member in group.members() {
+                        entries.push(FlatEntry {
+                            path:     member.display_path(),
+                            abs_path: member.path().to_path_buf(),
+                            name:     member.display_name(),
+                        });
+                    }
+                }
+                for vendored in ws.vendored() {
                     entries.push(FlatEntry {
-                        path:     member.path.clone(),
-                        abs_path: PathBuf::from(&member.abs_path),
-                        name:     member.display_name(),
+                        path:     vendored.display_path(),
+                        abs_path: vendored.path().to_path_buf(),
+                        name:     format!("{} (vendored)", vendored.display_name()),
                     });
                 }
-            }
-
-            for vendored in &worktree.vendored {
-                entries.push(FlatEntry {
-                    path:     vendored.path.clone(),
-                    abs_path: PathBuf::from(&vendored.abs_path),
-                    name:     format!("{} (vendored)", vendored.display_name()),
-                });
-            }
+            },
+            ProjectListItem::Package(pkg) => {
+                for vendored in pkg.vendored() {
+                    entries.push(FlatEntry {
+                        path:     vendored.display_path(),
+                        abs_path: vendored.path().to_path_buf(),
+                        name:     format!("{} (vendored)", vendored.display_name()),
+                    });
+                }
+            },
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                for linked in wtg.linked() {
+                    entries.push(FlatEntry {
+                        path:     linked.display_path(),
+                        abs_path: linked.path().to_path_buf(),
+                        name:     linked
+                            .worktree_name()
+                            .unwrap_or_else(|| linked.name().unwrap_or(""))
+                            .to_string(),
+                    });
+                    for group in linked.groups() {
+                        for member in group.members() {
+                            entries.push(FlatEntry {
+                                path:     member.display_path(),
+                                abs_path: member.path().to_path_buf(),
+                                name:     member.display_name(),
+                            });
+                        }
+                    }
+                }
+                // Also emit primary's groups
+                for group in wtg.primary().groups() {
+                    for member in group.members() {
+                        entries.push(FlatEntry {
+                            path:     member.display_path(),
+                            abs_path: member.path().to_path_buf(),
+                            name:     member.display_name(),
+                        });
+                    }
+                }
+                for vendored in wtg.primary().vendored() {
+                    entries.push(FlatEntry {
+                        path:     vendored.display_path(),
+                        abs_path: vendored.path().to_path_buf(),
+                        name:     format!("{} (vendored)", vendored.display_name()),
+                    });
+                }
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                for linked in wtg.linked() {
+                    entries.push(FlatEntry {
+                        path:     linked.display_path(),
+                        abs_path: linked.path().to_path_buf(),
+                        name:     linked
+                            .worktree_name()
+                            .unwrap_or_else(|| linked.name().unwrap_or(""))
+                            .to_string(),
+                    });
+                }
+            },
+            ProjectListItem::NonRust(_) => {},
         }
     }
     entries
 }
 
-// ── New type system: build_project_list ────────────────────────────
-
-/// Convert an old `LegacyProject` into a `Project<Package>`.
-fn old_project_to_package(p: &LegacyProject) -> Project<Package> {
-    Project::<Package>::new(
-        PathBuf::from(&p.abs_path),
-        p.name.clone(),
-        Cargo::new(
-            p.version.clone(),
-            p.description.clone(),
-            p.types.clone(),
-            p.examples.clone(),
-            p.benches.clone(),
-            p.test_count,
-        ),
-        Vec::new(),
-        p.worktree_name.clone(),
-        p.worktree_primary_abs_path.as_ref().map(PathBuf::from),
-    )
-}
-
-/// Convert an old `LegacyProject` into a `Project<Workspace>`.
-fn old_project_to_workspace(
-    p: &LegacyProject,
-    groups: Vec<MemberGroup>,
-    vendored: Vec<Project<Package>>,
-) -> Project<Workspace> {
-    Project::<Workspace>::new(
-        PathBuf::from(&p.abs_path),
-        p.name.clone(),
-        Cargo::new(
-            p.version.clone(),
-            p.description.clone(),
-            p.types.clone(),
-            p.examples.clone(),
-            p.benches.clone(),
-            p.test_count,
-        ),
-        groups,
-        vendored,
-        p.worktree_name.clone(),
-        p.worktree_primary_abs_path.as_ref().map(PathBuf::from),
-    )
-}
-
-/// Convert an old `LegacyProject` into a `Project<NonRust>`.
-fn old_project_to_nonrust(p: &LegacyProject) -> Project<NonRust> {
-    Project::<NonRust>::new(
-        PathBuf::from(&p.abs_path),
-        p.name.clone(),
-        p.worktree_name.clone(),
-        p.worktree_primary_abs_path.as_ref().map(PathBuf::from),
-    )
-}
-
-/// Convert old `LegacyMemberGroup`s to new `MemberGroup`s.
-fn convert_member_groups(groups: &[LegacyMemberGroup]) -> Vec<MemberGroup> {
-    groups
-        .iter()
-        .map(|g| {
-            let members: Vec<Project<Package>> =
-                g.members.iter().map(old_project_to_package).collect();
-            if g.name.is_empty() {
-                MemberGroup::Inline { members }
-            } else {
-                MemberGroup::Named {
-                    name: g.name.clone(),
-                    members,
-                }
-            }
-        })
-        .collect()
-}
-
-/// Build `Vec<ProjectListItem>` from existing `ProjectEntry` tree.
-/// This bridges the old and new type systems during migration.
-pub(crate) fn build_project_list(nodes: &[ProjectEntry]) -> Vec<ProjectListItem> {
-    let mut items = Vec::new();
-    for node in nodes {
-        let is_rust = matches!(node.project.is_rust, ProjectLanguage::Rust);
-        let is_workspace = matches!(node.project.is_workspace, WorkspaceStatus::Workspace)
-            || !node.groups.is_empty()
-            || node.worktrees.iter().any(|wt| !wt.groups.is_empty());
-        let has_worktrees = !node.worktrees.is_empty();
-
-        if !is_rust {
-            // NonRust doesn't have worktrees in the new model, skip worktree grouping.
-            // Just emit the primary as NonRust.
-            items.push(ProjectListItem::NonRust(old_project_to_nonrust(
-                &node.project,
-            )));
-        } else if has_worktrees {
-            // Build worktree group. The first worktree entry is the primary.
-            let primary_wt = &node.worktrees[0];
-            if is_workspace {
-                let primary = old_project_to_workspace(
-                    &primary_wt.project,
-                    convert_member_groups(&primary_wt.groups),
-                    primary_wt
-                        .vendored
-                        .iter()
-                        .map(old_project_to_package)
-                        .collect(),
-                );
-                let linked: Vec<Project<Workspace>> = node.worktrees[1..]
-                    .iter()
-                    .map(|wt| {
-                        old_project_to_workspace(
-                            &wt.project,
-                            convert_member_groups(&wt.groups),
-                            wt.vendored.iter().map(old_project_to_package).collect(),
-                        )
-                    })
-                    .collect();
-                items.push(ProjectListItem::WorkspaceWorktrees(WorktreeGroup::new(
-                    primary, linked,
-                )));
-            } else {
-                let primary = old_project_to_package(&primary_wt.project);
-                let linked: Vec<Project<Package>> = node.worktrees[1..]
-                    .iter()
-                    .map(|wt| old_project_to_package(&wt.project))
-                    .collect();
-                items.push(ProjectListItem::PackageWorktrees(WorktreeGroup::new(
-                    primary, linked,
-                )));
-            }
-        } else if is_workspace {
-            let groups = convert_member_groups(&node.groups);
-            let vendored: Vec<Project<Package>> =
-                node.vendored.iter().map(old_project_to_package).collect();
-            items.push(ProjectListItem::Workspace(old_project_to_workspace(
-                &node.project,
-                groups,
-                vendored,
-            )));
-        } else {
-            let mut pkg = old_project_to_package(&node.project);
-            if !node.vendored.is_empty() {
-                *pkg.vendored_mut() = node.vendored.iter().map(old_project_to_package).collect();
-            }
-            items.push(ProjectListItem::Package(pkg));
-        }
-    }
-    items
-}
-
-/// Convert a single flat `LegacyProject` (as produced by the scanner) to a
-/// `ProjectListItem`. Discovery only emits flat projects — worktree grouping and
-/// member groups are built later by `build_tree`.
-pub(crate) fn legacy_to_project_list_item(p: &LegacyProject) -> ProjectListItem {
-    if p.is_rust != ProjectLanguage::Rust {
-        ProjectListItem::NonRust(old_project_to_nonrust(p))
-    } else if matches!(p.is_workspace, WorkspaceStatus::Workspace) {
-        ProjectListItem::Workspace(old_project_to_workspace(p, Vec::new(), Vec::new()))
-    } else {
-        ProjectListItem::Package(old_project_to_package(p))
-    }
-}
-
-/// Temporary bridge: convert a `ProjectListItem` back to `LegacyProject` so
-/// `build_tree` (which still takes `&[LegacyProject]`) can consume
-/// `discovered_projects`. Removed in step 6 when `build_tree` is rewritten.
-pub(crate) fn project_list_item_to_legacy(item: &ProjectListItem) -> LegacyProject {
-    fn project_to_legacy_fields<Kind: crate::project::ProjectKind>(
-        p: &crate::project::Project<Kind>,
-        is_workspace: WorkspaceStatus,
-        is_rust: ProjectLanguage,
-        cargo: Option<&crate::project::Cargo>,
-    ) -> LegacyProject {
-        let abs_path = p.path().to_string_lossy().to_string();
-        let display_path = p.display_path();
-        LegacyProject {
-            path: display_path,
-            abs_path,
-            name: p.name().map(String::from),
-            version: cargo.and_then(|c| c.version().map(String::from)),
-            description: cargo.and_then(|c| c.description().map(String::from)),
-            worktree_name: p.worktree_name().map(String::from),
-            worktree_primary_abs_path: None,
-            is_workspace,
-            types: cargo.map_or_else(Vec::new, |c| c.types().to_vec()),
-            examples: cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
-            benches: cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
-            test_count: cargo.map_or(0, crate::project::Cargo::test_count),
-            is_rust,
-        }
-    }
-
-    match item {
-        ProjectListItem::Workspace(ws) => project_to_legacy_fields(
-            ws,
-            WorkspaceStatus::Workspace,
-            ProjectLanguage::Rust,
-            Some(ws.cargo()),
-        ),
-        ProjectListItem::Package(pkg) => project_to_legacy_fields(
-            pkg,
-            WorkspaceStatus::Standalone,
-            ProjectLanguage::Rust,
-            Some(pkg.cargo()),
-        ),
-        ProjectListItem::NonRust(nr) => project_to_legacy_fields(
-            nr,
-            WorkspaceStatus::Standalone,
-            ProjectLanguage::NonRust,
-            None,
-        ),
-        ProjectListItem::WorkspaceWorktrees(wtg) => project_to_legacy_fields(
-            wtg.primary(),
-            WorkspaceStatus::Workspace,
-            ProjectLanguage::Rust,
-            Some(wtg.primary().cargo()),
-        ),
-        ProjectListItem::PackageWorktrees(wtg) => project_to_legacy_fields(
-            wtg.primary(),
-            WorkspaceStatus::Standalone,
-            ProjectLanguage::Rust,
-            Some(wtg.primary().cargo()),
-        ),
+/// Convert a `CargoProject` (from `from_cargo_toml()`) into a `ProjectListItem`.
+pub(crate) fn cargo_project_to_item(cp: CargoProject) -> ProjectListItem {
+    match cp {
+        CargoProject::Workspace(ws) => ProjectListItem::Workspace(ws),
+        CargoProject::Package(pkg) => ProjectListItem::Package(pkg),
     }
 }
 
@@ -1512,25 +1380,26 @@ fn discover_non_rust_project(
     disk_entries: &mut Vec<(String, PathBuf)>,
     stats: &mut Phase1DiscoverStats,
 ) {
-    let project = LegacyProject::from_git_dir(entry_path);
-    let path = project.path.clone();
-    let abs_path = PathBuf::from(&project.abs_path);
+    let project = super::project::from_git_dir(entry_path);
+    let abs_path = project.path().to_path_buf();
+    let display_path = project.display_path();
     stats.projects += 1;
     stats.non_rust_projects += 1;
 
+    let item = ProjectListItem::NonRust(project);
     let _ = scan_context
         .tx
-        .send(BackgroundMsg::ProjectDiscovered { project });
+        .send(BackgroundMsg::ProjectDiscovered { item });
 
     let discovered = DiscoveredProject {
-        path,
-        abs_path: abs_path.clone(),
-        name: None,
-        repo_url: None,
+        path:       display_path,
+        abs_path:   abs_path.clone(),
+        name:       None,
+        repo_url:   None,
         owner_repo: None,
-        branch: None,
+        branch:     None,
     };
-    let disk_path = discovered.path.clone();
+    let disk_path = abs_path.to_string_lossy().into_owned();
     spawn_project_local_work(scan_context, discovered, GitRepoPresence::InRepo);
     disk_entries.push((disk_path, abs_path));
 }
@@ -1578,7 +1447,7 @@ fn phase1_discover(
             if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
                 stats.manifests += 1;
                 let manifest_started = std::time::Instant::now();
-                let Ok(project) = LegacyProject::from_cargo_toml(entry.path()) else {
+                let Ok(cargo_project) = super::project::from_cargo_toml(entry.path()) else {
                     continue;
                 };
                 perf_log::log_duration(
@@ -1588,7 +1457,10 @@ fn phase1_discover(
                     0,
                 );
                 stats.projects += 1;
-                let abs_path = PathBuf::from(&project.abs_path);
+                let item = cargo_project_to_item(cargo_project);
+                let abs_path = item.path().to_path_buf();
+                let display_path = item.display_path();
+                let project_name = item.name().map(str::to_string);
                 let repo_presence_started = std::time::Instant::now();
                 let repo_presence = if super::project::git_repo_root(&abs_path).is_some() {
                     GitRepoPresence::InRepo
@@ -1600,29 +1472,26 @@ fn phase1_discover(
                     repo_presence_started.elapsed(),
                     &format!(
                         "path={} in_repo={}",
-                        project.path,
+                        display_path,
                         repo_presence.is_in_repo()
                     ),
                     0,
                 );
 
-                let _ = scan_context.tx.send(BackgroundMsg::ProjectDiscovered {
-                    project: project.clone(),
-                });
+                let _ = scan_context
+                    .tx
+                    .send(BackgroundMsg::ProjectDiscovered { item });
 
                 let discovered = DiscoveredProject {
-                    path: project.path.clone(),
-                    abs_path,
-                    name: project.name.clone(),
-                    repo_url: None,
+                    path:       display_path,
+                    abs_path:   abs_path.clone(),
+                    name:       project_name,
+                    repo_url:   None,
                     owner_repo: None,
-                    branch: None,
+                    branch:     None,
                 };
                 spawn_project_local_work(scan_context, discovered.clone(), repo_presence);
-                disk_entries.push((
-                    discovered.abs_path.to_string_lossy().into_owned(),
-                    discovered.abs_path.clone(),
-                ));
+                disk_entries.push((abs_path.to_string_lossy().into_owned(), abs_path));
             }
         }
     }
@@ -2115,112 +1984,72 @@ fn cached_git_info(git_info_cache: &GitInfoCache, project_dir: &Path) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::ProjectLanguage;
-    use crate::project::WorkspaceStatus;
+    use crate::project::Cargo;
 
-    fn make_project(
+    fn make_workspace(
         name: Option<&str>,
-        path: &str,
         abs_path: &str,
         worktree_name: Option<&str>,
         primary_abs: Option<&str>,
-        is_workspace: WorkspaceStatus,
-    ) -> LegacyProject {
-        LegacyProject {
-            path: path.to_string(),
-            abs_path: abs_path.to_string(),
-            name: name.map(String::from),
-            version: None,
-            description: None,
-            worktree_name: worktree_name.map(String::from),
-            worktree_primary_abs_path: primary_abs.map(String::from),
-            is_workspace,
-            types: Vec::new(),
-            examples: Vec::new(),
-            benches: Vec::new(),
-            test_count: 0,
-            is_rust: ProjectLanguage::Rust,
-        }
+    ) -> ProjectListItem {
+        ProjectListItem::Workspace(Project::<Workspace>::new(
+            PathBuf::from(abs_path),
+            name.map(String::from),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Vec::new(),
+            Vec::new(),
+            worktree_name.map(String::from),
+            primary_abs.map(PathBuf::from),
+        ))
     }
 
-    fn make_node(project: LegacyProject) -> ProjectEntry {
-        ProjectEntry {
-            project,
-            groups: Vec::new(),
-            worktrees: Vec::new(),
-            vendored: Vec::new(),
-        }
-    }
-
-    fn make_node_with_groups(
-        project: LegacyProject,
-        groups: Vec<LegacyMemberGroup>,
-    ) -> ProjectEntry {
-        ProjectEntry {
-            project,
-            groups,
-            worktrees: Vec::new(),
-            vendored: Vec::new(),
-        }
+    fn make_package(
+        name: Option<&str>,
+        abs_path: &str,
+        worktree_name: Option<&str>,
+        primary_abs: Option<&str>,
+    ) -> ProjectListItem {
+        ProjectListItem::Package(Project::<Package>::new(
+            PathBuf::from(abs_path),
+            name.map(String::from),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Vec::new(),
+            worktree_name.map(String::from),
+            primary_abs.map(PathBuf::from),
+        ))
     }
 
     #[test]
     fn merge_virtual_workspace() {
-        let primary = make_project(
-            None,
-            "~/rust/ws",
-            "/home/ws",
-            None,
-            Some("/home/ws"),
-            WorkspaceStatus::Workspace,
-        );
-        let worktree = make_project(
-            None,
-            "~/rust/ws_feat",
-            "/home/ws_feat",
-            Some("ws_feat"),
-            Some("/home/ws"),
-            WorkspaceStatus::Workspace,
-        );
-        let mut nodes = vec![make_node(primary), make_node(worktree)];
-        merge_worktrees(&mut nodes);
+        let primary = make_workspace(None, "/home/ws", None, Some("/home/ws"));
+        let worktree = make_workspace(None, "/home/ws_feat", Some("ws_feat"), Some("/home/ws"));
+        let mut items = vec![primary, worktree];
+        merge_worktrees_new(&mut items);
 
-        assert_eq!(nodes.len(), 1, "worktree should be merged into primary");
-        assert_eq!(nodes[0].worktrees.len(), 2, "primary-as-wt + worktree");
-        assert_eq!(
-            nodes[0].worktrees[0].project.worktree_name.as_deref(),
-            Some("ws"),
-            "first entry is primary-as-worktree"
-        );
-        assert_eq!(
-            nodes[0].worktrees[1].project.worktree_name.as_deref(),
-            Some("ws_feat"),
-        );
+        assert_eq!(items.len(), 1, "worktree should be merged into primary");
+        let ProjectListItem::WorkspaceWorktrees(ref wtg) = items[0] else {
+            std::process::abort()
+        };
+        assert_eq!(wtg.linked().len(), 1, "should have one linked worktree");
     }
 
     #[test]
     fn merge_named_workspace() {
-        let primary = make_project(
+        let primary = make_workspace(Some("my-ws"), "/home/ws", None, Some("/home/ws"));
+        let worktree = make_workspace(
             Some("my-ws"),
-            "~/rust/ws",
-            "/home/ws",
-            None,
-            Some("/home/ws"),
-            WorkspaceStatus::Workspace,
-        );
-        let worktree = make_project(
-            Some("my-ws"),
-            "~/rust/ws_feat",
             "/home/ws_feat",
             Some("ws_feat"),
             Some("/home/ws"),
-            WorkspaceStatus::Workspace,
         );
-        let mut nodes = vec![make_node(primary), make_node(worktree)];
-        merge_worktrees(&mut nodes);
+        let mut items = vec![primary, worktree];
+        merge_worktrees_new(&mut items);
 
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].worktrees.len(), 2);
+        assert_eq!(items.len(), 1);
+        let ProjectListItem::WorkspaceWorktrees(ref wtg) = items[0] else {
+            std::process::abort()
+        };
+        assert_eq!(wtg.linked().len(), 1);
     }
 
     #[test]
@@ -2230,61 +2059,6 @@ mod tests {
 
         assert_ne!(main_dir, feature_dir);
         assert!(feature_dir.ends_with("branches/feat_2fdemo"));
-    }
-
-    #[test]
-    fn merge_groups_transfer() {
-        let primary = make_project(
-            None,
-            "~/rust/ws",
-            "/home/ws",
-            None,
-            Some("/home/ws"),
-            WorkspaceStatus::Workspace,
-        );
-        let member_a = make_project(
-            Some("crate-a"),
-            "~/rust/ws/crates/a",
-            "/home/ws/crates/a",
-            None,
-            Some("/home/ws"),
-            WorkspaceStatus::Standalone,
-        );
-        let member_b = make_project(
-            Some("crate-b"),
-            "~/rust/ws/crates/b",
-            "/home/ws/crates/b",
-            None,
-            Some("/home/ws"),
-            WorkspaceStatus::Standalone,
-        );
-        let groups = vec![LegacyMemberGroup {
-            name:    String::new(),
-            members: vec![member_a, member_b],
-        }];
-
-        let worktree = make_project(
-            None,
-            "~/rust/ws_feat",
-            "/home/ws_feat",
-            Some("ws_feat"),
-            Some("/home/ws"),
-            WorkspaceStatus::Workspace,
-        );
-
-        let mut nodes = vec![make_node_with_groups(primary, groups), make_node(worktree)];
-        merge_worktrees(&mut nodes);
-
-        assert!(
-            nodes[0].groups.is_empty(),
-            "primary's groups should be moved to worktrees[0]"
-        );
-        assert_eq!(
-            nodes[0].worktrees[0].groups.len(),
-            1,
-            "primary-as-wt should have the groups"
-        );
-        assert_eq!(nodes[0].worktrees[0].groups[0].members.len(), 2);
     }
 
     #[test]
@@ -2302,131 +2076,81 @@ mod tests {
         )
         .unwrap_or_else(|_| std::process::abort());
 
-        let workspace = make_project(
-            Some("hana"),
-            "~/rust/hana",
-            &workspace_dir.to_string_lossy(),
-            None,
-            Some(&workspace_dir.to_string_lossy()),
-            WorkspaceStatus::Workspace,
-        );
-        let included = make_project(
+        let workspace = make_workspace(Some("hana"), &workspace_dir.to_string_lossy(), None, None);
+        let included = make_package(
             Some("hana-node-api"),
-            "~/rust/hana/crates/hana",
             &included_dir.to_string_lossy(),
             None,
-            Some(&workspace_dir.to_string_lossy()),
-            WorkspaceStatus::Standalone,
+            None,
         );
-        let vendored = make_project(
+        let vendored = make_package(
             Some("clay-layout"),
-            "~/rust/hana/crates/clay-layout",
             &vendored_dir.to_string_lossy(),
             None,
-            Some(&workspace_dir.to_string_lossy()),
-            WorkspaceStatus::Standalone,
+            None,
         );
 
-        let nodes = build_tree(
-            &[workspace.clone(), included.clone(), vendored.clone()],
-            &["crates".to_string()],
-        );
+        let items = build_tree(&[workspace, included, vendored], &["crates".to_string()]);
 
-        let workspace_node = nodes
+        let ws_item = items
             .iter()
-            .find(|node| node.project.path == workspace.path)
+            .find(|item| item.path() == workspace_dir.as_path())
             .unwrap_or_else(|| std::process::abort());
-        assert_eq!(workspace_node.groups.len(), 1);
-        assert_eq!(workspace_node.groups[0].members.len(), 1);
-        assert_eq!(workspace_node.groups[0].members[0].path, included.path);
+        let ProjectListItem::Workspace(ws) = ws_item else {
+            std::process::abort()
+        };
+        assert_eq!(ws.groups().len(), 1);
+        assert_eq!(ws.groups()[0].members().len(), 1);
+        assert_eq!(ws.groups()[0].members()[0].path(), included_dir.as_path());
         assert!(
-            workspace_node
-                .groups
+            ws.groups()
                 .iter()
-                .flat_map(|group| group.members.iter())
-                .all(|member| member.path != vendored.path),
+                .flat_map(|group| group.members().iter())
+                .all(|member| member.path() != vendored_dir.as_path()),
             "non-member crate should not be grouped as a workspace member"
         );
-        assert_eq!(workspace_node.vendored.len(), 1);
-        assert_eq!(workspace_node.vendored[0].path, vendored.path);
+        assert_eq!(ws.vendored().len(), 1);
+        assert_eq!(ws.vendored()[0].path(), vendored_dir.as_path());
     }
 
     #[test]
     fn merge_standalone_project() {
-        let primary = make_project(
+        let primary = make_package(Some("app"), "/home/app", None, Some("/home/app"));
+        let worktree = make_package(
             Some("app"),
-            "~/rust/app",
-            "/home/app",
-            None,
-            Some("/home/app"),
-            WorkspaceStatus::Standalone,
-        );
-        let worktree = make_project(
-            Some("app"),
-            "~/rust/app_feat",
             "/home/app_feat",
             Some("app_feat"),
             Some("/home/app"),
-            WorkspaceStatus::Standalone,
         );
-        let mut nodes = vec![make_node(primary), make_node(worktree)];
-        merge_worktrees(&mut nodes);
+        let mut items = vec![primary, worktree];
+        merge_worktrees_new(&mut items);
 
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].worktrees.len(), 2);
-        assert!(
-            !nodes[0].worktrees[0].has_members(),
-            "standalone worktrees have no groups"
-        );
+        assert_eq!(items.len(), 1);
+        let ProjectListItem::PackageWorktrees(ref wtg) = items[0] else {
+            std::process::abort()
+        };
+        assert_eq!(wtg.linked().len(), 1);
     }
 
     #[test]
     fn no_merge_different_repos() {
-        let a = make_project(
-            Some("a"),
-            "~/rust/a",
-            "/home/a",
-            None,
-            Some("/home/a"),
-            WorkspaceStatus::Standalone,
-        );
-        let b = make_project(
-            Some("b"),
-            "~/rust/b",
-            "/home/b",
-            Some("b"),
-            Some("/home/b"),
-            WorkspaceStatus::Standalone,
-        );
-        let mut nodes = vec![make_node(a), make_node(b)];
-        merge_worktrees(&mut nodes);
+        let a = make_package(Some("a"), "/home/a", None, Some("/home/a"));
+        let b = make_package(Some("b"), "/home/b", Some("b"), Some("/home/b"));
+        let mut items = vec![a, b];
+        merge_worktrees_new(&mut items);
 
-        assert_eq!(nodes.len(), 2, "different repos should remain separate");
+        assert_eq!(items.len(), 2, "different repos should remain separate");
     }
 
     #[test]
     fn no_merge_none_identity() {
-        let a = make_project(
-            Some("x"),
-            "~/rust/x",
-            "/home/x",
-            None,
-            None,
-            WorkspaceStatus::Standalone,
-        );
-        let b = make_project(
-            Some("x"),
-            "~/rust/x2",
-            "/home/x2",
-            Some("x2"),
-            None,
-            WorkspaceStatus::Standalone,
-        );
-        let mut nodes = vec![make_node(a), make_node(b)];
-        merge_worktrees(&mut nodes);
+        let a = make_package(Some("x"), "/home/x", None, None);
+        let b = make_package(Some("x"), "/home/x2", Some("x2"), None);
+        let mut items = vec![a, b];
+        merge_worktrees_new(&mut items);
 
         assert_eq!(
-            nodes.len(),
+            items.len(),
             2,
             "nodes without identity should not be merged"
         );

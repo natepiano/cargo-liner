@@ -176,11 +176,11 @@ impl App {
         }
     }
 
-    pub fn is_deleted(&self, path: &str) -> bool {
+    pub fn is_deleted(&self, path: &Path) -> bool {
         use crate::project::Visibility;
         self.project_list_items
             .iter()
-            .any(|item| item.has_project_with_visibility(path, Visibility::Deleted))
+            .any(|item| item.has_project_with_visibility_by_path(path, Visibility::Deleted))
     }
 
     pub fn formatted_disk(&self, path: &Path) -> String {

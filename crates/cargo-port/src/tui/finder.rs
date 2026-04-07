@@ -724,44 +724,34 @@ fn render_finder_results(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::project::LegacyProject;
-    use crate::project::ProjectLanguage;
-    use crate::project::WorkspaceStatus;
-    use crate::scan::ProjectEntry;
+    use std::path::PathBuf;
 
-    fn make_project(name: Option<&str>, path: &str) -> LegacyProject {
-        crate::project::LegacyProject {
-            path:                      path.to_string(),
-            abs_path:                  path.to_string(),
-            name:                      name.map(str::to_string),
-            version:                   None,
-            description:               None,
-            worktree_name:             None,
-            worktree_primary_abs_path: None,
-            is_workspace:              WorkspaceStatus::Standalone,
-            types:                     Vec::new(),
-            examples:                  Vec::new(),
-            benches:                   Vec::new(),
-            test_count:                0,
-            is_rust:                   ProjectLanguage::Rust,
-        }
-    }
+    use super::*;
+    use crate::project::Cargo;
+    use crate::project::Package;
+    use crate::project::Project;
+    use crate::project::ProjectListItem;
+    use crate::project::Workspace;
 
     #[test]
     fn build_finder_index_includes_vendored_projects() {
-        let mut node = ProjectEntry {
-            project:   make_project(Some("hana"), "~/rust/hana"),
-            groups:    Vec::new(),
-            worktrees: Vec::new(),
-            vendored:  vec![make_project(
-                Some("clay-layout"),
-                "~/rust/hana/crates/clay-layout",
+        let ws = Project::<Workspace>::new(
+            PathBuf::from("~/rust/hana"),
+            Some("hana".to_string()),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Vec::new(),
+            vec![Project::<Package>::new(
+                PathBuf::from("~/rust/hana/crates/clay-layout"),
+                Some("clay-layout".to_string()),
+                Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+                Vec::new(),
+                None,
+                None,
             )],
-        };
-        node.project.is_workspace = WorkspaceStatus::Workspace;
-
-        let list_items = crate::scan::build_project_list(&[node]);
+            None,
+            None,
+        );
+        let list_items = vec![ProjectListItem::Workspace(ws)];
         let (items, _widths) = build_finder_index(&list_items, &HashMap::new());
         assert!(items.iter().any(|item| {
             item.project_path == "~/rust/hana/crates/clay-layout"

@@ -12,7 +12,6 @@ use crate::project::GitPathState;
 use crate::project::NonRust;
 use crate::project::Package;
 use crate::project::Project;
-use crate::project::ProjectLanguage;
 use crate::project::ProjectListItem;
 use crate::project::ProjectType;
 use crate::project::Workspace;
@@ -310,7 +309,7 @@ impl DetailField {
 /// All fields for the `Package` column.
 /// Non-Rust projects show only name, path, disk, and CI.
 pub fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
-    if info.is_rust == ProjectLanguage::NonRust {
+    if info.package_title == "Project" {
         let mut fields = vec![DetailField::Name, DetailField::Path];
         if info.cargo_active && !info.lint_label.is_empty() {
             fields.push(DetailField::Lint);
@@ -420,8 +419,6 @@ pub struct DetailInfo {
     pub binary_name:      Option<String>,
     pub examples:         Vec<ExampleGroup>,
     pub benches:          Vec<String>,
-    /// Whether this is a Rust project (has `Cargo.toml`).
-    pub is_rust:          ProjectLanguage,
     /// Whether this project declares `[package]` (has version/description fields).
     pub has_package:      bool,
     pub cargo_active:     bool,
@@ -649,7 +646,6 @@ fn build_detail_info_for_workspace(
             name: ws.name(),
             cargo: Some(cargo),
             worktree_name: ws.worktree_name(),
-            is_rust: true,
             wt_item: wt_item_ref,
             stats_rows,
             package_title: "Workspace".to_string(),
@@ -685,7 +681,6 @@ fn build_detail_info_for_package(
             name: pkg.name(),
             cargo: Some(cargo),
             worktree_name: pkg.worktree_name(),
-            is_rust: true,
             wt_item: wt_item_ref,
             stats_rows,
             package_title,
@@ -711,7 +706,6 @@ fn build_detail_info_non_rust(
             name: nr.name(),
             cargo: None,
             worktree_name: nr.worktree_name(),
-            is_rust: false,
             wt_item: wt_item_ref,
             stats_rows: Vec::new(),
             package_title: "Project".to_string(),
@@ -725,7 +719,6 @@ struct DetailSource<'a> {
     name:          Option<&'a str>,
     cargo:         Option<&'a Cargo>,
     worktree_name: Option<&'a str>,
-    is_rust:       bool,
     wt_item:       Option<&'a ProjectListItem>,
     stats_rows:    Vec<(&'static str, usize)>,
     package_title: String,
@@ -804,11 +797,6 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
         binary_name,
         examples: cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
         benches: cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
-        is_rust: if src.is_rust {
-            ProjectLanguage::Rust
-        } else {
-            ProjectLanguage::NonRust
-        },
         has_package: name.is_some(),
         cargo_active,
     }

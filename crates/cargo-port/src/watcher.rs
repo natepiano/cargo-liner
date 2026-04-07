@@ -34,10 +34,11 @@ use super::http::HttpClient;
 use super::project;
 use super::project::GitInfo;
 use super::project::GitRepoPresence;
-use super::project::LegacyProject;
 use super::scan;
 use super::scan::BackgroundMsg;
 use crate::perf_log;
+use crate::project::ProjectListItem;
+use crate::project::ProjectListItem::NonRust;
 
 /// Request to register an already-known project with the watcher.
 pub(crate) struct WatchRequest {
@@ -592,10 +593,11 @@ fn is_target_metadata_event(event_path: &Path, project_root: &Path) -> bool {
 fn spawn_project_refresh(bg_tx: mpsc::Sender<BackgroundMsg>, project_root: PathBuf) {
     rayon::spawn(move || {
         let cargo_toml = project_root.join("Cargo.toml");
-        let Ok(project) = LegacyProject::from_cargo_toml(&cargo_toml) else {
+        let Ok(cargo_project) = crate::project::from_cargo_toml(&cargo_toml) else {
             return;
         };
-        let _ = bg_tx.send(BackgroundMsg::ProjectRefreshed { project });
+        let item = scan::cargo_project_to_item(cargo_project);
+        let _ = bg_tx.send(BackgroundMsg::ProjectRefreshed { item });
     });
 }
 
@@ -950,31 +952,29 @@ fn probe_new_projects(
         if discovered.contains(&dir) {
             continue;
         }
-        if let Some(project) = probe_project(&dir, non_rust) {
+        if let Some(item) = probe_project(&dir, non_rust) {
             discovered.insert(dir.clone());
-            let abs_path = PathBuf::from(&project.abs_path);
+            let abs_path = item.path().to_path_buf();
+            let display_path = item.display_path();
+            let project_name = item.name().map(str::to_string);
             let repo_presence = if project::git_repo_root(&abs_path).is_some() {
                 GitRepoPresence::InRepo
             } else {
                 GitRepoPresence::OutsideRepo
             };
-            let _ = bg_tx.send(BackgroundMsg::ProjectDiscovered {
-                project: project.clone(),
-            });
+            let _ = bg_tx.send(BackgroundMsg::ProjectDiscovered { item });
             let tx = bg_tx.clone();
             let task_ctx = scan::FetchContext {
                 client:     client.clone(),
                 repo_cache: scan::new_repo_cache(),
             };
-            let path = project.path.clone();
-            let name = project.name.clone();
             rayon::spawn(move || {
                 let request = scan::ProjectDetailRequest {
                     tx: &tx,
                     ctx: &task_ctx,
-                    _project_path: &path,
+                    _project_path: &display_path,
                     abs_path: &abs_path,
-                    project_name: name.as_deref(),
+                    project_name: project_name.as_deref(),
                     repo_presence,
                     ci_run_count,
                 };
@@ -1018,13 +1018,15 @@ fn project_level_dir(
 
 /// Check if a directory is a project (has `Cargo.toml`, or `.git` when
 /// `include_non_rust` is enabled).
-fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<LegacyProject> {
+fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<ProjectListItem> {
     let cargo_toml = dir.join("Cargo.toml");
     if cargo_toml.exists() {
-        return LegacyProject::from_cargo_toml(&cargo_toml).ok();
+        return crate::project::from_cargo_toml(&cargo_toml)
+            .ok()
+            .map(scan::cargo_project_to_item);
     }
     if non_rust.includes_non_rust() && dir.join(".git").is_dir() {
-        return Some(LegacyProject::from_git_dir(dir));
+        return Some(NonRust(crate::project::from_git_dir(dir)));
     }
     None
 }
@@ -1321,24 +1323,30 @@ edition = "2024"
             &mut pending_git,
             &mut pending_new,
         );
-        let BackgroundMsg::ProjectRefreshed { project: refreshed } = bg_rx
+        let BackgroundMsg::ProjectRefreshed { item: refreshed } = bg_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("project refresh message")
         else {
             panic!("unexpected background message");
         };
-        assert_eq!(
-            refreshed.abs_path,
-            project_root.path().display().to_string()
-        );
-        assert_eq!(
-            refreshed
-                .examples
+        assert_eq!(refreshed.path(), project_root.path());
+        // Verify examples were parsed from the refreshed Cargo.toml
+        let example_count = match &refreshed {
+            crate::project::ProjectListItem::Package(pkg) => pkg
+                .cargo()
+                .examples()
                 .iter()
                 .map(|g| g.names.len())
                 .sum::<usize>(),
-            1
-        );
+            crate::project::ProjectListItem::Workspace(ws) => ws
+                .cargo()
+                .examples()
+                .iter()
+                .map(|g| g.names.len())
+                .sum::<usize>(),
+            _ => 0,
+        };
+        assert_eq!(example_count, 1);
         assert_pending_disk(&pending_disk, "~/rust/demo");
         assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());

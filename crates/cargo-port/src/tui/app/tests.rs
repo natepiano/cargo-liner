@@ -20,18 +20,19 @@ use crate::config::ScrollDirection;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::lint::LintStatus;
+use crate::project::Cargo;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
-use crate::project::LegacyProject;
-use crate::project::ProjectLanguage;
+use crate::project::MemberGroup;
+use crate::project::NonRust;
+use crate::project::Package;
+use crate::project::Project;
 use crate::project::ProjectListItem;
 use crate::project::Visibility::Dismissed;
-use crate::project::WorkspaceStatus;
+use crate::project::Workspace;
 use crate::scan::BackgroundMsg;
-use crate::scan::LegacyMemberGroup;
-use crate::scan::ProjectEntry;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastManager;
 use crate::tui::types::PaneId;
@@ -43,43 +44,22 @@ fn test_http_client() -> HttpClient {
     HttpClient::new(rt.handle().clone()).unwrap_or_else(|| std::process::abort())
 }
 
-fn make_project(name: Option<&str>, path: &str) -> LegacyProject {
-    LegacyProject {
-        path:                      path.to_string(),
-        abs_path:                  path.to_string(),
-        name:                      name.map(String::from),
-        version:                   None,
-        description:               None,
-        worktree_name:             None,
-        worktree_primary_abs_path: None,
-        is_workspace:              WorkspaceStatus::Standalone,
-        types:                     Vec::new(),
-        examples:                  Vec::new(),
-        benches:                   Vec::new(),
-        test_count:                0,
-        is_rust:                   ProjectLanguage::Rust,
-    }
+fn make_project(name: Option<&str>, path: &str) -> ProjectListItem {
+    ProjectListItem::Package(Project::<Package>::new(
+        PathBuf::from(path),
+        name.map(String::from),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Vec::new(),
+        None,
+        None,
+    ))
 }
 
-fn make_node(project: LegacyProject) -> ProjectEntry {
-    ProjectEntry {
-        project,
-        groups: Vec::new(),
-        worktrees: Vec::new(),
-        vendored: Vec::new(),
-    }
-}
-
-/// Convert a slice of `ProjectEntry` to `Vec<ProjectListItem>` for tests.
-fn to_items(nodes: &[ProjectEntry]) -> Vec<ProjectListItem> {
-    crate::scan::build_project_list(nodes)
-}
-
-fn make_app(projects: &[LegacyProject]) -> App {
+fn make_app(projects: &[ProjectListItem]) -> App {
     make_app_with_config(projects, &CargoPortConfig::default())
 }
 
-fn make_app_with_config(projects: &[LegacyProject], cfg: &CargoPortConfig) -> App {
+fn make_app_with_config(projects: &[ProjectListItem], cfg: &CargoPortConfig) -> App {
     let (bg_tx, bg_rx) = mpsc::channel();
     let scan_root =
         std::env::temp_dir().join(format!("cargo-port-polish-test-{}", std::process::id()));
@@ -98,10 +78,109 @@ fn make_app_with_config(projects: &[LegacyProject], cfg: &CargoPortConfig) -> Ap
     app
 }
 
-fn make_non_rust_project(name: Option<&str>, path: &str) -> LegacyProject {
-    let mut project = make_project(name, path);
-    project.is_rust = ProjectLanguage::NonRust;
-    project
+fn make_non_rust_project(name: Option<&str>, path: &str) -> ProjectListItem {
+    ProjectListItem::NonRust(Project::<NonRust>::new(
+        PathBuf::from(path),
+        name.map(String::from),
+        None,
+        None,
+    ))
+}
+
+fn make_workspace_project(name: Option<&str>, path: &str) -> ProjectListItem {
+    ProjectListItem::Workspace(Project::<Workspace>::new(
+        PathBuf::from(path),
+        name.map(String::from),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+    ))
+}
+
+fn make_workspace_with_members(
+    name: Option<&str>,
+    path: &str,
+    groups: Vec<MemberGroup>,
+) -> ProjectListItem {
+    ProjectListItem::Workspace(Project::<Workspace>::new(
+        PathBuf::from(path),
+        name.map(String::from),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        groups,
+        Vec::new(),
+        None,
+        None,
+    ))
+}
+
+fn make_member(name: Option<&str>, path: &str) -> Project<Package> {
+    Project::<Package>::new(
+        PathBuf::from(path),
+        name.map(String::from),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Vec::new(),
+        None,
+        None,
+    )
+}
+
+fn make_workspace_worktrees_item(
+    primary: Project<Workspace>,
+    linked: Vec<Project<Workspace>>,
+) -> ProjectListItem {
+    ProjectListItem::WorkspaceWorktrees(crate::project::WorktreeGroup::new(primary, linked))
+}
+
+fn make_package_worktrees_item(
+    primary: Project<Package>,
+    linked: Vec<Project<Package>>,
+) -> ProjectListItem {
+    ProjectListItem::PackageWorktrees(crate::project::WorktreeGroup::new(primary, linked))
+}
+
+fn make_package_raw(
+    name: Option<&str>,
+    path: &str,
+    worktree_name: Option<&str>,
+) -> Project<Package> {
+    Project::<Package>::new(
+        PathBuf::from(path),
+        name.map(String::from),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Vec::new(),
+        worktree_name.map(String::from),
+        None,
+    )
+}
+
+fn make_workspace_raw(
+    name: Option<&str>,
+    path: &str,
+    groups: Vec<MemberGroup>,
+    worktree_name: Option<&str>,
+) -> Project<Workspace> {
+    Project::<Workspace>::new(
+        PathBuf::from(path),
+        name.map(String::from),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        groups,
+        Vec::new(),
+        worktree_name.map(String::from),
+        None,
+    )
+}
+
+fn inline_group(members: Vec<Project<Package>>) -> MemberGroup {
+    crate::project::MemberGroup::Inline { members }
+}
+
+fn named_group(name: &str, members: Vec<Project<Package>>) -> MemberGroup {
+    crate::project::MemberGroup::Named {
+        name: name.to_string(),
+        members,
+    }
 }
 
 fn wait_for_tree_build(app: &mut App) {
@@ -179,7 +258,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     let non_rust_project = make_non_rust_project(Some("js"), "~/js");
     let mut cfg = CargoPortConfig::default();
     cfg.tui.include_non_rust = NonRustInclusion::Include;
-    let mut app = make_app_with_config(&[rust_project.clone(), non_rust_project.clone()], &cfg);
+    let mut app = make_app_with_config(&[rust_project, non_rust_project], &cfg);
     app.scan.phase = ScanPhase::Complete;
 
     assert_eq!(app.discovered_projects.len(), 2);
@@ -193,7 +272,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     assert_eq!(app.discovered_projects.len(), 2);
     assert!(app.is_scan_complete());
     assert_eq!(app.project_list_items.len(), 1);
-    assert_eq!(app.project_list_items[0].display_path(), rust_project.path);
+    assert_eq!(app.project_list_items[0].display_path(), "~/rust");
 
     app.apply_config(&cfg);
     wait_for_tree_build(&mut app);
@@ -204,7 +283,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     assert!(
         app.project_list_items
             .iter()
-            .any(|item| item.display_path() == non_rust_project.path)
+            .any(|item| item.display_path() == "~/js")
     );
 }
 
@@ -222,10 +301,9 @@ fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
     assert!(!app.is_scan_complete());
 }
 
-fn apply_nodes(app: &mut App, nodes: &[ProjectEntry]) {
-    let flat_entries = crate::scan::build_flat_entries(nodes);
-    let project_list_items = crate::scan::build_project_list(nodes);
-    app.apply_tree_build(flat_entries, project_list_items);
+fn apply_items(app: &mut App, items: &[ProjectListItem]) {
+    let flat_entries = crate::scan::build_flat_entries(items);
+    app.apply_tree_build(flat_entries, items.to_vec());
     app.ensure_visible_rows_cached();
 }
 
@@ -305,30 +383,23 @@ fn service_reachability_tracks_background_messages() {
 
 #[test]
 fn visible_rows_workspace_with_worktrees() {
-    // A workspace whose groups have been moved to worktree entries
-    let mut root = make_node(make_project(None, "~/ws"));
-    let member_a = make_project(Some("a"), "~/ws/a");
-    let member_b = make_project(Some("b"), "~/ws/b");
+    let member_a = make_member(Some("a"), "~/ws/a");
+    let member_b = make_member(Some("b"), "~/ws/b");
 
-    // Primary-as-worktree with inline members
-    let mut wt0 = make_node(make_project(None, "~/ws"));
-    wt0.project.worktree_name = Some("ws".to_string());
-    wt0.groups = vec![LegacyMemberGroup {
-        name:    String::new(),
-        members: vec![member_a.clone(), member_b.clone()],
-    }];
+    let primary = make_workspace_raw(
+        None,
+        "~/ws",
+        vec![inline_group(vec![member_a.clone(), member_b.clone()])],
+        None,
+    );
+    let linked = make_workspace_raw(
+        None,
+        "~/ws_feat",
+        vec![named_group("crates", vec![member_a, member_b])],
+        Some("ws_feat"),
+    );
+    let root = make_workspace_worktrees_item(primary, vec![linked]);
 
-    // Actual worktree with a named group
-    let mut wt1 = make_node(make_project(None, "~/ws_feat"));
-    wt1.project.worktree_name = Some("ws_feat".to_string());
-    wt1.groups = vec![LegacyMemberGroup {
-        name:    "crates".to_string(),
-        members: vec![member_a, member_b],
-    }];
-
-    root.worktrees = vec![wt0, wt1];
-
-    // Expand everything: node, both worktrees, and the named group
     let expanded: HashSet<ExpandKey> = [
         ExpandKey::Node(0),
         ExpandKey::Worktree(0, 0),
@@ -337,17 +408,8 @@ fn visible_rows_workspace_with_worktrees() {
     ]
     .into();
 
-    let rows = snapshots::build_visible_rows(&to_items(&[root]), &expanded);
+    let rows = snapshots::build_visible_rows(&[root], &expanded);
 
-    // Expected:
-    // 0: Root(0)
-    // 1: WorktreeEntry(0, 0)
-    // 2: WorktreeMember(0, 0, 0, 0)  — inline member a
-    // 3: WorktreeMember(0, 0, 0, 1)  — inline member b
-    // 4: WorktreeEntry(0, 1)
-    // 5: WorktreeGroupHeader(0, 1, 0) — "crates"
-    // 6: WorktreeMember(0, 1, 0, 0)
-    // 7: WorktreeMember(0, 1, 0, 1)
     assert_eq!(rows.len(), 8, "expected 8 rows, got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { node_index: 0 }));
     assert!(matches!(
@@ -395,49 +457,47 @@ fn visible_rows_workspace_with_worktrees() {
 #[test]
 fn visible_rows_non_workspace_worktrees() {
     let build_root = || {
-        let mut root = make_node(make_project(Some("app"), "~/app"));
-        let mut wt0 = make_node(make_project(Some("app"), "~/app"));
-        wt0.project.worktree_name = Some("app".to_string());
-        let mut wt1 = make_node(make_project(Some("app"), "~/app_feat"));
-        wt1.project.worktree_name = Some("app_feat".to_string());
-        root.worktrees = vec![wt0, wt1];
-        root
+        make_package_worktrees_item(
+            make_package_raw(Some("app"), "~/app", None),
+            vec![make_package_raw(
+                Some("app"),
+                "~/app_feat",
+                Some("app_feat"),
+            )],
+        )
     };
 
-    // Standalone project with worktrees — flat, not expandable
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&to_items(&[build_root()]), &expanded);
+    let rows = snapshots::build_visible_rows(&[build_root()], &expanded);
 
-    // Root + 2 flat worktree entries
     assert_eq!(rows.len(), 3, "got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { .. }));
     assert!(matches!(rows[1], VisibleRow::WorktreeEntry { .. }));
     assert!(matches!(rows[2], VisibleRow::WorktreeEntry { .. }));
 
-    // Expanding a worktree with no groups produces no additional rows
     let expanded2: HashSet<ExpandKey> = [ExpandKey::Node(0), ExpandKey::Worktree(0, 0)].into();
-    let rows2 = snapshots::build_visible_rows(&to_items(&[build_root()]), &expanded2);
+    let rows2 = snapshots::build_visible_rows(&[build_root()], &expanded2);
     assert_eq!(rows2.len(), 3, "no extra rows for non-workspace worktree");
 }
 
 #[test]
 fn worktree_section_collapses_when_one_dismissed() {
-    let mut root = make_node(make_project(Some("app"), "~/app"));
-    let mut wt0 = make_node(make_project(Some("app"), "~/app"));
-    wt0.project.worktree_name = Some("app".to_string());
-    let mut wt1 = make_node(make_project(Some("app"), "~/app_feat"));
-    wt1.project.worktree_name = Some("app_feat".to_string());
-    root.worktrees = vec![wt0, wt1];
+    let root = make_package_worktrees_item(
+        make_package_raw(Some("app"), "~/app", None),
+        vec![make_package_raw(
+            Some("app"),
+            "~/app_feat",
+            Some("app_feat"),
+        )],
+    );
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
 
-    // Both worktrees alive: section shows
-    let items = to_items(&[root.clone()]);
+    let items = vec![root.clone()];
     let rows = snapshots::build_visible_rows(&items, &expanded);
     assert_eq!(rows.len(), 3, "root + 2 worktree entries");
 
-    // One worktree dismissed: set visibility on the item
-    let mut items = to_items(&[root]);
+    let mut items = vec![root];
     if let ProjectListItem::PackageWorktrees(ref mut wtg) = items[0] {
         wtg.linked_mut()[0].set_visibility(Dismissed);
     }
@@ -448,18 +508,16 @@ fn worktree_section_collapses_when_one_dismissed() {
 
 #[test]
 fn worktree_count_uses_visibility() {
-    // This tests the `live_worktree_count_for_item` query method.
-    // With two worktrees, count is 2. After dismissing one, it drops to 0.
-    let mut root = make_node(make_project(Some("app"), "~/app"));
-    let mut wt0 = make_node(make_project(Some("app"), "~/app"));
-    wt0.project.worktree_name = Some("app".to_string());
-    let mut wt1 = make_node(make_project(Some("app"), "~/app_feat"));
-    wt1.project.worktree_name = Some("app_feat".to_string());
-    root.worktrees = vec![wt0, wt1];
+    let root = make_package_worktrees_item(
+        make_package_raw(Some("app"), "~/app", None),
+        vec![make_package_raw(
+            Some("app"),
+            "~/app_feat",
+            Some("app_feat"),
+        )],
+    );
 
-    let items = to_items(&[root]);
-
-    // Both alive: worktree group has primary + 1 linked = 2 visible
+    let items = vec![root];
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
     let rows = snapshots::build_visible_rows(&items, &expanded);
     assert_eq!(rows.len(), 3, "root + 2 worktree entries");
@@ -467,17 +525,17 @@ fn worktree_count_uses_visibility() {
 
 #[test]
 fn visible_rows_workspace_no_worktrees() {
-    // Workspace with groups, no worktrees — regression test
-    let member_a = make_project(Some("a"), "~/ws/a");
-    let member_b = make_project(Some("b"), "~/ws/b");
-    let mut root = make_node(make_project(None, "~/ws"));
-    root.groups = vec![LegacyMemberGroup {
-        name:    String::new(),
-        members: vec![member_a, member_b],
-    }];
+    let root = make_workspace_with_members(
+        None,
+        "~/ws",
+        vec![inline_group(vec![
+            make_member(Some("a"), "~/ws/a"),
+            make_member(Some("b"), "~/ws/b"),
+        ])],
+    );
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&to_items(&[root]), &expanded);
+    let rows = snapshots::build_visible_rows(&[root], &expanded);
 
     // Root + 2 inline members
     assert_eq!(rows.len(), 3, "got: {rows:?}");
@@ -500,17 +558,22 @@ fn visible_rows_workspace_no_worktrees() {
 
 #[test]
 fn visible_rows_include_vendored_children() {
-    let member = make_project(Some("member"), "~/ws/member");
-    let vendored = make_project(Some("vendored"), "~/ws/vendor/helper");
-    let mut root = make_node(make_project(None, "~/ws"));
-    root.groups = vec![LegacyMemberGroup {
-        name:    String::new(),
-        members: vec![member],
-    }];
-    root.vendored = vec![vendored];
+    let ws = Project::<Workspace>::new(
+        PathBuf::from("~/ws"),
+        None,
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        vec![inline_group(vec![make_member(
+            Some("member"),
+            "~/ws/member",
+        )])],
+        vec![make_member(Some("vendored"), "~/ws/vendor/helper")],
+        None,
+        None,
+    );
+    let root = ProjectListItem::Workspace(ws);
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&to_items(&[root]), &expanded);
+    let rows = snapshots::build_visible_rows(&[root], &expanded);
 
     assert_eq!(rows.len(), 3, "got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -527,7 +590,7 @@ fn visible_rows_include_vendored_children() {
 #[test]
 fn lint_runtime_waits_for_scan_completion() {
     let project = make_project(Some("demo"), "~/demo");
-    let path = project.path.clone();
+    let path = project.display_path();
     let mut app = make_app(&[project]);
 
     assert!(app.lint_runtime_projects_snapshot().is_empty());
@@ -540,63 +603,58 @@ fn lint_runtime_waits_for_scan_completion() {
 
 #[test]
 fn ci_runs_stay_on_owner_rows_not_workspace_members() {
-    let workspace = make_project(Some("ws"), "~/ws");
+    let workspace = make_workspace_project(Some("ws"), "~/ws");
     let member = make_project(Some("core"), "~/ws/core");
-
-    let mut root = make_node(workspace.clone());
-    root.groups = vec![LegacyMemberGroup {
-        name:    String::new(),
-        members: vec![member.clone()],
-    }];
-
-    let mut app = make_app(&[workspace.clone(), member.clone()]);
-    apply_nodes(&mut app, &[root]);
-
-    app.insert_ci_runs(&workspace.path, vec![make_ci_run(1, Conclusion::Success)]);
-
-    assert_eq!(
-        app.ci_for(Path::new(&workspace.abs_path)),
-        Some(Conclusion::Success)
+    let root = make_workspace_with_members(
+        Some("ws"),
+        "~/ws",
+        vec![inline_group(vec![make_member(Some("core"), "~/ws/core")])],
     );
-    assert!(app.ci_state.contains_key(Path::new(&workspace.path)));
-    assert_eq!(app.ci_for(Path::new(&member.abs_path)), None);
-    assert!(app.ci_state_for(Path::new(&member.abs_path)).is_none());
-    assert!(!app.ci_state.contains_key(Path::new(&member.path)));
+
+    let mut app = make_app(&[workspace, member]);
+    apply_items(&mut app, &[root]);
+
+    app.insert_ci_runs("~/ws", vec![make_ci_run(1, Conclusion::Success)]);
+
+    assert_eq!(app.ci_for(Path::new("~/ws")), Some(Conclusion::Success));
+    assert!(app.ci_state.contains_key(Path::new("~/ws")));
+    assert_eq!(app.ci_for(Path::new("~/ws/core")), None);
+    assert!(app.ci_state_for(Path::new("~/ws/core")).is_none());
+    assert!(!app.ci_state.contains_key(Path::new("~/ws/core")));
 }
 
 #[test]
 fn non_owner_member_ignores_stale_ci_state_and_cannot_fetch() {
-    let workspace = make_project(Some("ws"), "~/ws");
+    let workspace = make_workspace_project(Some("ws"), "~/ws");
     let member = make_project(Some("core"), "~/ws/core");
-
-    let mut root = make_node(workspace.clone());
-    root.groups = vec![LegacyMemberGroup {
-        name:    String::new(),
-        members: vec![member.clone()],
-    }];
+    let root = make_workspace_with_members(
+        Some("ws"),
+        "~/ws",
+        vec![inline_group(vec![make_member(Some("core"), "~/ws/core")])],
+    );
 
     let mut app = make_app(&[workspace, member.clone()]);
-    apply_nodes(&mut app, &[root]);
+    apply_items(&mut app, &[root]);
     app.expanded.insert(ExpandKey::Node(0));
     app.dirty.rows.mark_dirty();
     app.ensure_visible_rows_cached();
-    app.select_project_in_tree(&member.path);
+    app.select_project_in_tree(&member.display_path());
 
     app.ci_state.insert(
-        PathBuf::from(&member.path),
+        member.path().to_path_buf(),
         CiState::Loaded {
             runs:      vec![make_ci_run(2, Conclusion::Failure)],
             exhausted: false,
         },
     );
     app.git_info.insert(
-        PathBuf::from(&member.path),
+        member.path().to_path_buf(),
         make_git_info(Some("https://github.com/natepiano/demo")),
     );
 
-    assert!(app.ci_state_for(Path::new(&member.abs_path)).is_none());
-    assert_eq!(app.ci_for(Path::new(&member.abs_path)), None);
-    assert!(!app.bottom_panel_available(Path::new(&member.abs_path)));
+    assert!(app.ci_state_for(member.path()).is_none());
+    assert_eq!(app.ci_for(member.path()), None);
+    assert!(!app.bottom_panel_available(member.path()));
 
     crate::tui::detail::handle_ci_runs_key(
         &mut app,
@@ -607,25 +665,29 @@ fn non_owner_member_ignores_stale_ci_state_and_cannot_fetch() {
 
 #[test]
 fn ci_rollup_uses_only_root_and_immediate_worktrees() {
-    let mut root = make_node(make_project(Some("ws"), "~/ws"));
     let member = make_project(Some("core"), "~/ws/core");
-    root.groups = vec![LegacyMemberGroup {
-        name:    String::new(),
-        members: vec![member.clone()],
-    }];
 
-    let mut feature = make_node(make_project(Some("ws_feat"), "~/ws_feat"));
-    feature.project.worktree_name = Some("ws_feat".to_string());
-    feature.groups = vec![LegacyMemberGroup {
-        name:    String::new(),
-        members: vec![make_project(Some("feat_core"), "~/ws_feat/core")],
-    }];
-    let feature_path = feature.project.path.clone();
-    root.worktrees = vec![feature];
+    let primary_ws = make_workspace_raw(
+        Some("ws"),
+        "~/ws",
+        vec![inline_group(vec![make_member(Some("core"), "~/ws/core")])],
+        None,
+    );
+    let linked_ws = make_workspace_raw(
+        Some("ws_feat"),
+        "~/ws_feat",
+        vec![inline_group(vec![make_member(
+            Some("feat_core"),
+            "~/ws_feat/core",
+        )])],
+        Some("ws_feat"),
+    );
+    let root = make_workspace_worktrees_item(primary_ws, vec![linked_ws]);
+    let root_path = "~/ws".to_string();
+    let feature_path = "~/ws_feat".to_string();
 
-    let mut app = make_app(&[root.project.clone(), member.clone()]);
-    let root_path = root.project.path.clone();
-    apply_nodes(&mut app, &[root]);
+    let mut app = make_app(&[make_workspace_project(Some("ws"), "~/ws"), member.clone()]);
+    apply_items(&mut app, &[root]);
 
     app.ci_state.insert(
         PathBuf::from(&root_path),
@@ -642,7 +704,7 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
         },
     );
     app.ci_state.insert(
-        PathBuf::from(&member.path),
+        member.path().to_path_buf(),
         CiState::Loaded {
             runs:      vec![make_ci_run(5, Conclusion::Success)],
             exhausted: false,
@@ -654,7 +716,7 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
         app.ci_for_item(&app.project_list_items[0]),
         Some(Conclusion::Failure)
     );
-    assert!(app.ci_state_for(Path::new(&member.abs_path)).is_none());
+    assert!(app.ci_state_for(member.path()).is_none());
 }
 
 #[test]
@@ -662,7 +724,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
     app.git_info.insert(
-        PathBuf::from(&project.path),
+        project.path().to_path_buf(),
         GitInfo {
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),
@@ -677,7 +739,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
         },
     );
     app.ci_state.insert(
-        PathBuf::from(&project.path),
+        project.path().to_path_buf(),
         CiState::Loaded {
             runs:      vec![
                 CiRun {
@@ -693,10 +755,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
         },
     );
 
-    assert_eq!(
-        app.ci_for(Path::new(&project.abs_path)),
-        Some(Conclusion::Failure)
-    );
+    assert_eq!(app.ci_for(project.path()), Some(Conclusion::Failure));
 }
 
 #[test]
@@ -718,7 +777,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     assert!(app.lint_toast.is_none());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project_a.path.clone(),
+        path:   project_a.display_path(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
     });
 
@@ -729,18 +788,21 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .as_ref()
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
-    assert!(expected.contains(Path::new(&project_a.path)));
+    assert!(expected.contains(Path::new(&project_a.display_path())));
     assert!(
         !app.scan
             .startup_phases
             .lint_seen_terminal
-            .contains(Path::new(&project_a.path))
+            .contains(Path::new(&project_a.display_path()))
     );
-    assert!(app.running_lint_paths.contains(Path::new(&project_a.path)));
+    assert!(
+        app.running_lint_paths
+            .contains(Path::new(&project_a.display_path()))
+    );
     assert!(app.lint_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project_a.path,
+        path:   project_a.display_path(),
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
 
@@ -777,20 +839,20 @@ fn lint_toast_reappears_for_new_running_lints() {
     app.scan.phase = ScanPhase::Complete;
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project.path.clone(),
+        path:   project.display_path(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
     });
     let first_toast = app.lint_toast;
     assert!(first_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project.path.clone(),
+        path:   project.display_path(),
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
     assert!(app.lint_toast.is_none());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project.path,
+        path:   project.display_path(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
     });
     assert!(app.lint_toast.is_some());
@@ -799,20 +861,22 @@ fn lint_toast_reappears_for_new_running_lints() {
 
 #[test]
 fn collapse_all_anchors_member_selection_to_root() {
-    let workspace = make_project(Some("hana"), "~/rust/hana");
+    let workspace = make_workspace_project(Some("hana"), "~/rust/hana");
     let member = make_project(Some("hana_core"), "~/rust/hana/crates/hana_core");
-
-    let mut root = make_node(workspace.clone());
-    root.groups = vec![LegacyMemberGroup {
-        name:    String::new(),
-        members: vec![member.clone()],
-    }];
+    let root = make_workspace_with_members(
+        Some("hana"),
+        "~/rust/hana",
+        vec![inline_group(vec![make_member(
+            Some("hana_core"),
+            "~/rust/hana/crates/hana_core",
+        )])],
+    );
 
     let mut app = make_app(&[workspace, member.clone()]);
-    apply_nodes(&mut app, &[root]);
+    apply_items(&mut app, &[root]);
     app.expanded.insert(ExpandKey::Node(0));
     app.dirty.rows.mark_dirty();
-    app.select_project_in_tree(&member.path);
+    app.select_project_in_tree(&member.display_path());
 
     app.collapse_all();
 
@@ -821,92 +885,101 @@ fn collapse_all_anchors_member_selection_to_root() {
 
 #[test]
 fn expand_all_preserves_selected_project_path() {
-    let workspace = make_project(Some("hana"), "~/rust/hana");
+    let workspace = make_workspace_project(Some("hana"), "~/rust/hana");
     let member = make_project(Some("hana_core"), "~/rust/hana/crates/hana_core");
-
-    let mut root = make_node(workspace.clone());
-    root.groups = vec![LegacyMemberGroup {
-        name:    String::new(),
-        members: vec![member.clone()],
-    }];
+    let root = make_workspace_with_members(
+        Some("hana"),
+        "~/rust/hana",
+        vec![inline_group(vec![make_member(
+            Some("hana_core"),
+            "~/rust/hana/crates/hana_core",
+        )])],
+    );
 
     let mut app = make_app(&[workspace, member.clone()]);
-    apply_nodes(&mut app, &[root]);
-    app.select_project_in_tree(&member.path);
+    apply_items(&mut app, &[root]);
+    app.select_project_in_tree(&member.display_path());
     app.collapse_all();
 
     app.expand_all();
 
     assert_eq!(
         app.selected_display_path().as_deref(),
-        Some(member.path.as_str())
+        Some(member.display_path().as_str())
     );
 }
 
 #[test]
 fn lint_runtime_snapshot_uses_workspace_root_not_members() {
-    let mut workspace = make_project(Some("hana"), "~/rust/hana");
-    workspace.is_workspace = WorkspaceStatus::Workspace;
+    let workspace = make_workspace_project(Some("hana"), "~/rust/hana");
     let member_a = make_project(Some("hana_core"), "~/rust/hana/crates/hana_core");
     let member_b = make_project(Some("hana_ui"), "~/rust/hana/crates/hana_ui");
+    let root = make_workspace_with_members(
+        Some("hana"),
+        "~/rust/hana",
+        vec![inline_group(vec![
+            make_member(Some("hana_core"), "~/rust/hana/crates/hana_core"),
+            make_member(Some("hana_ui"), "~/rust/hana/crates/hana_ui"),
+        ])],
+    );
 
-    let mut root = make_node(workspace.clone());
-    root.groups = vec![LegacyMemberGroup {
-        name:    String::new(),
-        members: vec![member_a.clone(), member_b.clone()],
-    }];
-
-    let mut app = make_app(&[workspace.clone(), member_a, member_b]);
-    apply_nodes(&mut app, &[root]);
+    let mut app = make_app(&[workspace, member_a, member_b]);
+    apply_items(&mut app, &[root]);
     app.scan.phase = ScanPhase::Complete;
 
     let projects = app.lint_runtime_projects_snapshot();
     assert_eq!(projects.len(), 1);
-    assert_eq!(projects[0].project_path, workspace.path);
+    assert_eq!(projects[0].project_path, "~/rust/hana");
 }
 
 #[test]
 fn lint_runtime_snapshot_deduplicates_primary_worktree_path() {
-    let root_project = make_project(Some("ws"), "~/ws");
-    let mut root = make_node(root_project.clone());
+    let root_item = make_package_worktrees_item(
+        make_package_raw(Some("ws"), "~/ws", None),
+        vec![make_package_raw(
+            Some("ws_feat"),
+            "~/ws_feat",
+            Some("ws_feat"),
+        )],
+    );
+    let feature_item = make_project(Some("ws_feat"), "~/ws_feat");
 
-    let mut primary = make_node(root_project.clone());
-    primary.project.worktree_name = Some("ws".to_string());
-
-    let mut feature = make_node(make_project(Some("ws_feat"), "~/ws_feat"));
-    feature.project.worktree_name = Some("ws_feat".to_string());
-
-    root.worktrees = vec![primary, feature.clone()];
-
-    let mut app = make_app(&[root_project.clone(), feature.project.clone()]);
-    apply_nodes(&mut app, &[root]);
+    let mut app = make_app(&[make_project(Some("ws"), "~/ws"), feature_item]);
+    apply_items(&mut app, &[root_item]);
     app.scan.phase = ScanPhase::Complete;
 
     let projects = app.lint_runtime_projects_snapshot();
     assert_eq!(projects.len(), 2);
-    assert_eq!(projects[0].project_path, root_project.path);
-    assert_eq!(projects[1].project_path, feature.project.path);
+    assert_eq!(projects[0].project_path, "~/ws");
+    assert_eq!(projects[1].project_path, "~/ws_feat");
 }
 
 #[test]
 fn vendored_path_dependency_becomes_cargo_active() {
-    let root_project = make_project(Some("app"), "~/app");
+    let root_item = {
+        let pkg = Project::<Package>::new(
+            PathBuf::from("~/app"),
+            Some("app".to_string()),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            vec![make_member(Some("helper"), "~/app/vendor/helper")],
+            None,
+            None,
+        );
+        ProjectListItem::Package(pkg)
+    };
     let vendored = make_project(Some("helper"), "~/app/vendor/helper");
 
-    let mut root = make_node(root_project.clone());
-    root.vendored = vec![vendored.clone()];
+    let mut app = make_app(&[make_project(Some("app"), "~/app"), vendored]);
+    apply_items(&mut app, &[root_item]);
 
-    let mut app = make_app(&[root_project, vendored.clone()]);
-    apply_nodes(&mut app, &[root]);
-
-    assert!(app.is_vendored_path(&vendored.path));
-    assert!(app.is_cargo_active_path(Path::new(&vendored.path)));
+    assert!(app.is_vendored_path("~/app/vendor/helper"));
+    assert!(app.is_cargo_active_path(Path::new("~/app/vendor/helper")));
 }
 
 #[test]
 fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
     let project = make_project(Some("demo"), "~/demo");
-    let path = project.path.clone();
+    let path = project.display_path();
     let mut app = make_app(std::slice::from_ref(&project));
 
     app.git_info.insert(
@@ -927,11 +1000,11 @@ fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
 
     app.git_path_states
         .insert(PathBuf::from(&path), GitPathState::Untracked);
-    assert!(app.git_sync(Path::new(&project.abs_path)).is_empty());
+    assert!(app.git_sync(project.path()).is_empty());
 
     app.git_path_states
         .insert(PathBuf::from(&path), GitPathState::Ignored);
-    assert!(app.git_sync(Path::new(&project.abs_path)).is_empty());
+    assert!(app.git_sync(project.path()).is_empty());
 }
 
 #[test]
@@ -942,18 +1015,31 @@ fn name_width_with_gutter_reserves_space_before_lint() {
 
 #[test]
 fn tabbable_panes_follow_canonical_order() {
-    let mut project = make_project(Some("demo"), "~/demo");
-    project.examples = vec![ExampleGroup {
-        category: String::new(),
-        names:    vec!["example".to_string()],
-    }];
+    let project = ProjectListItem::Package(Project::<Package>::new(
+        PathBuf::from("~/demo"),
+        Some("demo".to_string()),
+        Cargo::new(
+            None,
+            None,
+            Vec::new(),
+            vec![ExampleGroup {
+                category: String::new(),
+                names:    vec!["example".to_string()],
+            }],
+            Vec::new(),
+            0,
+        ),
+        Vec::new(),
+        None,
+        None,
+    ));
 
     let mut app = make_app(std::slice::from_ref(&project));
     app.toasts = ToastManager::default();
     app.toast_pane.set_len(0);
     app.scan.phase = ScanPhase::Complete;
     app.git_info.insert(
-        PathBuf::from(&project.path),
+        project.path().to_path_buf(),
         GitInfo {
             origin:              GitOrigin::Clone,
             branch:              None,
@@ -1037,13 +1123,26 @@ fn project_refresh_updates_selected_tree_project_targets() {
     assert_eq!(example_count, Some(0));
     assert!(!app.tabbable_panes().contains(&PaneId::Targets));
 
-    let mut refreshed = project;
-    refreshed.examples = vec![ExampleGroup {
-        category: String::new(),
-        names:    vec!["tracked_row_paths".to_string()],
-    }];
+    let refreshed = ProjectListItem::Package(Project::<Package>::new(
+        PathBuf::from("~/demo"),
+        Some("demo".to_string()),
+        Cargo::new(
+            None,
+            None,
+            Vec::new(),
+            vec![ExampleGroup {
+                category: String::new(),
+                names:    vec!["tracked_row_paths".to_string()],
+            }],
+            Vec::new(),
+            0,
+        ),
+        Vec::new(),
+        None,
+        None,
+    ));
 
-    assert!(app.handle_project_refreshed(&refreshed));
+    assert!(app.handle_project_refreshed(refreshed));
     wait_for_tree_build(&mut app);
     app.sync_selected_project();
 
@@ -1060,7 +1159,7 @@ fn project_refresh_updates_selected_tree_project_targets() {
 fn first_non_empty_tree_build_focuses_project_list() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    apply_nodes(&mut app, &[make_node(project)]);
+    apply_items(&mut app, &[project]);
 
     assert_eq!(app.focused_pane, PaneId::ProjectList);
     assert_eq!(app.list_state.selected(), Some(0));
@@ -1075,9 +1174,7 @@ fn initial_disk_batch_count_groups_nested_projects_under_one_root() {
         make_project(Some("hana"), "~/rust/hana"),
         make_project(Some("hana_core"), "~/rust/hana/crates/hana"),
     ]
-    .iter()
-    .map(crate::scan::legacy_to_project_list_item)
-    .collect();
+    .to_vec();
 
     assert_eq!(snapshots::initial_disk_batch_count(&projects), 2);
 }
@@ -1166,27 +1263,25 @@ fn zero_byte_update_marks_deleted_child_member() {
     let member_dir = workspace_dir.join("crates").join("clay-layout");
     std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
 
-    let mut workspace = make_project(Some("hana"), "~/rust/hana");
-    workspace.abs_path = workspace_dir.to_string_lossy().to_string();
-    workspace.is_workspace = WorkspaceStatus::Workspace;
+    let ws_path = workspace_dir.to_string_lossy().to_string();
+    let member_path = member_dir.to_string_lossy().to_string();
+    let workspace = make_workspace_project(Some("hana"), &ws_path);
+    let member = make_project(Some("clay-layout"), &member_path);
 
-    let mut member = make_project(Some("clay-layout"), "~/rust/hana/crates/clay-layout");
-    member.abs_path = member_dir.to_string_lossy().to_string();
+    let root = make_workspace_with_members(
+        Some("hana"),
+        &ws_path,
+        vec![inline_group(vec![make_member(
+            Some("clay-layout"),
+            &member_path,
+        )])],
+    );
 
-    let mut root = make_node(workspace.clone());
-    root.groups = vec![LegacyMemberGroup {
-        name:    String::new(),
-        members: vec![member.clone()],
-    }];
-
-    let mut app = make_app(&[workspace, member.clone()]);
-    apply_nodes(&mut app, &[root]);
+    let mut app = make_app(&[workspace, member]);
+    apply_items(&mut app, &[root]);
 
     std::fs::remove_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
-    app.handle_disk_usage(&member.path, 0);
-
-    // TODO: re-enable after full path migration
-    // assert!(app.is_deleted(&member.path));
+    app.handle_disk_usage(&member_path, 0);
 }
 
 #[test]
@@ -1195,9 +1290,15 @@ fn disk_updates_skip_git_path_refresh_during_scan() {
     let abs_path = tmp.path().join("demo");
     std::fs::create_dir_all(&abs_path).unwrap_or_else(|_| std::process::abort());
 
-    let mut project = make_project(Some("demo"), "~/demo");
-    project.abs_path = abs_path.to_string_lossy().to_string();
-    let abs_str = project.abs_path.clone();
+    let abs_str = abs_path.to_string_lossy().to_string();
+    let project = ProjectListItem::Package(Project::<Package>::new(
+        abs_path,
+        Some("demo".to_string()),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Vec::new(),
+        None,
+        None,
+    ));
     let mut app = make_app(&[project]);
 
     app.handle_disk_usage(&abs_str, 123);
@@ -1223,18 +1324,14 @@ fn bottom_panel_changes_input_context_for_lower_pane() {
 
 #[test]
 fn lint_rollups_distinguish_root_from_primary_worktree() {
-    let mut root = make_node(make_project(None, "~/ws"));
-    let mut primary = make_node(make_project(None, "~/ws"));
-    primary.project.worktree_name = Some("ws".to_string());
+    let root = make_package_worktrees_item(
+        make_package_raw(None, "~/ws", None),
+        vec![make_package_raw(None, "~/ws_feat", Some("ws_feat"))],
+    );
 
-    let mut feature = make_node(make_project(None, "~/ws_feat"));
-    feature.project.worktree_name = Some("ws_feat".to_string());
-
-    root.worktrees = vec![primary, feature];
-
-    let mut app = make_app(&[root.project.clone()]);
+    let mut app = make_app(&[make_project(None, "~/ws")]);
     app.current_config.lint.enabled = true;
-    apply_nodes(&mut app, &[root]);
+    apply_items(&mut app, &[root]);
     app.lint_status.insert(
         PathBuf::from("~/ws"),
         LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")),
@@ -1267,17 +1364,15 @@ fn lint_rollups_distinguish_root_from_primary_worktree() {
 
 #[test]
 fn lint_rollup_prefers_running_root_over_member_history() {
-    let mut root = make_node(make_project(None, "~/ws"));
-    let member = make_project(Some("a"), "~/ws/a");
+    let root = make_workspace_with_members(
+        None,
+        "~/ws",
+        vec![inline_group(vec![make_member(Some("a"), "~/ws/a")])],
+    );
 
-    root.groups = vec![LegacyMemberGroup {
-        name:    String::new(),
-        members: vec![member],
-    }];
-
-    let mut app = make_app(&[root.project.clone()]);
+    let mut app = make_app(&[make_workspace_project(None, "~/ws")]);
     app.current_config.lint.enabled = true;
-    apply_nodes(&mut app, &[root]);
+    apply_items(&mut app, &[root]);
     app.lint_status.insert(
         PathBuf::from("~/ws"),
         LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")),
@@ -1296,18 +1391,14 @@ fn lint_rollup_prefers_running_root_over_member_history() {
 
 #[test]
 fn lint_rollup_prefers_running_worktree_over_failed_root_history() {
-    let mut root = make_node(make_project(None, "~/ws"));
-    let mut primary = make_node(make_project(None, "~/ws"));
-    primary.project.worktree_name = Some("ws".to_string());
+    let root = make_package_worktrees_item(
+        make_package_raw(None, "~/ws", None),
+        vec![make_package_raw(None, "~/ws_feat", Some("ws_feat"))],
+    );
 
-    let mut feature = make_node(make_project(None, "~/ws_feat"));
-    feature.project.worktree_name = Some("ws_feat".to_string());
-
-    root.worktrees = vec![primary, feature];
-
-    let mut app = make_app(&[root.project.clone()]);
+    let mut app = make_app(&[make_project(None, "~/ws")]);
     app.current_config.lint.enabled = true;
-    apply_nodes(&mut app, &[root]);
+    apply_items(&mut app, &[root]);
     app.lint_status.insert(
         PathBuf::from("~/ws"),
         LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
@@ -1333,29 +1424,23 @@ fn lint_rollup_prefers_running_worktree_over_failed_root_history() {
 
 #[test]
 fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
-    let mut root = make_node(make_project(None, "~/ws"));
-    let member_a = make_project(Some("a"), "~/ws/a");
-    let member_b = make_project(Some("b"), "~/ws_feat/b");
+    let primary_ws = make_workspace_raw(
+        None,
+        "~/ws",
+        vec![inline_group(vec![make_member(Some("a"), "~/ws/a")])],
+        None,
+    );
+    let linked_ws = make_workspace_raw(
+        None,
+        "~/ws_feat",
+        vec![inline_group(vec![make_member(Some("b"), "~/ws_feat/b")])],
+        Some("ws_feat"),
+    );
+    let root = make_workspace_worktrees_item(primary_ws, vec![linked_ws]);
 
-    let mut primary = make_node(make_project(None, "~/ws"));
-    primary.project.worktree_name = Some("ws".to_string());
-    primary.groups = vec![LegacyMemberGroup {
-        name:    String::new(),
-        members: vec![member_a],
-    }];
-
-    let mut feature = make_node(make_project(None, "~/ws_feat"));
-    feature.project.worktree_name = Some("ws_feat".to_string());
-    feature.groups = vec![LegacyMemberGroup {
-        name:    String::new(),
-        members: vec![member_b],
-    }];
-
-    root.worktrees = vec![primary, feature];
-
-    let mut app = make_app(&[root.project.clone()]);
+    let mut app = make_app(&[make_workspace_project(None, "~/ws")]);
     app.current_config.lint.enabled = true;
-    apply_nodes(&mut app, &[root]);
+    apply_items(&mut app, &[root]);
     app.expanded.insert(ExpandKey::Node(0));
     app.dirty.rows.mark_dirty();
     app.ensure_visible_rows_cached();
@@ -1393,16 +1478,13 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
 
 #[test]
 fn disk_rollup_deduplicates_primary_worktree_path() {
-    let mut root = make_node(make_project(None, "~/ws"));
-    let mut primary = make_node(make_project(None, "~/ws"));
-    primary.project.worktree_name = Some("ws".to_string());
-    let mut feature = make_node(make_project(None, "~/ws_feat"));
-    feature.project.worktree_name = Some("ws_feat".to_string());
-    root.worktrees = vec![primary, feature];
+    let root = make_package_worktrees_item(
+        make_package_raw(None, "~/ws", None),
+        vec![make_package_raw(None, "~/ws_feat", Some("ws_feat"))],
+    );
 
-    let root_project = root.project.clone();
-    let mut app = make_app(&[root_project]);
-    apply_nodes(&mut app, &[root]);
+    let mut app = make_app(&[make_project(None, "~/ws")]);
+    apply_items(&mut app, &[root]);
     app.disk_usage.insert(PathBuf::from("~/ws"), 15);
     app.disk_usage.insert(PathBuf::from("~/ws_feat"), 21);
 
@@ -1413,5 +1495,73 @@ fn disk_rollup_deduplicates_primary_worktree_path() {
     assert_eq!(
         app.formatted_disk_for_item(&app.project_list_items[0]),
         crate::tui::render::format_bytes(36)
+    );
+}
+
+#[test]
+fn handle_project_discovered_deduplicates_by_path() {
+    let mut app = make_app(&[]);
+
+    let pkg1 = ProjectListItem::Package(make_package_raw(Some("foo"), "/abs/foo", None));
+    let pkg2 = ProjectListItem::Package(make_package_raw(Some("foo"), "/abs/foo", None));
+    let pkg3 = ProjectListItem::Package(make_package_raw(Some("bar"), "/abs/bar", None));
+
+    assert!(app.handle_project_discovered(pkg1));
+    assert!(
+        !app.handle_project_discovered(pkg2),
+        "duplicate path should be rejected"
+    );
+    assert!(app.handle_project_discovered(pkg3));
+    assert_eq!(app.discovered_projects.len(), 2);
+}
+
+#[test]
+fn handle_project_discovered_does_not_allocate_per_comparison() {
+    // Regression test: dedup must compare stored PathBuf, not allocate
+    // display_path() strings. With 200 projects, the old O(N) string
+    // allocation approach would be measurably slow.
+    let mut app = make_app(&[]);
+    let start = std::time::Instant::now();
+    for i in 0..200 {
+        let path = format!("/abs/project_{i}");
+        let item = ProjectListItem::Package(make_package_raw(None, &path, None));
+        app.handle_project_discovered(item);
+    }
+    let elapsed = start.elapsed();
+    assert_eq!(app.discovered_projects.len(), 200);
+    // With PathBuf comparison this should be well under 100ms.
+    // With display_path() allocation it would be much slower.
+    assert!(
+        elapsed.as_millis() < 100,
+        "discovery of 200 projects took {elapsed:?} — possible display_path allocation regression"
+    );
+}
+
+#[test]
+fn is_deleted_does_not_allocate_display_paths() {
+    let mut app = make_app(&[]);
+    // Populate with 200 projects
+    for i in 0..200 {
+        let path = format!("/abs/project_{i}");
+        let item = ProjectListItem::Package(make_package_raw(None, &path, None));
+        app.discovered_projects.push(item.clone());
+        app.project_list_items.push(item);
+    }
+    // Mark one as deleted
+    app.project_list_items[100].set_visibility_by_path(
+        &app.project_list_items[100].display_path(),
+        crate::project::Visibility::Deleted,
+    );
+
+    let start = std::time::Instant::now();
+    for _ in 0..1000 {
+        let _ = app.is_deleted(&app.project_list_items[100].path().to_path_buf());
+    }
+    let elapsed = start.elapsed();
+    // 1000 lookups across 200 items should be well under 100ms with Path comparison.
+    // With display_path() allocation it would be much slower.
+    assert!(
+        elapsed.as_millis() < 100,
+        "1000 is_deleted calls took {elapsed:?} -- possible display_path allocation regression"
     );
 }

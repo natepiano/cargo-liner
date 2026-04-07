@@ -27,7 +27,6 @@ use crate::lint::LintStatus;
 use crate::lint::RegisterProjectRequest;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
-use crate::project::LegacyProject;
 use crate::project::Project;
 use crate::project::ProjectListItem;
 use crate::project::Visibility::Deleted;
@@ -523,9 +522,7 @@ impl App {
         }
         self.lint_runtime_root_entries()
             .into_iter()
-            .filter(|(path, _)| {
-                !self.is_deleted(&path.display().to_string()) && self.is_cargo_active_path(path)
-            })
+            .filter(|(path, _)| !self.is_deleted(path) && self.is_cargo_active_path(path))
             .map(|(abs_path, is_rust)| RegisterProjectRequest {
                 project_path: abs_path.display().to_string(),
                 abs_path,
@@ -838,16 +835,16 @@ impl App {
         self.builds.tree.active = Some(build_id);
         std::thread::spawn(move || {
             let started = Instant::now();
-            let nodes = scan::build_tree(&projects, &inline_dirs);
-            let flat_entries = scan::build_flat_entries(&nodes);
-            let project_list_items = scan::build_project_list(&nodes);
+            let input_count = projects.len();
+            let project_list_items = scan::build_tree(&projects, &inline_dirs);
+            let flat_entries = scan::build_flat_entries(&project_list_items);
             crate::perf_log::log_duration(
                 "tree_build",
                 started.elapsed(),
                 &format!(
                     "build_id={} projects={} items={} flat_entries={}",
                     build_id,
-                    projects.len(),
+                    input_count,
                     project_list_items.len(),
                     flat_entries.len()
                 ),
@@ -1377,8 +1374,7 @@ impl App {
         }
     }
 
-    pub(super) fn handle_project_discovered(&mut self, project: &LegacyProject) -> bool {
-        let item = crate::scan::legacy_to_project_list_item(project);
+    pub(super) fn handle_project_discovered(&mut self, item: ProjectListItem) -> bool {
         let display = item.display_path();
         if self
             .discovered_projects
@@ -1396,8 +1392,7 @@ impl App {
         true
     }
 
-    pub(super) fn handle_project_refreshed(&mut self, project: &LegacyProject) -> bool {
-        let item = crate::scan::legacy_to_project_list_item(project);
+    pub(super) fn handle_project_refreshed(&mut self, item: ProjectListItem) -> bool {
         let display = item.display_path();
         let updated = self
             .discovered_projects
@@ -1665,13 +1660,13 @@ impl App {
                 stars,
                 description,
             } => self.handle_repo_meta(&path, stars, description),
-            BackgroundMsg::ProjectDiscovered { project } => {
-                if self.handle_project_discovered(&project) {
+            BackgroundMsg::ProjectDiscovered { item } => {
+                if self.handle_project_discovered(item) {
                     return true;
                 }
             },
-            BackgroundMsg::ProjectRefreshed { project } => {
-                if self.handle_project_refreshed(&project) {
+            BackgroundMsg::ProjectRefreshed { item } => {
+                if self.handle_project_refreshed(item) {
                     return true;
                 }
             },

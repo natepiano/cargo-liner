@@ -30,8 +30,6 @@ use crate::http::HttpClient;
 use crate::keymap;
 use crate::lint;
 use crate::lint::RuntimeHandle;
-use crate::project::LegacyProject;
-use crate::project::ProjectLanguage::Rust;
 use crate::project::ProjectListItem;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -92,26 +90,9 @@ struct AppInit {
 }
 
 impl AppInit {
-    /// Filter legacy projects by non-rust inclusion. Used at init time before
-    /// `discovered_projects` exists.
-    fn filter_legacy_projects(
-        projects: &[LegacyProject],
-        include_non_rust: NonRustInclusion,
-    ) -> Vec<LegacyProject> {
-        if include_non_rust.includes_non_rust() {
-            projects.to_vec()
-        } else {
-            projects
-                .iter()
-                .filter(|project| project.is_rust == Rust)
-                .cloned()
-                .collect()
-        }
-    }
-
     fn new(
         scan_root: &Path,
-        projects: &[LegacyProject],
+        projects: &[ProjectListItem],
         bg_tx: &mpsc::Sender<BackgroundMsg>,
         cfg: &CargoPortConfig,
         http_client: &HttpClient,
@@ -128,10 +109,9 @@ impl AppInit {
             cfg.tui.include_dirs.clone(),
             http_client.clone(),
         );
-        let tree_projects = Self::filter_legacy_projects(projects, cfg.tui.include_non_rust);
-        let nodes = scan::build_tree(&tree_projects, &cfg.tui.inline_dirs);
-        let flat_entries = scan::build_flat_entries(&nodes);
-        let project_list_items = scan::build_project_list(&nodes);
+        let tree_input = App::filter_discovered_projects(projects, cfg.tui.include_non_rust);
+        let project_list_items = scan::build_tree(&tree_input, &cfg.tui.inline_dirs);
+        let flat_entries = scan::build_flat_entries(&project_list_items);
         let list_state = initial_list_state(&project_list_items);
 
         Self {
@@ -182,18 +162,13 @@ impl App {
     }
 
     /// Snapshot of discovered projects for tree builds.
-    /// Returns `Vec<LegacyProject>` because `build_tree` still takes that type.
-    /// Step 6 will eliminate this conversion.
-    pub fn tree_projects_snapshot(&self) -> Vec<LegacyProject> {
+    pub fn tree_projects_snapshot(&self) -> Vec<ProjectListItem> {
         Self::filter_discovered_projects(&self.discovered_projects, self.include_non_rust())
-            .iter()
-            .map(scan::project_list_item_to_legacy)
-            .collect()
     }
 
     pub fn new(
         scan_root: PathBuf,
-        projects: &[LegacyProject],
+        projects: &[ProjectListItem],
         bg_tx: mpsc::Sender<BackgroundMsg>,
         bg_rx: Receiver<BackgroundMsg>,
         cfg: &CargoPortConfig,
@@ -204,10 +179,7 @@ impl App {
         let builds = AsyncBuildState::new(BuildChannels::new());
         let init = AppInit::new(&scan_root, projects, &bg_tx, cfg, &http_client);
         let status_flash = init.lint_warning.clone().map(|w| (w, Instant::now()));
-        let discovered: Vec<ProjectListItem> = projects
-            .iter()
-            .map(scan::legacy_to_project_list_item)
-            .collect();
+        let discovered: Vec<ProjectListItem> = projects.to_vec();
         let mut app = Self::build_core(CoreInputs {
             scan_root,
             discovered,

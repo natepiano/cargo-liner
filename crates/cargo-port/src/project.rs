@@ -621,40 +621,6 @@ fn parse_remote_url(raw: &str) -> (Option<String>, Option<String>) {
     (None, None)
 }
 
-/// Whether a project has a `[workspace]` section in `Cargo.toml`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "bool", into = "bool")]
-pub(crate) enum WorkspaceStatus {
-    Workspace,
-    #[default]
-    Standalone,
-}
-
-impl From<bool> for WorkspaceStatus {
-    fn from(b: bool) -> Self { if b { Self::Workspace } else { Self::Standalone } }
-}
-
-impl From<WorkspaceStatus> for bool {
-    fn from(val: WorkspaceStatus) -> Self { matches!(val, WorkspaceStatus::Workspace) }
-}
-
-/// Whether a project is a Rust project (has `Cargo.toml`) or a non-Rust git repo.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "bool", into = "bool")]
-pub(crate) enum ProjectLanguage {
-    #[default]
-    Rust,
-    NonRust,
-}
-
-impl From<bool> for ProjectLanguage {
-    fn from(b: bool) -> Self { if b { Self::Rust } else { Self::NonRust } }
-}
-
-impl From<ProjectLanguage> for bool {
-    fn from(val: ProjectLanguage) -> Self { matches!(val, ProjectLanguage::Rust) }
-}
-
 /// Whether a project path lives inside a git repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GitRepoPresence {
@@ -694,44 +660,6 @@ pub(crate) struct ExampleGroup {
     pub names:    Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct LegacyProject {
-    /// Display path (e.g. `~/rust/bevy`).
-    pub path:                      String,
-    /// Absolute filesystem path for operations that need to access the project on disk.
-    #[serde(skip)]
-    pub abs_path:                  String,
-    pub name:                      Option<String>,
-    pub version:                   Option<String>,
-    pub description:               Option<String>,
-    pub worktree_name:             Option<String>,
-    /// Absolute path of the primary git repo root. Shared by primaries and their
-    /// worktrees, used as the identity key for grouping worktrees together.
-    #[serde(skip)]
-    pub worktree_primary_abs_path: Option<String>,
-    /// Whether this project has a `[workspace]` section.
-    #[serde(default)]
-    pub is_workspace:              WorkspaceStatus,
-    pub types:                     Vec<ProjectType>,
-    pub examples:                  Vec<ExampleGroup>,
-    pub benches:                   Vec<String>,
-    pub test_count:                usize,
-    /// Whether this project is a Rust project (has `Cargo.toml`).
-    #[serde(default)]
-    pub is_rust:                   ProjectLanguage,
-}
-
-impl LegacyProject {
-    /// Display name for the project list.
-    /// Falls back to the last path component for workspace-only projects.
-    pub(crate) fn display_name(&self) -> String {
-        self.name
-            .as_deref()
-            .unwrap_or_else(|| self.path.rsplit('/').next().unwrap_or(&self.path))
-            .to_string()
-    }
-}
-
 pub(crate) enum ProjectParseError {
     ReadError(io::Error),
     ParseError(toml::de::Error),
@@ -746,106 +674,95 @@ impl fmt::Display for ProjectParseError {
     }
 }
 
-impl LegacyProject {
-    pub(crate) fn from_cargo_toml(cargo_toml_path: &Path) -> Result<Self, ProjectParseError> {
-        let contents =
-            std::fs::read_to_string(cargo_toml_path).map_err(ProjectParseError::ReadError)?;
-        let table: Table = contents.parse().map_err(ProjectParseError::ParseError)?;
+/// Result of parsing a `Cargo.toml`: either a workspace or a standalone package.
+pub(crate) enum CargoProject {
+    Workspace(Project<Workspace>),
+    Package(Project<Package>),
+}
 
-        let project_dir = cargo_toml_path.parent().unwrap_or(cargo_toml_path);
+/// Parse a `Cargo.toml` and return either a workspace or a package project.
+pub(crate) fn from_cargo_toml(cargo_toml_path: &Path) -> Result<CargoProject, ProjectParseError> {
+    let contents =
+        std::fs::read_to_string(cargo_toml_path).map_err(ProjectParseError::ReadError)?;
+    let table: Table = contents.parse().map_err(ProjectParseError::ParseError)?;
 
-        let path_str = home_relative_path(project_dir);
+    let project_dir = cargo_toml_path.parent().unwrap_or(cargo_toml_path);
+    let abs_path = project_dir.to_path_buf();
 
-        let name = table
-            .get("package")
-            .and_then(|p| p.get("name"))
-            .and_then(|n| n.as_str())
-            .map(|s| (*s).to_string());
+    let name = table
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .map(|s| (*s).to_string());
 
-        let version = table
-            .get("package")
-            .and_then(|p| p.get("version"))
-            .map(|v| {
-                v.as_str().map_or_else(
-                    || {
-                        if v.get("workspace").and_then(Value::as_bool) == Some(true) {
-                            "(workspace)".to_string()
-                        } else {
-                            "-".to_string()
-                        }
-                    },
-                    |s| (*s).to_string(),
-                )
-            });
+    let version = table
+        .get("package")
+        .and_then(|p| p.get("version"))
+        .map(|v| {
+            v.as_str().map_or_else(
+                || {
+                    if v.get("workspace").and_then(Value::as_bool) == Some(true) {
+                        "(workspace)".to_string()
+                    } else {
+                        "-".to_string()
+                    }
+                },
+                |s| (*s).to_string(),
+            )
+        });
 
-        let description = table
-            .get("package")
-            .and_then(|p| p.get("description"))
-            .and_then(|n| n.as_str())
-            .map(|s| (*s).to_string());
+    let description = table
+        .get("package")
+        .and_then(|p| p.get("description"))
+        .and_then(|n| n.as_str())
+        .map(|s| (*s).to_string());
 
-        // A `.git` file (not directory) indicates a git worktree
-        let worktree_name = detect_worktree_name(project_dir);
-        let worktree_primary_abs_path = detect_worktree_primary(project_dir);
+    let worktree_name = detect_worktree_name(project_dir);
+    let worktree_primary_abs_path = detect_worktree_primary(project_dir).map(PathBuf::from);
 
-        let is_workspace = if table.get("workspace").is_some() {
-            WorkspaceStatus::Workspace
-        } else {
-            WorkspaceStatus::Standalone
-        };
-        let types = detect_types(&table, project_dir);
-        let examples = collect_examples(&table, project_dir);
-        let benches = collect_target_names(&table, project_dir, "bench", "benches");
-        let test_count = count_targets(&table, project_dir, "test", "tests");
-        let abs_path = project_dir.display().to_string();
+    let types = detect_types(&table, project_dir);
+    let examples = collect_examples(&table, project_dir);
+    let benches = collect_target_names(&table, project_dir, "bench", "benches");
+    let test_count = count_targets(&table, project_dir, "test", "tests");
 
-        Ok(Self {
-            path: path_str,
+    let cargo = Cargo::new(version, description, types, examples, benches, test_count);
+
+    if table.get("workspace").is_some() {
+        Ok(CargoProject::Workspace(Project::<Workspace>::new(
             abs_path,
             name,
-            version,
-            description,
+            cargo,
+            Vec::new(),
+            Vec::new(),
             worktree_name,
             worktree_primary_abs_path,
-            is_workspace,
-            types,
-            examples,
-            benches,
-            test_count,
-            is_rust: ProjectLanguage::Rust,
-        })
-    }
-
-    /// Create a project entry for a non-Rust git repository (no `Cargo.toml`).
-    pub(crate) fn from_git_dir(project_dir: &Path) -> Self {
-        let name = project_dir
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string());
-        let path = home_relative_path(project_dir);
-        let abs_path = project_dir.display().to_string();
-        let worktree_name = detect_worktree_name(project_dir);
-        let worktree_primary_abs_path = detect_worktree_primary(project_dir);
-
-        Self {
-            path,
+        )))
+    } else {
+        Ok(CargoProject::Package(Project::<Package>::new(
             abs_path,
             name,
-            version: None,
-            description: None,
+            cargo,
+            Vec::new(),
             worktree_name,
             worktree_primary_abs_path,
-            is_workspace: WorkspaceStatus::Standalone,
-            types: Vec::new(),
-            examples: Vec::new(),
-            benches: Vec::new(),
-            test_count: 0,
-            is_rust: ProjectLanguage::NonRust,
-        }
+        )))
     }
+}
 
-    pub(crate) const fn is_workspace(&self) -> bool {
-        matches!(self.is_workspace, WorkspaceStatus::Workspace)
-    }
+/// Create a project entry for a non-Rust git repository (no `Cargo.toml`).
+pub(crate) fn from_git_dir(project_dir: &Path) -> Project<NonRust> {
+    let name = project_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string());
+    let worktree_name = detect_worktree_name(project_dir);
+    let worktree_primary_abs_path = detect_worktree_primary(project_dir).map(PathBuf::from);
+
+    Project::<NonRust>::new(
+        project_dir.to_path_buf(),
+        name,
+        worktree_name,
+        worktree_primary_abs_path,
+    )
 }
 
 fn detect_types(table: &Table, project_dir: &Path) -> Vec<ProjectType> {
@@ -1296,6 +1213,10 @@ impl<Kind: ProjectKind> Project<Kind> {
 
     pub(crate) fn worktree_name(&self) -> Option<&str> { self.worktree_name.as_deref() }
 
+    pub(crate) fn worktree_primary_abs_path(&self) -> Option<&Path> {
+        self.worktree_primary_abs_path.as_deref()
+    }
+
     /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
     pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }
 
@@ -1497,6 +1418,16 @@ impl ProjectListItem {
         }
     }
 
+    pub(crate) fn name(&self) -> Option<&str> {
+        match self {
+            Self::Workspace(p) => p.name(),
+            Self::Package(p) => p.name(),
+            Self::NonRust(p) => p.name(),
+            Self::WorkspaceWorktrees(g) => g.primary().name(),
+            Self::PackageWorktrees(g) => g.primary().name(),
+        }
+    }
+
     pub(crate) fn display_path(&self) -> String {
         match self {
             Self::Workspace(p) => p.display_path(),
@@ -1586,6 +1517,46 @@ impl ProjectListItem {
                     || g.linked()
                         .iter()
                         .any(|l| l.display_path() == display_path && l.visibility() == v)
+            },
+        }
+    }
+
+    /// Check if any project in the hierarchy matches the absolute path and visibility.
+    pub fn has_project_with_visibility_by_path(&self, path: &Path, v: Visibility) -> bool {
+        match self {
+            Self::Workspace(p) => {
+                if p.path() == path && p.visibility() == v {
+                    return true;
+                }
+                p.groups().iter().any(|g| {
+                    g.members()
+                        .iter()
+                        .any(|m| m.path() == path && m.visibility() == v)
+                }) || p
+                    .vendored()
+                    .iter()
+                    .any(|vp| vp.path() == path && vp.visibility() == v)
+            },
+            Self::Package(p) => {
+                if p.path() == path && p.visibility() == v {
+                    return true;
+                }
+                p.vendored()
+                    .iter()
+                    .any(|vp| vp.path() == path && vp.visibility() == v)
+            },
+            Self::NonRust(p) => p.path() == path && p.visibility() == v,
+            Self::WorkspaceWorktrees(g) => {
+                (g.primary().path() == path && g.primary().visibility() == v)
+                    || g.linked()
+                        .iter()
+                        .any(|l| l.path() == path && l.visibility() == v)
+            },
+            Self::PackageWorktrees(g) => {
+                (g.primary().path() == path && g.primary().visibility() == v)
+                    || g.linked()
+                        .iter()
+                        .any(|l| l.path() == path && l.visibility() == v)
             },
         }
     }
