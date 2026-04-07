@@ -46,6 +46,36 @@ use crate::tui::types::PaneId;
 use crate::watcher;
 use crate::watcher::WatchRequest;
 
+/// Extract a flat list of root-level `ProjectListItem` values from the tree
+/// so that `discovered_projects` can be populated from a single-pass scan
+/// result. Each top-level item (workspace, package, non-rust) is included
+/// once; worktree groups contribute their primary and linked entries.
+fn collect_discovered_from_tree(tree: &[ProjectListItem]) -> Vec<ProjectListItem> {
+    let mut result = Vec::with_capacity(tree.len());
+    for item in tree {
+        match item {
+            ProjectListItem::Workspace(_)
+            | ProjectListItem::Package(_)
+            | ProjectListItem::NonRust(_) => {
+                result.push(item.clone());
+            },
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                result.push(ProjectListItem::Workspace(wtg.primary().clone()));
+                for linked in wtg.linked() {
+                    result.push(ProjectListItem::Workspace(linked.clone()));
+                }
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                result.push(ProjectListItem::Package(wtg.primary().clone()));
+                for linked in wtg.linked() {
+                    result.push(ProjectListItem::Package(linked.clone()));
+                }
+            },
+        }
+    }
+    result
+}
+
 impl App {
     pub(super) fn apply_tree_build(
         &mut self,
@@ -394,6 +424,22 @@ impl App {
     pub fn refresh_lint_cache_usage_from_disk(&mut self) {
         let cache_size_bytes = self.current_config.lint.cache_size_bytes().unwrap_or(None);
         self.lint_cache_usage = crate::lint::retained_cache_usage(cache_size_bytes);
+    }
+
+    /// Register file-system watchers for every item in the tree after a
+    /// single-pass scan delivers the complete tree.
+    fn register_background_services_for_tree(&self) {
+        let started = Instant::now();
+        let mut count = 0usize;
+        for item in &self.project_list_items {
+            self.register_item_background_services(item);
+            count += 1;
+        }
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+            count,
+            "register_background_services_for_tree"
+        );
     }
 
     pub(super) fn register_item_background_services(&self, item: &ProjectListItem) {
@@ -1138,6 +1184,7 @@ impl App {
             &self.scan_root,
             self.ci_run_count(),
             &self.current_config.tui.include_dirs,
+            &self.current_config.tui.inline_dirs,
             self.include_non_rust(),
             self.http_client.clone(),
         );
@@ -1218,10 +1265,10 @@ impl App {
             | BackgroundMsg::RepoFetchComplete { .. }
             | BackgroundMsg::CratesIoVersion { .. }
             | BackgroundMsg::RepoMeta { .. }
+            | BackgroundMsg::ScanResult { .. }
             | BackgroundMsg::ProjectDiscovered { .. }
             | BackgroundMsg::ProjectRefreshed { .. }
             | BackgroundMsg::LintCachePruned { .. }
-            | BackgroundMsg::ScanComplete
             | BackgroundMsg::ServiceReachable { .. }
             | BackgroundMsg::ServiceRecovered { .. }
             | BackgroundMsg::ServiceUnreachable { .. } => {},
@@ -1689,19 +1736,105 @@ impl App {
         self.maybe_log_startup_phase_completions();
     }
 
-    fn handle_scan_complete_msg(&mut self) {
+    fn handle_scan_result(
+        &mut self,
+        project_list_items: Vec<ProjectListItem>,
+        flat_entries: Vec<FlatEntry>,
+        disk_entries: &[(String, PathBuf)],
+    ) {
         let kind = if self.scan.run_count == 1 {
             "initial"
         } else {
             "rescan"
         };
+
+        // Populate discovered_projects from the pre-tree items. Extract all
+        // leaf-level projects from the tree so dedup, service registration,
+        // and startup tracking work against the same set.
+        self.discovered_projects = collect_discovered_from_tree(&project_list_items);
+
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(self.scan.started_at.elapsed().as_millis()),
             kind,
             run = self.scan.run_count,
-            projects = self.discovered_projects.len(),
-            "scan_complete"
+            discovered = self.discovered_projects.len(),
+            tree_items = project_list_items.len(),
+            flat_entries = flat_entries.len(),
+            disk_entries = disk_entries.len(),
+            "scan_result_applied"
         );
+
+        // Apply tree (same as apply_tree_build but inlined to avoid redundant
+        // rebuild scheduling).
+        let selected_path = self
+            .selected_display_path()
+            .or_else(|| self.selection_paths.last_selected.clone());
+        self.project_list_items = project_list_items;
+        self.flat_entries = flat_entries;
+        self.dirty.finder.mark_dirty();
+        self.dirty.rows.mark_dirty();
+        self.dirty.disk_cache.mark_dirty();
+        self.dirty.fit_widths.mark_dirty();
+        self.recompute_cargo_active_paths();
+        self.prune_inactive_project_state();
+        self.register_lint_for_root_items();
+        self.rebuild_lint_rollups();
+        self.data_generation += 1;
+        self.detail_generation += 1;
+
+        // Re-run search if active so filtered indices match new flat_entries.
+        if self.is_searching() && !self.search_query.is_empty() {
+            let query = self.search_query.clone();
+            self.update_search(&query);
+        } else {
+            self.filtered.clear();
+        }
+
+        // Propagate git info and stars from workspace roots to members.
+        for item in &self.project_list_items {
+            let root_path = item.path();
+            let member_paths: Vec<PathBuf> = match item {
+                ProjectListItem::Workspace(ws) => ws
+                    .groups()
+                    .iter()
+                    .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
+                    .collect(),
+                ProjectListItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
+                    .chain(wtg.linked().iter())
+                    .flat_map(|ws| {
+                        ws.groups()
+                            .iter()
+                            .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            if let Some(info) = self.git_info.get(root_path).cloned() {
+                for member_path in &member_paths {
+                    self.git_info
+                        .entry(member_path.clone())
+                        .or_insert_with(|| info.clone());
+                }
+            }
+            if let Some(&stars) = self.stars.get(root_path) {
+                for member_path in &member_paths {
+                    self.stars.entry(member_path.clone()).or_insert(stars);
+                }
+            }
+        }
+
+        // Restore selection.
+        if let Some(path) = selected_path {
+            self.select_project_in_tree(&path);
+        } else if !self.project_list_items.is_empty() {
+            self.list_state.select(Some(0));
+        }
+        self.sync_selected_project();
+
+        // Register watcher for each item (same as register_item_background_services).
+        self.register_background_services_for_tree();
+
+        // Mark scan complete and initialize startup tracking.
         self.scan.phase = ScanPhase::Complete;
         self.initialize_startup_phase_tracker();
         self.schedule_git_path_state_refreshes();
@@ -1747,6 +1880,13 @@ impl App {
                 stars,
                 description,
             } => self.handle_repo_meta(&path, stars, description),
+            BackgroundMsg::ScanResult {
+                project_list_items,
+                flat_entries,
+                disk_entries,
+            } => {
+                self.handle_scan_result(project_list_items, flat_entries, &disk_entries);
+            },
             BackgroundMsg::ProjectDiscovered { item } => {
                 if self.handle_project_discovered(item) {
                     return true;
@@ -1774,7 +1914,6 @@ impl App {
             BackgroundMsg::LintStatus { path, status } => {
                 self.handle_lint_status_msg(&path, status);
             },
-            BackgroundMsg::ScanComplete => self.handle_scan_complete_msg(),
             BackgroundMsg::ServiceReachable { service } => {
                 self.apply_service_signal(ServiceSignal::Reachable(service));
             },

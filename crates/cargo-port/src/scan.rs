@@ -89,6 +89,11 @@ pub(crate) enum BackgroundMsg {
         stars:       u64,
         description: Option<String>,
     },
+    ScanResult {
+        project_list_items: Vec<ProjectListItem>,
+        flat_entries:       Vec<FlatEntry>,
+        disk_entries:       Vec<(String, PathBuf)>,
+    },
     ProjectDiscovered {
         item: ProjectListItem,
     },
@@ -103,7 +108,6 @@ pub(crate) enum BackgroundMsg {
         runs_evicted:    usize,
         bytes_reclaimed: u64,
     },
-    ScanComplete,
     ServiceReachable {
         service: ServiceKind,
     },
@@ -131,11 +135,11 @@ impl BackgroundMsg {
             Self::ProjectDiscovered { item } | Self::ProjectRefreshed { item } => {
                 Some(item.path().to_str().unwrap_or(""))
             },
-            Self::DiskUsageBatch { .. }
+            Self::ScanResult { .. }
+            | Self::DiskUsageBatch { .. }
             | Self::RepoFetchQueued { .. }
             | Self::RepoFetchComplete { .. }
             | Self::LintCachePruned { .. }
-            | Self::ScanComplete
             | Self::ServiceReachable { .. }
             | Self::ServiceRecovered { .. }
             | Self::ServiceUnreachable { .. } => None,
@@ -1307,18 +1311,20 @@ struct RepoFetchRequest {
 /// - **HTTP (tokio):** CI runs, repo metadata, crates.io info, and connectivity checks run on the
 ///   async runtime behind a shared semaphore.
 ///
-/// `ScanComplete` is sent after discovery/local work has finished. Disk and HTTP results may
-/// continue to stream in afterward.
+/// `ScanResult` is sent after discovery/local work has finished, containing the complete tree
+/// and flat entries. Disk and HTTP results may continue to stream in afterward.
 pub(crate) fn spawn_streaming_scan(
     scan_root: &Path,
     ci_run_count: u32,
     include_dirs: &[String],
+    inline_dirs: &[String],
     non_rust: NonRustInclusion,
     client: HttpClient,
 ) -> (mpsc::Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
     let (tx, rx) = mpsc::channel();
     let root = scan_root.to_path_buf();
     let scan_dirs = resolve_include_dirs(&root, include_dirs);
+    let inline_dirs = inline_dirs.to_vec();
 
     let scan_tx = tx.clone();
     thread::spawn(move || {
@@ -1345,7 +1351,23 @@ pub(crate) fn spawn_streaming_scan(
             disk_entries = phase1.disk_entries.len(),
             "phase1_discover_total"
         );
-        let _ = scan_tx.send(BackgroundMsg::ScanComplete);
+
+        let tree_started = std::time::Instant::now();
+        let project_list_items = build_tree(&phase1.items, &inline_dirs);
+        let flat_entries = build_flat_entries(&project_list_items);
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(tree_started.elapsed().as_millis()),
+            input_items = phase1.items.len(),
+            tree_items = project_list_items.len(),
+            flat_entries = flat_entries.len(),
+            "scan_tree_build"
+        );
+
+        let _ = scan_tx.send(BackgroundMsg::ScanResult {
+            project_list_items,
+            flat_entries,
+            disk_entries: phase1.disk_entries.clone(),
+        });
         spawn_initial_disk_usage(&scan_context, &phase1.disk_entries);
     });
 
@@ -1363,6 +1385,7 @@ struct Phase1DiscoverStats {
 }
 
 struct Phase1DiscoverResult {
+    items:        Vec<ProjectListItem>,
     disk_entries: Vec<(String, PathBuf)>,
     stats:        Phase1DiscoverStats,
 }
@@ -1370,6 +1393,7 @@ struct Phase1DiscoverResult {
 fn discover_non_rust_project(
     scan_context: &StreamingScanContext,
     entry_path: &Path,
+    items: &mut Vec<ProjectListItem>,
     disk_entries: &mut Vec<(String, PathBuf)>,
     stats: &mut Phase1DiscoverStats,
 ) {
@@ -1380,9 +1404,7 @@ fn discover_non_rust_project(
     stats.non_rust_projects += 1;
 
     let item = ProjectListItem::NonRust(project);
-    let _ = scan_context
-        .tx
-        .send(BackgroundMsg::ProjectDiscovered { item });
+    items.push(item);
 
     let discovered = DiscoveredProject {
         path:       display_path,
@@ -1402,6 +1424,7 @@ fn phase1_discover(
     non_rust: NonRustInclusion,
     scan_context: &StreamingScanContext,
 ) -> Phase1DiscoverResult {
+    let mut items = Vec::new();
     let mut disk_entries = Vec::new();
     let mut stats = Phase1DiscoverStats {
         visited_dirs:      0,
@@ -1431,6 +1454,7 @@ fn phase1_discover(
                     discover_non_rust_project(
                         scan_context,
                         entry.path(),
+                        &mut items,
                         &mut disk_entries,
                         &mut stats,
                     );
@@ -1466,9 +1490,7 @@ fn phase1_discover(
                     "phase1_repo_presence"
                 );
 
-                let _ = scan_context
-                    .tx
-                    .send(BackgroundMsg::ProjectDiscovered { item });
+                items.push(item);
 
                 let discovered = DiscoveredProject {
                     path:       display_path,
@@ -1484,6 +1506,7 @@ fn phase1_discover(
         }
     }
     Phase1DiscoverResult {
+        items,
         disk_entries,
         stats,
     }

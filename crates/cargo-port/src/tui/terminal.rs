@@ -128,6 +128,7 @@ pub fn run(path: &Path) -> ExitCode {
         &scan_root,
         cfg.tui.ci_run_count,
         &cfg.tui.include_dirs,
+        &cfg.tui.inline_dirs,
         cfg.tui.include_non_rust,
         http_client.clone(),
     );
