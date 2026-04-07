@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-04-06
 
 ### Added
 - New `narrow_to_pub_crate` diagnostic: warns when `pub` items in top-level private modules are not re-exported by the crate root, and auto-fixes them to `pub(crate)`
