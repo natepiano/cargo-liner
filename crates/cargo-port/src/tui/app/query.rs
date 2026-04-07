@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
@@ -16,7 +15,8 @@ use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
-use crate::project::ProjectLanguage::Rust;
+use crate::project::Package;
+use crate::project::Project;
 use crate::project::ProjectListItem;
 use crate::project::Visibility;
 use crate::tui::detail::DetailField;
@@ -106,9 +106,9 @@ impl App {
             return false;
         }
         let is_rust = self
-            .all_projects
+            .discovered_projects
             .iter()
-            .any(|p| Path::new(&p.abs_path) == path && p.is_rust == Rust);
+            .any(|item| item.path() == path && item.is_rust());
         crate::lint::project_is_eligible(
             &self.current_config.lint,
             &path.to_string_lossy(),
@@ -355,32 +355,37 @@ impl App {
     }
 
     pub fn recompute_cargo_active_paths(&mut self) {
-        let project_index: HashMap<PathBuf, Vec<String>> = self
-            .all_projects
-            .iter()
-            .map(|project| {
-                (
-                    PathBuf::from(&project.abs_path),
-                    project.local_dependency_paths.clone(),
-                )
-            })
-            .collect();
         let mut active_paths: HashSet<PathBuf> = self
-            .all_projects
+            .discovered_projects
             .iter()
-            .filter(|project| !self.is_vendored_path(&project.path))
-            .map(|project| PathBuf::from(&project.abs_path))
+            .filter(|item| !self.is_vendored_path(&item.display_path()))
+            .map(|item| item.path().to_path_buf())
             .collect();
-        let mut frontier: Vec<PathBuf> = active_paths.iter().cloned().collect();
 
-        while let Some(path) = frontier.pop() {
-            let Some(dependencies) = project_index.get(&path) else {
-                continue;
+        // Include vendored projects whose parent is active.
+        for item in &self.project_list_items {
+            let vendored_paths: Vec<&Path> = match item {
+                ProjectListItem::Workspace(ws) => {
+                    ws.vendored().iter().map(Project::<Package>::path).collect()
+                },
+                ProjectListItem::Package(pkg) => pkg
+                    .vendored()
+                    .iter()
+                    .map(Project::<Package>::path)
+                    .collect(),
+                ProjectListItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
+                    .chain(wtg.linked().iter())
+                    .flat_map(|ws| ws.vendored().iter().map(Project::<Package>::path))
+                    .collect(),
+                ProjectListItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
+                    .chain(wtg.linked().iter())
+                    .flat_map(|pkg| pkg.vendored().iter().map(Project::<Package>::path))
+                    .collect(),
+                ProjectListItem::NonRust(_) => Vec::new(),
             };
-            for dependency_path in dependencies {
-                let dep = PathBuf::from(dependency_path);
-                if project_index.contains_key(&dep) && active_paths.insert(dep.clone()) {
-                    frontier.push(dep);
+            if active_paths.contains(item.path()) {
+                for vp in vendored_paths {
+                    active_paths.insert(vp.to_path_buf());
                 }
             }
         }
@@ -406,9 +411,9 @@ impl App {
 
     pub fn prune_inactive_project_state(&mut self) {
         let all_paths: HashSet<PathBuf> = self
-            .all_projects
+            .discovered_projects
             .iter()
-            .map(|project| PathBuf::from(&project.abs_path))
+            .map(|item| item.path().to_path_buf())
             .collect();
         self.git_path_states
             .retain(|path, _| all_paths.contains(path));

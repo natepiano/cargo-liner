@@ -92,6 +92,23 @@ struct AppInit {
 }
 
 impl AppInit {
+    /// Filter legacy projects by non-rust inclusion. Used at init time before
+    /// `discovered_projects` exists.
+    fn filter_legacy_projects(
+        projects: &[LegacyProject],
+        include_non_rust: NonRustInclusion,
+    ) -> Vec<LegacyProject> {
+        if include_non_rust.includes_non_rust() {
+            projects.to_vec()
+        } else {
+            projects
+                .iter()
+                .filter(|project| project.is_rust == Rust)
+                .cloned()
+                .collect()
+        }
+    }
+
     fn new(
         scan_root: &Path,
         projects: &[LegacyProject],
@@ -111,7 +128,7 @@ impl AppInit {
             cfg.tui.include_dirs.clone(),
             http_client.clone(),
         );
-        let tree_projects = App::filter_tree_projects(projects, cfg.tui.include_non_rust);
+        let tree_projects = Self::filter_legacy_projects(projects, cfg.tui.include_non_rust);
         let nodes = scan::build_tree(&tree_projects, &cfg.tui.inline_dirs);
         let flat_entries = scan::build_flat_entries(&nodes);
         let project_list_items = scan::build_project_list(&nodes);
@@ -132,7 +149,7 @@ impl AppInit {
 
 struct CoreInputs {
     scan_root:       PathBuf,
-    projects:        Vec<LegacyProject>,
+    discovered:      Vec<ProjectListItem>,
     http_client:     HttpClient,
     bg_tx:           mpsc::Sender<BackgroundMsg>,
     bg_rx:           Receiver<BackgroundMsg>,
@@ -146,33 +163,37 @@ struct CoreInputs {
 
 impl App {
     pub fn has_cached_non_rust_projects(&self) -> bool {
-        self.all_projects
-            .iter()
-            .any(|project| project.is_rust != Rust)
+        self.discovered_projects.iter().any(|item| !item.is_rust())
     }
 
-    fn filter_tree_projects(
-        projects: &[LegacyProject],
+    fn filter_discovered_projects(
+        projects: &[ProjectListItem],
         include_non_rust: NonRustInclusion,
-    ) -> Vec<LegacyProject> {
+    ) -> Vec<ProjectListItem> {
         if include_non_rust.includes_non_rust() {
             projects.to_vec()
         } else {
             projects
                 .iter()
-                .filter(|project| project.is_rust == Rust)
+                .filter(|item| item.is_rust())
                 .cloned()
                 .collect()
         }
     }
 
+    /// Snapshot of discovered projects for tree builds.
+    /// Returns `Vec<LegacyProject>` because `build_tree` still takes that type.
+    /// Step 6 will eliminate this conversion.
     pub fn tree_projects_snapshot(&self) -> Vec<LegacyProject> {
-        Self::filter_tree_projects(&self.all_projects, self.include_non_rust())
+        Self::filter_discovered_projects(&self.discovered_projects, self.include_non_rust())
+            .iter()
+            .map(scan::project_list_item_to_legacy)
+            .collect()
     }
 
     pub fn new(
         scan_root: PathBuf,
-        projects: Vec<LegacyProject>,
+        projects: &[LegacyProject],
         bg_tx: mpsc::Sender<BackgroundMsg>,
         bg_rx: Receiver<BackgroundMsg>,
         cfg: &CargoPortConfig,
@@ -181,11 +202,15 @@ impl App {
     ) -> Self {
         let channels = AppChannels::new();
         let builds = AsyncBuildState::new(BuildChannels::new());
-        let init = AppInit::new(&scan_root, &projects, &bg_tx, cfg, &http_client);
+        let init = AppInit::new(&scan_root, projects, &bg_tx, cfg, &http_client);
         let status_flash = init.lint_warning.clone().map(|w| (w, Instant::now()));
+        let discovered: Vec<ProjectListItem> = projects
+            .iter()
+            .map(scan::legacy_to_project_list_item)
+            .collect();
         let mut app = Self::build_core(CoreInputs {
             scan_root,
-            projects,
+            discovered,
             http_client,
             bg_tx,
             bg_rx,
@@ -208,7 +233,7 @@ impl App {
             current_config: inputs.cfg,
             scan_root: inputs.scan_root,
             http_client: inputs.http_client,
-            all_projects: inputs.projects,
+            discovered_projects: inputs.discovered,
             project_list_items: init.project_list_items,
             flat_entries: init.flat_entries,
             disk_usage: HashMap::new(),

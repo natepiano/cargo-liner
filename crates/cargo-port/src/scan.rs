@@ -1152,6 +1152,82 @@ pub(crate) fn build_project_list(nodes: &[ProjectEntry]) -> Vec<ProjectListItem>
     items
 }
 
+/// Convert a single flat `LegacyProject` (as produced by the scanner) to a
+/// `ProjectListItem`. Discovery only emits flat projects — worktree grouping and
+/// member groups are built later by `build_tree`.
+pub(crate) fn legacy_to_project_list_item(p: &LegacyProject) -> ProjectListItem {
+    if p.is_rust != ProjectLanguage::Rust {
+        ProjectListItem::NonRust(old_project_to_nonrust(p))
+    } else if matches!(p.is_workspace, WorkspaceStatus::Workspace) {
+        ProjectListItem::Workspace(old_project_to_workspace(p, Vec::new(), Vec::new()))
+    } else {
+        ProjectListItem::Package(old_project_to_package(p))
+    }
+}
+
+/// Temporary bridge: convert a `ProjectListItem` back to `LegacyProject` so
+/// `build_tree` (which still takes `&[LegacyProject]`) can consume
+/// `discovered_projects`. Removed in step 6 when `build_tree` is rewritten.
+pub(crate) fn project_list_item_to_legacy(item: &ProjectListItem) -> LegacyProject {
+    fn project_to_legacy_fields<Kind: crate::project::ProjectKind>(
+        p: &crate::project::Project<Kind>,
+        is_workspace: WorkspaceStatus,
+        is_rust: ProjectLanguage,
+        cargo: Option<&crate::project::Cargo>,
+    ) -> LegacyProject {
+        let abs_path = p.path().to_string_lossy().to_string();
+        let display_path = p.display_path();
+        LegacyProject {
+            path: display_path,
+            abs_path,
+            name: p.name().map(String::from),
+            version: cargo.and_then(|c| c.version().map(String::from)),
+            description: cargo.and_then(|c| c.description().map(String::from)),
+            worktree_name: p.worktree_name().map(String::from),
+            worktree_primary_abs_path: None,
+            is_workspace,
+            types: cargo.map_or_else(Vec::new, |c| c.types().to_vec()),
+            examples: cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
+            benches: cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
+            test_count: cargo.map_or(0, crate::project::Cargo::test_count),
+            is_rust,
+        }
+    }
+
+    match item {
+        ProjectListItem::Workspace(ws) => project_to_legacy_fields(
+            ws,
+            WorkspaceStatus::Workspace,
+            ProjectLanguage::Rust,
+            Some(ws.cargo()),
+        ),
+        ProjectListItem::Package(pkg) => project_to_legacy_fields(
+            pkg,
+            WorkspaceStatus::Standalone,
+            ProjectLanguage::Rust,
+            Some(pkg.cargo()),
+        ),
+        ProjectListItem::NonRust(nr) => project_to_legacy_fields(
+            nr,
+            WorkspaceStatus::Standalone,
+            ProjectLanguage::NonRust,
+            None,
+        ),
+        ProjectListItem::WorkspaceWorktrees(wtg) => project_to_legacy_fields(
+            wtg.primary(),
+            WorkspaceStatus::Workspace,
+            ProjectLanguage::Rust,
+            Some(wtg.primary().cargo()),
+        ),
+        ProjectListItem::PackageWorktrees(wtg) => project_to_legacy_fields(
+            wtg.primary(),
+            WorkspaceStatus::Standalone,
+            ProjectLanguage::Rust,
+            Some(wtg.primary().cargo()),
+        ),
+    }
+}
+
 /// Shared network context passed to `fetch_project_details`.
 pub(crate) struct FetchContext {
     pub client:     HttpClient,
@@ -2064,7 +2140,6 @@ mod tests {
             benches: Vec::new(),
             test_count: 0,
             is_rust: ProjectLanguage::Rust,
-            local_dependency_paths: Vec::new(),
         }
     }
 

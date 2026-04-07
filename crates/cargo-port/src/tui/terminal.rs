@@ -149,7 +149,7 @@ pub fn run(path: &Path) -> ExitCode {
 
     let mut app = App::new(
         scan_root,
-        projects,
+        &projects,
         bg_tx,
         bg_rx,
         &cfg,
@@ -381,7 +381,7 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         bg_stats.fit_results,
         bg_stats.disk_results,
         bg_stats.needs_rebuild,
-        app.all_projects.len(),
+        app.discovered_projects.len(),
         app.project_list_items.len(),
         app.is_scan_complete()
     ));

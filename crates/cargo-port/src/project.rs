@@ -719,19 +719,9 @@ pub(crate) struct LegacyProject {
     /// Whether this project is a Rust project (has `Cargo.toml`).
     #[serde(default)]
     pub is_rust:                   ProjectLanguage,
-    #[serde(skip)]
-    pub local_dependency_paths:    Vec<String>,
 }
 
 impl LegacyProject {
-    /// Language icon for the project list.
-    pub(crate) const fn lang_icon(&self) -> &'static str {
-        match self.is_rust {
-            ProjectLanguage::Rust => "🦀",
-            ProjectLanguage::NonRust => "  ",
-        }
-    }
-
     /// Display name for the project list.
     /// Falls back to the last path component for workspace-only projects.
     pub(crate) fn display_name(&self) -> String {
@@ -807,8 +797,6 @@ impl LegacyProject {
         let examples = collect_examples(&table, project_dir);
         let benches = collect_target_names(&table, project_dir, "bench", "benches");
         let test_count = count_targets(&table, project_dir, "test", "tests");
-        let local_dependency_paths = collect_local_dependency_paths(&table, project_dir);
-
         let abs_path = project_dir.display().to_string();
 
         Ok(Self {
@@ -825,7 +813,6 @@ impl LegacyProject {
             benches,
             test_count,
             is_rust: ProjectLanguage::Rust,
-            local_dependency_paths,
         })
     }
 
@@ -853,101 +840,12 @@ impl LegacyProject {
             benches: Vec::new(),
             test_count: 0,
             is_rust: ProjectLanguage::NonRust,
-            local_dependency_paths: Vec::new(),
         }
     }
 
     pub(crate) const fn is_workspace(&self) -> bool {
         matches!(self.is_workspace, WorkspaceStatus::Workspace)
     }
-}
-
-fn collect_local_dependency_paths(table: &Table, project_dir: &Path) -> Vec<String> {
-    let mut paths = Vec::new();
-    collect_dependency_paths_from_table(table.get("dependencies"), project_dir, &mut paths);
-    collect_dependency_paths_from_table(table.get("dev-dependencies"), project_dir, &mut paths);
-    collect_dependency_paths_from_table(table.get("build-dependencies"), project_dir, &mut paths);
-    collect_target_dependency_paths(table, project_dir, &mut paths);
-    collect_workspace_dependency_paths(table, project_dir, &mut paths);
-    collect_patch_dependency_paths(table, project_dir, &mut paths);
-    paths.sort();
-    paths.dedup();
-    paths
-}
-
-fn collect_dependency_paths_from_table(
-    value: Option<&Value>,
-    project_dir: &Path,
-    paths: &mut Vec<String>,
-) {
-    let Some(table) = value.and_then(Value::as_table) else {
-        return;
-    };
-    for dependency in table.values() {
-        if let Some(path) = dependency
-            .as_table()
-            .and_then(|dep_table| dep_table.get("path"))
-            .and_then(Value::as_str)
-            && let Some(normalized) = normalize_local_dependency_path(project_dir, path)
-        {
-            paths.push(normalized);
-        }
-    }
-}
-
-fn collect_target_dependency_paths(table: &Table, project_dir: &Path, paths: &mut Vec<String>) {
-    let Some(targets) = table.get("target").and_then(Value::as_table) else {
-        return;
-    };
-    for target in targets.values().filter_map(Value::as_table) {
-        collect_dependency_paths_from_table(target.get("dependencies"), project_dir, paths);
-        collect_dependency_paths_from_table(target.get("dev-dependencies"), project_dir, paths);
-        collect_dependency_paths_from_table(target.get("build-dependencies"), project_dir, paths);
-    }
-}
-
-fn collect_workspace_dependency_paths(table: &Table, project_dir: &Path, paths: &mut Vec<String>) {
-    let Some(workspace) = table.get("workspace").and_then(Value::as_table) else {
-        return;
-    };
-    collect_dependency_paths_from_table(workspace.get("dependencies"), project_dir, paths);
-}
-
-fn collect_patch_dependency_paths(table: &Table, project_dir: &Path, paths: &mut Vec<String>) {
-    let Some(patch) = table.get("patch").and_then(Value::as_table) else {
-        return;
-    };
-    for registry in patch.values().filter_map(Value::as_table) {
-        collect_dependency_paths_from_table(
-            Some(&Value::Table(registry.clone())),
-            project_dir,
-            paths,
-        );
-    }
-}
-
-fn normalize_local_dependency_path(project_dir: &Path, dependency_path: &str) -> Option<String> {
-    let joined = project_dir.join(dependency_path);
-    let dependency_dir = if joined.file_name().is_some_and(|name| name == "Cargo.toml") {
-        joined.parent().map(Path::to_path_buf)?
-    } else {
-        joined
-    };
-    Some(home_relative_path(&normalize_path(&dependency_dir)))
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {},
-            std::path::Component::ParentDir => {
-                normalized.pop();
-            },
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    normalized
 }
 
 fn detect_types(table: &Table, project_dir: &Path) -> Vec<ProjectType> {

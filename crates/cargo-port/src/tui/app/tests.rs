@@ -58,7 +58,6 @@ fn make_project(name: Option<&str>, path: &str) -> LegacyProject {
         benches:                   Vec::new(),
         test_count:                0,
         is_rust:                   ProjectLanguage::Rust,
-        local_dependency_paths:    Vec::new(),
     }
 }
 
@@ -76,11 +75,11 @@ fn to_items(nodes: &[ProjectEntry]) -> Vec<ProjectListItem> {
     crate::scan::build_project_list(nodes)
 }
 
-fn make_app(projects: Vec<LegacyProject>) -> App {
+fn make_app(projects: &[LegacyProject]) -> App {
     make_app_with_config(projects, &CargoPortConfig::default())
 }
 
-fn make_app_with_config(projects: Vec<LegacyProject>, cfg: &CargoPortConfig) -> App {
+fn make_app_with_config(projects: &[LegacyProject], cfg: &CargoPortConfig) -> App {
     let (bg_tx, bg_rx) = mpsc::channel();
     let scan_root =
         std::env::temp_dir().join(format!("cargo-port-polish-test-{}", std::process::id()));
@@ -118,7 +117,7 @@ fn wait_for_tree_build(app: &mut App) {
 
 #[test]
 fn external_config_reload_applies_valid_changes() {
-    let mut app = make_app(Vec::new());
+    let mut app = make_app(&[]);
     let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
     let path = dir.path().join("config.toml");
 
@@ -145,7 +144,7 @@ fn external_config_reload_applies_valid_changes() {
 
 #[test]
 fn external_config_reload_keeps_last_good_config_on_parse_error() {
-    let mut app = make_app(Vec::new());
+    let mut app = make_app(&[]);
     let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
     let path = dir.path().join("config.toml");
 
@@ -180,10 +179,10 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     let non_rust_project = make_non_rust_project(Some("js"), "~/js");
     let mut cfg = CargoPortConfig::default();
     cfg.tui.include_non_rust = NonRustInclusion::Include;
-    let mut app = make_app_with_config(vec![rust_project.clone(), non_rust_project.clone()], &cfg);
+    let mut app = make_app_with_config(&[rust_project.clone(), non_rust_project.clone()], &cfg);
     app.scan.phase = ScanPhase::Complete;
 
-    assert_eq!(app.all_projects.len(), 2);
+    assert_eq!(app.discovered_projects.len(), 2);
     assert_eq!(app.project_list_items.len(), 2);
 
     let mut hide_cfg = cfg.clone();
@@ -191,7 +190,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     app.apply_config(&hide_cfg);
     wait_for_tree_build(&mut app);
 
-    assert_eq!(app.all_projects.len(), 2);
+    assert_eq!(app.discovered_projects.len(), 2);
     assert!(app.is_scan_complete());
     assert_eq!(app.project_list_items.len(), 1);
     assert_eq!(app.project_list_items[0].display_path(), rust_project.path);
@@ -199,7 +198,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     app.apply_config(&cfg);
     wait_for_tree_build(&mut app);
 
-    assert_eq!(app.all_projects.len(), 2);
+    assert_eq!(app.discovered_projects.len(), 2);
     assert!(app.is_scan_complete());
     assert_eq!(app.project_list_items.len(), 2);
     assert!(
@@ -212,14 +211,14 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
 #[test]
 fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
     let rust_project = make_project(Some("rust"), "~/rust");
-    let mut app = make_app(vec![rust_project]);
+    let mut app = make_app(&[rust_project]);
     app.scan.phase = ScanPhase::Complete;
 
     let mut cfg = app.current_config.clone();
     cfg.tui.include_non_rust = NonRustInclusion::Include;
     app.apply_config(&cfg);
 
-    assert!(app.all_projects.is_empty());
+    assert!(app.discovered_projects.is_empty());
     assert!(!app.is_scan_complete());
 }
 
@@ -265,7 +264,7 @@ fn make_git_info(url: Option<&str>) -> GitInfo {
 
 #[test]
 fn service_reachability_tracks_background_messages() {
-    let mut app = make_app(Vec::new());
+    let mut app = make_app(&[]);
 
     assert!(app.unreachable_services.is_empty());
     assert!(app.unreachable_service_message().is_none());
@@ -529,7 +528,7 @@ fn visible_rows_include_vendored_children() {
 fn lint_runtime_waits_for_scan_completion() {
     let project = make_project(Some("demo"), "~/demo");
     let path = project.path.clone();
-    let mut app = make_app(vec![project]);
+    let mut app = make_app(&[project]);
 
     assert!(app.lint_runtime_projects_snapshot().is_empty());
 
@@ -550,7 +549,7 @@ fn ci_runs_stay_on_owner_rows_not_workspace_members() {
         members: vec![member.clone()],
     }];
 
-    let mut app = make_app(vec![workspace.clone(), member.clone()]);
+    let mut app = make_app(&[workspace.clone(), member.clone()]);
     apply_nodes(&mut app, &[root]);
 
     app.insert_ci_runs(&workspace.path, vec![make_ci_run(1, Conclusion::Success)]);
@@ -576,7 +575,7 @@ fn non_owner_member_ignores_stale_ci_state_and_cannot_fetch() {
         members: vec![member.clone()],
     }];
 
-    let mut app = make_app(vec![workspace, member.clone()]);
+    let mut app = make_app(&[workspace, member.clone()]);
     apply_nodes(&mut app, &[root]);
     app.expanded.insert(ExpandKey::Node(0));
     app.dirty.rows.mark_dirty();
@@ -624,7 +623,7 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
     let feature_path = feature.project.path.clone();
     root.worktrees = vec![feature];
 
-    let mut app = make_app(vec![root.project.clone(), member.clone()]);
+    let mut app = make_app(&[root.project.clone(), member.clone()]);
     let root_path = root.project.path.clone();
     apply_nodes(&mut app, &[root]);
 
@@ -661,7 +660,7 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
 #[test]
 fn ci_for_prefers_runs_matching_local_branch() {
     let project = make_project(Some("demo"), "~/demo");
-    let mut app = make_app(vec![project.clone()]);
+    let mut app = make_app(std::slice::from_ref(&project));
     app.git_info.insert(
         PathBuf::from(&project.path),
         GitInfo {
@@ -704,7 +703,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
 fn startup_lint_expectation_tracks_running_startup_lints() {
     let project_a = make_project(Some("a"), "~/a");
     let project_b = make_project(Some("b"), "~/b");
-    let mut app = make_app(vec![project_a.clone(), project_b]);
+    let mut app = make_app(&[project_a.clone(), project_b]);
     app.scan.phase = ScanPhase::Complete;
 
     app.initialize_startup_phase_tracker();
@@ -774,7 +773,7 @@ fn startup_lint_toast_body_shows_paths_then_others() {
 #[test]
 fn lint_toast_reappears_for_new_running_lints() {
     let project = make_project(Some("a"), "~/a");
-    let mut app = make_app(vec![project.clone()]);
+    let mut app = make_app(std::slice::from_ref(&project));
     app.scan.phase = ScanPhase::Complete;
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
@@ -809,7 +808,7 @@ fn collapse_all_anchors_member_selection_to_root() {
         members: vec![member.clone()],
     }];
 
-    let mut app = make_app(vec![workspace, member.clone()]);
+    let mut app = make_app(&[workspace, member.clone()]);
     apply_nodes(&mut app, &[root]);
     app.expanded.insert(ExpandKey::Node(0));
     app.dirty.rows.mark_dirty();
@@ -831,7 +830,7 @@ fn expand_all_preserves_selected_project_path() {
         members: vec![member.clone()],
     }];
 
-    let mut app = make_app(vec![workspace, member.clone()]);
+    let mut app = make_app(&[workspace, member.clone()]);
     apply_nodes(&mut app, &[root]);
     app.select_project_in_tree(&member.path);
     app.collapse_all();
@@ -857,7 +856,7 @@ fn lint_runtime_snapshot_uses_workspace_root_not_members() {
         members: vec![member_a.clone(), member_b.clone()],
     }];
 
-    let mut app = make_app(vec![workspace.clone(), member_a, member_b]);
+    let mut app = make_app(&[workspace.clone(), member_a, member_b]);
     apply_nodes(&mut app, &[root]);
     app.scan.phase = ScanPhase::Complete;
 
@@ -879,7 +878,7 @@ fn lint_runtime_snapshot_deduplicates_primary_worktree_path() {
 
     root.worktrees = vec![primary, feature.clone()];
 
-    let mut app = make_app(vec![root_project.clone(), feature.project.clone()]);
+    let mut app = make_app(&[root_project.clone(), feature.project.clone()]);
     apply_nodes(&mut app, &[root]);
     app.scan.phase = ScanPhase::Complete;
 
@@ -891,14 +890,13 @@ fn lint_runtime_snapshot_deduplicates_primary_worktree_path() {
 
 #[test]
 fn vendored_path_dependency_becomes_cargo_active() {
-    let mut root_project = make_project(Some("app"), "~/app");
+    let root_project = make_project(Some("app"), "~/app");
     let vendored = make_project(Some("helper"), "~/app/vendor/helper");
-    root_project.local_dependency_paths = vec![vendored.path.clone()];
 
     let mut root = make_node(root_project.clone());
     root.vendored = vec![vendored.clone()];
 
-    let mut app = make_app(vec![root_project, vendored.clone()]);
+    let mut app = make_app(&[root_project, vendored.clone()]);
     apply_nodes(&mut app, &[root]);
 
     assert!(app.is_vendored_path(&vendored.path));
@@ -909,7 +907,7 @@ fn vendored_path_dependency_becomes_cargo_active() {
 fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
     let project = make_project(Some("demo"), "~/demo");
     let path = project.path.clone();
-    let mut app = make_app(vec![project.clone()]);
+    let mut app = make_app(std::slice::from_ref(&project));
 
     app.git_info.insert(
         PathBuf::from(&path),
@@ -950,7 +948,7 @@ fn tabbable_panes_follow_canonical_order() {
         names:    vec!["example".to_string()],
     }];
 
-    let mut app = make_app(vec![project.clone()]);
+    let mut app = make_app(std::slice::from_ref(&project));
     app.toasts = ToastManager::default();
     app.toast_pane.set_len(0);
     app.scan.phase = ScanPhase::Complete;
@@ -1013,7 +1011,7 @@ fn tabbable_panes_follow_canonical_order() {
 #[test]
 fn new_toasts_do_not_steal_focus() {
     let project = make_project(Some("demo"), "~/demo");
-    let mut app = make_app(vec![project]);
+    let mut app = make_app(&[project]);
     app.focus_pane(PaneId::Git);
 
     app.show_timed_toast("Settings", "Updated");
@@ -1026,7 +1024,7 @@ fn new_toasts_do_not_steal_focus() {
 #[test]
 fn project_refresh_updates_selected_tree_project_targets() {
     let project = make_project(Some("demo"), "~/demo");
-    let mut app = make_app(vec![project.clone()]);
+    let mut app = make_app(std::slice::from_ref(&project));
     app.scan.phase = ScanPhase::Complete;
     app.list_state.select(Some(0));
     app.sync_selected_project();
@@ -1061,7 +1059,7 @@ fn project_refresh_updates_selected_tree_project_targets() {
 #[test]
 fn first_non_empty_tree_build_focuses_project_list() {
     let project = make_project(Some("demo"), "~/demo");
-    let mut app = make_app(vec![project.clone()]);
+    let mut app = make_app(std::slice::from_ref(&project));
     apply_nodes(&mut app, &[make_node(project)]);
 
     assert_eq!(app.focused_pane, PaneId::ProjectList);
@@ -1070,13 +1068,16 @@ fn first_non_empty_tree_build_focuses_project_list() {
 
 #[test]
 fn initial_disk_batch_count_groups_nested_projects_under_one_root() {
-    let projects = vec![
+    let projects: Vec<ProjectListItem> = [
         make_project(Some("bevy"), "~/rust/bevy"),
         make_project(Some("ecs"), "~/rust/bevy/crates/bevy_ecs"),
         make_project(Some("render"), "~/rust/bevy/crates/bevy_render"),
         make_project(Some("hana"), "~/rust/hana"),
         make_project(Some("hana_core"), "~/rust/hana/crates/hana"),
-    ];
+    ]
+    .iter()
+    .map(crate::scan::legacy_to_project_list_item)
+    .collect();
 
     assert_eq!(snapshots::initial_disk_batch_count(&projects), 2);
 }
@@ -1084,7 +1085,7 @@ fn initial_disk_batch_count_groups_nested_projects_under_one_root() {
 #[test]
 fn overlays_restore_prior_focus() {
     let app_project = make_project(Some("demo"), "~/demo");
-    let mut app = make_app(vec![app_project]);
+    let mut app = make_app(&[app_project]);
     app.focus_pane(PaneId::Git);
 
     app.open_overlay(PaneId::Settings);
@@ -1101,7 +1102,7 @@ fn overlays_restore_prior_focus() {
 #[test]
 fn detail_panes_do_not_remember_selection_until_focused() {
     let project = make_project(Some("demo"), "~/demo");
-    let mut app = make_app(vec![project]);
+    let mut app = make_app(&[project]);
 
     assert!(app.remembers_selection(PaneId::ProjectList));
     assert!(!app.remembers_selection(PaneId::Package));
@@ -1117,7 +1118,7 @@ fn detail_panes_do_not_remember_selection_until_focused() {
 fn project_change_resets_project_dependent_panes() {
     let project_a = make_project(Some("a"), "~/a");
     let project_b = make_project(Some("b"), "~/b");
-    let mut app = make_app(vec![project_a, project_b]);
+    let mut app = make_app(&[project_a, project_b]);
 
     app.focus_pane(PaneId::Package);
     app.focus_pane(PaneId::Git);
@@ -1144,7 +1145,7 @@ fn project_change_resets_project_dependent_panes() {
 
 #[test]
 fn apply_config_resets_column_layout_flag() {
-    let mut app = make_app(vec![make_project(Some("demo"), "~/demo")]);
+    let mut app = make_app(&[make_project(Some("demo"), "~/demo")]);
     let mut cfg = CargoPortConfig::default();
 
     assert!(!app.cached_fit_widths.lint_enabled());
@@ -1178,7 +1179,7 @@ fn zero_byte_update_marks_deleted_child_member() {
         members: vec![member.clone()],
     }];
 
-    let mut app = make_app(vec![workspace, member.clone()]);
+    let mut app = make_app(&[workspace, member.clone()]);
     apply_nodes(&mut app, &[root]);
 
     std::fs::remove_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
@@ -1197,7 +1198,7 @@ fn disk_updates_skip_git_path_refresh_during_scan() {
     let mut project = make_project(Some("demo"), "~/demo");
     project.abs_path = abs_path.to_string_lossy().to_string();
     let abs_str = project.abs_path.clone();
-    let mut app = make_app(vec![project]);
+    let mut app = make_app(&[project]);
 
     app.handle_disk_usage(&abs_str, 123);
     assert!(!app.git_path_states.contains_key(Path::new(&abs_str)));
@@ -1212,7 +1213,7 @@ fn disk_updates_skip_git_path_refresh_during_scan() {
 
 #[test]
 fn bottom_panel_changes_input_context_for_lower_pane() {
-    let mut app = make_app(vec![make_project(Some("demo"), "~/demo")]);
+    let mut app = make_app(&[make_project(Some("demo"), "~/demo")]);
     app.focus_pane(PaneId::CiRuns);
     assert_eq!(app.input_context(), InputContext::CiRuns);
 
@@ -1231,7 +1232,7 @@ fn lint_rollups_distinguish_root_from_primary_worktree() {
 
     root.worktrees = vec![primary, feature];
 
-    let mut app = make_app(vec![root.project.clone()]);
+    let mut app = make_app(&[root.project.clone()]);
     app.current_config.lint.enabled = true;
     apply_nodes(&mut app, &[root]);
     app.lint_status.insert(
@@ -1274,7 +1275,7 @@ fn lint_rollup_prefers_running_root_over_member_history() {
         members: vec![member],
     }];
 
-    let mut app = make_app(vec![root.project.clone()]);
+    let mut app = make_app(&[root.project.clone()]);
     app.current_config.lint.enabled = true;
     apply_nodes(&mut app, &[root]);
     app.lint_status.insert(
@@ -1304,7 +1305,7 @@ fn lint_rollup_prefers_running_worktree_over_failed_root_history() {
 
     root.worktrees = vec![primary, feature];
 
-    let mut app = make_app(vec![root.project.clone()]);
+    let mut app = make_app(&[root.project.clone()]);
     app.current_config.lint.enabled = true;
     apply_nodes(&mut app, &[root]);
     app.lint_status.insert(
@@ -1352,7 +1353,7 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
 
     root.worktrees = vec![primary, feature];
 
-    let mut app = make_app(vec![root.project.clone()]);
+    let mut app = make_app(&[root.project.clone()]);
     app.current_config.lint.enabled = true;
     apply_nodes(&mut app, &[root]);
     app.expanded.insert(ExpandKey::Node(0));
@@ -1400,7 +1401,7 @@ fn disk_rollup_deduplicates_primary_worktree_path() {
     root.worktrees = vec![primary, feature];
 
     let root_project = root.project.clone();
-    let mut app = make_app(vec![root_project]);
+    let mut app = make_app(&[root_project]);
     apply_nodes(&mut app, &[root]);
     app.disk_usage.insert(PathBuf::from("~/ws"), 15);
     app.disk_usage.insert(PathBuf::from("~/ws_feat"), 21);

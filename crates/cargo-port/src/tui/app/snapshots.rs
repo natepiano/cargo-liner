@@ -12,7 +12,6 @@ use crate::constants::SYNC_UP;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
-use crate::project::LegacyProject;
 use crate::project::MemberGroup;
 use crate::project::Package;
 use crate::project::Project;
@@ -624,25 +623,18 @@ fn collect_vendored_disk(
     }
 }
 
-pub(super) fn initial_disk_batch_count(projects: &[LegacyProject]) -> usize {
-    let mut abs_paths: Vec<&str> = projects
-        .iter()
-        .map(|project| project.abs_path.as_str())
-        .collect();
+pub(super) fn initial_disk_batch_count(projects: &[ProjectListItem]) -> usize {
+    let mut abs_paths: Vec<&Path> = projects.iter().map(ProjectListItem::path).collect();
     abs_paths.sort_by(|left, right| {
-        Path::new(left)
-            .components()
+        left.components()
             .count()
-            .cmp(&Path::new(right).components().count())
+            .cmp(&right.components().count())
             .then_with(|| left.cmp(right))
     });
 
-    let mut roots: Vec<&str> = Vec::new();
+    let mut roots: Vec<&Path> = Vec::new();
     for abs_path in abs_paths {
-        if roots
-            .iter()
-            .any(|root| Path::new(abs_path).starts_with(Path::new(root)))
-        {
+        if roots.iter().any(|root| abs_path.starts_with(root)) {
             continue;
         }
         roots.push(abs_path);

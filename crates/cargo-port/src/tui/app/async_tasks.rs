@@ -29,7 +29,6 @@ use crate::project::GitInfo;
 use crate::project::GitPathState;
 use crate::project::LegacyProject;
 use crate::project::Project;
-use crate::project::ProjectLanguage::Rust;
 use crate::project::ProjectListItem;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Visible;
@@ -351,40 +350,40 @@ impl App {
     }
 
     pub(super) fn register_existing_projects(&self) {
-        for project in &self.all_projects {
-            self.register_project_background_services(project);
+        for item in &self.discovered_projects {
+            self.register_item_background_services(item);
         }
     }
 
     pub(super) fn refresh_lint_runs_from_disk(&mut self) {
         self.lint_runs.clear();
-        for project in &self.all_projects {
-            let abs = PathBuf::from(&project.abs_path);
-            if !self.is_cargo_active_path(&abs) {
+        for item in &self.discovered_projects {
+            let path = item.path();
+            if !self.is_cargo_active_path(path) {
                 continue;
             }
-            let runs = crate::lint::read_history(&abs);
+            let runs = crate::lint::read_history(path);
             if !runs.is_empty() {
-                self.lint_runs.insert(abs, runs);
+                self.lint_runs.insert(path.to_path_buf(), runs);
             }
         }
         self.refresh_lint_cache_usage_from_disk();
     }
 
     pub(super) fn reload_lint_history(&mut self, project_path: &Path) {
-        let Some(project) = self
-            .all_projects
+        let found = self
+            .discovered_projects
             .iter()
-            .find(|project| Path::new(&project.abs_path) == project_path)
-        else {
+            .any(|item| item.path() == project_path);
+        if !found {
             self.lint_runs.remove(project_path);
             return;
-        };
+        }
         if !self.is_cargo_active_path(project_path) {
             self.lint_runs.remove(project_path);
             return;
         }
-        let runs = crate::lint::read_history(&PathBuf::from(&project.abs_path));
+        let runs = crate::lint::read_history(project_path);
         if runs.is_empty() {
             self.lint_runs.remove(project_path);
         } else {
@@ -398,20 +397,20 @@ impl App {
         self.lint_cache_usage = crate::lint::retained_cache_usage(cache_size_bytes);
     }
 
-    pub(super) fn register_project_background_services(&self, project: &LegacyProject) {
+    pub(super) fn register_item_background_services(&self, item: &ProjectListItem) {
         let started = Instant::now();
-        let abs_path = PathBuf::from(&project.abs_path);
+        let abs_path = item.path().to_path_buf();
         let repo_root = crate::project::git_repo_root(&abs_path);
         let has_repo_root = repo_root.is_some();
         let _ = self.watch_tx.send(WatchRequest {
-            project_path: project.abs_path.clone(),
-            abs_path,
+            project_path: abs_path.to_string_lossy().to_string(),
+            abs_path: abs_path.clone(),
             repo_root,
         });
         crate::perf_log::log_duration(
             "app_register_project_background_services",
             started.elapsed(),
-            &format!("path={} has_repo_root={has_repo_root}", project.path),
+            &format!("path={} has_repo_root={has_repo_root}", item.display_path()),
             0,
         );
     }
@@ -419,9 +418,12 @@ impl App {
     pub(super) fn schedule_git_path_state_refreshes(&self) {
         let tx = self.bg_tx.clone();
         let projects: Vec<(String, String)> = self
-            .all_projects
+            .discovered_projects
             .iter()
-            .map(|project| (project.abs_path.clone(), project.abs_path.clone()))
+            .map(|item| {
+                let abs = item.path().to_string_lossy().to_string();
+                (abs.clone(), abs)
+            })
             .collect();
         std::thread::spawn(move || {
             let states = crate::project::detect_git_path_states_batch(&projects);
@@ -434,15 +436,15 @@ impl App {
     pub(super) fn schedule_git_first_commit_refreshes(&self) {
         let tx = self.bg_tx.clone();
         let mut projects_by_repo: HashMap<PathBuf, Vec<String>> = HashMap::new();
-        for project in &self.all_projects {
-            let abs_path = PathBuf::from(&project.abs_path);
+        for item in &self.discovered_projects {
+            let abs_path = item.path().to_path_buf();
             let Some(repo_root) = crate::project::git_repo_root(&abs_path) else {
                 continue;
             };
             projects_by_repo
                 .entry(repo_root)
                 .or_default()
-                .push(project.abs_path.clone());
+                .push(abs_path.to_string_lossy().to_string());
         }
         std::thread::spawn(move || {
             for (repo_root, paths) in projects_by_repo {
@@ -502,12 +504,12 @@ impl App {
             return entries;
         }
 
-        self.all_projects
+        self.discovered_projects
             .iter()
-            .filter_map(|project| {
-                let abs = PathBuf::from(&project.abs_path);
+            .filter_map(|item| {
+                let abs = item.path().to_path_buf();
                 if seen.insert(abs.clone()) {
-                    Some((abs, project.is_rust == Rust))
+                    Some((abs, item.is_rust()))
                 } else {
                     None
                 }
@@ -540,7 +542,7 @@ impl App {
     }
 
     pub(super) fn initialize_startup_phase_tracker(&mut self) {
-        let disk_expected = super::snapshots::initial_disk_batch_count(&self.all_projects);
+        let disk_expected = super::snapshots::initial_disk_batch_count(&self.discovered_projects);
         let git_seen = self
             .scan
             .startup_phases
@@ -996,7 +998,7 @@ impl App {
     }
 
     pub fn rescan(&mut self) {
-        self.all_projects.clear();
+        self.discovered_projects.clear();
         self.project_list_items.clear();
         self.flat_entries.clear();
         self.disk_usage.clear();
@@ -1100,7 +1102,7 @@ impl App {
                 stats.fit_results,
                 stats.disk_results,
                 stats.needs_rebuild,
-                self.all_projects.len(),
+                self.discovered_projects.len(),
                 self.project_list_items.len()
             ),
             crate::perf_log::slow_bg_batch_threshold_ms(),
@@ -1375,17 +1377,19 @@ impl App {
         }
     }
 
-    pub(super) fn handle_project_discovered(&mut self, project: LegacyProject) -> bool {
+    pub(super) fn handle_project_discovered(&mut self, project: &LegacyProject) -> bool {
+        let item = crate::scan::legacy_to_project_list_item(project);
+        let display = item.display_path();
         if self
-            .all_projects
+            .discovered_projects
             .iter()
-            .any(|existing| existing.path == project.path)
+            .any(|existing| existing.display_path() == display)
         {
             return false;
         }
 
-        self.register_project_background_services(&project);
-        self.all_projects.push(project);
+        self.register_item_background_services(&item);
+        self.discovered_projects.push(item);
         if self.is_scan_complete() {
             self.sync_lint_runtime_projects();
         }
@@ -1393,17 +1397,18 @@ impl App {
     }
 
     pub(super) fn handle_project_refreshed(&mut self, project: &LegacyProject) -> bool {
-        let project_path = project.path.clone();
-        let updated_in_all_projects = self
-            .all_projects
+        let item = crate::scan::legacy_to_project_list_item(project);
+        let display = item.display_path();
+        let updated = self
+            .discovered_projects
             .iter_mut()
-            .find(|existing| existing.path == project_path)
+            .find(|existing| existing.display_path() == display)
             .is_some_and(|existing| {
-                *existing = project.clone();
+                *existing = item;
                 true
             });
 
-        if !updated_in_all_projects {
+        if !updated {
             return false;
         }
 
@@ -1540,15 +1545,15 @@ impl App {
             return;
         }
         let eligible = self
-            .all_projects
+            .discovered_projects
             .iter()
-            .find(|project| Path::new(&project.abs_path) == abs)
-            .is_some_and(|project| {
+            .find(|item| item.path() == abs)
+            .is_some_and(|item| {
                 crate::lint::project_is_eligible(
                     &self.current_config.lint,
-                    &project.abs_path,
-                    &PathBuf::from(&project.abs_path),
-                    project.is_rust == Rust,
+                    &abs.to_string_lossy(),
+                    &abs,
+                    item.is_rust(),
                 )
             });
         if eligible {
@@ -1610,7 +1615,7 @@ impl App {
                 "kind={} run={} projects={}",
                 kind,
                 self.scan.run_count,
-                self.all_projects.len()
+                self.discovered_projects.len()
             ),
             0,
         );
@@ -1661,7 +1666,7 @@ impl App {
                 description,
             } => self.handle_repo_meta(&path, stars, description),
             BackgroundMsg::ProjectDiscovered { project } => {
-                if self.handle_project_discovered(project) {
+                if self.handle_project_discovered(&project) {
                     return true;
                 }
             },

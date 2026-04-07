@@ -1257,16 +1257,16 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
         .iter()
         .filter_map(|&flat_idx| {
             let entry = app.flat_entries.get(flat_idx)?;
-            let project = app
-                .all_projects
+            let item = app
+                .discovered_projects
                 .iter()
-                .find(|project| project.path == entry.path)?;
-            let abs = Path::new(&project.abs_path);
+                .find(|item| item.display_path() == entry.path)?;
+            let abs = item.path();
             let cargo_active = app.is_cargo_active_path(abs);
             let disk = app.formatted_disk(abs);
             let disk_bytes = app.disk_usage.get(abs).copied();
             let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
-            let lang = project.lang_icon();
+            let lang = item.lang_icon();
             let lint = if cargo_active {
                 app.lint_icon(abs)
             } else {
@@ -1281,7 +1281,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             } else {
                 app.git_sync(abs)
             };
-            let deleted = app.is_deleted(&project.path);
+            let deleted = app.is_deleted(&item.display_path());
             let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
                 (
                     "0.0",
