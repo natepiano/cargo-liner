@@ -32,7 +32,6 @@ use crate::config::DiscoveryLint;
 use crate::config::LintCommandConfig;
 use crate::config::LintConfig;
 use crate::constants::LINTS_LATEST_JSON;
-use crate::project::AbsolutePath;
 use crate::scan::BackgroundMsg;
 
 const LINT_DEBOUNCE: Duration = Duration::from_millis(750);
@@ -166,7 +165,7 @@ fn supervisor_loop(
                         )
                     });
                     let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                        path:   AbsolutePath::new(abs_path.clone()),
+                        path:   abs_path.clone().into(),
                         status: cached_status_for_project(&status_cache, &abs_path),
                     });
                 }
@@ -175,7 +174,7 @@ fn supervisor_loop(
                 if let Some(worker) = workers.remove(&abs_path) {
                     stop_worker(worker);
                     let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                        path:   AbsolutePath::new(abs_path),
+                        path:   abs_path.into(),
                         status: LintStatus::NoLog,
                     });
                 }
@@ -216,7 +215,7 @@ fn emit_current_statuses(
 ) {
     for request in desired.values() {
         let _ = bg_tx.send(BackgroundMsg::LintStatus {
-            path:   AbsolutePath::new(request.abs_path.clone()),
+            path:   request.abs_path.clone().into(),
             status: cached_status_for_project(status_cache, &request.abs_path),
         });
     }
@@ -268,7 +267,7 @@ fn reconcile_workers(
         if let Some(worker) = workers.remove(&path) {
             stop_worker(worker);
             let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                path:   AbsolutePath::new(path),
+                path:   path.into(),
                 status: LintStatus::NoLog,
             });
         }
@@ -601,7 +600,7 @@ fn publish_status(
         }
     }
     let _ = bg_tx.send(BackgroundMsg::LintStatus {
-        path: AbsolutePath::new(project_root.to_path_buf()),
+        path: project_root.to_path_buf().into(),
         status,
     });
 }

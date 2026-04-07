@@ -20,7 +20,6 @@ use crate::config::ScrollDirection;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::lint::LintStatus;
-use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
@@ -776,7 +775,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     assert!(app.lint_toast.is_none());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   AbsolutePath::new(project_a.path().to_path_buf()),
+        path:   project_a.path().to_path_buf().into(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
     });
 
@@ -801,7 +800,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     assert!(app.lint_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   AbsolutePath::new(project_a.path().to_path_buf()),
+        path:   project_a.path().to_path_buf().into(),
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
 
@@ -838,20 +837,20 @@ fn lint_toast_reappears_for_new_running_lints() {
     app.scan.phase = ScanPhase::Complete;
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   AbsolutePath::new(project.path().to_path_buf()),
+        path:   project.path().to_path_buf().into(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
     });
     let first_toast = app.lint_toast;
     assert!(first_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   AbsolutePath::new(project.path().to_path_buf()),
+        path:   project.path().to_path_buf().into(),
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
     assert!(app.lint_toast.is_none());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   AbsolutePath::new(project.path().to_path_buf()),
+        path:   project.path().to_path_buf().into(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
     });
     assert!(app.lint_toast.is_some());

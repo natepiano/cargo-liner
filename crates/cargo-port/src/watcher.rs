@@ -32,7 +32,6 @@ use super::constants::WATCHER_DISK_CONCURRENCY;
 use super::constants::WATCHER_GIT_CONCURRENCY;
 use super::http::HttpClient;
 use super::project;
-use super::project::AbsolutePath;
 use super::project::GitInfo;
 use super::project::GitRepoPresence;
 use super::scan;
@@ -680,7 +679,7 @@ fn emit_root_git_path_refresh(
         "watcher_root_git_path_refresh"
     );
     let _ = bg_tx.send(BackgroundMsg::GitPathState {
-        path: AbsolutePath::new(root_entry.abs_path.clone()),
+        path: root_entry.abs_path.clone().into(),
         state,
     });
 }
@@ -783,7 +782,7 @@ fn spawn_git_refresh(
             if let Some(info) = git_info {
                 for (path, _) in &affected {
                     let _ = bg_tx.send(BackgroundMsg::GitInfo {
-                        path: AbsolutePath::new(PathBuf::from(path)),
+                        path: PathBuf::from(path).into(),
                         info: info.clone(),
                     });
                 }
@@ -804,7 +803,7 @@ fn spawn_git_refresh(
         if let Some(git_path_states) = git_path_states {
             for (path, state) in git_path_states {
                 let _ = bg_tx.send(BackgroundMsg::GitPathState {
-                    path: AbsolutePath::new(PathBuf::from(path)),
+                    path: PathBuf::from(path).into(),
                     state,
                 });
             }
@@ -886,7 +885,7 @@ fn spawn_disk_update(
         );
 
         let started = Instant::now();
-        let abs_for_msg = AbsolutePath::new(abs_path.clone());
+        let abs_for_msg = abs_path.clone().into();
         let bytes = tokio::task::spawn_blocking(move || scan::dir_size(&abs_path))
             .await
             .ok()
@@ -928,7 +927,7 @@ fn probe_new_projects(
             // can mark it as deleted if it was a tracked project.
             discovered.remove(&dir);
             let _ = bg_tx.send(BackgroundMsg::DiskUsage {
-                path:  AbsolutePath::new(dir),
+                path:  dir.into(),
                 bytes: 0,
             });
             continue;

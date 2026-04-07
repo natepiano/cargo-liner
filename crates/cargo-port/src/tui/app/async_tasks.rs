@@ -475,7 +475,7 @@ impl App {
             let states = crate::project::detect_git_path_states_batch(&projects);
             for (path, state) in states {
                 let _ = tx.send(BackgroundMsg::GitPathState {
-                    path: AbsolutePath::new(PathBuf::from(path)),
+                    path: PathBuf::from(path).into(),
                     state,
                 });
             }
@@ -508,7 +508,7 @@ impl App {
                 );
                 for path in paths {
                     let _ = tx.send(BackgroundMsg::GitFirstCommit {
-                        path:         AbsolutePath::new(path),
+                        path:         path.into(),
                         first_commit: first_commit.clone(),
                     });
                 }

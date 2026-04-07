@@ -22,8 +22,6 @@ use crate::constants::GIT_LOCAL;
 pub(crate) struct AbsolutePath(PathBuf);
 
 impl AbsolutePath {
-    pub(crate) const fn new(path: PathBuf) -> Self { Self(path) }
-
     pub(crate) fn as_path(&self) -> &Path { &self.0 }
 
     pub(crate) fn to_path_buf(&self) -> PathBuf { self.0.clone() }
@@ -45,14 +43,20 @@ impl fmt::Display for AbsolutePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.display().fmt(f) }
 }
 
+impl From<PathBuf> for AbsolutePath {
+    fn from(path: PathBuf) -> Self { Self(path) }
+}
+
+impl From<&Path> for AbsolutePath {
+    fn from(path: &Path) -> Self { Self(path.to_path_buf()) }
+}
+
 /// A display path for the UI (e.g. `~/rust/bevy`). Never used as a `HashMap` key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DisplayPath(String);
 
 impl DisplayPath {
     pub(crate) const fn new(s: String) -> Self { Self(s) }
-
-    pub(crate) fn as_str(&self) -> &str { &self.0 }
 }
 
 impl fmt::Display for DisplayPath {

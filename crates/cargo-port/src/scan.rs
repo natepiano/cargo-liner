@@ -1118,7 +1118,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let tx = req.tx;
     let ctx = req.ctx;
     let abs_path = req.abs_path;
-    let abs = AbsolutePath::new(abs_path.to_path_buf());
+    let abs: AbsolutePath = abs_path.to_path_buf().into();
     let project_name = req.project_name;
     let repo_presence = req.repo_presence;
     let ci_run_count = req.ci_run_count;
@@ -1401,9 +1401,9 @@ fn discover_non_rust_project(
     let item = ProjectListItem::NonRust(project);
     items.push(item);
 
-    let abs = AbsolutePath::new(abs_path.clone());
+    let abs: AbsolutePath = abs_path.clone().into();
     let discovered = DiscoveredProject {
-        abs_path:   abs.clone(),
+        abs_path:   abs,
         name:       None,
         repo_url:   None,
         owner_repo: None,
@@ -1470,7 +1470,7 @@ fn phase1_discover(
                 stats.projects += 1;
                 let item = cargo_project_to_item(cargo_project);
                 let abs_path = item.path().to_path_buf();
-                let abs = AbsolutePath::new(abs_path.clone());
+                let abs: AbsolutePath = abs_path.clone().into();
                 let project_name = item.name().map(str::to_string);
                 let repo_presence_started = std::time::Instant::now();
                 let repo_presence = if super::project::git_repo_root(&abs_path).is_some() {
@@ -1678,7 +1678,7 @@ fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTre
             "tokio_disk_usage"
         );
         let _ = tx.send(BackgroundMsg::DiskUsageBatch {
-            root_path: AbsolutePath::new(tree.root_abs_path),
+            root_path: tree.root_abs_path.into(),
             entries:   results,
         });
     });
@@ -1715,7 +1715,7 @@ fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, u64)> {
         .iter()
         .map(|abs_path| {
             let bytes = totals.get(abs_path).copied().unwrap_or(0);
-            (AbsolutePath::new(abs_path.clone()), bytes)
+            (abs_path.clone().into(), bytes)
         })
         .collect()
 }
@@ -1758,10 +1758,9 @@ fn finish_repo_fetch(
     };
     let previous = dispatch.insert(key.to_string(), RepoDispatchState::Ready(data));
     match previous {
-        Some(RepoDispatchState::Pending(paths)) => paths
-            .into_iter()
-            .map(|s| AbsolutePath::new(PathBuf::from(s)))
-            .collect(),
+        Some(RepoDispatchState::Pending(paths)) => {
+            paths.into_iter().map(|s| PathBuf::from(s).into()).collect()
+        },
         Some(RepoDispatchState::Ready(_)) | None => Vec::new(),
     }
 }
@@ -1844,7 +1843,7 @@ fn spawn_crates_fetch(
     let handle = client.handle.clone();
     let tx = tx.clone();
     let http_limit = Arc::clone(http_limit);
-    let abs = AbsolutePath::new(project_path.to_path_buf());
+    let abs = project_path.to_path_buf().into();
     let crate_name = crate_name.to_string();
 
     handle.spawn(async move {

@@ -590,7 +590,7 @@ pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name:
     let project_name = name.cloned();
 
     thread::spawn(move || {
-        let path = AbsolutePath::new(abs.clone());
+        let path: AbsolutePath = abs.clone().into();
         let _ = tx.send(BackgroundMsg::GitPathState {
             path:  path.clone(),
             state: crate::project::detect_git_path_state(&abs),
