@@ -9,6 +9,7 @@ pub(super) enum ConfigKey {
     IncludeDirs,
     InlineDirs,
     StatusFlashSecs,
+    TaskLingerSecs,
     CacheRoot,
     LintEnabled,
     LintInclude,
@@ -159,6 +160,9 @@ pub(super) fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<
     if old.tui.status_flash_secs.to_bits() != new.tui.status_flash_secs.to_bits() {
         keys.push(ConfigKey::StatusFlashSecs);
     }
+    if old.tui.task_linger_secs.to_bits() != new.tui.task_linger_secs.to_bits() {
+        keys.push(ConfigKey::TaskLingerSecs);
+    }
     if old.cache.root != new.cache.root {
         keys.push(ConfigKey::CacheRoot);
     }
@@ -215,7 +219,7 @@ mod tests {
         let mut new = CargoPortConfig::default();
         new.mouse.invert_scroll.toggle();
         new.tui.editor = "helix".to_string();
-        new.tui.status_flash_secs = 5.0;
+        new.tui.status_flash_secs = 10.0;
 
         let keys = changed_keys(&CargoPortConfig::default(), &new);
 

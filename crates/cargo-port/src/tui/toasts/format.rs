@@ -3,7 +3,9 @@ use unicode_width::UnicodeWidthStr;
 
 const ELLIPSIS: &str = "…";
 const ELLIPSIS_WIDTH: usize = 1;
-const MAX_VISIBLE_ITEMS: usize = 3;
+/// All items included in the body — the toast renderer truncates based on
+/// allocated space and shows (+N more) as needed.
+const MAX_VISIBLE_ITEMS: usize = usize::MAX;
 
 /// Format a list of items for toast display within `max_width` columns.
 ///
@@ -163,33 +165,32 @@ mod tests {
     }
 
     #[test]
-    fn four_items_shows_three_with_suffix() {
+    fn four_items_shows_all() {
         let result = format_toast_items(&["~/rust/a", "~/rust/b", "~/rust/c", "~/rust/d"], width());
         let lines: Vec<&str> = result.lines().collect();
-        assert_eq!(lines.len(), 3);
-        assert!(lines[2].contains("(+ 1 others)"));
-        assert!(UnicodeWidthStr::width(lines[2]) <= width());
+        assert_eq!(lines.len(), 4);
+        for line in &lines {
+            assert!(UnicodeWidthStr::width(*line) <= width());
+        }
     }
 
     #[test]
-    fn suffix_with_long_path_truncates_path() {
+    fn long_paths_are_truncated_with_ellipsis() {
         let long_path = "a".repeat(50);
         let result = format_toast_items(&[&long_path, &long_path, &long_path, "d", "e"], width());
         let lines: Vec<&str> = result.lines().collect();
-        assert_eq!(lines.len(), 3);
-        assert!(lines[2].contains("(+ 2 others)"));
-        assert!(lines[2].contains('…'));
-        assert!(UnicodeWidthStr::width(lines[2]) <= width());
+        assert_eq!(lines.len(), 5);
+        assert!(lines[0].contains('…'));
+        for line in &lines {
+            assert!(UnicodeWidthStr::width(*line) <= width());
+        }
     }
 
     #[test]
-    fn suffix_with_large_count() {
+    fn large_item_count_shows_all() {
         let items: Vec<&str> = (0..103).map(|_| "~/path").collect();
         let result = format_toast_items(&items, width());
-        let lines: Vec<&str> = result.lines().collect();
-        assert_eq!(lines.len(), 3);
-        assert!(lines[2].contains("(+ 100 others)"));
-        assert!(UnicodeWidthStr::width(lines[1]) <= width());
+        assert_eq!(result.lines().count(), 103);
     }
 
     #[test]

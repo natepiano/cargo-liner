@@ -4,8 +4,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::tui::constants::TOAST_LINE_REVEAL_MS;
-use crate::tui::constants::TOAST_MAX_HEIGHT;
-use crate::tui::constants::TOAST_MIN_HEIGHT;
 use crate::tui::constants::TOAST_WIDTH;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -28,19 +26,32 @@ pub enum ToastStyle {
 
 #[derive(Clone, Debug)]
 struct Toast {
-    id:              u64,
-    title:           String,
-    body:            String,
-    timeout_at:      Option<Instant>,
-    task_id:         Option<ToastTaskId>,
-    dismissed:       bool,
-    finished_task:   bool,
-    created_at:      Instant,
-    exit_started_at: Option<Instant>,
-    persistence:     ToastPersistence,
-    style:           ToastStyle,
-    action_path:     Option<PathBuf>,
-    target_height:   u16,
+    id:                 u64,
+    title:              String,
+    body:               String,
+    timeout_at:         Option<Instant>,
+    task_id:            Option<ToastTaskId>,
+    dismissed:          bool,
+    finished_task:      bool,
+    finished_at:        Option<Instant>,
+    linger_duration:    Option<Duration>,
+    created_at:         Instant,
+    exit_started_at:    Option<Instant>,
+    persistence:        ToastPersistence,
+    style:              ToastStyle,
+    action_path:        Option<PathBuf>,
+    target_height:      u16,
+    min_interior_lines: u16,
+    /// Per-item linger duration (used while toast is still active).
+    item_linger:        Option<Duration>,
+    /// Tracked items for task toasts — each item can linger after completion.
+    tracked_items:      Vec<TrackedItem>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TrackedItem {
+    pub label:        String,
+    pub completed_at: Option<Instant>,
 }
 
 impl Toast {
@@ -116,12 +127,25 @@ fn elapsed_line_count(elapsed: Duration) -> u16 {
 
 #[derive(Clone, Debug)]
 pub struct ToastView<'a> {
-    id:            u64,
-    title:         &'a str,
-    body:          &'a str,
-    visible_lines: u16,
-    style:         ToastStyle,
-    action_path:   Option<&'a Path>,
+    id:                 u64,
+    title:              &'a str,
+    body:               &'a str,
+    visible_lines:      u16,
+    style:              ToastStyle,
+    action_path:        Option<&'a Path>,
+    min_interior_lines: u16,
+    target_height:      u16,
+    /// 0.0 = just finished, 1.0 = linger complete, about to exit. None = not lingering.
+    linger_progress:    Option<f64>,
+    tracked_items:      Vec<TrackedItemView>,
+}
+
+/// A tracked item in a toast, with per-item linger progress.
+#[derive(Clone, Debug)]
+pub struct TrackedItemView {
+    pub label:           String,
+    /// None = pending. Some(0.0..1.0) = lingering with strikethrough progress.
+    pub linger_progress: Option<f64>,
 }
 
 impl<'a> ToastView<'a> {
@@ -136,6 +160,18 @@ impl<'a> ToastView<'a> {
     pub const fn style(&self) -> ToastStyle { self.style }
 
     pub const fn action_path(&self) -> Option<&Path> { self.action_path }
+
+    /// Linger progress: 0.0 = just finished, 1.0 = about to exit. None if not lingering.
+    pub const fn linger_progress(&self) -> Option<f64> { self.linger_progress }
+
+    /// Tracked items with per-item linger progress.
+    pub fn tracked_items(&self) -> &[TrackedItemView] { &self.tracked_items }
+
+    /// Minimum height: 2 (borders) + `min_interior_lines`.
+    pub const fn min_height(&self) -> u16 { 2 + self.min_interior_lines }
+
+    /// Full desired height based on body content.
+    pub const fn desired_height(&self) -> u16 { self.target_height }
 }
 
 #[derive(Default)]
@@ -156,11 +192,12 @@ impl ToastManager {
         title: impl Into<String>,
         body: impl Into<String>,
         timeout: Duration,
+        min_interior_lines: u16,
     ) -> u64 {
         let id = self.alloc_id();
         let now = Instant::now();
         let body = body.into();
-        let target_height = compute_target_height(&body);
+        let target_height = compute_target_height(&body, min_interior_lines);
         self.toasts.push(Toast {
             id,
             title: title.into(),
@@ -169,22 +206,32 @@ impl ToastManager {
             task_id: None,
             dismissed: false,
             finished_task: false,
+            finished_at: None,
+            linger_duration: None,
             created_at: now,
             exit_started_at: None,
             persistence: ToastPersistence::Timed,
             style: ToastStyle::Normal,
             action_path: None,
             target_height,
+            min_interior_lines,
+            item_linger: None,
+            tracked_items: Vec::new(),
         });
         id
     }
 
-    pub fn push_task(&mut self, title: impl Into<String>, body: impl Into<String>) -> ToastTaskId {
+    pub fn push_task(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        min_interior_lines: u16,
+    ) -> ToastTaskId {
         let id = self.alloc_id();
         let task_id = ToastTaskId(id);
         let now = Instant::now();
         let body = body.into();
-        let target_height = compute_target_height(&body);
+        let target_height = compute_target_height(&body, min_interior_lines);
         self.toasts.push(Toast {
             id,
             title: title.into(),
@@ -193,12 +240,17 @@ impl ToastManager {
             task_id: Some(task_id),
             dismissed: false,
             finished_task: false,
+            finished_at: None,
+            linger_duration: None,
             created_at: now,
             exit_started_at: None,
             persistence: ToastPersistence::Task,
             style: ToastStyle::Normal,
             action_path: None,
             target_height,
+            min_interior_lines,
+            item_linger: None,
+            tracked_items: Vec::new(),
         });
         task_id
     }
@@ -209,11 +261,12 @@ impl ToastManager {
         body: impl Into<String>,
         style: ToastStyle,
         action_path: Option<PathBuf>,
+        min_interior_lines: u16,
     ) -> u64 {
         let id = self.alloc_id();
         let now = Instant::now();
         let body = body.into();
-        let target_height = compute_target_height(&body);
+        let target_height = compute_target_height(&body, min_interior_lines);
         self.toasts.push(Toast {
             id,
             title: title.into(),
@@ -222,12 +275,17 @@ impl ToastManager {
             task_id: None,
             dismissed: false,
             finished_task: false,
+            finished_at: None,
+            linger_duration: None,
             created_at: now,
             exit_started_at: None,
             persistence: ToastPersistence::Permanent,
             style,
             action_path,
             target_height,
+            min_interior_lines,
+            item_linger: None,
+            tracked_items: Vec::new(),
         });
         id
     }
@@ -238,21 +296,92 @@ impl ToastManager {
         }
     }
 
-    pub fn finish_task(&mut self, task_id: ToastTaskId) {
+    pub fn finish_task(&mut self, task_id: ToastTaskId, linger: Duration) {
+        let now = Instant::now();
+        let deadline = now + linger;
         for toast in &mut self.toasts {
             if toast.task_id == Some(task_id) {
                 toast.finished_task = true;
+                toast.finished_at = Some(now);
+                toast.linger_duration = Some(linger);
+                toast.timeout_at = Some(deadline);
+                toast.persistence = ToastPersistence::Timed;
             }
         }
     }
 
+    #[cfg(test)]
     pub fn update_task_body(&mut self, task_id: ToastTaskId, body: impl Into<String>) {
         let body = body.into();
-        let target_height = compute_target_height(&body);
         for toast in &mut self.toasts {
             if toast.task_id == Some(task_id) {
+                let target_height = compute_target_height(&body, toast.min_interior_lines);
                 toast.body.clone_from(&body);
                 toast.target_height = target_height;
+            }
+        }
+    }
+
+    /// Set tracked items for a task toast. Items are displayed instead of
+    /// the plain body text. Completed items linger with strikethrough.
+    pub fn set_tracked_items(
+        &mut self,
+        task_id: ToastTaskId,
+        items: &[TrackedItem],
+        item_linger: Duration,
+    ) {
+        for toast in &mut self.toasts {
+            if toast.task_id == Some(task_id) {
+                // Rebuild body from tracked items for height calc.
+                let body: String = items
+                    .iter()
+                    .map(|item| item.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let target_height = compute_target_height(&body, toast.min_interior_lines);
+                toast.body = body;
+                toast.target_height = target_height;
+                toast.item_linger = Some(item_linger);
+                toast.tracked_items = items.to_vec();
+            }
+        }
+    }
+
+    /// Mark a tracked item as completed by label.
+    pub fn mark_item_completed(&mut self, task_id: ToastTaskId, label: &str) {
+        let now = Instant::now();
+        for toast in &mut self.toasts {
+            if toast.task_id == Some(task_id) {
+                for item in &mut toast.tracked_items {
+                    if item.label == label && item.completed_at.is_none() {
+                        item.completed_at = Some(now);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Remove expired lingering items from tracked toasts.
+    pub fn prune_tracked_items(&mut self, now: Instant, linger: Duration) {
+        for toast in &mut self.toasts {
+            if toast.tracked_items.is_empty() {
+                continue;
+            }
+            let before = toast.tracked_items.len();
+            toast.tracked_items.retain(|item| {
+                item.completed_at
+                    .is_none_or(|completed| now.duration_since(completed) < linger)
+            });
+            if toast.tracked_items.len() != before {
+                let body: String = toast
+                    .tracked_items
+                    .iter()
+                    .map(|item| item.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                toast.target_height = compute_target_height(&body, toast.min_interior_lines);
+                toast.body = body;
             }
         }
     }
@@ -272,13 +401,53 @@ impl ToastManager {
         self.toasts
             .iter()
             .filter(|toast| toast.is_alive(now))
-            .map(|toast| ToastView {
-                id:            toast.id,
-                title:         &toast.title,
-                body:          &toast.body,
-                visible_lines: toast.current_visible_lines(now),
-                style:         toast.style,
-                action_path:   toast.action_path.as_deref(),
+            .map(|toast| {
+                let linger_progress =
+                    toast
+                        .finished_at
+                        .zip(toast.linger_duration)
+                        .map(|(finished_at, linger)| {
+                            let elapsed = now.duration_since(finished_at).as_secs_f64();
+                            let total = linger.as_secs_f64();
+                            if total <= 0.0 {
+                                1.0
+                            } else {
+                                (elapsed / total).clamp(0.0, 1.0)
+                            }
+                        });
+                let tracked_items: Vec<TrackedItemView> = toast
+                    .tracked_items
+                    .iter()
+                    .map(|item| {
+                        let item_progress = item.completed_at.and_then(|completed| {
+                            toast.item_linger.map(|linger| {
+                                let elapsed = now.duration_since(completed).as_secs_f64();
+                                let total = linger.as_secs_f64();
+                                if total <= 0.0 {
+                                    1.0
+                                } else {
+                                    (elapsed / total).clamp(0.0, 1.0)
+                                }
+                            })
+                        });
+                        TrackedItemView {
+                            label:           item.label.clone(),
+                            linger_progress: item_progress,
+                        }
+                    })
+                    .collect();
+                ToastView {
+                    id: toast.id,
+                    title: &toast.title,
+                    body: &toast.body,
+                    visible_lines: toast.current_visible_lines(now),
+                    style: toast.style,
+                    action_path: toast.action_path.as_deref(),
+                    min_interior_lines: toast.min_interior_lines,
+                    target_height: toast.target_height,
+                    linger_progress,
+                    tracked_items,
+                }
             })
             .collect()
     }
@@ -286,8 +455,8 @@ impl ToastManager {
 
 /// Compute the target (fully-revealed) height for a toast based on its
 /// body content.  Height = 2 (borders, title is on the top border) +
-/// body lines, clamped to `[TOAST_MIN_HEIGHT, TOAST_MAX_HEIGHT]`.
-fn compute_target_height(body: &str) -> u16 {
+/// body lines, with a floor of `2 + min_interior_lines`.
+fn compute_target_height(body: &str, min_interior_lines: u16) -> u16 {
     // Inner width is toast width minus 2 for borders.
     let inner_width = usize::from(TOAST_WIDTH.saturating_sub(2));
     let body_lines = if body.is_empty() {
@@ -305,7 +474,7 @@ fn compute_target_height(body: &str) -> u16 {
             .sum::<usize>()
     };
     let raw = u16::try_from(2 + body_lines).unwrap_or(u16::MAX);
-    raw.clamp(TOAST_MIN_HEIGHT, TOAST_MAX_HEIGHT)
+    raw.max(2 + min_interior_lines)
 }
 
 #[cfg(test)]
@@ -316,13 +485,13 @@ mod tests {
     use super::*;
 
     /// Duration long enough for the full exit animation to complete.
-    const EXIT_ANIMATION: Duration =
-        Duration::from_millis(TOAST_MAX_HEIGHT as u64 * TOAST_LINE_REVEAL_MS + 1);
+    /// Use a generous upper bound since toast heights are now variable.
+    const EXIT_ANIMATION: Duration = Duration::from_millis(20 * TOAST_LINE_REVEAL_MS + 1);
 
     #[test]
     fn timed_toast_expires() {
         let mut manager = ToastManager::default();
-        manager.push_timed("settings", "updated", Duration::from_millis(10));
+        manager.push_timed("settings", "updated", Duration::from_millis(10), 1);
         assert_eq!(manager.active(Instant::now()).len(), 1);
 
         // Prune after timeout — starts exit animation but toast is still alive.
@@ -337,26 +506,33 @@ mod tests {
     }
 
     #[test]
-    fn task_toast_finishes_independently() {
+    fn task_toast_lingers_then_exits() {
         let mut manager = ToastManager::default();
-        let task = manager.push_task("cargo clean", "~/rust/bevy");
+        let linger = Duration::from_secs(1);
+        let task = manager.push_task("cargo clean", "~/rust/bevy", 1);
         assert_eq!(manager.active(Instant::now()).len(), 1);
 
-        manager.finish_task(task);
+        manager.finish_task(task, linger);
         let now = Instant::now();
         manager.prune(now);
-        // Still alive during exit animation.
+        // Still alive during linger period.
         assert_eq!(manager.active(now).len(), 1);
 
-        let after_exit = now + EXIT_ANIMATION;
-        manager.prune(after_exit);
-        assert!(manager.active(after_exit).is_empty());
+        // After linger, exit animation begins.
+        let after_linger = now + linger + Duration::from_millis(10);
+        manager.prune(after_linger);
+        assert_eq!(manager.active(after_linger).len(), 1); // exit animation in progress
+
+        // After linger + exit animation, toast is gone.
+        let after_all = after_linger + EXIT_ANIMATION;
+        manager.prune(after_all);
+        assert!(manager.active(after_all).is_empty());
     }
 
     #[test]
     fn task_toast_body_can_be_updated() {
         let mut manager = ToastManager::default();
-        let task = manager.push_task("startup git", "loading");
+        let task = manager.push_task("startup git", "loading", 1);
         manager.update_task_body(task, "2 remaining");
         let active = manager.active(Instant::now());
         assert_eq!(active.len(), 1);
@@ -366,7 +542,7 @@ mod tests {
     #[test]
     fn permanent_toast_stays_after_prune() {
         let mut manager = ToastManager::default();
-        manager.push_persistent("error", "bad keymap", ToastStyle::Error, None);
+        manager.push_persistent("error", "bad keymap", ToastStyle::Error, None, 1);
 
         // Prune many times — permanent toast stays.
         let later = Instant::now() + Duration::from_secs(3600);
@@ -377,7 +553,7 @@ mod tests {
     #[test]
     fn permanent_toast_dismissed_by_user() {
         let mut manager = ToastManager::default();
-        let id = manager.push_persistent("error", "bad keymap", ToastStyle::Error, None);
+        let id = manager.push_persistent("error", "bad keymap", ToastStyle::Error, None, 1);
         manager.dismiss(id);
 
         let now = Instant::now();
@@ -393,7 +569,7 @@ mod tests {
     #[test]
     fn toast_view_exposes_style() {
         let mut manager = ToastManager::default();
-        manager.push_persistent("error", "bad", ToastStyle::Error, None);
+        manager.push_persistent("error", "bad", ToastStyle::Error, None, 1);
         let active = manager.active(Instant::now());
         assert_eq!(active[0].style(), ToastStyle::Error);
     }
@@ -402,28 +578,41 @@ mod tests {
     fn toast_view_exposes_action_path() {
         let mut manager = ToastManager::default();
         let path = PathBuf::from("/tmp/keymap.toml");
-        manager.push_persistent("error", "bad", ToastStyle::Error, Some(path.clone()));
+        manager.push_persistent("error", "bad", ToastStyle::Error, Some(path.clone()), 1);
         let active = manager.active(Instant::now());
         assert_eq!(active[0].action_path(), Some(path.as_path()));
     }
 
     #[test]
     fn variable_height_short_body() {
-        // 2 borders + 1 title + 1 body line = 4, clamped to min 5
-        assert_eq!(compute_target_height("short"), TOAST_MIN_HEIGHT);
+        // 2 borders + 1 body line = 3, min_interior_lines=1 floor is 3
+        assert_eq!(compute_target_height("short", 1), 3);
     }
 
     #[test]
-    fn variable_height_long_body() {
+    fn variable_height_long_body_no_clamp() {
         let body = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10";
-        // 2 + 1 + 10 = 13, clamped to max 12
-        assert_eq!(compute_target_height(body), TOAST_MAX_HEIGHT);
+        // 2 + 10 = 12, no max clamp
+        assert_eq!(compute_target_height(body, 1), 12);
     }
 
     #[test]
     fn variable_height_multiline_body() {
         let body = "line1\nline2\nline3";
-        // 2 (borders, title on top border) + 3 body lines = 5
-        assert_eq!(compute_target_height(body), 5);
+        // 2 (borders) + 3 body lines = 5
+        assert_eq!(compute_target_height(body, 1), 5);
+    }
+
+    #[test]
+    fn min_interior_lines_raises_floor() {
+        // Body has 1 line, but min_interior_lines=2 means floor is 4
+        assert_eq!(compute_target_height("short", 2), 4);
+    }
+
+    #[test]
+    fn min_interior_lines_does_not_shrink() {
+        // Body has 5 lines, min_interior_lines=1 means floor is 3, actual is 7
+        let body = "a\nb\nc\nd\ne";
+        assert_eq!(compute_target_height(body, 1), 7);
     }
 }

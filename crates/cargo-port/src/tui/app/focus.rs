@@ -52,7 +52,10 @@ impl App {
 
     pub const fn open_settings(&mut self) { self.ui_modes.settings = SettingsMode::Browsing; }
 
-    pub const fn close_settings(&mut self) { self.ui_modes.settings = SettingsMode::Hidden; }
+    pub fn close_settings(&mut self) {
+        self.ui_modes.settings = SettingsMode::Hidden;
+        self.inline_error = None;
+    }
 
     pub const fn is_keymap_open(&self) -> bool { self.ui_modes.keymap.is_visible() }
 
@@ -60,25 +63,27 @@ impl App {
 
     pub fn close_keymap(&mut self) {
         self.ui_modes.keymap = KeymapMode::Hidden;
-        self.keymap_conflict = None;
+        self.inline_error = None;
     }
 
     pub fn keymap_begin_awaiting(&mut self) {
         self.ui_modes.keymap = KeymapMode::AwaitingKey;
-        self.keymap_conflict = None;
+        self.inline_error = None;
     }
 
     pub fn keymap_end_awaiting(&mut self) {
         self.ui_modes.keymap = KeymapMode::Browsing;
-        self.keymap_conflict = None;
+        self.inline_error = None;
     }
 
-    pub const fn begin_settings_editing(&mut self) {
+    pub fn begin_settings_editing(&mut self) {
         self.ui_modes.settings = SettingsMode::Editing;
+        self.inline_error = None;
     }
 
-    pub const fn end_settings_editing(&mut self) {
+    pub fn end_settings_editing(&mut self) {
         self.ui_modes.settings = SettingsMode::Browsing;
+        self.inline_error = None;
     }
 
     pub const fn mark_terminal_dirty(&mut self) { self.dirty.terminal.mark_dirty(); }
@@ -89,7 +94,7 @@ impl App {
 
     /// Derive the current input context from app state.
     pub const fn input_context(&self) -> InputContext {
-        if self.ui_modes.keymap.is_awaiting_key() && self.keymap_conflict.is_some() {
+        if self.ui_modes.keymap.is_awaiting_key() && self.inline_error.is_some() {
             InputContext::KeymapConflict
         } else if self.ui_modes.keymap.is_awaiting_key() {
             InputContext::KeymapAwaiting

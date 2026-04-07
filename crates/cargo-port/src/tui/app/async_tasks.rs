@@ -43,6 +43,7 @@ use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
 use crate::tui::toasts;
 use crate::tui::toasts::ToastStyle::Error;
+use crate::tui::toasts::TrackedItem;
 use crate::tui::types::PaneId;
 use crate::watcher;
 use crate::watcher::WatchRequest;
@@ -272,9 +273,13 @@ impl App {
             .join("\n");
         let action_path = self.keymap_path.clone();
 
-        let id =
-            self.toasts
-                .push_persistent("Keymap errors (using defaults)", body, Error, action_path);
+        let id = self.toasts.push_persistent(
+            "Keymap errors (using defaults)",
+            body,
+            Error,
+            action_path,
+            1,
+        );
         self.keymap_diagnostics_id = Some(id);
         self.toast_pane.set_len(self.active_toasts().len());
     }
@@ -693,28 +698,25 @@ impl App {
         self.scan.startup_phases.lint_seen_terminal.clear();
         self.scan.startup_phases.lint_complete_at = None;
         self.scan.startup_phases.startup_complete_at = None;
-        let git_remaining = self
-            .scan
-            .startup_phases
-            .git_expected
-            .len()
-            .saturating_sub(self.scan.startup_phases.git_seen.len());
-        if git_remaining > 0 {
-            self.scan.startup_phases.git_toast = Some(
-                self.start_task_toast("Scanning local git repos", self.startup_git_toast_body()),
-            );
+        let git_items = Self::tracked_items_for_startup(
+            &self.scan.startup_phases.git_expected,
+            &self.scan.startup_phases.git_seen,
+        );
+        if !git_items.is_empty() {
+            let body = self.startup_git_toast_body();
+            let task_id = self.start_task_toast("Scanning local git repos", &body);
+            self.set_task_tracked_items(task_id, &git_items);
+            self.scan.startup_phases.git_toast = Some(task_id);
         }
-        let repo_remaining = self
-            .scan
-            .startup_phases
-            .repo_expected
-            .len()
-            .saturating_sub(self.scan.startup_phases.repo_seen.len());
-        if repo_remaining > 0 {
-            self.scan.startup_phases.repo_toast = Some(self.start_task_toast(
-                "Retrieving GitHub repo details",
-                self.startup_repo_toast_body(),
-            ));
+        let repo_items = Self::tracked_items_for_startup(
+            &self.scan.startup_phases.repo_expected,
+            &self.scan.startup_phases.repo_seen,
+        );
+        if !repo_items.is_empty() {
+            let body = self.startup_repo_toast_body();
+            let task_id = self.start_task_toast("Retrieving GitHub repo details", &body);
+            self.set_task_tracked_items(task_id, &repo_items);
+            self.scan.startup_phases.repo_toast = Some(task_id);
         }
         tracing::info!(
             disk_expected = self.scan.startup_phases.disk_expected.unwrap_or(0),
@@ -780,8 +782,6 @@ impl App {
                 expected = self.scan.startup_phases.git_expected.len(),
                 "startup_phase_complete"
             );
-        } else if let Some(git_toast) = self.scan.startup_phases.git_toast {
-            self.update_task_toast_body(git_toast, self.startup_git_toast_body());
         }
     }
 
@@ -802,8 +802,6 @@ impl App {
                 expected = self.scan.startup_phases.repo_expected.len(),
                 "startup_phase_complete"
             );
-        } else if let Some(repo_toast) = self.scan.startup_phases.repo_toast {
-            self.update_task_toast_body(repo_toast, self.startup_repo_toast_body());
         }
     }
 
@@ -888,6 +886,29 @@ impl App {
         )
     }
 
+    /// Build tracked items from expected/seen path sets. Already-seen paths
+    /// are pre-marked as completed so the renderer shows them with strikethrough.
+    pub(super) fn tracked_items_for_startup(
+        expected: &HashSet<PathBuf>,
+        seen: &HashSet<PathBuf>,
+    ) -> Vec<TrackedItem> {
+        expected
+            .iter()
+            .map(|path| {
+                let label = crate::project::home_relative_path(path);
+                let completed_at = if seen.contains(path) {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
+                TrackedItem {
+                    label,
+                    completed_at,
+                }
+            })
+            .collect()
+    }
+
     pub(super) fn startup_remaining_toast_body(
         expected: &HashSet<PathBuf>,
         seen: &HashSet<PathBuf>,
@@ -932,11 +953,21 @@ impl App {
             return;
         }
 
+        let items: Vec<TrackedItem> = self
+            .running_clean_paths
+            .iter()
+            .map(|p| TrackedItem {
+                label:        crate::project::home_relative_path(p),
+                completed_at: None,
+            })
+            .collect();
         let body = self.running_clean_toast_body();
         if let Some(task_id) = self.clean_toast {
-            self.update_task_toast_body(task_id, body);
+            self.set_task_tracked_items(task_id, &items);
         } else {
-            self.clean_toast = Some(self.start_task_toast("cargo clean", body));
+            let task_id = self.start_task_toast("cargo clean", body);
+            self.set_task_tracked_items(task_id, &items);
+            self.clean_toast = Some(task_id);
         }
     }
 
@@ -958,11 +989,21 @@ impl App {
             return;
         }
 
+        let items: Vec<TrackedItem> = self
+            .running_lint_paths
+            .iter()
+            .map(|p| TrackedItem {
+                label:        crate::project::home_relative_path(p),
+                completed_at: None,
+            })
+            .collect();
         let body = self.running_lint_toast_body();
         if let Some(task_id) = self.lint_toast {
-            self.update_task_toast_body(task_id, body);
+            self.set_task_tracked_items(task_id, &items);
         } else {
-            self.lint_toast = Some(self.start_task_toast("Lints", body));
+            let task_id = self.start_task_toast("Lints", body);
+            self.set_task_tracked_items(task_id, &items);
+            self.lint_toast = Some(task_id);
         }
     }
 
@@ -1467,7 +1508,11 @@ impl App {
         }
         self.git_info.insert(abs.clone(), info);
         if self.is_scan_complete() {
-            self.scan.startup_phases.git_seen.insert(abs);
+            self.scan.startup_phases.git_seen.insert(abs.clone());
+            if let Some(git_toast) = self.scan.startup_phases.git_toast {
+                let label = crate::project::home_relative_path(&abs);
+                self.mark_tracked_item_completed(git_toast, &label);
+            }
             self.maybe_log_startup_phase_completions();
         }
         self.dirty.finder.mark_dirty();
@@ -1480,11 +1525,13 @@ impl App {
         info.first_commit = first_commit;
     }
 
-    pub(super) fn handle_repo_fetch_complete(&mut self, key: String) {
-        self.scan
-            .startup_phases
-            .repo_seen
-            .insert(PathBuf::from(key));
+    pub(super) fn handle_repo_fetch_complete(&mut self, key: &str) {
+        let path = PathBuf::from(key);
+        if let Some(repo_toast) = self.scan.startup_phases.repo_toast {
+            let label = crate::project::home_relative_path(&path);
+            self.mark_tracked_item_completed(repo_toast, &label);
+        }
+        self.scan.startup_phases.repo_seen.insert(path);
         self.maybe_log_startup_phase_completions();
     }
 
@@ -1877,7 +1924,7 @@ impl App {
                     .repo_expected
                     .insert(PathBuf::from(key));
             },
-            BackgroundMsg::RepoFetchComplete { key } => self.handle_repo_fetch_complete(key),
+            BackgroundMsg::RepoFetchComplete { key } => self.handle_repo_fetch_complete(&key),
             BackgroundMsg::GitInfo { path, info } => {
                 self.handle_git_info(path.as_path(), info);
             },

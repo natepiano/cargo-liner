@@ -485,8 +485,13 @@ pub(crate) struct TuiConfig {
 
     /// How long (in seconds) the status bar flash is shown (e.g. "no new
     /// runs found").
-    #[config(default = 3.0)]
+    #[config(default = 5.0)]
     pub status_flash_secs: f64,
+
+    /// How long (in seconds) a completed task toast lingers before
+    /// starting its exit animation.
+    #[config(default = 1.0)]
+    pub task_linger_secs: f64,
 }
 
 impl Default for TuiConfig {
@@ -498,7 +503,8 @@ impl Default for TuiConfig {
             include_dirs:      Vec::new(),
             include_non_rust:  NonRustInclusion::Exclude,
             editor:            "zed".to_string(),
-            status_flash_secs: 3.0,
+            status_flash_secs: 5.0,
+            task_linger_secs:  1.0,
         }
     }
 }
@@ -614,7 +620,7 @@ mod tests {
         assert!(cfg.tui.include_dirs.is_empty());
         assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Exclude);
         assert_eq!(cfg.tui.editor, "zed");
-        assert!((cfg.tui.status_flash_secs - 3.0).abs() < f64::EPSILON);
+        assert!((cfg.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
         assert!(!cfg.lint.enabled);
         assert!(cfg.lint.include.is_empty());

@@ -823,11 +823,11 @@ fn startup_lint_toast_body_shows_paths_then_others() {
     let body = App::startup_lint_toast_body_for(&expected, &seen);
     let lines = body.lines().collect::<Vec<_>>();
 
-    // 4 remaining, 3 visible + suffix on last.
-    assert_eq!(lines.len(), 3);
-    assert!(lines[0].starts_with("~/"));
-    assert!(lines[1].starts_with("~/"));
-    assert!(lines[2].contains("(+ 1 others)"));
+    // 4 remaining — all shown (toast renderer handles truncation).
+    assert_eq!(lines.len(), 4);
+    for line in &lines {
+        assert!(line.starts_with("~/"));
+    }
 }
 
 #[test]

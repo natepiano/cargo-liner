@@ -208,8 +208,8 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     }
 
     // Enter clears a conflict message so the user can try another key.
-    if event.code == KeyCode::Enter && app.keymap_conflict.is_some() {
-        app.keymap_conflict = None;
+    if event.code == KeyCode::Enter && app.inline_error.is_some() {
+        app.inline_error = None;
         return;
     }
 
@@ -232,7 +232,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
                 | KeyCode::End
         )
     {
-        app.keymap_conflict = Some(format!("\"{}\" reserved for navigation", bind.display()));
+        app.inline_error = Some(format!("\"{}\" reserved for navigation", bind.display()));
         return;
     }
 
@@ -241,7 +241,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
         && bind.modifiers == KeyModifiers::NONE
         && matches!(bind.code, KeyCode::Char('h' | 'j' | 'k' | 'l'))
     {
-        app.keymap_conflict = Some(format!(
+        app.inline_error = Some(format!(
             "\"{}\" reserved for vim navigation",
             bind.display()
         ));
@@ -252,7 +252,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     if row.scope != "global"
         && let Some(global_action) = app.current_keymap.global.action_for(&bind)
     {
-        app.keymap_conflict = Some(format!(
+        app.inline_error = Some(format!(
             "\"{}\" used by Global → {}",
             bind.display(),
             global_action.toml_key()
@@ -265,14 +265,14 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     if row.scope == "global"
         && let Some(msg) = check_pane_conflict(&app.current_keymap, &bind)
     {
-        app.keymap_conflict = Some(msg);
+        app.inline_error = Some(msg);
         return;
     }
 
     // Check intra-scope conflict.
     let conflict = check_scope_conflict(&app.current_keymap, row.scope, row.action, &bind);
     if let Some(msg) = conflict {
-        app.keymap_conflict = Some(msg);
+        app.inline_error = Some(msg);
         return;
     }
 
@@ -504,7 +504,7 @@ fn build_lines<'a>(
 
         let is_selected = selectable_index == selected_pos;
         let key_text = if is_selected && is_awaiting {
-            app.keymap_conflict
+            app.inline_error
                 .as_ref()
                 .map_or_else(|| "Press key...".to_string(), Clone::clone)
         } else {
@@ -514,7 +514,7 @@ fn build_lines<'a>(
         let desc_width = 25usize;
         let padded_desc = format!("{:<width$}", row.description, width = desc_width);
 
-        let line = if is_selected && is_awaiting && app.keymap_conflict.is_some() {
+        let line = if is_selected && is_awaiting && app.inline_error.is_some() {
             Line::from(vec![
                 Span::styled(
                     format!("  {padded_desc}"),
@@ -565,14 +565,11 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     let rows = build_rows(&app.current_keymap);
 
     // Dynamic width: base fits all normal keys, expands for conflict messages.
-    let content_width = app
-        .keymap_conflict
-        .as_ref()
-        .map_or(BASE_POPUP_WIDTH, |msg| {
-            // 2 indent + 25 desc + msg len + 2 pad
-            let needed = u16::try_from(2 + 25 + msg.len() + 2).unwrap_or(u16::MAX);
-            BASE_POPUP_WIDTH.max(needed)
-        });
+    let content_width = app.inline_error.as_ref().map_or(BASE_POPUP_WIDTH, |msg| {
+        // 2 indent + 25 desc + msg len + 2 pad
+        let needed = u16::try_from(2 + 25 + msg.len() + 2).unwrap_or(u16::MAX);
+        BASE_POPUP_WIDTH.max(needed)
+    });
     // +2 for left/right border
     let width = (content_width + 2).min(area.width.saturating_sub(4));
 

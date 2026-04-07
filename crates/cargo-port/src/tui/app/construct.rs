@@ -288,7 +288,7 @@ impl App {
             keymap_last_seen: None,
             keymap_diagnostics_id: None,
             keymap_pane: Pane::new(),
-            keymap_conflict: None,
+            inline_error: None,
             ui_modes: UiModes::default(),
             dirty: DirtyState::initial(),
             scan: ScanState::new(inputs.scan_started_at),

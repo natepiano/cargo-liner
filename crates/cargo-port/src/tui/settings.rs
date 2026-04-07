@@ -6,6 +6,8 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use strum::EnumCount;
+use strum::IntoEnumIterator;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
@@ -13,7 +15,7 @@ use super::app::App;
 use super::constants::SETTINGS_POPUP_WIDTH;
 use crate::config;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::EnumCount, strum::EnumIter)]
 pub(super) enum SettingOption {
     InvertScroll,
     IncludeNonRust,
@@ -22,6 +24,8 @@ pub(super) enum SettingOption {
     Editor,
     IncludeDirs,
     InlineDirs,
+    StatusFlashSecs,
+    TaskLingerSecs,
     LintsEnabled,
     LintOnDiscovery,
     LintProjects,
@@ -30,25 +34,7 @@ pub(super) enum SettingOption {
 }
 
 impl SettingOption {
-    pub(super) const fn from_index(i: usize) -> Option<Self> {
-        match i {
-            0 => Some(Self::InvertScroll),
-            1 => Some(Self::IncludeNonRust),
-            2 => Some(Self::NavigationKeys),
-            3 => Some(Self::CiRunCount),
-            4 => Some(Self::Editor),
-            5 => Some(Self::IncludeDirs),
-            6 => Some(Self::InlineDirs),
-            7 => Some(Self::LintsEnabled),
-            8 => Some(Self::LintOnDiscovery),
-            9 => Some(Self::LintProjects),
-            10 => Some(Self::LintCommands),
-            11 => Some(Self::LintCacheSize),
-            _ => None,
-        }
-    }
-
-    pub(super) const fn count() -> usize { 12 }
+    pub(super) fn from_index(i: usize) -> Option<Self> { Self::iter().nth(i) }
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
@@ -95,6 +81,23 @@ fn format_lint_commands(cfg: &config::CargoPortConfig) -> String {
 }
 
 fn format_lint_cache_size(cfg: &config::CargoPortConfig) -> String { cfg.lint.cache_size.clone() }
+
+fn format_secs(secs: f64) -> String {
+    // Display whole-number seconds without a decimal point.
+    if secs.fract() == 0.0 {
+        format!("{secs:.0}")
+    } else {
+        format!("{secs}")
+    }
+}
+
+fn format_flash_secs(cfg: &config::CargoPortConfig) -> String {
+    format_secs(cfg.tui.status_flash_secs)
+}
+
+fn format_linger_secs(cfg: &config::CargoPortConfig) -> String {
+    format_secs(cfg.tui.task_linger_secs)
+}
 
 fn settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
     vec![
@@ -148,6 +151,16 @@ fn settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
             Some(SettingOption::InlineDirs),
             "Inline dirs",
             format_sorted_list(&cfg.tui.inline_dirs),
+        ),
+        (
+            Some(SettingOption::StatusFlashSecs),
+            "Status flash secs",
+            format_flash_secs(cfg),
+        ),
+        (
+            Some(SettingOption::TaskLingerSecs),
+            "Task linger secs",
+            format_linger_secs(cfg),
         ),
         (None, "Lints", String::new()),
         (
@@ -325,7 +338,7 @@ fn toggle_vim_mode(app: &mut App) {
                 "Cannot enable vim mode — these bindings use h/j/k/l:\n{}",
                 conflicts.join(", ")
             );
-            app.show_timed_toast("Vim mode blocked", msg);
+            app.inline_error = Some(msg);
             return;
         }
     }
@@ -338,7 +351,7 @@ fn save_updated_config(app: &mut App, cfg: &config::CargoPortConfig) -> bool {
     match app.save_and_apply_config(cfg) {
         Ok(()) => true,
         Err(err) => {
-            app.show_timed_toast("Config save failed", err);
+            app.inline_error = Some(err);
             false
         },
     }
@@ -360,7 +373,8 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
         content_width,
     );
     lines.push(Line::from(""));
-    if !app.is_settings_editing() && app.settings_pane.pos() == 2 {
+    let nav_keys_index = SettingOption::iter().position(|s| s == SettingOption::NavigationKeys);
+    if !app.is_settings_editing() && Some(app.settings_pane.pos()) == nav_keys_index {
         lines.push(Line::from(vec![
             Span::styled("  Note: ", label_style),
             Span::styled("maps h/j/k/l to arrow navigation", label_style),
@@ -372,7 +386,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
         .saturating_add(2)
         .saturating_add(1);
 
-    app.settings_pane.set_len(SettingOption::count());
+    app.settings_pane.set_len(SettingOption::COUNT);
 
     let inner = super::popup::PopupFrame {
         title:        Some(" Settings ".to_string()),
@@ -426,7 +440,17 @@ pub(super) fn build_settings_lines(
         let setting = *setting;
         let label = format!("  {cursor}{name:<max_label$}  ");
 
-        if app.is_settings_editing() && is_selected {
+        if is_selected && app.inline_error.is_some() && !app.is_settings_editing() {
+            let error = app.inline_error.clone().unwrap_or_default();
+            push_wrapped_value_row(
+                lines,
+                &label,
+                &error,
+                highlight_style,
+                Style::default().fg(Color::Red),
+                content_width,
+            );
+        } else if app.is_settings_editing() && is_selected {
             push_wrapped_value_row(
                 lines,
                 &label,
@@ -508,13 +532,21 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
             app.close_overlay();
         },
         KeyCode::Up => {
+            app.inline_error = None;
             app.settings_pane.up();
         },
         KeyCode::Down => {
+            app.inline_error = None;
             app.settings_pane.down();
         },
-        KeyCode::Left | KeyCode::Right => handle_settings_adjust_key(app, key, setting),
-        KeyCode::Enter | KeyCode::Char(' ') => handle_settings_activate_key(app, setting),
+        KeyCode::Left | KeyCode::Right => {
+            app.inline_error = None;
+            handle_settings_adjust_key(app, key, setting);
+        },
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            app.inline_error = None;
+            handle_settings_activate_key(app, setting);
+        },
         _ => {},
     }
 }
@@ -551,8 +583,25 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
             cfg.lint.on_discovery.toggle();
             let _ = save_updated_config(app, &cfg);
         },
-        _ => {},
+        Some(
+            SettingOption::Editor
+            | SettingOption::IncludeDirs
+            | SettingOption::InlineDirs
+            | SettingOption::StatusFlashSecs
+            | SettingOption::TaskLingerSecs
+            | SettingOption::LintProjects
+            | SettingOption::LintCommands
+            | SettingOption::LintCacheSize,
+        )
+        | None => {},
     }
+}
+
+fn finish_settings_edit_with_error(app: &mut App, error: impl Into<String>) {
+    app.end_settings_editing();
+    app.settings_edit_buf.clear();
+    app.settings_edit_cursor = 0;
+    app.inline_error = Some(error.into());
 }
 
 fn begin_settings_edit(app: &mut App, value: String) {
@@ -589,6 +638,12 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
         Some(SettingOption::LintCacheSize) => {
             begin_settings_edit(app, format_lint_cache_size(&app.current_config));
         },
+        Some(SettingOption::StatusFlashSecs) => {
+            begin_settings_edit(app, format_flash_secs(&app.current_config));
+        },
+        Some(SettingOption::TaskLingerSecs) => {
+            begin_settings_edit(app, format_linger_secs(&app.current_config));
+        },
         Some(SettingOption::IncludeNonRust) => {
             let mut cfg = app.current_config.clone();
             cfg.tui.include_non_rust.toggle();
@@ -609,73 +664,108 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
     }
 }
 
-pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
+fn apply_settings_edit(app: &mut App) {
     let setting = SettingOption::from_index(app.settings_pane.pos());
+    let value = app.settings_edit_buf.clone();
+    match setting {
+        Some(SettingOption::CiRunCount) => match value.parse::<u32>() {
+            Ok(n) => {
+                let mut cfg = app.current_config.clone();
+                cfg.tui.ci_run_count = n.max(1);
+                let _ = save_updated_config(app, &cfg);
+            },
+            Err(_) => {
+                finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+                return;
+            },
+        },
+        Some(SettingOption::InlineDirs) => {
+            let dirs = normalize_sorted_list(&value);
+            let mut cfg = app.current_config.clone();
+            cfg.tui.inline_dirs = dirs;
+            let _ = save_updated_config(app, &cfg);
+        },
+        Some(SettingOption::IncludeDirs) => {
+            let dirs = normalize_sorted_list(&value);
+            let mut cfg = app.current_config.clone();
+            cfg.tui.include_dirs = dirs;
+            let _ = save_updated_config(app, &cfg);
+        },
+        Some(SettingOption::Editor) => {
+            let editor = value.trim().to_string();
+            if !editor.is_empty() {
+                let mut cfg = app.current_config.clone();
+                cfg.tui.editor = editor;
+                let _ = save_updated_config(app, &cfg);
+            }
+        },
+        Some(SettingOption::LintProjects) => {
+            let mut cfg = app.current_config.clone();
+            cfg.lint.include = normalize_sorted_list(&value);
+            if save_updated_config(app, &cfg) {
+                app.show_timed_toast("Settings", "Lint projects updated");
+            }
+        },
+        Some(SettingOption::LintCommands) => {
+            let mut cfg = app.current_config.clone();
+            cfg.lint.commands = parse_lint_commands(&value);
+            if save_updated_config(app, &cfg) {
+                app.show_timed_toast("Settings", "Lint commands updated");
+            }
+        },
+        Some(SettingOption::LintCacheSize) => match parse_lint_cache_size(&value) {
+            Ok(cache_size) => {
+                let mut cfg = app.current_config.clone();
+                cfg.lint.cache_size = cache_size;
+                if save_updated_config(app, &cfg) {
+                    app.show_timed_toast("Settings", "Lint cache size updated");
+                }
+            },
+            Err(err) => {
+                finish_settings_edit_with_error(app, err);
+                return;
+            },
+        },
+        Some(SettingOption::StatusFlashSecs) => match value.parse::<f64>() {
+            Ok(secs) => {
+                let mut cfg = app.current_config.clone();
+                cfg.tui.status_flash_secs = secs.max(0.0);
+                let _ = save_updated_config(app, &cfg);
+            },
+            Err(_) => {
+                finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+                return;
+            },
+        },
+        Some(SettingOption::TaskLingerSecs) => match value.parse::<f64>() {
+            Ok(secs) => {
+                let mut cfg = app.current_config.clone();
+                cfg.tui.task_linger_secs = secs.max(0.0);
+                let _ = save_updated_config(app, &cfg);
+            },
+            Err(_) => {
+                finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+                return;
+            },
+        },
+        Some(
+            SettingOption::InvertScroll
+            | SettingOption::IncludeNonRust
+            | SettingOption::NavigationKeys
+            | SettingOption::LintsEnabled
+            | SettingOption::LintOnDiscovery,
+        )
+        | None => {},
+    }
+    app.end_settings_editing();
+    app.settings_edit_buf.clear();
+    app.settings_edit_cursor = 0;
+}
 
+pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Enter => {
-            let value = app.settings_edit_buf.clone();
-            match setting {
-                Some(SettingOption::CiRunCount) => {
-                    if let Ok(n) = value.parse::<u32>() {
-                        let count: u32 = n.max(1);
-                        let mut cfg = app.current_config.clone();
-                        cfg.tui.ci_run_count = count;
-                        let _ = save_updated_config(app, &cfg);
-                    }
-                },
-                Some(SettingOption::InlineDirs) => {
-                    let dirs = normalize_sorted_list(&value);
-                    let mut cfg = app.current_config.clone();
-                    cfg.tui.inline_dirs = dirs;
-                    let _ = save_updated_config(app, &cfg);
-                },
-                Some(SettingOption::IncludeDirs) => {
-                    let dirs = normalize_sorted_list(&value);
-                    let mut cfg = app.current_config.clone();
-                    cfg.tui.include_dirs = dirs;
-                    let _ = save_updated_config(app, &cfg);
-                },
-                Some(SettingOption::Editor) => {
-                    let editor = value.trim().to_string();
-                    if !editor.is_empty() {
-                        let mut cfg = app.current_config.clone();
-                        cfg.tui.editor = editor;
-                        let _ = save_updated_config(app, &cfg);
-                    }
-                },
-                Some(SettingOption::LintProjects) => {
-                    let mut cfg = app.current_config.clone();
-                    cfg.lint.include = normalize_sorted_list(&value);
-                    if save_updated_config(app, &cfg) {
-                        app.show_timed_toast("Settings", "Lint projects updated");
-                    }
-                },
-                Some(SettingOption::LintCommands) => {
-                    let mut cfg = app.current_config.clone();
-                    cfg.lint.commands = parse_lint_commands(&value);
-                    if save_updated_config(app, &cfg) {
-                        app.show_timed_toast("Settings", "Lint commands updated");
-                    }
-                },
-                Some(SettingOption::LintCacheSize) => match parse_lint_cache_size(&value) {
-                    Ok(cache_size) => {
-                        let mut cfg = app.current_config.clone();
-                        cfg.lint.cache_size = cache_size;
-                        if save_updated_config(app, &cfg) {
-                            app.show_timed_toast("Settings", "Lint cache size updated");
-                        }
-                    },
-                    Err(err) => {
-                        app.show_timed_toast("Invalid cache size", err);
-                        return;
-                    },
-                },
-                _ => {},
-            }
-            app.end_settings_editing();
-            app.settings_edit_buf.clear();
-            app.settings_edit_cursor = 0;
+            apply_settings_edit(app);
         },
         KeyCode::Esc => {
             app.end_settings_editing();
@@ -745,26 +835,26 @@ mod tests {
             Some(SettingOption::NavigationKeys)
         );
         assert_eq!(
-            SettingOption::from_index(7),
+            SettingOption::from_index(9),
             Some(SettingOption::LintsEnabled)
         );
         assert_eq!(
-            SettingOption::from_index(8),
+            SettingOption::from_index(10),
             Some(SettingOption::LintOnDiscovery)
         );
         assert_eq!(
-            SettingOption::from_index(9),
+            SettingOption::from_index(11),
             Some(SettingOption::LintProjects)
         );
         assert_eq!(
-            SettingOption::from_index(10),
+            SettingOption::from_index(12),
             Some(SettingOption::LintCommands)
         );
         assert_eq!(
-            SettingOption::from_index(11),
+            SettingOption::from_index(13),
             Some(SettingOption::LintCacheSize)
         );
-        assert_eq!(SettingOption::count(), 12);
+        assert_eq!(SettingOption::COUNT, 14);
     }
 
     #[test]

@@ -587,7 +587,7 @@ pub struct App {
     pub keymap_last_seen:      Option<ConfigFileStamp>,
     pub keymap_diagnostics_id: Option<u64>,
     pub keymap_pane:           Pane,
-    pub keymap_conflict:       Option<String>,
+    pub inline_error:          Option<String>,
     pub ui_modes:              UiModes,
     pub dirty:                 DirtyState,
     pub scan:                  ScanState,

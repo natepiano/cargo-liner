@@ -23,6 +23,7 @@ use crate::tui::detail::DetailField;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastTaskId;
 use crate::tui::toasts::ToastView;
+use crate::tui::toasts::TrackedItem;
 use crate::tui::types::PaneId;
 
 impl App {
@@ -54,7 +55,10 @@ impl App {
     }
 
     pub fn prune_toasts(&mut self) {
-        self.toasts.prune(Instant::now());
+        let now = Instant::now();
+        let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+        self.toasts.prune_tracked_items(now, linger);
+        self.toasts.prune(now);
         self.toast_pane.set_len(self.active_toasts().len());
         if self.base_focus() == PaneId::Toasts && self.active_toasts().is_empty() {
             self.focus_pane(PaneId::ProjectList);
@@ -62,7 +66,7 @@ impl App {
     }
 
     pub fn show_timed_toast(&mut self, title: impl Into<String>, body: impl Into<String>) {
-        self.toasts.push_timed(title, body, self.toast_timeout());
+        self.toasts.push_timed(title, body, self.toast_timeout(), 1);
         self.toast_pane.set_len(self.active_toasts().len());
     }
 
@@ -71,18 +75,25 @@ impl App {
         title: impl Into<String>,
         body: impl Into<String>,
     ) -> ToastTaskId {
-        let task_id = self.toasts.push_task(title, body);
+        let task_id = self.toasts.push_task(title, body, 1);
         self.toast_pane.set_len(self.active_toasts().len());
         task_id
     }
 
     pub fn finish_task_toast(&mut self, task_id: ToastTaskId) {
-        self.toasts.finish_task(task_id);
+        let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+        self.toasts.finish_task(task_id, linger);
         self.prune_toasts();
     }
 
-    pub fn update_task_toast_body(&mut self, task_id: ToastTaskId, body: impl Into<String>) {
-        self.toasts.update_task_body(task_id, body);
+    pub fn set_task_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) {
+        let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+        self.toasts.set_tracked_items(task_id, items, linger);
+        self.toast_pane.set_len(self.active_toasts().len());
+    }
+
+    pub fn mark_tracked_item_completed(&mut self, task_id: ToastTaskId, label: &str) {
+        self.toasts.mark_item_completed(task_id, label);
         self.toast_pane.set_len(self.active_toasts().len());
     }
 

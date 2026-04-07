@@ -10,9 +10,71 @@ use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
+use unicode_width::UnicodeWidthStr;
 
 use super::manager::ToastStyle;
 use super::manager::ToastView;
+use super::manager::TrackedItemView;
+
+/// Compute how many display-width columns to strike through.
+///
+/// `progress` is in 0.0..=1.0. The result is at most `total_width`.
+/// The progress is quantized to permille (1/1000) resolution to allow
+/// pure integer arithmetic after the single float→int conversion.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "progress is clamped to [0.0, 1.0] and scaled by 1000, so the \
+              rounded result is in [0, 1000] — well within u32"
+)]
+fn strike_width(total_width: usize, progress: f64) -> usize {
+    const SCALE: u32 = 1000;
+    let p_int = (progress.clamp(0.0, 1.0) * f64::from(SCALE)).round() as u32;
+    let tw = u32::try_from(total_width).unwrap_or(u32::MAX);
+    let struck = u64::from(tw) * u64::from(p_int.min(SCALE)) / u64::from(SCALE);
+    usize::try_from(struck)
+        .unwrap_or(total_width)
+        .min(total_width)
+}
+
+/// Split a line into struck-through (left) and normal (right) portions
+/// based on progress (0.0 = none struck, 1.0 = all struck).
+fn strikethrough_line<'a>(text: &str, progress: f64, base_style: Style) -> Line<'a> {
+    let total_width = UnicodeWidthStr::width(text);
+    let strike_chars = strike_width(total_width, progress);
+    if strike_chars == 0 {
+        return Line::from(Span::styled(text.to_owned(), base_style));
+    }
+    if strike_chars >= total_width {
+        return Line::from(Span::styled(
+            text.to_owned(),
+            base_style
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::CROSSED_OUT),
+        ));
+    }
+    // Split at the character boundary closest to strike_chars display width.
+    let mut used = 0usize;
+    let mut split_byte = text.len();
+    for (i, ch) in text.char_indices() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > strike_chars {
+            split_byte = i;
+            break;
+        }
+        used += w;
+    }
+    let (left, right) = text.split_at(split_byte);
+    Line::from(vec![
+        Span::styled(
+            left.to_owned(),
+            base_style
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::CROSSED_OUT),
+        ),
+        Span::styled(right.to_owned(), base_style),
+    ])
+}
 use crate::tui::app::ClickAction;
 use crate::tui::app::DismissTarget;
 use crate::tui::constants::TOAST_GAP;
@@ -52,15 +114,20 @@ pub fn render_toasts(
         };
     }
 
+    let allocated = allocate_toast_heights(toasts, area.height);
+
     let width = TOAST_WIDTH.min(area.width);
 
-    // Stack toasts from the bottom of the area upward. Each toast may
-    // have a different height due to entrance/exit animation.
+    // Stack toasts from the bottom of the area upward.
     let mut dismiss_actions = Vec::with_capacity(toasts.len());
     let mut card_hitboxes = Vec::with_capacity(toasts.len());
     let mut cursor_y = area.y.saturating_add(area.height);
-    for toast in toasts.iter().rev() {
-        let card_height = toast.visible_lines();
+    for (toast, &alloc_height) in toasts.iter().zip(&allocated).rev() {
+        if alloc_height == 0 {
+            continue;
+        }
+        // During entrance animation, visible_lines may be less than alloc.
+        let card_height = toast.visible_lines().min(alloc_height);
         if card_height == 0 {
             continue;
         }
@@ -77,7 +144,14 @@ pub fn render_toasts(
         };
 
         frame.render_widget(Clear, card);
-        let close_rect = render_toast_card(frame, card, toast, pane_focused, focused_toast_id);
+        let close_rect = render_toast_card(
+            frame,
+            card,
+            toast,
+            alloc_height,
+            pane_focused,
+            focused_toast_id,
+        );
         dismiss_actions.push(ClickAction {
             rect:   close_rect,
             target: DismissTarget::Toast(toast.id()),
@@ -96,11 +170,72 @@ pub fn render_toasts(
     }
 }
 
+/// Allocate heights for each toast given total available space.
+///
+/// Returns a Vec parallel to `toasts` with the allocated height for each.
+/// Toasts that don't fit are given 0.
+fn allocate_toast_heights(toasts: &[ToastView<'_>], available: u16) -> Vec<u16> {
+    let count = toasts.len();
+    let mut alloc = vec![0u16; count];
+
+    // First pass: can all minimums fit?
+    let total_min: u16 = toasts
+        .iter()
+        .map(ToastView::min_height)
+        .fold(0u16, u16::saturating_add);
+
+    if total_min > available {
+        // Not all toasts fit at minimum height. Show as many as possible.
+        let mut used = 0u16;
+        for (i, toast) in toasts.iter().enumerate() {
+            let min_h = toast.min_height();
+            if used.saturating_add(min_h) <= available {
+                alloc[i] = min_h;
+                used = used.saturating_add(min_h);
+            }
+            // Remaining toasts get 0 (not shown).
+        }
+        return alloc;
+    }
+
+    // All minimums fit. Start each toast at its minimum.
+    for (i, toast) in toasts.iter().enumerate() {
+        alloc[i] = toast.min_height();
+    }
+    let mut remaining = available.saturating_sub(total_min);
+
+    // Round-robin distribute extra lines to toasts that haven't reached
+    // their animated desired height (visible_lines, capped by desired).
+    loop {
+        if remaining == 0 {
+            break;
+        }
+        let mut gave_any = false;
+        for (i, toast) in toasts.iter().enumerate() {
+            if remaining == 0 {
+                break;
+            }
+            let desired = toast.desired_height();
+            if alloc[i] < desired {
+                alloc[i] += 1;
+                remaining -= 1;
+                gave_any = true;
+            }
+        }
+        if !gave_any {
+            break;
+        }
+    }
+
+    alloc
+}
+
 /// Render a single toast card and return the close-button rect for hit-testing.
 fn render_toast_card(
     frame: &mut Frame,
     card: Rect,
     toast: &ToastView<'_>,
+    alloc_height: u16,
     pane_focused: bool,
     focused_toast_id: Option<u64>,
 ) -> Rect {
@@ -154,19 +289,120 @@ fn render_toast_card(
     } else {
         Style::default()
     };
-    render_toast_body(frame, toast, body_style, inner);
+    // Interior lines available = alloc_height - 2 (borders).
+    let alloc_interior = alloc_height.saturating_sub(2);
+    render_toast_body(frame, toast, body_style, inner, alloc_interior);
 
     close_rect
 }
 
-fn render_toast_body(frame: &mut Frame, toast: &ToastView<'_>, body_style: Style, body_area: Rect) {
-    if toast.action_path().is_some() && body_area.height >= 2 {
+/// Build body lines from plain body text.
+fn body_lines_plain<'a>(
+    toast: &ToastView<'_>,
+    body_style: Style,
+    lines_for_body: usize,
+) -> Vec<Line<'a>> {
+    let body_lines: Vec<&str> = toast.body().lines().collect();
+    let total_body = body_lines.len();
+
+    let needs_truncation = total_body > lines_for_body;
+    let (visible_body, overflow_line) = if needs_truncation && lines_for_body >= 1 {
+        let show = lines_for_body.saturating_sub(1);
+        let remaining = total_body.saturating_sub(show);
+        (
+            body_lines[..show].join("\n"),
+            Some(format!("(+{remaining} more)")),
+        )
+    } else {
+        (toast.body().to_owned(), None)
+    };
+
+    let mut result: Vec<Line<'_>> = visible_body
+        .lines()
+        .map(|l| {
+            toast.linger_progress().map_or_else(
+                || Line::from(Span::styled(l.to_owned(), body_style)),
+                |progress| strikethrough_line(l, progress, body_style),
+            )
+        })
+        .collect();
+    if let Some(overflow) = overflow_line {
+        let overflow_style = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC);
+        result.push(toast.linger_progress().map_or_else(
+            || Line::from(Span::styled(overflow.clone(), overflow_style)),
+            |progress| strikethrough_line(&overflow, progress, overflow_style),
+        ));
+    }
+    result
+}
+
+/// Build body lines from tracked items.
+fn body_lines_tracked<'a>(
+    tracked: &[TrackedItemView],
+    body_style: Style,
+    lines_for_body: usize,
+) -> Vec<Line<'a>> {
+    let total_items = tracked.len();
+    let needs_truncation = total_items > lines_for_body;
+    let (visible_items, overflow_line) = if needs_truncation && lines_for_body >= 1 {
+        let show = lines_for_body.saturating_sub(1);
+        let remaining = total_items.saturating_sub(show);
+        (&tracked[..show], Some(format!("(+{remaining} more)")))
+    } else {
+        (tracked, None)
+    };
+
+    let mut result: Vec<Line<'_>> = visible_items
+        .iter()
+        .map(|item| {
+            item.linger_progress.map_or_else(
+                || Line::from(Span::styled(item.label.clone(), body_style)),
+                |progress| strikethrough_line(&item.label, progress, body_style),
+            )
+        })
+        .collect();
+    if let Some(overflow) = overflow_line {
+        let overflow_style = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC);
+        result.push(Line::from(Span::styled(overflow, overflow_style)));
+    }
+    result
+}
+
+fn render_toast_body(
+    frame: &mut Frame,
+    toast: &ToastView<'_>,
+    body_style: Style,
+    body_area: Rect,
+    alloc_interior: u16,
+) {
+    let tracked = toast.tracked_items();
+    let alloc_body = usize::from(alloc_interior);
+
+    // Reserve a line for the action hint if applicable.
+    let has_action = toast.action_path().is_some() && alloc_body >= 2;
+    let lines_for_body = if has_action {
+        alloc_body.saturating_sub(1)
+    } else {
+        alloc_body
+    };
+
+    let lines: Vec<Line<'_>> = if tracked.is_empty() {
+        body_lines_plain(toast, body_style, lines_for_body)
+    } else {
+        body_lines_tracked(tracked, body_style, lines_for_body)
+    };
+
+    if has_action {
         let text_area = Rect {
             height: body_area.height.saturating_sub(1),
             ..body_area
         };
         frame.render_widget(
-            Paragraph::new(toast.body())
+            Paragraph::new(lines)
                 .style(body_style)
                 .wrap(Wrap { trim: false }),
             text_area,
@@ -187,7 +423,7 @@ fn render_toast_body(frame: &mut Frame, toast: &ToastView<'_>, body_style: Style
         );
     } else {
         frame.render_widget(
-            Paragraph::new(toast.body())
+            Paragraph::new(lines)
                 .style(body_style)
                 .wrap(Wrap { trim: false }),
             body_area,
