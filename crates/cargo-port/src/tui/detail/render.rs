@@ -627,16 +627,15 @@ pub fn detail_layout_pub(app: &App) -> (usize, Option<usize>) {
 }
 
 fn detail_layout(app: &App) -> DetailLayoutSpec {
-    let Some(project) = app.selected_project() else {
+    let Some(info) = app.cached_detail.as_ref().map(|c| &c.info) else {
         return detail_layout_spec(GitPresence::Missing, TargetPresence::Missing);
     };
-    let info = model::build_detail_info(app, project);
-    let git = if model::git_fields(&info).is_empty() {
+    let git = if model::git_fields(info).is_empty() {
         GitPresence::Missing
     } else {
         GitPresence::Available
     };
-    let targets = if has_targets(&info) {
+    let targets = if has_targets(info) {
         TargetPresence::Available
     } else {
         TargetPresence::Missing

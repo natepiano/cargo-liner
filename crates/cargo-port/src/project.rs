@@ -724,11 +724,6 @@ pub(crate) struct LegacyProject {
 }
 
 impl LegacyProject {
-    /// Total number of examples across all groups.
-    pub(crate) fn example_count(&self) -> usize {
-        self.examples.iter().map(|g| g.names.len()).sum()
-    }
-
     /// Language icon for the project list.
     pub(crate) const fn lang_icon(&self) -> &'static str {
         match self.is_rust {
@@ -1285,13 +1280,12 @@ impl ProjectKind for NonRust {
 /// Shared Cargo fields extracted from `Cargo.toml`.
 #[derive(Clone, Debug)]
 pub(crate) struct Cargo {
-    version:                Option<String>,
-    description:            Option<String>,
-    types:                  Vec<ProjectType>,
-    examples:               Vec<ExampleGroup>,
-    benches:                Vec<String>,
-    test_count:             usize,
-    local_dependency_paths: Vec<String>,
+    version:     Option<String>,
+    description: Option<String>,
+    types:       Vec<ProjectType>,
+    examples:    Vec<ExampleGroup>,
+    benches:     Vec<String>,
+    test_count:  usize,
 }
 
 impl Cargo {
@@ -1302,7 +1296,6 @@ impl Cargo {
         examples: Vec<ExampleGroup>,
         benches: Vec<String>,
         test_count: usize,
-        local_dependency_paths: Vec<String>,
     ) -> Self {
         Self {
             version,
@@ -1311,7 +1304,6 @@ impl Cargo {
             examples,
             benches,
             test_count,
-            local_dependency_paths,
         }
     }
 
@@ -1326,8 +1318,6 @@ impl Cargo {
     pub(crate) fn description(&self) -> Option<&str> { self.description.as_deref() }
 
     pub(crate) const fn test_count(&self) -> usize { self.test_count }
-
-    pub(crate) fn local_dependency_paths(&self) -> &[String] { &self.local_dependency_paths }
 
     pub(crate) fn example_count(&self) -> usize {
         self.examples.iter().map(|g| g.names.len()).sum()
@@ -1407,10 +1397,6 @@ impl<Kind: ProjectKind> Project<Kind> {
     pub(crate) const fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
 
     pub(crate) fn worktree_name(&self) -> Option<&str> { self.worktree_name.as_deref() }
-
-    pub(crate) fn worktree_primary_abs_path(&self) -> Option<&Path> {
-        self.worktree_primary_abs_path.as_deref()
-    }
 
     /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
     pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }

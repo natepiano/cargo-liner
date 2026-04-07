@@ -15,7 +15,6 @@ use super::types::ExpandKey;
 use super::types::SearchMode;
 use super::types::VisibleRow;
 use crate::constants::WORKTREE;
-use crate::project::LegacyProject;
 use crate::project::Package;
 use crate::project::Project;
 use crate::project::ProjectListItem;
@@ -93,11 +92,162 @@ impl App {
             return;
         }
 
-        self.cached_detail = self.selected_project().map(|p| DetailCache {
+        self.cached_detail = self.build_selected_detail_info().map(|info| DetailCache {
             generation: self.detail_generation,
-            selection:  current_selection,
-            info:       tui::detail::build_detail_info(self, p),
+            selection: current_selection,
+            info,
         });
+    }
+
+    /// Build `DetailInfo` for the currently selected row, resolving through
+    /// the `project_list_items` hierarchy.
+    fn build_selected_detail_info(&self) -> Option<tui::detail::DetailInfo> {
+        let row = self.selected_row()?;
+        match row {
+            VisibleRow::Root { node_index } => {
+                let item = self.project_list_items.get(node_index)?;
+                Some(tui::detail::build_detail_info(self, item))
+            },
+            VisibleRow::Member {
+                node_index,
+                group_index,
+                member_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                let pkg = Self::resolve_member(item, group_index, member_index)?;
+                Some(tui::detail::build_detail_info_for_member(self, pkg))
+            },
+            VisibleRow::Vendored {
+                node_index,
+                vendored_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                let pkg = Self::resolve_vendored(item, vendored_index)?;
+                Some(tui::detail::build_detail_info_for_member(self, pkg))
+            },
+            VisibleRow::GroupHeader { node_index, .. } => {
+                // Group headers show the parent project's detail
+                let item = self.project_list_items.get(node_index)?;
+                Some(tui::detail::build_detail_info(self, item))
+            },
+            VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
+            }
+            | VisibleRow::WorktreeGroupHeader {
+                node_index,
+                worktree_index,
+                ..
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                self.build_worktree_detail(item, worktree_index)
+            },
+            VisibleRow::WorktreeMember {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                let pkg =
+                    Self::worktree_member_ref(item, worktree_index, group_index, member_index)?;
+                Some(tui::detail::build_detail_info_for_member(self, pkg))
+            },
+            VisibleRow::WorktreeVendored {
+                node_index,
+                worktree_index,
+                vendored_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                let pkg = Self::worktree_vendored_ref(item, worktree_index, vendored_index)?;
+                Some(tui::detail::build_detail_info_for_member(self, pkg))
+            },
+        }
+    }
+
+    /// Resolve a member `Project<Package>` from a `ProjectListItem`.
+    fn resolve_member(
+        item: &ProjectListItem,
+        group_index: usize,
+        member_index: usize,
+    ) -> Option<&Project<Package>> {
+        match item {
+            ProjectListItem::Workspace(ws) => {
+                ws.groups().get(group_index)?.members().get(member_index)
+            },
+            _ => None,
+        }
+    }
+
+    /// Resolve a vendored `Project<Package>` from a `ProjectListItem`.
+    fn resolve_vendored(
+        item: &ProjectListItem,
+        vendored_index: usize,
+    ) -> Option<&Project<Package>> {
+        match item {
+            ProjectListItem::Workspace(ws) => ws.vendored().get(vendored_index),
+            ProjectListItem::Package(pkg) => pkg.vendored().get(vendored_index),
+            _ => None,
+        }
+    }
+
+    /// Resolve a member inside a worktree entry.
+    fn worktree_member_ref(
+        item: &ProjectListItem,
+        worktree_index: usize,
+        group_index: usize,
+        member_index: usize,
+    ) -> Option<&Project<Package>> {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                let ws = wtg.linked().get(worktree_index)?;
+                ws.groups().get(group_index)?.members().get(member_index)
+            },
+            _ => None,
+        }
+    }
+
+    /// Resolve a vendored package inside a worktree entry.
+    fn worktree_vendored_ref(
+        item: &ProjectListItem,
+        worktree_index: usize,
+        vendored_index: usize,
+    ) -> Option<&Project<Package>> {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                let ws = wtg.linked().get(worktree_index)?;
+                ws.vendored().get(vendored_index)
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                let pkg = wtg.linked().get(worktree_index)?;
+                pkg.vendored().get(vendored_index)
+            },
+            _ => None,
+        }
+    }
+
+    /// Build detail info for a worktree entry (a linked workspace or package).
+    fn build_worktree_detail(
+        &self,
+        item: &ProjectListItem,
+        worktree_index: usize,
+    ) -> Option<tui::detail::DetailInfo> {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                let ws = wtg.linked().get(worktree_index)?;
+                let display_path = ws.display_path();
+                Some(tui::detail::build_detail_info_for_workspace_ref(
+                    self,
+                    ws,
+                    &display_path,
+                ))
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                let pkg = wtg.linked().get(worktree_index)?;
+                Some(tui::detail::build_detail_info_for_member(self, pkg))
+            },
+            _ => None,
+        }
     }
 
     pub(super) fn selected_row(&self) -> Option<VisibleRow> {
@@ -162,18 +312,6 @@ impl App {
         match self.selected_row()? {
             VisibleRow::Root { node_index } => self.project_list_items.get(node_index),
             _ => None,
-        }
-    }
-
-    pub fn selected_project(&self) -> Option<&LegacyProject> {
-        if self.is_searching() && !self.search_query.is_empty() {
-            let selected = self.list_state.selected()?;
-            let flat_idx = *self.filtered.get(selected)?;
-            let entry = self.flat_entries.get(flat_idx)?;
-            self.project_by_path(&entry.path)
-        } else {
-            let display_path = self.selected_display_path()?;
-            self.project_by_path(&display_path)
         }
     }
 

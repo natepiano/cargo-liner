@@ -165,9 +165,8 @@ impl App {
                         .get(path)
                         .is_some_and(|info| info.url.is_some())
                 }),
-                PaneId::Targets => self.selected_project().is_some_and(|project| {
-                    let info = crate::tui::detail::build_detail_info(self, project);
-                    info.is_binary || !info.examples.is_empty() || !info.benches.is_empty()
+                PaneId::Targets => self.cached_detail.as_ref().is_some_and(|c| {
+                    c.info.is_binary || !c.info.examples.is_empty() || !c.info.benches.is_empty()
                 }),
                 PaneId::CiRuns => self
                     .selected_project_path()

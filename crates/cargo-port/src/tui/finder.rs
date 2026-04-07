@@ -546,8 +546,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
         app.focus_pane(PaneId::Targets);
 
         // Build target list and find the matching entry index
-        if let Some(project) = app.selected_project() {
-            let info = super::detail::build_detail_info(app, project);
+        if let Some(info) = app.cached_detail.as_ref().map(|c| c.info.clone()) {
             let entries = super::detail::build_target_list(&info);
             let target_kind = match item.kind {
                 FinderKind::Binary => RunTargetKind::Binary,

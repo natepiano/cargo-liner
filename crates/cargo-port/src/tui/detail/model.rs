@@ -1,50 +1,43 @@
+use std::path::Path;
+
 use super::timestamp;
 use crate::ci::Conclusion;
 use crate::constants::IN_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
+use crate::project::Cargo;
 use crate::project::ExampleGroup;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
-use crate::project::LegacyProject;
+use crate::project::NonRust;
 use crate::project::Package;
 use crate::project::Project;
 use crate::project::ProjectLanguage;
 use crate::project::ProjectListItem;
 use crate::project::ProjectType;
+use crate::project::Workspace;
 use crate::tui::app::App;
 
 #[derive(Default)]
-pub struct ProjectCounts {
-    pub workspaces:  usize,
-    pub libs:        usize,
-    pub bins:        usize,
-    pub proc_macros: usize,
-    pub examples:    usize,
-    pub benches:     usize,
-    pub tests:       usize,
+struct ProjectCounts {
+    workspaces:  usize,
+    libs:        usize,
+    bins:        usize,
+    proc_macros: usize,
+    examples:    usize,
+    benches:     usize,
+    tests:       usize,
 }
 
 impl ProjectCounts {
-    pub fn add_project(&mut self, project: &LegacyProject) {
-        if project.is_workspace() {
-            self.workspaces += 1;
-        }
-        for t in &project.types {
-            match t {
-                ProjectType::Library => self.libs += 1,
-                ProjectType::Binary => self.bins += 1,
-                ProjectType::ProcMacro => self.proc_macros += 1,
-                ProjectType::BuildScript => {},
-            }
-        }
-        self.examples += project.example_count();
-        self.benches += project.benches.len();
-        self.tests += project.test_count;
+    fn add_package(&mut self, project: &Project<Package>) { self.add_cargo(project.cargo()); }
+
+    fn add_workspace(&mut self, ws: &Project<Workspace>) {
+        self.workspaces += 1;
+        self.add_cargo(ws.cargo());
     }
 
-    pub fn add_package(&mut self, project: &Project<Package>) {
-        let cargo = project.cargo();
+    fn add_cargo(&mut self, cargo: &Cargo) {
         for t in cargo.types() {
             match t {
                 ProjectType::Library => self.libs += 1,
@@ -59,7 +52,7 @@ impl ProjectCounts {
     }
 
     /// Returns non-zero stats as (label, count) pairs for column display.
-    pub fn to_rows(&self) -> Vec<(&'static str, usize)> {
+    fn to_rows(&self) -> Vec<(&'static str, usize)> {
         let mut rows = Vec::new();
         if self.workspaces > 0 {
             rows.push(("ws", self.workspaces));
@@ -435,17 +428,33 @@ pub struct DetailInfo {
 }
 
 /// Resolve the title shown in the `Package` column header.
-fn resolve_package_title(app: &App, project: &LegacyProject) -> String {
-    if project.is_rust == ProjectLanguage::NonRust {
-        return "LegacyProject".to_string();
+fn resolve_package_title(app: &App, item: &ProjectListItem) -> String {
+    if !item.is_rust() {
+        return "Project".to_string();
     }
-    if app.is_vendored_path(&project.path) {
+    let display = item.display_path();
+    if app.is_vendored_path(&display) {
         return "Vendored Crate".to_string();
     }
-    if project.is_workspace() {
+    if matches!(
+        item,
+        ProjectListItem::Workspace(_) | ProjectListItem::WorkspaceWorktrees(_)
+    ) {
         return "Workspace".to_string();
     }
-    if app.is_workspace_member_path(&project.path) {
+    if app.is_workspace_member_path(&display) {
+        "Workspace Member".to_string()
+    } else {
+        "Package".to_string()
+    }
+}
+
+/// Resolve the package title for a non-root package (member or vendored).
+fn resolve_package_title_for_package(app: &App, pkg: &Project<Package>) -> String {
+    let display = pkg.display_path();
+    if app.is_vendored_path(&display) {
+        "Vendored Crate".to_string()
+    } else if app.is_workspace_member_path(&display) {
         "Workspace Member".to_string()
     } else {
         "Package".to_string()
@@ -490,8 +499,8 @@ struct GitDetailFields {
     last_commit:    Option<String>,
 }
 
-fn build_git_detail_fields(app: &App, project: &LegacyProject) -> GitDetailFields {
-    let git = app.git_info.get(std::path::Path::new(&project.abs_path));
+fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
+    let git = app.git_info.get(abs_path);
     let branch = git.and_then(|info| info.branch.clone());
     let sync = git
         .map(|info| match info.ahead_behind {
@@ -513,14 +522,8 @@ fn build_git_detail_fields(app: &App, project: &LegacyProject) -> GitDetailField
     let origin = git.map(|info| format!("{} {}", info.origin.icon(), info.origin.label()));
     let owner = git.and_then(|info| info.owner.clone());
     let url = git.and_then(|info| info.url.clone());
-    let stars = app
-        .stars
-        .get(std::path::Path::new(&project.abs_path))
-        .copied();
-    let description = app
-        .repo_descriptions
-        .get(std::path::Path::new(&project.abs_path))
-        .cloned();
+    let stars = app.stars.get(abs_path).copied();
+    let description = app.repo_descriptions.get(abs_path).cloned();
     let inception = git
         .and_then(|info| info.first_commit.as_deref())
         .map(timestamp::format_timestamp);
@@ -529,7 +532,7 @@ fn build_git_detail_fields(app: &App, project: &LegacyProject) -> GitDetailField
         .map(timestamp::format_timestamp);
     GitDetailFields {
         branch,
-        path: app.git_path_state_for(std::path::Path::new(&project.abs_path)),
+        path: app.git_path_state_for(abs_path),
         sync,
         vs_origin,
         vs_local,
@@ -544,15 +547,12 @@ fn build_git_detail_fields(app: &App, project: &LegacyProject) -> GitDetailField
     }
 }
 
-/// Resolve worktree group item from the selected item if this project is a worktree group root.
-fn worktree_group_item<'a>(app: &'a App, project: &LegacyProject) -> Option<&'a ProjectListItem> {
-    let item = app.selected_item()?;
-    let is_group = matches!(
+/// Check whether a `ProjectListItem` is a worktree group.
+const fn is_worktree_group(item: &ProjectListItem) -> bool {
+    matches!(
         item,
-        crate::project::ProjectListItem::WorkspaceWorktrees(_)
-            | crate::project::ProjectListItem::PackageWorktrees(_)
-    ) && item.display_path() == project.path;
-    is_group.then_some(item)
+        ProjectListItem::WorkspaceWorktrees(_) | ProjectListItem::PackageWorktrees(_)
+    )
 }
 
 /// Collect worktree names from a worktree group item.
@@ -578,75 +578,213 @@ fn worktree_names_from_item(item: &ProjectListItem) -> Vec<String> {
     }
 }
 
-pub fn build_detail_info(app: &App, project: &LegacyProject) -> DetailInfo {
-    let mut counts = app.workspace_counts(project).unwrap_or_else(|| {
-        let mut counts = ProjectCounts::default();
-        counts.add_project(project);
-        counts
-    });
-    if !project.is_workspace() {
-        counts.examples = project.example_count();
-        counts.benches = project.benches.len();
-        counts.tests = project.test_count;
+/// Build `DetailInfo` for a root `ProjectListItem`.
+pub fn build_detail_info(app: &App, item: &ProjectListItem) -> DetailInfo {
+    let display_path = item.display_path();
+    let is_wt_group = is_worktree_group(item);
+
+    match item {
+        ProjectListItem::Workspace(ws) => {
+            build_detail_info_for_workspace(app, ws, &display_path, is_wt_group, Some(item))
+        },
+        ProjectListItem::Package(pkg) => {
+            build_detail_info_for_package(app, pkg, &display_path, is_wt_group, Some(item))
+        },
+        ProjectListItem::NonRust(nr) => {
+            build_detail_info_non_rust(app, nr, &display_path, is_wt_group, Some(item))
+        },
+        ProjectListItem::WorkspaceWorktrees(wtg) => {
+            let ws = wtg.primary();
+            build_detail_info_for_workspace(app, ws, &display_path, true, Some(item))
+        },
+        ProjectListItem::PackageWorktrees(wtg) => {
+            let pkg = wtg.primary();
+            build_detail_info_for_package(app, pkg, &display_path, true, Some(item))
+        },
+    }
+}
+
+/// Build `DetailInfo` for a `Project<Package>` (member or vendored row).
+pub fn build_detail_info_for_member(app: &App, pkg: &Project<Package>) -> DetailInfo {
+    let display_path = pkg.display_path();
+    build_detail_info_for_package(app, pkg, &display_path, false, None)
+}
+
+/// Build `DetailInfo` for a linked `Project<Workspace>` worktree entry.
+pub fn build_detail_info_for_workspace_ref(
+    app: &App,
+    ws: &Project<Workspace>,
+    display_path: &str,
+) -> DetailInfo {
+    build_detail_info_for_workspace(app, ws, display_path, false, None)
+}
+
+fn build_detail_info_for_workspace(
+    app: &App,
+    ws: &Project<Workspace>,
+    display_path: &str,
+    is_wt_group: bool,
+    wt_item: Option<&ProjectListItem>,
+) -> DetailInfo {
+    let abs_path = ws.path();
+    let cargo = ws.cargo();
+
+    let mut counts = ProjectCounts::default();
+    counts.add_workspace(ws);
+    if ws.has_members() {
+        for group in ws.groups() {
+            for member in group.members() {
+                counts.add_package(member);
+            }
+        }
     }
     let stats_rows = counts.to_rows();
 
-    let git_detail = build_git_detail_fields(app, project);
-    let crates_version = app
-        .crates_versions
-        .get(std::path::Path::new(&project.abs_path))
-        .cloned();
-    let crates_downloads = app
-        .crates_downloads
-        .get(std::path::Path::new(&project.abs_path))
-        .copied();
-    let worktree_label = project.worktree_name.clone();
-    let cargo_active = app.is_cargo_active_path(std::path::Path::new(&project.abs_path));
+    let wt_item_ref = wt_item.filter(|_| is_wt_group);
+    build_detail_info_common(
+        app,
+        DetailSource {
+            abs_path,
+            display_path,
+            name: ws.name(),
+            cargo: Some(cargo),
+            worktree_name: ws.worktree_name(),
+            is_rust: true,
+            wt_item: wt_item_ref,
+            stats_rows,
+            package_title: "Workspace".to_string(),
+        },
+    )
+}
 
-    let wt_item = worktree_group_item(app, project);
+fn build_detail_info_for_package(
+    app: &App,
+    pkg: &Project<Package>,
+    display_path: &str,
+    is_wt_group: bool,
+    wt_item: Option<&ProjectListItem>,
+) -> DetailInfo {
+    let abs_path = pkg.path();
+    let cargo = pkg.cargo();
 
-    let abs = std::path::Path::new(&project.abs_path);
+    let mut counts = ProjectCounts::default();
+    counts.add_package(pkg);
+    let stats_rows = counts.to_rows();
+
+    let wt_item_ref = wt_item.filter(|_| is_wt_group);
+    let package_title = wt_item.map_or_else(
+        || resolve_package_title_for_package(app, pkg),
+        |item| resolve_package_title(app, item),
+    );
+
+    build_detail_info_common(
+        app,
+        DetailSource {
+            abs_path,
+            display_path,
+            name: pkg.name(),
+            cargo: Some(cargo),
+            worktree_name: pkg.worktree_name(),
+            is_rust: true,
+            wt_item: wt_item_ref,
+            stats_rows,
+            package_title,
+        },
+    )
+}
+
+fn build_detail_info_non_rust(
+    app: &App,
+    nr: &Project<NonRust>,
+    display_path: &str,
+    is_wt_group: bool,
+    wt_item: Option<&ProjectListItem>,
+) -> DetailInfo {
+    let abs_path = nr.path();
+    let wt_item_ref = wt_item.filter(|_| is_wt_group);
+
+    build_detail_info_common(
+        app,
+        DetailSource {
+            abs_path,
+            display_path,
+            name: nr.name(),
+            cargo: None,
+            worktree_name: nr.worktree_name(),
+            is_rust: false,
+            wt_item: wt_item_ref,
+            stats_rows: Vec::new(),
+            package_title: "Project".to_string(),
+        },
+    )
+}
+
+struct DetailSource<'a> {
+    abs_path:      &'a Path,
+    display_path:  &'a str,
+    name:          Option<&'a str>,
+    cargo:         Option<&'a Cargo>,
+    worktree_name: Option<&'a str>,
+    is_rust:       bool,
+    wt_item:       Option<&'a ProjectListItem>,
+    stats_rows:    Vec<(&'static str, usize)>,
+    package_title: String,
+}
+
+fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
+    let abs_path = src.abs_path;
+    let name = src.name;
+    let cargo = src.cargo;
+    let wt_item = src.wt_item;
+    let git_detail = build_git_detail_fields(app, abs_path);
+    let crates_version = app.crates_versions.get(abs_path).cloned();
+    let crates_downloads = app.crates_downloads.get(abs_path).copied();
+    let cargo_active = app.is_cargo_active_path(abs_path);
+
     let (disk, ci) = wt_item.map_or_else(
         || {
-            let ci = if cargo_active { app.ci_for(abs) } else { None };
-            (app.formatted_disk(abs), ci)
+            let ci = if cargo_active {
+                app.ci_for(abs_path)
+            } else {
+                None
+            };
+            (app.formatted_disk(abs_path), ci)
         },
         |item| (app.formatted_disk_for_item(item), app.ci_for_item(item)),
     );
 
-    let package_title = resolve_package_title(app, project);
     let worktree_names = wt_item.map_or_else(Vec::new, worktree_names_from_item);
 
-    let is_binary = project
-        .types
-        .iter()
-        .any(|project_type| matches!(project_type, ProjectType::Binary));
+    let types_str = cargo.map_or_else(String::new, |c| {
+        c.types()
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
+
+    let is_binary = cargo.is_some_and(Cargo::is_binary);
     let binary_name = if is_binary {
-        project.name.clone()
+        name.map(str::to_string)
     } else {
         None
     };
 
     DetailInfo {
-        package_title,
-        name: project.name.clone().unwrap_or_else(|| "-".to_string()),
-        path: project.path.clone(),
-        version: project.version.clone().unwrap_or_else(|| "-".to_string()),
-        description: project.description.clone(),
+        package_title: src.package_title,
+        name: name.unwrap_or("-").to_string(),
+        path: src.display_path.to_string(),
+        version: cargo.and_then(Cargo::version).unwrap_or("-").to_string(),
+        description: cargo.and_then(Cargo::description).map(str::to_string),
         crates_version,
         crates_downloads,
-        types: project
-            .types
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", "),
+        types: types_str,
         disk,
         lint_label: app
-            .selected_lint_icon(abs)
+            .selected_lint_icon(abs_path)
             .map_or_else(String::new, std::string::ToString::to_string),
         ci,
-        stats_rows,
+        stats_rows: src.stats_rows,
         git_branch: git_detail.branch,
         git_path: git_detail.path,
         git_sync: git_detail.sync,
@@ -660,14 +798,18 @@ pub fn build_detail_info(app: &App, project: &LegacyProject) -> DetailInfo {
         repo_description: git_detail.description,
         git_inception: git_detail.inception,
         git_last_commit: git_detail.last_commit,
-        worktree_label,
+        worktree_label: src.worktree_name.map(str::to_string),
         worktree_names,
         is_binary,
         binary_name,
-        examples: project.examples.clone(),
-        benches: project.benches.clone(),
-        is_rust: project.is_rust,
-        has_package: project.name.is_some(),
+        examples: cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
+        benches: cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
+        is_rust: if src.is_rust {
+            ProjectLanguage::Rust
+        } else {
+            ProjectLanguage::NonRust
+        },
+        has_package: name.is_some(),
         cargo_active,
     }
 }

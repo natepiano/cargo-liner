@@ -1724,7 +1724,11 @@ impl App {
         let display_path = self
             .selected_display_path()
             .unwrap_or_else(|| abs_path.display().to_string());
-        let name = self.selected_project().and_then(|p| p.name.clone());
+        let name = self
+            .cached_detail
+            .as_ref()
+            .map(|c| c.info.name.clone())
+            .filter(|n| n != "-");
         if !self.fully_loaded.contains(&abs_path)
             && self.priority_fetch_path.as_ref() != Some(&display_path)
         {

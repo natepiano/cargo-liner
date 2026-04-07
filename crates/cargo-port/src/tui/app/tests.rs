@@ -969,6 +969,8 @@ fn tabbable_panes_follow_canonical_order() {
             ahead_behind_local:  None,
         },
     );
+    app.detail_generation += 1;
+    app.ensure_detail_cached();
 
     assert_eq!(
         app.tabbable_panes(),
@@ -1029,10 +1031,12 @@ fn project_refresh_updates_selected_tree_project_targets() {
     app.list_state.select(Some(0));
     app.sync_selected_project();
 
-    assert_eq!(
-        app.selected_project().map(LegacyProject::example_count),
-        Some(0)
-    );
+    app.ensure_detail_cached();
+    let example_count = app
+        .cached_detail
+        .as_ref()
+        .map(|c| c.info.examples.iter().map(|g| g.names.len()).sum::<usize>());
+    assert_eq!(example_count, Some(0));
     assert!(!app.tabbable_panes().contains(&PaneId::Targets));
 
     let mut refreshed = project;
@@ -1042,12 +1046,15 @@ fn project_refresh_updates_selected_tree_project_targets() {
     }];
 
     assert!(app.handle_project_refreshed(&refreshed));
+    wait_for_tree_build(&mut app);
     app.sync_selected_project();
 
-    assert_eq!(
-        app.selected_project().map(LegacyProject::example_count),
-        Some(1)
-    );
+    app.ensure_detail_cached();
+    let example_count = app
+        .cached_detail
+        .as_ref()
+        .map(|c| c.info.examples.iter().map(|g| g.names.len()).sum::<usize>());
+    assert_eq!(example_count, Some(1));
     assert!(app.tabbable_panes().contains(&PaneId::Targets));
 }
 

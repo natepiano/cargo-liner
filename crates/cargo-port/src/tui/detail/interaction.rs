@@ -8,7 +8,6 @@ use super::CiFetchKind;
 use super::DetailField;
 use super::PendingCiFetch;
 use super::PendingExampleRun;
-use super::build_detail_info;
 use super::build_target_list;
 use super::git_fields;
 use super::package_fields;
@@ -34,20 +33,24 @@ enum BuildMode {
 }
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
-    let Some(project) = app.selected_project() else {
+    let Some(info) = app.cached_detail.as_ref().map(|c| c.info.clone()) else {
         return;
     };
-    let info = build_detail_info(app, project);
     let entries = build_target_list(&info);
     if let Some(entry) = entries.get(app.targets_pane.pos())
-        && let Some(project) = app.selected_project()
+        && let Some(abs_path) = app.selected_project_path()
     {
+        let package_name = if info.name == "-" {
+            None
+        } else {
+            Some(info.name)
+        };
         app.pending_example_run = Some(PendingExampleRun {
-            abs_path:     project.abs_path.clone(),
-            target_name:  entry.name.clone(),
-            package_name: project.name.clone(),
-            kind:         entry.kind,
-            release:      matches!(mode, BuildMode::Release),
+            abs_path: abs_path.display().to_string(),
+            target_name: entry.name.clone(),
+            package_name,
+            kind: entry.kind,
+            release: matches!(mode, BuildMode::Release),
         });
     }
 }
@@ -129,9 +132,7 @@ fn handle_detail_enter(app: &mut App) {
     if app.is_focused(PaneId::Targets) {
         handle_target_action(app, BuildMode::Debug);
     } else if app.base_focus() == PaneId::Package {
-        let info = app
-            .selected_project()
-            .map(|project| build_detail_info(app, project));
+        let info = app.cached_detail.as_ref().map(|c| c.info.clone());
         let fields = info.as_ref().map(package_fields).unwrap_or_default();
         match fields.get(app.package_pane.pos()) {
             Some(DetailField::CratesIo) => {
@@ -142,11 +143,9 @@ fn handle_detail_enter(app: &mut App) {
             Some(field) if field.is_from_cargo_toml() => open_cargo_toml(app),
             _ => {},
         }
-    } else if let Some(info) = app
-        .selected_project()
-        .map(|project| build_detail_info(app, project))
+    } else if let Some(info) = app.cached_detail.as_ref().map(|c| &c.info)
         && matches!(
-            git_fields(&info).get(app.git_pane.pos()),
+            git_fields(info).get(app.git_pane.pos()),
             Some(DetailField::Repo)
         )
         && let Some(url) = info.git_url.as_deref()

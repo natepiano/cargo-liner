@@ -16,14 +16,10 @@ use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
-use crate::project::LegacyProject;
-use crate::project::Project;
 use crate::project::ProjectLanguage::Rust;
 use crate::project::ProjectListItem;
 use crate::project::Visibility;
-use crate::project::Workspace;
 use crate::tui::detail::DetailField;
-use crate::tui::detail::ProjectCounts;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastTaskId;
 use crate::tui::toasts::ToastView;
@@ -178,45 +174,6 @@ impl App {
             self.mark_selection_changed();
             self.maybe_priority_fetch();
         }
-    }
-
-    pub fn workspace_counts(&self, project: &LegacyProject) -> Option<ProjectCounts> {
-        for item in &self.project_list_items {
-            match item {
-                ProjectListItem::Workspace(ws) if ws.display_path() == project.path => {
-                    if !ws.has_members() {
-                        return None;
-                    }
-                    let mut counts = ProjectCounts::default();
-                    counts.add_project(project);
-                    for group in ws.groups() {
-                        for member in group.members() {
-                            counts.add_package(member);
-                        }
-                    }
-                    return Some(counts);
-                },
-                ProjectListItem::WorkspaceWorktrees(wtg) => {
-                    let all_ws: Vec<&Project<Workspace>> = std::iter::once(wtg.primary())
-                        .chain(wtg.linked().iter())
-                        .collect();
-                    for ws in &all_ws {
-                        if ws.display_path() == project.path && ws.has_members() {
-                            let mut counts = ProjectCounts::default();
-                            counts.add_project(project);
-                            for group in ws.groups() {
-                                for member in group.members() {
-                                    counts.add_package(member);
-                                }
-                            }
-                            return Some(counts);
-                        }
-                    }
-                },
-                _ => {},
-            }
-        }
-        None
     }
 
     pub fn is_deleted(&self, path: &str) -> bool {
@@ -397,12 +354,6 @@ impl App {
         })
     }
 
-    pub fn project_by_path(&self, path: &str) -> Option<&LegacyProject> {
-        self.all_projects
-            .iter()
-            .find(|project| project.path == path)
-    }
-
     pub fn recompute_cargo_active_paths(&mut self) {
         let project_index: HashMap<PathBuf, Vec<String>> = self
             .all_projects
@@ -503,11 +454,9 @@ impl App {
             InputContext::ProjectList => Some("open"),
             InputContext::DetailTargets => Some("run"),
             InputContext::DetailFields => {
+                let info = &self.cached_detail.as_ref()?.info;
                 if self.base_focus() == PaneId::Package {
-                    let info = self
-                        .selected_project()
-                        .map(|p| crate::tui::detail::build_detail_info(self, p))?;
-                    let fields = crate::tui::detail::package_fields(&info);
+                    let fields = crate::tui::detail::package_fields(info);
                     let field = *fields.get(self.package_pane.pos())?;
                     if field.is_from_cargo_toml() {
                         Some("open")
@@ -516,10 +465,7 @@ impl App {
                     }
                 } else {
                     // Git column — Repo field opens URL
-                    let info = self
-                        .selected_project()
-                        .map(|p| crate::tui::detail::build_detail_info(self, p))?;
-                    let fields = crate::tui::detail::git_fields(&info);
+                    let fields = crate::tui::detail::git_fields(info);
                     match fields.get(self.git_pane.pos()) {
                         Some(DetailField::Repo) if info.git_url.is_some() => Some("open"),
                         _ => None,

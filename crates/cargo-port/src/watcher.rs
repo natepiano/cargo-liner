@@ -1331,7 +1331,14 @@ edition = "2024"
             refreshed.abs_path,
             project_root.path().display().to_string()
         );
-        assert_eq!(refreshed.example_count(), 1);
+        assert_eq!(
+            refreshed
+                .examples
+                .iter()
+                .map(|g| g.names.len())
+                .sum::<usize>(),
+            1
+        );
         assert_pending_disk(&pending_disk, "~/rust/demo");
         assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());
