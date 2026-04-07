@@ -406,11 +406,11 @@ impl App {
             abs_path: abs_path.clone(),
             repo_root,
         });
-        crate::perf_log::log_duration(
-            "app_register_project_background_services",
-            started.elapsed(),
-            &format!("path={} has_repo_root={has_repo_root}", item.display_path()),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+            path = %item.display_path(),
+            has_repo_root,
+            "app_register_project_background_services"
         );
     }
 
@@ -449,16 +449,12 @@ impl App {
             for (repo_root, paths) in projects_by_repo {
                 let started = Instant::now();
                 let first_commit = crate::project::detect_first_commit(&repo_root);
-                crate::perf_log::log_duration(
-                    "git_first_commit_fetch",
-                    started.elapsed(),
-                    &format!(
-                        "repo_root={} rows={} found={}",
-                        repo_root.display(),
-                        paths.len(),
-                        first_commit.is_some()
-                    ),
-                    0,
+                tracing::info!(
+                    elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+                    repo_root = %repo_root.display(),
+                    rows = paths.len(),
+                    found = first_commit.is_some(),
+                    "git_first_commit_fetch"
                 );
                 for path in paths {
                     let _ = tx.send(BackgroundMsg::GitFirstCommit {
@@ -584,15 +580,12 @@ impl App {
                 ProjectListItem::NonRust(_) => {},
             }
         }
-        crate::perf_log::log_event(&format!("lint_register_root_items count={count}"));
+        tracing::info!(count, "lint_register_root_items");
     }
 
     fn register_lint_project_if_eligible(&self, item: &ProjectListItem) {
         if !item.is_rust() {
-            crate::perf_log::log_event(&format!(
-                "lint_register_skip reason=not_rust path={}",
-                item.display_path()
-            ));
+            tracing::info!(reason = "not_rust", path = %item.display_path(), "lint_register_skip");
             return;
         }
         let path = item.path();
@@ -603,20 +596,14 @@ impl App {
                 && path.starts_with(existing.path())
         });
         if is_member {
-            crate::perf_log::log_event(&format!(
-                "lint_register_skip reason=workspace_member path={}",
-                item.display_path()
-            ));
+            tracing::info!(reason = "workspace_member", path = %item.display_path(), "lint_register_skip");
             return;
         }
         let Some(runtime) = &self.lint_runtime else {
-            crate::perf_log::log_event(&format!(
-                "lint_register_skip reason=no_runtime path={}",
-                item.display_path()
-            ));
+            tracing::info!(reason = "no_runtime", path = %item.display_path(), "lint_register_skip");
             return;
         };
-        crate::perf_log::log_event(&format!("lint_register path={}", item.display_path()));
+        tracing::info!(path = %item.display_path(), "lint_register");
         runtime.register_project(crate::lint::RegisterProjectRequest {
             project_path: item.display_path(),
             abs_path:     path.to_path_buf(),
@@ -679,17 +666,18 @@ impl App {
                 self.startup_repo_toast_body(),
             ));
         }
-        crate::perf_log::log_event(&format!(
-            "startup_phase_plan disk_expected={} git_expected={} repo_expected={} lint_expected={}",
-            self.scan.startup_phases.disk_expected.unwrap_or(0),
-            self.scan.startup_phases.git_expected.len(),
-            self.scan.startup_phases.repo_expected.len(),
-            self.scan
+        tracing::info!(
+            disk_expected = self.scan.startup_phases.disk_expected.unwrap_or(0),
+            git_expected = self.scan.startup_phases.git_expected.len(),
+            repo_expected = self.scan.startup_phases.repo_expected.len(),
+            lint_expected = self
+                .scan
                 .startup_phases
                 .lint_expected
                 .as_ref()
-                .map_or(0, HashSet::len)
-        ));
+                .map_or(0, HashSet::len),
+            "startup_phase_plan"
+        );
         self.maybe_log_startup_phase_completions();
     }
 
@@ -714,12 +702,14 @@ impl App {
                 .is_some_and(|expected| self.scan.startup_phases.disk_seen.len() >= expected)
         {
             self.scan.startup_phases.disk_complete_at = Some(now);
-            crate::perf_log::log_event(&format!(
-                "startup_phase_complete phase=disk_applied since_scan_complete_ms={} seen={} expected={}",
-                now.duration_since(scan_complete_at).as_millis(),
-                self.scan.startup_phases.disk_seen.len(),
-                self.scan.startup_phases.disk_expected.unwrap_or(0)
-            ));
+            tracing::info!(
+                phase = "disk_applied",
+                since_scan_complete_ms =
+                    crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+                seen = self.scan.startup_phases.disk_seen.len(),
+                expected = self.scan.startup_phases.disk_expected.unwrap_or(0),
+                "startup_phase_complete"
+            );
         }
     }
 
@@ -732,12 +722,14 @@ impl App {
             if let Some(git_toast) = self.scan.startup_phases.git_toast.take() {
                 self.finish_task_toast(git_toast);
             }
-            crate::perf_log::log_event(&format!(
-                "startup_phase_complete phase=git_local_applied since_scan_complete_ms={} seen={} expected={}",
-                now.duration_since(scan_complete_at).as_millis(),
-                self.scan.startup_phases.git_seen.len(),
-                self.scan.startup_phases.git_expected.len()
-            ));
+            tracing::info!(
+                phase = "git_local_applied",
+                since_scan_complete_ms =
+                    crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+                seen = self.scan.startup_phases.git_seen.len(),
+                expected = self.scan.startup_phases.git_expected.len(),
+                "startup_phase_complete"
+            );
         } else if let Some(git_toast) = self.scan.startup_phases.git_toast {
             self.update_task_toast_body(git_toast, self.startup_git_toast_body());
         }
@@ -752,12 +744,14 @@ impl App {
             if let Some(repo_toast) = self.scan.startup_phases.repo_toast.take() {
                 self.finish_task_toast(repo_toast);
             }
-            crate::perf_log::log_event(&format!(
-                "startup_phase_complete phase=repo_fetch_applied since_scan_complete_ms={} seen={} expected={}",
-                now.duration_since(scan_complete_at).as_millis(),
-                self.scan.startup_phases.repo_seen.len(),
-                self.scan.startup_phases.repo_expected.len()
-            ));
+            tracing::info!(
+                phase = "repo_fetch_applied",
+                since_scan_complete_ms =
+                    crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+                seen = self.scan.startup_phases.repo_seen.len(),
+                expected = self.scan.startup_phases.repo_expected.len(),
+                "startup_phase_complete"
+            );
         } else if let Some(repo_toast) = self.scan.startup_phases.repo_toast {
             self.update_task_toast_body(repo_toast, self.startup_repo_toast_body());
         }
@@ -776,16 +770,19 @@ impl App {
                 })
         {
             self.scan.startup_phases.lint_complete_at = Some(now);
-            crate::perf_log::log_event(&format!(
-                "startup_phase_complete phase=lint_terminal_applied since_scan_complete_ms={} seen={} expected={}",
-                now.duration_since(scan_complete_at).as_millis(),
-                self.scan.startup_phases.lint_seen_terminal.len(),
-                self.scan
+            tracing::info!(
+                phase = "lint_terminal_applied",
+                since_scan_complete_ms =
+                    crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+                seen = self.scan.startup_phases.lint_seen_terminal.len(),
+                expected = self
+                    .scan
                     .startup_phases
                     .lint_expected
                     .as_ref()
-                    .map_or(0, HashSet::len)
-            ));
+                    .map_or(0, HashSet::len),
+                "startup_phase_complete"
+            );
         }
     }
 
@@ -800,26 +797,29 @@ impl App {
                     "Startup complete",
                     "Disk, local Git, and GitHub startup activity complete.".to_string(),
                 );
-                crate::perf_log::log_event(&format!(
-                    "startup_complete since_scan_complete_ms={} disk_seen={} disk_expected={} git_seen={} git_expected={} repo_seen={} repo_expected={} lint_seen={} lint_expected={}",
-                    now.duration_since(scan_complete_at).as_millis(),
-                    self.scan.startup_phases.disk_seen.len(),
-                    self.scan.startup_phases.disk_expected.unwrap_or(0),
-                    self.scan.startup_phases.git_seen.len(),
-                    self.scan.startup_phases.git_expected.len(),
-                    self.scan.startup_phases.repo_seen.len(),
-                    self.scan.startup_phases.repo_expected.len(),
-                    self.scan.startup_phases.lint_seen_terminal.len(),
-                    self.scan
+                tracing::info!(
+                    since_scan_complete_ms =
+                        crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+                    disk_seen = self.scan.startup_phases.disk_seen.len(),
+                    disk_expected = self.scan.startup_phases.disk_expected.unwrap_or(0),
+                    git_seen = self.scan.startup_phases.git_seen.len(),
+                    git_expected = self.scan.startup_phases.git_expected.len(),
+                    repo_seen = self.scan.startup_phases.repo_seen.len(),
+                    repo_expected = self.scan.startup_phases.repo_expected.len(),
+                    lint_seen = self.scan.startup_phases.lint_seen_terminal.len(),
+                    lint_expected = self
+                        .scan
                         .startup_phases
                         .lint_expected
                         .as_ref()
-                        .map_or(0, HashSet::len)
-                ));
-                crate::perf_log::log_event(&format!(
-                    "steady_state_begin since_scan_complete_ms={}",
-                    now.duration_since(scan_complete_at).as_millis()
-                ));
+                        .map_or(0, HashSet::len),
+                    "startup_complete"
+                );
+                tracing::info!(
+                    since_scan_complete_ms =
+                        crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+                    "steady_state_begin"
+                );
             }
         }
     }
@@ -934,18 +934,17 @@ impl App {
             let input_count = projects.len();
             let project_list_items = scan::build_tree(&projects, &inline_dirs);
             let flat_entries = scan::build_flat_entries(&project_list_items);
-            crate::perf_log::log_duration(
-                "tree_build",
-                started.elapsed(),
-                &format!(
-                    "build_id={} projects={} items={} flat_entries={}",
+            let elapsed = started.elapsed();
+            if elapsed.as_millis() >= crate::perf_log::SLOW_WORKER_MS {
+                tracing::info!(
+                    elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
                     build_id,
-                    input_count,
-                    project_list_items.len(),
-                    flat_entries.len()
-                ),
-                crate::perf_log::slow_worker_threshold_ms(),
-            );
+                    projects = input_count,
+                    items = project_list_items.len(),
+                    flat_entries = flat_entries.len(),
+                    "tree_build"
+                );
+            }
             let _ = tx.send(TreeBuildResult {
                 build_id,
                 flat_entries,
@@ -998,12 +997,15 @@ impl App {
             };
             let widths =
                 super::snapshots::build_fit_widths_snapshot(&items, &state, lint_enabled, build_id);
-            crate::perf_log::log_duration(
-                "fit_widths_build",
-                started.elapsed(),
-                &format!("build_id={} items={}", build_id, items.len()),
-                crate::perf_log::slow_worker_threshold_ms(),
-            );
+            let elapsed = started.elapsed();
+            if elapsed.as_millis() >= crate::perf_log::SLOW_WORKER_MS {
+                tracing::info!(
+                    elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
+                    build_id,
+                    items = items.len(),
+                    "fit_widths_build"
+                );
+            }
             let _ = tx.send(FitWidthsBuildResult { build_id, widths });
         });
     }
@@ -1046,18 +1048,17 @@ impl App {
             let started = Instant::now();
             let (root_sorted, child_sorted) =
                 super::snapshots::build_disk_cache_snapshot(&items, &disk_usage);
-            crate::perf_log::log_duration(
-                "disk_cache_build",
-                started.elapsed(),
-                &format!(
-                    "build_id={} items={} root_values={} child_sets={}",
+            let elapsed = started.elapsed();
+            if elapsed.as_millis() >= crate::perf_log::SLOW_WORKER_MS {
+                tracing::info!(
+                    elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
                     build_id,
-                    items.len(),
-                    root_sorted.len(),
-                    child_sorted.len()
-                ),
-                crate::perf_log::slow_worker_threshold_ms(),
-            );
+                    items = items.len(),
+                    root_values = root_sorted.len(),
+                    child_sets = child_sorted.len(),
+                    "disk_cache_build"
+                );
+            }
             let _ = tx.send(DiskCacheBuildResult {
                 build_id,
                 root_sorted,
@@ -1110,10 +1111,7 @@ impl App {
         self.scan.started_at = Instant::now();
         self.scan.run_count += 1;
         self.scan.startup_phases = StartupPhaseTracker::default();
-        crate::perf_log::log_event(&format!(
-            "scan_start kind=rescan run={}",
-            self.scan.run_count
-        ));
+        tracing::info!(kind = "rescan", run = self.scan.run_count, "scan_start");
         self.fully_loaded.clear();
         self.priority_fetch_path = None;
         self.focus_pane(PaneId::ProjectList);
@@ -1182,23 +1180,22 @@ impl App {
         stats.needs_rebuild = needs_rebuild;
 
         self.refresh_async_caches();
-        crate::perf_log::log_duration(
-            "poll_background",
-            started.elapsed(),
-            &format!(
-                "bg_msgs={} ci_msgs={} example_msgs={} tree_results={} fit_results={} disk_results={} needs_rebuild={} projects={} items={}",
-                stats.bg_msgs,
-                stats.ci_msgs,
-                stats.example_msgs,
-                stats.tree_results,
-                stats.fit_results,
-                stats.disk_results,
-                stats.needs_rebuild,
-                self.discovered_projects.len(),
-                self.project_list_items.len()
-            ),
-            crate::perf_log::slow_bg_batch_threshold_ms(),
-        );
+        let elapsed = started.elapsed();
+        if elapsed.as_millis() >= crate::perf_log::SLOW_BG_BATCH_MS {
+            tracing::info!(
+                elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
+                bg_msgs = stats.bg_msgs,
+                ci_msgs = stats.ci_msgs,
+                example_msgs = stats.example_msgs,
+                tree_results = stats.tree_results,
+                fit_results = stats.fit_results,
+                disk_results = stats.disk_results,
+                needs_rebuild = stats.needs_rebuild,
+                projects = self.discovered_projects.len(),
+                items = self.project_list_items.len(),
+                "poll_background"
+            );
+        }
         stats
     }
 
@@ -1237,14 +1234,14 @@ impl App {
             return;
         }
 
-        crate::perf_log::log_event(&format!(
-            "poll_background_saturated bg_msgs={} disk_usage_msgs={} git_info_msgs={} git_path_state_msgs={} lint_status_msgs={}",
-            stats.bg_msgs,
-            stats.disk_usage_msgs,
-            stats.git_info_msgs,
-            stats.git_path_state_msgs,
-            stats.lint_status_msgs
-        ));
+        tracing::info!(
+            bg_msgs = stats.bg_msgs,
+            disk_usage_msgs = stats.disk_usage_msgs,
+            git_info_msgs = stats.git_info_msgs,
+            git_path_state_msgs = stats.git_path_state_msgs,
+            lint_status_msgs = stats.lint_status_msgs,
+            "poll_background_saturated"
+        );
     }
 
     pub(super) fn poll_ci_fetches(&mut self) -> usize {
@@ -1607,11 +1604,7 @@ impl App {
     }
 
     fn handle_git_path_state_msg(&mut self, path: String, state: GitPathState) {
-        crate::perf_log::log_event(&format!(
-            "app_git_path_state_applied path={} state={}",
-            path,
-            state.label()
-        ));
+        tracing::info!(path = %path, state = %state.label(), "app_git_path_state_applied");
         self.git_path_states.insert(PathBuf::from(path), state);
     }
 
@@ -1702,16 +1695,12 @@ impl App {
         } else {
             "rescan"
         };
-        crate::perf_log::log_duration(
-            "scan_complete",
-            self.scan.started_at.elapsed(),
-            &format!(
-                "kind={} run={} projects={}",
-                kind,
-                self.scan.run_count,
-                self.discovered_projects.len()
-            ),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(self.scan.started_at.elapsed().as_millis()),
+            kind,
+            run = self.scan.run_count,
+            projects = self.discovered_projects.len(),
+            "scan_complete"
         );
         self.scan.phase = ScanPhase::Complete;
         self.initialize_startup_phase_tracker();

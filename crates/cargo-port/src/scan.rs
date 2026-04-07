@@ -26,7 +26,6 @@ use super::http::HttpClient;
 use super::http::ServiceKind;
 use super::http::ServiceSignal;
 use super::lint::LintStatus;
-use super::perf_log;
 use super::project::Cargo;
 use super::project::CargoParseResult;
 use super::project::GitInfo;
@@ -1336,19 +1335,15 @@ pub(crate) fn spawn_streaming_scan(
 
         let phase1_started = std::time::Instant::now();
         let phase1 = phase1_discover(&scan_dirs, non_rust, &scan_context);
-        perf_log::log_duration(
-            "phase1_discover_total",
-            phase1_started.elapsed(),
-            &format!(
-                "scan_dirs={} visited_dirs={} manifests={} projects={} non_rust_projects={} disk_entries={}",
-                scan_dirs.len(),
-                phase1.stats.visited_dirs,
-                phase1.stats.manifests,
-                phase1.stats.projects,
-                phase1.stats.non_rust_projects,
-                phase1.disk_entries.len()
-            ),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(phase1_started.elapsed().as_millis()),
+            scan_dirs = scan_dirs.len(),
+            visited_dirs = phase1.stats.visited_dirs,
+            manifests = phase1.stats.manifests,
+            projects = phase1.stats.projects,
+            non_rust_projects = phase1.stats.non_rust_projects,
+            disk_entries = phase1.disk_entries.len(),
+            "phase1_discover_total"
         );
         let _ = scan_tx.send(BackgroundMsg::ScanComplete);
         spawn_initial_disk_usage(&scan_context, &phase1.disk_entries);
@@ -1448,11 +1443,10 @@ fn phase1_discover(
                 let Ok(cargo_project) = super::project::from_cargo_toml(entry.path()) else {
                     continue;
                 };
-                perf_log::log_duration(
-                    "phase1_manifest_parse",
-                    manifest_started.elapsed(),
-                    &format!("manifest={}", entry.path().display()),
-                    0,
+                tracing::info!(
+                    elapsed_ms = crate::perf_log::ms(manifest_started.elapsed().as_millis()),
+                    manifest = %entry.path().display(),
+                    "phase1_manifest_parse"
                 );
                 stats.projects += 1;
                 let item = cargo_project_to_item(cargo_project);
@@ -1465,15 +1459,11 @@ fn phase1_discover(
                 } else {
                     GitRepoPresence::OutsideRepo
                 };
-                perf_log::log_duration(
-                    "phase1_repo_presence",
-                    repo_presence_started.elapsed(),
-                    &format!(
-                        "path={} in_repo={}",
-                        display_path,
-                        repo_presence.is_in_repo()
-                    ),
-                    0,
+                tracing::info!(
+                    elapsed_ms = crate::perf_log::ms(repo_presence_started.elapsed().as_millis()),
+                    path = %display_path,
+                    in_repo = repo_presence.is_in_repo(),
+                    "phase1_repo_presence"
                 );
 
                 let _ = scan_context
@@ -1575,15 +1565,11 @@ fn spawn_project_local_work(
         let Ok(_permit) = local_limit.acquire_owned().await else {
             return;
         };
-        perf_log::log_duration(
-            "tokio_local_queue_wait",
-            queue_started.elapsed(),
-            &format!(
-                "path={} abs_path={}",
-                project.path,
-                project.abs_path.display()
-            ),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
+            path = %project.path,
+            abs_path = %project.abs_path.display(),
+            "tokio_local_queue_wait"
         );
         let run_started = std::time::Instant::now();
         let tx_for_work = tx.clone();
@@ -1601,15 +1587,11 @@ fn spawn_project_local_work(
         else {
             return;
         };
-        perf_log::log_duration(
-            "tokio_local_work",
-            run_started.elapsed(),
-            &format!(
-                "path={} abs_path={}",
-                discovered.path,
-                discovered.abs_path.display()
-            ),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(run_started.elapsed().as_millis()),
+            path = %discovered.path,
+            abs_path = %discovered.abs_path.display(),
+            "tokio_local_work"
         );
         spawn_project_http(&scan_context, &discovered);
     });
@@ -1660,16 +1642,12 @@ fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTre
             return;
         };
         let queue_elapsed = queue_started.elapsed();
-        perf_log::log_duration(
-            "tokio_disk_queue_wait",
-            queue_elapsed,
-            &format!(
-                "path={} abs_path={} rows={}",
-                tree.root_path,
-                tree.root_abs_path.display(),
-                tree.entries.len()
-            ),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(queue_elapsed.as_millis()),
+            path = %tree.root_path,
+            abs_path = %tree.root_abs_path.display(),
+            rows = tree.entries.len(),
+            "tokio_disk_queue_wait"
         );
         let run_started = std::time::Instant::now();
         let tree_for_walk = tree.clone();
@@ -1678,16 +1656,12 @@ fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTre
         else {
             return;
         };
-        perf_log::log_duration(
-            "tokio_disk_usage",
-            run_started.elapsed(),
-            &format!(
-                "path={} abs_path={} rows={}",
-                tree.root_path,
-                tree.root_abs_path.display(),
-                tree.entries.len()
-            ),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(run_started.elapsed().as_millis()),
+            path = %tree.root_path,
+            abs_path = %tree.root_abs_path.display(),
+            rows = tree.entries.len(),
+            "tokio_disk_usage"
         );
         let _ = tx.send(BackgroundMsg::DiskUsageBatch {
             root_path: tree.root_path,
@@ -1809,17 +1783,12 @@ fn spawn_repo_fetch(scan_context: &StreamingScanContext, request: RepoFetchReque
         let Ok(_permit) = http_limit.acquire_owned().await else {
             return;
         };
-        perf_log::log_duration(
-            "tokio_repo_fetch_queue_wait",
-            queue_started.elapsed(),
-            &format!(
-                "path={} repo={}/{} branch={}",
-                request.project_path,
-                request.owner,
-                request.repo,
-                request.branch.as_deref().unwrap_or("-")
-            ),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
+            path = %request.project_path,
+            repo = format!("{}/{}", request.owner, request.repo),
+            branch = request.branch.as_deref().unwrap_or("-"),
+            "tokio_repo_fetch_queue_wait"
         );
         let fetch_started = std::time::Instant::now();
         let (result, meta, signal) = fetch_ci_runs_cached_async(
@@ -1838,18 +1807,13 @@ fn spawn_repo_fetch(scan_context: &StreamingScanContext, request: RepoFetchReque
             },
             meta,
         };
-        perf_log::log_duration(
-            "tokio_repo_fetch",
-            fetch_started.elapsed(),
-            &format!(
-                "path={} repo={}/{} branch={} runs={}",
-                request.project_path,
-                request.owner,
-                request.repo,
-                request.branch.as_deref().unwrap_or("-"),
-                data.runs.len()
-            ),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(fetch_started.elapsed().as_millis()),
+            path = %request.project_path,
+            repo = format!("{}/{}", request.owner, request.repo),
+            branch = request.branch.as_deref().unwrap_or("-"),
+            runs = data.runs.len(),
+            "tokio_repo_fetch"
         );
         let paths = finish_repo_fetch(&repo_dispatch, &request.key, data.clone());
         send_repo_data(&tx, &paths, &data);
@@ -1876,23 +1840,21 @@ fn spawn_crates_fetch(
         let Ok(_permit) = http_limit.acquire_owned().await else {
             return;
         };
-        perf_log::log_duration(
-            "tokio_crates_fetch_queue_wait",
-            queue_started.elapsed(),
-            &format!("path={project_path} crate={crate_name}"),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
+            path = %project_path,
+            crate_name = %crate_name,
+            "tokio_crates_fetch_queue_wait"
         );
         let fetch_started = std::time::Instant::now();
         let (info, signal) = client.fetch_crates_io_info_async(&crate_name).await;
         emit_service_signal(&tx, signal);
-        perf_log::log_duration(
-            "tokio_crates_fetch",
-            fetch_started.elapsed(),
-            &format!(
-                "path={project_path} crate={crate_name} found={}",
-                info.is_some()
-            ),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(fetch_started.elapsed().as_millis()),
+            path = %project_path,
+            crate_name = %crate_name,
+            found = info.is_some(),
+            "tokio_crates_fetch"
         );
         if let Some(info) = info {
             let _ = tx.send(BackgroundMsg::CratesIoVersion {
@@ -1931,17 +1893,13 @@ fn phase1_local_work(
         .as_ref()
         .and_then(|url| ci::parse_owner_repo(url));
     project.branch = git_info.as_ref().and_then(|g| g.branch.clone());
-    perf_log::log_duration(
-        "phase1_local_work",
-        started.elapsed(),
-        &format!(
-            "path={} in_repo={} has_git_info={} branch={}",
-            project.path,
-            repo_presence.is_in_repo(),
-            git_info.is_some(),
-            project.branch.as_deref().unwrap_or("-")
-        ),
-        0,
+    tracing::info!(
+        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+        path = %project.path,
+        in_repo = repo_presence.is_in_repo(),
+        has_git_info = git_info.is_some(),
+        branch = project.branch.as_deref().unwrap_or("-"),
+        "phase1_local_work"
     );
     project
 }
@@ -1951,30 +1909,33 @@ fn cached_git_info(git_info_cache: &GitInfoCache, project_dir: &Path) -> Option<
     let repo_root = super::project::git_repo_root(project_dir)?;
     let Ok(mut cache) = git_info_cache.lock() else {
         let info = GitInfo::detect_fast(&repo_root);
-        perf_log::log_duration(
-            "phase1_cached_git_info",
-            started.elapsed(),
-            &format!("repo_root={} cache=poisoned hit=false", repo_root.display()),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+            repo_root = %repo_root.display(),
+            cache = "poisoned",
+            hit = false,
+            "phase1_cached_git_info"
         );
         return info;
     };
     if let Some(info) = cache.get(&repo_root) {
-        perf_log::log_duration(
-            "phase1_cached_git_info",
-            started.elapsed(),
-            &format!("repo_root={} cache=ok hit=true", repo_root.display()),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+            repo_root = %repo_root.display(),
+            cache = "ok",
+            hit = true,
+            "phase1_cached_git_info"
         );
         return info.clone();
     }
     let info = GitInfo::detect_fast(&repo_root);
     cache.insert(repo_root.clone(), info.clone());
-    perf_log::log_duration(
-        "phase1_cached_git_info",
-        started.elapsed(),
-        &format!("repo_root={} cache=ok hit=false", repo_root.display()),
-        0,
+    tracing::info!(
+        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+        repo_root = %repo_root.display(),
+        cache = "ok",
+        hit = false,
+        "phase1_cached_git_info"
     );
     info
 }

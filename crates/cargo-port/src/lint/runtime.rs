@@ -504,11 +504,11 @@ pub fn run_commands_for_project(
             .collect(),
     };
     read_write::write_latest_under(cache_root, project_root, &run)?;
-    crate::perf_log::log_event(&format!(
-        "startup_lint_started path={} abs_path={}",
-        project_path,
-        project_root.display()
-    ));
+    tracing::info!(
+        path = project_path,
+        abs_path = %project_root.display(),
+        "startup_lint_started"
+    );
     publish_status(
         status_cache,
         project_root,

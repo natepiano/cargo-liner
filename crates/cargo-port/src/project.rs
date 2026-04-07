@@ -14,8 +14,6 @@ use toml::Value;
 use crate::constants::GIT_CLONE;
 use crate::constants::GIT_FORK;
 use crate::constants::GIT_LOCAL;
-use crate::perf_log;
-
 /// Whether a project is a plain clone or a fork (has an "upstream" remote).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -208,15 +206,12 @@ fn git_output_logged<const N: usize>(
         .ok()
         .and_then(|out| out.status.code())
         .map_or_else(|| "signal".to_string(), |code| code.to_string());
-    perf_log::log_duration(
-        "git_info_detect_call",
-        started.elapsed(),
-        &format!(
-            "repo_root={} op={} status={status}",
-            repo_root.display(),
-            op,
-        ),
-        0,
+    tracing::info!(
+        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+        repo_root = %repo_root.display(),
+        op,
+        status,
+        "git_info_detect_call"
     );
     output
 }
@@ -263,16 +258,12 @@ pub(crate) fn detect_git_path_state(project_dir: &Path) -> GitPathState {
             .is_some_and(|status| status.success());
         if ignored {
             let state = GitPathState::Ignored;
-            perf_log::log_duration(
-                "git_path_state_single",
-                started.elapsed(),
-                &format!(
-                    "repo_root={} project_dir={} state={}",
-                    repo_root.display(),
-                    project_dir.display(),
-                    state.label()
-                ),
-                0,
+            tracing::info!(
+                elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+                repo_root = %repo_root.display(),
+                project_dir = %project_dir.display(),
+                state = %state.label(),
+                "git_path_state_single"
             );
             return state;
         }
@@ -311,16 +302,12 @@ pub(crate) fn detect_git_path_state(project_dir: &Path) -> GitPathState {
     } else {
         GitPathState::Clean
     };
-    perf_log::log_duration(
-        "git_path_state_single",
-        started.elapsed(),
-        &format!(
-            "repo_root={} project_dir={} state={}",
-            repo_root.display(),
-            project_dir.display(),
-            state.label()
-        ),
-        0,
+    tracing::info!(
+        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+        repo_root = %repo_root.display(),
+        project_dir = %project_dir.display(),
+        state = %state.label(),
+        "git_path_state_single"
     );
     state
 }
@@ -369,11 +356,11 @@ pub(crate) fn detect_git_path_states_batch(
         states.extend(detect_repo_git_path_states(&repo_root, &entries));
     }
 
-    perf_log::log_duration(
-        "git_path_states_batch",
-        started.elapsed(),
-        &format!("repos={} rows={}", repo_count, projects.len()),
-        0,
+    tracing::info!(
+        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+        repos = repo_count,
+        rows = projects.len(),
+        "git_path_states_batch"
     );
     states
 }
@@ -427,12 +414,13 @@ fn detect_repo_git_path_states(
 
     let ignored_elapsed_ms = update_ignored_repo_states(repo_root, &prefixes, &mut repo_states);
 
-    perf_log::log_event(&format!(
-        "git_path_states_repo repo_root={} rows={} status_ms={} ignored_ms={ignored_elapsed_ms}",
-        repo_root.display(),
-        prefixes.len(),
-        status_elapsed_ms,
-    ));
+    tracing::info!(
+        repo_root = %repo_root.display(),
+        rows = prefixes.len(),
+        status_ms = status_elapsed_ms,
+        ignored_ms = ignored_elapsed_ms,
+        "git_path_states_repo"
+    );
 
     repo_states
 }

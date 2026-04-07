@@ -113,6 +113,7 @@ pub fn run(path: &Path) -> ExitCode {
     };
     config::set_active_config(&cfg);
     let perf_log_path = crate::perf_log::init();
+
     let Ok(rt) = tokio::runtime::Runtime::new() else {
         eprintln!("Error: failed to create async runtime");
         return ExitCode::FAILURE;
@@ -122,7 +123,7 @@ pub fn run(path: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let scan_started_at = std::time::Instant::now();
-    crate::perf_log::log_event("scan_start kind=initial run=1");
+    tracing::info!(kind = "initial", run = 1, "scan_start");
     let (bg_tx, bg_rx) = scan::spawn_streaming_scan(
         &scan_root,
         cfg.tui.ci_run_count,
@@ -156,7 +157,7 @@ pub fn run(path: &Path) -> ExitCode {
         http_client,
         scan_started_at,
     );
-    crate::perf_log::log_event(&format!("tui_ready perf_log={}", perf_log_path.display()));
+    tracing::info!(perf_log = %perf_log_path.display(), "tui_ready");
     let input_rx = spawn_input_thread();
 
     let result = event_loop(&mut terminal, &mut app, &input_rx);
@@ -355,36 +356,36 @@ fn idle_if_no_input(input_count: usize) -> Duration {
 }
 
 fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetrics) {
-    if metrics.frame_elapsed.as_millis() < crate::perf_log::slow_frame_threshold_ms() {
+    if metrics.frame_elapsed.as_millis() < crate::perf_log::SLOW_FRAME_MS {
         return;
     }
-    crate::perf_log::log_event(&format!(
-        "slow_frame elapsed_ms={} input_ms={} bg_ms={} rows_ms={} disk_ms={} fit_ms={} detail_ms={} draw_ms={} idle_ms={} input_count={} bg_msgs={} disk_usage_msgs={} git_info_msgs={} git_path_state_msgs={} lint_status_msgs={} ci_msgs={} example_msgs={} tree_results={} fit_results={} disk_results={} needs_rebuild={} projects={} nodes={} scan_complete={}",
-        metrics.frame_elapsed.as_millis(),
-        metrics.input_elapsed.as_millis(),
-        metrics.bg_elapsed.as_millis(),
-        metrics.rows_elapsed.as_millis(),
-        metrics.disk_elapsed.as_millis(),
-        metrics.fit_elapsed.as_millis(),
-        metrics.detail_elapsed.as_millis(),
-        metrics.draw_elapsed.as_millis(),
-        metrics.idle_elapsed.as_millis(),
-        metrics.input_count,
-        bg_stats.bg_msgs,
-        bg_stats.disk_usage_msgs,
-        bg_stats.git_info_msgs,
-        bg_stats.git_path_state_msgs,
-        bg_stats.lint_status_msgs,
-        bg_stats.ci_msgs,
-        bg_stats.example_msgs,
-        bg_stats.tree_results,
-        bg_stats.fit_results,
-        bg_stats.disk_results,
-        bg_stats.needs_rebuild,
-        app.discovered_projects.len(),
-        app.project_list_items.len(),
-        app.is_scan_complete()
-    ));
+    tracing::info!(
+        elapsed_ms = crate::perf_log::ms(metrics.frame_elapsed.as_millis()),
+        input_ms = crate::perf_log::ms(metrics.input_elapsed.as_millis()),
+        bg_ms = crate::perf_log::ms(metrics.bg_elapsed.as_millis()),
+        rows_ms = crate::perf_log::ms(metrics.rows_elapsed.as_millis()),
+        disk_ms = crate::perf_log::ms(metrics.disk_elapsed.as_millis()),
+        fit_ms = crate::perf_log::ms(metrics.fit_elapsed.as_millis()),
+        detail_ms = crate::perf_log::ms(metrics.detail_elapsed.as_millis()),
+        draw_ms = crate::perf_log::ms(metrics.draw_elapsed.as_millis()),
+        idle_ms = crate::perf_log::ms(metrics.idle_elapsed.as_millis()),
+        input_count = metrics.input_count,
+        bg_msgs = bg_stats.bg_msgs,
+        disk_usage_msgs = bg_stats.disk_usage_msgs,
+        git_info_msgs = bg_stats.git_info_msgs,
+        git_path_state_msgs = bg_stats.git_path_state_msgs,
+        lint_status_msgs = bg_stats.lint_status_msgs,
+        ci_msgs = bg_stats.ci_msgs,
+        example_msgs = bg_stats.example_msgs,
+        tree_results = bg_stats.tree_results,
+        fit_results = bg_stats.fit_results,
+        disk_results = bg_stats.disk_results,
+        needs_rebuild = bg_stats.needs_rebuild,
+        projects = app.discovered_projects.len(),
+        nodes = app.project_list_items.len(),
+        scan_complete = app.is_scan_complete(),
+        "slow_frame"
+    );
 }
 
 fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {

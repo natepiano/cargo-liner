@@ -32,19 +32,18 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
 
     app.sync_selected_project();
 
-    crate::perf_log::log_duration(
-        "input_event",
-        started.elapsed(),
-        &format!(
-            "kind={} focus={} scan_complete={} selected={}",
-            event_label(event),
-            pane_label(app.focused_pane),
-            app.is_scan_complete(),
-            app.selected_project_path()
-                .map_or_else(|| "-".to_string(), |path| path.display().to_string())
-        ),
-        crate::perf_log::slow_input_event_threshold_ms(),
-    );
+    let elapsed = started.elapsed();
+    if elapsed.as_millis() >= crate::perf_log::SLOW_INPUT_EVENT_MS {
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
+            kind = %event_label(event),
+            focus = pane_label(app.focused_pane),
+            scan_complete = app.is_scan_complete(),
+            selected = %app.selected_project_path()
+                .map_or_else(|| "-".to_string(), |path| path.display().to_string()),
+            "input_event"
+        );
+    }
 }
 
 fn handle_key_event(app: &mut App, raw: &KeyEvent) {

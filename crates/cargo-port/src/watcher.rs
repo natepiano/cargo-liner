@@ -36,7 +36,6 @@ use super::project::GitInfo;
 use super::project::GitRepoPresence;
 use super::scan;
 use super::scan::BackgroundMsg;
-use crate::perf_log;
 use crate::project::ProjectListItem;
 use crate::project::ProjectListItem::NonRust;
 
@@ -324,16 +323,12 @@ fn watch_git_metadata_paths(
             added += 1;
         }
     }
-    perf_log::log_duration(
-        "watcher_watch_git_metadata",
-        started.elapsed(),
-        &format!(
-            "repo_root={} request_path={} added={}",
-            repo_root.display(),
-            req.project_path,
-            added
-        ),
-        0,
+    tracing::info!(
+        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+        repo_root = %repo_root.display(),
+        request_path = %req.project_path,
+        added,
+        "watcher_watch_git_metadata"
     );
 }
 
@@ -376,12 +371,12 @@ fn handle_event(
         classify_fast_git_event(event_path, entry).map(|refresh_kind| (entry, refresh_kind))
     }) {
         if let Some(repo_root) = &entry.repo_root {
-            perf_log::log_event(&format!(
-                "watcher_fast_git_metadata_event repo_root={} event_path={} refresh_info={}",
-                repo_root.display(),
-                event_path.display(),
-                refresh_kind.refresh_info()
-            ));
+            tracing::info!(
+                repo_root = %repo_root.display(),
+                event_path = %event_path.display(),
+                refresh_info = %refresh_kind.refresh_info(),
+                "watcher_fast_git_metadata_event"
+            );
             emit_root_git_path_refresh(bg_tx, ctx.projects, repo_root);
             enqueue_git_refresh(
                 pending_git,
@@ -618,14 +613,14 @@ fn enqueue_git_refresh(
             pending_git.get(&repo_root),
             Some(GitState::Pending { .. })
         ));
-    perf_log::log_event(&format!(
-        "watcher_enqueue_git_refresh repo_root={} immediate={} refresh_info={} cause={} pending_git={}",
-        repo_root.display(),
+    tracing::info!(
+        repo_root = %repo_root.display(),
         immediate,
         refresh_info,
         cause,
-        pending_count,
-    ));
+        pending_git = pending_count,
+        "watcher_enqueue_git_refresh"
+    );
     match pending_git.get_mut(&repo_root) {
         Some(GitState::Pending {
             debounce_deadline,
@@ -676,16 +671,12 @@ fn emit_root_git_path_refresh(
         return;
     };
     let state = project::detect_git_path_state(repo_root);
-    perf_log::log_duration(
-        "watcher_root_git_path_refresh",
-        started.elapsed(),
-        &format!(
-            "repo_root={} path={} state={}",
-            repo_root.display(),
-            root_entry.project_path,
-            state.label()
-        ),
-        0,
+    tracing::info!(
+        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+        repo_root = %repo_root.display(),
+        path = %root_entry.project_path,
+        state = %state.label(),
+        "watcher_root_git_path_refresh"
     );
     let _ = bg_tx.send(BackgroundMsg::GitPathState {
         path: root_entry.project_path.clone(),
@@ -764,15 +755,11 @@ fn spawn_git_refresh(
         let Ok(_permit) = git_limit.acquire_owned().await else {
             return;
         };
-        perf_log::log_duration(
-            "watcher_git_queue_wait",
-            queue_started.elapsed(),
-            &format!(
-                "repo_root={} affected_rows={}",
-                repo_root.display(),
-                affected.len()
-            ),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
+            repo_root = %repo_root.display(),
+            affected_rows = affected.len(),
+            "watcher_git_queue_wait"
         );
 
         let started = Instant::now();
@@ -785,15 +772,12 @@ fn spawn_git_refresh(
                     .ok()
                     .flatten();
             let git_info_elapsed_ms = git_info_started.elapsed().as_millis();
-            perf_log::log_duration(
-                "watcher_git_info_detect",
-                git_info_started.elapsed(),
-                &format!(
-                    "repo_root={} affected_rows={} refresh_info={refresh_info}",
-                    repo_root.display(),
-                    affected.len()
-                ),
-                0,
+            tracing::info!(
+                elapsed_ms = crate::perf_log::ms(git_info_started.elapsed().as_millis()),
+                repo_root = %repo_root.display(),
+                affected_rows = affected.len(),
+                refresh_info,
+                "watcher_git_info_detect"
             );
             if let Some(info) = git_info {
                 for (path, _) in &affected {
@@ -821,18 +805,14 @@ fn spawn_git_refresh(
                 let _ = bg_tx.send(BackgroundMsg::GitPathState { path, state });
             }
         }
-        perf_log::log_duration(
-            "watcher_git_refresh",
-            started.elapsed(),
-            &format!(
-                "repo_root={} affected_rows={} refresh_info={} git_info_ms={} git_path_states_ms={}",
-                repo_root.display(),
-                affected.len(),
-                refresh_info,
-                git_info_elapsed_ms,
-                git_path_states_elapsed_ms
-            ),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+            repo_root = %repo_root.display(),
+            affected_rows = affected.len(),
+            refresh_info,
+            git_info_ms = git_info_elapsed_ms,
+            git_path_states_ms = git_path_states_elapsed_ms,
+            "watcher_git_refresh"
         );
         let _ = git_done_tx.send(repo_root);
     });
@@ -894,11 +874,11 @@ fn spawn_disk_update(
         let Ok(_permit) = disk_limit.acquire_owned().await else {
             return;
         };
-        perf_log::log_duration(
-            "watcher_disk_queue_wait",
-            queue_started.elapsed(),
-            &format!("path={} abs_path={}", project_path, abs_path.display()),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
+            path = %project_path,
+            abs_path = %abs_path.display(),
+            "watcher_disk_queue_wait"
         );
 
         let started = Instant::now();
@@ -906,11 +886,11 @@ fn spawn_disk_update(
             .await
             .ok()
             .unwrap_or(0);
-        perf_log::log_duration(
-            "watcher_disk_usage",
-            started.elapsed(),
-            &format!("path={project_path} bytes={bytes}"),
-            0,
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+            path = %project_path,
+            bytes,
+            "watcher_disk_usage"
         );
         let _ = bg_tx.send(BackgroundMsg::DiskUsage {
             path: project_path.clone(),
