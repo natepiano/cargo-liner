@@ -24,13 +24,13 @@ use super::scan::CratesIoInfo;
 use super::scan::RepoMetaInfo;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub enum ServiceKind {
+pub(crate) enum ServiceKind {
     GitHub,
     CratesIo,
 }
 
 impl ServiceKind {
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::GitHub => "GitHub",
             Self::CratesIo => "crates.io",
@@ -46,14 +46,14 @@ impl ServiceKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ServiceSignal {
+pub(crate) enum ServiceSignal {
     Reachable(ServiceKind),
     Unreachable(ServiceKind),
 }
 
 type GitHubJobsAndMeta = (HashMap<u64, Vec<GqlCheckRun>>, Option<RepoMetaInfo>);
 
-pub type HttpOutcome<T> = (Option<T>, Option<ServiceSignal>);
+pub(crate) type HttpOutcome<T> = (Option<T>, Option<ServiceSignal>);
 
 fn classify_network_error(service: ServiceKind, error: &reqwest::Error) -> Option<ServiceSignal> {
     if error.is_connect() || error.is_timeout() {
@@ -95,7 +95,7 @@ struct GqlCheckRunConnection {
 /// `Arc`. A `tokio::runtime::Handle` is stored so sync callers can
 /// dispatch async work via `block_on`.
 #[derive(Clone)]
-pub struct HttpClient {
+pub(crate) struct HttpClient {
     client:            reqwest::Client,
     github_token:      Option<String>,
     pub(crate) handle: tokio::runtime::Handle,
@@ -105,7 +105,7 @@ impl HttpClient {
     /// Build a new client. Obtains the GitHub auth token from `gh auth
     /// token` (single subprocess call). If `gh` is unavailable or not
     /// authenticated, GitHub API methods degrade gracefully.
-    pub fn new(handle: tokio::runtime::Handle) -> Option<Self> {
+    pub(crate) fn new(handle: tokio::runtime::Handle) -> Option<Self> {
         let client = build_client().ok()?;
         let github_token = Command::new("gh")
             .args(["auth", "token"])
@@ -191,7 +191,7 @@ impl HttpClient {
     // ── Async public API ────────────────────────────────────────────
 
     /// List recent completed workflow runs for a repo (async).
-    pub async fn list_runs_async(
+    pub(crate) async fn list_runs_async(
         &self,
         owner: &str,
         repo: &str,
@@ -215,7 +215,7 @@ impl HttpClient {
     /// Batch-fetch job details for uncached runs AND repo metadata in a
     /// single GraphQL call (async). Returns jobs map + optional repo
     /// metadata.
-    pub async fn batch_fetch_jobs_and_meta_async(
+    pub(crate) async fn batch_fetch_jobs_and_meta_async(
         &self,
         owner: &str,
         repo: &str,
@@ -279,7 +279,7 @@ impl HttpClient {
     }
 
     /// Lightweight service probe used only while recovering from a prior failure.
-    pub async fn probe_service_async(&self, service: ServiceKind) -> bool {
+    pub(crate) async fn probe_service_async(&self, service: ServiceKind) -> bool {
         self.client
             .head(service.probe_url())
             .timeout(Duration::from_secs(SERVICE_RETRY_SECS))
@@ -289,7 +289,10 @@ impl HttpClient {
     }
 
     /// Fetch version and download count from the crates.io API (async).
-    pub async fn fetch_crates_io_info_async(&self, crate_name: &str) -> HttpOutcome<CratesIoInfo> {
+    pub(crate) async fn fetch_crates_io_info_async(
+        &self,
+        crate_name: &str,
+    ) -> HttpOutcome<CratesIoInfo> {
         let url = format!("{CRATES_IO_API_BASE}/crates/{crate_name}");
         let response = match self
             .client
@@ -336,7 +339,7 @@ impl HttpClient {
     // ── Sync wrappers (for std/rayon thread callers) ────────────────
 
     /// List recent completed workflow runs (sync wrapper).
-    pub fn list_runs(
+    pub(crate) fn list_runs(
         &self,
         owner: &str,
         repo: &str,
@@ -348,7 +351,7 @@ impl HttpClient {
     }
 
     /// Batch-fetch job details + repo metadata (sync wrapper).
-    pub fn batch_fetch_jobs_and_meta(
+    pub(crate) fn batch_fetch_jobs_and_meta(
         &self,
         owner: &str,
         repo: &str,
@@ -358,12 +361,12 @@ impl HttpClient {
             .block_on(self.batch_fetch_jobs_and_meta_async(owner, repo, runs))
     }
 
-    pub fn probe_service(&self, service: ServiceKind) -> bool {
+    pub(crate) fn probe_service(&self, service: ServiceKind) -> bool {
         self.handle.block_on(self.probe_service_async(service))
     }
 
     /// Fetch crates.io info (sync wrapper).
-    pub fn fetch_crates_io_info(&self, crate_name: &str) -> HttpOutcome<CratesIoInfo> {
+    pub(crate) fn fetch_crates_io_info(&self, crate_name: &str) -> HttpOutcome<CratesIoInfo> {
         self.handle
             .block_on(self.fetch_crates_io_info_async(crate_name))
     }

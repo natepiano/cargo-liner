@@ -25,10 +25,13 @@ use super::constants::FINDER_POPUP_HEIGHT;
 use super::constants::MAX_FINDER_RESULTS;
 use super::detail::RunTargetKind;
 use super::types::PaneId;
+use crate::project::ExampleGroup;
 use crate::project::GitInfo;
-use crate::project::Project;
+use crate::project::Package;
+use crate::project::ProjectListItem;
 use crate::project::ProjectType;
-use crate::scan::ProjectNode;
+use crate::project::TypedProject;
+use crate::project::Workspace;
 
 /// A searchable item in the universal finder.
 #[derive(Clone)]
@@ -85,62 +88,58 @@ pub(super) const FINDER_COLUMN_COUNT: usize = 5;
 pub(super) const FINDER_HEADERS: [&str; FINDER_COLUMN_COUNT] =
     ["Name", "Project", "Branch", "Dir", "Type"];
 
-/// Build a flat index of all searchable items from the node tree.
+/// Build a flat index of all searchable items from the project list.
 /// Uses the tree structure so workspace members inherit the branch
 /// from their workspace root (members don't have their own `.git`).
 /// Returns `(items, col_widths)` where `col_widths` is the max display
 /// width of each column across the entire index.
 pub(super) fn build_finder_index(
-    nodes: &[ProjectNode],
+    list_items: &[ProjectListItem],
     git_info: &HashMap<String, GitInfo>,
 ) -> (Vec<FinderItem>, [usize; FINDER_COLUMN_COUNT]) {
     let mut items = Vec::new();
 
-    for node in nodes {
-        let root_branch = git_info
-            .get(&node.project.path)
-            .and_then(|g| g.branch.as_deref())
-            .unwrap_or("")
-            .to_string();
-
-        // Add the root project and its targets
-        add_project_items(&mut items, &node.project, &root_branch);
-
-        // Add workspace members (inherit root branch)
-        for group in &node.groups {
-            for member in &group.members {
-                add_project_items(&mut items, member, &root_branch);
-            }
-        }
-
-        for vendored in &node.vendored {
-            add_vendored_items(&mut items, vendored, &node.project);
-        }
-
-        // Add worktree entries — each has its own branch.
-        // Skip the primary-as-worktree clone (same path as root) since
-        // the root was already added above.
-        for wt in &node.worktrees {
-            if wt.project.path == node.project.path {
-                continue;
-            }
-            let wt_branch = git_info
-                .get(&wt.project.path)
-                .and_then(|g| g.branch.as_deref())
-                .unwrap_or("")
-                .to_string();
-
-            add_project_items(&mut items, &wt.project, &wt_branch);
-
-            for group in &wt.groups {
-                for member in &group.members {
-                    add_project_items(&mut items, member, &wt_branch);
+    for list_item in list_items {
+        match list_item {
+            ProjectListItem::Workspace(ws) => {
+                add_workspace_items(&mut items, ws, git_info);
+            },
+            ProjectListItem::Package(pkg) => {
+                add_package_items(&mut items, pkg, git_info);
+            },
+            ProjectListItem::NonRust(nr) => {
+                let dp = nr.display_path();
+                let branch = branch_for(&dp, git_info);
+                add_project_items_from_typed(
+                    &mut items,
+                    &nr.display_name(),
+                    &dp,
+                    &[],
+                    &[],
+                    &[],
+                    &branch,
+                );
+            },
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                add_workspace_items(&mut items, wtg.primary(), git_info);
+                for linked in wtg.linked() {
+                    let dp = linked.display_path();
+                    if dp == wtg.primary().display_path() {
+                        continue;
+                    }
+                    add_workspace_items(&mut items, linked, git_info);
                 }
-            }
-
-            for vendored in &wt.vendored {
-                add_vendored_items(&mut items, vendored, &wt.project);
-            }
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                add_package_items(&mut items, wtg.primary(), git_info);
+                for linked in wtg.linked() {
+                    let dp = linked.display_path();
+                    if dp == wtg.primary().display_path() {
+                        continue;
+                    }
+                    add_package_items(&mut items, linked, git_info);
+                }
+            },
         }
     }
 
@@ -161,15 +160,174 @@ pub(super) fn build_finder_index(
     (items, col_widths)
 }
 
-fn add_project_items(items: &mut Vec<FinderItem>, project: &Project, branch: &str) {
-    let project_name = project
-        .name
-        .as_deref()
-        .unwrap_or_else(|| project.path.rsplit('/').next().unwrap_or(&project.path))
-        .to_string();
+fn branch_for(display_path: &str, git_info: &HashMap<String, GitInfo>) -> String {
+    git_info
+        .get(display_path)
+        .and_then(|g| g.branch.as_deref())
+        .unwrap_or("")
+        .to_string()
+}
 
+fn add_workspace_items(
+    items: &mut Vec<FinderItem>,
+    ws: &TypedProject<Workspace>,
+    git_info: &HashMap<String, GitInfo>,
+) {
+    let root_path = ws.display_path();
+    let root_branch = branch_for(&root_path, git_info);
+    let cargo = ws.cargo();
+
+    add_project_items_from_typed(
+        items,
+        &ws.display_name(),
+        &root_path,
+        cargo.types(),
+        cargo.examples(),
+        cargo.benches(),
+        &root_branch,
+    );
+
+    for group in ws.groups() {
+        for member in group.members() {
+            let member_cargo = member.cargo();
+            add_project_items_from_typed(
+                items,
+                &member.display_name(),
+                &member.display_path(),
+                member_cargo.types(),
+                member_cargo.examples(),
+                member_cargo.benches(),
+                &root_branch,
+            );
+        }
+    }
+
+    for vendored in ws.vendored() {
+        add_vendored_items_typed(items, vendored, &ws.display_name());
+    }
+}
+
+fn add_package_items(
+    items: &mut Vec<FinderItem>,
+    pkg: &TypedProject<Package>,
+    git_info: &HashMap<String, GitInfo>,
+) {
+    let root_path = pkg.display_path();
+    let root_branch = branch_for(&root_path, git_info);
+    let cargo = pkg.cargo();
+
+    add_project_items_from_typed(
+        items,
+        &pkg.display_name(),
+        &root_path,
+        cargo.types(),
+        cargo.examples(),
+        cargo.benches(),
+        &root_branch,
+    );
+
+    for vendored in pkg.vendored() {
+        add_vendored_items_typed(items, vendored, &pkg.display_name());
+    }
+}
+
+fn add_vendored_items_typed(
+    items: &mut Vec<FinderItem>,
+    project: &TypedProject<Package>,
+    parent_name: &str,
+) {
+    let project_name = project.display_name();
+    let dir = project.display_path();
+    let branch = String::new();
+    let display_name = format!("{project_name} (vendored)");
+
+    items.push(FinderItem {
+        search_text: format!(
+            "{display_name} {project_name} {parent_name} {dir} vendored {}",
+            FinderKind::Project.label()
+        ),
+        display_name,
+        kind: FinderKind::Project,
+        project_path: dir.clone(),
+        target_name: None,
+        parent_label: parent_name.to_string(),
+        branch: branch.clone(),
+        dir: dir.clone(),
+    });
+
+    let cargo = project.cargo();
+
+    if cargo.types().contains(&ProjectType::Binary) {
+        let kind = FinderKind::Binary;
+        items.push(FinderItem {
+            search_text: format!(
+                "{project_name} {project_name} {parent_name} {dir} vendored {}",
+                kind.label()
+            ),
+            display_name: project_name.clone(),
+            kind,
+            project_path: dir.clone(),
+            target_name: Some(project_name.clone()),
+            parent_label: project_name.clone(),
+            branch: branch.clone(),
+            dir: dir.clone(),
+        });
+    }
+
+    for group in cargo.examples() {
+        for name in &group.names {
+            let display = if group.category.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{name}", group.category)
+            };
+            let kind = FinderKind::Example;
+            items.push(FinderItem {
+                search_text: format!(
+                    "{display} {project_name} {parent_name} {dir} vendored {}",
+                    kind.label()
+                ),
+                display_name: display,
+                kind,
+                project_path: dir.clone(),
+                target_name: Some(name.clone()),
+                parent_label: project_name.clone(),
+                branch: branch.clone(),
+                dir: dir.clone(),
+            });
+        }
+    }
+
+    for name in cargo.benches() {
+        let kind = FinderKind::Bench;
+        items.push(FinderItem {
+            search_text: format!(
+                "{name} {project_name} {parent_name} {dir} vendored {}",
+                kind.label()
+            ),
+            display_name: name.clone(),
+            kind,
+            project_path: dir.clone(),
+            target_name: Some(name.clone()),
+            parent_label: project_name.clone(),
+            branch: branch.clone(),
+            dir: dir.clone(),
+        });
+    }
+}
+
+fn add_project_items_from_typed(
+    items: &mut Vec<FinderItem>,
+    project_name: &str,
+    display_path: &str,
+    types: &[ProjectType],
+    examples: &[ExampleGroup],
+    benches: &[String],
+    branch: &str,
+) {
+    let project_name = project_name.to_string();
     let branch = branch.to_string();
-    let dir = project.path.clone();
+    let dir = display_path.to_string();
 
     // The project itself
     let kind = FinderKind::Project;
@@ -177,7 +335,7 @@ fn add_project_items(items: &mut Vec<FinderItem>, project: &Project, branch: &st
         search_text: format!("{project_name} {dir} {branch} {}", kind.label()),
         display_name: project_name.clone(),
         kind,
-        project_path: project.path.clone(),
+        project_path: dir.clone(),
         target_name: None,
         parent_label: String::new(),
         branch: branch.clone(),
@@ -185,7 +343,7 @@ fn add_project_items(items: &mut Vec<FinderItem>, project: &Project, branch: &st
     });
 
     // Binary
-    if project.types.contains(&ProjectType::Binary) {
+    if types.contains(&ProjectType::Binary) {
         let kind = FinderKind::Binary;
         items.push(FinderItem {
             search_text: format!(
@@ -194,7 +352,7 @@ fn add_project_items(items: &mut Vec<FinderItem>, project: &Project, branch: &st
             ),
             display_name: project_name.clone(),
             kind,
-            project_path: project.path.clone(),
+            project_path: dir.clone(),
             target_name: Some(project_name.clone()),
             parent_label: project_name.clone(),
             branch: branch.clone(),
@@ -203,7 +361,7 @@ fn add_project_items(items: &mut Vec<FinderItem>, project: &Project, branch: &st
     }
 
     // Examples (with category prefix)
-    for group in &project.examples {
+    for group in examples {
         for name in &group.names {
             let display = if group.category.is_empty() {
                 name.clone()
@@ -215,7 +373,7 @@ fn add_project_items(items: &mut Vec<FinderItem>, project: &Project, branch: &st
                 search_text: format!("{display} {project_name} {dir} {branch} {}", kind.label()),
                 display_name: display,
                 kind,
-                project_path: project.path.clone(),
+                project_path: dir.clone(),
                 target_name: Some(name.clone()),
                 parent_label: project_name.clone(),
                 branch: branch.clone(),
@@ -225,100 +383,13 @@ fn add_project_items(items: &mut Vec<FinderItem>, project: &Project, branch: &st
     }
 
     // Benches
-    for name in &project.benches {
+    for name in benches {
         let kind = FinderKind::Bench;
         items.push(FinderItem {
             search_text: format!("{name} {project_name} {dir} {branch} {}", kind.label()),
             display_name: name.clone(),
             kind,
-            project_path: project.path.clone(),
-            target_name: Some(name.clone()),
-            parent_label: project_name.clone(),
-            branch: branch.clone(),
-            dir: dir.clone(),
-        });
-    }
-}
-
-fn add_vendored_items(items: &mut Vec<FinderItem>, project: &Project, parent: &Project) {
-    let project_name = project
-        .name
-        .as_deref()
-        .unwrap_or_else(|| project.path.rsplit('/').next().unwrap_or(&project.path))
-        .to_string();
-    let parent_name = parent.display_name();
-    let branch = String::new();
-    let dir = project.path.clone();
-    let display_name = format!("{project_name} (vendored)");
-
-    items.push(FinderItem {
-        search_text: format!(
-            "{display_name} {project_name} {parent_name} {dir} vendored {}",
-            FinderKind::Project.label()
-        ),
-        display_name,
-        kind: FinderKind::Project,
-        project_path: project.path.clone(),
-        target_name: None,
-        parent_label: parent_name,
-        branch: branch.clone(),
-        dir: dir.clone(),
-    });
-
-    if project.types.contains(&ProjectType::Binary) {
-        let kind = FinderKind::Binary;
-        items.push(FinderItem {
-            search_text: format!(
-                "{project_name} {project_name} {} {dir} vendored {}",
-                parent.display_name(),
-                kind.label()
-            ),
-            display_name: project_name.clone(),
-            kind,
-            project_path: project.path.clone(),
-            target_name: Some(project_name.clone()),
-            parent_label: project_name.clone(),
-            branch: branch.clone(),
-            dir: dir.clone(),
-        });
-    }
-
-    for group in &project.examples {
-        for name in &group.names {
-            let display = if group.category.is_empty() {
-                name.clone()
-            } else {
-                format!("{}/{name}", group.category)
-            };
-            let kind = FinderKind::Example;
-            items.push(FinderItem {
-                search_text: format!(
-                    "{display} {project_name} {} {dir} vendored {}",
-                    parent.display_name(),
-                    kind.label()
-                ),
-                display_name: display,
-                kind,
-                project_path: project.path.clone(),
-                target_name: Some(name.clone()),
-                parent_label: project_name.clone(),
-                branch: branch.clone(),
-                dir: dir.clone(),
-            });
-        }
-    }
-
-    for name in &project.benches {
-        let kind = FinderKind::Bench;
-        items.push(FinderItem {
-            search_text: format!(
-                "{name} {project_name} {} {dir} vendored {}",
-                parent.display_name(),
-                kind.label()
-            ),
-            display_name: name.clone(),
-            kind,
-            project_path: project.path.clone(),
+            project_path: dir.clone(),
             target_name: Some(name.clone()),
             parent_label: project_name.clone(),
             branch: branch.clone(),
@@ -652,11 +723,13 @@ fn render_finder_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::Project;
     use crate::project::ProjectLanguage;
     use crate::project::WorkspaceStatus;
+    use crate::scan::ProjectNode;
 
     fn make_project(name: Option<&str>, path: &str) -> Project {
-        Project {
+        crate::project::Project {
             path:                      path.to_string(),
             abs_path:                  path.to_string(),
             name:                      name.map(str::to_string),
@@ -687,7 +760,8 @@ mod tests {
         };
         node.project.is_workspace = WorkspaceStatus::Workspace;
 
-        let (items, _widths) = build_finder_index(&[node], &HashMap::new());
+        let list_items = crate::scan::build_project_list(&[node]);
+        let (items, _widths) = build_finder_index(&list_items, &HashMap::new());
         assert!(items.iter().any(|item| {
             item.project_path == "~/rust/hana/crates/clay-layout"
                 && item.display_name == "clay-layout (vendored)"

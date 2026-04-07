@@ -782,7 +782,7 @@ fn render_root_item(
     let display_path = item.display_path();
     let project = app.project_by_path(&display_path);
     let mut name = item.display_name();
-    let live_wt = app.live_worktree_count_for_item(item);
+    let live_wt = App::live_worktree_count_for_item(item);
     if live_wt > 0 {
         name = format!("{name} {WORKTREE}:{live_wt}");
     }
@@ -913,8 +913,7 @@ fn render_worktree_entry<'a>(
                 wtg.linked().get(wi - 1).unwrap_or_else(|| wtg.primary())
             };
             ws.worktree_name()
-                .map(str::to_string)
-                .unwrap_or_else(|| ws.display_name())
+                .map_or_else(|| ws.display_name(), str::to_string)
         },
         crate::project::ProjectListItem::PackageWorktrees(wtg) => {
             let pkg = if wi == 0 {
@@ -923,8 +922,7 @@ fn render_worktree_entry<'a>(
                 wtg.linked().get(wi - 1).unwrap_or_else(|| wtg.primary())
             };
             pkg.worktree_name()
-                .map(str::to_string)
-                .unwrap_or_else(|| pkg.display_name())
+                .map_or_else(|| pkg.display_name(), str::to_string)
         },
         _ => dp.clone(),
     };
@@ -1052,13 +1050,139 @@ fn render_wt_member<'a>(
     } else {
         PREFIX_WT_MEMBER_INLINE
     };
-    if let Some(project) = app.project_by_path(&member_path) {
-        render_child_item(app, project, &member_name, sorted, indent, widths)
+    app.project_by_path(&member_path).map_or_else(
+        || {
+            // Fallback: render with minimal info
+            let row = super::columns::build_group_header_cells(indent, &member_name);
+            ListItem::new(super::columns::row_to_line(&row, widths))
+        },
+        |project| render_child_item(app, project, &member_name, sorted, indent, widths),
+    )
+}
+
+fn render_member_item(
+    app: &App,
+    node_index: usize,
+    group_index: usize,
+    member_index: usize,
+    child_sorted: &HashMap<usize, Vec<u64>>,
+    widths: &ResolvedWidths,
+) -> ListItem<'static> {
+    let item = &app.project_list_items[node_index];
+    let empty = Vec::new();
+    let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
+    let (member_path, member_name, is_named) = match item {
+        crate::project::ProjectListItem::Workspace(ws) => {
+            let group = &ws.groups()[group_index];
+            let member = &group.members()[member_index];
+            (
+                member.display_path(),
+                member.display_name(),
+                group.is_named(),
+            )
+        },
+        _ => (String::new(), String::new(), false),
+    };
+    let indent = if is_named {
+        PREFIX_MEMBER_NAMED
     } else {
-        // Fallback: render with minimal info
-        let row = super::columns::build_group_header_cells(indent, &member_name);
-        ListItem::new(super::columns::row_to_line(&row, widths))
-    }
+        PREFIX_MEMBER_INLINE
+    };
+    app.project_by_path(&member_path).map_or_else(
+        || {
+            let row = super::columns::build_group_header_cells(indent, &member_name);
+            ListItem::new(super::columns::row_to_line(&row, widths))
+        },
+        |project| render_child_item(app, project, &member_name, sorted, indent, widths),
+    )
+}
+
+fn render_vendored_item(
+    app: &App,
+    node_index: usize,
+    vendored_index: usize,
+    child_sorted: &HashMap<usize, Vec<u64>>,
+    widths: &ResolvedWidths,
+) -> ListItem<'static> {
+    let item = &app.project_list_items[node_index];
+    let empty = Vec::new();
+    let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
+    let (vendored_path, vendored_display_name) = match item {
+        crate::project::ProjectListItem::Workspace(ws) => {
+            let v = &ws.vendored()[vendored_index];
+            (v.display_path(), v.display_name())
+        },
+        crate::project::ProjectListItem::Package(pkg) => {
+            let v = &pkg.vendored()[vendored_index];
+            (v.display_path(), v.display_name())
+        },
+        _ => (String::new(), String::new()),
+    };
+    let name = format!("{vendored_display_name} (vendored)");
+    app.project_by_path(&vendored_path).map_or_else(
+        || {
+            let row = super::columns::build_group_header_cells(PREFIX_VENDORED, &name);
+            ListItem::new(super::columns::row_to_line(&row, widths))
+        },
+        |project| render_child_item(app, project, &name, sorted, PREFIX_VENDORED, widths),
+    )
+}
+
+fn render_wt_vendored_item(
+    app: &App,
+    node_index: usize,
+    worktree_index: usize,
+    vendored_index: usize,
+    child_sorted: &HashMap<usize, Vec<u64>>,
+    widths: &ResolvedWidths,
+) -> ListItem<'static> {
+    let item = &app.project_list_items[node_index];
+    let empty = Vec::new();
+    let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
+    let dp = app
+        .display_path_for_row(VisibleRow::WorktreeVendored {
+            node_index,
+            worktree_index,
+            vendored_index,
+        })
+        .unwrap_or_default();
+    let vendored_display_name = match item {
+        crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+            let ws = if worktree_index == 0 {
+                wtg.primary()
+            } else {
+                wtg.linked()
+                    .get(worktree_index - 1)
+                    .unwrap_or_else(|| wtg.primary())
+            };
+            ws.vendored()
+                .get(vendored_index)
+                .map(crate::project::TypedProject::display_name)
+                .unwrap_or_default()
+        },
+        crate::project::ProjectListItem::PackageWorktrees(wtg) => {
+            let pkg = if worktree_index == 0 {
+                wtg.primary()
+            } else {
+                wtg.linked()
+                    .get(worktree_index - 1)
+                    .unwrap_or_else(|| wtg.primary())
+            };
+            pkg.vendored()
+                .get(vendored_index)
+                .map(crate::project::TypedProject::display_name)
+                .unwrap_or_default()
+        },
+        _ => String::new(),
+    };
+    let name = format!("{vendored_display_name} (vendored)");
+    app.project_by_path(&dp).map_or_else(
+        || {
+            let row = super::columns::build_group_header_cells(PREFIX_WT_VENDORED, &name);
+            ListItem::new(super::columns::row_to_line(&row, widths))
+        },
+        |project| render_child_item(app, project, &name, sorted, PREFIX_WT_VENDORED, widths),
+    )
 }
 
 pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListItem<'static>> {
@@ -1099,60 +1223,18 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                 node_index,
                 group_index,
                 member_index,
-            } => {
-                let item = &app.project_list_items[*node_index];
-                let empty = Vec::new();
-                let sorted = child_sorted.get(node_index).unwrap_or(&empty);
-                let (member_path, member_name, is_named) = match item {
-                    crate::project::ProjectListItem::Workspace(ws) => {
-                        let group = &ws.groups()[*group_index];
-                        let member = &group.members()[*member_index];
-                        (
-                            member.display_path(),
-                            member.display_name(),
-                            group.is_named(),
-                        )
-                    },
-                    _ => (String::new(), String::new(), false),
-                };
-                let indent = if is_named {
-                    PREFIX_MEMBER_NAMED
-                } else {
-                    PREFIX_MEMBER_INLINE
-                };
-                if let Some(project) = app.project_by_path(&member_path) {
-                    render_child_item(app, project, &member_name, sorted, indent, widths)
-                } else {
-                    let row = super::columns::build_group_header_cells(indent, &member_name);
-                    ListItem::new(super::columns::row_to_line(&row, widths))
-                }
-            },
+            } => render_member_item(
+                app,
+                *node_index,
+                *group_index,
+                *member_index,
+                child_sorted,
+                widths,
+            ),
             VisibleRow::Vendored {
                 node_index,
                 vendored_index,
-            } => {
-                let item = &app.project_list_items[*node_index];
-                let empty = Vec::new();
-                let sorted = child_sorted.get(node_index).unwrap_or(&empty);
-                let (vendored_path, vendored_display_name) = match item {
-                    crate::project::ProjectListItem::Workspace(ws) => {
-                        let v = &ws.vendored()[*vendored_index];
-                        (v.display_path(), v.display_name())
-                    },
-                    crate::project::ProjectListItem::Package(pkg) => {
-                        let v = &pkg.vendored()[*vendored_index];
-                        (v.display_path(), v.display_name())
-                    },
-                    _ => (String::new(), String::new()),
-                };
-                let name = format!("{vendored_display_name} (vendored)");
-                if let Some(project) = app.project_by_path(&vendored_path) {
-                    render_child_item(app, project, &name, sorted, PREFIX_VENDORED, widths)
-                } else {
-                    let row = super::columns::build_group_header_cells(PREFIX_VENDORED, &name);
-                    ListItem::new(super::columns::row_to_line(&row, widths))
-                }
-            },
+            } => render_vendored_item(app, *node_index, *vendored_index, child_sorted, widths),
             VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
@@ -1180,54 +1262,14 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                 node_index,
                 worktree_index,
                 vendored_index,
-            } => {
-                let item = &app.project_list_items[*node_index];
-                let empty = Vec::new();
-                let sorted = child_sorted.get(node_index).unwrap_or(&empty);
-                let dp = app
-                    .display_path_for_row(VisibleRow::WorktreeVendored {
-                        node_index:     *node_index,
-                        worktree_index: *worktree_index,
-                        vendored_index: *vendored_index,
-                    })
-                    .unwrap_or_default();
-                let vendored_display_name = match item {
-                    crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
-                        let ws = if *worktree_index == 0 {
-                            wtg.primary()
-                        } else {
-                            wtg.linked()
-                                .get(*worktree_index - 1)
-                                .unwrap_or_else(|| wtg.primary())
-                        };
-                        ws.vendored()
-                            .get(*vendored_index)
-                            .map(|v| v.display_name())
-                            .unwrap_or_default()
-                    },
-                    crate::project::ProjectListItem::PackageWorktrees(wtg) => {
-                        let pkg = if *worktree_index == 0 {
-                            wtg.primary()
-                        } else {
-                            wtg.linked()
-                                .get(*worktree_index - 1)
-                                .unwrap_or_else(|| wtg.primary())
-                        };
-                        pkg.vendored()
-                            .get(*vendored_index)
-                            .map(|v| v.display_name())
-                            .unwrap_or_default()
-                    },
-                    _ => String::new(),
-                };
-                let name = format!("{vendored_display_name} (vendored)");
-                if let Some(project) = app.project_by_path(&dp) {
-                    render_child_item(app, project, &name, sorted, PREFIX_WT_VENDORED, widths)
-                } else {
-                    let row = super::columns::build_group_header_cells(PREFIX_WT_VENDORED, &name);
-                    ListItem::new(super::columns::row_to_line(&row, widths))
-                }
-            },
+            } => render_wt_vendored_item(
+                app,
+                *node_index,
+                *worktree_index,
+                *vendored_index,
+                child_sorted,
+                widths,
+            ),
         })
         .collect()
 }

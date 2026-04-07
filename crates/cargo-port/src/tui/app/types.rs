@@ -26,7 +26,6 @@ use crate::project::Project;
 use crate::project::ProjectListItem;
 use crate::scan::BackgroundMsg;
 use crate::scan::FlatEntry;
-use crate::scan::ProjectNode;
 use crate::tui::columns::ResolvedWidths;
 use crate::tui::detail::DetailInfo;
 use crate::tui::detail::PendingCiFetch;
@@ -78,7 +77,6 @@ pub struct ConfigFileStamp {
 
 pub struct TreeBuildResult {
     pub build_id:           u64,
-    pub nodes:              Vec<ProjectNode>,
     pub flat_entries:       Vec<FlatEntry>,
     pub project_list_items: Vec<ProjectListItem>,
 }
@@ -503,7 +501,6 @@ pub struct App {
     pub scan_root:                PathBuf,
     pub http_client:              HttpClient,
     pub all_projects:             Vec<Project>,
-    pub nodes:                    Vec<ProjectNode>,
     pub project_list_items:       Vec<ProjectListItem>,
     pub flat_entries:             Vec<FlatEntry>,
     pub disk_usage:               HashMap<String, u64>,
@@ -566,12 +563,6 @@ pub struct App {
     pub lint_runtime:         Option<RuntimeHandle>,
     pub unreachable_services: HashSet<ServiceKind>,
     pub service_retry_active: HashSet<ServiceKind>,
-
-    // Projects whose directories have been deleted from disk.
-    pub deleted_projects: HashSet<String>,
-
-    // Projects the user has explicitly dismissed via [x].
-    pub dismissed_projects: HashSet<String>,
 
     // Universal finder
     pub selection_paths: SelectionPaths,

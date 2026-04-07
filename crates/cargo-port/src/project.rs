@@ -19,7 +19,7 @@ use crate::perf_log;
 /// Whether a project is a plain clone or a fork (has an "upstream" remote).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum GitOrigin {
+pub(crate) enum GitOrigin {
     /// A local-only repo (no origin remote).
     Local,
     /// A plain git clone (has "origin" remote).
@@ -29,7 +29,7 @@ pub enum GitOrigin {
 }
 
 impl GitOrigin {
-    pub const fn icon(self) -> &'static str {
+    pub(crate) const fn icon(self) -> &'static str {
         match self {
             Self::Local => GIT_LOCAL,
             Self::Clone => GIT_CLONE,
@@ -37,7 +37,7 @@ impl GitOrigin {
         }
     }
 
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Local => "local",
             Self::Clone => "clone",
@@ -48,7 +48,7 @@ impl GitOrigin {
 
 /// Git metadata for a project: origin type, owner, repo URL, and current branch.
 #[derive(Debug, Clone, Serialize)]
-pub struct GitInfo {
+pub(crate) struct GitInfo {
     /// Whether this is a clone or a fork.
     pub origin:              GitOrigin,
     /// The current branch name.
@@ -73,7 +73,7 @@ pub struct GitInfo {
 
 impl GitInfo {
     /// Detect git info for a project directory.
-    pub fn detect(project_dir: &Path) -> Option<Self> {
+    pub(crate) fn detect(project_dir: &Path) -> Option<Self> {
         let repo_root = git_repo_root(project_dir)?;
         let mut info = Self::detect_fast(&repo_root)?;
         info.first_commit = detect_first_commit(&repo_root);
@@ -81,7 +81,7 @@ impl GitInfo {
     }
 
     /// Detect the subset of git info needed on the startup critical path.
-    pub fn detect_fast(project_dir: &Path) -> Option<Self> {
+    pub(crate) fn detect_fast(project_dir: &Path) -> Option<Self> {
         let repo_root = git_repo_root(project_dir)?;
 
         let remote_output = git_output_logged(&repo_root, "remote", ["remote"]).ok()?;
@@ -170,7 +170,7 @@ impl GitInfo {
     }
 }
 
-pub fn detect_first_commit(project_dir: &Path) -> Option<String> {
+pub(crate) fn detect_first_commit(project_dir: &Path) -> Option<String> {
     let repo_root = git_repo_root(project_dir)?;
     git_output_logged(
         &repo_root,
@@ -223,7 +223,7 @@ fn git_output_logged<const N: usize>(
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum GitPathState {
+pub(crate) enum GitPathState {
     #[default]
     OutsideRepo,
     Clean,
@@ -233,7 +233,7 @@ pub enum GitPathState {
 }
 
 impl GitPathState {
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::OutsideRepo => "outside repo",
             Self::Clean => "clean",
@@ -248,7 +248,7 @@ type ProjectPathEntry = (String, String);
 type GitPathStatesByProject = HashMap<String, GitPathState>;
 type ProjectsByRepoRoot = HashMap<PathBuf, Vec<ProjectPathEntry>>;
 
-pub fn detect_git_path_state(project_dir: &Path) -> GitPathState {
+pub(crate) fn detect_git_path_state(project_dir: &Path) -> GitPathState {
     let started = std::time::Instant::now();
     let Some(repo_root) = git_repo_root(project_dir) else {
         return GitPathState::OutsideRepo;
@@ -325,7 +325,7 @@ pub fn detect_git_path_state(project_dir: &Path) -> GitPathState {
     state
 }
 
-pub fn git_repo_root(project_dir: &Path) -> Option<PathBuf> {
+pub(crate) fn git_repo_root(project_dir: &Path) -> Option<PathBuf> {
     project_dir
         .ancestors()
         .find(|dir| {
@@ -340,7 +340,7 @@ pub fn git_repo_root(project_dir: &Path) -> Option<PathBuf> {
 /// For normal repos, returns `repo_root/.git`.
 /// For worktrees, `.git` is a file containing `gitdir: <path>` — this
 /// function reads that file and returns the resolved path.
-pub fn resolve_git_dir(repo_root: &Path) -> Option<PathBuf> {
+pub(crate) fn resolve_git_dir(repo_root: &Path) -> Option<PathBuf> {
     let git_path = repo_root.join(".git");
     if git_path.is_dir() {
         return Some(git_path);
@@ -358,7 +358,9 @@ pub fn resolve_git_dir(repo_root: &Path) -> Option<PathBuf> {
     None
 }
 
-pub fn detect_git_path_states_batch(projects: &[ProjectPathEntry]) -> GitPathStatesByProject {
+pub(crate) fn detect_git_path_states_batch(
+    projects: &[ProjectPathEntry],
+) -> GitPathStatesByProject {
     let started = std::time::Instant::now();
     let (mut states, repos) = partition_projects_by_repo(projects);
 
@@ -622,7 +624,7 @@ fn parse_remote_url(raw: &str) -> (Option<String>, Option<String>) {
 /// Whether a project has a `[workspace]` section in `Cargo.toml`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
-pub enum WorkspaceStatus {
+pub(crate) enum WorkspaceStatus {
     Workspace,
     #[default]
     Standalone,
@@ -639,7 +641,7 @@ impl From<WorkspaceStatus> for bool {
 /// Whether a project is a Rust project (has `Cargo.toml`) or a non-Rust git repo.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
-pub enum ProjectLanguage {
+pub(crate) enum ProjectLanguage {
     #[default]
     Rust,
     NonRust,
@@ -655,18 +657,18 @@ impl From<ProjectLanguage> for bool {
 
 /// Whether a project path lives inside a git repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GitRepoPresence {
+pub(crate) enum GitRepoPresence {
     InRepo,
     OutsideRepo,
 }
 
 impl GitRepoPresence {
-    pub const fn is_in_repo(self) -> bool { matches!(self, Self::InRepo) }
+    pub(crate) const fn is_in_repo(self) -> bool { matches!(self, Self::InRepo) }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ProjectType {
+pub(crate) enum ProjectType {
     Binary,
     Library,
     ProcMacro,
@@ -686,14 +688,14 @@ impl fmt::Display for ProjectType {
 
 /// A group of examples in a subdirectory, or root-level examples (empty category).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExampleGroup {
+pub(crate) struct ExampleGroup {
     /// Subdirectory name, or empty for root-level examples.
     pub category: String,
     pub names:    Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Project {
+pub(crate) struct Project {
     /// Display path (e.g. `~/rust/bevy`).
     pub path:                      String,
     /// Absolute filesystem path for operations that need to access the project on disk.
@@ -723,10 +725,12 @@ pub struct Project {
 
 impl Project {
     /// Total number of examples across all groups.
-    pub fn example_count(&self) -> usize { self.examples.iter().map(|g| g.names.len()).sum() }
+    pub(crate) fn example_count(&self) -> usize {
+        self.examples.iter().map(|g| g.names.len()).sum()
+    }
 
     /// Language icon for the project list.
-    pub const fn lang_icon(&self) -> &'static str {
+    pub(crate) const fn lang_icon(&self) -> &'static str {
         match self.is_rust {
             ProjectLanguage::Rust => "🦀",
             ProjectLanguage::NonRust => "  ",
@@ -735,7 +739,7 @@ impl Project {
 
     /// Display name for the project list.
     /// Falls back to the last path component for workspace-only projects.
-    pub fn display_name(&self) -> String {
+    pub(crate) fn display_name(&self) -> String {
         self.name
             .as_deref()
             .unwrap_or_else(|| self.path.rsplit('/').next().unwrap_or(&self.path))
@@ -743,7 +747,7 @@ impl Project {
     }
 }
 
-pub enum ProjectParseError {
+pub(crate) enum ProjectParseError {
     ReadError(io::Error),
     ParseError(toml::de::Error),
 }
@@ -758,7 +762,7 @@ impl fmt::Display for ProjectParseError {
 }
 
 impl Project {
-    pub fn from_cargo_toml(cargo_toml_path: &Path) -> Result<Self, ProjectParseError> {
+    pub(crate) fn from_cargo_toml(cargo_toml_path: &Path) -> Result<Self, ProjectParseError> {
         let contents =
             std::fs::read_to_string(cargo_toml_path).map_err(ProjectParseError::ReadError)?;
         let table: Table = contents.parse().map_err(ProjectParseError::ParseError)?;
@@ -831,7 +835,7 @@ impl Project {
     }
 
     /// Create a project entry for a non-Rust git repository (no `Cargo.toml`).
-    pub fn from_git_dir(project_dir: &Path) -> Self {
+    pub(crate) fn from_git_dir(project_dir: &Path) -> Self {
         let name = project_dir
             .file_name()
             .map(|n| n.to_string_lossy().to_string());
@@ -858,7 +862,7 @@ impl Project {
         }
     }
 
-    pub const fn is_workspace(&self) -> bool {
+    pub(crate) const fn is_workspace(&self) -> bool {
         matches!(self.is_workspace, WorkspaceStatus::Workspace)
     }
 }
@@ -1175,7 +1179,7 @@ fn count_targets(table: &Table, project_dir: &Path, toml_key: &str, dir_name: &s
 /// Returns the worktree root directory name as the label.
 /// Returns a `~/`-prefixed path if under the home directory, otherwise the absolute path.
 /// Returns a `~/`-prefixed path if under the home directory, otherwise the absolute path.
-pub fn home_relative_path(path: &Path) -> String {
+pub(crate) fn home_relative_path(path: &Path) -> String {
     if let Some(home) = dirs::home_dir()
         && let Ok(rel) = path.strip_prefix(&home)
     {
@@ -1237,7 +1241,7 @@ fn detect_worktree_primary(project_dir: &Path) -> Option<String> {
 /// Visibility state for projects and worktree groups.
 /// Progression: `Visible -> Deleted -> Dismissed`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Visibility {
+pub(crate) enum Visibility {
     #[default]
     Visible,
     Deleted,
@@ -1245,14 +1249,14 @@ pub enum Visibility {
 }
 
 /// Associated types that drive the structure per project kind.
-pub trait ProjectKind: Clone + 'static {
+pub(crate) trait ProjectKind: Clone + 'static {
     type Cargo: Clone;
     type Groups: Clone;
     type Vendored: Clone;
 }
 
 #[derive(Clone)]
-pub struct Workspace;
+pub(crate) struct Workspace;
 
 impl ProjectKind for Workspace {
     type Cargo = Cargo;
@@ -1261,16 +1265,16 @@ impl ProjectKind for Workspace {
 }
 
 #[derive(Clone)]
-pub struct Package;
+pub(crate) struct Package;
 
 impl ProjectKind for Package {
     type Cargo = Cargo;
     type Groups = ();
-    type Vendored = Vec<TypedProject<Package>>;
+    type Vendored = Vec<TypedProject<Self>>;
 }
 
 #[derive(Clone)]
-pub struct NonRust;
+pub(crate) struct NonRust;
 
 impl ProjectKind for NonRust {
     type Cargo = ();
@@ -1280,7 +1284,7 @@ impl ProjectKind for NonRust {
 
 /// Shared Cargo fields extracted from `Cargo.toml`.
 #[derive(Clone, Debug)]
-pub struct Cargo {
+pub(crate) struct Cargo {
     version:                Option<String>,
     description:            Option<String>,
     types:                  Vec<ProjectType>,
@@ -1291,7 +1295,7 @@ pub struct Cargo {
 }
 
 impl Cargo {
-    pub fn new(
+    pub(crate) const fn new(
         version: Option<String>,
         description: Option<String>,
         types: Vec<ProjectType>,
@@ -1311,26 +1315,28 @@ impl Cargo {
         }
     }
 
-    pub fn version(&self) -> Option<&str> { self.version.as_deref() }
+    pub(crate) fn version(&self) -> Option<&str> { self.version.as_deref() }
 
-    pub fn description(&self) -> Option<&str> { self.description.as_deref() }
+    pub(crate) fn description(&self) -> Option<&str> { self.description.as_deref() }
 
-    pub fn types(&self) -> &[ProjectType] { &self.types }
+    pub(crate) fn types(&self) -> &[ProjectType] { &self.types }
 
-    pub fn examples(&self) -> &[ExampleGroup] { &self.examples }
+    pub(crate) fn examples(&self) -> &[ExampleGroup] { &self.examples }
 
-    pub fn benches(&self) -> &[String] { &self.benches }
+    pub(crate) fn benches(&self) -> &[String] { &self.benches }
 
-    pub const fn test_count(&self) -> usize { self.test_count }
+    pub(crate) const fn test_count(&self) -> usize { self.test_count }
 
-    pub fn local_dependency_paths(&self) -> &[String] { &self.local_dependency_paths }
+    pub(crate) fn local_dependency_paths(&self) -> &[String] { &self.local_dependency_paths }
 
-    pub fn example_count(&self) -> usize { self.examples.iter().map(|g| g.names.len()).sum() }
+    pub(crate) fn example_count(&self) -> usize {
+        self.examples.iter().map(|g| g.names.len()).sum()
+    }
 }
 
 /// The core project type, parameterized by kind.
 /// Private fields with accessors enforce what's available per kind.
-pub struct TypedProject<Kind: ProjectKind> {
+pub(crate) struct TypedProject<Kind: ProjectKind> {
     path:                      PathBuf,
     name:                      Option<String>,
     visibility:                Visibility,
@@ -1388,25 +1394,25 @@ impl Clone for TypedProject<NonRust> {
 
 // Shared accessors for all kinds.
 impl<Kind: ProjectKind> TypedProject<Kind> {
-    pub fn path(&self) -> &Path { &self.path }
+    pub(crate) fn path(&self) -> &Path { &self.path }
 
-    pub fn name(&self) -> Option<&str> { self.name.as_deref() }
+    pub(crate) fn name(&self) -> Option<&str> { self.name.as_deref() }
 
-    pub const fn visibility(&self) -> Visibility { self.visibility }
+    pub(crate) const fn visibility(&self) -> Visibility { self.visibility }
 
-    pub fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
+    pub(crate) const fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
 
-    pub fn worktree_name(&self) -> Option<&str> { self.worktree_name.as_deref() }
+    pub(crate) fn worktree_name(&self) -> Option<&str> { self.worktree_name.as_deref() }
 
-    pub fn worktree_primary_abs_path(&self) -> Option<&Path> {
+    pub(crate) fn worktree_primary_abs_path(&self) -> Option<&Path> {
         self.worktree_primary_abs_path.as_deref()
     }
 
     /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
-    pub fn display_path(&self) -> String { home_relative_path(&self.path) }
+    pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }
 
     /// Display name: project name or last path component.
-    pub fn display_name(&self) -> String {
+    pub(crate) fn display_name(&self) -> String {
         self.name
             .as_deref()
             .unwrap_or_else(|| {
@@ -1420,17 +1426,19 @@ impl<Kind: ProjectKind> TypedProject<Kind> {
 
 // Workspace-specific accessors.
 impl TypedProject<Workspace> {
-    pub fn cargo(&self) -> &Cargo { &self.cargo }
+    pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
 
-    pub fn groups(&self) -> &[NewMemberGroup] { &self.groups }
+    pub(crate) fn groups(&self) -> &[NewMemberGroup] { &self.groups }
 
-    pub fn groups_mut(&mut self) -> &mut Vec<NewMemberGroup> { &mut self.groups }
+    pub(crate) const fn groups_mut(&mut self) -> &mut Vec<NewMemberGroup> { &mut self.groups }
 
-    pub fn vendored(&self) -> &[TypedProject<Package>] { &self.vendored }
+    pub(crate) fn vendored(&self) -> &[TypedProject<Package>] { &self.vendored }
 
-    pub fn vendored_mut(&mut self) -> &mut Vec<TypedProject<Package>> { &mut self.vendored }
+    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<TypedProject<Package>> {
+        &mut self.vendored
+    }
 
-    pub fn new(
+    pub(crate) fn new(
         path: PathBuf,
         name: Option<String>,
         cargo: Cargo,
@@ -1451,25 +1459,25 @@ impl TypedProject<Workspace> {
         }
     }
 
-    pub fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members().is_empty()) }
+    pub(crate) fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members().is_empty()) }
 
     /// Language icon for the project list.
-    pub const fn lang_icon(&self) -> &'static str { "\u{1f980}" }
+    pub(crate) const fn lang_icon() -> &'static str { "\u{1f980}" }
 }
 
 // Package-specific accessors.
 impl TypedProject<Package> {
-    pub fn cargo(&self) -> &Cargo { &self.cargo }
+    pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
 
-    pub fn vendored(&self) -> &[TypedProject<Package>] { &self.vendored }
+    pub(crate) fn vendored(&self) -> &[Self] { &self.vendored }
 
-    pub fn vendored_mut(&mut self) -> &mut Vec<TypedProject<Package>> { &mut self.vendored }
+    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<Self> { &mut self.vendored }
 
-    pub fn new(
+    pub(crate) fn new(
         path: PathBuf,
         name: Option<String>,
         cargo: Cargo,
-        vendored: Vec<TypedProject<Package>>,
+        vendored: Vec<Self>,
         worktree_name: Option<String>,
         worktree_primary_abs_path: Option<PathBuf>,
     ) -> Self {
@@ -1486,12 +1494,12 @@ impl TypedProject<Package> {
     }
 
     /// Language icon for the project list.
-    pub const fn lang_icon(&self) -> &'static str { "\u{1f980}" }
+    pub(crate) const fn lang_icon() -> &'static str { "\u{1f980}" }
 }
 
 // NonRust-specific constructor.
 impl TypedProject<NonRust> {
-    pub fn new(
+    pub(crate) fn new(
         path: PathBuf,
         name: Option<String>,
         worktree_name: Option<String>,
@@ -1510,18 +1518,18 @@ impl TypedProject<NonRust> {
     }
 
     /// Language icon for the project list.
-    pub const fn lang_icon(&self) -> &'static str { "  " }
+    pub(crate) const fn lang_icon() -> &'static str { "  " }
 }
 
 /// A generic worktree group: primary + linked checkouts.
-pub struct WorktreeGroup<Kind: ProjectKind> {
+pub(crate) struct WorktreeGroup<Kind: ProjectKind> {
     primary:    TypedProject<Kind>,
     linked:     Vec<TypedProject<Kind>>,
     visibility: Visibility,
 }
 
 impl<Kind: ProjectKind> WorktreeGroup<Kind> {
-    pub fn new(primary: TypedProject<Kind>, linked: Vec<TypedProject<Kind>>) -> Self {
+    pub(crate) fn new(primary: TypedProject<Kind>, linked: Vec<TypedProject<Kind>>) -> Self {
         Self {
             primary,
             linked,
@@ -1529,19 +1537,19 @@ impl<Kind: ProjectKind> WorktreeGroup<Kind> {
         }
     }
 
-    pub fn primary(&self) -> &TypedProject<Kind> { &self.primary }
+    pub(crate) const fn primary(&self) -> &TypedProject<Kind> { &self.primary }
 
-    pub fn primary_mut(&mut self) -> &mut TypedProject<Kind> { &mut self.primary }
+    pub(crate) const fn primary_mut(&mut self) -> &mut TypedProject<Kind> { &mut self.primary }
 
-    pub fn linked(&self) -> &[TypedProject<Kind>] { &self.linked }
+    pub(crate) fn linked(&self) -> &[TypedProject<Kind>] { &self.linked }
 
-    pub fn linked_mut(&mut self) -> &mut Vec<TypedProject<Kind>> { &mut self.linked }
+    pub(crate) const fn linked_mut(&mut self) -> &mut Vec<TypedProject<Kind>> { &mut self.linked }
 
-    pub const fn visibility(&self) -> Visibility { self.visibility }
+    pub(crate) const fn visibility(&self) -> Visibility { self.visibility }
 
-    pub fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
+    pub(crate) const fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
 
-    pub fn linked_count(&self) -> usize { self.linked.len() }
+    pub(crate) const fn linked_count(&self) -> usize { self.linked.len() }
 }
 
 impl Clone for WorktreeGroup<Workspace> {
@@ -1565,7 +1573,7 @@ impl Clone for WorktreeGroup<Package> {
 }
 
 /// The top-level enum for the project list.
-pub enum ProjectListItem {
+pub(crate) enum ProjectListItem {
     Workspace(TypedProject<Workspace>),
     Package(TypedProject<Package>),
     NonRust(TypedProject<NonRust>),
@@ -1586,7 +1594,7 @@ impl Clone for ProjectListItem {
 }
 
 impl ProjectListItem {
-    pub fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         match self {
             Self::Workspace(p) => p.path(),
             Self::Package(p) => p.path(),
@@ -1596,7 +1604,7 @@ impl ProjectListItem {
         }
     }
 
-    pub fn name(&self) -> Option<&str> {
+    pub(crate) fn name(&self) -> Option<&str> {
         match self {
             Self::Workspace(p) => p.name(),
             Self::Package(p) => p.name(),
@@ -1606,7 +1614,7 @@ impl ProjectListItem {
         }
     }
 
-    pub fn visibility(&self) -> Visibility {
+    pub(crate) const fn visibility(&self) -> Visibility {
         match self {
             Self::Workspace(p) => p.visibility(),
             Self::Package(p) => p.visibility(),
@@ -1616,7 +1624,7 @@ impl ProjectListItem {
         }
     }
 
-    pub fn set_visibility(&mut self, v: Visibility) {
+    pub(crate) const fn set_visibility(&mut self, v: Visibility) {
         match self {
             Self::Workspace(p) => p.set_visibility(v),
             Self::Package(p) => p.set_visibility(v),
@@ -1626,7 +1634,7 @@ impl ProjectListItem {
         }
     }
 
-    pub fn display_path(&self) -> String {
+    pub(crate) fn display_path(&self) -> String {
         match self {
             Self::Workspace(p) => p.display_path(),
             Self::Package(p) => p.display_path(),
@@ -1636,7 +1644,7 @@ impl ProjectListItem {
         }
     }
 
-    pub fn display_name(&self) -> String {
+    pub(crate) fn display_name(&self) -> String {
         match self {
             Self::Workspace(p) => p.display_name(),
             Self::Package(p) => p.display_name(),
@@ -1647,7 +1655,7 @@ impl ProjectListItem {
     }
 
     /// Whether this item has expandable children.
-    pub fn has_children(&self) -> bool {
+    pub(crate) fn has_children(&self) -> bool {
         match self {
             Self::Workspace(ws) => {
                 ws.groups().iter().any(|g| !g.members().is_empty()) || !ws.vendored().is_empty()
@@ -1660,7 +1668,7 @@ impl ProjectListItem {
     }
 
     /// Language icon for the project list.
-    pub fn lang_icon(&self) -> &'static str {
+    pub(crate) const fn lang_icon(&self) -> &'static str {
         match self {
             Self::Workspace(_)
             | Self::Package(_)
@@ -1671,7 +1679,7 @@ impl ProjectListItem {
     }
 
     /// Whether this is a Rust project (has Cargo.toml).
-    pub const fn is_rust(&self) -> bool {
+    pub(crate) const fn is_rust(&self) -> bool {
         matches!(
             self,
             Self::Workspace(_)
@@ -1682,14 +1690,127 @@ impl ProjectListItem {
     }
 
     /// Whether this is a workspace.
-    pub const fn is_workspace(&self) -> bool {
+    pub(crate) const fn is_workspace(&self) -> bool {
         matches!(self, Self::Workspace(_) | Self::WorkspaceWorktrees(_))
+    }
+
+    /// Check if any project in the hierarchy matches the display path and visibility.
+    pub(crate) fn has_project_with_visibility(&self, display_path: &str, v: Visibility) -> bool {
+        match self {
+            Self::Workspace(p) => {
+                if p.display_path() == display_path && p.visibility() == v {
+                    return true;
+                }
+                p.groups().iter().any(|g| {
+                    g.members()
+                        .iter()
+                        .any(|m| m.display_path() == display_path && m.visibility() == v)
+                }) || p
+                    .vendored()
+                    .iter()
+                    .any(|v_proj| v_proj.display_path() == display_path && v_proj.visibility() == v)
+            },
+            Self::Package(p) => {
+                if p.display_path() == display_path && p.visibility() == v {
+                    return true;
+                }
+                p.vendored()
+                    .iter()
+                    .any(|v_proj| v_proj.display_path() == display_path && v_proj.visibility() == v)
+            },
+            Self::NonRust(p) => p.display_path() == display_path && p.visibility() == v,
+            Self::WorkspaceWorktrees(g) => {
+                (g.primary().display_path() == display_path && g.primary().visibility() == v)
+                    || g.linked()
+                        .iter()
+                        .any(|l| l.display_path() == display_path && l.visibility() == v)
+            },
+            Self::PackageWorktrees(g) => {
+                (g.primary().display_path() == display_path && g.primary().visibility() == v)
+                    || g.linked()
+                        .iter()
+                        .any(|l| l.display_path() == display_path && l.visibility() == v)
+            },
+        }
+    }
+
+    /// Set visibility on a project anywhere in the hierarchy by display path.
+    pub(crate) fn set_visibility_by_path(&mut self, display_path: &str, v: Visibility) -> bool {
+        match self {
+            Self::Workspace(p) => {
+                if p.display_path() == display_path {
+                    p.set_visibility(v);
+                    return true;
+                }
+                for g in p.groups_mut() {
+                    for m in g.members_mut() {
+                        if m.display_path() == display_path {
+                            m.set_visibility(v);
+                            return true;
+                        }
+                    }
+                }
+                for vp in p.vendored_mut() {
+                    if vp.display_path() == display_path {
+                        vp.set_visibility(v);
+                        return true;
+                    }
+                }
+                false
+            },
+            Self::Package(p) => {
+                if p.display_path() == display_path {
+                    p.set_visibility(v);
+                    return true;
+                }
+                for vp in p.vendored_mut() {
+                    if vp.display_path() == display_path {
+                        vp.set_visibility(v);
+                        return true;
+                    }
+                }
+                false
+            },
+            Self::NonRust(p) => {
+                if p.display_path() == display_path {
+                    p.set_visibility(v);
+                    return true;
+                }
+                false
+            },
+            Self::WorkspaceWorktrees(g) => {
+                if g.primary().display_path() == display_path {
+                    g.primary_mut().set_visibility(v);
+                    return true;
+                }
+                for linked in g.linked_mut() {
+                    if linked.display_path() == display_path {
+                        linked.set_visibility(v);
+                        return true;
+                    }
+                }
+                false
+            },
+            Self::PackageWorktrees(g) => {
+                if g.primary().display_path() == display_path {
+                    g.primary_mut().set_visibility(v);
+                    return true;
+                }
+                for linked in g.linked_mut() {
+                    if linked.display_path() == display_path {
+                        linked.set_visibility(v);
+                        return true;
+                    }
+                }
+                false
+            },
+        }
     }
 }
 
 /// Members within a workspace organized into groups.
 #[derive(Clone)]
-pub enum NewMemberGroup {
+pub(crate) enum NewMemberGroup {
     Named {
         name:    String,
         members: Vec<TypedProject<Package>>,
@@ -1700,26 +1821,26 @@ pub enum NewMemberGroup {
 }
 
 impl NewMemberGroup {
-    pub fn members(&self) -> &[TypedProject<Package>] {
+    pub(crate) fn members(&self) -> &[TypedProject<Package>] {
         match self {
             Self::Named { members, .. } | Self::Inline { members } => members,
         }
     }
 
-    pub fn members_mut(&mut self) -> &mut Vec<TypedProject<Package>> {
+    pub(crate) const fn members_mut(&mut self) -> &mut Vec<TypedProject<Package>> {
         match self {
             Self::Named { members, .. } | Self::Inline { members } => members,
         }
     }
 
-    pub fn group_name(&self) -> &str {
+    pub(crate) fn group_name(&self) -> &str {
         match self {
             Self::Named { name, .. } => name,
             Self::Inline { .. } => "",
         }
     }
 
-    pub const fn is_named(&self) -> bool { matches!(self, Self::Named { .. }) }
+    pub(crate) const fn is_named(&self) -> bool { matches!(self, Self::Named { .. }) }
 }
 
 fn count_rs_files_recursive(dir: &Path) -> usize {

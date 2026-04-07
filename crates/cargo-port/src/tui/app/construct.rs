@@ -36,7 +36,6 @@ use crate::project::ProjectListItem;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::FlatEntry;
-use crate::scan::ProjectNode;
 use crate::tui::columns::ResolvedWidths;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
@@ -48,9 +47,9 @@ use crate::tui::types::PaneId;
 use crate::watcher;
 use crate::watcher::WatchRequest;
 
-fn initial_list_state(nodes: &[ProjectNode]) -> ListState {
+fn initial_list_state(items: &[ProjectListItem]) -> ListState {
     let mut state = ListState::default();
-    if !nodes.is_empty() {
+    if !items.is_empty() {
         state.select(Some(0));
     }
     state
@@ -87,7 +86,6 @@ struct AppInit {
     lint_warning:       Option<String>,
     lint_runtime:       Option<RuntimeHandle>,
     watch_tx:           mpsc::Sender<WatchRequest>,
-    nodes:              Vec<ProjectNode>,
     project_list_items: Vec<ProjectListItem>,
     flat_entries:       Vec<FlatEntry>,
     list_state:         ListState,
@@ -117,7 +115,7 @@ impl AppInit {
         let nodes = scan::build_tree(&tree_projects, &cfg.tui.inline_dirs);
         let flat_entries = scan::build_flat_entries(&nodes);
         let project_list_items = scan::build_project_list(&nodes);
-        let list_state = initial_list_state(&nodes);
+        let list_state = initial_list_state(&project_list_items);
 
         Self {
             config_path,
@@ -125,7 +123,6 @@ impl AppInit {
             lint_warning: lint_spawn.warning,
             lint_runtime: lint_spawn.handle,
             watch_tx,
-            nodes,
             project_list_items,
             flat_entries,
             list_state,
@@ -212,7 +209,6 @@ impl App {
             scan_root: inputs.scan_root,
             http_client: inputs.http_client,
             all_projects: inputs.projects,
-            nodes: init.nodes,
             project_list_items: init.project_list_items,
             flat_entries: init.flat_entries,
             disk_usage: HashMap::new(),
@@ -275,8 +271,6 @@ impl App {
             service_retry_active: HashSet::new(),
             #[cfg(test)]
             retry_spawn_mode: RetrySpawnMode::Enabled,
-            deleted_projects: HashSet::new(),
-            dismissed_projects: HashSet::new(),
             selection_paths: SelectionPaths::new(),
             finder: FinderState::new(),
             cached_visible_rows: Vec::new(),

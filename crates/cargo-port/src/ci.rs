@@ -7,7 +7,7 @@ use super::constants::PASSING;
 
 /// Workflow run from the GitHub REST API (`/actions/runs`).
 #[derive(Deserialize)]
-pub struct GhRun {
+pub(crate) struct GhRun {
     pub id:            u64,
     pub node_id:       String,
     pub created_at:    String,
@@ -18,7 +18,7 @@ pub struct GhRun {
 /// Job from the GraphQL `checkRuns` response (upper-case conclusion).
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GqlCheckRun {
+pub(crate) struct GqlCheckRun {
     pub(super) name:         String,
     pub(super) conclusion:   Option<String>,
     pub(super) started_at:   Option<String>,
@@ -28,7 +28,7 @@ pub struct GqlCheckRun {
 /// Whether a CI run has been fully fetched from the API.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum FetchStatus {
+pub(crate) enum FetchStatus {
     #[default]
     Fetched,
     Pending,
@@ -36,14 +36,14 @@ pub enum FetchStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Conclusion {
+pub(crate) enum Conclusion {
     Success,
     Failure,
     Cancelled,
 }
 
 impl Conclusion {
-    pub const fn icon(self) -> &'static str {
+    pub(crate) const fn icon(self) -> &'static str {
         match self {
             Self::Success => PASSING,
             Self::Failure => FAILING,
@@ -51,9 +51,9 @@ impl Conclusion {
         }
     }
 
-    pub const fn is_success(self) -> bool { matches!(self, Self::Success) }
+    pub(crate) const fn is_success(self) -> bool { matches!(self, Self::Success) }
 
-    pub const fn is_failure(self) -> bool { matches!(self, Self::Failure) }
+    pub(crate) const fn is_failure(self) -> bool { matches!(self, Self::Failure) }
 }
 
 impl std::fmt::Display for Conclusion {
@@ -61,7 +61,7 @@ impl std::fmt::Display for Conclusion {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct CiRun {
+pub(crate) struct CiRun {
     pub run_id:          u64,
     pub created_at:      String,
     pub branch:          String,
@@ -76,7 +76,7 @@ pub struct CiRun {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct CiJob {
+pub(crate) struct CiJob {
     pub name:          String,
     pub conclusion:    Conclusion,
     pub duration:      String,
@@ -84,7 +84,7 @@ pub struct CiJob {
 }
 
 /// Build a `CiRun` from a `GhRun` and pre-fetched check run data.
-pub fn build_ci_run(gh_run: &GhRun, check_runs: Vec<GqlCheckRun>, repo_url: &str) -> CiRun {
+pub(crate) fn build_ci_run(gh_run: &GhRun, check_runs: Vec<GqlCheckRun>, repo_url: &str) -> CiRun {
     let mut earliest_start: Option<u64> = None;
     let mut latest_completion: Option<u64> = None;
 
@@ -136,7 +136,7 @@ pub fn build_ci_run(gh_run: &GhRun, check_runs: Vec<GqlCheckRun>, repo_url: &str
 }
 
 /// Extract `(owner, repo)` from a GitHub URL like `https://github.com/owner/repo`.
-pub fn parse_owner_repo(url: &str) -> Option<(String, String)> {
+pub(crate) fn parse_owner_repo(url: &str) -> Option<(String, String)> {
     let stripped = url.strip_prefix("https://github.com/")?;
     let mut parts = stripped.split('/');
     let owner = parts.next()?.to_string();
@@ -178,7 +178,7 @@ fn compute_duration_secs(
     Some(end_ts.saturating_sub(start_ts))
 }
 
-pub fn format_secs(secs: u64) -> String {
+pub(crate) fn format_secs(secs: u64) -> String {
     if secs >= 3600 {
         let h = secs / 3600;
         let m = (secs % 3600) / 60;

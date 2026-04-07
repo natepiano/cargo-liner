@@ -348,20 +348,21 @@ fn open_in_editor(app: &App) {
         return;
     };
     let abs_path = app
-        .nodes
+        .project_list_items
         .iter()
-        .find(|node| {
-            node.groups.iter().any(|group| {
-                group
-                    .members
+        .find_map(|item| match item {
+            crate::project::ProjectListItem::Workspace(ws)
+                if ws
+                    .groups()
                     .iter()
-                    .any(|member| member.path == project.path)
-            })
+                    .any(|g| g.members().iter().any(|m| m.display_path() == project.path)) =>
+            {
+                app.project_by_path(&ws.display_path())
+                    .map(|p| p.abs_path.clone())
+            },
+            _ => None,
         })
-        .map_or_else(
-            || project.abs_path.clone(),
-            |node| node.project.abs_path.clone(),
-        );
+        .unwrap_or_else(|| project.abs_path.clone());
 
     let _ = std::process::Command::new(app.editor())
         .arg(&abs_path)
@@ -372,7 +373,8 @@ fn open_in_editor(app: &App) {
 
 fn open_finder(app: &mut App) {
     if app.dirty.finder.is_dirty() {
-        let (index, col_widths) = super::finder::build_finder_index(&app.nodes, &app.git_info);
+        let (index, col_widths) =
+            super::finder::build_finder_index(&app.project_list_items, &app.git_info);
         app.finder.index = index;
         app.finder.col_widths = col_widths;
         app.dirty.finder.mark_clean();

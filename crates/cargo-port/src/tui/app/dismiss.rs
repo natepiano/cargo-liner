@@ -2,6 +2,7 @@ use ratatui::layout::Rect;
 
 use super::types::App;
 use super::types::VisibleRow;
+use crate::project::Visibility::Dismissed;
 use crate::tui::types::PaneId;
 
 // ── Dismiss target ──────────────────────────────────────────────
@@ -46,8 +47,11 @@ impl App {
             DismissTarget::Toast(id) => self.dismiss_toast(id),
             DismissTarget::DeletedProject(path) => {
                 let parent_node_index = self.worktree_parent_node_index(&path);
-                self.dismissed_projects.insert(path.clone());
-                self.deleted_projects.remove(&path);
+                for item in &mut self.project_list_items {
+                    if item.set_visibility_by_path(&path, Dismissed) {
+                        break;
+                    }
+                }
                 self.dirty.rows.mark_dirty();
                 self.ensure_visible_rows_cached();
                 if let Some(ni) = parent_node_index {

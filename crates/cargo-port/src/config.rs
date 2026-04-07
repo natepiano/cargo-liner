@@ -13,7 +13,7 @@ use super::constants::CONFIG_FILE;
 /// Whether non-Rust projects (git repos without `Cargo.toml`) are included in scans.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
-pub enum NonRustInclusion {
+pub(crate) enum NonRustInclusion {
     Include,
     #[default]
     Exclude,
@@ -28,9 +28,9 @@ impl From<NonRustInclusion> for bool {
 }
 
 impl NonRustInclusion {
-    pub const fn includes_non_rust(self) -> bool { matches!(self, Self::Include) }
+    pub(crate) const fn includes_non_rust(self) -> bool { matches!(self, Self::Include) }
 
-    pub const fn toggle(&mut self) {
+    pub(crate) const fn toggle(&mut self) {
         *self = match *self {
             Self::Include => Self::Exclude,
             Self::Exclude => Self::Include,
@@ -41,7 +41,7 @@ impl NonRustInclusion {
 /// Scroll direction for mouse wheel events.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
-pub enum ScrollDirection {
+pub(crate) enum ScrollDirection {
     #[default]
     Normal,
     Inverted,
@@ -56,9 +56,9 @@ impl From<ScrollDirection> for bool {
 }
 
 impl ScrollDirection {
-    pub const fn is_inverted(self) -> bool { matches!(self, Self::Inverted) }
+    pub(crate) const fn is_inverted(self) -> bool { matches!(self, Self::Inverted) }
 
-    pub const fn toggle(&mut self) {
+    pub(crate) const fn toggle(&mut self) {
         *self = match *self {
             Self::Normal => Self::Inverted,
             Self::Inverted => Self::Normal,
@@ -70,7 +70,7 @@ impl ScrollDirection {
 /// for a real file-system change event.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
-pub enum DiscoveryLint {
+pub(crate) enum DiscoveryLint {
     /// Run lints immediately when a new project appears after the initial scan.
     Immediate,
     /// Wait for an actual disk event before running lints on new projects.
@@ -87,9 +87,9 @@ impl From<DiscoveryLint> for bool {
 }
 
 impl DiscoveryLint {
-    pub const fn is_immediate(self) -> bool { matches!(self, Self::Immediate) }
+    pub(crate) const fn is_immediate(self) -> bool { matches!(self, Self::Immediate) }
 
-    pub const fn toggle(&mut self) {
+    pub(crate) const fn toggle(&mut self) {
         *self = match *self {
             Self::Immediate => Self::Deferred,
             Self::Deferred => Self::Immediate,
@@ -100,7 +100,7 @@ impl DiscoveryLint {
 /// Whether `hjkl` should mirror arrow-key navigation in non-text panes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
-pub enum NavigationKeys {
+pub(crate) enum NavigationKeys {
     #[default]
     ArrowsOnly,
     ArrowsAndVim,
@@ -121,9 +121,9 @@ impl From<NavigationKeys> for bool {
 }
 
 impl NavigationKeys {
-    pub const fn uses_vim(self) -> bool { matches!(self, Self::ArrowsAndVim) }
+    pub(crate) const fn uses_vim(self) -> bool { matches!(self, Self::ArrowsAndVim) }
 
-    pub const fn toggle(&mut self) {
+    pub(crate) const fn toggle(&mut self) {
         *self = match *self {
             Self::ArrowsOnly => Self::ArrowsAndVim,
             Self::ArrowsAndVim => Self::ArrowsOnly,
@@ -133,7 +133,7 @@ impl NavigationKeys {
 
 /// Cache storage settings shared by CI and lint-history data.
 #[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
-pub struct CacheConfig {
+pub(crate) struct CacheConfig {
     /// Override the app cache root. Empty uses the system cache directory.
     #[config(default = "")]
     pub root: String,
@@ -141,7 +141,7 @@ pub struct CacheConfig {
 
 /// Lint status indicator settings.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LintCommandConfig {
+pub(crate) struct LintCommandConfig {
     #[serde(default)]
     pub name:    String,
     #[serde(default)]
@@ -149,7 +149,7 @@ pub struct LintCommandConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
-pub struct LintConfig {
+pub(crate) struct LintConfig {
     /// Show a lint status indicator per project by reading cache-rooted
     /// lint JSON artifacts.
     #[config(default = false)]
@@ -197,7 +197,7 @@ impl Default for LintConfig {
 }
 
 impl LintConfig {
-    pub fn resolved_commands(&self) -> Vec<LintCommandConfig> {
+    pub(crate) fn resolved_commands(&self) -> Vec<LintCommandConfig> {
         let commands = normalize_lint_commands(&self.commands);
         if commands.is_empty() {
             return vec![default_clippy_lint_command()];
@@ -205,16 +205,16 @@ impl LintConfig {
         commands
     }
 
-    pub fn cache_size_bytes(&self) -> Result<Option<u64>, String> {
+    pub(crate) fn cache_size_bytes(&self) -> Result<Option<u64>, String> {
         parse_cache_size(&self.cache_size).map(|parsed| parsed.bytes)
     }
 
-    pub fn normalized_cache_size(&self) -> Result<String, String> {
+    pub(crate) fn normalized_cache_size(&self) -> Result<String, String> {
         parse_cache_size(&self.cache_size).map(|parsed| parsed.normalized)
     }
 }
 
-pub fn default_clippy_lint_command() -> LintCommandConfig {
+pub(crate) fn default_clippy_lint_command() -> LintCommandConfig {
     LintCommandConfig {
         name:    "clippy".to_string(),
         command:
@@ -223,7 +223,7 @@ pub fn default_clippy_lint_command() -> LintCommandConfig {
     }
 }
 
-pub fn builtin_lint_command(name: &str) -> Option<LintCommandConfig> {
+pub(crate) fn builtin_lint_command(name: &str) -> Option<LintCommandConfig> {
     match name.trim().to_ascii_lowercase().as_str() {
         "mend" => Some(LintCommandConfig {
             name:    "mend".to_string(),
@@ -234,7 +234,7 @@ pub fn builtin_lint_command(name: &str) -> Option<LintCommandConfig> {
     }
 }
 
-pub fn infer_lint_command_name(command: &str) -> String {
+pub(crate) fn infer_lint_command_name(command: &str) -> String {
     let mut parts = command.split_whitespace();
     let Some(first) = parts.next() else {
         return String::new();
@@ -274,7 +274,7 @@ fn normalize_lint_command(command: &LintCommandConfig) -> Option<LintCommandConf
     })
 }
 
-pub fn normalize_lint_commands(commands: &[LintCommandConfig]) -> Vec<LintCommandConfig> {
+pub(crate) fn normalize_lint_commands(commands: &[LintCommandConfig]) -> Vec<LintCommandConfig> {
     commands.iter().filter_map(normalize_lint_command).collect()
 }
 
@@ -283,7 +283,7 @@ const BYTES_PER_MIB: u64 = BYTES_PER_KIB * 1024;
 const BYTES_PER_GIB: u64 = BYTES_PER_MIB * 1024;
 const DEFAULT_CACHE_SIZE: &str = "512 MiB";
 
-pub struct ParsedCacheSize {
+pub(crate) struct ParsedCacheSize {
     pub bytes:      Option<u64>,
     pub normalized: String,
 }
@@ -389,7 +389,7 @@ fn canonical_cache_size_unit(unit: &str) -> Option<(&'static str, u64)> {
     }
 }
 
-pub fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
+pub(crate) fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err("Cache size cannot be empty".to_string());
@@ -433,7 +433,7 @@ pub fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
     })
 }
 
-pub fn normalize_config(mut config: CargoPortConfig) -> Result<CargoPortConfig, String> {
+pub(crate) fn normalize_config(mut config: CargoPortConfig) -> Result<CargoPortConfig, String> {
     config.lint.commands = normalize_lint_commands(&config.lint.commands);
     config.lint.cache_size = config.lint.normalized_cache_size()?;
     Ok(config)
@@ -441,7 +441,7 @@ pub fn normalize_config(mut config: CargoPortConfig) -> Result<CargoPortConfig, 
 
 /// Top-level application configuration.
 #[derive(Clone, Debug, Default, PartialEq, confique::Config, Serialize)]
-pub struct CargoPortConfig {
+pub(crate) struct CargoPortConfig {
     #[config(nested)]
     pub cache: CacheConfig,
     #[config(nested)]
@@ -454,7 +454,7 @@ pub struct CargoPortConfig {
 
 /// TUI display and behaviour settings.
 #[derive(Clone, Debug, PartialEq, confique::Config, Serialize)]
-pub struct TuiConfig {
+pub(crate) struct TuiConfig {
     /// Directory names whose members are shown inline (pulled up to the
     /// workspace level). For example, `["crates"]` means projects under
     /// `workspace/crates/` appear directly under the workspace rather than
@@ -505,7 +505,7 @@ impl Default for TuiConfig {
 
 /// Mouse input settings.
 #[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
-pub struct MouseConfig {
+pub(crate) struct MouseConfig {
     /// Whether to invert mouse scroll direction.
     #[config(default = true)]
     pub invert_scroll: ScrollDirection,
@@ -519,7 +519,7 @@ impl Default for MouseConfig {
     }
 }
 
-pub fn config_path() -> Option<PathBuf> {
+pub(crate) fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join(APP_NAME).join(CONFIG_FILE))
 }
 
@@ -528,13 +528,13 @@ fn active_config_cell() -> &'static RwLock<CargoPortConfig> {
     ACTIVE_CONFIG.get_or_init(|| RwLock::new(CargoPortConfig::default()))
 }
 
-pub fn active_config() -> CargoPortConfig {
+pub(crate) fn active_config() -> CargoPortConfig {
     active_config_cell()
         .read()
         .map_or_else(|_| CargoPortConfig::default(), |cfg| cfg.clone())
 }
 
-pub fn set_active_config(config: &CargoPortConfig) {
+pub(crate) fn set_active_config(config: &CargoPortConfig) {
     if let Ok(mut active) = active_config_cell().write() {
         *active = normalize_config(config.clone()).unwrap_or_else(|_| config.clone());
     }
@@ -553,9 +553,11 @@ fn load_from_path(path: &Path) -> Result<CargoPortConfig, String> {
         .map_err(|err| format!("Failed to load config '{}': {err}", path.display()))
 }
 
-pub fn try_load_from_path(path: &Path) -> Result<CargoPortConfig, String> { load_from_path(path) }
+pub(crate) fn try_load_from_path(path: &Path) -> Result<CargoPortConfig, String> {
+    load_from_path(path)
+}
 
-pub fn try_load() -> Result<CargoPortConfig, String> {
+pub(crate) fn try_load() -> Result<CargoPortConfig, String> {
     let Some(path) = config_path() else {
         return Ok(CargoPortConfig::default());
     };
@@ -575,7 +577,7 @@ fn create_default_config(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn save(config: &CargoPortConfig) -> Result<(), String> {
+pub(crate) fn save(config: &CargoPortConfig) -> Result<(), String> {
     let Some(path) = config_path() else {
         return Err("Could not determine config directory".to_string());
     };

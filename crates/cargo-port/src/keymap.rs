@@ -16,13 +16,13 @@ use crate::config::NavigationKeys;
 /// `=` and `+` are normalised to a single canonical form (`+`) so they
 /// are treated as the same physical key.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct KeyBind {
+pub(crate) struct KeyBind {
     pub code:      KeyCode,
     pub modifiers: KeyModifiers,
 }
 
 impl KeyBind {
-    pub fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
+    pub(crate) fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
         // BackTab implies Shift — normalise to Tab + SHIFT.
         // Uppercase Char implies Shift — strip SHIFT since it's
         // encoded in the character itself (`Char('R')` already means
@@ -49,10 +49,10 @@ impl KeyBind {
         }
     }
 
-    pub fn plain(code: KeyCode) -> Self { Self::new(code, KeyModifiers::NONE) }
+    pub(crate) fn plain(code: KeyCode) -> Self { Self::new(code, KeyModifiers::NONE) }
 
     /// Human-readable glyph string for display in status bar / keymap UI.
-    pub fn display(&self) -> String {
+    pub(crate) fn display(&self) -> String {
         let mut parts = String::new();
         if self.modifiers.contains(KeyModifiers::CONTROL) {
             parts.push('⌃');
@@ -68,7 +68,7 @@ impl KeyBind {
     }
 
     /// TOML-serialisable string (e.g. `"Ctrl+r"`, `"Shift+Tab"`, `"q"`).
-    pub fn to_toml_string(&self) -> String {
+    pub(crate) fn to_toml_string(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         if self.modifiers.contains(KeyModifiers::CONTROL) {
             parts.push("Ctrl".to_string());
@@ -319,30 +319,30 @@ action_enum! {
 /// Bidirectional map for a single scope: key→action for dispatch,
 /// action→key for display.
 #[derive(Clone, Debug)]
-pub struct ScopeMap<A: Copy + Eq + std::hash::Hash> {
+pub(crate) struct ScopeMap<A: Copy + Eq + std::hash::Hash> {
     pub by_key:    HashMap<KeyBind, A>,
     pub by_action: HashMap<A, KeyBind>,
 }
 
 impl<A: Copy + Eq + std::hash::Hash> ScopeMap<A> {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             by_key:    HashMap::new(),
             by_action: HashMap::new(),
         }
     }
 
-    pub fn insert(&mut self, key: KeyBind, action: A) {
+    pub(crate) fn insert(&mut self, key: KeyBind, action: A) {
         self.by_key.insert(key.clone(), action);
         self.by_action.insert(action, key);
     }
 
-    pub fn action_for(&self, key: &KeyBind) -> Option<A> { self.by_key.get(key).copied() }
+    pub(crate) fn action_for(&self, key: &KeyBind) -> Option<A> { self.by_key.get(key).copied() }
 
-    pub fn key_for(&self, action: A) -> Option<&KeyBind> { self.by_action.get(&action) }
+    pub(crate) fn key_for(&self, action: A) -> Option<&KeyBind> { self.by_action.get(&action) }
 
     /// Display string for an action's bound key, or `"—"` if unbound.
-    pub fn display_key_for(&self, action: A) -> String {
+    pub(crate) fn display_key_for(&self, action: A) -> String {
         self.key_for(action)
             .map_or_else(|| "—".to_string(), KeyBind::display)
     }
@@ -357,7 +357,7 @@ impl<A: Copy + Eq + std::hash::Hash> Default for ScopeMap<A> {
 /// Runtime lookup structure: one `ScopeMap` per scope, built from the
 /// TOML config at load time.
 #[derive(Clone, Debug, Default)]
-pub struct ResolvedKeymap {
+pub(crate) struct ResolvedKeymap {
     pub global:       ScopeMap<GlobalAction>,
     pub project_list: ScopeMap<ProjectListAction>,
     pub package:      ScopeMap<PackageAction>,
@@ -369,7 +369,7 @@ pub struct ResolvedKeymap {
 
 impl ResolvedKeymap {
     /// The built-in default keymap matching the current hardcoded bindings.
-    pub fn defaults() -> Self {
+    pub(crate) fn defaults() -> Self {
         let mut km = Self::default();
 
         // Global
@@ -460,7 +460,7 @@ impl ResolvedKeymap {
     }
 
     /// Generate the default TOML content for `keymap.toml`.
-    pub fn default_toml() -> String {
+    pub(crate) fn default_toml() -> String {
         fn write_scope<A: Copy + Eq + std::hash::Hash>(
             out: &mut String,
             header: &str,
@@ -542,7 +542,7 @@ impl ResolvedKeymap {
     }
 
     /// Generate TOML content from the given keymap (for saving after UI edits).
-    pub fn default_toml_from(km: &Self) -> String {
+    pub(crate) fn default_toml_from(km: &Self) -> String {
         fn write_scope<A: Copy + Eq + std::hash::Hash>(
             out: &mut String,
             header: &str,
@@ -616,13 +616,13 @@ impl ResolvedKeymap {
 
 // ── Loading & validation ─────────────────────────────────────────────
 
-pub struct KeymapLoadResult {
+pub(crate) struct KeymapLoadResult {
     pub keymap:          ResolvedKeymap,
     pub errors:          Vec<KeymapError>,
     pub missing_actions: Vec<String>,
 }
 
-pub struct KeymapError {
+pub(crate) struct KeymapError {
     pub scope:  String,
     pub action: String,
     pub key:    String,
@@ -639,7 +639,7 @@ impl fmt::Display for KeymapError {
     }
 }
 
-pub enum KeymapErrorReason {
+pub(crate) enum KeymapErrorReason {
     ParseError(String),
     ConflictWithGlobal(String),
     ConflictWithinScope(String),
@@ -662,7 +662,7 @@ impl fmt::Display for KeymapErrorReason {
 }
 
 /// Path to the keymap config file.
-pub fn keymap_path() -> Option<PathBuf> {
+pub(crate) fn keymap_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| {
         d.join(crate::constants::APP_NAME)
             .join(crate::constants::KEYMAP_FILE)
@@ -670,7 +670,7 @@ pub fn keymap_path() -> Option<PathBuf> {
 }
 
 /// Load and validate keymap from disk. Creates the default file if missing.
-pub fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
+pub(crate) fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
     let Some(path) = keymap_path() else {
         return KeymapLoadResult {
             keymap:          ResolvedKeymap::defaults(),
@@ -735,7 +735,7 @@ pub fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
 }
 
 /// Load keymap from a TOML string (for testing and hot-reload).
-pub fn load_keymap_from_str(toml_str: &str, vim_mode: NavigationKeys) -> KeymapLoadResult {
+pub(crate) fn load_keymap_from_str(toml_str: &str, vim_mode: NavigationKeys) -> KeymapLoadResult {
     let table: toml::Table = match toml_str.parse() {
         Ok(t) => t,
         Err(e) => {
@@ -756,7 +756,7 @@ pub fn load_keymap_from_str(toml_str: &str, vim_mode: NavigationKeys) -> KeymapL
 
 /// Check whether enabling vim mode would conflict with current keymap bindings.
 /// Returns the list of conflicting bindings (scope.action = key).
-pub fn vim_mode_conflicts(keymap: &ResolvedKeymap) -> Vec<String> {
+pub(crate) fn vim_mode_conflicts(keymap: &ResolvedKeymap) -> Vec<String> {
     fn check_scope<A: Copy + Eq + std::hash::Hash>(
         scope_name: &str,
         scope: &ScopeMap<A>,

@@ -26,6 +26,7 @@ pedantic = { level = "deny", priority = -1 }
 
 # Allow specific lints that conflict with common patterns
 multiple_crate_versions = "allow"
+redundant_pub_crate     = "allow"
 
 [lints.rust]
 missing_docs = "deny"

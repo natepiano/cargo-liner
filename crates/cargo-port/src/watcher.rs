@@ -40,7 +40,7 @@ use super::scan::BackgroundMsg;
 use crate::perf_log;
 
 /// Request to register an already-known project with the watcher.
-pub struct WatchRequest {
+pub(crate) struct WatchRequest {
     /// Display path (e.g. `~/foo/bar`).
     pub project_path: String,
     /// Absolute filesystem path to the project root.
@@ -52,7 +52,7 @@ pub struct WatchRequest {
 /// Spawn a unified background watcher thread. Watches the include
 /// directories recursively and handles disk-usage updates,
 /// new-project detection, and deleted-project detection.
-pub fn spawn_watcher(
+pub(crate) fn spawn_watcher(
     scan_root: PathBuf,
     bg_tx: mpsc::Sender<BackgroundMsg>,
     ci_run_count: u32,

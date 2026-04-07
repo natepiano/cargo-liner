@@ -16,8 +16,8 @@ use crate::project::Package;
 use crate::project::Project;
 use crate::project::ProjectListItem;
 use crate::project::TypedProject;
+use crate::project::Visibility;
 use crate::project::Workspace;
-use crate::scan::ProjectNode;
 use crate::tui;
 use crate::tui::columns::COL_NAME;
 use crate::tui::columns::ResolvedWidths;
@@ -39,25 +39,6 @@ impl App {
     /// Keep fit-to-content widths rebuilding in the background, never inline on the UI thread.
     pub fn ensure_fit_widths_cached(&mut self) { self.request_fit_widths_build(); }
 
-    /// Iterate all group members in a node, including those nested under worktree entries.
-    pub(super) fn all_group_members(node: &ProjectNode) -> impl Iterator<Item = &Project> {
-        let direct = node.groups.iter().flat_map(|g| g.members.iter());
-        let wt = node
-            .worktrees
-            .iter()
-            .flat_map(|wt| wt.groups.iter().flat_map(|g| g.members.iter()));
-        direct.chain(wt)
-    }
-
-    pub(super) fn all_vendored_projects(node: &ProjectNode) -> impl Iterator<Item = &Project> {
-        let direct = node.vendored.iter();
-        let wt = node
-            .worktrees
-            .iter()
-            .flat_map(|worktree| worktree.vendored.iter());
-        direct.chain(wt)
-    }
-
     pub(super) fn observe_name_width(widths: &mut ResolvedWidths, content_width: usize) {
         use COL_NAME;
 
@@ -68,11 +49,36 @@ impl App {
         content_width.saturating_add(1)
     }
 
-    pub(super) fn fit_name_for_node(node: &ProjectNode, live_worktrees: usize) -> usize {
+    pub(super) fn fit_name_for_item(item: &ProjectListItem) -> usize {
         let dw = tui::columns::display_width;
-        let mut name = node.project.display_name();
-        if live_worktrees > 0 {
-            name = format!("{name} {WORKTREE}:{live_worktrees}");
+        let mut name = item.display_name();
+        let live = match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                let count = std::iter::once(wtg.primary().visibility())
+                    .chain(
+                        wtg.linked()
+                            .iter()
+                            .map(crate::project::TypedProject::visibility),
+                    )
+                    .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
+                    .count();
+                if count <= 1 { 0 } else { count }
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                let count = std::iter::once(wtg.primary().visibility())
+                    .chain(
+                        wtg.linked()
+                            .iter()
+                            .map(crate::project::TypedProject::visibility),
+                    )
+                    .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
+                    .count();
+                if count <= 1 { 0 } else { count }
+            },
+            _ => 0,
+        };
+        if live > 0 {
+            name = format!("{name} {WORKTREE}:{live}");
         }
         dw(PREFIX_ROOT_COLLAPSED) + dw(&name)
     }
@@ -156,14 +162,6 @@ impl App {
         }
     }
 
-    /// Returns the `ProjectNode` when a root row is selected (not a member or worktree).
-    pub fn selected_node(&self) -> Option<&ProjectNode> {
-        match self.selected_row()? {
-            VisibleRow::Root { node_index } => self.nodes.get(node_index),
-            _ => None,
-        }
-    }
-
     /// Returns the `ProjectListItem` when a root row is selected.
     pub fn selected_item(&self) -> Option<&ProjectListItem> {
         match self.selected_row()? {
@@ -192,7 +190,7 @@ impl App {
         self.display_path_for_row(*row)
     }
 
-    /// Given a VisibleRow, resolve the display path from `project_list_items`.
+    /// Given a `VisibleRow`, resolve the display path from `project_list_items`.
     pub fn display_path_for_row(&self, row: VisibleRow) -> Option<String> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
@@ -241,7 +239,7 @@ impl App {
                 ..
             } => {
                 let item = self.project_list_items.get(node_index)?;
-                self.worktree_display_path(item, worktree_index)
+                Self::worktree_display_path(item, worktree_index)
             },
             VisibleRow::WorktreeMember {
                 node_index,
@@ -250,7 +248,7 @@ impl App {
                 member_index,
             } => {
                 let item = self.project_list_items.get(node_index)?;
-                self.worktree_member_display_path(item, worktree_index, group_index, member_index)
+                Self::worktree_member_display_path(item, worktree_index, group_index, member_index)
             },
             VisibleRow::WorktreeVendored {
                 node_index,
@@ -258,7 +256,7 @@ impl App {
                 vendored_index,
             } => {
                 let item = self.project_list_items.get(node_index)?;
-                self.worktree_vendored_display_path(item, worktree_index, vendored_index)
+                Self::worktree_vendored_display_path(item, worktree_index, vendored_index)
             },
         }
     }
@@ -295,7 +293,7 @@ impl App {
         }
     }
 
-    fn worktree_display_path(&self, item: &ProjectListItem, wi: usize) -> Option<String> {
+    fn worktree_display_path(item: &ProjectListItem, wi: usize) -> Option<String> {
         match item {
             ProjectListItem::WorkspaceWorktrees(wtg) => {
                 if wi == 0 {
@@ -316,7 +314,6 @@ impl App {
     }
 
     fn worktree_member_display_path(
-        &self,
         item: &ProjectListItem,
         wi: usize,
         gi: usize,
@@ -337,7 +334,6 @@ impl App {
     }
 
     fn worktree_vendored_display_path(
-        &self,
         item: &ProjectListItem,
         wi: usize,
         vi: usize,
@@ -377,12 +373,6 @@ impl App {
                 .get(*node_index)
                 .is_some_and(ProjectListItem::has_children),
             Some(VisibleRow::GroupHeader { .. } | VisibleRow::WorktreeGroupHeader { .. }) => true,
-            Some(VisibleRow::WorktreeEntry { .. }) => {
-                // Worktree entries in the new model are always leaf rows
-                // (they are individual checkout rows within a WorktreeGroup).
-                // The WorktreeGroup itself is the Root row.
-                false
-            },
             _ => false,
         }
     }

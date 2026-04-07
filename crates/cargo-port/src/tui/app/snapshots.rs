@@ -19,8 +19,6 @@ use crate::project::TypedProject;
 use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
-use crate::scan::MemberGroup;
-use crate::scan::ProjectNode;
 use crate::tui::columns;
 use crate::tui::columns::COL_DISK;
 use crate::tui::columns::COL_SYNC;
@@ -234,55 +232,6 @@ fn emit_worktree_children(
     }
 }
 
-pub(super) fn live_worktree_count_for_node(
-    node: &ProjectNode,
-    deleted_projects: &HashSet<String>,
-    dismissed_projects: &HashSet<String>,
-) -> usize {
-    let live = node
-        .worktrees
-        .iter()
-        .filter(|wt| {
-            !deleted_projects.contains(&wt.project.path)
-                && !dismissed_projects.contains(&wt.project.path)
-        })
-        .count();
-    if live <= 1 { 0 } else { live }
-}
-
-pub(super) fn unique_node_paths(node: &ProjectNode) -> Vec<&str> {
-    let mut seen = HashSet::new();
-    let mut paths = Vec::new();
-
-    for path in std::iter::once(node.project.path.as_str())
-        .chain(node.worktrees.iter().map(|wt| wt.project.path.as_str()))
-    {
-        if seen.insert(path) {
-            paths.push(path);
-        }
-    }
-
-    paths
-}
-
-pub(super) fn disk_bytes_for_node_snapshot(
-    node: &ProjectNode,
-    disk_usage: &HashMap<String, u64>,
-) -> Option<u64> {
-    if node.worktrees.is_empty() {
-        return disk_usage.get(&node.project.path).copied();
-    }
-    let mut total = 0;
-    let mut any_data = false;
-    for path in unique_node_paths(node) {
-        if let Some(&bytes) = disk_usage.get(path) {
-            total += bytes;
-            any_data = true;
-        }
-    }
-    if any_data { Some(total) } else { None }
-}
-
 pub(super) fn formatted_disk_snapshot(disk_usage: &HashMap<String, u64>, path: &str) -> String {
     disk_usage
         .get(path)
@@ -290,11 +239,55 @@ pub(super) fn formatted_disk_snapshot(disk_usage: &HashMap<String, u64>, path: &
         .map_or_else(|| render::format_bytes(0), render::format_bytes)
 }
 
-pub(super) fn formatted_disk_for_node_snapshot(
-    node: &ProjectNode,
+/// Collect all unique display paths for a `ProjectListItem`.
+fn unique_item_display_paths(item: &ProjectListItem) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut push_unique = |p: String| {
+        if !paths.contains(&p) {
+            paths.push(p);
+        }
+    };
+    push_unique(item.display_path());
+    match item {
+        ProjectListItem::WorkspaceWorktrees(wtg) => {
+            for linked in wtg.linked() {
+                push_unique(linked.display_path());
+            }
+        },
+        ProjectListItem::PackageWorktrees(wtg) => {
+            for linked in wtg.linked() {
+                push_unique(linked.display_path());
+            }
+        },
+        _ => {},
+    }
+    paths
+}
+
+fn disk_bytes_for_item_snapshot(
+    item: &ProjectListItem,
+    disk_usage: &HashMap<String, u64>,
+) -> Option<u64> {
+    let paths = unique_item_display_paths(item);
+    if paths.len() == 1 {
+        return disk_usage.get(&paths[0]).copied();
+    }
+    let mut total: u64 = 0;
+    let mut any_data = false;
+    for path in &paths {
+        if let Some(&bytes) = disk_usage.get(path.as_str()) {
+            total += bytes;
+            any_data = true;
+        }
+    }
+    if any_data { Some(total) } else { None }
+}
+
+fn formatted_disk_for_item_snapshot(
+    item: &ProjectListItem,
     disk_usage: &HashMap<String, u64>,
 ) -> String {
-    disk_bytes_for_node_snapshot(node, disk_usage)
+    disk_bytes_for_item_snapshot(item, disk_usage)
         .map_or_else(|| render::format_bytes(0), render::format_bytes)
 }
 
@@ -327,226 +320,237 @@ pub(super) fn git_sync_snapshot(
 
 /// Snapshot of project state needed for fit-width calculations.
 pub(super) struct FitWidthsState<'a> {
-    pub disk_usage:         &'a HashMap<String, u64>,
-    pub git_info:           &'a HashMap<String, GitInfo>,
-    pub git_path_states:    &'a HashMap<String, GitPathState>,
-    pub deleted_projects:   &'a HashSet<String>,
-    pub dismissed_projects: &'a HashSet<String>,
+    pub disk_usage:      &'a HashMap<String, u64>,
+    pub git_info:        &'a HashMap<String, GitInfo>,
+    pub git_path_states: &'a HashMap<String, GitPathState>,
 }
 
 pub(super) fn build_fit_widths_snapshot(
-    nodes: &[ProjectNode],
+    items: &[ProjectListItem],
     state: &FitWidthsState<'_>,
     lint_enabled: bool,
     generation: u64,
 ) -> ResolvedWidths {
     let mut widths = ResolvedWidths::new(lint_enabled);
 
-    for node in nodes {
-        observe_node_fit_widths(&mut widths, node, state);
+    for item in items {
+        observe_item_fit_widths(&mut widths, item, state);
     }
 
     widths.generation = generation;
     widths
 }
 
-pub(super) fn observe_node_fit_widths(
+fn observe_item_fit_widths(
     widths: &mut ResolvedWidths,
-    node: &ProjectNode,
+    item: &ProjectListItem,
     state: &FitWidthsState<'_>,
 ) {
     let dw = columns::display_width;
-    App::observe_name_width(
-        widths,
-        App::fit_name_for_node(
-            node,
-            live_worktree_count_for_node(node, state.deleted_projects, state.dismissed_projects),
-        ),
-    );
+    let root_path = item.display_path();
+
+    App::observe_name_width(widths, App::fit_name_for_item(item));
     widths.observe(
         COL_DISK,
-        dw(&formatted_disk_for_node_snapshot(node, state.disk_usage)),
+        dw(&formatted_disk_for_item_snapshot(item, state.disk_usage)),
     );
     widths.observe(
         COL_SYNC,
         dw(&git_sync_snapshot(
             state.git_info,
             state.git_path_states,
-            &node.project.path,
+            &root_path,
         )),
     );
 
-    observe_member_group_fit_widths(
-        widths,
-        &node.groups,
-        state.disk_usage,
-        state.git_info,
-        state.git_path_states,
-    );
-    observe_vendored_fit_widths(widths, &node.vendored, state.disk_usage, PREFIX_VENDORED);
-    for worktree in &node.worktrees {
-        observe_worktree_fit_widths(
-            widths,
-            worktree,
-            state.disk_usage,
-            state.git_info,
-            state.git_path_states,
-        );
+    match item {
+        ProjectListItem::Workspace(ws) => {
+            observe_new_member_group_fit_widths(widths, ws.groups(), state, false);
+            observe_typed_vendored_fit_widths(
+                widths,
+                ws.vendored(),
+                state.disk_usage,
+                PREFIX_VENDORED,
+            );
+        },
+        ProjectListItem::Package(pkg) => {
+            observe_typed_vendored_fit_widths(
+                widths,
+                pkg.vendored(),
+                state.disk_usage,
+                PREFIX_VENDORED,
+            );
+        },
+        ProjectListItem::NonRust(_) => {},
+        ProjectListItem::WorkspaceWorktrees(wtg) => {
+            observe_workspace_worktree_group_fit_widths(widths, wtg, state);
+        },
+        ProjectListItem::PackageWorktrees(wtg) => {
+            observe_package_worktree_group_fit_widths(widths, wtg, state);
+        },
     }
 }
 
-pub(super) fn observe_member_group_fit_widths(
+fn observe_new_member_group_fit_widths(
     widths: &mut ResolvedWidths,
-    groups: &[MemberGroup],
-    disk_usage: &HashMap<String, u64>,
-    git_info: &HashMap<String, GitInfo>,
-    git_path_states: &HashMap<String, GitPathState>,
+    groups: &[NewMemberGroup],
+    state: &FitWidthsState<'_>,
+    is_worktree: bool,
 ) {
     let dw = columns::display_width;
     for group in groups {
-        for member in &group.members {
-            let prefix = if group.name.is_empty() {
-                PREFIX_MEMBER_INLINE
+        let (inline_prefix, named_prefix, group_prefix) = if is_worktree {
+            (
+                PREFIX_WT_MEMBER_INLINE,
+                PREFIX_WT_MEMBER_NAMED,
+                PREFIX_WT_GROUP_COLLAPSED,
+            )
+        } else {
+            (
+                PREFIX_MEMBER_INLINE,
+                PREFIX_MEMBER_NAMED,
+                PREFIX_GROUP_COLLAPSED,
+            )
+        };
+        for member in group.members() {
+            let prefix = if group.is_named() {
+                named_prefix
             } else {
-                PREFIX_MEMBER_NAMED
+                inline_prefix
             };
+            let member_path = member.display_path();
             App::observe_name_width(widths, dw(prefix) + dw(&member.display_name()));
             widths.observe(
                 COL_DISK,
-                dw(&formatted_disk_snapshot(disk_usage, &member.path)),
+                dw(&formatted_disk_snapshot(state.disk_usage, &member_path)),
             );
             widths.observe(
                 COL_SYNC,
-                dw(&git_sync_snapshot(git_info, git_path_states, &member.path)),
+                dw(&git_sync_snapshot(
+                    state.git_info,
+                    state.git_path_states,
+                    &member_path,
+                )),
             );
         }
-        if !group.name.is_empty() {
-            let label = format!("{} ({})", group.name, group.members.len());
-            App::observe_name_width(widths, dw(PREFIX_GROUP_COLLAPSED) + dw(&label));
+        if group.is_named() {
+            let label = format!("{} ({})", group.group_name(), group.members().len());
+            App::observe_name_width(widths, dw(group_prefix) + dw(&label));
         }
     }
 }
 
-pub(super) fn observe_vendored_fit_widths(
+fn observe_typed_vendored_fit_widths(
     widths: &mut ResolvedWidths,
-    vendored: &[Project],
+    vendored: &[TypedProject<Package>],
     disk_usage: &HashMap<String, u64>,
     prefix: &str,
 ) {
     let dw = columns::display_width;
     for project in vendored {
         let label = format!("{} (vendored)", project.display_name());
+        let path = project.display_path();
         App::observe_name_width(widths, dw(prefix) + dw(&label));
-        widths.observe(
-            COL_DISK,
-            dw(&formatted_disk_snapshot(disk_usage, &project.path)),
-        );
+        widths.observe(COL_DISK, dw(&formatted_disk_snapshot(disk_usage, &path)));
     }
 }
 
-pub(super) fn observe_worktree_fit_widths(
+fn observe_workspace_worktree_entry_fit_widths(
     widths: &mut ResolvedWidths,
-    worktree: &ProjectNode,
-    disk_usage: &HashMap<String, u64>,
-    git_info: &HashMap<String, GitInfo>,
-    git_path_states: &HashMap<String, GitPathState>,
+    ws: &TypedProject<Workspace>,
+    state: &FitWidthsState<'_>,
 ) {
     let dw = columns::display_width;
-    let worktree_name = worktree
-        .project
-        .worktree_name
-        .as_deref()
-        .unwrap_or(&worktree.project.path);
-    let worktree_prefix = if worktree.has_children() {
+    let wt_name = ws
+        .worktree_name()
+        .unwrap_or_else(|| ws.path().to_str().unwrap_or(""));
+    let prefix = if ws.has_members() {
         PREFIX_WT_COLLAPSED
     } else {
         PREFIX_WT_FLAT
     };
-    App::observe_name_width(widths, dw(worktree_prefix) + dw(worktree_name));
+    let wt_path = ws.display_path();
+    App::observe_name_width(widths, dw(prefix) + dw(wt_name));
     widths.observe(
         COL_DISK,
-        dw(&formatted_disk_snapshot(disk_usage, &worktree.project.path)),
+        dw(&formatted_disk_snapshot(state.disk_usage, &wt_path)),
     );
     widths.observe(
         COL_SYNC,
         dw(&git_sync_snapshot(
-            git_info,
-            git_path_states,
-            &worktree.project.path,
+            state.git_info,
+            state.git_path_states,
+            &wt_path,
         )),
     );
-    observe_worktree_group_fit_widths(
-        widths,
-        &worktree.groups,
-        disk_usage,
-        git_info,
-        git_path_states,
-    );
-    observe_vendored_fit_widths(widths, &worktree.vendored, disk_usage, PREFIX_WT_VENDORED);
+    observe_new_member_group_fit_widths(widths, ws.groups(), state, true);
+    observe_typed_vendored_fit_widths(widths, ws.vendored(), state.disk_usage, PREFIX_WT_VENDORED);
 }
 
-pub(super) fn observe_worktree_group_fit_widths(
+fn observe_package_worktree_entry_fit_widths(
     widths: &mut ResolvedWidths,
-    groups: &[MemberGroup],
-    disk_usage: &HashMap<String, u64>,
-    git_info: &HashMap<String, GitInfo>,
-    git_path_states: &HashMap<String, GitPathState>,
+    pkg: &TypedProject<Package>,
+    state: &FitWidthsState<'_>,
 ) {
     let dw = columns::display_width;
-    for group in groups {
-        for member in &group.members {
-            let prefix = if group.name.is_empty() {
-                PREFIX_WT_MEMBER_INLINE
-            } else {
-                PREFIX_WT_MEMBER_NAMED
-            };
-            App::observe_name_width(widths, dw(prefix) + dw(&member.display_name()));
-            widths.observe(
-                COL_DISK,
-                dw(&formatted_disk_snapshot(disk_usage, &member.path)),
-            );
-            widths.observe(
-                COL_SYNC,
-                dw(&git_sync_snapshot(git_info, git_path_states, &member.path)),
-            );
-        }
-        if !group.name.is_empty() {
-            let label = format!("{} ({})", group.name, group.members.len());
-            App::observe_name_width(widths, dw(PREFIX_WT_GROUP_COLLAPSED) + dw(&label));
-        }
+    let wt_name = pkg
+        .worktree_name()
+        .unwrap_or_else(|| pkg.path().to_str().unwrap_or(""));
+    let wt_path = pkg.display_path();
+    App::observe_name_width(widths, dw(PREFIX_WT_FLAT) + dw(wt_name));
+    widths.observe(
+        COL_DISK,
+        dw(&formatted_disk_snapshot(state.disk_usage, &wt_path)),
+    );
+    widths.observe(
+        COL_SYNC,
+        dw(&git_sync_snapshot(
+            state.git_info,
+            state.git_path_states,
+            &wt_path,
+        )),
+    );
+    observe_typed_vendored_fit_widths(widths, pkg.vendored(), state.disk_usage, PREFIX_WT_VENDORED);
+}
+
+fn observe_workspace_worktree_group_fit_widths(
+    widths: &mut ResolvedWidths,
+    wtg: &WorktreeGroup<Workspace>,
+    state: &FitWidthsState<'_>,
+) {
+    observe_workspace_worktree_entry_fit_widths(widths, wtg.primary(), state);
+    for linked in wtg.linked() {
+        observe_workspace_worktree_entry_fit_widths(widths, linked, state);
+    }
+}
+
+fn observe_package_worktree_group_fit_widths(
+    widths: &mut ResolvedWidths,
+    wtg: &WorktreeGroup<Package>,
+    state: &FitWidthsState<'_>,
+) {
+    observe_package_worktree_entry_fit_widths(widths, wtg.primary(), state);
+    for linked in wtg.linked() {
+        observe_package_worktree_entry_fit_widths(widths, linked, state);
     }
 }
 
 pub(super) fn build_disk_cache_snapshot(
-    nodes: &[ProjectNode],
+    items: &[ProjectListItem],
     disk_usage: &HashMap<String, u64>,
 ) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
     let mut root_sorted = Vec::new();
-    for node in nodes {
-        if let Some(bytes) = disk_bytes_for_node_snapshot(node, disk_usage) {
+    for item in items {
+        if let Some(bytes) = disk_bytes_for_item_snapshot(item, disk_usage) {
             root_sorted.push(bytes);
         }
     }
     root_sorted.sort_unstable();
 
     let mut child_sorted = HashMap::new();
-    for (ni, node) in nodes.iter().enumerate() {
+    for (ni, item) in items.iter().enumerate() {
         let mut values = Vec::new();
-        for member in App::all_group_members(node) {
-            if let Some(&bytes) = disk_usage.get(&member.path) {
-                values.push(bytes);
-            }
-        }
-        for vendored in App::all_vendored_projects(node) {
-            if let Some(&bytes) = disk_usage.get(&vendored.path) {
-                values.push(bytes);
-            }
-        }
-        for wt in &node.worktrees {
-            if let Some(&bytes) = disk_usage.get(&wt.project.path) {
-                values.push(bytes);
-            }
-        }
+        collect_child_disk_values(item, disk_usage, &mut values);
         if !values.is_empty() {
             values.sort_unstable();
             child_sorted.insert(ni, values);
@@ -556,60 +560,69 @@ pub(super) fn build_disk_cache_snapshot(
     (root_sorted, child_sorted)
 }
 
-pub(super) fn replace_project_in_node(
-    node: &mut ProjectNode,
-    project_path: &str,
-    project: &Project,
-) -> bool {
-    let updated = if node.project.path == project_path {
-        node.project = project.clone();
-        true
-    } else {
-        false
-    };
-
-    let mut updated = updated;
-
-    for group in &mut node.groups {
-        for member in &mut group.members {
-            if member.path == project_path {
-                *member = project.clone();
-                updated = true;
-            }
-        }
-    }
-
-    for vendored in &mut node.vendored {
-        if vendored.path == project_path {
-            *vendored = project.clone();
-            updated = true;
-        }
-    }
-
-    for worktree in &mut node.worktrees {
-        if worktree.project.path == project_path {
-            worktree.project = project.clone();
-            updated = true;
-        }
-
-        for group in &mut worktree.groups {
-            for member in &mut group.members {
-                if member.path == project_path {
-                    *member = project.clone();
-                    updated = true;
+/// Collect disk bytes for all children (members, vendored, worktree entries) of an item.
+fn collect_child_disk_values(
+    item: &ProjectListItem,
+    disk_usage: &HashMap<String, u64>,
+    values: &mut Vec<u64>,
+) {
+    match item {
+        ProjectListItem::Workspace(ws) => {
+            collect_member_group_disk(ws.groups(), disk_usage, values);
+            collect_vendored_disk(ws.vendored(), disk_usage, values);
+        },
+        ProjectListItem::Package(pkg) => {
+            collect_vendored_disk(pkg.vendored(), disk_usage, values);
+        },
+        ProjectListItem::NonRust(_) => {},
+        ProjectListItem::WorkspaceWorktrees(wtg) => {
+            for ws in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
+                let dp = ws.display_path();
+                if let Some(&bytes) = disk_usage.get(&dp) {
+                    values.push(bytes);
                 }
+                collect_member_group_disk(ws.groups(), disk_usage, values);
+                collect_vendored_disk(ws.vendored(), disk_usage, values);
             }
-        }
+        },
+        ProjectListItem::PackageWorktrees(wtg) => {
+            for pkg in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
+                let dp = pkg.display_path();
+                if let Some(&bytes) = disk_usage.get(&dp) {
+                    values.push(bytes);
+                }
+                collect_vendored_disk(pkg.vendored(), disk_usage, values);
+            }
+        },
+    }
+}
 
-        for vendored in &mut worktree.vendored {
-            if vendored.path == project_path {
-                *vendored = project.clone();
-                updated = true;
+fn collect_member_group_disk(
+    groups: &[NewMemberGroup],
+    disk_usage: &HashMap<String, u64>,
+    values: &mut Vec<u64>,
+) {
+    for group in groups {
+        for member in group.members() {
+            let dp = member.display_path();
+            if let Some(&bytes) = disk_usage.get(&dp) {
+                values.push(bytes);
             }
         }
     }
+}
 
-    updated
+fn collect_vendored_disk(
+    vendored: &[TypedProject<Package>],
+    disk_usage: &HashMap<String, u64>,
+    values: &mut Vec<u64>,
+) {
+    for project in vendored {
+        let dp = project.display_path();
+        if let Some(&bytes) = disk_usage.get(&dp) {
+            values.push(bytes);
+        }
+    }
 }
 
 pub(super) fn initial_disk_batch_count(projects: &[Project]) -> usize {

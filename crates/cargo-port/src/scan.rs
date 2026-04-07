@@ -46,13 +46,13 @@ use super::project::WorktreeGroup;
 /// The "inline" group (empty name) contains members directly under the workspace root
 /// or under the primary `crates/` directory -- these are shown without a folder header.
 #[derive(Clone)]
-pub struct MemberGroup {
+pub(crate) struct MemberGroup {
     pub name:    String,
     pub members: Vec<Project>,
 }
 
 #[derive(Clone)]
-pub struct ProjectNode {
+pub(crate) struct ProjectNode {
     pub project:   Project,
     pub groups:    Vec<MemberGroup>,
     pub worktrees: Vec<Self>,
@@ -60,20 +60,20 @@ pub struct ProjectNode {
 }
 
 impl ProjectNode {
-    pub fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members.is_empty()) }
+    pub(crate) fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members.is_empty()) }
 
-    pub fn has_children(&self) -> bool {
+    pub(crate) fn has_children(&self) -> bool {
         self.has_members() || !self.vendored.is_empty() || !self.worktrees.is_empty()
     }
 }
 
 /// A flattened entry for fuzzy search.
-pub struct FlatEntry {
+pub(crate) struct FlatEntry {
     pub path: String,
     pub name: String,
 }
 
-pub enum BackgroundMsg {
+pub(crate) enum BackgroundMsg {
     DiskUsage {
         path:  String,
         bytes: u64,
@@ -145,7 +145,7 @@ pub enum BackgroundMsg {
 
 impl BackgroundMsg {
     /// Returns the project path this message relates to, if any.
-    pub fn path(&self) -> Option<&str> {
+    pub(crate) fn path(&self) -> Option<&str> {
         match self {
             Self::DiskUsage { path, .. }
             | Self::LocalGitQueued { path }
@@ -186,7 +186,7 @@ const fn combine_service_signal(
     }
 }
 
-pub fn emit_service_signal(tx: &mpsc::Sender<BackgroundMsg>, signal: Option<ServiceSignal>) {
+pub(crate) fn emit_service_signal(tx: &mpsc::Sender<BackgroundMsg>, signal: Option<ServiceSignal>) {
     let msg = match signal {
         Some(ServiceSignal::Reachable(service)) => BackgroundMsg::ServiceReachable { service },
         Some(ServiceSignal::Unreachable(service)) => BackgroundMsg::ServiceUnreachable { service },
@@ -195,14 +195,14 @@ pub fn emit_service_signal(tx: &mpsc::Sender<BackgroundMsg>, signal: Option<Serv
     let _ = tx.send(msg);
 }
 
-pub fn emit_service_recovered(tx: &mpsc::Sender<BackgroundMsg>, service: ServiceKind) {
+pub(crate) fn emit_service_recovered(tx: &mpsc::Sender<BackgroundMsg>, service: ServiceKind) {
     let _ = tx.send(BackgroundMsg::ServiceRecovered { service });
 }
 
 /// What a CI fetch function returns. Forces callers to handle the
 /// "network failed but cache exists" case explicitly -- the compiler won't
 /// let you silently discard cached runs.
-pub enum CiFetchResult {
+pub(crate) enum CiFetchResult {
     /// Fresh runs (network succeeded), merged with cache.
     Loaded(Vec<CiRun>),
     /// Network failed; returning whatever the disk cache had.
@@ -210,7 +210,7 @@ pub enum CiFetchResult {
 }
 
 /// Base cache directory for CI metadata.
-pub fn cache_dir() -> PathBuf { cache_paths::ci_cache_root() }
+pub(crate) fn cache_dir() -> PathBuf { cache_paths::ci_cache_root() }
 
 /// Repo-keyed cache directory: `{cache_dir}/{owner}/{repo}`.
 fn repo_cache_dir(owner: &str, repo: &str) -> PathBuf { cache_dir().join(owner).join(repo) }
@@ -243,26 +243,26 @@ fn ci_cache_dir(owner: &str, repo: &str, branch: Option<&str>) -> PathBuf {
     )
 }
 
-pub fn ci_cache_dir_pub(owner: &str, repo: &str, branch: Option<&str>) -> PathBuf {
+pub(crate) fn ci_cache_dir_pub(owner: &str, repo: &str, branch: Option<&str>) -> PathBuf {
     ci_cache_dir(owner, repo, branch)
 }
 
 /// Check if the "no more runs" marker exists for a repo.
-pub fn is_exhausted(owner: &str, repo: &str, branch: Option<&str>) -> bool {
+pub(crate) fn is_exhausted(owner: &str, repo: &str, branch: Option<&str>) -> bool {
     ci_cache_dir(owner, repo, branch)
         .join(NO_MORE_RUNS_MARKER)
         .exists()
 }
 
 /// Save the "no more runs" marker for a repo.
-pub fn mark_exhausted(owner: &str, repo: &str, branch: Option<&str>) {
+pub(crate) fn mark_exhausted(owner: &str, repo: &str, branch: Option<&str>) {
     let dir = ci_cache_dir(owner, repo, branch);
     let _ = std::fs::create_dir_all(&dir);
     let _ = std::fs::write(dir.join(NO_MORE_RUNS_MARKER), "");
 }
 
 /// Remove the "no more runs" marker so fresh runs can be discovered.
-pub fn clear_exhausted(owner: &str, repo: &str, branch: Option<&str>) {
+pub(crate) fn clear_exhausted(owner: &str, repo: &str, branch: Option<&str>) {
     let dir = ci_cache_dir(owner, repo, branch);
     let _ = std::fs::remove_file(dir.join(NO_MORE_RUNS_MARKER));
 }
@@ -284,7 +284,7 @@ fn load_cached_run(owner: &str, repo: &str, branch: Option<&str>, run_id: u64) -
 }
 
 /// Count the number of cached CI run files on disk for a given repo.
-pub fn count_cached_runs(owner: &str, repo: &str, branch: Option<&str>) -> usize {
+pub(crate) fn count_cached_runs(owner: &str, repo: &str, branch: Option<&str>) -> usize {
     let dir = ci_cache_dir(owner, repo, branch);
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
@@ -296,7 +296,7 @@ pub fn count_cached_runs(owner: &str, repo: &str, branch: Option<&str>) -> usize
 }
 
 /// Load all cached CI runs for a given repo.
-pub fn load_all_cached_runs(owner: &str, repo: &str, branch: Option<&str>) -> Vec<CiRun> {
+pub(crate) fn load_all_cached_runs(owner: &str, repo: &str, branch: Option<&str>) -> Vec<CiRun> {
     let dir = ci_cache_dir(owner, repo, branch);
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -437,7 +437,7 @@ fn merge_runs(fetched: Vec<CiRun>, cached: Vec<CiRun>) -> Vec<CiRun> {
 ///
 /// Accepts `(repo_url, owner, repo)` derived from the *local* git remote so that
 /// cache loading never depends on network availability.
-pub fn fetch_ci_runs_cached(
+pub(crate) fn fetch_ci_runs_cached(
     client: &HttpClient,
     repo_url: &str,
     owner: &str,
@@ -466,7 +466,7 @@ pub fn fetch_ci_runs_cached(
 
 /// Fetch older CI runs beyond what we currently have, by requesting a
 /// larger limit and returning any newly discovered runs.
-pub fn fetch_older_runs(
+pub(crate) fn fetch_older_runs(
     client: &HttpClient,
     repo_url: &str,
     owner: &str,
@@ -493,7 +493,7 @@ pub fn fetch_older_runs(
 
 /// Re-fetch at the current count to pick up newly created runs without
 /// requesting deeper history.
-pub fn fetch_newer_runs(
+pub(crate) fn fetch_newer_runs(
     client: &HttpClient,
     repo_url: &str,
     owner: &str,
@@ -515,12 +515,12 @@ pub fn fetch_newer_runs(
     (result, combine_service_signal(list_signal, detail_signal))
 }
 
-pub struct CratesIoInfo {
+pub(crate) struct CratesIoInfo {
     pub version:   String,
     pub downloads: u64,
 }
 
-pub fn dir_size(path: &Path) -> u64 {
+pub(crate) fn dir_size(path: &Path) -> u64 {
     WalkDir::new(path)
         .into_iter()
         .flatten()
@@ -530,7 +530,7 @@ pub fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
-pub fn build_tree(projects: &[Project], inline_dirs: &[String]) -> Vec<ProjectNode> {
+pub(crate) fn build_tree(projects: &[Project], inline_dirs: &[String]) -> Vec<ProjectNode> {
     let workspace_paths: Vec<String> = projects
         .iter()
         .filter(|p| p.is_workspace())
@@ -900,7 +900,7 @@ fn extract_vendored(nodes: &mut Vec<ProjectNode>) {
     }
 }
 
-pub fn group_members(
+pub(crate) fn group_members(
     workspace_path: &str,
     members: Vec<Project>,
     inline_dirs: &[String],
@@ -943,7 +943,7 @@ pub fn group_members(
     groups
 }
 
-pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
+pub(crate) fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
     let mut entries = Vec::new();
     for node in nodes {
         entries.push(FlatEntry {
@@ -1077,7 +1077,7 @@ fn convert_member_groups(groups: &[MemberGroup]) -> Vec<NewMemberGroup> {
 
 /// Build `Vec<ProjectListItem>` from existing `ProjectNode` tree.
 /// This bridges the old and new type systems during migration.
-pub fn build_project_list(nodes: &[ProjectNode]) -> Vec<ProjectListItem> {
+pub(crate) fn build_project_list(nodes: &[ProjectNode]) -> Vec<ProjectListItem> {
     let mut items = Vec::new();
     for node in nodes {
         let is_rust = matches!(node.project.is_rust, ProjectLanguage::Rust);
@@ -1087,21 +1087,15 @@ pub fn build_project_list(nodes: &[ProjectNode]) -> Vec<ProjectListItem> {
         let has_worktrees = !node.worktrees.is_empty();
 
         if !is_rust {
-            if has_worktrees {
-                // NonRust doesn't have worktrees in the new model, skip worktree grouping.
-                // Just emit the primary as NonRust.
-                items.push(ProjectListItem::NonRust(old_project_to_nonrust(
-                    &node.project,
-                )));
-            } else {
-                items.push(ProjectListItem::NonRust(old_project_to_nonrust(
-                    &node.project,
-                )));
-            }
+            // NonRust doesn't have worktrees in the new model, skip worktree grouping.
+            // Just emit the primary as NonRust.
+            items.push(ProjectListItem::NonRust(old_project_to_nonrust(
+                &node.project,
+            )));
         } else if has_worktrees {
             // Build worktree group. The first worktree entry is the primary.
+            let primary_wt = &node.worktrees[0];
             if is_workspace {
-                let primary_wt = &node.worktrees[0];
                 let primary = old_project_to_workspace(
                     &primary_wt.project,
                     convert_member_groups(&primary_wt.groups),
@@ -1125,7 +1119,6 @@ pub fn build_project_list(nodes: &[ProjectNode]) -> Vec<ProjectListItem> {
                     primary, linked,
                 )));
             } else {
-                let primary_wt = &node.worktrees[0];
                 let primary = old_project_to_package(&primary_wt.project);
                 let linked: Vec<TypedProject<Package>> = node.worktrees[1..]
                     .iter()
@@ -1156,12 +1149,12 @@ pub fn build_project_list(nodes: &[ProjectNode]) -> Vec<ProjectListItem> {
 }
 
 /// Shared network context passed to `fetch_project_details`.
-pub struct FetchContext {
+pub(crate) struct FetchContext {
     pub client:     HttpClient,
     pub repo_cache: RepoCache,
 }
 
-pub struct ProjectDetailRequest<'a> {
+pub(crate) struct ProjectDetailRequest<'a> {
     pub tx:            &'a mpsc::Sender<BackgroundMsg>,
     pub ctx:           &'a FetchContext,
     pub project_path:  &'a str,
@@ -1173,7 +1166,7 @@ pub struct ProjectDetailRequest<'a> {
 
 /// Fetch all details (disk, git, crates.io, CI) for a single project and send
 /// results through the provided channel. Used by both the main scan and priority fetch.
-pub fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
+pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let tx = req.tx;
     let ctx = req.ctx;
     let project_path = req.project_path;
@@ -1263,7 +1256,7 @@ pub fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
 }
 
 #[derive(Clone)]
-pub struct RepoMetaInfo {
+pub(crate) struct RepoMetaInfo {
     pub stars:       u64,
     pub description: Option<String>,
 }
@@ -1272,19 +1265,19 @@ pub struct RepoMetaInfo {
 /// rayon threads so worktrees on the same repo+branch don't make duplicate
 /// HTTP calls.
 #[derive(Clone)]
-pub struct CachedRepoData {
+pub(crate) struct CachedRepoData {
     runs: Vec<CiRun>,
     meta: Option<RepoMetaInfo>,
 }
 
-pub type RepoCache = Arc<Mutex<HashMap<String, CachedRepoData>>>;
+pub(crate) type RepoCache = Arc<Mutex<HashMap<String, CachedRepoData>>>;
 
-pub fn new_repo_cache() -> RepoCache { Arc::new(Mutex::new(HashMap::new())) }
+pub(crate) fn new_repo_cache() -> RepoCache { Arc::new(Mutex::new(HashMap::new())) }
 
 /// Resolve include-dir entries to absolute paths. Relative entries are
 /// joined to `scan_root`; absolute entries are used as-is. An empty
 /// list falls back to `[scan_root]` so the whole tree is walked.
-pub fn resolve_include_dirs(scan_root: &Path, include_dirs: &[String]) -> Vec<PathBuf> {
+pub(crate) fn resolve_include_dirs(scan_root: &Path, include_dirs: &[String]) -> Vec<PathBuf> {
     if include_dirs.is_empty() {
         return vec![scan_root.to_path_buf()];
     }
@@ -1372,7 +1365,7 @@ struct RepoFetchRequest {
 ///
 /// `ScanComplete` is sent after discovery/local work has finished. Disk and HTTP results may
 /// continue to stream in afterward.
-pub fn spawn_streaming_scan(
+pub(crate) fn spawn_streaming_scan(
     scan_root: &Path,
     ci_run_count: u32,
     include_dirs: &[String],

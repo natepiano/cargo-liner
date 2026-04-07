@@ -7,14 +7,14 @@ use crate::constants::CI_CACHE_DIR;
 use crate::constants::LINTS_CACHE_DIR;
 
 /// Default app-owned cache root under the platform cache directory.
-pub fn default_app_cache_root() -> PathBuf {
+pub(crate) fn default_app_cache_root() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(APP_NAME)
 }
 
 /// Resolve the configured cache root for a given `CargoPortConfig`.
-pub fn configured_app_cache_root_for(cfg: &CargoPortConfig) -> PathBuf {
+pub(crate) fn configured_app_cache_root_for(cfg: &CargoPortConfig) -> PathBuf {
     if cfg.cache.root.is_empty() {
         return default_app_cache_root();
     }
@@ -28,21 +28,21 @@ pub fn configured_app_cache_root_for(cfg: &CargoPortConfig) -> PathBuf {
 }
 
 /// Resolve the active app cache root from the process' last good config.
-pub fn app_cache_root() -> PathBuf {
+pub(crate) fn app_cache_root() -> PathBuf {
     let cfg = config::active_config();
     configured_app_cache_root_for(&cfg)
 }
 
 /// Cache root for repo-keyed CI data.
-pub fn ci_cache_root() -> PathBuf { app_cache_root().join(CI_CACHE_DIR) }
+pub(crate) fn ci_cache_root() -> PathBuf { app_cache_root().join(CI_CACHE_DIR) }
 
 /// Cache root for project-keyed lint runs under a specific config.
-pub fn lint_runs_root_for(cfg: &CargoPortConfig) -> PathBuf {
+pub(crate) fn lint_runs_root_for(cfg: &CargoPortConfig) -> PathBuf {
     configured_app_cache_root_for(cfg).join(LINTS_CACHE_DIR)
 }
 
 /// Cache root for project-keyed lint runs.
-pub fn lint_runs_root() -> PathBuf { app_cache_root().join(LINTS_CACHE_DIR) }
+pub(crate) fn lint_runs_root() -> PathBuf { app_cache_root().join(LINTS_CACHE_DIR) }
 
 #[cfg(test)]
 #[allow(

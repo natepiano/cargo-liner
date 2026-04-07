@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
-use super::snapshots;
 use super::types::App;
 use super::types::CiState;
 use crate::ci::Conclusion;
@@ -23,7 +22,6 @@ use crate::project::ProjectListItem;
 use crate::project::TypedProject;
 use crate::project::Visibility;
 use crate::project::Workspace;
-use crate::scan::ProjectNode;
 use crate::tui::detail::DetailField;
 use crate::tui::detail::ProjectCounts;
 use crate::tui::shortcuts::InputContext;
@@ -219,14 +217,11 @@ impl App {
         None
     }
 
-    pub fn is_deleted(&self, path: &str) -> bool { self.deleted_projects.contains(path) }
-
-    pub fn live_worktree_count(&self, node: &ProjectNode) -> usize {
-        super::snapshots::live_worktree_count_for_node(
-            node,
-            &self.deleted_projects,
-            &self.dismissed_projects,
-        )
+    pub fn is_deleted(&self, path: &str) -> bool {
+        use crate::project::Visibility;
+        self.project_list_items
+            .iter()
+            .any(|item| item.has_project_with_visibility(path, Visibility::Deleted))
     }
 
     pub fn formatted_disk(&self, project: &Project) -> String {
@@ -252,74 +247,6 @@ impl App {
             .map(|run| run.conclusion)
     }
 
-    /// Aggregate disk usage for a node: sums the root and all worktrees.
-    pub fn formatted_disk_for_node(&self, node: &ProjectNode) -> String {
-        if node.worktrees.is_empty() {
-            return self.formatted_disk(&node.project);
-        }
-        let mut total: u64 = 0;
-        let mut any_data = false;
-        for path in snapshots::unique_node_paths(node) {
-            if let Some(&bytes) = self.disk_usage.get(path) {
-                total += bytes;
-                any_data = true;
-            }
-        }
-        if any_data {
-            crate::tui::render::format_bytes(total)
-        } else {
-            crate::tui::render::format_bytes(0)
-        }
-    }
-
-    /// Get total disk bytes for a node (sum of root + worktrees).
-    pub fn disk_bytes_for_node(&self, node: &ProjectNode) -> Option<u64> {
-        if node.worktrees.is_empty() {
-            return self.disk_usage.get(&node.project.path).copied();
-        }
-        let mut total: u64 = 0;
-        let mut any_data = false;
-        for path in snapshots::unique_node_paths(node) {
-            if let Some(&bytes) = self.disk_usage.get(path) {
-                total += bytes;
-                any_data = true;
-            }
-        }
-        if any_data { Some(total) } else { None }
-    }
-
-    /// Aggregate CI for a node: `Success` if all green, `Failure` if any red, `None` if no data.
-    pub fn ci_for_node(&self, node: &ProjectNode) -> Option<Conclusion> {
-        if node.worktrees.is_empty() {
-            return self.ci_for(&node.project);
-        }
-        let mut any_red = false;
-        let mut all_green = true;
-        let mut any_data = false;
-        for path in std::iter::once(&node.project.path)
-            .chain(node.worktrees.iter().map(|wt| &wt.project.path))
-        {
-            if let Some(run) = self.latest_ci_run_for_path(path) {
-                any_data = true;
-                if run.conclusion.is_failure() {
-                    any_red = true;
-                    all_green = false;
-                } else if !run.conclusion.is_success() {
-                    all_green = false;
-                }
-            }
-        }
-        if !any_data {
-            None
-        } else if any_red {
-            Some(Conclusion::Failure)
-        } else if all_green {
-            Some(Conclusion::Success)
-        } else {
-            None
-        }
-    }
-
     pub fn ci_state_for(&self, project: &Project) -> Option<&CiState> {
         self.is_ci_owner_path(&project.path)
             .then(|| self.ci_state.get(&project.path))
@@ -329,18 +256,26 @@ impl App {
     // ── ProjectListItem query methods ──────────────────────────────
 
     /// Count live (visible) worktree entries for a `ProjectListItem`.
-    pub fn live_worktree_count_for_item(&self, item: &ProjectListItem) -> usize {
+    pub fn live_worktree_count_for_item(item: &ProjectListItem) -> usize {
         match item {
             ProjectListItem::WorkspaceWorktrees(wtg) => {
                 let live = std::iter::once(wtg.primary().visibility())
-                    .chain(wtg.linked().iter().map(|l| l.visibility()))
+                    .chain(
+                        wtg.linked()
+                            .iter()
+                            .map(crate::project::TypedProject::visibility),
+                    )
                     .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
                     .count();
                 if live <= 1 { 0 } else { live }
             },
             ProjectListItem::PackageWorktrees(wtg) => {
                 let live = std::iter::once(wtg.primary().visibility())
-                    .chain(wtg.linked().iter().map(|l| l.visibility()))
+                    .chain(
+                        wtg.linked()
+                            .iter()
+                            .map(crate::project::TypedProject::visibility),
+                    )
                     .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
                     .count();
                 if live <= 1 { 0 } else { live }
@@ -350,7 +285,7 @@ impl App {
     }
 
     /// All display paths for a `ProjectListItem` (root + worktrees).
-    fn unique_item_display_paths(&self, item: &ProjectListItem) -> Vec<String> {
+    fn unique_item_display_paths(item: &ProjectListItem) -> Vec<String> {
         let mut paths = Vec::new();
         paths.push(item.display_path());
         match item {
@@ -385,7 +320,7 @@ impl App {
 
     /// Get total disk bytes for a `ProjectListItem` (sum of root + worktrees).
     pub fn disk_bytes_for_item(&self, item: &ProjectListItem) -> Option<u64> {
-        let paths = self.unique_item_display_paths(item);
+        let paths = Self::unique_item_display_paths(item);
         if paths.len() == 1 {
             return self.disk_usage.get(&paths[0]).copied();
         }
@@ -402,9 +337,17 @@ impl App {
 
     /// Aggregate CI for a `ProjectListItem`.
     pub fn ci_for_item(&self, item: &ProjectListItem) -> Option<Conclusion> {
-        let paths = self.unique_item_display_paths(item);
+        let paths = Self::unique_item_display_paths(item);
         if paths.len() == 1 {
-            return self.project_by_path(&paths[0]).and_then(|p| self.ci_for(p));
+            // For single-path items, use the standard ci_for (checks CI owner).
+            // But fall through to aggregation if the project isn't in all_projects
+            // (e.g., a worktree not yet discovered).
+            if let Some(p) = self.project_by_path(&paths[0]) {
+                return self.ci_for(p);
+            }
+            return self
+                .latest_ci_run_for_path(&paths[0])
+                .map(|run| run.conclusion);
         }
         let mut any_red = false;
         let mut all_green = true;

@@ -125,11 +125,19 @@ impl App {
         match item {
             ProjectListItem::WorkspaceWorktrees(wtg) => {
                 std::iter::once(wtg.primary().display_path())
-                    .chain(wtg.linked().iter().map(|l| l.display_path()))
+                    .chain(
+                        wtg.linked()
+                            .iter()
+                            .map(crate::project::TypedProject::display_path),
+                    )
                     .collect()
             },
             ProjectListItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary().display_path())
-                .chain(wtg.linked().iter().map(|l| l.display_path()))
+                .chain(
+                    wtg.linked()
+                        .iter()
+                        .map(crate::project::TypedProject::display_path),
+                )
                 .collect(),
             _ => vec![item.display_path()],
         }

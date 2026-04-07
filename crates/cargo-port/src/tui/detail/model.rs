@@ -520,6 +520,43 @@ fn build_git_detail_fields(app: &App, project: &Project) -> GitDetailFields {
     }
 }
 
+/// Resolve worktree group item from the selected item if this project is a worktree group root.
+fn worktree_group_item<'a>(
+    app: &'a App,
+    project: &Project,
+) -> Option<&'a crate::project::ProjectListItem> {
+    let item = app.selected_item()?;
+    let is_group = matches!(
+        item,
+        crate::project::ProjectListItem::WorkspaceWorktrees(_)
+            | crate::project::ProjectListItem::PackageWorktrees(_)
+    ) && item.display_path() == project.path;
+    is_group.then_some(item)
+}
+
+/// Collect worktree names from a worktree group item.
+fn worktree_names_from_item(item: &crate::project::ProjectListItem) -> Vec<String> {
+    match item {
+        crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
+            .chain(wtg.linked().iter())
+            .map(|ws| {
+                ws.worktree_name()
+                    .unwrap_or_else(|| ws.path().to_str().unwrap_or(""))
+                    .to_string()
+            })
+            .collect(),
+        crate::project::ProjectListItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
+            .chain(wtg.linked().iter())
+            .map(|pkg| {
+                pkg.worktree_name()
+                    .unwrap_or_else(|| pkg.path().to_str().unwrap_or(""))
+                    .to_string()
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 pub fn build_detail_info(app: &App, project: &Project) -> DetailInfo {
     let mut counts = app.workspace_counts(project).unwrap_or_else(|| {
         let mut counts = ProjectCounts::default();
@@ -539,39 +576,22 @@ pub fn build_detail_info(app: &App, project: &Project) -> DetailInfo {
     let worktree_label = project.worktree_name.clone();
     let cargo_active = app.is_cargo_active_path(&project.path);
 
-    let worktree_node = app
-        .selected_node()
-        .filter(|node| node.project.path == project.path && !node.worktrees.is_empty());
+    let wt_item = worktree_group_item(app, project);
 
-    let (disk, ci) = worktree_node.map_or_else(
+    let (disk, ci) = wt_item.map_or_else(
         || {
-            (
-                app.formatted_disk(project),
-                if cargo_active {
-                    app.ci_for(project)
-                } else {
-                    None
-                },
-            )
+            let ci = if cargo_active {
+                app.ci_for(project)
+            } else {
+                None
+            };
+            (app.formatted_disk(project), ci)
         },
-        |node| (app.formatted_disk_for_node(node), app.ci_for_node(node)),
+        |item| (app.formatted_disk_for_item(item), app.ci_for_item(item)),
     );
 
     let package_title = resolve_package_title(app, project);
-
-    let worktree_names: Vec<String> = worktree_node.map_or_else(Vec::new, |node| {
-        node.worktrees
-            .iter()
-            .map(|worktree| {
-                worktree
-                    .project
-                    .worktree_name
-                    .as_deref()
-                    .unwrap_or(&worktree.project.path)
-                    .to_string()
-            })
-            .collect()
-    });
+    let worktree_names = wt_item.map_or_else(Vec::new, worktree_names_from_item);
 
     let is_binary = project
         .types

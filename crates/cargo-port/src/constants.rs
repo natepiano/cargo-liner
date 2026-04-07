@@ -4,80 +4,80 @@ use ratatui::style::Color;
 
 // ── Shared icons ─────────────────────────────────────────────────────
 
-pub const PASSING: &str = "🟢";
-pub const FAILING: &str = "🔴";
-pub const CANCELLED: &str = "🌑";
-pub const IN_SYNC: &str = "☑️";
-pub const SYNC_UP: &str = "↑";
-pub const SYNC_DOWN: &str = "↓";
+pub(crate) const PASSING: &str = "🟢";
+pub(crate) const FAILING: &str = "🔴";
+pub(crate) const CANCELLED: &str = "🌑";
+pub(crate) const IN_SYNC: &str = "☑️";
+pub(crate) const SYNC_UP: &str = "↑";
+pub(crate) const SYNC_DOWN: &str = "↓";
 
 // ── Lint status icons ────────────────────────────────────────────────
 
-pub const LINT_PASSED: &str = "🟢";
-pub const LINT_FAILED: &str = "🔴";
-pub const LINT_STALE: &str = "⚫";
-pub const LINT_NO_LOG: &str = " ";
+pub(crate) const LINT_PASSED: &str = "🟢";
+pub(crate) const LINT_FAILED: &str = "🔴";
+pub(crate) const LINT_STALE: &str = "⚫";
+pub(crate) const LINT_NO_LOG: &str = " ";
 
 // ── Git UI constants ─────────────────────────────────────────────────
 
-pub const GIT_LOCAL: &str = "📁";
-pub const GIT_CLONE: &str = "👯";
-pub const GIT_FORK: &str = "🔱";
-pub const WORKTREE: &str = "🌲";
-pub const GIT_MODIFIED_COLOR: Color = Color::Indexed(208);
-pub const GIT_UNTRACKED_COLOR: Color = Color::Green;
-pub const GIT_IGNORED_COLOR: Color = Color::DarkGray;
+pub(crate) const GIT_LOCAL: &str = "📁";
+pub(crate) const GIT_CLONE: &str = "👯";
+pub(crate) const GIT_FORK: &str = "🔱";
+pub(crate) const WORKTREE: &str = "🌲";
+pub(crate) const GIT_MODIFIED_COLOR: Color = Color::Indexed(208);
+pub(crate) const GIT_UNTRACKED_COLOR: Color = Color::Green;
+pub(crate) const GIT_IGNORED_COLOR: Color = Color::DarkGray;
 
 // ── CI constants ──────────────────────────────────────────────────────
 
-pub const GH_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const GH_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ── Cache constants ───────────────────────────────────────────────────
 
-pub const CI_CACHE_DIR: &str = "ci";
-pub const LINTS_CACHE_DIR: &str = "lint-runs";
+pub(crate) const CI_CACHE_DIR: &str = "ci";
+pub(crate) const LINTS_CACHE_DIR: &str = "lint-runs";
 
 // ── Scan constants ────────────────────────────────────────────────────
 
-pub const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";
-pub const OLDER_RUNS_FETCH_INCREMENT: u32 = 5;
-pub const SCAN_DISK_CONCURRENCY: usize = 2;
-pub const SCAN_HTTP_CONCURRENCY: usize = 8;
-pub const SCAN_LOCAL_CONCURRENCY: usize = 8;
+pub(crate) const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";
+pub(crate) const OLDER_RUNS_FETCH_INCREMENT: u32 = 5;
+pub(crate) const SCAN_DISK_CONCURRENCY: usize = 2;
+pub(crate) const SCAN_HTTP_CONCURRENCY: usize = 8;
+pub(crate) const SCAN_LOCAL_CONCURRENCY: usize = 8;
 // ── HTTP constants ───────────────────────────────────────────────────
 
-pub const GITHUB_API_BASE: &str = "https://api.github.com";
-pub const GITHUB_GRAPHQL_URL: &str = "https://api.github.com/graphql";
-pub const CRATES_IO_API_BASE: &str = "https://crates.io/api/v1";
-pub const CRATES_IO_USER_AGENT: &str = "cargo-port";
-pub const SERVICE_RETRY_SECS: u64 = 1;
+pub(crate) const GITHUB_API_BASE: &str = "https://api.github.com";
+pub(crate) const GITHUB_GRAPHQL_URL: &str = "https://api.github.com/graphql";
+pub(crate) const CRATES_IO_API_BASE: &str = "https://crates.io/api/v1";
+pub(crate) const CRATES_IO_USER_AGENT: &str = "cargo-port";
+pub(crate) const SERVICE_RETRY_SECS: u64 = 1;
 
 // ── Watcher constants ─────────────────────────────────────────────────
 
 /// Wait for build/clean activity to settle before recalculating.
-pub const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
+pub(crate) const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
 
 /// Maximum time before forcing a recalc even if events keep arriving.
-pub const MAX_WAIT: Duration = Duration::from_secs(1);
+pub(crate) const MAX_WAIT: Duration = Duration::from_secs(1);
 
 /// Extra settling time for new project directories (e.g. `cargo init`).
-pub const NEW_PROJECT_DEBOUNCE: Duration = Duration::from_secs(2);
+pub(crate) const NEW_PROJECT_DEBOUNCE: Duration = Duration::from_secs(2);
 
 /// How often the watcher thread checks for expired timers.
-pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
-pub const WATCHER_DISK_CONCURRENCY: usize = 2;
-pub const WATCHER_GIT_CONCURRENCY: usize = 2;
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(500);
+pub(crate) const WATCHER_DISK_CONCURRENCY: usize = 2;
+pub(crate) const WATCHER_GIT_CONCURRENCY: usize = 2;
 
 // ── Lint history constants ───────────────────────────────────────────
 
-pub const LINTS_LATEST_JSON: &str = "latest.json";
-pub const LINTS_HISTORY_JSONL: &str = "history.jsonl";
+pub(crate) const LINTS_LATEST_JSON: &str = "latest.json";
+pub(crate) const LINTS_HISTORY_JSONL: &str = "history.jsonl";
 
 /// A `started` entry older than this is considered stale (crashed watcher).
-pub const STALE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub(crate) const STALE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 // ── Config constants ──────────────────────────────────────────────────
 
-pub const APP_NAME: &str = "cargo-port";
-pub const CONFIG_FILE: &str = "config.toml";
-pub const KEYMAP_FILE: &str = "keymap.toml";
+pub(crate) const APP_NAME: &str = "cargo-port";
+pub(crate) const CONFIG_FILE: &str = "config.toml";
+pub(crate) const KEYMAP_FILE: &str = "keymap.toml";

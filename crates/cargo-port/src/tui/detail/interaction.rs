@@ -327,20 +327,21 @@ fn open_cargo_toml(app: &App) {
         return;
     };
     let project_dir = app
-        .nodes
+        .project_list_items
         .iter()
-        .find(|node| {
-            node.groups.iter().any(|group| {
-                group
-                    .members
+        .find_map(|item| match item {
+            crate::project::ProjectListItem::Workspace(ws)
+                if ws
+                    .groups()
                     .iter()
-                    .any(|member| member.path == project.path)
-            })
+                    .any(|g| g.members().iter().any(|m| m.display_path() == project.path)) =>
+            {
+                app.project_by_path(&ws.display_path())
+                    .map(|p| p.abs_path.clone())
+            },
+            _ => None,
         })
-        .map_or_else(
-            || project.abs_path.clone(),
-            |node| node.project.abs_path.clone(),
-        );
+        .unwrap_or_else(|| project.abs_path.clone());
 
     let cargo_toml = PathBuf::from(&project.abs_path).join("Cargo.toml");
     let _ = std::process::Command::new(app.editor())
