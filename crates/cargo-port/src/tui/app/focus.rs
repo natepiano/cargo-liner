@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use super::types::App;
 use super::types::BottomPanel;
 use super::types::ExitMode;
@@ -161,19 +159,19 @@ impl App {
             .into_iter()
             .filter(|pane| match pane {
                 PaneId::ProjectList => true,
-                PaneId::Package => self.selected_project().is_some(),
-                PaneId::Git => self.selected_project().is_some_and(|project| {
+                PaneId::Package => self.selected_project_path().is_some(),
+                PaneId::Git => self.selected_project_path().is_some_and(|path| {
                     self.git_info
-                        .get(std::path::Path::new(&project.abs_path))
+                        .get(path)
                         .is_some_and(|info| info.url.is_some())
                 }),
                 PaneId::Targets => self.selected_project().is_some_and(|project| {
                     let info = crate::tui::detail::build_detail_info(self, project);
                     info.is_binary || !info.examples.is_empty() || !info.benches.is_empty()
                 }),
-                PaneId::CiRuns => self.selected_project().is_some_and(|project| {
-                    self.bottom_panel_available(Path::new(&project.abs_path))
-                }),
+                PaneId::CiRuns => self
+                    .selected_project_path()
+                    .is_some_and(|path| self.bottom_panel_available(path)),
                 PaneId::Toasts => !self.active_toasts().is_empty(),
                 PaneId::Search | PaneId::Settings | PaneId::Finder | PaneId::Keymap => false,
             })

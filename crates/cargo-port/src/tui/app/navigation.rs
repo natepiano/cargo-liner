@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::path::PathBuf;
 
 use nucleo_matcher::Matcher;
@@ -111,8 +112,8 @@ impl App {
     pub(super) fn current_detail_selection_key(&self) -> String {
         if self.is_searching() && !self.search_query.is_empty() {
             return self
-                .selected_project()
-                .map(|project| format!("search:{}", project.path))
+                .selected_project_path()
+                .map(|path| format!("search:{}", path.display()))
                 .unwrap_or_default();
         }
         match self.selected_row() {
@@ -173,6 +174,90 @@ impl App {
         } else {
             let display_path = self.selected_display_path()?;
             self.project_by_path(&display_path)
+        }
+    }
+
+    /// Returns the absolute path of the currently selected project, borrowed
+    /// from `project_list_items` (or `flat_entries` during search).
+    pub fn selected_project_path(&self) -> Option<&Path> {
+        if self.is_searching() && !self.search_query.is_empty() {
+            let selected = self.list_state.selected()?;
+            let flat_idx = *self.filtered.get(selected)?;
+            let entry = self.flat_entries.get(flat_idx)?;
+            Some(entry.abs_path.as_path())
+        } else {
+            let row = self.selected_row()?;
+            self.path_for_row(row)
+        }
+    }
+
+    /// Given a `VisibleRow`, resolve the absolute `&Path` borrowed from
+    /// `project_list_items`.
+    pub fn path_for_row(&self, row: VisibleRow) -> Option<&Path> {
+        match row {
+            VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
+                let item = self.project_list_items.get(node_index)?;
+                Some(item.path())
+            },
+            VisibleRow::Member {
+                node_index,
+                group_index,
+                member_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                match item {
+                    ProjectListItem::Workspace(ws) => {
+                        let group = ws.groups().get(group_index)?;
+                        let member = group.members().get(member_index)?;
+                        Some(member.path())
+                    },
+                    _ => None,
+                }
+            },
+            VisibleRow::Vendored {
+                node_index,
+                vendored_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                match item {
+                    ProjectListItem::Workspace(ws) => {
+                        ws.vendored().get(vendored_index).map(Project::path)
+                    },
+                    ProjectListItem::Package(pkg) => {
+                        pkg.vendored().get(vendored_index).map(Project::path)
+                    },
+                    _ => None,
+                }
+            },
+            VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
+            }
+            | VisibleRow::WorktreeGroupHeader {
+                node_index,
+                worktree_index,
+                ..
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                Self::worktree_path_ref(item, worktree_index)
+            },
+            VisibleRow::WorktreeMember {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                Self::worktree_member_path_ref(item, worktree_index, group_index, member_index)
+            },
+            VisibleRow::WorktreeVendored {
+                node_index,
+                worktree_index,
+                vendored_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                Self::worktree_vendored_path_ref(item, worktree_index, vendored_index)
+            },
         }
     }
 
@@ -485,6 +570,68 @@ impl App {
         }
     }
 
+    fn worktree_path_ref(item: &ProjectListItem, wi: usize) -> Option<&Path> {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                if wi == 0 {
+                    Some(wtg.primary().path())
+                } else {
+                    wtg.linked().get(wi - 1).map(Project::path)
+                }
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                if wi == 0 {
+                    Some(wtg.primary().path())
+                } else {
+                    wtg.linked().get(wi - 1).map(Project::path)
+                }
+            },
+            _ => None,
+        }
+    }
+
+    fn worktree_member_path_ref(
+        item: &ProjectListItem,
+        wi: usize,
+        gi: usize,
+        mi: usize,
+    ) -> Option<&Path> {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                let ws = if wi == 0 {
+                    wtg.primary()
+                } else {
+                    wtg.linked().get(wi - 1)?
+                };
+                let group = ws.groups().get(gi)?;
+                group.members().get(mi).map(Project::path)
+            },
+            _ => None,
+        }
+    }
+
+    fn worktree_vendored_path_ref(item: &ProjectListItem, wi: usize, vi: usize) -> Option<&Path> {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                let ws = if wi == 0 {
+                    wtg.primary()
+                } else {
+                    wtg.linked().get(wi - 1)?
+                };
+                ws.vendored().get(vi).map(Project::path)
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                let pkg = if wi == 0 {
+                    wtg.primary()
+                } else {
+                    wtg.linked().get(wi - 1)?
+                };
+                pkg.vendored().get(vi).map(Project::path)
+            },
+            _ => None,
+        }
+    }
+
     pub(super) fn selected_is_expandable(&self) -> bool {
         if self.is_searching() && !self.search_query.is_empty() {
             return false;
@@ -779,7 +926,7 @@ impl App {
             .selection_paths
             .collapsed_selected
             .take()
-            .or_else(|| self.selected_project().map(|project| project.path.clone()));
+            .or_else(|| self.selected_display_path());
         self.selection_paths.collapsed_anchor = None;
         for (ni, item) in self.project_list_items.iter().enumerate() {
             if item.has_children() {
@@ -818,7 +965,7 @@ impl App {
     }
 
     pub fn collapse_all(&mut self) {
-        let selected_path = self.selected_project().map(|project| project.path.clone());
+        let selected_path = self.selected_display_path();
         let anchor = self.selected_row().map(Self::collapse_anchor_row);
         self.expanded.clear();
         self.dirty.rows.mark_dirty();
@@ -828,7 +975,7 @@ impl App {
         {
             self.list_state.select(Some(pos));
         }
-        let anchor_path = self.selected_project().map(|project| project.path.clone());
+        let anchor_path = self.selected_display_path();
         if selected_path == anchor_path {
             self.selection_paths.collapsed_selected = None;
             self.selection_paths.collapsed_anchor = None;
@@ -850,7 +997,12 @@ impl App {
     }
 
     pub fn confirm_search(&mut self) {
-        let project_path = self.selected_project().map(|p| p.path.clone());
+        let project_path = self
+            .list_state
+            .selected()
+            .and_then(|sel| self.filtered.get(sel).copied())
+            .and_then(|flat_idx| self.flat_entries.get(flat_idx))
+            .map(|entry| entry.path.clone());
         self.end_search();
         self.search_query.clear();
         self.filtered.clear();

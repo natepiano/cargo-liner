@@ -112,9 +112,8 @@ fn lints_panel_title(app: &App, runs: &[LintRun], focused: bool) -> String {
         let indicator = crate::tui::types::scroll_indicator(app.lint_pane.pos(), runs.len());
         return format!(" Lints ({indicator}) ");
     }
-    let (watching, worker_count) = app.selected_project().map_or((false, 0usize), |project| {
-        let watching = app.lint_is_watchable(std::path::Path::new(&project.abs_path))
-            && app.lint_runtime.is_some();
+    let (watching, worker_count) = app.selected_project_path().map_or((false, 0usize), |path| {
+        let watching = app.lint_is_watchable(path) && app.lint_runtime.is_some();
         (watching, usize::from(watching))
     });
     let cache_size = app

@@ -65,8 +65,9 @@ impl ProjectEntry {
 
 /// A flattened entry for fuzzy search.
 pub(crate) struct FlatEntry {
-    pub path: String,
-    pub name: String,
+    pub path:     String,
+    pub abs_path: PathBuf,
+    pub name:     String,
 }
 
 pub(crate) enum BackgroundMsg {
@@ -946,31 +947,35 @@ pub(crate) fn build_flat_entries(nodes: &[ProjectEntry]) -> Vec<FlatEntry> {
     let mut entries = Vec::new();
     for node in nodes {
         entries.push(FlatEntry {
-            path: node.project.path.clone(),
-            name: node.project.display_name(),
+            path:     node.project.path.clone(),
+            abs_path: PathBuf::from(&node.project.abs_path),
+            name:     node.project.display_name(),
         });
 
         for group in &node.groups {
             for member in &group.members {
                 entries.push(FlatEntry {
-                    path: member.path.clone(),
-                    name: member.display_name(),
+                    path:     member.path.clone(),
+                    abs_path: PathBuf::from(&member.abs_path),
+                    name:     member.display_name(),
                 });
             }
         }
 
         for vendored in &node.vendored {
             entries.push(FlatEntry {
-                path: vendored.path.clone(),
-                name: format!("{} (vendored)", vendored.display_name()),
+                path:     vendored.path.clone(),
+                abs_path: PathBuf::from(&vendored.abs_path),
+                name:     format!("{} (vendored)", vendored.display_name()),
             });
         }
 
         for worktree in &node.worktrees {
             if worktree.project.path != node.project.path {
                 entries.push(FlatEntry {
-                    path: worktree.project.path.clone(),
-                    name: worktree
+                    path:     worktree.project.path.clone(),
+                    abs_path: PathBuf::from(&worktree.project.abs_path),
+                    name:     worktree
                         .project
                         .worktree_name
                         .clone()
@@ -981,16 +986,18 @@ pub(crate) fn build_flat_entries(nodes: &[ProjectEntry]) -> Vec<FlatEntry> {
             for group in &worktree.groups {
                 for member in &group.members {
                     entries.push(FlatEntry {
-                        path: member.path.clone(),
-                        name: member.display_name(),
+                        path:     member.path.clone(),
+                        abs_path: PathBuf::from(&member.abs_path),
+                        name:     member.display_name(),
                     });
                 }
             }
 
             for vendored in &worktree.vendored {
                 entries.push(FlatEntry {
-                    path: vendored.path.clone(),
-                    name: format!("{} (vendored)", vendored.display_name()),
+                    path:     vendored.path.clone(),
+                    abs_path: PathBuf::from(&vendored.abs_path),
+                    name:     format!("{} (vendored)", vendored.display_name()),
                 });
             }
         }

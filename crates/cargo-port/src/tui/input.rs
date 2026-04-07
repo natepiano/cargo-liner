@@ -21,7 +21,6 @@ use crate::keymap::GlobalAction;
 use crate::keymap::KeyBind;
 use crate::keymap::ProjectListAction;
 use crate::project;
-use crate::project::ProjectLanguage;
 
 pub(super) fn handle_event(app: &mut App, event: &Event) {
     let started = Instant::now();
@@ -41,8 +40,8 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
             event_label(event),
             pane_label(app.focused_pane),
             app.is_scan_complete(),
-            app.selected_project()
-                .map_or("-", |project| project.path.as_str())
+            app.selected_project_path()
+                .map_or_else(|| "-".to_string(), |path| path.display().to_string())
         ),
         crate::perf_log::slow_input_event_threshold_ms(),
     );
@@ -344,7 +343,10 @@ const fn handle_settings_click(app: &mut App, pos: Position) {
 }
 
 fn open_in_editor(app: &App) {
-    let Some(project) = app.selected_project() else {
+    let Some(selected_path) = app
+        .selected_project_path()
+        .map(std::path::Path::to_path_buf)
+    else {
         return;
     };
     let abs_path = app
@@ -352,17 +354,17 @@ fn open_in_editor(app: &App) {
         .iter()
         .find_map(|item| match item {
             crate::project::ProjectListItem::Workspace(ws)
-                if ws
-                    .groups()
-                    .iter()
-                    .any(|g| g.members().iter().any(|m| m.display_path() == project.path)) =>
+                if ws.groups().iter().any(|g| {
+                    g.members()
+                        .iter()
+                        .any(|m| m.path() == selected_path.as_path())
+                }) =>
             {
-                app.project_by_path(&ws.display_path())
-                    .map(|p| p.abs_path.clone())
+                Some(ws.path().to_path_buf())
             },
             _ => None,
         })
-        .unwrap_or_else(|| project.abs_path.clone());
+        .unwrap_or(selected_path);
 
     let _ = std::process::Command::new(app.editor())
         .arg(&abs_path)
@@ -450,10 +452,12 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
         ProjectListAction::CollapseAll => app.collapse_all(),
         ProjectListAction::Rescan => app.rescan(),
         ProjectListAction::Clean => {
-            if let Some(project) = app.selected_project()
-                && project.is_rust == ProjectLanguage::Rust
+            if let Some(path) = app.selected_project_path()
+                && app
+                    .selected_item()
+                    .is_some_and(crate::project::ProjectListItem::is_rust)
             {
-                app.confirm = Some(ConfirmAction::Clean(project.abs_path.clone()));
+                app.confirm = Some(ConfirmAction::Clean(path.display().to_string()));
             }
         },
     }

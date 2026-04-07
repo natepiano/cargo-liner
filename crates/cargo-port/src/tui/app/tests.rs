@@ -839,7 +839,7 @@ fn expand_all_preserves_selected_project_path() {
     app.expand_all();
 
     assert_eq!(
-        app.selected_project().map(|project| project.path.as_str()),
+        app.selected_display_path().as_deref(),
         Some(member.path.as_str())
     );
 }

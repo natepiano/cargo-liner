@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
@@ -18,7 +19,6 @@ use crate::keymap::KeyBind;
 use crate::keymap::LintsAction;
 use crate::keymap::PackageAction;
 use crate::keymap::TargetsAction;
-use crate::project::ProjectLanguage;
 use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::CiState;
@@ -98,10 +98,12 @@ pub fn handle_detail_key(app: &mut App, event: &KeyEvent) {
 }
 
 fn request_clean(app: &mut App) {
-    if let Some(project) = app.selected_project()
-        && project.is_rust == ProjectLanguage::Rust
+    if let Some(path) = app.selected_project_path()
+        && app
+            .selected_item()
+            .is_some_and(crate::project::ProjectListItem::is_rust)
     {
-        app.confirm = Some(ConfirmAction::Clean(project.abs_path.clone()));
+        app.confirm = Some(ConfirmAction::Clean(path.display().to_string()));
     }
 }
 
@@ -190,8 +192,7 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     match action {
         CiRunsAction::Activate => handle_ci_enter(app),
         CiRunsAction::ClearCache => {
-            if let Some(project) = app.selected_ci_project() {
-                let path = project.path.clone();
+            if let Some(path) = app.selected_ci_path().map(Path::to_path_buf) {
                 clear_ci_cache(app, &path);
             }
         },
@@ -214,7 +215,7 @@ fn handle_ci_enter(app: &mut App) {
         }
     } else if cursor_pos == run_count
         && !is_fetching
-        && let Some(project) = app.selected_ci_project()
+        && let Some(ci_path) = app.selected_ci_path().map(Path::to_path_buf)
     {
         let current_count = u32::try_from(run_count).unwrap_or(u32::MAX);
         let kind = if is_exhausted {
@@ -223,7 +224,7 @@ fn handle_ci_enter(app: &mut App) {
             CiFetchKind::FetchOlder
         };
         app.pending_ci_fetch = Some(PendingCiFetch {
-            project_path: project.path.clone(),
+            project_path: ci_path.display().to_string(),
             current_count,
             kind,
         });
@@ -253,9 +254,8 @@ fn handle_lints_key(app: &mut App, event: &KeyEvent) {
 }
 
 /// Clear CI cache for a project and remove its runs from the app.
-fn clear_ci_cache(app: &mut App, project_path: &str) {
-    let abs = std::path::PathBuf::from(project_path);
-    if let Some(git) = app.git_info.get(&abs)
+fn clear_ci_cache(app: &mut App, abs: &Path) {
+    if let Some(git) = app.git_info.get(abs)
         && let Some(url) = git.url.as_deref()
         && let Some((owner, repo)) = ci::parse_owner_repo(url)
     {
@@ -264,7 +264,7 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
     }
 
     app.ci_state.insert(
-        abs,
+        abs.to_path_buf(),
         CiState::Loaded {
             runs:      Vec::new(),
             exhausted: false,
@@ -275,24 +275,23 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
 }
 
 fn clear_lint_history(app: &mut App) {
-    let Some(project) = app.selected_project() else {
+    let Some(abs_path) = app.selected_project_path().map(Path::to_path_buf) else {
         return;
     };
-    let project_cache_dir = crate::lint::project_dir(std::path::Path::new(&project.abs_path));
+    let project_cache_dir = crate::lint::project_dir(&abs_path);
     let _ = std::fs::remove_dir_all(project_cache_dir);
 
-    let abs = std::path::PathBuf::from(&project.abs_path);
-    app.lint_runs.remove(&abs);
+    app.lint_runs.remove(abs_path.as_path());
     app.lint_pane.home();
     app.refresh_lint_cache_usage_from_disk();
     app.data_generation += 1;
 }
 
 fn open_lint_run_output(app: &App) {
-    let Some(project) = app.selected_project() else {
+    let Some(abs_path) = app.selected_project_path() else {
         return;
     };
-    let runs = match app.lint_runs.get(std::path::Path::new(&project.abs_path)) {
+    let runs = match app.lint_runs.get(abs_path) {
         Some(runs) if !runs.is_empty() => runs,
         _ => return,
     };
@@ -300,7 +299,7 @@ fn open_lint_run_output(app: &App) {
         return;
     };
 
-    let project_cache_dir = crate::lint::project_dir(std::path::Path::new(&project.abs_path));
+    let project_cache_dir = crate::lint::project_dir(abs_path);
     let log_paths: Vec<PathBuf> = run
         .commands
         .iter()
@@ -313,7 +312,7 @@ fn open_lint_run_output(app: &App) {
     }
 
     let mut cmd = std::process::Command::new(app.editor());
-    cmd.arg(&project.abs_path);
+    cmd.arg(abs_path);
     for path in &log_paths {
         cmd.arg(path);
     }
@@ -324,7 +323,7 @@ fn open_lint_run_output(app: &App) {
 }
 
 fn open_cargo_toml(app: &App) {
-    let Some(project) = app.selected_project() else {
+    let Some(abs_path) = app.selected_project_path().map(Path::to_path_buf) else {
         return;
     };
     let project_dir = app
@@ -335,16 +334,15 @@ fn open_cargo_toml(app: &App) {
                 if ws
                     .groups()
                     .iter()
-                    .any(|g| g.members().iter().any(|m| m.display_path() == project.path)) =>
+                    .any(|g| g.members().iter().any(|m| m.path() == abs_path.as_path())) =>
             {
-                app.project_by_path(&ws.display_path())
-                    .map(|p| p.abs_path.clone())
+                Some(ws.path().to_path_buf())
             },
             _ => None,
         })
-        .unwrap_or_else(|| project.abs_path.clone());
+        .unwrap_or_else(|| abs_path.clone());
 
-    let cargo_toml = PathBuf::from(&project.abs_path).join("Cargo.toml");
+    let cargo_toml = abs_path.join("Cargo.toml");
     let _ = std::process::Command::new(app.editor())
         .arg(&project_dir)
         .arg(&cargo_toml)

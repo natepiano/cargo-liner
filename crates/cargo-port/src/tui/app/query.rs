@@ -140,7 +140,7 @@ impl App {
 
     pub fn sync_selected_project(&mut self) {
         self.ensure_visible_rows_cached();
-        let current = self.selected_project().map(|project| project.path.clone());
+        let current = self.selected_display_path();
         if self
             .selection_paths
             .collapsed_anchor
@@ -166,13 +166,15 @@ impl App {
             self.return_focus = Some(PaneId::ProjectList);
         }
 
-        if let Some(path) = current
-            && self.selection_paths.last_selected.as_ref() != Some(&path)
+        if let Some(display_path) = current
+            && self.selection_paths.last_selected.as_ref() != Some(&display_path)
         {
-            self.reload_lint_history(Path::new(&path));
+            if let Some(abs_path) = self.selected_project_path().map(Path::to_path_buf) {
+                self.reload_lint_history(&abs_path);
+            }
             self.data_generation += 1;
             self.detail_generation += 1;
-            self.selection_paths.last_selected = Some(path);
+            self.selection_paths.last_selected = Some(display_path);
             self.mark_selection_changed();
             self.maybe_priority_fetch();
         }
@@ -189,9 +191,7 @@ impl App {
                     counts.add_project(project);
                     for group in ws.groups() {
                         for member in group.members() {
-                            if let Some(p) = self.project_by_path(&member.display_path()) {
-                                counts.add_project(p);
-                            }
+                            counts.add_package(member);
                         }
                     }
                     return Some(counts);
@@ -206,9 +206,7 @@ impl App {
                             counts.add_project(project);
                             for group in ws.groups() {
                                 for member in group.members() {
-                                    if let Some(p) = self.project_by_path(&member.display_path()) {
-                                        counts.add_project(p);
-                                    }
+                                    counts.add_package(member);
                                 }
                             }
                             return Some(counts);
@@ -235,14 +233,14 @@ impl App {
         }
     }
 
-    pub fn selected_ci_project(&self) -> Option<&LegacyProject> {
-        self.selected_project()
-            .filter(|project| self.is_ci_owner_path(Path::new(&project.abs_path)))
+    pub fn selected_ci_path(&self) -> Option<&Path> {
+        self.selected_project_path()
+            .filter(|path| self.is_ci_owner_path(path))
     }
 
     pub fn selected_ci_state(&self) -> Option<&CiState> {
-        let project = self.selected_ci_project()?;
-        self.ci_state_for(Path::new(&project.abs_path))
+        let path = self.selected_ci_path()?;
+        self.ci_state_for(path)
     }
 
     pub fn ci_for(&self, path: &Path) -> Option<Conclusion> {
@@ -335,15 +333,7 @@ impl App {
     pub fn ci_for_item(&self, item: &ProjectListItem) -> Option<Conclusion> {
         let paths = Self::unique_item_paths(item);
         if paths.len() == 1 {
-            // For single-path items, use the standard ci_for (checks CI owner).
-            // But fall through to aggregation if the project isn't in all_projects
-            // (e.g., a worktree not yet discovered).
-            if self.project_by_abs_path(&paths[0]).is_some() {
-                return self.ci_for(&paths[0]);
-            }
-            return self
-                .latest_ci_run_for_path(&paths[0])
-                .map(|run| run.conclusion);
+            return self.ci_for(&paths[0]);
         }
         let mut any_red = false;
         let mut all_green = true;
@@ -413,12 +403,6 @@ impl App {
             .find(|project| project.path == path)
     }
 
-    pub fn project_by_abs_path(&self, path: &Path) -> Option<&LegacyProject> {
-        self.all_projects
-            .iter()
-            .find(|project| Path::new(&project.abs_path) == path)
-    }
-
     pub fn recompute_cargo_active_paths(&mut self) {
         let project_index: HashMap<PathBuf, Vec<String>> = self
             .all_projects
@@ -465,11 +449,7 @@ impl App {
     }
 
     pub fn refresh_git_path_state(&mut self, path: &Path) {
-        let Some(project) = self.project_by_abs_path(path) else {
-            self.git_path_states.remove(path);
-            return;
-        };
-        let state = crate::project::detect_git_path_state(Path::new(&project.abs_path));
+        let state = crate::project::detect_git_path_state(path);
         self.git_path_states.insert(path.to_path_buf(), state);
     }
 
@@ -548,8 +528,8 @@ impl App {
             },
             InputContext::CiRuns => {
                 let ci_state = self
-                    .selected_project()
-                    .and_then(|p| self.ci_state_for(Path::new(&p.abs_path)));
+                    .selected_project_path()
+                    .and_then(|path| self.ci_state_for(path));
                 let run_count = ci_state.map_or(0, |s| s.runs().len());
                 if self.ci_pane.pos() == run_count
                     && !ci_state.is_some_and(CiState::is_fetching)

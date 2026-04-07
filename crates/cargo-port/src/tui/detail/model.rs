@@ -7,6 +7,8 @@ use crate::project::ExampleGroup;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::LegacyProject;
+use crate::project::Package;
+use crate::project::Project;
 use crate::project::ProjectLanguage;
 use crate::project::ProjectListItem;
 use crate::project::ProjectType;
@@ -39,6 +41,21 @@ impl ProjectCounts {
         self.examples += project.example_count();
         self.benches += project.benches.len();
         self.tests += project.test_count;
+    }
+
+    pub fn add_package(&mut self, project: &Project<Package>) {
+        let cargo = project.cargo();
+        for t in cargo.types() {
+            match t {
+                ProjectType::Library => self.libs += 1,
+                ProjectType::Binary => self.bins += 1,
+                ProjectType::ProcMacro => self.proc_macros += 1,
+                ProjectType::BuildScript => {},
+            }
+        }
+        self.examples += cargo.example_count();
+        self.benches += cargo.benches().len();
+        self.tests += cargo.test_count();
     }
 
     /// Returns non-zero stats as (label, count) pairs for column display.

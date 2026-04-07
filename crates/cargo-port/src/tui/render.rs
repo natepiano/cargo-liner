@@ -41,7 +41,6 @@ use crate::ci::Conclusion;
 use crate::constants::WORKTREE;
 use crate::project;
 use crate::project::GitOrigin;
-use crate::project::LegacyProject;
 use crate::project::ProjectListItem;
 use crate::scan;
 
@@ -278,11 +277,11 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let detail_info = app.cached_detail.as_ref().map(|c| c.info.clone());
     let selected_ci_state = app.selected_ci_state();
-    let selected_has_ci_owner = app.selected_ci_project().is_some();
+    let selected_has_ci_owner = app.selected_ci_path().is_some();
     let has_ci = selected_ci_state.is_some();
     let detail_lint_runs = app
-        .selected_project()
-        .and_then(|p| app.lint_runs.get(Path::new(&p.abs_path)))
+        .selected_project_path()
+        .and_then(|path| app.lint_runs.get(path))
         .cloned()
         .unwrap_or_default();
     let detail_ci_runs: Vec<CiRun> = selected_ci_state
@@ -314,7 +313,7 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                     render_empty_ci_panel(
                         frame,
                         app,
-                        app.selected_project(),
+                        app.selected_project_path(),
                         selected_has_ci_owner,
                         right_layout[1],
                     );
@@ -358,7 +357,7 @@ fn render_unreachable_overlay(frame: &mut Frame, area: Rect, msg: &str) {
 fn render_empty_ci_panel(
     frame: &mut Frame,
     app: &App,
-    project: Option<&LegacyProject>,
+    project_path: Option<&Path>,
     selected_has_ci_owner: bool,
     area: Rect,
 ) {
@@ -379,17 +378,17 @@ fn render_empty_ci_panel(
     frame.render_widget(block, area);
 
     // Determine why there's no CI
-    let has_git = project.is_some_and(|p| app.git_info.contains_key(Path::new(&p.abs_path)));
-    let has_url = project
+    let has_git = project_path.is_some_and(|path| app.git_info.contains_key(path));
+    let has_url = project_path
         .filter(|_| selected_has_ci_owner)
-        .and_then(|p| app.git_info.get(Path::new(&p.abs_path)))
+        .and_then(|path| app.git_info.get(path))
         .is_some_and(|g| g.url.is_some());
-    let is_local = project
+    let is_local = project_path
         .filter(|_| selected_has_ci_owner)
-        .and_then(|p| app.git_info.get(Path::new(&p.abs_path)))
+        .and_then(|path| app.git_info.get(path))
         .is_some_and(|g| g.origin == GitOrigin::Local);
 
-    let msg = if project.is_some() && !selected_has_ci_owner {
+    let msg = if project_path.is_some() && !selected_has_ci_owner {
         "CI is shown on branch/worktree rows"
     } else if !has_git {
         "Not a git repository"

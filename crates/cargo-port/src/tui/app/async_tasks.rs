@@ -55,8 +55,7 @@ impl App {
         project_list_items: Vec<ProjectListItem>,
     ) {
         let selected_path = self
-            .selected_project()
-            .map(|p| p.path.clone())
+            .selected_display_path()
             .or_else(|| self.selection_paths.last_selected.clone());
         let should_focus_project_list = false;
         self.project_list_items = project_list_items;
@@ -470,40 +469,49 @@ impl App {
         });
     }
 
-    pub(super) fn lint_runtime_root_projects(&self) -> Vec<&LegacyProject> {
+    /// Collect root project paths and metadata for the lint runtime.
+    fn lint_runtime_root_entries(&self) -> Vec<(PathBuf, bool)> {
         let mut seen = HashSet::new();
-        let mut projects = Vec::new();
+        let mut entries = Vec::new();
 
         for item in &self.project_list_items {
-            let paths: Vec<PathBuf> = match item {
+            let items: Vec<(&Path, bool)> = match item {
                 crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
-                    std::iter::once(wtg.primary().path().to_path_buf())
-                        .chain(wtg.linked().iter().map(|p| p.path().to_path_buf()))
+                    std::iter::once(wtg.primary())
+                        .chain(wtg.linked().iter())
+                        .map(|p| (p.path(), true))
                         .collect()
                 },
                 crate::project::ProjectListItem::PackageWorktrees(wtg) => {
-                    std::iter::once(wtg.primary().path().to_path_buf())
-                        .chain(wtg.linked().iter().map(|p| p.path().to_path_buf()))
+                    std::iter::once(wtg.primary())
+                        .chain(wtg.linked().iter())
+                        .map(|p| (p.path(), true))
                         .collect()
                 },
-                _ => vec![item.path().to_path_buf()],
+                _ => vec![(item.path(), item.is_rust())],
             };
-            for dp in paths {
-                if seen.insert(dp.clone())
-                    && let Some(p) = self.project_by_abs_path(&dp)
-                {
-                    projects.push(p);
+            for (path, is_rust) in items {
+                let owned = path.to_path_buf();
+                if seen.insert(owned.clone()) {
+                    entries.push((owned, is_rust));
                 }
             }
         }
 
-        if !projects.is_empty() {
-            return projects;
+        if !entries.is_empty() {
+            return entries;
         }
 
         self.all_projects
             .iter()
-            .filter(|project| seen.insert(PathBuf::from(&project.abs_path)))
+            .filter_map(|project| {
+                let abs = PathBuf::from(&project.abs_path);
+                if seen.insert(abs.clone()) {
+                    Some((abs, project.is_rust == Rust))
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
@@ -511,14 +519,15 @@ impl App {
         if !self.is_scan_complete() {
             return Vec::new();
         }
-        self.lint_runtime_root_projects()
+        self.lint_runtime_root_entries()
             .into_iter()
-            .filter(|project| !self.is_deleted(&project.path))
-            .filter(|project| self.is_cargo_active_path(Path::new(&project.abs_path)))
-            .map(|project| RegisterProjectRequest {
-                project_path: project.abs_path.clone(),
-                abs_path:     PathBuf::from(&project.abs_path),
-                is_rust:      project.is_rust == Rust,
+            .filter(|(path, _)| {
+                !self.is_deleted(&path.display().to_string()) && self.is_cargo_active_path(path)
+            })
+            .map(|(abs_path, is_rust)| RegisterProjectRequest {
+                project_path: abs_path.display().to_string(),
+                abs_path,
+                is_rust,
             })
             .collect()
     }
@@ -1693,12 +1702,12 @@ impl App {
     }
 
     pub(super) fn detail_path_is_affected(&self, path: &str) -> bool {
-        let Some(project) = self.selected_project() else {
+        let Some(selected_path) = self.selected_project_path() else {
             return false;
         };
         let abs = Path::new(path);
         self.selected_lint_rollup_key().map_or_else(
-            || Path::new(&project.abs_path) == abs,
+            || selected_path == abs,
             |key| {
                 self.lint_rollup_paths
                     .get(&key)
@@ -1709,16 +1718,24 @@ impl App {
 
     /// Spawn a priority fetch for the selected project if it hasn't been loaded yet.
     pub(super) fn maybe_priority_fetch(&mut self) {
-        let Some(project) = self.selected_project() else {
+        let Some(abs_path) = self.selected_project_path().map(Path::to_path_buf) else {
             return;
         };
-        let path = project.path.clone();
-        let abs_path = project.abs_path.clone();
-        let name = project.name.clone();
-        let abs = PathBuf::from(&abs_path);
-        if !self.fully_loaded.contains(&abs) && self.priority_fetch_path.as_ref() != Some(&path) {
-            self.priority_fetch_path = Some(path.clone());
-            crate::tui::terminal::spawn_priority_fetch(self, &path, &abs_path, name.as_ref());
+        let display_path = self
+            .selected_display_path()
+            .unwrap_or_else(|| abs_path.display().to_string());
+        let name = self.selected_project().and_then(|p| p.name.clone());
+        if !self.fully_loaded.contains(&abs_path)
+            && self.priority_fetch_path.as_ref() != Some(&display_path)
+        {
+            self.priority_fetch_path = Some(display_path.clone());
+            let abs_str = abs_path.display().to_string();
+            crate::tui::terminal::spawn_priority_fetch(
+                self,
+                &display_path,
+                &abs_str,
+                name.as_ref(),
+            );
         }
     }
 }
