@@ -695,7 +695,7 @@ pub(crate) struct ExampleGroup {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct Project {
+pub(crate) struct LegacyProject {
     /// Display path (e.g. `~/rust/bevy`).
     pub path:                      String,
     /// Absolute filesystem path for operations that need to access the project on disk.
@@ -723,7 +723,7 @@ pub(crate) struct Project {
     pub local_dependency_paths:    Vec<String>,
 }
 
-impl Project {
+impl LegacyProject {
     /// Total number of examples across all groups.
     pub(crate) fn example_count(&self) -> usize {
         self.examples.iter().map(|g| g.names.len()).sum()
@@ -761,7 +761,7 @@ impl fmt::Display for ProjectParseError {
     }
 }
 
-impl Project {
+impl LegacyProject {
     pub(crate) fn from_cargo_toml(cargo_toml_path: &Path) -> Result<Self, ProjectParseError> {
         let contents =
             std::fs::read_to_string(cargo_toml_path).map_err(ProjectParseError::ReadError)?;
@@ -1260,8 +1260,8 @@ pub(crate) struct Workspace;
 
 impl ProjectKind for Workspace {
     type Cargo = Cargo;
-    type Groups = Vec<NewMemberGroup>;
-    type Vendored = Vec<TypedProject<Package>>;
+    type Groups = Vec<MemberGroup>;
+    type Vendored = Vec<Project<Package>>;
 }
 
 #[derive(Clone)]
@@ -1270,7 +1270,7 @@ pub(crate) struct Package;
 impl ProjectKind for Package {
     type Cargo = Cargo;
     type Groups = ();
-    type Vendored = Vec<TypedProject<Self>>;
+    type Vendored = Vec<Project<Self>>;
 }
 
 #[derive(Clone)]
@@ -1285,58 +1285,34 @@ impl ProjectKind for NonRust {
 /// Shared Cargo fields extracted from `Cargo.toml`.
 #[derive(Clone, Debug)]
 pub(crate) struct Cargo {
-    version:                Option<String>,
-    description:            Option<String>,
-    types:                  Vec<ProjectType>,
-    examples:               Vec<ExampleGroup>,
-    benches:                Vec<String>,
-    test_count:             usize,
-    local_dependency_paths: Vec<String>,
+    types:    Vec<ProjectType>,
+    examples: Vec<ExampleGroup>,
+    benches:  Vec<String>,
 }
 
 impl Cargo {
     pub(crate) const fn new(
-        version: Option<String>,
-        description: Option<String>,
         types: Vec<ProjectType>,
         examples: Vec<ExampleGroup>,
         benches: Vec<String>,
-        test_count: usize,
-        local_dependency_paths: Vec<String>,
     ) -> Self {
         Self {
-            version,
-            description,
             types,
             examples,
             benches,
-            test_count,
-            local_dependency_paths,
         }
     }
-
-    pub(crate) fn version(&self) -> Option<&str> { self.version.as_deref() }
-
-    pub(crate) fn description(&self) -> Option<&str> { self.description.as_deref() }
 
     pub(crate) fn types(&self) -> &[ProjectType] { &self.types }
 
     pub(crate) fn examples(&self) -> &[ExampleGroup] { &self.examples }
 
     pub(crate) fn benches(&self) -> &[String] { &self.benches }
-
-    pub(crate) const fn test_count(&self) -> usize { self.test_count }
-
-    pub(crate) fn local_dependency_paths(&self) -> &[String] { &self.local_dependency_paths }
-
-    pub(crate) fn example_count(&self) -> usize {
-        self.examples.iter().map(|g| g.names.len()).sum()
-    }
 }
 
 /// The core project type, parameterized by kind.
 /// Private fields with accessors enforce what's available per kind.
-pub(crate) struct TypedProject<Kind: ProjectKind> {
+pub(crate) struct Project<Kind: ProjectKind> {
     path:                      PathBuf,
     name:                      Option<String>,
     visibility:                Visibility,
@@ -1347,7 +1323,7 @@ pub(crate) struct TypedProject<Kind: ProjectKind> {
     worktree_primary_abs_path: Option<PathBuf>,
 }
 
-impl Clone for TypedProject<Workspace> {
+impl Clone for Project<Workspace> {
     fn clone(&self) -> Self {
         Self {
             path:                      self.path.clone(),
@@ -1362,7 +1338,7 @@ impl Clone for TypedProject<Workspace> {
     }
 }
 
-impl Clone for TypedProject<Package> {
+impl Clone for Project<Package> {
     fn clone(&self) -> Self {
         Self {
             path:                      self.path.clone(),
@@ -1377,7 +1353,7 @@ impl Clone for TypedProject<Package> {
     }
 }
 
-impl Clone for TypedProject<NonRust> {
+impl Clone for Project<NonRust> {
     fn clone(&self) -> Self {
         Self {
             path:                      self.path.clone(),
@@ -1393,20 +1369,14 @@ impl Clone for TypedProject<NonRust> {
 }
 
 // Shared accessors for all kinds.
-impl<Kind: ProjectKind> TypedProject<Kind> {
+impl<Kind: ProjectKind> Project<Kind> {
     pub(crate) fn path(&self) -> &Path { &self.path }
-
-    pub(crate) fn name(&self) -> Option<&str> { self.name.as_deref() }
 
     pub(crate) const fn visibility(&self) -> Visibility { self.visibility }
 
     pub(crate) const fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
 
     pub(crate) fn worktree_name(&self) -> Option<&str> { self.worktree_name.as_deref() }
-
-    pub(crate) fn worktree_primary_abs_path(&self) -> Option<&Path> {
-        self.worktree_primary_abs_path.as_deref()
-    }
 
     /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
     pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }
@@ -1425,25 +1395,23 @@ impl<Kind: ProjectKind> TypedProject<Kind> {
 }
 
 // Workspace-specific accessors.
-impl TypedProject<Workspace> {
+impl Project<Workspace> {
     pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
 
-    pub(crate) fn groups(&self) -> &[NewMemberGroup] { &self.groups }
+    pub(crate) fn groups(&self) -> &[MemberGroup] { &self.groups }
 
-    pub(crate) const fn groups_mut(&mut self) -> &mut Vec<NewMemberGroup> { &mut self.groups }
+    pub(crate) const fn groups_mut(&mut self) -> &mut Vec<MemberGroup> { &mut self.groups }
 
-    pub(crate) fn vendored(&self) -> &[TypedProject<Package>] { &self.vendored }
+    pub(crate) fn vendored(&self) -> &[Project<Package>] { &self.vendored }
 
-    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<TypedProject<Package>> {
-        &mut self.vendored
-    }
+    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<Project<Package>> { &mut self.vendored }
 
     pub(crate) fn new(
         path: PathBuf,
         name: Option<String>,
         cargo: Cargo,
-        groups: Vec<NewMemberGroup>,
-        vendored: Vec<TypedProject<Package>>,
+        groups: Vec<MemberGroup>,
+        vendored: Vec<Project<Package>>,
         worktree_name: Option<String>,
         worktree_primary_abs_path: Option<PathBuf>,
     ) -> Self {
@@ -1466,7 +1434,7 @@ impl TypedProject<Workspace> {
 }
 
 // Package-specific accessors.
-impl TypedProject<Package> {
+impl Project<Package> {
     pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
 
     pub(crate) fn vendored(&self) -> &[Self] { &self.vendored }
@@ -1498,7 +1466,7 @@ impl TypedProject<Package> {
 }
 
 // NonRust-specific constructor.
-impl TypedProject<NonRust> {
+impl Project<NonRust> {
     pub(crate) fn new(
         path: PathBuf,
         name: Option<String>,
@@ -1523,13 +1491,13 @@ impl TypedProject<NonRust> {
 
 /// A generic worktree group: primary + linked checkouts.
 pub(crate) struct WorktreeGroup<Kind: ProjectKind> {
-    primary:    TypedProject<Kind>,
-    linked:     Vec<TypedProject<Kind>>,
+    primary:    Project<Kind>,
+    linked:     Vec<Project<Kind>>,
     visibility: Visibility,
 }
 
 impl<Kind: ProjectKind> WorktreeGroup<Kind> {
-    pub(crate) fn new(primary: TypedProject<Kind>, linked: Vec<TypedProject<Kind>>) -> Self {
+    pub(crate) fn new(primary: Project<Kind>, linked: Vec<Project<Kind>>) -> Self {
         Self {
             primary,
             linked,
@@ -1537,19 +1505,15 @@ impl<Kind: ProjectKind> WorktreeGroup<Kind> {
         }
     }
 
-    pub(crate) const fn primary(&self) -> &TypedProject<Kind> { &self.primary }
+    pub(crate) const fn primary(&self) -> &Project<Kind> { &self.primary }
 
-    pub(crate) const fn primary_mut(&mut self) -> &mut TypedProject<Kind> { &mut self.primary }
+    pub(crate) const fn primary_mut(&mut self) -> &mut Project<Kind> { &mut self.primary }
 
-    pub(crate) fn linked(&self) -> &[TypedProject<Kind>] { &self.linked }
+    pub(crate) fn linked(&self) -> &[Project<Kind>] { &self.linked }
 
-    pub(crate) const fn linked_mut(&mut self) -> &mut Vec<TypedProject<Kind>> { &mut self.linked }
+    pub(crate) const fn linked_mut(&mut self) -> &mut Vec<Project<Kind>> { &mut self.linked }
 
     pub(crate) const fn visibility(&self) -> Visibility { self.visibility }
-
-    pub(crate) const fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
-
-    pub(crate) const fn linked_count(&self) -> usize { self.linked.len() }
 }
 
 impl Clone for WorktreeGroup<Workspace> {
@@ -1574,9 +1538,9 @@ impl Clone for WorktreeGroup<Package> {
 
 /// The top-level enum for the project list.
 pub(crate) enum ProjectListItem {
-    Workspace(TypedProject<Workspace>),
-    Package(TypedProject<Package>),
-    NonRust(TypedProject<NonRust>),
+    Workspace(Project<Workspace>),
+    Package(Project<Package>),
+    NonRust(Project<NonRust>),
     WorkspaceWorktrees(WorktreeGroup<Workspace>),
     PackageWorktrees(WorktreeGroup<Package>),
 }
@@ -1594,26 +1558,6 @@ impl Clone for ProjectListItem {
 }
 
 impl ProjectListItem {
-    pub(crate) fn path(&self) -> &Path {
-        match self {
-            Self::Workspace(p) => p.path(),
-            Self::Package(p) => p.path(),
-            Self::NonRust(p) => p.path(),
-            Self::WorkspaceWorktrees(g) => g.primary().path(),
-            Self::PackageWorktrees(g) => g.primary().path(),
-        }
-    }
-
-    pub(crate) fn name(&self) -> Option<&str> {
-        match self {
-            Self::Workspace(p) => p.name(),
-            Self::Package(p) => p.name(),
-            Self::NonRust(p) => p.name(),
-            Self::WorkspaceWorktrees(g) => g.primary().name(),
-            Self::PackageWorktrees(g) => g.primary().name(),
-        }
-    }
-
     pub(crate) const fn visibility(&self) -> Visibility {
         match self {
             Self::Workspace(p) => p.visibility(),
@@ -1621,16 +1565,6 @@ impl ProjectListItem {
             Self::NonRust(p) => p.visibility(),
             Self::WorkspaceWorktrees(g) => g.visibility(),
             Self::PackageWorktrees(g) => g.visibility(),
-        }
-    }
-
-    pub(crate) const fn set_visibility(&mut self, v: Visibility) {
-        match self {
-            Self::Workspace(p) => p.set_visibility(v),
-            Self::Package(p) => p.set_visibility(v),
-            Self::NonRust(p) => p.set_visibility(v),
-            Self::WorkspaceWorktrees(g) => g.set_visibility(v),
-            Self::PackageWorktrees(g) => g.set_visibility(v),
         }
     }
 
@@ -1670,11 +1604,9 @@ impl ProjectListItem {
     /// Language icon for the project list.
     pub(crate) const fn lang_icon(&self) -> &'static str {
         match self {
-            Self::Workspace(_)
-            | Self::Package(_)
-            | Self::WorkspaceWorktrees(_)
-            | Self::PackageWorktrees(_) => "\u{1f980}",
-            Self::NonRust(_) => "  ",
+            Self::Workspace(_) | Self::WorkspaceWorktrees(_) => Project::<Workspace>::lang_icon(),
+            Self::Package(_) | Self::PackageWorktrees(_) => Project::<Package>::lang_icon(),
+            Self::NonRust(_) => Project::<NonRust>::lang_icon(),
         }
     }
 
@@ -1687,11 +1619,6 @@ impl ProjectListItem {
                 | Self::WorkspaceWorktrees(_)
                 | Self::PackageWorktrees(_)
         )
-    }
-
-    /// Whether this is a workspace.
-    pub(crate) const fn is_workspace(&self) -> bool {
-        matches!(self, Self::Workspace(_) | Self::WorkspaceWorktrees(_))
     }
 
     /// Check if any project in the hierarchy matches the display path and visibility.
@@ -1810,24 +1737,24 @@ impl ProjectListItem {
 
 /// Members within a workspace organized into groups.
 #[derive(Clone)]
-pub(crate) enum NewMemberGroup {
+pub(crate) enum MemberGroup {
     Named {
         name:    String,
-        members: Vec<TypedProject<Package>>,
+        members: Vec<Project<Package>>,
     },
     Inline {
-        members: Vec<TypedProject<Package>>,
+        members: Vec<Project<Package>>,
     },
 }
 
-impl NewMemberGroup {
-    pub(crate) fn members(&self) -> &[TypedProject<Package>] {
+impl MemberGroup {
+    pub(crate) fn members(&self) -> &[Project<Package>] {
         match self {
             Self::Named { members, .. } | Self::Inline { members } => members,
         }
     }
 
-    pub(crate) const fn members_mut(&mut self) -> &mut Vec<TypedProject<Package>> {
+    pub(crate) const fn members_mut(&mut self) -> &mut Vec<Project<Package>> {
         match self {
             Self::Named { members, .. } | Self::Inline { members } => members,
         }

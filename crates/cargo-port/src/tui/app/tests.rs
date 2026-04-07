@@ -22,13 +22,13 @@ use crate::project::ExampleGroup;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
-use crate::project::Project;
+use crate::project::LegacyProject;
 use crate::project::ProjectLanguage;
 use crate::project::ProjectListItem;
 use crate::project::Visibility::Dismissed;
 use crate::project::WorkspaceStatus;
 use crate::scan::BackgroundMsg;
-use crate::scan::MemberGroup;
+use crate::scan::LegacyMemberGroup;
 use crate::scan::ProjectNode;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastManager;
@@ -41,8 +41,8 @@ fn test_http_client() -> HttpClient {
     HttpClient::new(rt.handle().clone()).unwrap_or_else(|| std::process::abort())
 }
 
-fn make_project(name: Option<&str>, path: &str) -> Project {
-    Project {
+fn make_project(name: Option<&str>, path: &str) -> LegacyProject {
+    LegacyProject {
         path:                      path.to_string(),
         abs_path:                  path.to_string(),
         name:                      name.map(String::from),
@@ -60,7 +60,7 @@ fn make_project(name: Option<&str>, path: &str) -> Project {
     }
 }
 
-fn make_node(project: Project) -> ProjectNode {
+fn make_node(project: LegacyProject) -> ProjectNode {
     ProjectNode {
         project,
         groups: Vec::new(),
@@ -74,11 +74,11 @@ fn to_items(nodes: &[ProjectNode]) -> Vec<ProjectListItem> {
     crate::scan::build_project_list(nodes)
 }
 
-fn make_app(projects: Vec<Project>) -> App {
+fn make_app(projects: Vec<LegacyProject>) -> App {
     make_app_with_config(projects, &CargoPortConfig::default())
 }
 
-fn make_app_with_config(projects: Vec<Project>, cfg: &CargoPortConfig) -> App {
+fn make_app_with_config(projects: Vec<LegacyProject>, cfg: &CargoPortConfig) -> App {
     let (bg_tx, bg_rx) = mpsc::channel();
     let scan_root =
         std::env::temp_dir().join(format!("cargo-port-polish-test-{}", std::process::id()));
@@ -97,7 +97,7 @@ fn make_app_with_config(projects: Vec<Project>, cfg: &CargoPortConfig) -> App {
     app
 }
 
-fn make_non_rust_project(name: Option<&str>, path: &str) -> Project {
+fn make_non_rust_project(name: Option<&str>, path: &str) -> LegacyProject {
     let mut project = make_project(name, path);
     project.is_rust = ProjectLanguage::NonRust;
     project
@@ -312,7 +312,7 @@ fn visible_rows_workspace_with_worktrees() {
     // Primary-as-worktree with inline members
     let mut wt0 = make_node(make_project(None, "~/ws"));
     wt0.project.worktree_name = Some("ws".to_string());
-    wt0.groups = vec![MemberGroup {
+    wt0.groups = vec![LegacyMemberGroup {
         name:    String::new(),
         members: vec![member_a.clone(), member_b.clone()],
     }];
@@ -320,7 +320,7 @@ fn visible_rows_workspace_with_worktrees() {
     // Actual worktree with a named group
     let mut wt1 = make_node(make_project(None, "~/ws_feat"));
     wt1.project.worktree_name = Some("ws_feat".to_string());
-    wt1.groups = vec![MemberGroup {
+    wt1.groups = vec![LegacyMemberGroup {
         name:    "crates".to_string(),
         members: vec![member_a, member_b],
     }];
@@ -470,7 +470,7 @@ fn visible_rows_workspace_no_worktrees() {
     let member_a = make_project(Some("a"), "~/ws/a");
     let member_b = make_project(Some("b"), "~/ws/b");
     let mut root = make_node(make_project(None, "~/ws"));
-    root.groups = vec![MemberGroup {
+    root.groups = vec![LegacyMemberGroup {
         name:    String::new(),
         members: vec![member_a, member_b],
     }];
@@ -502,7 +502,7 @@ fn visible_rows_include_vendored_children() {
     let member = make_project(Some("member"), "~/ws/member");
     let vendored = make_project(Some("vendored"), "~/ws/vendor/helper");
     let mut root = make_node(make_project(None, "~/ws"));
-    root.groups = vec![MemberGroup {
+    root.groups = vec![LegacyMemberGroup {
         name:    String::new(),
         members: vec![member],
     }];
@@ -543,7 +543,7 @@ fn ci_runs_stay_on_owner_rows_not_workspace_members() {
     let member = make_project(Some("core"), "~/ws/core");
 
     let mut root = make_node(workspace.clone());
-    root.groups = vec![MemberGroup {
+    root.groups = vec![LegacyMemberGroup {
         name:    String::new(),
         members: vec![member.clone()],
     }];
@@ -569,7 +569,7 @@ fn non_owner_member_ignores_stale_ci_state_and_cannot_fetch() {
     let member = make_project(Some("core"), "~/ws/core");
 
     let mut root = make_node(workspace.clone());
-    root.groups = vec![MemberGroup {
+    root.groups = vec![LegacyMemberGroup {
         name:    String::new(),
         members: vec![member.clone()],
     }];
@@ -608,14 +608,14 @@ fn non_owner_member_ignores_stale_ci_state_and_cannot_fetch() {
 fn ci_rollup_uses_only_root_and_immediate_worktrees() {
     let mut root = make_node(make_project(Some("ws"), "~/ws"));
     let member = make_project(Some("core"), "~/ws/core");
-    root.groups = vec![MemberGroup {
+    root.groups = vec![LegacyMemberGroup {
         name:    String::new(),
         members: vec![member.clone()],
     }];
 
     let mut feature = make_node(make_project(Some("ws_feat"), "~/ws_feat"));
     feature.project.worktree_name = Some("ws_feat".to_string());
-    feature.groups = vec![MemberGroup {
+    feature.groups = vec![LegacyMemberGroup {
         name:    String::new(),
         members: vec![make_project(Some("feat_core"), "~/ws_feat/core")],
     }];
@@ -799,7 +799,7 @@ fn collapse_all_anchors_member_selection_to_root() {
     let member = make_project(Some("hana_core"), "~/rust/hana/crates/hana_core");
 
     let mut root = make_node(workspace.clone());
-    root.groups = vec![MemberGroup {
+    root.groups = vec![LegacyMemberGroup {
         name:    String::new(),
         members: vec![member.clone()],
     }];
@@ -821,7 +821,7 @@ fn expand_all_preserves_selected_project_path() {
     let member = make_project(Some("hana_core"), "~/rust/hana/crates/hana_core");
 
     let mut root = make_node(workspace.clone());
-    root.groups = vec![MemberGroup {
+    root.groups = vec![LegacyMemberGroup {
         name:    String::new(),
         members: vec![member.clone()],
     }];
@@ -847,7 +847,7 @@ fn lint_runtime_snapshot_uses_workspace_root_not_members() {
     let member_b = make_project(Some("hana_ui"), "~/rust/hana/crates/hana_ui");
 
     let mut root = make_node(workspace.clone());
-    root.groups = vec![MemberGroup {
+    root.groups = vec![LegacyMemberGroup {
         name:    String::new(),
         members: vec![member_a.clone(), member_b.clone()],
     }];
@@ -1023,7 +1023,10 @@ fn project_refresh_updates_selected_tree_project_targets() {
     app.list_state.select(Some(0));
     app.sync_selected_project();
 
-    assert_eq!(app.selected_project().map(Project::example_count), Some(0));
+    assert_eq!(
+        app.selected_project().map(LegacyProject::example_count),
+        Some(0)
+    );
     assert!(!app.tabbable_panes().contains(&PaneId::Targets));
 
     let mut refreshed = project;
@@ -1035,7 +1038,10 @@ fn project_refresh_updates_selected_tree_project_targets() {
     assert!(app.handle_project_refreshed(&refreshed));
     app.sync_selected_project();
 
-    assert_eq!(app.selected_project().map(Project::example_count), Some(1));
+    assert_eq!(
+        app.selected_project().map(LegacyProject::example_count),
+        Some(1)
+    );
     assert!(app.tabbable_panes().contains(&PaneId::Targets));
 }
 
@@ -1154,7 +1160,7 @@ fn zero_byte_update_marks_deleted_child_member() {
     member.abs_path = member_dir.to_string_lossy().to_string();
 
     let mut root = make_node(workspace.clone());
-    root.groups = vec![MemberGroup {
+    root.groups = vec![LegacyMemberGroup {
         name:    String::new(),
         members: vec![member.clone()],
     }];
@@ -1250,7 +1256,7 @@ fn lint_rollup_prefers_running_root_over_member_history() {
     let mut root = make_node(make_project(None, "~/ws"));
     let member = make_project(Some("a"), "~/ws/a");
 
-    root.groups = vec![MemberGroup {
+    root.groups = vec![LegacyMemberGroup {
         name:    String::new(),
         members: vec![member],
     }];
@@ -1319,14 +1325,14 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
 
     let mut primary = make_node(make_project(None, "~/ws"));
     primary.project.worktree_name = Some("ws".to_string());
-    primary.groups = vec![MemberGroup {
+    primary.groups = vec![LegacyMemberGroup {
         name:    String::new(),
         members: vec![member_a],
     }];
 
     let mut feature = make_node(make_project(None, "~/ws_feat"));
     feature.project.worktree_name = Some("ws_feat".to_string());
-    feature.groups = vec![MemberGroup {
+    feature.groups = vec![LegacyMemberGroup {
         name:    String::new(),
         members: vec![member_b],
     }];

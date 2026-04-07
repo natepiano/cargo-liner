@@ -30,9 +30,9 @@ impl App {
         match self.focused_pane {
             PaneId::Toasts => self.focused_toast_id().map(DismissTarget::Toast),
             PaneId::ProjectList => {
-                let project = self.selected_project()?;
-                if self.is_deleted(&project.path) {
-                    Some(DismissTarget::DeletedProject(project.path.clone()))
+                let display_path = self.selected_display_path()?;
+                if self.is_deleted(&display_path) {
+                    Some(DismissTarget::DeletedProject(display_path))
                 } else {
                     None
                 }

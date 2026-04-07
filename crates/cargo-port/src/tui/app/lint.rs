@@ -4,7 +4,7 @@ use super::types::App;
 use super::types::LintRollupKey;
 use super::types::VisibleRow;
 use crate::lint::LintStatus;
-use crate::project::Project;
+use crate::project::LegacyProject;
 use crate::project::ProjectListItem;
 
 impl App {
@@ -128,7 +128,7 @@ impl App {
                     .chain(
                         wtg.linked()
                             .iter()
-                            .map(crate::project::TypedProject::display_path),
+                            .map(crate::project::Project::display_path),
                     )
                     .collect()
             },
@@ -136,7 +136,7 @@ impl App {
                 .chain(
                     wtg.linked()
                         .iter()
-                        .map(crate::project::TypedProject::display_path),
+                        .map(crate::project::Project::display_path),
                 )
                 .collect(),
             _ => vec![item.display_path()],
@@ -173,7 +173,7 @@ impl App {
 
     /// Lint icon frame for the current animation state, or a blank space if lint is
     /// disabled or no log exists.
-    pub fn lint_icon(&self, project: &Project) -> &'static str {
+    pub fn lint_icon(&self, project: &LegacyProject) -> &'static str {
         use crate::constants::LINT_NO_LOG;
 
         if !self.lint_enabled() {
@@ -213,7 +213,7 @@ impl App {
         status.icon().frame_at(self.animation_elapsed())
     }
 
-    pub fn selected_lint_icon(&self, project: &Project) -> Option<&'static str> {
+    pub fn selected_lint_icon(&self, project: &LegacyProject) -> Option<&'static str> {
         if !self.lint_enabled() {
             return None;
         }

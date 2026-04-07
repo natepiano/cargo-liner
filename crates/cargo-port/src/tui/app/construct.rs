@@ -30,7 +30,7 @@ use crate::http::HttpClient;
 use crate::keymap;
 use crate::lint;
 use crate::lint::RuntimeHandle;
-use crate::project::Project;
+use crate::project::LegacyProject;
 use crate::project::ProjectLanguage::Rust;
 use crate::project::ProjectListItem;
 use crate::scan;
@@ -94,7 +94,7 @@ struct AppInit {
 impl AppInit {
     fn new(
         scan_root: &Path,
-        projects: &[Project],
+        projects: &[LegacyProject],
         bg_tx: &mpsc::Sender<BackgroundMsg>,
         cfg: &CargoPortConfig,
         http_client: &HttpClient,
@@ -132,7 +132,7 @@ impl AppInit {
 
 struct CoreInputs {
     scan_root:       PathBuf,
-    projects:        Vec<Project>,
+    projects:        Vec<LegacyProject>,
     http_client:     HttpClient,
     bg_tx:           mpsc::Sender<BackgroundMsg>,
     bg_rx:           Receiver<BackgroundMsg>,
@@ -152,9 +152,9 @@ impl App {
     }
 
     fn filter_tree_projects(
-        projects: &[Project],
+        projects: &[LegacyProject],
         include_non_rust: NonRustInclusion,
-    ) -> Vec<Project> {
+    ) -> Vec<LegacyProject> {
         if include_non_rust.includes_non_rust() {
             projects.to_vec()
         } else {
@@ -166,13 +166,13 @@ impl App {
         }
     }
 
-    pub fn tree_projects_snapshot(&self) -> Vec<Project> {
+    pub fn tree_projects_snapshot(&self) -> Vec<LegacyProject> {
         Self::filter_tree_projects(&self.all_projects, self.include_non_rust())
     }
 
     pub fn new(
         scan_root: PathBuf,
-        projects: Vec<Project>,
+        projects: Vec<LegacyProject>,
         bg_tx: mpsc::Sender<BackgroundMsg>,
         bg_rx: Receiver<BackgroundMsg>,
         cfg: &CargoPortConfig,

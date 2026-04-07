@@ -40,8 +40,8 @@ use crate::ci::Conclusion;
 use crate::constants::WORKTREE;
 use crate::project;
 use crate::project::GitOrigin;
-use crate::project::Project;
-use crate::project::ProjectLanguage::Rust;
+use crate::project::LegacyProject;
+use crate::project::ProjectListItem;
 use crate::scan;
 
 #[derive(Clone, Copy)]
@@ -357,7 +357,7 @@ fn render_unreachable_overlay(frame: &mut Frame, area: Rect, msg: &str) {
 fn render_empty_ci_panel(
     frame: &mut Frame,
     app: &App,
-    project: Option<&Project>,
+    project: Option<&LegacyProject>,
     selected_has_ci_owner: bool,
     area: Rect,
 ) {
@@ -701,7 +701,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let context = app.input_context();
     let enter_action = app.enter_action();
-    let is_rust = app.selected_project().is_some_and(|p| p.is_rust == Rust);
+    let is_rust = app.selected_item().is_some_and(ProjectListItem::is_rust);
     let groups =
         super::shortcuts::for_status_bar(context, enter_action, is_rust, &app.current_keymap);
 
@@ -832,7 +832,7 @@ fn render_root_item(
 /// Build a `ListItem` for a child project (workspace member or worktree).
 fn render_child_item(
     app: &App,
-    project: &Project,
+    project: &LegacyProject,
     name: &str,
     child_sorted: &[u64],
     prefix: &'static str,
@@ -1157,7 +1157,7 @@ fn render_wt_vendored_item(
             };
             ws.vendored()
                 .get(vendored_index)
-                .map(crate::project::TypedProject::display_name)
+                .map(crate::project::Project::display_name)
                 .unwrap_or_default()
         },
         crate::project::ProjectListItem::PackageWorktrees(wtg) => {
@@ -1170,7 +1170,7 @@ fn render_wt_vendored_item(
             };
             pkg.vendored()
                 .get(vendored_index)
-                .map(crate::project::TypedProject::display_name)
+                .map(crate::project::Project::display_name)
                 .unwrap_or_default()
         },
         _ => String::new(),

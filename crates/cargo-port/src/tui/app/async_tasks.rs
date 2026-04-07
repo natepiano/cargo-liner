@@ -27,10 +27,10 @@ use crate::lint::LintStatus;
 use crate::lint::RegisterProjectRequest;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
+use crate::project::LegacyProject;
 use crate::project::Project;
 use crate::project::ProjectLanguage::Rust;
 use crate::project::ProjectListItem;
-use crate::project::TypedProject;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Visible;
 use crate::project::Workspace;
@@ -90,7 +90,7 @@ impl App {
                     .flat_map(|g| {
                         g.members()
                             .iter()
-                            .map(crate::project::TypedProject::display_path)
+                            .map(crate::project::Project::display_path)
                     })
                     .collect(),
                 crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
@@ -100,7 +100,7 @@ impl App {
                             ws.groups().iter().flat_map(|g| {
                                 g.members()
                                     .iter()
-                                    .map(crate::project::TypedProject::display_path)
+                                    .map(crate::project::Project::display_path)
                             })
                         })
                         .collect()
@@ -404,7 +404,7 @@ impl App {
         self.lint_cache_usage = crate::lint::retained_cache_usage(cache_size_bytes);
     }
 
-    pub(super) fn register_project_background_services(&self, project: &Project) {
+    pub(super) fn register_project_background_services(&self, project: &LegacyProject) {
         let started = Instant::now();
         let abs_path = PathBuf::from(&project.abs_path);
         let repo_root = crate::project::git_repo_root(&abs_path);
@@ -475,7 +475,7 @@ impl App {
         });
     }
 
-    pub(super) fn lint_runtime_root_projects(&self) -> Vec<&Project> {
+    pub(super) fn lint_runtime_root_projects(&self) -> Vec<&LegacyProject> {
         let mut seen = HashSet::new();
         let mut projects = Vec::new();
 
@@ -486,7 +486,7 @@ impl App {
                         .chain(
                             wtg.linked()
                                 .iter()
-                                .map(crate::project::TypedProject::display_path),
+                                .map(crate::project::Project::display_path),
                         )
                         .collect::<Vec<_>>()
                 },
@@ -495,7 +495,7 @@ impl App {
                         .chain(
                             wtg.linked()
                                 .iter()
-                                .map(crate::project::TypedProject::display_path),
+                                .map(crate::project::Project::display_path),
                         )
                         .collect::<Vec<_>>()
                 },
@@ -1290,7 +1290,7 @@ impl App {
                     }
                 },
                 crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
-                    let all_ws: Vec<&TypedProject<Workspace>> = std::iter::once(wtg.primary())
+                    let all_ws: Vec<&Project<Workspace>> = std::iter::once(wtg.primary())
                         .chain(wtg.linked().iter())
                         .collect();
                     for ws in &all_ws {
@@ -1379,7 +1379,7 @@ impl App {
         }
     }
 
-    pub(super) fn handle_project_discovered(&mut self, project: Project) -> bool {
+    pub(super) fn handle_project_discovered(&mut self, project: LegacyProject) -> bool {
         if self
             .all_projects
             .iter()
@@ -1396,7 +1396,7 @@ impl App {
         true
     }
 
-    pub(super) fn handle_project_refreshed(&mut self, project: &Project) -> bool {
+    pub(super) fn handle_project_refreshed(&mut self, project: &LegacyProject) -> bool {
         let project_path = project.path.clone();
         let updated_in_all_projects = self
             .all_projects

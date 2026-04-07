@@ -31,13 +31,13 @@ use super::project::Cargo;
 use super::project::GitInfo;
 use super::project::GitPathState;
 use super::project::GitRepoPresence;
-use super::project::NewMemberGroup;
+use super::project::LegacyProject;
+use super::project::MemberGroup;
 use super::project::NonRust;
 use super::project::Package;
 use super::project::Project;
 use super::project::ProjectLanguage;
 use super::project::ProjectListItem;
-use super::project::TypedProject;
 use super::project::Workspace;
 use super::project::WorkspaceStatus;
 use super::project::WorktreeGroup;
@@ -46,25 +46,21 @@ use super::project::WorktreeGroup;
 /// The "inline" group (empty name) contains members directly under the workspace root
 /// or under the primary `crates/` directory -- these are shown without a folder header.
 #[derive(Clone)]
-pub(crate) struct MemberGroup {
+pub(crate) struct LegacyMemberGroup {
     pub name:    String,
-    pub members: Vec<Project>,
+    pub members: Vec<LegacyProject>,
 }
 
 #[derive(Clone)]
 pub(crate) struct ProjectNode {
-    pub project:   Project,
-    pub groups:    Vec<MemberGroup>,
+    pub project:   LegacyProject,
+    pub groups:    Vec<LegacyMemberGroup>,
     pub worktrees: Vec<Self>,
-    pub vendored:  Vec<Project>,
+    pub vendored:  Vec<LegacyProject>,
 }
 
 impl ProjectNode {
     pub(crate) fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members.is_empty()) }
-
-    pub(crate) fn has_children(&self) -> bool {
-        self.has_members() || !self.vendored.is_empty() || !self.worktrees.is_empty()
-    }
 }
 
 /// A flattened entry for fuzzy search.
@@ -118,10 +114,10 @@ pub(crate) enum BackgroundMsg {
         description: Option<String>,
     },
     ProjectDiscovered {
-        project: Project,
+        project: LegacyProject,
     },
     ProjectRefreshed {
-        project: Project,
+        project: LegacyProject,
     },
     LintStatus {
         path:   String,
@@ -530,7 +526,7 @@ pub(crate) fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
-pub(crate) fn build_tree(projects: &[Project], inline_dirs: &[String]) -> Vec<ProjectNode> {
+pub(crate) fn build_tree(projects: &[LegacyProject], inline_dirs: &[String]) -> Vec<ProjectNode> {
     let workspace_paths: Vec<String> = projects
         .iter()
         .filter(|p| p.is_workspace())
@@ -555,7 +551,7 @@ pub(crate) fn build_tree(projects: &[Project], inline_dirs: &[String]) -> Vec<Pr
     for (i, project) in projects.iter().enumerate() {
         if top_level_workspaces.contains(&i) {
             let member_paths = workspace_member_paths(project, projects);
-            let mut all_members: Vec<Project> = projects
+            let mut all_members: Vec<LegacyProject> = projects
                 .iter()
                 .enumerate()
                 .filter(|(j, p)| {
@@ -610,7 +606,10 @@ pub(crate) fn build_tree(projects: &[Project], inline_dirs: &[String]) -> Vec<Pr
     nodes
 }
 
-fn workspace_member_paths(workspace: &Project, projects: &[Project]) -> HashSet<String> {
+fn workspace_member_paths(
+    workspace: &LegacyProject,
+    projects: &[LegacyProject],
+) -> HashSet<String> {
     let manifest = Path::new(&workspace.abs_path).join("Cargo.toml");
     let Some((members, excludes)) = workspace_member_patterns(&manifest) else {
         return projects
@@ -673,7 +672,7 @@ fn workspace_member_patterns(manifest_path: &Path) -> Option<(Vec<String>, Vec<S
     Some((members, excludes))
 }
 
-fn workspace_relative_path(workspace: &Project, project: &Project) -> Option<String> {
+fn workspace_relative_path(workspace: &LegacyProject, project: &LegacyProject) -> Option<String> {
     Path::new(&project.abs_path)
         .strip_prefix(&workspace.abs_path)
         .ok()
@@ -862,7 +861,7 @@ fn extract_vendored(nodes: &mut Vec<ProjectNode>) {
     }
 
     // Extract vendored projects (iterate in reverse to preserve indices)
-    let mut vendored_projects: Vec<(usize, Option<usize>, Project)> = Vec::new();
+    let mut vendored_projects: Vec<(usize, Option<usize>, LegacyProject)> = Vec::new();
     let mut remove_indices: Vec<usize> = vendored_map.iter().map(|&(vi, _, _)| vi).collect();
     remove_indices.sort_unstable();
     remove_indices.dedup();
@@ -902,12 +901,12 @@ fn extract_vendored(nodes: &mut Vec<ProjectNode>) {
 
 pub(crate) fn group_members(
     workspace_path: &str,
-    members: Vec<Project>,
+    members: Vec<LegacyProject>,
     inline_dirs: &[String],
-) -> Vec<MemberGroup> {
+) -> Vec<LegacyMemberGroup> {
     let prefix = format!("{workspace_path}/");
 
-    let mut group_map: HashMap<String, Vec<Project>> = HashMap::new();
+    let mut group_map: HashMap<String, Vec<LegacyProject>> = HashMap::new();
 
     for member in members {
         let relative = member.path.strip_prefix(&prefix).unwrap_or(&member.path);
@@ -924,9 +923,9 @@ pub(crate) fn group_members(
         group_map.entry(group_name).or_default().push(member);
     }
 
-    let mut groups: Vec<MemberGroup> = group_map
+    let mut groups: Vec<LegacyMemberGroup> = group_map
         .into_iter()
-        .map(|(name, members)| MemberGroup { name, members })
+        .map(|(name, members)| LegacyMemberGroup { name, members })
         .collect();
 
     // Sort: named directories first (alphabetically), then inline group last
@@ -1001,44 +1000,28 @@ pub(crate) fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
 
 // ── New type system: build_project_list ────────────────────────────
 
-/// Convert an old `Project` into a `TypedProject<Package>`.
-fn old_project_to_package(p: &Project) -> TypedProject<Package> {
-    TypedProject::<Package>::new(
+/// Convert an old `LegacyProject` into a `Project<Package>`.
+fn old_project_to_package(p: &LegacyProject) -> Project<Package> {
+    Project::<Package>::new(
         PathBuf::from(&p.abs_path),
         p.name.clone(),
-        Cargo::new(
-            p.version.clone(),
-            p.description.clone(),
-            p.types.clone(),
-            p.examples.clone(),
-            p.benches.clone(),
-            p.test_count,
-            p.local_dependency_paths.clone(),
-        ),
+        Cargo::new(p.types.clone(), p.examples.clone(), p.benches.clone()),
         Vec::new(),
         p.worktree_name.clone(),
         p.worktree_primary_abs_path.as_ref().map(PathBuf::from),
     )
 }
 
-/// Convert an old `Project` into a `TypedProject<Workspace>`.
+/// Convert an old `LegacyProject` into a `Project<Workspace>`.
 fn old_project_to_workspace(
-    p: &Project,
-    groups: Vec<NewMemberGroup>,
-    vendored: Vec<TypedProject<Package>>,
-) -> TypedProject<Workspace> {
-    TypedProject::<Workspace>::new(
+    p: &LegacyProject,
+    groups: Vec<MemberGroup>,
+    vendored: Vec<Project<Package>>,
+) -> Project<Workspace> {
+    Project::<Workspace>::new(
         PathBuf::from(&p.abs_path),
         p.name.clone(),
-        Cargo::new(
-            p.version.clone(),
-            p.description.clone(),
-            p.types.clone(),
-            p.examples.clone(),
-            p.benches.clone(),
-            p.test_count,
-            p.local_dependency_paths.clone(),
-        ),
+        Cargo::new(p.types.clone(), p.examples.clone(), p.benches.clone()),
         groups,
         vendored,
         p.worktree_name.clone(),
@@ -1046,9 +1029,9 @@ fn old_project_to_workspace(
     )
 }
 
-/// Convert an old `Project` into a `TypedProject<NonRust>`.
-fn old_project_to_nonrust(p: &Project) -> TypedProject<NonRust> {
-    TypedProject::<NonRust>::new(
+/// Convert an old `LegacyProject` into a `Project<NonRust>`.
+fn old_project_to_nonrust(p: &LegacyProject) -> Project<NonRust> {
+    Project::<NonRust>::new(
         PathBuf::from(&p.abs_path),
         p.name.clone(),
         p.worktree_name.clone(),
@@ -1056,17 +1039,17 @@ fn old_project_to_nonrust(p: &Project) -> TypedProject<NonRust> {
     )
 }
 
-/// Convert old `MemberGroup`s to new `NewMemberGroup`s.
-fn convert_member_groups(groups: &[MemberGroup]) -> Vec<NewMemberGroup> {
+/// Convert old `LegacyMemberGroup`s to new `MemberGroup`s.
+fn convert_member_groups(groups: &[LegacyMemberGroup]) -> Vec<MemberGroup> {
     groups
         .iter()
         .map(|g| {
-            let members: Vec<TypedProject<Package>> =
+            let members: Vec<Project<Package>> =
                 g.members.iter().map(old_project_to_package).collect();
             if g.name.is_empty() {
-                NewMemberGroup::Inline { members }
+                MemberGroup::Inline { members }
             } else {
-                NewMemberGroup::Named {
+                MemberGroup::Named {
                     name: g.name.clone(),
                     members,
                 }
@@ -1105,7 +1088,7 @@ pub(crate) fn build_project_list(nodes: &[ProjectNode]) -> Vec<ProjectListItem> 
                         .map(old_project_to_package)
                         .collect(),
                 );
-                let linked: Vec<TypedProject<Workspace>> = node.worktrees[1..]
+                let linked: Vec<Project<Workspace>> = node.worktrees[1..]
                     .iter()
                     .map(|wt| {
                         old_project_to_workspace(
@@ -1120,7 +1103,7 @@ pub(crate) fn build_project_list(nodes: &[ProjectNode]) -> Vec<ProjectListItem> 
                 )));
             } else {
                 let primary = old_project_to_package(&primary_wt.project);
-                let linked: Vec<TypedProject<Package>> = node.worktrees[1..]
+                let linked: Vec<Project<Package>> = node.worktrees[1..]
                     .iter()
                     .map(|wt| old_project_to_package(&wt.project))
                     .collect();
@@ -1130,7 +1113,7 @@ pub(crate) fn build_project_list(nodes: &[ProjectNode]) -> Vec<ProjectListItem> 
             }
         } else if is_workspace {
             let groups = convert_member_groups(&node.groups);
-            let vendored: Vec<TypedProject<Package>> =
+            let vendored: Vec<Project<Package>> =
                 node.vendored.iter().map(old_project_to_package).collect();
             items.push(ProjectListItem::Workspace(old_project_to_workspace(
                 &node.project,
@@ -1433,7 +1416,7 @@ fn discover_non_rust_project(
     disk_entries: &mut Vec<(String, PathBuf)>,
     stats: &mut Phase1DiscoverStats,
 ) {
-    let project = Project::from_git_dir(entry_path);
+    let project = LegacyProject::from_git_dir(entry_path);
     let path = project.path.clone();
     let abs_path = PathBuf::from(&project.abs_path);
     stats.projects += 1;
@@ -1499,7 +1482,7 @@ fn phase1_discover(
             if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
                 stats.manifests += 1;
                 let manifest_started = std::time::Instant::now();
-                let Ok(project) = Project::from_cargo_toml(entry.path()) else {
+                let Ok(project) = LegacyProject::from_cargo_toml(entry.path()) else {
                     continue;
                 };
                 perf_log::log_duration(
@@ -2042,8 +2025,8 @@ mod tests {
         worktree_name: Option<&str>,
         primary_abs: Option<&str>,
         is_workspace: WorkspaceStatus,
-    ) -> Project {
-        Project {
+    ) -> LegacyProject {
+        LegacyProject {
             path: path.to_string(),
             abs_path: abs_path.to_string(),
             name: name.map(String::from),
@@ -2061,7 +2044,7 @@ mod tests {
         }
     }
 
-    fn make_node(project: Project) -> ProjectNode {
+    fn make_node(project: LegacyProject) -> ProjectNode {
         ProjectNode {
             project,
             groups: Vec::new(),
@@ -2070,7 +2053,10 @@ mod tests {
         }
     }
 
-    fn make_node_with_groups(project: Project, groups: Vec<MemberGroup>) -> ProjectNode {
+    fn make_node_with_groups(
+        project: LegacyProject,
+        groups: Vec<LegacyMemberGroup>,
+    ) -> ProjectNode {
         ProjectNode {
             project,
             groups,
@@ -2173,7 +2159,7 @@ mod tests {
             Some("/home/ws"),
             WorkspaceStatus::Standalone,
         );
-        let groups = vec![MemberGroup {
+        let groups = vec![LegacyMemberGroup {
             name:    String::new(),
             members: vec![member_a, member_b],
         }];

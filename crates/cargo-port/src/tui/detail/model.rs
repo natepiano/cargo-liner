@@ -6,8 +6,9 @@ use crate::constants::SYNC_UP;
 use crate::project::ExampleGroup;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
-use crate::project::Project;
+use crate::project::LegacyProject;
 use crate::project::ProjectLanguage;
+use crate::project::ProjectListItem;
 use crate::project::ProjectType;
 use crate::tui::app::App;
 
@@ -23,7 +24,7 @@ pub struct ProjectCounts {
 }
 
 impl ProjectCounts {
-    pub fn add_project(&mut self, project: &Project) {
+    pub fn add_project(&mut self, project: &LegacyProject) {
         if project.is_workspace() {
             self.workspaces += 1;
         }
@@ -417,9 +418,9 @@ pub struct DetailInfo {
 }
 
 /// Resolve the title shown in the `Package` column header.
-fn resolve_package_title(app: &App, project: &Project) -> String {
+fn resolve_package_title(app: &App, project: &LegacyProject) -> String {
     if project.is_rust == ProjectLanguage::NonRust {
-        return "Project".to_string();
+        return "LegacyProject".to_string();
     }
     if app.is_vendored_path(&project.path) {
         return "Vendored Crate".to_string();
@@ -472,7 +473,7 @@ struct GitDetailFields {
     last_commit:    Option<String>,
 }
 
-fn build_git_detail_fields(app: &App, project: &Project) -> GitDetailFields {
+fn build_git_detail_fields(app: &App, project: &LegacyProject) -> GitDetailFields {
     let git = app.git_info.get(&project.path);
     let branch = git.and_then(|info| info.branch.clone());
     let sync = git
@@ -521,10 +522,7 @@ fn build_git_detail_fields(app: &App, project: &Project) -> GitDetailFields {
 }
 
 /// Resolve worktree group item from the selected item if this project is a worktree group root.
-fn worktree_group_item<'a>(
-    app: &'a App,
-    project: &Project,
-) -> Option<&'a crate::project::ProjectListItem> {
+fn worktree_group_item<'a>(app: &'a App, project: &LegacyProject) -> Option<&'a ProjectListItem> {
     let item = app.selected_item()?;
     let is_group = matches!(
         item,
@@ -535,7 +533,7 @@ fn worktree_group_item<'a>(
 }
 
 /// Collect worktree names from a worktree group item.
-fn worktree_names_from_item(item: &crate::project::ProjectListItem) -> Vec<String> {
+fn worktree_names_from_item(item: &ProjectListItem) -> Vec<String> {
     match item {
         crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
             .chain(wtg.linked().iter())
@@ -557,7 +555,7 @@ fn worktree_names_from_item(item: &crate::project::ProjectListItem) -> Vec<Strin
     }
 }
 
-pub fn build_detail_info(app: &App, project: &Project) -> DetailInfo {
+pub fn build_detail_info(app: &App, project: &LegacyProject) -> DetailInfo {
     let mut counts = app.workspace_counts(project).unwrap_or_else(|| {
         let mut counts = ProjectCounts::default();
         counts.add_project(project);

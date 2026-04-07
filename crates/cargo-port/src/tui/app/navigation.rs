@@ -12,10 +12,10 @@ use super::types::ExpandKey;
 use super::types::SearchMode;
 use super::types::VisibleRow;
 use crate::constants::WORKTREE;
+use crate::project::LegacyProject;
 use crate::project::Package;
 use crate::project::Project;
 use crate::project::ProjectListItem;
-use crate::project::TypedProject;
 use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::tui;
@@ -55,22 +55,14 @@ impl App {
         let live = match item {
             ProjectListItem::WorkspaceWorktrees(wtg) => {
                 let count = std::iter::once(wtg.primary().visibility())
-                    .chain(
-                        wtg.linked()
-                            .iter()
-                            .map(crate::project::TypedProject::visibility),
-                    )
+                    .chain(wtg.linked().iter().map(crate::project::Project::visibility))
                     .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
                     .count();
                 if count <= 1 { 0 } else { count }
             },
             ProjectListItem::PackageWorktrees(wtg) => {
                 let count = std::iter::once(wtg.primary().visibility())
-                    .chain(
-                        wtg.linked()
-                            .iter()
-                            .map(crate::project::TypedProject::visibility),
-                    )
+                    .chain(wtg.linked().iter().map(crate::project::Project::visibility))
                     .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
                     .count();
                 if count <= 1 { 0 } else { count }
@@ -170,7 +162,7 @@ impl App {
         }
     }
 
-    pub fn selected_project(&self) -> Option<&Project> {
+    pub fn selected_project(&self) -> Option<&LegacyProject> {
         if self.is_searching() && !self.search_query.is_empty() {
             let selected = self.list_state.selected()?;
             let flat_idx = *self.filtered.get(selected)?;
@@ -183,7 +175,7 @@ impl App {
     }
 
     /// Resolve the display path of the currently selected row using `project_list_items`.
-    fn selected_display_path(&self) -> Option<String> {
+    pub(super) fn selected_display_path(&self) -> Option<String> {
         let rows = self.visible_rows();
         let selected = self.list_state.selected()?;
         let row = rows.get(selected)?;
@@ -218,14 +210,13 @@ impl App {
             } => {
                 let item = self.project_list_items.get(node_index)?;
                 match item {
-                    ProjectListItem::Workspace(ws) => ws
-                        .vendored()
-                        .get(vendored_index)
-                        .map(TypedProject::display_path),
+                    ProjectListItem::Workspace(ws) => {
+                        ws.vendored().get(vendored_index).map(Project::display_path)
+                    },
                     ProjectListItem::Package(pkg) => pkg
                         .vendored()
                         .get(vendored_index)
-                        .map(TypedProject::display_path),
+                        .map(Project::display_path),
                     _ => None,
                 }
             },
@@ -299,14 +290,14 @@ impl App {
                 if wi == 0 {
                     Some(wtg.primary().display_path())
                 } else {
-                    wtg.linked().get(wi - 1).map(TypedProject::display_path)
+                    wtg.linked().get(wi - 1).map(Project::display_path)
                 }
             },
             ProjectListItem::PackageWorktrees(wtg) => {
                 if wi == 0 {
                     Some(wtg.primary().display_path())
                 } else {
-                    wtg.linked().get(wi - 1).map(TypedProject::display_path)
+                    wtg.linked().get(wi - 1).map(Project::display_path)
                 }
             },
             _ => None,
@@ -327,7 +318,7 @@ impl App {
                     wtg.linked().get(wi - 1)?
                 };
                 let group = ws.groups().get(gi)?;
-                group.members().get(mi).map(TypedProject::display_path)
+                group.members().get(mi).map(Project::display_path)
             },
             _ => None,
         }
@@ -345,7 +336,7 @@ impl App {
                 } else {
                     wtg.linked().get(wi - 1)?
                 };
-                ws.vendored().get(vi).map(TypedProject::display_path)
+                ws.vendored().get(vi).map(Project::display_path)
             },
             ProjectListItem::PackageWorktrees(wtg) => {
                 let pkg = if wi == 0 {
@@ -353,7 +344,7 @@ impl App {
                 } else {
                     wtg.linked().get(wi - 1)?
                 };
-                pkg.vendored().get(vi).map(TypedProject::display_path)
+                pkg.vendored().get(vi).map(Project::display_path)
             },
             _ => None,
         }
@@ -668,7 +659,7 @@ impl App {
                     }
                 },
                 ProjectListItem::WorkspaceWorktrees(wtg) => {
-                    let all_ws: Vec<&TypedProject<Workspace>> = std::iter::once(wtg.primary())
+                    let all_ws: Vec<&Project<Workspace>> = std::iter::once(wtg.primary())
                         .chain(wtg.linked().iter())
                         .collect();
                     for (wi, ws) in all_ws.iter().enumerate() {
@@ -765,7 +756,7 @@ impl App {
                 },
                 ProjectListItem::NonRust(_) => {},
                 ProjectListItem::WorkspaceWorktrees(wtg) => {
-                    let all_ws: Vec<&TypedProject<Workspace>> = std::iter::once(wtg.primary())
+                    let all_ws: Vec<&Project<Workspace>> = std::iter::once(wtg.primary())
                         .chain(wtg.linked().iter())
                         .collect();
                     for (wi, ws) in all_ws.iter().enumerate() {
@@ -792,7 +783,7 @@ impl App {
                     }
                 },
                 ProjectListItem::PackageWorktrees(wtg) => {
-                    let all_pkg: Vec<&TypedProject<Package>> = std::iter::once(wtg.primary())
+                    let all_pkg: Vec<&Project<Package>> = std::iter::once(wtg.primary())
                         .chain(wtg.linked().iter())
                         .collect();
                     for (wi, pkg) in all_pkg.iter().enumerate() {

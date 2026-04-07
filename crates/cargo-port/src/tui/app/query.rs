@@ -16,10 +16,10 @@ use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
+use crate::project::LegacyProject;
 use crate::project::Project;
 use crate::project::ProjectLanguage::Rust;
 use crate::project::ProjectListItem;
-use crate::project::TypedProject;
 use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::tui::detail::DetailField;
@@ -105,7 +105,7 @@ impl App {
         self.prune_toasts();
     }
 
-    pub fn lint_is_watchable(&self, project: &Project) -> bool {
+    pub fn lint_is_watchable(&self, project: &LegacyProject) -> bool {
         if !self.lint_enabled() {
             return false;
         }
@@ -117,7 +117,7 @@ impl App {
         )
     }
 
-    pub fn bottom_panel_available(&self, project: &Project) -> bool {
+    pub fn bottom_panel_available(&self, project: &LegacyProject) -> bool {
         let has_ci = self.is_ci_owner_path(&project.path)
             && (self
                 .ci_state_for(project)
@@ -174,7 +174,7 @@ impl App {
         }
     }
 
-    pub fn workspace_counts(&self, project: &Project) -> Option<ProjectCounts> {
+    pub fn workspace_counts(&self, project: &LegacyProject) -> Option<ProjectCounts> {
         for item in &self.project_list_items {
             match item {
                 ProjectListItem::Workspace(ws) if ws.display_path() == project.path => {
@@ -193,7 +193,7 @@ impl App {
                     return Some(counts);
                 },
                 ProjectListItem::WorkspaceWorktrees(wtg) => {
-                    let all_ws: Vec<&TypedProject<Workspace>> = std::iter::once(wtg.primary())
+                    let all_ws: Vec<&Project<Workspace>> = std::iter::once(wtg.primary())
                         .chain(wtg.linked().iter())
                         .collect();
                     for ws in &all_ws {
@@ -224,14 +224,14 @@ impl App {
             .any(|item| item.has_project_with_visibility(path, Visibility::Deleted))
     }
 
-    pub fn formatted_disk(&self, project: &Project) -> String {
+    pub fn formatted_disk(&self, project: &LegacyProject) -> String {
         match self.disk_usage.get(&project.path) {
             Some(&bytes) => crate::tui::render::format_bytes(bytes),
             None => crate::tui::render::format_bytes(0),
         }
     }
 
-    pub fn selected_ci_project(&self) -> Option<&Project> {
+    pub fn selected_ci_project(&self) -> Option<&LegacyProject> {
         self.selected_project()
             .filter(|project| self.is_ci_owner_path(&project.path))
     }
@@ -241,13 +241,13 @@ impl App {
             .and_then(|project| self.ci_state.get(&project.path))
     }
 
-    pub fn ci_for(&self, project: &Project) -> Option<Conclusion> {
+    pub fn ci_for(&self, project: &LegacyProject) -> Option<Conclusion> {
         self.ci_state_for(project)
             .and_then(|_| self.latest_ci_run_for_path(&project.path))
             .map(|run| run.conclusion)
     }
 
-    pub fn ci_state_for(&self, project: &Project) -> Option<&CiState> {
+    pub fn ci_state_for(&self, project: &LegacyProject) -> Option<&CiState> {
         self.is_ci_owner_path(&project.path)
             .then(|| self.ci_state.get(&project.path))
             .flatten()
@@ -260,22 +260,14 @@ impl App {
         match item {
             ProjectListItem::WorkspaceWorktrees(wtg) => {
                 let live = std::iter::once(wtg.primary().visibility())
-                    .chain(
-                        wtg.linked()
-                            .iter()
-                            .map(crate::project::TypedProject::visibility),
-                    )
+                    .chain(wtg.linked().iter().map(crate::project::Project::visibility))
                     .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
                     .count();
                 if live <= 1 { 0 } else { live }
             },
             ProjectListItem::PackageWorktrees(wtg) => {
                 let live = std::iter::once(wtg.primary().visibility())
-                    .chain(
-                        wtg.linked()
-                            .iter()
-                            .map(crate::project::TypedProject::visibility),
-                    )
+                    .chain(wtg.linked().iter().map(crate::project::Project::visibility))
                     .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
                     .count();
                 if live <= 1 { 0 } else { live }
@@ -411,7 +403,7 @@ impl App {
         })
     }
 
-    pub fn project_by_path(&self, path: &str) -> Option<&Project> {
+    pub fn project_by_path(&self, path: &str) -> Option<&LegacyProject> {
         self.all_projects
             .iter()
             .find(|project| project.path == path)
@@ -488,7 +480,7 @@ impl App {
     }
 
     /// Formatted ahead/behind sync status for the project list columns.
-    pub fn git_sync(&self, project: &Project) -> String {
+    pub fn git_sync(&self, project: &LegacyProject) -> String {
         if matches!(
             self.git_path_state_for(&project.path),
             GitPathState::Untracked | GitPathState::Ignored

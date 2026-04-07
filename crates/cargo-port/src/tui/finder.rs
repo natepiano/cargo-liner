@@ -28,9 +28,9 @@ use super::types::PaneId;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
 use crate::project::Package;
+use crate::project::Project;
 use crate::project::ProjectListItem;
 use crate::project::ProjectType;
-use crate::project::TypedProject;
 use crate::project::Workspace;
 
 /// A searchable item in the universal finder.
@@ -170,7 +170,7 @@ fn branch_for(display_path: &str, git_info: &HashMap<String, GitInfo>) -> String
 
 fn add_workspace_items(
     items: &mut Vec<FinderItem>,
-    ws: &TypedProject<Workspace>,
+    ws: &Project<Workspace>,
     git_info: &HashMap<String, GitInfo>,
 ) {
     let root_path = ws.display_path();
@@ -209,7 +209,7 @@ fn add_workspace_items(
 
 fn add_package_items(
     items: &mut Vec<FinderItem>,
-    pkg: &TypedProject<Package>,
+    pkg: &Project<Package>,
     git_info: &HashMap<String, GitInfo>,
 ) {
     let root_path = pkg.display_path();
@@ -233,7 +233,7 @@ fn add_package_items(
 
 fn add_vendored_items_typed(
     items: &mut Vec<FinderItem>,
-    project: &TypedProject<Package>,
+    project: &Project<Package>,
     parent_name: &str,
 ) {
     let project_name = project.display_name();
@@ -723,13 +723,13 @@ fn render_finder_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::Project;
+    use crate::project::LegacyProject;
     use crate::project::ProjectLanguage;
     use crate::project::WorkspaceStatus;
     use crate::scan::ProjectNode;
 
-    fn make_project(name: Option<&str>, path: &str) -> Project {
-        crate::project::Project {
+    fn make_project(name: Option<&str>, path: &str) -> LegacyProject {
+        crate::project::LegacyProject {
             path:                      path.to_string(),
             abs_path:                  path.to_string(),
             name:                      name.map(str::to_string),

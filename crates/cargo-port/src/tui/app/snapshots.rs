@@ -11,11 +11,11 @@ use crate::constants::SYNC_UP;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
-use crate::project::NewMemberGroup;
+use crate::project::LegacyProject;
+use crate::project::MemberGroup;
 use crate::project::Package;
 use crate::project::Project;
 use crate::project::ProjectListItem;
-use crate::project::TypedProject;
 use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
@@ -73,12 +73,12 @@ pub(super) fn build_visible_rows(
 fn emit_groups(
     rows: &mut Vec<VisibleRow>,
     ni: usize,
-    groups: &[NewMemberGroup],
+    groups: &[MemberGroup],
     expanded: &HashSet<ExpandKey>,
 ) {
     for (gi, group) in groups.iter().enumerate() {
         match group {
-            NewMemberGroup::Inline { members } => {
+            MemberGroup::Inline { members } => {
                 for (mi, _) in members.iter().enumerate() {
                     rows.push(VisibleRow::Member {
                         node_index:   ni,
@@ -87,7 +87,7 @@ fn emit_groups(
                     });
                 }
             },
-            NewMemberGroup::Named { members, .. } => {
+            MemberGroup::Named { members, .. } => {
                 rows.push(VisibleRow::GroupHeader {
                     node_index:  ni,
                     group_index: gi,
@@ -106,7 +106,7 @@ fn emit_groups(
     }
 }
 
-fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[TypedProject<Package>]) {
+fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[Project<Package>]) {
     for (vi, _) in vendored.iter().enumerate() {
         rows.push(VisibleRow::Vendored {
             node_index:     ni,
@@ -187,13 +187,13 @@ fn emit_worktree_children(
     rows: &mut Vec<VisibleRow>,
     ni: usize,
     wi: usize,
-    groups: &[NewMemberGroup],
-    vendored: &[TypedProject<Package>],
+    groups: &[MemberGroup],
+    vendored: &[Project<Package>],
     expanded: &HashSet<ExpandKey>,
 ) {
     for (gi, group) in groups.iter().enumerate() {
         match group {
-            NewMemberGroup::Inline { members } => {
+            MemberGroup::Inline { members } => {
                 for (mi, _) in members.iter().enumerate() {
                     rows.push(VisibleRow::WorktreeMember {
                         node_index:     ni,
@@ -203,7 +203,7 @@ fn emit_worktree_children(
                     });
                 }
             },
-            NewMemberGroup::Named { members, .. } => {
+            MemberGroup::Named { members, .. } => {
                 rows.push(VisibleRow::WorktreeGroupHeader {
                     node_index:     ni,
                     worktree_index: wi,
@@ -393,7 +393,7 @@ fn observe_item_fit_widths(
 
 fn observe_new_member_group_fit_widths(
     widths: &mut ResolvedWidths,
-    groups: &[NewMemberGroup],
+    groups: &[MemberGroup],
     state: &FitWidthsState<'_>,
     is_worktree: bool,
 ) {
@@ -442,7 +442,7 @@ fn observe_new_member_group_fit_widths(
 
 fn observe_typed_vendored_fit_widths(
     widths: &mut ResolvedWidths,
-    vendored: &[TypedProject<Package>],
+    vendored: &[Project<Package>],
     disk_usage: &HashMap<String, u64>,
     prefix: &str,
 ) {
@@ -457,7 +457,7 @@ fn observe_typed_vendored_fit_widths(
 
 fn observe_workspace_worktree_entry_fit_widths(
     widths: &mut ResolvedWidths,
-    ws: &TypedProject<Workspace>,
+    ws: &Project<Workspace>,
     state: &FitWidthsState<'_>,
 ) {
     let dw = columns::display_width;
@@ -489,7 +489,7 @@ fn observe_workspace_worktree_entry_fit_widths(
 
 fn observe_package_worktree_entry_fit_widths(
     widths: &mut ResolvedWidths,
-    pkg: &TypedProject<Package>,
+    pkg: &Project<Package>,
     state: &FitWidthsState<'_>,
 ) {
     let dw = columns::display_width;
@@ -598,7 +598,7 @@ fn collect_child_disk_values(
 }
 
 fn collect_member_group_disk(
-    groups: &[NewMemberGroup],
+    groups: &[MemberGroup],
     disk_usage: &HashMap<String, u64>,
     values: &mut Vec<u64>,
 ) {
@@ -613,7 +613,7 @@ fn collect_member_group_disk(
 }
 
 fn collect_vendored_disk(
-    vendored: &[TypedProject<Package>],
+    vendored: &[Project<Package>],
     disk_usage: &HashMap<String, u64>,
     values: &mut Vec<u64>,
 ) {
@@ -625,7 +625,7 @@ fn collect_vendored_disk(
     }
 }
 
-pub(super) fn initial_disk_batch_count(projects: &[Project]) -> usize {
+pub(super) fn initial_disk_batch_count(projects: &[LegacyProject]) -> usize {
     let mut abs_paths: Vec<&str> = projects
         .iter()
         .map(|project| project.abs_path.as_str())

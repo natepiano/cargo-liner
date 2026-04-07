@@ -22,7 +22,7 @@ use crate::lint::LintStatus;
 use crate::lint::RuntimeHandle;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
-use crate::project::Project;
+use crate::project::LegacyProject;
 use crate::project::ProjectListItem;
 use crate::scan::BackgroundMsg;
 use crate::scan::FlatEntry;
@@ -500,7 +500,7 @@ pub struct App {
     pub current_config:           CargoPortConfig,
     pub scan_root:                PathBuf,
     pub http_client:              HttpClient,
-    pub all_projects:             Vec<Project>,
+    pub all_projects:             Vec<LegacyProject>,
     pub project_list_items:       Vec<ProjectListItem>,
     pub flat_entries:             Vec<FlatEntry>,
     pub disk_usage:               HashMap<String, u64>,
