@@ -24,7 +24,6 @@ mod tests;
 pub(super) use dismiss::ClickAction;
 pub(super) use dismiss::DismissTarget;
 pub(super) use types::App;
-pub(super) use types::BottomPanel;
 pub(super) use types::CiState;
 pub(super) use types::ConfirmAction;
 pub(super) use types::ExpandKey;

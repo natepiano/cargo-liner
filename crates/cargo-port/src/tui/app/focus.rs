@@ -10,11 +10,12 @@ use crate::tui::shortcuts::InputContext;
 use crate::tui::types::PaneId;
 
 impl App {
-    const TAB_ORDER: [PaneId; 6] = [
+    const TAB_ORDER: [PaneId; 7] = [
         PaneId::ProjectList,
         PaneId::Package,
         PaneId::Git,
         PaneId::Targets,
+        PaneId::Lints,
         PaneId::CiRuns,
         PaneId::Toasts,
     ];
@@ -106,13 +107,8 @@ impl App {
             match self.focused_pane {
                 PaneId::Package | PaneId::Git => InputContext::DetailFields,
                 PaneId::Targets => InputContext::DetailTargets,
-                PaneId::CiRuns => {
-                    if matches!(self.bottom_panel, BottomPanel::Lints) {
-                        InputContext::Lints
-                    } else {
-                        InputContext::CiRuns
-                    }
-                },
+                PaneId::Lints => InputContext::Lints,
+                PaneId::CiRuns => InputContext::CiRuns,
                 PaneId::Toasts => InputContext::Toasts,
                 PaneId::Search => InputContext::Searching,
                 PaneId::Settings => InputContext::Settings,
@@ -168,6 +164,7 @@ impl App {
                 PaneId::Targets => self.cached_detail.as_ref().is_some_and(|c| {
                     c.info.is_binary || !c.info.examples.is_empty() || !c.info.benches.is_empty()
                 }),
+                PaneId::Lints => self.selected_project_path().is_some() && self.lint_enabled(),
                 PaneId::CiRuns => self
                     .selected_project_path()
                     .is_some_and(|path| self.bottom_panel_available(path)),

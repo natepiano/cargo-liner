@@ -202,6 +202,7 @@ const fn pane_label(pane: PaneId) -> &'static str {
         PaneId::Package => "package",
         PaneId::Git => "git",
         PaneId::Targets => "targets",
+        PaneId::Lints => "lints",
         PaneId::CiRuns => "ci_runs",
         PaneId::Toasts => "toasts",
         PaneId::Search => "search",

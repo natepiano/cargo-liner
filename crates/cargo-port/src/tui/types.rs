@@ -117,6 +117,7 @@ pub(super) enum PaneId {
     Package,
     Git,
     Targets,
+    Lints,
     CiRuns,
     Toasts,
     Search,

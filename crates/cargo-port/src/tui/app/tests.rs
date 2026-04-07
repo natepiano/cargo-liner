@@ -1311,12 +1311,12 @@ fn disk_updates_skip_git_path_refresh_during_scan() {
 }
 
 #[test]
-fn bottom_panel_changes_input_context_for_lower_pane() {
+fn lints_and_ci_panes_have_distinct_input_contexts() {
     let mut app = make_app(&[make_project(Some("demo"), "~/demo")]);
     app.focus_pane(PaneId::CiRuns);
     assert_eq!(app.input_context(), InputContext::CiRuns);
 
-    app.toggle_bottom_panel();
+    app.focus_pane(PaneId::Lints);
     assert_eq!(app.input_context(), InputContext::Lints);
 }
 

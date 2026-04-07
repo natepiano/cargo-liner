@@ -118,6 +118,7 @@ fn active_detail_pane(app: &mut App) -> &mut Pane {
         PaneId::Git => &mut app.git_pane,
         PaneId::Package
         | PaneId::ProjectList
+        | PaneId::Lints
         | PaneId::CiRuns
         | PaneId::Toasts
         | PaneId::Search

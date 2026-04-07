@@ -20,7 +20,6 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
-use super::app::BottomPanel;
 use super::app::CiState;
 use super::app::ConfirmAction;
 use super::app::ExpandKey;
@@ -297,34 +296,33 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    // CI content_area and len are set inside render_ci_panel.
-
     super::detail::render_detail_panel(frame, app, detail_info.as_ref(), right_layout[0]);
 
-    // Running output replaces the CI panel; Esc restores it.
+    // Running output replaces the bottom panels; Esc restores them.
     if has_example_output {
         render_example_output(frame, app, right_layout[1]);
     } else {
-        match app.bottom_panel {
-            BottomPanel::CiRuns => {
-                if has_ci {
-                    super::detail::render_ci_panel(frame, app, &detail_ci_runs, right_layout[1]);
-                } else {
-                    render_empty_ci_panel(
-                        frame,
-                        app,
-                        app.selected_project_path(),
-                        selected_has_ci_owner,
-                        right_layout[1],
-                    );
-                }
-                if let Some(message) = app.unreachable_service_message() {
-                    render_unreachable_overlay(frame, right_layout[1], &message);
-                }
-            },
-            BottomPanel::Lints => {
-                super::detail::render_lints_panel(frame, app, &detail_lint_runs, right_layout[1]);
-            },
+        // Split bottom area: Lints (top half) + CI Runs (bottom half)
+        let bottom_split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(right_layout[1]);
+
+        super::detail::render_lints_panel(frame, app, &detail_lint_runs, bottom_split[0]);
+
+        if has_ci {
+            super::detail::render_ci_panel(frame, app, &detail_ci_runs, bottom_split[1]);
+        } else {
+            render_empty_ci_panel(
+                frame,
+                app,
+                app.selected_project_path(),
+                selected_has_ci_owner,
+                bottom_split[1],
+            );
+        }
+        if let Some(message) = app.unreachable_service_message() {
+            render_unreachable_overlay(frame, bottom_split[1], &message);
         }
     }
 }

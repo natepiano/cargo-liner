@@ -1703,7 +1703,6 @@ impl App {
                 )
             });
         if eligible {
-            self.reload_lint_history(&abs);
             if matches!(status, LintStatus::NoLog) {
                 self.lint_status.remove(&abs);
             } else {
