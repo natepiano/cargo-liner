@@ -105,30 +105,36 @@ impl App {
         self.prune_toasts();
     }
 
-    pub fn lint_is_watchable(&self, project: &LegacyProject) -> bool {
+    pub fn lint_is_watchable(&self, path: &Path) -> bool {
         if !self.lint_enabled() {
             return false;
         }
+        let is_rust = self
+            .all_projects
+            .iter()
+            .any(|p| Path::new(&p.abs_path) == path && p.is_rust == Rust);
         crate::lint::project_is_eligible(
             &self.current_config.lint,
-            &project.abs_path,
-            &PathBuf::from(&project.abs_path),
-            project.is_rust == Rust,
+            &path.to_string_lossy(),
+            path,
+            is_rust,
         )
     }
 
-    pub fn bottom_panel_available(&self, project: &LegacyProject) -> bool {
-        let abs = Path::new(&project.abs_path);
-        let has_ci = self.is_ci_owner_path(abs)
+    pub fn bottom_panel_available(&self, path: &Path) -> bool {
+        let has_ci = self.is_ci_owner_path(path)
             && (self
-                .ci_state_for(project)
+                .ci_state_for(path)
                 .is_some_and(|state| !state.runs().is_empty())
                 || self
                     .git_info
-                    .get(abs)
+                    .get(path)
                     .is_some_and(|info| info.url.is_some()));
-        let has_lint_runs = self.lint_runs.get(abs).is_some_and(|runs| !runs.is_empty())
-            || self.lint_is_watchable(project);
+        let has_lint_runs = self
+            .lint_runs
+            .get(path)
+            .is_some_and(|runs| !runs.is_empty())
+            || self.lint_is_watchable(path);
         has_ci || has_lint_runs
     }
 
@@ -222,8 +228,8 @@ impl App {
             .any(|item| item.has_project_with_visibility(path, Visibility::Deleted))
     }
 
-    pub fn formatted_disk(&self, project: &LegacyProject) -> String {
-        match self.disk_usage.get(Path::new(&project.abs_path)) {
+    pub fn formatted_disk(&self, path: &Path) -> String {
+        match self.disk_usage.get(path) {
             Some(&bytes) => crate::tui::render::format_bytes(bytes),
             None => crate::tui::render::format_bytes(0),
         }
@@ -235,19 +241,19 @@ impl App {
     }
 
     pub fn selected_ci_state(&self) -> Option<&CiState> {
-        self.selected_ci_project()
-            .and_then(|project| self.ci_state.get(Path::new(&project.abs_path)))
+        let project = self.selected_ci_project()?;
+        self.ci_state_for(Path::new(&project.abs_path))
     }
 
-    pub fn ci_for(&self, project: &LegacyProject) -> Option<Conclusion> {
-        self.ci_state_for(project)
-            .and_then(|_| self.latest_ci_run_for_path(Path::new(&project.abs_path)))
+    pub fn ci_for(&self, path: &Path) -> Option<Conclusion> {
+        self.ci_state_for(path)
+            .and_then(|_| self.latest_ci_run_for_path(path))
             .map(|run| run.conclusion)
     }
 
-    pub fn ci_state_for(&self, project: &LegacyProject) -> Option<&CiState> {
-        self.is_ci_owner_path(Path::new(&project.abs_path))
-            .then(|| self.ci_state.get(Path::new(&project.abs_path)))
+    pub fn ci_state_for(&self, path: &Path) -> Option<&CiState> {
+        self.is_ci_owner_path(path)
+            .then(|| self.ci_state.get(path))
             .flatten()
     }
 
@@ -332,8 +338,8 @@ impl App {
             // For single-path items, use the standard ci_for (checks CI owner).
             // But fall through to aggregation if the project isn't in all_projects
             // (e.g., a worktree not yet discovered).
-            if let Some(p) = self.project_by_abs_path(&paths[0]) {
-                return self.ci_for(p);
+            if self.project_by_abs_path(&paths[0]).is_some() {
+                return self.ci_for(&paths[0]);
             }
             return self
                 .latest_ci_run_for_path(&paths[0])
@@ -488,15 +494,14 @@ impl App {
     }
 
     /// Formatted ahead/behind sync status for the project list columns.
-    pub fn git_sync(&self, project: &LegacyProject) -> String {
-        let abs = Path::new(&project.abs_path);
+    pub fn git_sync(&self, path: &Path) -> String {
         if matches!(
-            self.git_path_state_for(abs),
+            self.git_path_state_for(path),
             GitPathState::Untracked | GitPathState::Ignored
         ) {
             return String::new();
         }
-        let Some(info) = self.git_info.get(abs) else {
+        let Some(info) = self.git_info.get(path) else {
             return String::new();
         };
         match info.ahead_behind {
@@ -542,7 +547,9 @@ impl App {
                 }
             },
             InputContext::CiRuns => {
-                let ci_state = self.selected_project().and_then(|p| self.ci_state_for(p));
+                let ci_state = self
+                    .selected_project()
+                    .and_then(|p| self.ci_state_for(Path::new(&p.abs_path)));
                 let run_count = ci_state.map_or(0, |s| s.runs().len());
                 if self.ci_pane.pos() == run_count
                     && !ci_state.is_some_and(CiState::is_fetching)

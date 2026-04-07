@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use super::types::App;
 use super::types::BottomPanel;
 use super::types::ExitMode;
@@ -169,9 +171,9 @@ impl App {
                     let info = crate::tui::detail::build_detail_info(self, project);
                     info.is_binary || !info.examples.is_empty() || !info.benches.is_empty()
                 }),
-                PaneId::CiRuns => self
-                    .selected_project()
-                    .is_some_and(|project| self.bottom_panel_available(project)),
+                PaneId::CiRuns => self.selected_project().is_some_and(|project| {
+                    self.bottom_panel_available(Path::new(&project.abs_path))
+                }),
                 PaneId::Toasts => !self.active_toasts().is_empty(),
                 PaneId::Search | PaneId::Settings | PaneId::Finder | PaneId::Keymap => false,
             })

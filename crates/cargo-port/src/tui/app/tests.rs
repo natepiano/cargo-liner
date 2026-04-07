@@ -555,10 +555,13 @@ fn ci_runs_stay_on_owner_rows_not_workspace_members() {
 
     app.insert_ci_runs(&workspace.path, vec![make_ci_run(1, Conclusion::Success)]);
 
-    assert_eq!(app.ci_for(&workspace), Some(Conclusion::Success));
+    assert_eq!(
+        app.ci_for(Path::new(&workspace.abs_path)),
+        Some(Conclusion::Success)
+    );
     assert!(app.ci_state.contains_key(Path::new(&workspace.path)));
-    assert_eq!(app.ci_for(&member), None);
-    assert!(app.ci_state_for(&member).is_none());
+    assert_eq!(app.ci_for(Path::new(&member.abs_path)), None);
+    assert!(app.ci_state_for(Path::new(&member.abs_path)).is_none());
     assert!(!app.ci_state.contains_key(Path::new(&member.path)));
 }
 
@@ -592,9 +595,9 @@ fn non_owner_member_ignores_stale_ci_state_and_cannot_fetch() {
         make_git_info(Some("https://github.com/natepiano/demo")),
     );
 
-    assert!(app.ci_state_for(&member).is_none());
-    assert_eq!(app.ci_for(&member), None);
-    assert!(!app.bottom_panel_available(&member));
+    assert!(app.ci_state_for(Path::new(&member.abs_path)).is_none());
+    assert_eq!(app.ci_for(Path::new(&member.abs_path)), None);
+    assert!(!app.bottom_panel_available(Path::new(&member.abs_path)));
 
     crate::tui::detail::handle_ci_runs_key(
         &mut app,
@@ -652,7 +655,7 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
         app.ci_for_item(&app.project_list_items[0]),
         Some(Conclusion::Failure)
     );
-    assert!(app.ci_state_for(&member).is_none());
+    assert!(app.ci_state_for(Path::new(&member.abs_path)).is_none());
 }
 
 #[test]
@@ -691,7 +694,10 @@ fn ci_for_prefers_runs_matching_local_branch() {
         },
     );
 
-    assert_eq!(app.ci_for(&project), Some(Conclusion::Failure));
+    assert_eq!(
+        app.ci_for(Path::new(&project.abs_path)),
+        Some(Conclusion::Failure)
+    );
 }
 
 #[test]
@@ -923,11 +929,11 @@ fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
 
     app.git_path_states
         .insert(PathBuf::from(&path), GitPathState::Untracked);
-    assert!(app.git_sync(&project).is_empty());
+    assert!(app.git_sync(Path::new(&project.abs_path)).is_empty());
 
     app.git_path_states
         .insert(PathBuf::from(&path), GitPathState::Ignored);
-    assert!(app.git_sync(&project).is_empty());
+    assert!(app.git_sync(Path::new(&project.abs_path)).is_empty());
 }
 
 #[test]

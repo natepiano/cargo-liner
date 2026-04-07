@@ -588,14 +588,11 @@ pub fn build_detail_info(app: &App, project: &LegacyProject) -> DetailInfo {
 
     let wt_item = worktree_group_item(app, project);
 
+    let abs = std::path::Path::new(&project.abs_path);
     let (disk, ci) = wt_item.map_or_else(
         || {
-            let ci = if cargo_active {
-                app.ci_for(project)
-            } else {
-                None
-            };
-            (app.formatted_disk(project), ci)
+            let ci = if cargo_active { app.ci_for(abs) } else { None };
+            (app.formatted_disk(abs), ci)
         },
         |item| (app.formatted_disk_for_item(item), app.ci_for_item(item)),
     );
@@ -629,7 +626,7 @@ pub fn build_detail_info(app: &App, project: &LegacyProject) -> DetailInfo {
             .join(", "),
         disk,
         lint_label: app
-            .selected_lint_icon(project)
+            .selected_lint_icon(abs)
             .map_or_else(String::new, std::string::ToString::to_string),
         ci,
         stats_rows,
