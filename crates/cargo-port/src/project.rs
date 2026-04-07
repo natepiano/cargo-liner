@@ -752,19 +752,12 @@ pub(crate) fn from_cargo_toml(
 }
 
 /// Create a project entry for a non-Rust git repository (no `Cargo.toml`).
-pub(crate) fn from_git_dir(project_dir: &Path) -> RustProject<NonRust> {
+pub(crate) fn from_git_dir(project_dir: &Path) -> NonRustProject {
     let name = project_dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string());
-    let worktree_name = detect_worktree_name(project_dir);
-    let worktree_primary_abs_path = detect_worktree_primary(project_dir).map(PathBuf::from);
 
-    RustProject::<NonRust>::new(
-        project_dir.to_path_buf(),
-        name,
-        worktree_name,
-        worktree_primary_abs_path,
-    )
+    NonRustProject::new(project_dir.to_path_buf(), name)
 }
 
 fn detect_types(table: &Table, project_dir: &Path) -> Vec<ProjectType> {
@@ -1060,39 +1053,25 @@ pub(crate) enum Visibility {
     Dismissed,
 }
 
-/// Associated types that drive the structure per project kind.
-pub(crate) trait ProjectKind: Clone + 'static {
-    type Cargo: Clone;
-    type Groups: Clone;
-    type Vendored: Clone;
-}
+/// Marker trait — only `Workspace` and `Package` implement this.
+pub(crate) trait CargoKind: Clone + 'static {}
 
+/// Workspace carries member groups.
 #[derive(Clone)]
-pub(crate) struct Workspace;
-
-impl ProjectKind for Workspace {
-    type Cargo = Cargo;
-    type Groups = Vec<MemberGroup>;
-    type Vendored = Vec<RustProject<Package>>;
+pub(crate) struct Workspace {
+    groups: Vec<MemberGroup>,
 }
+
+impl Workspace {
+    pub(crate) const fn new(groups: Vec<MemberGroup>) -> Self { Self { groups } }
+}
+
+impl CargoKind for Workspace {}
 
 #[derive(Clone)]
 pub(crate) struct Package;
 
-impl ProjectKind for Package {
-    type Cargo = Cargo;
-    type Groups = ();
-    type Vendored = Vec<RustProject<Self>>;
-}
-
-#[derive(Clone)]
-pub(crate) struct NonRust;
-
-impl ProjectKind for NonRust {
-    type Cargo = ();
-    type Groups = ();
-    type Vendored = ();
-}
+impl CargoKind for Package {}
 
 /// Shared Cargo fields extracted from `Cargo.toml`.
 #[derive(Clone, Debug)]
@@ -1147,15 +1126,68 @@ impl Cargo {
 
 /// The core project type, parameterized by kind.
 /// Private fields with accessors enforce what's available per kind.
-pub(crate) struct RustProject<Kind: ProjectKind> {
+pub(crate) struct RustProject<Kind: CargoKind> {
     path:                      PathBuf,
     name:                      Option<String>,
     visibility:                Visibility,
-    cargo:                     Kind::Cargo,
-    groups:                    Kind::Groups,
-    vendored:                  Kind::Vendored,
+    cargo:                     Cargo,
+    vendored:                  Vec<RustProject<Package>>,
+    kind:                      Kind,
     worktree_name:             Option<String>,
     worktree_primary_abs_path: Option<PathBuf>,
+}
+
+/// A non-Rust project. Separate struct, no generic parameter.
+pub(crate) struct NonRustProject {
+    path:       PathBuf,
+    name:       Option<String>,
+    visibility: Visibility,
+}
+
+impl Clone for NonRustProject {
+    fn clone(&self) -> Self {
+        Self {
+            path:       self.path.clone(),
+            name:       self.name.clone(),
+            visibility: self.visibility,
+        }
+    }
+}
+
+impl NonRustProject {
+    pub(crate) fn new(path: PathBuf, name: Option<String>) -> Self {
+        Self {
+            path,
+            name,
+            visibility: Visibility::default(),
+        }
+    }
+
+    pub(crate) fn path(&self) -> &Path { &self.path }
+
+    pub(crate) fn name(&self) -> Option<&str> { self.name.as_deref() }
+
+    pub(crate) const fn visibility(&self) -> Visibility { self.visibility }
+
+    pub(crate) const fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
+
+    /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
+    pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }
+
+    /// Display name: project name or last path component.
+    pub(crate) fn display_name(&self) -> String {
+        self.name
+            .as_deref()
+            .unwrap_or_else(|| {
+                self.path
+                    .file_name()
+                    .map_or("", |n| n.to_str().unwrap_or(""))
+            })
+            .to_string()
+    }
+
+    /// Language icon for the project list.
+    pub(crate) const fn lang_icon() -> &'static str { "  " }
 }
 
 impl Clone for RustProject<Workspace> {
@@ -1165,8 +1197,8 @@ impl Clone for RustProject<Workspace> {
             name:                      self.name.clone(),
             visibility:                self.visibility,
             cargo:                     self.cargo.clone(),
-            groups:                    self.groups.clone(),
             vendored:                  self.vendored.clone(),
+            kind:                      self.kind.clone(),
             worktree_name:             self.worktree_name.clone(),
             worktree_primary_abs_path: self.worktree_primary_abs_path.clone(),
         }
@@ -1180,31 +1212,16 @@ impl Clone for RustProject<Package> {
             name:                      self.name.clone(),
             visibility:                self.visibility,
             cargo:                     self.cargo.clone(),
-            groups:                    (),
             vendored:                  self.vendored.clone(),
+            kind:                      Package,
             worktree_name:             self.worktree_name.clone(),
             worktree_primary_abs_path: self.worktree_primary_abs_path.clone(),
         }
     }
 }
 
-impl Clone for RustProject<NonRust> {
-    fn clone(&self) -> Self {
-        Self {
-            path:                      self.path.clone(),
-            name:                      self.name.clone(),
-            visibility:                self.visibility,
-            cargo:                     (),
-            groups:                    (),
-            vendored:                  (),
-            worktree_name:             self.worktree_name.clone(),
-            worktree_primary_abs_path: self.worktree_primary_abs_path.clone(),
-        }
-    }
-}
-
-// Shared accessors for all kinds.
-impl<Kind: ProjectKind> RustProject<Kind> {
+// Shared accessors for all CargoKind projects.
+impl<Kind: CargoKind> RustProject<Kind> {
     pub(crate) fn path(&self) -> &Path { &self.path }
 
     pub(crate) fn name(&self) -> Option<&str> { self.name.as_deref() }
@@ -1212,6 +1229,14 @@ impl<Kind: ProjectKind> RustProject<Kind> {
     pub(crate) const fn visibility(&self) -> Visibility { self.visibility }
 
     pub(crate) const fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
+
+    pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
+
+    pub(crate) fn vendored(&self) -> &[RustProject<Package>] { &self.vendored }
+
+    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<RustProject<Package>> {
+        &mut self.vendored
+    }
 
     pub(crate) fn worktree_name(&self) -> Option<&str> { self.worktree_name.as_deref() }
 
@@ -1237,17 +1262,9 @@ impl<Kind: ProjectKind> RustProject<Kind> {
 
 // Workspace-specific accessors.
 impl RustProject<Workspace> {
-    pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
+    pub(crate) fn groups(&self) -> &[MemberGroup] { &self.kind.groups }
 
-    pub(crate) fn groups(&self) -> &[MemberGroup] { &self.groups }
-
-    pub(crate) const fn groups_mut(&mut self) -> &mut Vec<MemberGroup> { &mut self.groups }
-
-    pub(crate) fn vendored(&self) -> &[RustProject<Package>] { &self.vendored }
-
-    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<RustProject<Package>> {
-        &mut self.vendored
-    }
+    pub(crate) const fn groups_mut(&mut self) -> &mut Vec<MemberGroup> { &mut self.kind.groups }
 
     pub(crate) fn new(
         path: PathBuf,
@@ -1263,14 +1280,16 @@ impl RustProject<Workspace> {
             name,
             visibility: Visibility::default(),
             cargo,
-            groups,
             vendored,
+            kind: Workspace::new(groups),
             worktree_name,
             worktree_primary_abs_path,
         }
     }
 
-    pub(crate) fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members().is_empty()) }
+    pub(crate) fn has_members(&self) -> bool {
+        self.kind.groups.iter().any(|g| !g.members().is_empty())
+    }
 
     /// Language icon for the project list.
     pub(crate) const fn lang_icon() -> &'static str { "\u{1f980}" }
@@ -1278,12 +1297,6 @@ impl RustProject<Workspace> {
 
 // Package-specific accessors.
 impl RustProject<Package> {
-    pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
-
-    pub(crate) fn vendored(&self) -> &[Self] { &self.vendored }
-
-    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<Self> { &mut self.vendored }
-
     pub(crate) fn new(
         path: PathBuf,
         name: Option<String>,
@@ -1297,8 +1310,8 @@ impl RustProject<Package> {
             name,
             visibility: Visibility::default(),
             cargo,
-            groups: (),
             vendored,
+            kind: Package,
             worktree_name,
             worktree_primary_abs_path,
         }
@@ -1308,38 +1321,14 @@ impl RustProject<Package> {
     pub(crate) const fn lang_icon() -> &'static str { "\u{1f980}" }
 }
 
-// NonRust-specific constructor.
-impl RustProject<NonRust> {
-    pub(crate) fn new(
-        path: PathBuf,
-        name: Option<String>,
-        worktree_name: Option<String>,
-        worktree_primary_abs_path: Option<PathBuf>,
-    ) -> Self {
-        Self {
-            path,
-            name,
-            visibility: Visibility::default(),
-            cargo: (),
-            groups: (),
-            vendored: (),
-            worktree_name,
-            worktree_primary_abs_path,
-        }
-    }
-
-    /// Language icon for the project list.
-    pub(crate) const fn lang_icon() -> &'static str { "  " }
-}
-
 /// A generic worktree group: primary + linked checkouts.
-pub(crate) struct WorktreeGroup<Kind: ProjectKind> {
+pub(crate) struct WorktreeGroup<Kind: CargoKind> {
     primary:    RustProject<Kind>,
     linked:     Vec<RustProject<Kind>>,
     visibility: Visibility,
 }
 
-impl<Kind: ProjectKind> WorktreeGroup<Kind> {
+impl<Kind: CargoKind> WorktreeGroup<Kind> {
     pub(crate) fn new(primary: RustProject<Kind>, linked: Vec<RustProject<Kind>>) -> Self {
         Self {
             primary,
@@ -1383,7 +1372,7 @@ impl Clone for WorktreeGroup<Package> {
 pub(crate) enum ProjectListItem {
     Workspace(RustProject<Workspace>),
     Package(RustProject<Package>),
-    NonRust(RustProject<NonRust>),
+    NonRust(NonRustProject),
     WorkspaceWorktrees(WorktreeGroup<Workspace>),
     PackageWorktrees(WorktreeGroup<Package>),
 }
@@ -1472,7 +1461,7 @@ impl ProjectListItem {
                 RustProject::<Workspace>::lang_icon()
             },
             Self::Package(_) | Self::PackageWorktrees(_) => RustProject::<Package>::lang_icon(),
-            Self::NonRust(_) => RustProject::<NonRust>::lang_icon(),
+            Self::NonRust(_) => NonRustProject::lang_icon(),
         }
     }
 

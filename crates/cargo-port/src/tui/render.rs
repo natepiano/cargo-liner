@@ -922,7 +922,7 @@ fn render_worktree_entry<'a>(
             pkg.worktree_name()
                 .map_or_else(|| pkg.display_name(), str::to_string)
         },
-        _ => dp.clone(),
+        _ => dp,
     };
 
     let has_expandable_children = match item {

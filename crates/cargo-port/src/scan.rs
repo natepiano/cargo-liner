@@ -730,7 +730,6 @@ fn item_worktree_identity(item: &ProjectListItem) -> Option<&Path> {
     match item {
         ProjectListItem::Workspace(p) => p.worktree_primary_abs_path(),
         ProjectListItem::Package(p) => p.worktree_primary_abs_path(),
-        ProjectListItem::NonRust(p) => p.worktree_primary_abs_path(),
         _ => None,
     }
 }
@@ -739,7 +738,6 @@ fn item_is_linked(item: &ProjectListItem) -> bool {
     match item {
         ProjectListItem::Workspace(p) => p.worktree_name().is_some(),
         ProjectListItem::Package(p) => p.worktree_name().is_some(),
-        ProjectListItem::NonRust(p) => p.worktree_name().is_some(),
         _ => false,
     }
 }
@@ -907,8 +905,8 @@ fn extract_vendored_new(items: &mut Vec<ProjectListItem>) {
                 nr.name().map(str::to_string),
                 Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
                 Vec::new(),
-                nr.worktree_name().map(str::to_string),
-                nr.worktree_primary_abs_path().map(Path::to_path_buf),
+                None,
+                None,
             ),
             _ => continue,
         };

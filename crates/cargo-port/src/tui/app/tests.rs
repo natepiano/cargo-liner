@@ -26,7 +26,7 @@ use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::MemberGroup;
-use crate::project::NonRust;
+use crate::project::NonRustProject;
 use crate::project::Package;
 use crate::project::ProjectListItem;
 use crate::project::RustProject;
@@ -79,11 +79,9 @@ fn make_app_with_config(projects: &[ProjectListItem], cfg: &CargoPortConfig) -> 
 }
 
 fn make_non_rust_project(name: Option<&str>, path: &str) -> ProjectListItem {
-    ProjectListItem::NonRust(RustProject::<NonRust>::new(
+    ProjectListItem::NonRust(NonRustProject::new(
         PathBuf::from(path),
         name.map(String::from),
-        None,
-        None,
     ))
 }
 

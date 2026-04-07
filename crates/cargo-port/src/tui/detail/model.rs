@@ -9,7 +9,7 @@ use crate::project::Cargo;
 use crate::project::ExampleGroup;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
-use crate::project::NonRust;
+use crate::project::NonRustProject;
 use crate::project::Package;
 use crate::project::ProjectListItem;
 use crate::project::ProjectType;
@@ -690,7 +690,7 @@ fn build_detail_info_for_package(
 
 fn build_detail_info_non_rust(
     app: &App,
-    nr: &RustProject<NonRust>,
+    nr: &NonRustProject,
     display_path: &str,
     is_wt_group: bool,
     wt_item: Option<&ProjectListItem>,
@@ -705,7 +705,7 @@ fn build_detail_info_non_rust(
             display_path,
             name: nr.name(),
             cargo: None,
-            worktree_name: nr.worktree_name(),
+            worktree_name: None,
             wt_item: wt_item_ref,
             stats_rows: Vec::new(),
             package_title: "Project".to_string(),

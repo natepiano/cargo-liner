@@ -317,7 +317,6 @@ impl App {
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
         self.register_existing_projects();
-        self.sync_lint_runtime_projects();
         self.refresh_lint_runs_from_disk();
         self.rebuild_lint_rollups();
     }

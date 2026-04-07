@@ -64,6 +64,7 @@ impl App {
         self.dirty.fit_widths.mark_dirty();
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
+        self.register_lint_for_root_items();
         self.rebuild_lint_rollups();
         self.data_generation += 1;
         self.detail_generation += 1;
@@ -537,10 +538,73 @@ impl App {
         runtime.sync_projects(self.lint_runtime_projects_snapshot());
     }
 
+    fn register_lint_for_root_items(&self) {
+        let Some(runtime) = &self.lint_runtime else {
+            return;
+        };
+        let mut count = 0;
+        for item in &self.project_list_items {
+            match item {
+                ProjectListItem::Workspace(ws) => {
+                    runtime.register_project(crate::lint::RegisterProjectRequest {
+                        project_path: ws.display_path(),
+                        abs_path:     ws.path().to_path_buf(),
+                        is_rust:      true,
+                    });
+                    count += 1;
+                },
+                ProjectListItem::Package(pkg) => {
+                    runtime.register_project(crate::lint::RegisterProjectRequest {
+                        project_path: pkg.display_path(),
+                        abs_path:     pkg.path().to_path_buf(),
+                        is_rust:      true,
+                    });
+                    count += 1;
+                },
+                ProjectListItem::WorkspaceWorktrees(wtg) => {
+                    for ws in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
+                        runtime.register_project(crate::lint::RegisterProjectRequest {
+                            project_path: ws.display_path(),
+                            abs_path:     ws.path().to_path_buf(),
+                            is_rust:      true,
+                        });
+                        count += 1;
+                    }
+                },
+                ProjectListItem::PackageWorktrees(wtg) => {
+                    for pkg in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
+                        runtime.register_project(crate::lint::RegisterProjectRequest {
+                            project_path: pkg.display_path(),
+                            abs_path:     pkg.path().to_path_buf(),
+                            is_rust:      true,
+                        });
+                        count += 1;
+                    }
+                },
+                ProjectListItem::NonRust(_) => {},
+            }
+        }
+        crate::perf_log::log_event(&format!("lint_register_root_items count={count}"));
+    }
+
     fn register_lint_project_if_eligible(&self, item: &ProjectListItem) {
         if !item.is_rust() {
             crate::perf_log::log_event(&format!(
                 "lint_register_skip reason=not_rust path={}",
+                item.display_path()
+            ));
+            return;
+        }
+        let path = item.path();
+        // Skip workspace members — the workspace root's watcher covers them.
+        let is_member = self.discovered_projects.iter().any(|existing| {
+            matches!(existing, ProjectListItem::Workspace(_))
+                && existing.path() != path
+                && path.starts_with(existing.path())
+        });
+        if is_member {
+            crate::perf_log::log_event(&format!(
+                "lint_register_skip reason=workspace_member path={}",
                 item.display_path()
             ));
             return;
@@ -552,7 +616,6 @@ impl App {
             ));
             return;
         };
-        let path = item.path();
         crate::perf_log::log_event(&format!("lint_register path={}", item.display_path()));
         runtime.register_project(crate::lint::RegisterProjectRequest {
             project_path: item.display_path(),
@@ -1286,10 +1349,10 @@ impl App {
             }
         }
         if lint_runtime_changed {
-            if let Some(runtime) = &self.lint_runtime {
-                if bytes == 0 {
-                    runtime.unregister_project(path.to_path_buf());
-                }
+            if let Some(runtime) = &self.lint_runtime
+                && bytes == 0
+            {
+                runtime.unregister_project(path.to_path_buf());
             }
             // Project restored — re-register if eligible
             if bytes > 0 {
@@ -1425,7 +1488,6 @@ impl App {
         }
 
         self.register_item_background_services(&item);
-        self.register_lint_project_if_eligible(&item);
         self.discovered_projects.push(item);
         true
     }
