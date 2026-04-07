@@ -268,11 +268,7 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'stat
             let available = col_width.saturating_sub(prefix_w);
             format!("{}{}", row.prefix, pad_right(&cell.text, available))
         } else if i == COL_SYNC && cell.text == IN_SYNC {
-            let padded = if col_width <= 2 {
-                pad_left(&cell.text, col_width)
-            } else {
-                pad_center(&cell.text, col_width)
-            };
+            let padded = pad_left(&cell.text, col_width);
             format!("{}{padded}", " ".repeat(defs[i].gap))
         } else {
             let padded = match align {
