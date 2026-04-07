@@ -10,70 +10,27 @@ use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
-use unicode_width::UnicodeWidthStr;
 
 use super::manager::ToastStyle;
 use super::manager::ToastView;
 use super::manager::TrackedItemView;
 
-/// Compute how many display-width columns to strike through.
-///
-/// `progress` is in 0.0..=1.0. The result is at most `total_width`.
-/// The progress is quantized to permille (1/1000) resolution to allow
-/// pure integer arithmetic after the single float→int conversion.
+/// Morph text color from white to green based on progress (0.0 = white, 1.0 = green).
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "progress is clamped to [0.0, 1.0] and scaled by 1000, so the \
-              rounded result is in [0, 1000] — well within u32"
+    reason = "p is clamped to [0.0, 1.0], so (255 * (1-p)) is in [0, 255]"
 )]
-fn strike_width(total_width: usize, progress: f64) -> usize {
-    const SCALE: u32 = 1000;
-    let p_int = (progress.clamp(0.0, 1.0) * f64::from(SCALE)).round() as u32;
-    let tw = u32::try_from(total_width).unwrap_or(u32::MAX);
-    let struck = u64::from(tw) * u64::from(p_int.min(SCALE)) / u64::from(SCALE);
-    usize::try_from(struck)
-        .unwrap_or(total_width)
-        .min(total_width)
-}
-
-/// Split a line into struck-through (left) and normal (right) portions
-/// based on progress (0.0 = none struck, 1.0 = all struck).
-fn strikethrough_line<'a>(text: &str, progress: f64, base_style: Style) -> Line<'a> {
-    let total_width = UnicodeWidthStr::width(text);
-    let strike_chars = strike_width(total_width, progress);
-    if strike_chars == 0 {
-        return Line::from(Span::styled(text.to_owned(), base_style));
-    }
-    if strike_chars >= total_width {
-        return Line::from(Span::styled(
-            text.to_owned(),
-            base_style
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::CROSSED_OUT),
-        ));
-    }
-    // Split at the character boundary closest to strike_chars display width.
-    let mut used = 0usize;
-    let mut split_byte = text.len();
-    for (i, ch) in text.char_indices() {
-        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + w > strike_chars {
-            split_byte = i;
-            break;
-        }
-        used += w;
-    }
-    let (left, right) = text.split_at(split_byte);
-    Line::from(vec![
-        Span::styled(
-            left.to_owned(),
-            base_style
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::CROSSED_OUT),
-        ),
-        Span::styled(right.to_owned(), base_style),
-    ])
+fn fade_to_green_line<'a>(text: &str, progress: f64) -> Line<'a> {
+    let p = progress.clamp(0.0, 1.0);
+    // Exponential curve: stays mostly white, then snaps to green at the end.
+    let curve = p * p * p;
+    let r = (255.0 * (1.0 - curve)) as u8;
+    let b = (255.0 * (1.0 - curve)) as u8;
+    Line::from(Span::styled(
+        text.to_owned(),
+        Style::default().fg(Color::Rgb(r, 255, b)),
+    ))
 }
 use crate::tui::app::ClickAction;
 use crate::tui::app::DismissTarget;
@@ -322,7 +279,7 @@ fn body_lines_plain<'a>(
         .map(|l| {
             toast.linger_progress().map_or_else(
                 || Line::from(Span::styled(l.to_owned(), body_style)),
-                |progress| strikethrough_line(l, progress, body_style),
+                |progress| fade_to_green_line(l, progress),
             )
         })
         .collect();
@@ -332,7 +289,7 @@ fn body_lines_plain<'a>(
             .add_modifier(Modifier::ITALIC);
         result.push(toast.linger_progress().map_or_else(
             || Line::from(Span::styled(overflow.clone(), overflow_style)),
-            |progress| strikethrough_line(&overflow, progress, overflow_style),
+            |progress| fade_to_green_line(&overflow, progress),
         ));
     }
     result
@@ -359,7 +316,7 @@ fn body_lines_tracked<'a>(
         .map(|item| {
             item.linger_progress.map_or_else(
                 || Line::from(Span::styled(item.label.clone(), body_style)),
-                |progress| strikethrough_line(&item.label, progress, body_style),
+                |progress| fade_to_green_line(&item.label, progress),
             )
         })
         .collect();

@@ -983,8 +983,13 @@ impl App {
 
     pub(super) fn sync_running_lint_toast(&mut self) {
         if self.running_lint_paths.is_empty() {
+            // Don't finish immediately — let tracked items linger with
+            // strikethrough animation. The toast finishes when all tracked
+            // items have been pruned (empty body).
             if let Some(task_id) = self.lint_toast {
-                self.finish_task_toast(task_id);
+                if self.toasts.tracked_item_count(task_id) == 0 {
+                    self.finish_task_toast(task_id);
+                }
             }
             return;
         }

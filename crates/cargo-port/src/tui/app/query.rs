@@ -81,7 +81,13 @@ impl App {
     }
 
     pub fn finish_task_toast(&mut self, task_id: ToastTaskId) {
-        let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+        // If tracked items remain, linger so strikethrough animation plays.
+        // If no tracked items, exit immediately — nothing to animate.
+        let linger = if self.toasts.tracked_item_count(task_id) > 0 {
+            Duration::from_secs_f64(self.current_config.tui.task_linger_secs)
+        } else {
+            Duration::ZERO
+        };
         self.toasts.finish_task(task_id, linger);
         self.prune_toasts();
     }

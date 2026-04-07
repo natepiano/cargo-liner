@@ -367,6 +367,14 @@ impl ToastManager {
         }
     }
 
+    /// Count remaining tracked items for a task toast.
+    pub fn tracked_item_count(&self, task_id: ToastTaskId) -> usize {
+        self.toasts
+            .iter()
+            .find(|t| t.task_id == Some(task_id))
+            .map_or(0, |t| t.tracked_items.len())
+    }
+
     /// Mark a tracked item as completed by label.
     pub fn mark_item_completed(&mut self, task_id: ToastTaskId, label: &str) {
         let now = Instant::now();
@@ -402,6 +410,11 @@ impl ToastManager {
                     .join("\n");
                 toast.target_height = compute_target_height(&body, toast.min_interior_lines);
                 toast.body = body;
+                // All tracked items gone — auto-exit the toast immediately.
+                if toast.tracked_items.is_empty() && toast.exit_started_at.is_none() {
+                    toast.persistence = ToastPersistence::Timed;
+                    toast.timeout_at = Some(now);
+                }
             }
         }
     }
