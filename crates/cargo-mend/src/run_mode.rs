@@ -17,7 +17,7 @@ pub(crate) struct FixSelection {
 }
 
 impl FixSelection {
-    pub fn from_cli(fix_cli: &FixCli) -> Self {
+    pub(crate) fn from_cli(fix_cli: &FixCli) -> Self {
         let mut kinds = BTreeSet::new();
         if fix_cli.fix {
             kinds.insert(FixKind::ShortenImport);
@@ -41,9 +41,9 @@ impl FixSelection {
         Self { kinds }
     }
 
-    pub fn contains(&self, kind: FixKind) -> bool { self.kinds.contains(&kind) }
+    pub(crate) fn contains(&self, kind: FixKind) -> bool { self.kinds.contains(&kind) }
 
-    pub fn is_empty(&self) -> bool { self.kinds.is_empty() }
+    pub(crate) fn is_empty(&self) -> bool { self.kinds.is_empty() }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +60,7 @@ pub(crate) struct OperationMode {
 }
 
 impl OperationMode {
-    pub fn from_cli(fix_cli: &FixCli) -> Self {
+    pub(crate) fn from_cli(fix_cli: &FixCli) -> Self {
         let fixes = FixSelection::from_cli(fix_cli);
         if fix_cli.dry_run {
             let effective_fixes = if fixes.is_empty() {

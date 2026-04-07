@@ -46,11 +46,11 @@ struct RunPlan {
 }
 
 impl<'a> MendRunner<'a> {
-    pub const fn new(selection: &'a Selection, config: &'a LoadedConfig) -> Self {
+    pub(crate) const fn new(selection: &'a Selection, config: &'a LoadedConfig) -> Self {
         Self { selection, config }
     }
 
-    pub fn run(&self, mode: OperationMode) -> Result<ExecutionOutcome, MendFailure> {
+    pub(crate) fn run(&self, mode: OperationMode) -> Result<ExecutionOutcome, MendFailure> {
         let planned = self.plan(mode)?;
         self.execute(planned)
     }

@@ -17,7 +17,7 @@ const GLOBAL_CONFIG_FILE: &str = "config.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DiagnosticCode {
+pub(crate) enum DiagnosticCode {
     ForbiddenPubCrate,
     ForbiddenPubInCrate,
     ReviewPubMod,
@@ -32,7 +32,7 @@ pub enum DiagnosticCode {
 }
 
 impl DiagnosticCode {
-    pub const ALL: &[Self] = &[
+    pub(crate) const ALL: &[Self] = &[
         Self::ForbiddenPubCrate,
         Self::ForbiddenPubInCrate,
         Self::ReviewPubMod,
@@ -46,7 +46,7 @@ impl DiagnosticCode {
         Self::NarrowToPubCrate,
     ];
 
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::ForbiddenPubCrate => "forbidden_pub_crate",
             Self::ForbiddenPubInCrate => "forbidden_pub_in_crate",
@@ -72,18 +72,18 @@ pub(crate) struct DiagnosticsConfig {
 }
 
 impl DiagnosticsConfig {
-    pub fn is_enabled(&self, code: DiagnosticCode) -> bool {
+    pub(crate) fn is_enabled(&self, code: DiagnosticCode) -> bool {
         self.rules.get(&code).copied().unwrap_or(true)
     }
 
-    pub fn entries(&self) -> Vec<(DiagnosticCode, bool)> {
+    pub(crate) fn entries(&self) -> Vec<(DiagnosticCode, bool)> {
         DiagnosticCode::ALL
             .iter()
             .map(|code| (*code, self.is_enabled(*code)))
             .collect()
     }
 
-    pub fn merge_project(&self, project: &Self) -> Self {
+    pub(crate) fn merge_project(&self, project: &Self) -> Self {
         let mut rules = self.rules.clone();
         for (code, enabled) in &project.rules {
             rules.insert(*code, *enabled);

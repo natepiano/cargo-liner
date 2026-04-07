@@ -3,7 +3,7 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum FixSupport {
+pub(crate) enum FixSupport {
     #[default]
     None,
     ShortenImport,
@@ -16,13 +16,13 @@ pub enum FixSupport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FixSummaryBucket {
+pub(crate) enum FixSummaryBucket {
     Fix,
     FixPubUse,
 }
 
 impl FixSupport {
-    pub const fn note(self) -> Option<&'static str> {
+    pub(crate) const fn note(self) -> Option<&'static str> {
         match self {
             Self::None | Self::NeedsManualPubUseCleanup | Self::InternalParentFacade => None,
             Self::ShortenImport
@@ -35,7 +35,7 @@ impl FixSupport {
         }
     }
 
-    pub const fn summary_bucket(self) -> Option<FixSummaryBucket> {
+    pub(crate) const fn summary_bucket(self) -> Option<FixSummaryBucket> {
         match self {
             Self::None | Self::NeedsManualPubUseCleanup | Self::InternalParentFacade => None,
             Self::ShortenImport

@@ -19,7 +19,7 @@ enum DetailMode {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct DiagnosticSpec {
+pub(crate) struct DiagnosticSpec {
     pub headline:    &'static str,
     pub inline_help: Option<&'static str>,
     pub help_anchor: &'static str,
@@ -27,7 +27,7 @@ pub struct DiagnosticSpec {
     pub fix_support: FixSupport,
 }
 
-pub fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
+pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
     static FORBIDDEN_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
         headline:    "use of `pub(crate)` is forbidden by policy",
         inline_help: None,
@@ -187,9 +187,9 @@ pub(crate) struct PubUseFixFacts {
 }
 
 impl PubUseFixFacts {
-    pub const fn from_vec(facts: Vec<PubUseFixFact>) -> Self { Self { facts } }
+    pub(crate) const fn from_vec(facts: Vec<PubUseFixFact>) -> Self { Self { facts } }
 
-    pub fn iter(&self) -> impl Iterator<Item = &PubUseFixFact> { self.facts.iter() }
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &PubUseFixFact> { self.facts.iter() }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -201,15 +201,15 @@ pub(crate) enum CompilerWarningFacts {
 }
 
 impl CompilerWarningFacts {
-    pub const fn saw_unused_import_warnings(self) -> bool {
+    pub(crate) const fn saw_unused_import_warnings(self) -> bool {
         matches!(self, Self::UnusedImportWarnings)
     }
 }
 
 impl Report {
-    pub const fn has_errors(&self) -> bool { self.summary.errors > 0 }
+    pub(crate) const fn has_errors(&self) -> bool { self.summary.errors > 0 }
 
-    pub const fn has_warnings(&self) -> bool { self.summary.warnings > 0 }
+    pub(crate) const fn has_warnings(&self) -> bool { self.summary.warnings > 0 }
 
     pub(super) fn refresh_summary(&mut self) {
         self.summary = ReportSummary {

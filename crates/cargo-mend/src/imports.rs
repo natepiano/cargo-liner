@@ -53,7 +53,7 @@ pub(crate) struct ValidatedFixSet {
 }
 
 impl ValidatedFixSet {
-    pub fn from_vec(mut fixes: Vec<UseFix>) -> Result<Self> {
+    pub(crate) fn from_vec(mut fixes: Vec<UseFix>) -> Result<Self> {
         fixes.sort_by(|left, right| {
             (&left.path, left.start, left.end, &left.replacement).cmp(&(
                 &right.path,
@@ -107,9 +107,9 @@ impl ValidatedFixSet {
         Ok(Self { fixes })
     }
 
-    pub const fn is_empty(&self) -> bool { self.fixes.is_empty() }
+    pub(crate) const fn is_empty(&self) -> bool { self.fixes.is_empty() }
 
-    pub fn iter(&self) -> impl Iterator<Item = &UseFix> { self.fixes.iter() }
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &UseFix> { self.fixes.iter() }
 }
 
 #[derive(Debug)]

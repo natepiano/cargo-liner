@@ -81,7 +81,7 @@ pub(crate) struct FixValidationFailure {
 }
 
 impl MendFailure {
-    pub fn exit_code() -> ExitCode { ExitCode::from(EXIT_CODE_WARNING) }
+    pub(crate) fn exit_code() -> ExitCode { ExitCode::from(EXIT_CODE_WARNING) }
 }
 
 impl fmt::Display for MendFailure {
@@ -144,11 +144,11 @@ impl From<Error> for MendFailure {
 }
 
 impl ExecutionNotice {
-    pub fn from_kind(kind: NoticeKind) -> Self { Self { kinds: vec![kind] } }
+    pub(crate) fn from_kind(kind: NoticeKind) -> Self { Self { kinds: vec![kind] } }
 
-    pub const fn from_kinds(kinds: Vec<NoticeKind>) -> Self { Self { kinds } }
+    pub(crate) const fn from_kinds(kinds: Vec<NoticeKind>) -> Self { Self { kinds } }
 
-    pub fn render(&self) -> String {
+    pub(crate) fn render(&self) -> String {
         let parts = self
             .kinds
             .iter()
@@ -180,7 +180,7 @@ impl FixNotice {
         }
     }
 
-    pub const fn from_intent(intent: OperationIntent, count: usize) -> Self {
+    pub(crate) const fn from_intent(intent: OperationIntent, count: usize) -> Self {
         match intent {
             OperationIntent::ReadOnly => Self::NoneAvailable,
             OperationIntent::DryRun => {
@@ -235,7 +235,7 @@ impl PubUseNotice {
         }
     }
 
-    pub const fn from_intent(
+    pub(crate) const fn from_intent(
         intent: OperationIntent,
         applied: usize,
         skipped_unsupported: usize,

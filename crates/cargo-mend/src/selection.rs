@@ -48,7 +48,7 @@ pub(crate) enum TargetSelector {
 }
 
 impl TargetSelector {
-    pub fn cargo_args(&self) -> Vec<String> {
+    pub(crate) fn cargo_args(&self) -> Vec<String> {
         match self {
             Self::Implicit => Vec::new(),
             Self::Lib => vec!["--lib".to_string()],
