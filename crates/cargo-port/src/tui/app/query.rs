@@ -90,12 +90,12 @@ impl App {
         self.toast_pane.set_len(self.active_toasts().len());
     }
 
-    pub fn start_clean(&mut self, project_path: &str) {
-        self.running_clean_paths.insert(project_path.to_string());
+    pub fn start_clean(&mut self, project_path: &Path) {
+        self.running_clean_paths.insert(project_path.to_path_buf());
         self.sync_running_clean_toast();
     }
 
-    pub fn clean_spawn_failed(&mut self, project_path: &str) {
+    pub fn clean_spawn_failed(&mut self, project_path: &Path) {
         self.running_clean_paths.remove(project_path);
         self.sync_running_clean_toast();
     }
@@ -111,25 +111,23 @@ impl App {
         }
         crate::lint::project_is_eligible(
             &self.current_config.lint,
-            &project.path,
+            &project.abs_path,
             &PathBuf::from(&project.abs_path),
             project.is_rust == Rust,
         )
     }
 
     pub fn bottom_panel_available(&self, project: &LegacyProject) -> bool {
-        let has_ci = self.is_ci_owner_path(&project.path)
+        let abs = Path::new(&project.abs_path);
+        let has_ci = self.is_ci_owner_path(abs)
             && (self
                 .ci_state_for(project)
                 .is_some_and(|state| !state.runs().is_empty())
                 || self
                     .git_info
-                    .get(&project.path)
+                    .get(abs)
                     .is_some_and(|info| info.url.is_some()));
-        let has_lint_runs = self
-            .lint_runs
-            .get(&project.path)
-            .is_some_and(|runs| !runs.is_empty())
+        let has_lint_runs = self.lint_runs.get(abs).is_some_and(|runs| !runs.is_empty())
             || self.lint_is_watchable(project);
         has_ci || has_lint_runs
     }
@@ -165,7 +163,7 @@ impl App {
         if let Some(path) = current
             && self.selection_paths.last_selected.as_ref() != Some(&path)
         {
-            self.reload_lint_history(&path);
+            self.reload_lint_history(Path::new(&path));
             self.data_generation += 1;
             self.detail_generation += 1;
             self.selection_paths.last_selected = Some(path);
@@ -225,7 +223,7 @@ impl App {
     }
 
     pub fn formatted_disk(&self, project: &LegacyProject) -> String {
-        match self.disk_usage.get(&project.path) {
+        match self.disk_usage.get(Path::new(&project.abs_path)) {
             Some(&bytes) => crate::tui::render::format_bytes(bytes),
             None => crate::tui::render::format_bytes(0),
         }
@@ -233,23 +231,23 @@ impl App {
 
     pub fn selected_ci_project(&self) -> Option<&LegacyProject> {
         self.selected_project()
-            .filter(|project| self.is_ci_owner_path(&project.path))
+            .filter(|project| self.is_ci_owner_path(Path::new(&project.abs_path)))
     }
 
     pub fn selected_ci_state(&self) -> Option<&CiState> {
         self.selected_ci_project()
-            .and_then(|project| self.ci_state.get(&project.path))
+            .and_then(|project| self.ci_state.get(Path::new(&project.abs_path)))
     }
 
     pub fn ci_for(&self, project: &LegacyProject) -> Option<Conclusion> {
         self.ci_state_for(project)
-            .and_then(|_| self.latest_ci_run_for_path(&project.path))
+            .and_then(|_| self.latest_ci_run_for_path(Path::new(&project.abs_path)))
             .map(|run| run.conclusion)
     }
 
     pub fn ci_state_for(&self, project: &LegacyProject) -> Option<&CiState> {
-        self.is_ci_owner_path(&project.path)
-            .then(|| self.ci_state.get(&project.path))
+        self.is_ci_owner_path(Path::new(&project.abs_path))
+            .then(|| self.ci_state.get(Path::new(&project.abs_path)))
             .flatten()
     }
 
@@ -276,24 +274,24 @@ impl App {
         }
     }
 
-    /// All display paths for a `ProjectListItem` (root + worktrees).
-    fn unique_item_display_paths(item: &ProjectListItem) -> Vec<String> {
+    /// All absolute paths for a `ProjectListItem` (root + worktrees).
+    fn unique_item_paths(item: &ProjectListItem) -> Vec<PathBuf> {
         let mut paths = Vec::new();
-        paths.push(item.display_path());
+        paths.push(item.path().to_path_buf());
         match item {
             ProjectListItem::WorkspaceWorktrees(wtg) => {
                 for linked in wtg.linked() {
-                    let dp = linked.display_path();
-                    if !paths.contains(&dp) {
-                        paths.push(dp);
+                    let p = linked.path().to_path_buf();
+                    if !paths.contains(&p) {
+                        paths.push(p);
                     }
                 }
             },
             ProjectListItem::PackageWorktrees(wtg) => {
                 for linked in wtg.linked() {
-                    let dp = linked.display_path();
-                    if !paths.contains(&dp) {
-                        paths.push(dp);
+                    let p = linked.path().to_path_buf();
+                    if !paths.contains(&p) {
+                        paths.push(p);
                     }
                 }
             },
@@ -312,14 +310,14 @@ impl App {
 
     /// Get total disk bytes for a `ProjectListItem` (sum of root + worktrees).
     pub fn disk_bytes_for_item(&self, item: &ProjectListItem) -> Option<u64> {
-        let paths = Self::unique_item_display_paths(item);
+        let paths = Self::unique_item_paths(item);
         if paths.len() == 1 {
             return self.disk_usage.get(&paths[0]).copied();
         }
         let mut total: u64 = 0;
         let mut any_data = false;
         for path in &paths {
-            if let Some(&bytes) = self.disk_usage.get(path.as_str()) {
+            if let Some(&bytes) = self.disk_usage.get(path.as_path()) {
                 total += bytes;
                 any_data = true;
             }
@@ -329,12 +327,12 @@ impl App {
 
     /// Aggregate CI for a `ProjectListItem`.
     pub fn ci_for_item(&self, item: &ProjectListItem) -> Option<Conclusion> {
-        let paths = Self::unique_item_display_paths(item);
+        let paths = Self::unique_item_paths(item);
         if paths.len() == 1 {
             // For single-path items, use the standard ci_for (checks CI owner).
             // But fall through to aggregation if the project isn't in all_projects
             // (e.g., a worktree not yet discovered).
-            if let Some(p) = self.project_by_path(&paths[0]) {
+            if let Some(p) = self.project_by_abs_path(&paths[0]) {
                 return self.ci_for(p);
             }
             return self
@@ -409,29 +407,39 @@ impl App {
             .find(|project| project.path == path)
     }
 
+    pub fn project_by_abs_path(&self, path: &Path) -> Option<&LegacyProject> {
+        self.all_projects
+            .iter()
+            .find(|project| Path::new(&project.abs_path) == path)
+    }
+
     pub fn recompute_cargo_active_paths(&mut self) {
-        let project_index: HashMap<String, Vec<String>> = self
+        let project_index: HashMap<PathBuf, Vec<String>> = self
             .all_projects
             .iter()
-            .map(|project| (project.path.clone(), project.local_dependency_paths.clone()))
+            .map(|project| {
+                (
+                    PathBuf::from(&project.abs_path),
+                    project.local_dependency_paths.clone(),
+                )
+            })
             .collect();
-        let mut active_paths: HashSet<String> = self
+        let mut active_paths: HashSet<PathBuf> = self
             .all_projects
             .iter()
             .filter(|project| !self.is_vendored_path(&project.path))
-            .map(|project| project.path.clone())
+            .map(|project| PathBuf::from(&project.abs_path))
             .collect();
-        let mut frontier: Vec<String> = active_paths.iter().cloned().collect();
+        let mut frontier: Vec<PathBuf> = active_paths.iter().cloned().collect();
 
         while let Some(path) = frontier.pop() {
             let Some(dependencies) = project_index.get(&path) else {
                 continue;
             };
             for dependency_path in dependencies {
-                if project_index.contains_key(dependency_path)
-                    && active_paths.insert(dependency_path.clone())
-                {
-                    frontier.push(dependency_path.clone());
+                let dep = PathBuf::from(dependency_path);
+                if project_index.contains_key(&dep) && active_paths.insert(dep.clone()) {
+                    frontier.push(dep);
                 }
             }
         }
@@ -439,55 +447,56 @@ impl App {
         self.cargo_active_paths = active_paths;
     }
 
-    pub fn is_cargo_active_path(&self, path: &str) -> bool {
+    pub fn is_cargo_active_path(&self, path: &Path) -> bool {
         self.cargo_active_paths.contains(path)
     }
 
-    pub fn git_path_state_for(&self, path: &str) -> GitPathState {
+    pub fn git_path_state_for(&self, path: &Path) -> GitPathState {
         self.git_path_states
             .get(path)
             .copied()
             .unwrap_or(GitPathState::OutsideRepo)
     }
 
-    pub fn refresh_git_path_state(&mut self, path: &str) {
-        let Some(project) = self.project_by_path(path) else {
+    pub fn refresh_git_path_state(&mut self, path: &Path) {
+        let Some(project) = self.project_by_abs_path(path) else {
             self.git_path_states.remove(path);
             return;
         };
         let state = crate::project::detect_git_path_state(Path::new(&project.abs_path));
-        self.git_path_states.insert(path.to_string(), state);
+        self.git_path_states.insert(path.to_path_buf(), state);
     }
 
     pub fn prune_inactive_project_state(&mut self) {
-        let all_paths: HashSet<String> = self
+        let all_paths: HashSet<PathBuf> = self
             .all_projects
             .iter()
-            .map(|project| project.path.clone())
+            .map(|project| PathBuf::from(&project.abs_path))
             .collect();
         self.git_path_states
             .retain(|path, _| all_paths.contains(path));
-        for path in all_paths {
-            if self.is_cargo_active_path(&path) {
+        for path in &all_paths {
+            if self.is_cargo_active_path(path) {
                 continue;
             }
-            self.ci_state.remove(&path);
-            self.crates_versions.remove(&path);
-            self.crates_downloads.remove(&path);
-            self.lint_runs.remove(&path);
-            self.lint_status.remove(&path);
+            self.ci_state.remove(path);
+            self.crates_versions.remove(path);
+            self.crates_downloads.remove(path);
+            self.lint_runs.remove(path);
+            self.lint_status.remove(path);
         }
     }
 
     /// Formatted ahead/behind sync status for the project list columns.
     pub fn git_sync(&self, project: &LegacyProject) -> String {
+        let abs = Path::new(&project.abs_path);
         if matches!(
-            self.git_path_state_for(&project.path),
+            self.git_path_state_for(abs),
             GitPathState::Untracked | GitPathState::Ignored
         ) {
             return String::new();
         }
-        let Some(info) = self.git_info.get(&project.path) else {
+        let Some(info) = self.git_info.get(abs) else {
             return String::new();
         };
         match info.ahead_behind {

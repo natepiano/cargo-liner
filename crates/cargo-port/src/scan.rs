@@ -1156,7 +1156,7 @@ pub(crate) struct FetchContext {
 pub(crate) struct ProjectDetailRequest<'a> {
     pub tx:            &'a mpsc::Sender<BackgroundMsg>,
     pub ctx:           &'a FetchContext,
-    pub project_path:  &'a str,
+    pub _project_path: &'a str,
     pub abs_path:      &'a Path,
     pub project_name:  Option<&'a str>,
     pub repo_presence: GitRepoPresence,
@@ -1168,7 +1168,6 @@ pub(crate) struct ProjectDetailRequest<'a> {
 pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let tx = req.tx;
     let ctx = req.ctx;
-    let project_path = req.project_path;
     let abs_path = req.abs_path;
     let project_name = req.project_name;
     let repo_presence = req.repo_presence;
@@ -1176,7 +1175,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let client = &ctx.client;
     let repo_cache = &ctx.repo_cache;
     let _ = tx.send(BackgroundMsg::GitPathState {
-        path:  project_path.to_string(),
+        path:  abs_path.to_string_lossy().into_owned(),
         state: super::project::detect_git_path_state(abs_path),
     });
     // Git info first (local, instant) — also provides the repo URL for CI cache lookup
@@ -1187,7 +1186,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     };
     if let Some(ref info) = git_info {
         let _ = tx.send(BackgroundMsg::GitInfo {
-            path: project_path.to_string(),
+            path: abs_path.to_string_lossy().into_owned(),
             info: info.clone(),
         });
     }
@@ -1220,12 +1219,12 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         });
 
         let _ = tx.send(BackgroundMsg::CiRuns {
-            path: project_path.to_string(),
+            path: abs_path.to_string_lossy().into_owned(),
             runs: data.runs,
         });
         if let Some(meta) = data.meta {
             let _ = tx.send(BackgroundMsg::RepoMeta {
-                path:        project_path.to_string(),
+                path:        abs_path.to_string_lossy().into_owned(),
                 stars:       meta.stars,
                 description: meta.description,
             });
@@ -1238,7 +1237,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         emit_service_signal(tx, signal);
         if let Some(info) = info {
             let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                path:      project_path.to_string(),
+                path:      abs_path.to_string_lossy().into_owned(),
                 version:   info.version,
                 downloads: info.downloads,
             });
@@ -1249,7 +1248,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     // local operation and doesn't block anything else.
     let bytes = dir_size(abs_path);
     let _ = tx.send(BackgroundMsg::DiskUsage {
-        path: project_path.to_string(),
+        path: abs_path.to_string_lossy().into_owned(),
         bytes,
     });
 }
@@ -1539,7 +1538,10 @@ fn phase1_discover(
                     branch: None,
                 };
                 spawn_project_local_work(scan_context, discovered.clone(), repo_presence);
-                disk_entries.push((discovered.path.clone(), discovered.abs_path.clone()));
+                disk_entries.push((
+                    discovered.abs_path.to_string_lossy().into_owned(),
+                    discovered.abs_path.clone(),
+                ));
             }
         }
     }
@@ -1561,9 +1563,10 @@ fn spawn_initial_disk_usage(
 fn spawn_project_http(scan_context: &StreamingScanContext, project: &DiscoveredProject) {
     if let Some((owner, repo)) = &project.owner_repo {
         let key = repo_dispatch_key(owner, repo, project.branch.as_deref());
-        match register_repo_path(&scan_context.repo_dispatch, &key, &project.path) {
+        let abs_path_str = project.abs_path.to_string_lossy().into_owned();
+        match register_repo_path(&scan_context.repo_dispatch, &key, &abs_path_str) {
             RepoDispatchRegistration::Cached(data) => {
-                send_repo_data(&scan_context.tx, std::slice::from_ref(&project.path), &data);
+                send_repo_data(&scan_context.tx, std::slice::from_ref(&abs_path_str), &data);
             },
             RepoDispatchRegistration::SpawnFetch => {
                 let _ = scan_context
@@ -1590,7 +1593,7 @@ fn spawn_project_http(scan_context: &StreamingScanContext, project: &DiscoveredP
             &scan_context.client,
             &scan_context.tx,
             &scan_context.http_limit,
-            &project.path,
+            &project.abs_path.to_string_lossy(),
             name,
         );
     }
@@ -1615,7 +1618,7 @@ fn spawn_project_local_work(
     let scan_context = scan_context.clone();
     if repo_presence.is_in_repo() {
         let _ = tx.send(BackgroundMsg::LocalGitQueued {
-            path: project.path.clone(),
+            path: project.abs_path.to_string_lossy().into_owned(),
         });
     }
 

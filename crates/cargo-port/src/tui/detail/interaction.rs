@@ -254,7 +254,8 @@ fn handle_lints_key(app: &mut App, event: &KeyEvent) {
 
 /// Clear CI cache for a project and remove its runs from the app.
 fn clear_ci_cache(app: &mut App, project_path: &str) {
-    if let Some(git) = app.git_info.get(project_path)
+    let abs = std::path::PathBuf::from(project_path);
+    if let Some(git) = app.git_info.get(&abs)
         && let Some(url) = git.url.as_deref()
         && let Some((owner, repo)) = ci::parse_owner_repo(url)
     {
@@ -263,7 +264,7 @@ fn clear_ci_cache(app: &mut App, project_path: &str) {
     }
 
     app.ci_state.insert(
-        project_path.to_string(),
+        abs,
         CiState::Loaded {
             runs:      Vec::new(),
             exhausted: false,
@@ -280,8 +281,8 @@ fn clear_lint_history(app: &mut App) {
     let project_cache_dir = crate::lint::project_dir(std::path::Path::new(&project.abs_path));
     let _ = std::fs::remove_dir_all(project_cache_dir);
 
-    let path = project.path.clone();
-    app.lint_runs.remove(&path);
+    let abs = std::path::PathBuf::from(&project.abs_path);
+    app.lint_runs.remove(&abs);
     app.lint_pane.home();
     app.refresh_lint_cache_usage_from_disk();
     app.data_generation += 1;
@@ -291,7 +292,7 @@ fn open_lint_run_output(app: &App) {
     let Some(project) = app.selected_project() else {
         return;
     };
-    let runs = match app.lint_runs.get(&project.path) {
+    let runs = match app.lint_runs.get(std::path::Path::new(&project.abs_path)) {
         Some(runs) if !runs.is_empty() => runs,
         _ => return,
     };

@@ -165,7 +165,7 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
         match action {
             ConfirmAction::Clean(abs_path) => {
                 let project_path = project::home_relative_path(Path::new(&abs_path));
-                app.start_clean(&project_path);
+                app.start_clean(Path::new(&abs_path));
                 app.pending_cleans.push_back(PendingClean {
                     abs_path,
                     project_path,

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use nucleo_matcher::Matcher;
 use nucleo_matcher::Utf32Str;
 use nucleo_matcher::pattern::Atom;
@@ -252,6 +254,77 @@ impl App {
         }
     }
 
+    /// Given a `VisibleRow`, resolve the absolute path from `project_list_items`.
+    pub fn abs_path_for_row(&self, row: VisibleRow) -> Option<PathBuf> {
+        match row {
+            VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
+                let item = self.project_list_items.get(node_index)?;
+                Some(item.path().to_path_buf())
+            },
+            VisibleRow::Member {
+                node_index,
+                group_index,
+                member_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                match item {
+                    ProjectListItem::Workspace(ws) => {
+                        let group = ws.groups().get(group_index)?;
+                        let member = group.members().get(member_index)?;
+                        Some(member.path().to_path_buf())
+                    },
+                    _ => None,
+                }
+            },
+            VisibleRow::Vendored {
+                node_index,
+                vendored_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                match item {
+                    ProjectListItem::Workspace(ws) => ws
+                        .vendored()
+                        .get(vendored_index)
+                        .map(|p| p.path().to_path_buf()),
+                    ProjectListItem::Package(pkg) => pkg
+                        .vendored()
+                        .get(vendored_index)
+                        .map(|p| p.path().to_path_buf()),
+                    _ => None,
+                }
+            },
+            VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
+            }
+            | VisibleRow::WorktreeGroupHeader {
+                node_index,
+                worktree_index,
+                ..
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                Self::worktree_abs_path(item, worktree_index)
+            },
+            VisibleRow::WorktreeMember {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                Self::worktree_member_abs_path(item, worktree_index, group_index, member_index)
+            },
+            VisibleRow::WorktreeVendored {
+                node_index,
+                worktree_index,
+                vendored_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                Self::worktree_vendored_abs_path(item, worktree_index, vendored_index)
+            },
+        }
+    }
+
     /// Check if a group at the given indices is an inline (unnamed) group.
     fn is_inline_group(&self, ni: usize, gi: usize) -> bool {
         let Some(item) = self.project_list_items.get(ni) else {
@@ -345,6 +418,68 @@ impl App {
                     wtg.linked().get(wi - 1)?
                 };
                 pkg.vendored().get(vi).map(Project::display_path)
+            },
+            _ => None,
+        }
+    }
+
+    fn worktree_abs_path(item: &ProjectListItem, wi: usize) -> Option<PathBuf> {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                if wi == 0 {
+                    Some(wtg.primary().path().to_path_buf())
+                } else {
+                    wtg.linked().get(wi - 1).map(|p| p.path().to_path_buf())
+                }
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                if wi == 0 {
+                    Some(wtg.primary().path().to_path_buf())
+                } else {
+                    wtg.linked().get(wi - 1).map(|p| p.path().to_path_buf())
+                }
+            },
+            _ => None,
+        }
+    }
+
+    fn worktree_member_abs_path(
+        item: &ProjectListItem,
+        wi: usize,
+        gi: usize,
+        mi: usize,
+    ) -> Option<PathBuf> {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                let ws = if wi == 0 {
+                    wtg.primary()
+                } else {
+                    wtg.linked().get(wi - 1)?
+                };
+                let group = ws.groups().get(gi)?;
+                group.members().get(mi).map(|p| p.path().to_path_buf())
+            },
+            _ => None,
+        }
+    }
+
+    fn worktree_vendored_abs_path(item: &ProjectListItem, wi: usize, vi: usize) -> Option<PathBuf> {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                let ws = if wi == 0 {
+                    wtg.primary()
+                } else {
+                    wtg.linked().get(wi - 1)?
+                };
+                ws.vendored().get(vi).map(|p| p.path().to_path_buf())
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                let pkg = if wi == 0 {
+                    wtg.primary()
+                } else {
+                    wtg.linked().get(wi - 1)?
+                };
+                pkg.vendored().get(vi).map(|p| p.path().to_path_buf())
             },
             _ => None,
         }

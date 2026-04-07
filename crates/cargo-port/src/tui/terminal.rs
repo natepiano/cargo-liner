@@ -325,16 +325,17 @@ fn spawn_pending_background_tasks(app: &mut App) {
     }
 
     if let Some(fetch) = app.pending_ci_fetch.take() {
+        let abs = PathBuf::from(&fetch.project_path);
         let existing_runs = app
             .ci_state
-            .remove(&fetch.project_path)
+            .remove(&abs)
             .map(|s| match s {
                 super::app::CiState::Fetching { runs, .. }
                 | super::app::CiState::Loaded { runs, .. } => runs,
             })
             .unwrap_or_default();
         app.ci_state.insert(
-            fetch.project_path.clone(),
+            abs,
             super::app::CiState::Fetching {
                 runs:  existing_runs,
                 count: CI_FETCH_DISPLAY_COUNT,
@@ -499,7 +500,7 @@ fn spawn_clean_process(app: &mut App, pending: &PendingClean) {
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            app.clean_spawn_failed(&pending.project_path);
+            app.clean_spawn_failed(Path::new(&pending.project_path));
             app.show_timed_toast("cargo clean failed", e.to_string());
             return;
         },
@@ -514,7 +515,7 @@ fn spawn_clean_process(app: &mut App, pending: &PendingClean) {
 
 fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     // Derive (repo_url, owner, repo) from local git info — no network needed
-    let Some(git) = app.git_info.get(&fetch.project_path) else {
+    let Some(git) = app.git_info.get(Path::new(&fetch.project_path)) else {
         return;
     };
     let Some(repo_url) = &git.url else {
@@ -573,10 +574,10 @@ fn save_last_selected(project_path: &str) {
 }
 
 /// Spawn a background thread to fetch details for a single project ahead of the main scan.
-pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: Option<&String>) {
+pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name: Option<&String>) {
     let tx = app.bg_tx.clone();
     let client = app.http_client.clone();
-    let project_path = path.to_string();
+    let project_path = abs_path.to_string();
     let abs = PathBuf::from(abs_path);
     let repo_presence = if crate::project::git_repo_root(&abs).is_some() {
         GitRepoPresence::InRepo

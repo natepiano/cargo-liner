@@ -277,7 +277,7 @@ fn build_fetch_row(
 
 fn cached_run_count(app: &App) -> usize {
     app.selected_ci_project()
-        .and_then(|project| app.git_info.get(&project.path))
+        .and_then(|project| app.git_info.get(std::path::Path::new(&project.abs_path)))
         .and_then(|git| {
             git.url.as_ref().and_then(|url| {
                 ci::parse_owner_repo(url).map(|(owner, repo)| {

@@ -719,10 +719,8 @@ fn fire_git_updates(
             .values()
             .filter(|entry| entry.repo_root.as_deref() == Some(repo_root.as_path()))
             .map(|entry| {
-                (
-                    entry.project_path.clone(),
-                    entry.abs_path.to_string_lossy().to_string(),
-                )
+                let abs = entry.abs_path.to_string_lossy().to_string();
+                (abs.clone(), abs)
             })
             .collect();
         if affected.is_empty() {
@@ -942,9 +940,8 @@ fn probe_new_projects(
             // Directory was removed — send a zero-byte update so the app
             // can mark it as deleted if it was a tracked project.
             discovered.remove(&dir);
-            let display_path = project::home_relative_path(&dir);
             let _ = bg_tx.send(BackgroundMsg::DiskUsage {
-                path:  display_path,
+                path:  dir.to_string_lossy().into_owned(),
                 bytes: 0,
             });
             continue;
@@ -975,7 +972,7 @@ fn probe_new_projects(
                 let request = scan::ProjectDetailRequest {
                     tx: &tx,
                     ctx: &task_ctx,
-                    project_path: &path,
+                    _project_path: &path,
                     abs_path: &abs_path,
                     project_name: name.as_deref(),
                     repo_presence,

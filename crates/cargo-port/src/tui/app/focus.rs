@@ -162,7 +162,7 @@ impl App {
                 PaneId::Package => self.selected_project().is_some(),
                 PaneId::Git => self.selected_project().is_some_and(|project| {
                     self.git_info
-                        .get(&project.path)
+                        .get(std::path::Path::new(&project.abs_path))
                         .is_some_and(|info| info.url.is_some())
                 }),
                 PaneId::Targets => self.selected_project().is_some_and(|project| {

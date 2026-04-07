@@ -1602,6 +1602,17 @@ impl ProjectListItem {
         }
     }
 
+    /// Absolute path to the primary project root.
+    pub(crate) fn path(&self) -> &Path {
+        match self {
+            Self::Workspace(p) => p.path(),
+            Self::Package(p) => p.path(),
+            Self::NonRust(p) => p.path(),
+            Self::WorkspaceWorktrees(g) => g.primary().path(),
+            Self::PackageWorktrees(g) => g.primary().path(),
+        }
+    }
+
     pub(crate) fn display_path(&self) -> String {
         match self {
             Self::Workspace(p) => p.display_path(),

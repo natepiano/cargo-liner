@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
 
 use super::types::App;
 use super::types::LintRollupKey;
@@ -13,7 +15,7 @@ impl App {
         self.lint_rollup_paths.clear();
         self.lint_rollup_keys_by_path.clear();
 
-        let mut registrations: Vec<(LintRollupKey, Vec<String>)> = Vec::new();
+        let mut registrations: Vec<(LintRollupKey, Vec<PathBuf>)> = Vec::new();
         for (node_index, item) in self.project_list_items.iter().enumerate() {
             registrations.push((
                 LintRollupKey::Root { node_index },
@@ -27,7 +29,7 @@ impl App {
                             node_index,
                             worktree_index: 0,
                         },
-                        vec![wtg.primary().display_path()],
+                        vec![wtg.primary().path().to_path_buf()],
                     ));
                     for (i, linked) in wtg.linked().iter().enumerate() {
                         registrations.push((
@@ -35,7 +37,7 @@ impl App {
                                 node_index,
                                 worktree_index: i + 1,
                             },
-                            vec![linked.display_path()],
+                            vec![linked.path().to_path_buf()],
                         ));
                     }
                 },
@@ -45,7 +47,7 @@ impl App {
                             node_index,
                             worktree_index: 0,
                         },
-                        vec![wtg.primary().display_path()],
+                        vec![wtg.primary().path().to_path_buf()],
                     ));
                     for (i, linked) in wtg.linked().iter().enumerate() {
                         registrations.push((
@@ -53,7 +55,7 @@ impl App {
                                 node_index,
                                 worktree_index: i + 1,
                             },
-                            vec![linked.display_path()],
+                            vec![linked.path().to_path_buf()],
                         ));
                     }
                 },
@@ -71,7 +73,7 @@ impl App {
         }
     }
 
-    fn register_lint_rollup(&mut self, key: LintRollupKey, mut paths: Vec<String>) {
+    fn register_lint_rollup(&mut self, key: LintRollupKey, mut paths: Vec<PathBuf>) {
         let mut seen = HashSet::new();
         paths.retain(|path| seen.insert(path.clone()));
         for path in &paths {
@@ -83,7 +85,7 @@ impl App {
         self.lint_rollup_paths.insert(key, paths);
     }
 
-    pub(super) fn update_lint_rollups_for_path(&mut self, path: &str) {
+    pub(super) fn update_lint_rollups_for_path(&mut self, path: &Path) {
         let Some(keys) = self.lint_rollup_keys_by_path.get(path).cloned() else {
             return;
         };
@@ -121,25 +123,19 @@ impl App {
         LintStatus::aggregate(statuses.iter().cloned())
     }
 
-    fn lint_root_paths_for_item(item: &ProjectListItem) -> Vec<String> {
+    fn lint_root_paths_for_item(item: &ProjectListItem) -> Vec<PathBuf> {
         match item {
             ProjectListItem::WorkspaceWorktrees(wtg) => {
-                std::iter::once(wtg.primary().display_path())
-                    .chain(
-                        wtg.linked()
-                            .iter()
-                            .map(crate::project::Project::display_path),
-                    )
+                std::iter::once(wtg.primary().path().to_path_buf())
+                    .chain(wtg.linked().iter().map(|p| p.path().to_path_buf()))
                     .collect()
             },
-            ProjectListItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary().display_path())
-                .chain(
-                    wtg.linked()
-                        .iter()
-                        .map(crate::project::Project::display_path),
-                )
-                .collect(),
-            _ => vec![item.display_path()],
+            ProjectListItem::PackageWorktrees(wtg) => {
+                std::iter::once(wtg.primary().path().to_path_buf())
+                    .chain(wtg.linked().iter().map(|p| p.path().to_path_buf()))
+                    .collect()
+            },
+            _ => vec![item.path().to_path_buf()],
         }
     }
 
@@ -179,7 +175,7 @@ impl App {
         if !self.lint_enabled() {
             return LINT_NO_LOG;
         }
-        let Some(status) = self.lint_status.get(&project.path) else {
+        let Some(status) = self.lint_status.get(Path::new(&project.abs_path)) else {
             return LINT_NO_LOG;
         };
         status.icon().frame_at(self.animation_elapsed())
@@ -246,7 +242,7 @@ impl App {
             )
             | None => self
                 .lint_status
-                .get(&project.path)
+                .get(Path::new(&project.abs_path))
                 .map(|status| status.icon().frame_at(self.animation_elapsed())),
         }
     }

@@ -95,7 +95,7 @@ pub(super) const FINDER_HEADERS: [&str; FINDER_COLUMN_COUNT] =
 /// width of each column across the entire index.
 pub(super) fn build_finder_index(
     list_items: &[ProjectListItem],
-    git_info: &HashMap<String, GitInfo>,
+    git_info: &HashMap<std::path::PathBuf, GitInfo>,
 ) -> (Vec<FinderItem>, [usize; FINDER_COLUMN_COUNT]) {
     let mut items = Vec::new();
 
@@ -109,7 +109,7 @@ pub(super) fn build_finder_index(
             },
             ProjectListItem::NonRust(nr) => {
                 let dp = nr.display_path();
-                let branch = branch_for(&dp, git_info);
+                let branch = branch_for(nr.path(), git_info);
                 add_project_items_from_typed(
                     &mut items,
                     &nr.display_name(),
@@ -160,9 +160,12 @@ pub(super) fn build_finder_index(
     (items, col_widths)
 }
 
-fn branch_for(display_path: &str, git_info: &HashMap<String, GitInfo>) -> String {
+fn branch_for(
+    abs_path: &std::path::Path,
+    git_info: &HashMap<std::path::PathBuf, GitInfo>,
+) -> String {
     git_info
-        .get(display_path)
+        .get(abs_path)
         .and_then(|g| g.branch.as_deref())
         .unwrap_or("")
         .to_string()
@@ -171,10 +174,10 @@ fn branch_for(display_path: &str, git_info: &HashMap<String, GitInfo>) -> String
 fn add_workspace_items(
     items: &mut Vec<FinderItem>,
     ws: &Project<Workspace>,
-    git_info: &HashMap<String, GitInfo>,
+    git_info: &HashMap<std::path::PathBuf, GitInfo>,
 ) {
     let root_path = ws.display_path();
-    let root_branch = branch_for(&root_path, git_info);
+    let root_branch = branch_for(ws.path(), git_info);
     let cargo = ws.cargo();
 
     add_project_items_from_typed(
@@ -210,10 +213,10 @@ fn add_workspace_items(
 fn add_package_items(
     items: &mut Vec<FinderItem>,
     pkg: &Project<Package>,
-    git_info: &HashMap<String, GitInfo>,
+    git_info: &HashMap<std::path::PathBuf, GitInfo>,
 ) {
     let root_path = pkg.display_path();
-    let root_branch = branch_for(&root_path, git_info);
+    let root_branch = branch_for(pkg.path(), git_info);
     let cargo = pkg.cargo();
 
     add_project_items_from_typed(

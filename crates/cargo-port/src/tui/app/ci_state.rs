@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
 
 use super::types::App;
 use super::types::CiState;
@@ -10,14 +12,15 @@ use crate::tui::detail::CiFetchKind;
 
 impl App {
     /// Insert CI runs from the initial scan for a CI owner path.
-    pub(super) fn insert_ci_runs(&mut self, path: String, runs: Vec<CiRun>) {
-        if !self.is_cargo_active_path(&path) {
-            self.ci_state.remove(&path);
+    pub(super) fn insert_ci_runs(&mut self, path: &str, runs: Vec<CiRun>) {
+        let abs = PathBuf::from(path);
+        if !self.is_cargo_active_path(&abs) {
+            self.ci_state.remove(&abs);
             return;
         }
         let exhausted = self
             .git_info
-            .get(&path)
+            .get(&abs)
             .and_then(|git| {
                 git.url.as_ref().and_then(|url| {
                     ci::parse_owner_repo(url).map(|(owner, repo)| {
@@ -27,28 +30,29 @@ impl App {
             })
             .unwrap_or(false);
         self.ci_state
-            .insert(path, CiState::Loaded { runs, exhausted });
+            .insert(abs, CiState::Loaded { runs, exhausted });
     }
 
     /// Process a completed CI fetch: merge runs and detect exhaustion.
     pub(super) fn handle_ci_fetch_complete(
         &mut self,
-        path: String,
+        path: &str,
         result: CiFetchResult,
         kind: CiFetchKind,
     ) {
+        let abs = PathBuf::from(path);
         let new_runs = match result {
             CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
         };
 
         let prev_count = self
             .ci_state
-            .get(&path)
+            .get(&abs)
             .map_or(0, |state| state.runs().len());
 
         let existing = self
             .ci_state
-            .remove(&path)
+            .remove(&abs)
             .map(|state| match state {
                 CiState::Fetching { runs, .. } | CiState::Loaded { runs, .. } => runs,
             })
@@ -70,7 +74,7 @@ impl App {
 
         let found_new = merged.len() > prev_count;
         let exhausted = if found_new {
-            if let Some(git) = self.git_info.get(&path)
+            if let Some(git) = self.git_info.get(&abs)
                 && let Some(ref url) = git.url
                 && let Some((owner, repo)) = ci::parse_owner_repo(url)
             {
@@ -78,7 +82,7 @@ impl App {
             }
             false
         } else {
-            if let Some(git) = self.git_info.get(&path)
+            if let Some(git) = self.git_info.get(&abs)
                 && let Some(ref url) = git.url
                 && let Some((owner, repo)) = ci::parse_owner_repo(url)
             {
@@ -94,7 +98,7 @@ impl App {
 
         self.ci_pane.set_pos(merged.len());
         self.ci_state.insert(
-            path,
+            abs,
             CiState::Loaded {
                 runs: merged,
                 exhausted,
@@ -103,22 +107,22 @@ impl App {
         self.data_generation += 1;
     }
 
-    pub(super) fn is_ci_owner_path(&self, path: &str) -> bool {
+    pub(super) fn is_ci_owner_path(&self, path: &Path) -> bool {
         self.project_list_items.iter().any(|item| {
-            item.display_path() == path
+            item.path() == path
                 || match item {
                     crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
-                        wtg.linked().iter().any(|l| l.display_path() == path)
+                        wtg.linked().iter().any(|l| l.path() == path)
                     },
                     crate::project::ProjectListItem::PackageWorktrees(wtg) => {
-                        wtg.linked().iter().any(|l| l.display_path() == path)
+                        wtg.linked().iter().any(|l| l.path() == path)
                     },
                     _ => false,
                 }
         })
     }
 
-    pub(super) fn latest_ci_run_for_path(&self, path: &str) -> Option<&CiRun> {
+    pub(super) fn latest_ci_run_for_path(&self, path: &Path) -> Option<&CiRun> {
         let branch = self
             .git_info
             .get(path)

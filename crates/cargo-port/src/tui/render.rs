@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use ratatui::Frame;
 use ratatui::layout::Constraint;
@@ -281,7 +282,7 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let has_ci = selected_ci_state.is_some();
     let detail_lint_runs = app
         .selected_project()
-        .and_then(|p| app.lint_runs.get(&p.path))
+        .and_then(|p| app.lint_runs.get(Path::new(&p.abs_path)))
         .cloned()
         .unwrap_or_default();
     let detail_ci_runs: Vec<CiRun> = selected_ci_state
@@ -378,14 +379,14 @@ fn render_empty_ci_panel(
     frame.render_widget(block, area);
 
     // Determine why there's no CI
-    let has_git = project.is_some_and(|p| app.git_info.contains_key(&p.path));
+    let has_git = project.is_some_and(|p| app.git_info.contains_key(Path::new(&p.abs_path)));
     let has_url = project
         .filter(|_| selected_has_ci_owner)
-        .and_then(|p| app.git_info.get(&p.path))
+        .and_then(|p| app.git_info.get(Path::new(&p.abs_path)))
         .is_some_and(|g| g.url.is_some());
     let is_local = project
         .filter(|_| selected_has_ci_owner)
-        .and_then(|p| app.git_info.get(&p.path))
+        .and_then(|p| app.git_info.get(Path::new(&p.abs_path)))
         .is_some_and(|g| g.origin == GitOrigin::Local);
 
     let msg = if project.is_some() && !selected_has_ci_owner {
@@ -815,7 +816,7 @@ fn render_root_item(
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name: &name,
-        git_path_state: app.git_path_state_for(&display_path),
+        git_path_state: app.git_path_state_for(item.path()),
         lint_icon: lint,
         disk: disk_text,
         disk_style: ds,
@@ -839,10 +840,10 @@ fn render_child_item(
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
     let disk = app.formatted_disk(project);
-    let disk_bytes = app.disk_usage.get(&project.path).copied();
+    let disk_bytes = app.disk_usage.get(Path::new(&project.abs_path)).copied();
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
     let lang = project.lang_icon();
-    let cargo_active = app.is_cargo_active_path(&project.path);
+    let cargo_active = app.is_cargo_active_path(Path::new(&project.abs_path));
     let lint = if cargo_active {
         app.lint_icon(project)
     } else {
@@ -854,7 +855,7 @@ fn render_child_item(
         None
     };
     let sync = if matches!(
-        app.git_path_state_for(&project.path),
+        app.git_path_state_for(Path::new(&project.abs_path)),
         crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
     ) {
         String::new()
@@ -874,7 +875,7 @@ fn render_child_item(
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name,
-        git_path_state: app.git_path_state_for(&project.path),
+        git_path_state: app.git_path_state_for(Path::new(&project.abs_path)),
         lint_icon: lint,
         disk: disk_text,
         disk_style: ds,
@@ -901,6 +902,10 @@ fn render_worktree_entry<'a>(
         worktree_index: wi,
     });
     let dp = display_path.unwrap_or_default();
+    let abs_path = app.abs_path_for_row(VisibleRow::WorktreeEntry {
+        node_index:     ni,
+        worktree_index: wi,
+    });
     let project = app.project_by_path(&dp);
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
@@ -952,7 +957,8 @@ fn render_worktree_entry<'a>(
         || crate::tui::render::format_bytes(0),
         |p| app.formatted_disk(p),
     );
-    let disk_bytes = app.disk_usage.get(&dp).copied();
+    let wt_abs = abs_path.as_deref().unwrap_or_else(|| Path::new(""));
+    let disk_bytes = app.disk_usage.get(wt_abs).copied();
     let ds = disk_color(disk_percentile(disk_bytes, sorted));
     let lang = item.lang_icon();
     let lint = app.lint_icon_for_worktree(ni, wi);
@@ -971,7 +977,7 @@ fn render_worktree_entry<'a>(
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name: &wt_name,
-        git_path_state: app.git_path_state_for(&dp),
+        git_path_state: app.git_path_state_for(wt_abs),
         lint_icon: lint,
         disk: disk_text,
         disk_style: ds,
@@ -1284,9 +1290,9 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
                 .all_projects
                 .iter()
                 .find(|project| project.path == entry.path)?;
-            let cargo_active = app.is_cargo_active_path(&project.path);
+            let cargo_active = app.is_cargo_active_path(Path::new(&project.abs_path));
             let disk = app.formatted_disk(project);
-            let disk_bytes = app.disk_usage.get(&project.path).copied();
+            let disk_bytes = app.disk_usage.get(Path::new(&project.abs_path)).copied();
             let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
             let lang = project.lang_icon();
             let lint = if cargo_active {
@@ -1300,7 +1306,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
                 None
             };
             let sync = if matches!(
-                app.git_path_state_for(&project.path),
+                app.git_path_state_for(Path::new(&project.abs_path)),
                 crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
             ) {
                 String::new()
@@ -1320,7 +1326,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             let row = super::columns::build_row_cells(super::columns::ProjectRow {
                 prefix: "  ",
                 name: &entry.name,
-                git_path_state: app.git_path_state_for(&project.path),
+                git_path_state: app.git_path_state_for(Path::new(&project.abs_path)),
                 lint_icon: lint,
                 disk: disk_text,
                 disk_style: ds,

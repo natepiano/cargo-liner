@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -551,16 +553,13 @@ fn ci_runs_stay_on_owner_rows_not_workspace_members() {
     let mut app = make_app(vec![workspace.clone(), member.clone()]);
     apply_nodes(&mut app, &[root]);
 
-    app.insert_ci_runs(
-        workspace.path.clone(),
-        vec![make_ci_run(1, Conclusion::Success)],
-    );
+    app.insert_ci_runs(&workspace.path, vec![make_ci_run(1, Conclusion::Success)]);
 
     assert_eq!(app.ci_for(&workspace), Some(Conclusion::Success));
-    assert!(app.ci_state.contains_key(&workspace.path));
+    assert!(app.ci_state.contains_key(Path::new(&workspace.path)));
     assert_eq!(app.ci_for(&member), None);
     assert!(app.ci_state_for(&member).is_none());
-    assert!(!app.ci_state.contains_key(&member.path));
+    assert!(!app.ci_state.contains_key(Path::new(&member.path)));
 }
 
 #[test]
@@ -582,14 +581,14 @@ fn non_owner_member_ignores_stale_ci_state_and_cannot_fetch() {
     app.select_project_in_tree(&member.path);
 
     app.ci_state.insert(
-        member.path.clone(),
+        PathBuf::from(&member.path),
         CiState::Loaded {
             runs:      vec![make_ci_run(2, Conclusion::Failure)],
             exhausted: false,
         },
     );
     app.git_info.insert(
-        member.path.clone(),
+        PathBuf::from(&member.path),
         make_git_info(Some("https://github.com/natepiano/demo")),
     );
 
@@ -627,21 +626,21 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
     apply_nodes(&mut app, &[root]);
 
     app.ci_state.insert(
-        root_path,
+        PathBuf::from(&root_path),
         CiState::Loaded {
             runs:      vec![make_ci_run(3, Conclusion::Success)],
             exhausted: false,
         },
     );
     app.ci_state.insert(
-        feature_path,
+        PathBuf::from(&feature_path),
         CiState::Loaded {
             runs:      vec![make_ci_run(4, Conclusion::Failure)],
             exhausted: false,
         },
     );
     app.ci_state.insert(
-        member.path.clone(),
+        PathBuf::from(&member.path),
         CiState::Loaded {
             runs:      vec![make_ci_run(5, Conclusion::Success)],
             exhausted: false,
@@ -661,7 +660,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(vec![project.clone()]);
     app.git_info.insert(
-        project.path.clone(),
+        PathBuf::from(&project.path),
         GitInfo {
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),
@@ -676,7 +675,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
         },
     );
     app.ci_state.insert(
-        project.path.clone(),
+        PathBuf::from(&project.path),
         CiState::Loaded {
             runs:      vec![
                 CiRun {
@@ -725,14 +724,14 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .as_ref()
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
-    assert!(expected.contains(&project_a.path));
+    assert!(expected.contains(Path::new(&project_a.path)));
     assert!(
         !app.scan
             .startup_phases
             .lint_seen_terminal
-            .contains(&project_a.path)
+            .contains(Path::new(&project_a.path))
     );
-    assert!(app.running_lint_paths.contains(&project_a.path));
+    assert!(app.running_lint_paths.contains(Path::new(&project_a.path)));
     assert!(app.lint_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
@@ -748,13 +747,13 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
 #[test]
 fn startup_lint_toast_body_shows_paths_then_others() {
     let expected = HashSet::from([
-        "~/a".to_string(),
-        "~/b".to_string(),
-        "~/c".to_string(),
-        "~/d".to_string(),
-        "~/e".to_string(),
+        PathBuf::from("~/a"),
+        PathBuf::from("~/b"),
+        PathBuf::from("~/c"),
+        PathBuf::from("~/d"),
+        PathBuf::from("~/e"),
     ]);
-    let seen = HashSet::from(["~/e".to_string()]);
+    let seen = HashSet::from([PathBuf::from("~/e")]);
 
     let body = App::startup_lint_toast_body_for(&expected, &seen);
     let lines = body.lines().collect::<Vec<_>>();
@@ -897,7 +896,7 @@ fn vendored_path_dependency_becomes_cargo_active() {
     apply_nodes(&mut app, &[root]);
 
     assert!(app.is_vendored_path(&vendored.path));
-    assert!(app.is_cargo_active_path(&vendored.path));
+    assert!(app.is_cargo_active_path(Path::new(&vendored.path)));
 }
 
 #[test]
@@ -907,7 +906,7 @@ fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
     let mut app = make_app(vec![project.clone()]);
 
     app.git_info.insert(
-        path.clone(),
+        PathBuf::from(&path),
         GitInfo {
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),
@@ -923,10 +922,11 @@ fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
     );
 
     app.git_path_states
-        .insert(path.clone(), GitPathState::Untracked);
+        .insert(PathBuf::from(&path), GitPathState::Untracked);
     assert!(app.git_sync(&project).is_empty());
 
-    app.git_path_states.insert(path, GitPathState::Ignored);
+    app.git_path_states
+        .insert(PathBuf::from(&path), GitPathState::Ignored);
     assert!(app.git_sync(&project).is_empty());
 }
 
@@ -949,7 +949,7 @@ fn tabbable_panes_follow_canonical_order() {
     app.toast_pane.set_len(0);
     app.scan.phase = ScanPhase::Complete;
     app.git_info.insert(
-        project.path,
+        PathBuf::from(&project.path),
         GitInfo {
             origin:              GitOrigin::Clone,
             branch:              None,
@@ -1183,16 +1183,16 @@ fn disk_updates_skip_git_path_refresh_during_scan() {
 
     let mut project = make_project(Some("demo"), "~/demo");
     project.abs_path = abs_path.to_string_lossy().to_string();
-    let path = project.path.clone();
+    let abs_str = project.abs_path.clone();
     let mut app = make_app(vec![project]);
 
-    app.handle_disk_usage(&path, 123);
-    assert!(!app.git_path_states.contains_key(&path));
+    app.handle_disk_usage(&abs_str, 123);
+    assert!(!app.git_path_states.contains_key(Path::new(&abs_str)));
 
     app.scan.phase = ScanPhase::Complete;
-    app.handle_disk_usage(&path, 123);
+    app.handle_disk_usage(&abs_str, 123);
     assert_eq!(
-        app.git_path_states.get(&path),
+        app.git_path_states.get(Path::new(&abs_str)),
         Some(&GitPathState::OutsideRepo)
     );
 }
@@ -1222,11 +1222,11 @@ fn lint_rollups_distinguish_root_from_primary_worktree() {
     app.current_config.lint.enabled = true;
     apply_nodes(&mut app, &[root]);
     app.lint_status.insert(
-        "~/ws".to_string(),
+        PathBuf::from("~/ws"),
         LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")),
     );
     app.lint_status.insert(
-        "~/ws_feat".to_string(),
+        PathBuf::from("~/ws_feat"),
         LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
     );
     app.rebuild_lint_rollups();
@@ -1265,11 +1265,11 @@ fn lint_rollup_prefers_running_root_over_member_history() {
     app.current_config.lint.enabled = true;
     apply_nodes(&mut app, &[root]);
     app.lint_status.insert(
-        "~/ws".to_string(),
+        PathBuf::from("~/ws"),
         LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")),
     );
     app.lint_status.insert(
-        "~/ws/a".to_string(),
+        PathBuf::from("~/ws/a"),
         LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
     );
     app.rebuild_lint_rollups();
@@ -1295,11 +1295,11 @@ fn lint_rollup_prefers_running_worktree_over_failed_root_history() {
     app.current_config.lint.enabled = true;
     apply_nodes(&mut app, &[root]);
     app.lint_status.insert(
-        "~/ws".to_string(),
+        PathBuf::from("~/ws"),
         LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
     );
     app.lint_status.insert(
-        "~/ws_feat".to_string(),
+        PathBuf::from("~/ws_feat"),
         LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")),
     );
     app.rebuild_lint_rollups();
@@ -1347,11 +1347,11 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
     app.ensure_visible_rows_cached();
 
     app.lint_status.insert(
-        "~/ws".to_string(),
+        PathBuf::from("~/ws"),
         LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")),
     );
     app.lint_status.insert(
-        "~/ws_feat".to_string(),
+        PathBuf::from("~/ws_feat"),
         LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
     );
     app.rebuild_lint_rollups();
@@ -1389,8 +1389,8 @@ fn disk_rollup_deduplicates_primary_worktree_path() {
     let root_project = root.project.clone();
     let mut app = make_app(vec![root_project]);
     apply_nodes(&mut app, &[root]);
-    app.disk_usage.insert("~/ws".to_string(), 15);
-    app.disk_usage.insert("~/ws_feat".to_string(), 21);
+    app.disk_usage.insert(PathBuf::from("~/ws"), 15);
+    app.disk_usage.insert(PathBuf::from("~/ws_feat"), 21);
 
     assert_eq!(
         app.disk_bytes_for_item(&app.project_list_items[0]),

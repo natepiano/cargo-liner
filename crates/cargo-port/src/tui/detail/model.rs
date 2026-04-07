@@ -474,7 +474,7 @@ struct GitDetailFields {
 }
 
 fn build_git_detail_fields(app: &App, project: &LegacyProject) -> GitDetailFields {
-    let git = app.git_info.get(&project.path);
+    let git = app.git_info.get(std::path::Path::new(&project.abs_path));
     let branch = git.and_then(|info| info.branch.clone());
     let sync = git
         .map(|info| match info.ahead_behind {
@@ -496,8 +496,14 @@ fn build_git_detail_fields(app: &App, project: &LegacyProject) -> GitDetailField
     let origin = git.map(|info| format!("{} {}", info.origin.icon(), info.origin.label()));
     let owner = git.and_then(|info| info.owner.clone());
     let url = git.and_then(|info| info.url.clone());
-    let stars = app.stars.get(&project.path).copied();
-    let description = app.repo_descriptions.get(&project.path).cloned();
+    let stars = app
+        .stars
+        .get(std::path::Path::new(&project.abs_path))
+        .copied();
+    let description = app
+        .repo_descriptions
+        .get(std::path::Path::new(&project.abs_path))
+        .cloned();
     let inception = git
         .and_then(|info| info.first_commit.as_deref())
         .map(timestamp::format_timestamp);
@@ -506,7 +512,7 @@ fn build_git_detail_fields(app: &App, project: &LegacyProject) -> GitDetailField
         .map(timestamp::format_timestamp);
     GitDetailFields {
         branch,
-        path: app.git_path_state_for(&project.path),
+        path: app.git_path_state_for(std::path::Path::new(&project.abs_path)),
         sync,
         vs_origin,
         vs_local,
@@ -569,10 +575,16 @@ pub fn build_detail_info(app: &App, project: &LegacyProject) -> DetailInfo {
     let stats_rows = counts.to_rows();
 
     let git_detail = build_git_detail_fields(app, project);
-    let crates_version = app.crates_versions.get(&project.path).cloned();
-    let crates_downloads = app.crates_downloads.get(&project.path).copied();
+    let crates_version = app
+        .crates_versions
+        .get(std::path::Path::new(&project.abs_path))
+        .cloned();
+    let crates_downloads = app
+        .crates_downloads
+        .get(std::path::Path::new(&project.abs_path))
+        .copied();
     let worktree_label = project.worktree_name.clone();
-    let cargo_active = app.is_cargo_active_path(&project.path);
+    let cargo_active = app.is_cargo_active_path(std::path::Path::new(&project.abs_path));
 
     let wt_item = worktree_group_item(app, project);
 

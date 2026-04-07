@@ -82,39 +82,33 @@ impl App {
 
         // Propagate git info and stars from workspace roots to their members.
         for item in &self.project_list_items {
-            let root_path = item.display_path();
-            let member_paths: Vec<String> = match item {
+            let root_path = item.path();
+            let member_paths: Vec<PathBuf> = match item {
                 crate::project::ProjectListItem::Workspace(ws) => ws
                     .groups()
                     .iter()
-                    .flat_map(|g| {
-                        g.members()
-                            .iter()
-                            .map(crate::project::Project::display_path)
-                    })
+                    .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
                     .collect(),
                 crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
                     std::iter::once(wtg.primary())
                         .chain(wtg.linked().iter())
                         .flat_map(|ws| {
-                            ws.groups().iter().flat_map(|g| {
-                                g.members()
-                                    .iter()
-                                    .map(crate::project::Project::display_path)
-                            })
+                            ws.groups()
+                                .iter()
+                                .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
                         })
                         .collect()
                 },
                 _ => Vec::new(),
             };
-            if let Some(info) = self.git_info.get(&root_path).cloned() {
+            if let Some(info) = self.git_info.get(root_path).cloned() {
                 for member_path in &member_paths {
                     self.git_info
                         .entry(member_path.clone())
                         .or_insert_with(|| info.clone());
                 }
             }
-            if let Some(&stars) = self.stars.get(&root_path) {
+            if let Some(&stars) = self.stars.get(root_path) {
                 for member_path in &member_paths {
                     self.stars.entry(member_path.clone()).or_insert(stars);
                 }
@@ -366,22 +360,23 @@ impl App {
     pub(super) fn refresh_lint_runs_from_disk(&mut self) {
         self.lint_runs.clear();
         for project in &self.all_projects {
-            if !self.is_cargo_active_path(&project.path) {
+            let abs = PathBuf::from(&project.abs_path);
+            if !self.is_cargo_active_path(&abs) {
                 continue;
             }
-            let runs = crate::lint::read_history(&PathBuf::from(&project.abs_path));
+            let runs = crate::lint::read_history(&abs);
             if !runs.is_empty() {
-                self.lint_runs.insert(project.path.clone(), runs);
+                self.lint_runs.insert(abs, runs);
             }
         }
         self.refresh_lint_cache_usage_from_disk();
     }
 
-    pub(super) fn reload_lint_history(&mut self, project_path: &str) {
+    pub(super) fn reload_lint_history(&mut self, project_path: &Path) {
         let Some(project) = self
             .all_projects
             .iter()
-            .find(|project| project.path == project_path)
+            .find(|project| Path::new(&project.abs_path) == project_path)
         else {
             self.lint_runs.remove(project_path);
             return;
@@ -394,7 +389,7 @@ impl App {
         if runs.is_empty() {
             self.lint_runs.remove(project_path);
         } else {
-            self.lint_runs.insert(project_path.to_string(), runs);
+            self.lint_runs.insert(project_path.to_path_buf(), runs);
         }
         self.refresh_lint_cache_usage_from_disk();
     }
@@ -410,7 +405,7 @@ impl App {
         let repo_root = crate::project::git_repo_root(&abs_path);
         let has_repo_root = repo_root.is_some();
         let _ = self.watch_tx.send(WatchRequest {
-            project_path: project.path.clone(),
+            project_path: project.abs_path.clone(),
             abs_path,
             repo_root,
         });
@@ -427,7 +422,7 @@ impl App {
         let projects: Vec<(String, String)> = self
             .all_projects
             .iter()
-            .map(|project| (project.path.clone(), project.abs_path.clone()))
+            .map(|project| (project.abs_path.clone(), project.abs_path.clone()))
             .collect();
         std::thread::spawn(move || {
             let states = crate::project::detect_git_path_states_batch(&projects);
@@ -448,7 +443,7 @@ impl App {
             projects_by_repo
                 .entry(repo_root)
                 .or_default()
-                .push(project.path.clone());
+                .push(project.abs_path.clone());
         }
         std::thread::spawn(move || {
             for (repo_root, paths) in projects_by_repo {
@@ -480,30 +475,22 @@ impl App {
         let mut projects = Vec::new();
 
         for item in &self.project_list_items {
-            let paths = match item {
+            let paths: Vec<PathBuf> = match item {
                 crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
-                    std::iter::once(wtg.primary().display_path())
-                        .chain(
-                            wtg.linked()
-                                .iter()
-                                .map(crate::project::Project::display_path),
-                        )
-                        .collect::<Vec<_>>()
+                    std::iter::once(wtg.primary().path().to_path_buf())
+                        .chain(wtg.linked().iter().map(|p| p.path().to_path_buf()))
+                        .collect()
                 },
                 crate::project::ProjectListItem::PackageWorktrees(wtg) => {
-                    std::iter::once(wtg.primary().display_path())
-                        .chain(
-                            wtg.linked()
-                                .iter()
-                                .map(crate::project::Project::display_path),
-                        )
-                        .collect::<Vec<_>>()
+                    std::iter::once(wtg.primary().path().to_path_buf())
+                        .chain(wtg.linked().iter().map(|p| p.path().to_path_buf()))
+                        .collect()
                 },
-                _ => vec![item.display_path()],
+                _ => vec![item.path().to_path_buf()],
             };
             for dp in paths {
                 if seen.insert(dp.clone())
-                    && let Some(p) = self.project_by_path(&dp)
+                    && let Some(p) = self.project_by_abs_path(&dp)
                 {
                     projects.push(p);
                 }
@@ -516,7 +503,7 @@ impl App {
 
         self.all_projects
             .iter()
-            .filter(|project| seen.insert(project.path.clone()))
+            .filter(|project| seen.insert(PathBuf::from(&project.abs_path)))
             .collect()
     }
 
@@ -527,9 +514,9 @@ impl App {
         self.lint_runtime_root_projects()
             .into_iter()
             .filter(|project| !self.is_deleted(&project.path))
-            .filter(|project| self.is_cargo_active_path(&project.path))
+            .filter(|project| self.is_cargo_active_path(Path::new(&project.abs_path)))
             .map(|project| RegisterProjectRequest {
-                project_path: project.path.clone(),
+                project_path: project.abs_path.clone(),
                 abs_path:     PathBuf::from(&project.abs_path),
                 is_rust:      project.is_rust == Rust,
             })
@@ -748,33 +735,35 @@ impl App {
     }
 
     pub(super) fn startup_remaining_toast_body(
-        expected: &HashSet<String>,
-        seen: &HashSet<String>,
+        expected: &HashSet<PathBuf>,
+        seen: &HashSet<PathBuf>,
     ) -> String {
-        let items: Vec<&str> = expected
+        let items: Vec<String> = expected
             .iter()
             .filter(|path| !seen.contains(*path))
-            .map(String::as_str)
+            .map(|p| crate::project::home_relative_path(p))
             .collect();
-        if items.is_empty() {
+        let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+        if refs.is_empty() {
             return "Complete".to_string();
         }
-        toasts::format_toast_items(&items, toasts::toast_body_width())
+        toasts::format_toast_items(&refs, toasts::toast_body_width())
     }
 
     pub(super) fn startup_lint_toast_body_for(
-        expected: &HashSet<String>,
-        seen: &HashSet<String>,
+        expected: &HashSet<PathBuf>,
+        seen: &HashSet<PathBuf>,
     ) -> String {
-        let items: Vec<&str> = expected
+        let items: Vec<String> = expected
             .iter()
             .filter(|path| !seen.contains(*path))
-            .map(String::as_str)
+            .map(|p| crate::project::home_relative_path(p))
             .collect();
-        if items.is_empty() {
+        let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+        if refs.is_empty() {
             return "Complete".to_string();
         }
-        toasts::format_toast_items(&items, toasts::toast_body_width())
+        toasts::format_toast_items(&refs, toasts::toast_body_width())
     }
 
     pub(super) fn running_lint_toast_body(&self) -> String {
@@ -798,12 +787,13 @@ impl App {
     }
 
     fn running_clean_toast_body(&self) -> String {
-        let items: Vec<&str> = self
+        let items: Vec<String> = self
             .running_clean_paths
             .iter()
-            .map(String::as_str)
+            .map(|p| crate::project::home_relative_path(p))
             .collect();
-        crate::tui::toasts::format_toast_items(&items, crate::tui::toasts::toast_body_width())
+        let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+        crate::tui::toasts::format_toast_items(&refs, crate::tui::toasts::toast_body_width())
     }
 
     pub(super) fn sync_running_lint_toast(&mut self) {
@@ -1159,7 +1149,7 @@ impl App {
         while let Ok(msg) = self.ci_fetch_rx.try_recv() {
             match msg {
                 CiFetchMsg::Complete { path, result, kind } => {
-                    self.handle_ci_fetch_complete(path, result, kind);
+                    self.handle_ci_fetch_complete(&path, result, kind);
                 },
             }
             count += 1;
@@ -1198,13 +1188,10 @@ impl App {
         while let Ok(msg) = self.clean_rx.try_recv() {
             match msg {
                 CleanMsg::Finished(path) => {
-                    // Process exited. Toast persists until `DiskUsage`
-                    // arrives so the user sees the updated size. If the
-                    // project already shows 0 bytes (no-op clean, or
-                    // DiskUsage already arrived), remove immediately.
-                    let already_zero = self.disk_usage.get(&path).is_none_or(|&bytes| bytes == 0);
+                    let abs = PathBuf::from(&path);
+                    let already_zero = self.disk_usage.get(&abs).is_none_or(|&bytes| bytes == 0);
                     if already_zero {
-                        self.running_clean_paths.remove(&path);
+                        self.running_clean_paths.remove(&abs);
                         self.sync_running_clean_toast();
                     }
                 },
@@ -1213,43 +1200,38 @@ impl App {
     }
 
     pub(super) fn handle_disk_usage(&mut self, path: &str, bytes: u64) {
-        if self.running_clean_paths.remove(path) {
+        let abs = PathBuf::from(path);
+        if self.running_clean_paths.remove(&abs) {
             self.sync_running_clean_toast();
         }
-        self.apply_disk_usage(path, bytes, self.is_scan_complete());
+        self.apply_disk_usage(&abs, bytes, self.is_scan_complete());
     }
 
     pub(super) fn handle_disk_usage_batch(&mut self, entries: Vec<(String, u64)>) {
         for (path, bytes) in entries {
-            self.apply_disk_usage(&path, bytes, false);
+            self.apply_disk_usage(&PathBuf::from(&path), bytes, false);
         }
     }
 
     pub(super) fn apply_disk_usage(
         &mut self,
-        path: &str,
+        path: &Path,
         bytes: u64,
         refresh_git_path_state: bool,
     ) {
-        self.fully_loaded.insert(path.to_string());
-        self.disk_usage.insert(path.to_string(), bytes);
+        self.fully_loaded.insert(path.to_path_buf());
+        self.disk_usage.insert(path.to_path_buf(), bytes);
         if refresh_git_path_state {
             self.refresh_git_path_state(path);
         }
         self.dirty.disk_cache.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
         let mut lint_runtime_changed = false;
+        let display = crate::project::home_relative_path(path);
         if bytes == 0 {
-            let abs = self
-                .all_projects
-                .iter()
-                .find(|project| project.path == path)
-                .map(|project| project.abs_path.as_str());
-            if let Some(abs) = abs
-                && !std::path::Path::new(abs).exists()
-            {
+            if !path.exists() {
                 for item in &mut self.project_list_items {
-                    if item.set_visibility_by_path(path, Deleted) {
+                    if item.set_visibility_by_path(&display, Deleted) {
                         lint_runtime_changed = true;
                         break;
                     }
@@ -1257,7 +1239,7 @@ impl App {
             }
         } else {
             for item in &mut self.project_list_items {
-                if item.set_visibility_by_path(path, Visible) {
+                if item.set_visibility_by_path(&display, Visible) {
                     lint_runtime_changed = true;
                     break;
                 }
@@ -1268,12 +1250,12 @@ impl App {
         }
     }
 
-    pub(super) fn handle_git_info(&mut self, path: String, info: GitInfo) {
+    pub(super) fn handle_git_info(&mut self, path: &str, info: GitInfo) {
         self.dirty.fit_widths.mark_dirty();
-        let seen_path = path.clone();
+        let abs = PathBuf::from(path);
         let preserved_first_commit = self
             .git_info
-            .get(&path)
+            .get(&abs)
             .and_then(|existing| existing.first_commit.clone());
         let mut info = info;
         if info.first_commit.is_none() {
@@ -1282,10 +1264,11 @@ impl App {
         // Propagate git info to workspace members and worktrees.
         for item in &self.project_list_items {
             match item {
-                crate::project::ProjectListItem::Workspace(ws) if ws.display_path() == path => {
+                crate::project::ProjectListItem::Workspace(ws) if ws.path() == abs => {
                     for group in ws.groups() {
                         for member in group.members() {
-                            self.git_info.insert(member.display_path(), info.clone());
+                            self.git_info
+                                .insert(member.path().to_path_buf(), info.clone());
                         }
                     }
                 },
@@ -1294,28 +1277,29 @@ impl App {
                         .chain(wtg.linked().iter())
                         .collect();
                     for ws in &all_ws {
-                        if ws.display_path() == path {
+                        if ws.path() == abs {
                             for group in ws.groups() {
                                 for member in group.members() {
-                                    self.git_info.insert(member.display_path(), info.clone());
+                                    self.git_info
+                                        .insert(member.path().to_path_buf(), info.clone());
                                 }
                             }
                         }
                     }
                     // Propagate from root to worktrees that don't have info yet
-                    if wtg.primary().display_path() == path {
+                    if wtg.primary().path() == abs {
                         for linked in wtg.linked() {
                             self.git_info
-                                .entry(linked.display_path())
+                                .entry(linked.path().to_path_buf())
                                 .or_insert_with(|| info.clone());
                         }
                     }
                 },
                 crate::project::ProjectListItem::PackageWorktrees(wtg) => {
-                    if wtg.primary().display_path() == path {
+                    if wtg.primary().path() == abs {
                         for linked in wtg.linked() {
                             self.git_info
-                                .entry(linked.display_path())
+                                .entry(linked.path().to_path_buf())
                                 .or_insert_with(|| info.clone());
                         }
                     }
@@ -1323,48 +1307,51 @@ impl App {
                 _ => {},
             }
         }
-        self.git_info.insert(path, info);
+        self.git_info.insert(abs.clone(), info);
         if self.is_scan_complete() {
-            self.scan.startup_phases.git_seen.insert(seen_path);
+            self.scan.startup_phases.git_seen.insert(abs);
             self.maybe_log_startup_phase_completions();
         }
         self.dirty.finder.mark_dirty();
     }
 
     pub(super) fn handle_git_first_commit(&mut self, path: &str, first_commit: Option<String>) {
-        let Some(info) = self.git_info.get_mut(path) else {
+        let Some(info) = self.git_info.get_mut(Path::new(path)) else {
             return;
         };
         info.first_commit = first_commit;
     }
 
     pub(super) fn handle_repo_fetch_complete(&mut self, key: String) {
-        self.scan.startup_phases.repo_seen.insert(key);
+        self.scan
+            .startup_phases
+            .repo_seen
+            .insert(PathBuf::from(key));
         self.maybe_log_startup_phase_completions();
     }
 
-    pub(super) fn handle_repo_meta(
-        &mut self,
-        path: String,
-        stars: u64,
-        description: Option<String>,
-    ) {
+    pub(super) fn handle_repo_meta(&mut self, path: &str, stars: u64, description: Option<String>) {
+        let abs = PathBuf::from(path);
         // Propagate stars to workspace members.
         for item in &self.project_list_items {
             match item {
-                crate::project::ProjectListItem::Workspace(ws) if ws.display_path() == path => {
+                crate::project::ProjectListItem::Workspace(ws) if ws.path() == abs => {
                     for group in ws.groups() {
                         for member in group.members() {
-                            self.stars.entry(member.display_path()).or_insert(stars);
+                            self.stars
+                                .entry(member.path().to_path_buf())
+                                .or_insert(stars);
                         }
                     }
                 },
                 crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
                     for ws in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
-                        if ws.display_path() == path {
+                        if ws.path() == abs {
                             for group in ws.groups() {
                                 for member in group.members() {
-                                    self.stars.entry(member.display_path()).or_insert(stars);
+                                    self.stars
+                                        .entry(member.path().to_path_buf())
+                                        .or_insert(stars);
                                 }
                             }
                         }
@@ -1373,9 +1360,9 @@ impl App {
                 _ => {},
             }
         }
-        self.stars.insert(path.clone(), stars);
+        self.stars.insert(abs.clone(), stars);
         if let Some(desc) = description {
-            self.repo_descriptions.insert(path, desc);
+            self.repo_descriptions.insert(abs, desc);
         }
     }
 
@@ -1487,7 +1474,10 @@ impl App {
     }
 
     fn handle_disk_usage_msg(&mut self, path: &str, bytes: u64) {
-        self.scan.startup_phases.disk_seen.insert(path.to_string());
+        self.scan
+            .startup_phases
+            .disk_seen
+            .insert(PathBuf::from(path));
         self.handle_disk_usage(path, bytes);
         self.maybe_log_startup_phase_completions();
     }
@@ -1500,7 +1490,10 @@ impl App {
         {
             self.detail_generation += 1;
         }
-        self.scan.startup_phases.disk_seen.insert(root_path);
+        self.scan
+            .startup_phases
+            .disk_seen
+            .insert(PathBuf::from(root_path));
         self.handle_disk_usage_batch(entries);
         self.maybe_log_startup_phase_completions();
     }
@@ -1511,60 +1504,62 @@ impl App {
             path,
             state.label()
         ));
-        self.git_path_states.insert(path, state);
+        self.git_path_states.insert(PathBuf::from(path), state);
     }
 
-    fn handle_crates_io_version_msg(&mut self, path: String, version: String, downloads: u64) {
-        if self.is_cargo_active_path(&path) {
-            self.crates_versions.insert(path.clone(), version);
-            self.crates_downloads.insert(path, downloads);
+    fn handle_crates_io_version_msg(&mut self, path: &str, version: String, downloads: u64) {
+        let abs = PathBuf::from(path);
+        if self.is_cargo_active_path(&abs) {
+            self.crates_versions.insert(abs.clone(), version);
+            self.crates_downloads.insert(abs, downloads);
         } else {
-            self.crates_versions.remove(&path);
-            self.crates_downloads.remove(&path);
+            self.crates_versions.remove(&abs);
+            self.crates_downloads.remove(&abs);
         }
     }
 
-    fn handle_lint_status_msg(&mut self, path: String, status: LintStatus) {
+    fn handle_lint_status_msg(&mut self, path: &str, status: LintStatus) {
+        let abs = PathBuf::from(path);
         let status_started = matches!(status, LintStatus::Running(_));
         let status_is_terminal = matches!(
             status,
             LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog
         );
-        if !self.is_cargo_active_path(&path) {
-            self.lint_runs.remove(&path);
-            self.lint_status.remove(&path);
+        if !self.is_cargo_active_path(&abs) {
+            self.lint_runs.remove(&abs);
+            self.lint_status.remove(&abs);
             return;
         }
         let eligible = self
             .all_projects
             .iter()
-            .find(|project| project.path == path)
+            .find(|project| Path::new(&project.abs_path) == abs)
             .is_some_and(|project| {
                 crate::lint::project_is_eligible(
                     &self.current_config.lint,
-                    &project.path,
+                    &project.abs_path,
                     &PathBuf::from(&project.abs_path),
                     project.is_rust == Rust,
                 )
             });
         if eligible {
-            self.reload_lint_history(&path);
+            self.reload_lint_history(&abs);
             if matches!(status, LintStatus::NoLog) {
-                self.lint_status.remove(&path);
+                self.lint_status.remove(&abs);
             } else {
-                self.lint_status.insert(path.clone(), status);
+                self.lint_status.insert(abs.clone(), status);
             }
         } else {
-            self.lint_runs.remove(&path);
-            self.lint_status.remove(&path);
-            self.running_lint_paths.remove(&path);
+            self.lint_runs.remove(&abs);
+            self.lint_status.remove(&abs);
+            self.running_lint_paths.remove(&abs);
         }
-        self.update_lint_rollups_for_path(&path);
+        self.update_lint_rollups_for_path(&abs);
         if status_started {
-            self.running_lint_paths.insert(path.clone());
+            self.running_lint_paths.insert(abs.clone());
         }
         if status_is_terminal {
-            self.running_lint_paths.remove(&path);
+            self.running_lint_paths.remove(&abs);
         }
         self.sync_running_lint_toast();
         if !self.is_scan_complete() {
@@ -1576,7 +1571,7 @@ impl App {
                 .startup_phases
                 .lint_expected
                 .get_or_insert_with(HashSet::new);
-            if expected.insert(path.clone()) {
+            if expected.insert(abs.clone()) {
                 self.scan.startup_phases.lint_complete_at = None;
             }
         }
@@ -1586,9 +1581,9 @@ impl App {
                 .startup_phases
                 .lint_expected
                 .as_ref()
-                .is_some_and(|expected| expected.contains(&path))
+                .is_some_and(|expected| expected.contains(&abs))
         {
-            self.scan.startup_phases.lint_seen_terminal.insert(path);
+            self.scan.startup_phases.lint_seen_terminal.insert(abs);
         }
         self.maybe_log_startup_phase_completions();
     }
@@ -1626,14 +1621,20 @@ impl App {
                 self.handle_disk_usage_batch_msg(root_path, entries);
             },
             BackgroundMsg::LocalGitQueued { path } => {
-                self.scan.startup_phases.git_expected.insert(path);
+                self.scan
+                    .startup_phases
+                    .git_expected
+                    .insert(PathBuf::from(path));
             },
-            BackgroundMsg::CiRuns { path, runs } => self.insert_ci_runs(path, runs),
+            BackgroundMsg::CiRuns { path, runs } => self.insert_ci_runs(&path, runs),
             BackgroundMsg::RepoFetchQueued { key } => {
-                self.scan.startup_phases.repo_expected.insert(key);
+                self.scan
+                    .startup_phases
+                    .repo_expected
+                    .insert(PathBuf::from(key));
             },
             BackgroundMsg::RepoFetchComplete { key } => self.handle_repo_fetch_complete(key),
-            BackgroundMsg::GitInfo { path, info } => self.handle_git_info(path, info),
+            BackgroundMsg::GitInfo { path, info } => self.handle_git_info(&path, info),
             BackgroundMsg::GitFirstCommit { path, first_commit } => {
                 self.handle_git_first_commit(&path, first_commit);
             },
@@ -1644,12 +1645,12 @@ impl App {
                 path,
                 version,
                 downloads,
-            } => self.handle_crates_io_version_msg(path, version, downloads),
+            } => self.handle_crates_io_version_msg(&path, version, downloads),
             BackgroundMsg::RepoMeta {
                 path,
                 stars,
                 description,
-            } => self.handle_repo_meta(path, stars, description),
+            } => self.handle_repo_meta(&path, stars, description),
             BackgroundMsg::ProjectDiscovered { project } => {
                 if self.handle_project_discovered(project) {
                     return true;
@@ -1674,7 +1675,9 @@ impl App {
                 );
                 self.refresh_lint_cache_usage_from_disk();
             },
-            BackgroundMsg::LintStatus { path, status } => self.handle_lint_status_msg(path, status),
+            BackgroundMsg::LintStatus { path, status } => {
+                self.handle_lint_status_msg(&path, status);
+            },
             BackgroundMsg::ScanComplete => self.handle_scan_complete_msg(),
             BackgroundMsg::ServiceReachable { service } => {
                 self.apply_service_signal(ServiceSignal::Reachable(service));
@@ -1693,12 +1696,13 @@ impl App {
         let Some(project) = self.selected_project() else {
             return false;
         };
+        let abs = Path::new(path);
         self.selected_lint_rollup_key().map_or_else(
-            || project.path == path,
+            || Path::new(&project.abs_path) == abs,
             |key| {
                 self.lint_rollup_paths
                     .get(&key)
-                    .is_some_and(|paths| paths.iter().any(|candidate| candidate == path))
+                    .is_some_and(|paths| paths.iter().any(|candidate| candidate == abs))
             },
         )
     }
@@ -1711,7 +1715,8 @@ impl App {
         let path = project.path.clone();
         let abs_path = project.abs_path.clone();
         let name = project.name.clone();
-        if !self.fully_loaded.contains(&path) && self.priority_fetch_path.as_ref() != Some(&path) {
+        let abs = PathBuf::from(&abs_path);
+        if !self.fully_loaded.contains(&abs) && self.priority_fetch_path.as_ref() != Some(&path) {
             self.priority_fetch_path = Some(path.clone());
             crate::tui::terminal::spawn_priority_fetch(self, &path, &abs_path, name.as_ref());
         }
