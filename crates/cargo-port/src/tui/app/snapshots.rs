@@ -14,8 +14,8 @@ use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::MemberGroup;
 use crate::project::Package;
-use crate::project::Project;
 use crate::project::ProjectListItem;
+use crate::project::RustProject;
 use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
@@ -106,7 +106,7 @@ fn emit_groups(
     }
 }
 
-fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[Project<Package>]) {
+fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[RustProject<Package>]) {
     for (vi, _) in vendored.iter().enumerate() {
         rows.push(VisibleRow::Vendored {
             node_index:     ni,
@@ -188,7 +188,7 @@ fn emit_worktree_children(
     ni: usize,
     wi: usize,
     groups: &[MemberGroup],
-    vendored: &[Project<Package>],
+    vendored: &[RustProject<Package>],
     expanded: &HashSet<ExpandKey>,
 ) {
     for (gi, group) in groups.iter().enumerate() {
@@ -442,7 +442,7 @@ fn observe_new_member_group_fit_widths(
 
 fn observe_typed_vendored_fit_widths(
     widths: &mut ResolvedWidths,
-    vendored: &[Project<Package>],
+    vendored: &[RustProject<Package>],
     disk_usage: &HashMap<PathBuf, u64>,
     prefix: &str,
 ) {
@@ -459,7 +459,7 @@ fn observe_typed_vendored_fit_widths(
 
 fn observe_workspace_worktree_entry_fit_widths(
     widths: &mut ResolvedWidths,
-    ws: &Project<Workspace>,
+    ws: &RustProject<Workspace>,
     state: &FitWidthsState<'_>,
 ) {
     let dw = columns::display_width;
@@ -491,7 +491,7 @@ fn observe_workspace_worktree_entry_fit_widths(
 
 fn observe_package_worktree_entry_fit_widths(
     widths: &mut ResolvedWidths,
-    pkg: &Project<Package>,
+    pkg: &RustProject<Package>,
     state: &FitWidthsState<'_>,
 ) {
     let dw = columns::display_width;
@@ -612,7 +612,7 @@ fn collect_member_group_disk(
 }
 
 fn collect_vendored_disk(
-    vendored: &[Project<Package>],
+    vendored: &[RustProject<Package>],
     disk_usage: &HashMap<PathBuf, u64>,
     values: &mut Vec<u64>,
 ) {

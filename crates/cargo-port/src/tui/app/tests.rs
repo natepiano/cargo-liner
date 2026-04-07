@@ -28,8 +28,8 @@ use crate::project::GitPathState;
 use crate::project::MemberGroup;
 use crate::project::NonRust;
 use crate::project::Package;
-use crate::project::Project;
 use crate::project::ProjectListItem;
+use crate::project::RustProject;
 use crate::project::Visibility::Dismissed;
 use crate::project::Workspace;
 use crate::scan::BackgroundMsg;
@@ -45,7 +45,7 @@ fn test_http_client() -> HttpClient {
 }
 
 fn make_project(name: Option<&str>, path: &str) -> ProjectListItem {
-    ProjectListItem::Package(Project::<Package>::new(
+    ProjectListItem::Package(RustProject::<Package>::new(
         PathBuf::from(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -79,7 +79,7 @@ fn make_app_with_config(projects: &[ProjectListItem], cfg: &CargoPortConfig) -> 
 }
 
 fn make_non_rust_project(name: Option<&str>, path: &str) -> ProjectListItem {
-    ProjectListItem::NonRust(Project::<NonRust>::new(
+    ProjectListItem::NonRust(RustProject::<NonRust>::new(
         PathBuf::from(path),
         name.map(String::from),
         None,
@@ -88,7 +88,7 @@ fn make_non_rust_project(name: Option<&str>, path: &str) -> ProjectListItem {
 }
 
 fn make_workspace_project(name: Option<&str>, path: &str) -> ProjectListItem {
-    ProjectListItem::Workspace(Project::<Workspace>::new(
+    ProjectListItem::Workspace(RustProject::<Workspace>::new(
         PathBuf::from(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -104,7 +104,7 @@ fn make_workspace_with_members(
     path: &str,
     groups: Vec<MemberGroup>,
 ) -> ProjectListItem {
-    ProjectListItem::Workspace(Project::<Workspace>::new(
+    ProjectListItem::Workspace(RustProject::<Workspace>::new(
         PathBuf::from(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -115,8 +115,8 @@ fn make_workspace_with_members(
     ))
 }
 
-fn make_member(name: Option<&str>, path: &str) -> Project<Package> {
-    Project::<Package>::new(
+fn make_member(name: Option<&str>, path: &str) -> RustProject<Package> {
+    RustProject::<Package>::new(
         PathBuf::from(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -127,15 +127,15 @@ fn make_member(name: Option<&str>, path: &str) -> Project<Package> {
 }
 
 fn make_workspace_worktrees_item(
-    primary: Project<Workspace>,
-    linked: Vec<Project<Workspace>>,
+    primary: RustProject<Workspace>,
+    linked: Vec<RustProject<Workspace>>,
 ) -> ProjectListItem {
     ProjectListItem::WorkspaceWorktrees(crate::project::WorktreeGroup::new(primary, linked))
 }
 
 fn make_package_worktrees_item(
-    primary: Project<Package>,
-    linked: Vec<Project<Package>>,
+    primary: RustProject<Package>,
+    linked: Vec<RustProject<Package>>,
 ) -> ProjectListItem {
     ProjectListItem::PackageWorktrees(crate::project::WorktreeGroup::new(primary, linked))
 }
@@ -144,8 +144,8 @@ fn make_package_raw(
     name: Option<&str>,
     path: &str,
     worktree_name: Option<&str>,
-) -> Project<Package> {
-    Project::<Package>::new(
+) -> RustProject<Package> {
+    RustProject::<Package>::new(
         PathBuf::from(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -160,8 +160,8 @@ fn make_workspace_raw(
     path: &str,
     groups: Vec<MemberGroup>,
     worktree_name: Option<&str>,
-) -> Project<Workspace> {
-    Project::<Workspace>::new(
+) -> RustProject<Workspace> {
+    RustProject::<Workspace>::new(
         PathBuf::from(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -172,11 +172,11 @@ fn make_workspace_raw(
     )
 }
 
-fn inline_group(members: Vec<Project<Package>>) -> MemberGroup {
+fn inline_group(members: Vec<RustProject<Package>>) -> MemberGroup {
     crate::project::MemberGroup::Inline { members }
 }
 
-fn named_group(name: &str, members: Vec<Project<Package>>) -> MemberGroup {
+fn named_group(name: &str, members: Vec<RustProject<Package>>) -> MemberGroup {
     crate::project::MemberGroup::Named {
         name: name.to_string(),
         members,
@@ -558,7 +558,7 @@ fn visible_rows_workspace_no_worktrees() {
 
 #[test]
 fn visible_rows_include_vendored_children() {
-    let ws = Project::<Workspace>::new(
+    let ws = RustProject::<Workspace>::new(
         PathBuf::from("~/ws"),
         None,
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -957,7 +957,7 @@ fn lint_runtime_snapshot_deduplicates_primary_worktree_path() {
 #[test]
 fn vendored_path_dependency_becomes_cargo_active() {
     let root_item = {
-        let pkg = Project::<Package>::new(
+        let pkg = RustProject::<Package>::new(
             PathBuf::from("~/app"),
             Some("app".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -1015,7 +1015,7 @@ fn name_width_with_gutter_reserves_space_before_lint() {
 
 #[test]
 fn tabbable_panes_follow_canonical_order() {
-    let project = ProjectListItem::Package(Project::<Package>::new(
+    let project = ProjectListItem::Package(RustProject::<Package>::new(
         PathBuf::from("~/demo"),
         Some("demo".to_string()),
         Cargo::new(
@@ -1123,7 +1123,7 @@ fn project_refresh_updates_selected_tree_project_targets() {
     assert_eq!(example_count, Some(0));
     assert!(!app.tabbable_panes().contains(&PaneId::Targets));
 
-    let refreshed = ProjectListItem::Package(Project::<Package>::new(
+    let refreshed = ProjectListItem::Package(RustProject::<Package>::new(
         PathBuf::from("~/demo"),
         Some("demo".to_string()),
         Cargo::new(
@@ -1291,7 +1291,7 @@ fn disk_updates_skip_git_path_refresh_during_scan() {
     std::fs::create_dir_all(&abs_path).unwrap_or_else(|_| std::process::abort());
 
     let abs_str = abs_path.to_string_lossy().to_string();
-    let project = ProjectListItem::Package(Project::<Package>::new(
+    let project = ProjectListItem::Package(RustProject::<Package>::new(
         abs_path,
         Some("demo".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),

@@ -675,13 +675,15 @@ impl fmt::Display for ProjectParseError {
 }
 
 /// Result of parsing a `Cargo.toml`: either a workspace or a standalone package.
-pub(crate) enum CargoProject {
-    Workspace(Project<Workspace>),
-    Package(Project<Package>),
+pub(crate) enum CargoParseResult {
+    Workspace(RustProject<Workspace>),
+    Package(RustProject<Package>),
 }
 
 /// Parse a `Cargo.toml` and return either a workspace or a package project.
-pub(crate) fn from_cargo_toml(cargo_toml_path: &Path) -> Result<CargoProject, ProjectParseError> {
+pub(crate) fn from_cargo_toml(
+    cargo_toml_path: &Path,
+) -> Result<CargoParseResult, ProjectParseError> {
     let contents =
         std::fs::read_to_string(cargo_toml_path).map_err(ProjectParseError::ReadError)?;
     let table: Table = contents.parse().map_err(ProjectParseError::ParseError)?;
@@ -728,7 +730,7 @@ pub(crate) fn from_cargo_toml(cargo_toml_path: &Path) -> Result<CargoProject, Pr
     let cargo = Cargo::new(version, description, types, examples, benches, test_count);
 
     if table.get("workspace").is_some() {
-        Ok(CargoProject::Workspace(Project::<Workspace>::new(
+        Ok(CargoParseResult::Workspace(RustProject::<Workspace>::new(
             abs_path,
             name,
             cargo,
@@ -738,7 +740,7 @@ pub(crate) fn from_cargo_toml(cargo_toml_path: &Path) -> Result<CargoProject, Pr
             worktree_primary_abs_path,
         )))
     } else {
-        Ok(CargoProject::Package(Project::<Package>::new(
+        Ok(CargoParseResult::Package(RustProject::<Package>::new(
             abs_path,
             name,
             cargo,
@@ -750,14 +752,14 @@ pub(crate) fn from_cargo_toml(cargo_toml_path: &Path) -> Result<CargoProject, Pr
 }
 
 /// Create a project entry for a non-Rust git repository (no `Cargo.toml`).
-pub(crate) fn from_git_dir(project_dir: &Path) -> Project<NonRust> {
+pub(crate) fn from_git_dir(project_dir: &Path) -> RustProject<NonRust> {
     let name = project_dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string());
     let worktree_name = detect_worktree_name(project_dir);
     let worktree_primary_abs_path = detect_worktree_primary(project_dir).map(PathBuf::from);
 
-    Project::<NonRust>::new(
+    RustProject::<NonRust>::new(
         project_dir.to_path_buf(),
         name,
         worktree_name,
@@ -1071,7 +1073,7 @@ pub(crate) struct Workspace;
 impl ProjectKind for Workspace {
     type Cargo = Cargo;
     type Groups = Vec<MemberGroup>;
-    type Vendored = Vec<Project<Package>>;
+    type Vendored = Vec<RustProject<Package>>;
 }
 
 #[derive(Clone)]
@@ -1080,7 +1082,7 @@ pub(crate) struct Package;
 impl ProjectKind for Package {
     type Cargo = Cargo;
     type Groups = ();
-    type Vendored = Vec<Project<Self>>;
+    type Vendored = Vec<RustProject<Self>>;
 }
 
 #[derive(Clone)]
@@ -1145,7 +1147,7 @@ impl Cargo {
 
 /// The core project type, parameterized by kind.
 /// Private fields with accessors enforce what's available per kind.
-pub(crate) struct Project<Kind: ProjectKind> {
+pub(crate) struct RustProject<Kind: ProjectKind> {
     path:                      PathBuf,
     name:                      Option<String>,
     visibility:                Visibility,
@@ -1156,7 +1158,7 @@ pub(crate) struct Project<Kind: ProjectKind> {
     worktree_primary_abs_path: Option<PathBuf>,
 }
 
-impl Clone for Project<Workspace> {
+impl Clone for RustProject<Workspace> {
     fn clone(&self) -> Self {
         Self {
             path:                      self.path.clone(),
@@ -1171,7 +1173,7 @@ impl Clone for Project<Workspace> {
     }
 }
 
-impl Clone for Project<Package> {
+impl Clone for RustProject<Package> {
     fn clone(&self) -> Self {
         Self {
             path:                      self.path.clone(),
@@ -1186,7 +1188,7 @@ impl Clone for Project<Package> {
     }
 }
 
-impl Clone for Project<NonRust> {
+impl Clone for RustProject<NonRust> {
     fn clone(&self) -> Self {
         Self {
             path:                      self.path.clone(),
@@ -1202,7 +1204,7 @@ impl Clone for Project<NonRust> {
 }
 
 // Shared accessors for all kinds.
-impl<Kind: ProjectKind> Project<Kind> {
+impl<Kind: ProjectKind> RustProject<Kind> {
     pub(crate) fn path(&self) -> &Path { &self.path }
 
     pub(crate) fn name(&self) -> Option<&str> { self.name.as_deref() }
@@ -1234,23 +1236,25 @@ impl<Kind: ProjectKind> Project<Kind> {
 }
 
 // Workspace-specific accessors.
-impl Project<Workspace> {
+impl RustProject<Workspace> {
     pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
 
     pub(crate) fn groups(&self) -> &[MemberGroup] { &self.groups }
 
     pub(crate) const fn groups_mut(&mut self) -> &mut Vec<MemberGroup> { &mut self.groups }
 
-    pub(crate) fn vendored(&self) -> &[Project<Package>] { &self.vendored }
+    pub(crate) fn vendored(&self) -> &[RustProject<Package>] { &self.vendored }
 
-    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<Project<Package>> { &mut self.vendored }
+    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<RustProject<Package>> {
+        &mut self.vendored
+    }
 
     pub(crate) fn new(
         path: PathBuf,
         name: Option<String>,
         cargo: Cargo,
         groups: Vec<MemberGroup>,
-        vendored: Vec<Project<Package>>,
+        vendored: Vec<RustProject<Package>>,
         worktree_name: Option<String>,
         worktree_primary_abs_path: Option<PathBuf>,
     ) -> Self {
@@ -1273,7 +1277,7 @@ impl Project<Workspace> {
 }
 
 // Package-specific accessors.
-impl Project<Package> {
+impl RustProject<Package> {
     pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
 
     pub(crate) fn vendored(&self) -> &[Self] { &self.vendored }
@@ -1305,7 +1309,7 @@ impl Project<Package> {
 }
 
 // NonRust-specific constructor.
-impl Project<NonRust> {
+impl RustProject<NonRust> {
     pub(crate) fn new(
         path: PathBuf,
         name: Option<String>,
@@ -1330,13 +1334,13 @@ impl Project<NonRust> {
 
 /// A generic worktree group: primary + linked checkouts.
 pub(crate) struct WorktreeGroup<Kind: ProjectKind> {
-    primary:    Project<Kind>,
-    linked:     Vec<Project<Kind>>,
+    primary:    RustProject<Kind>,
+    linked:     Vec<RustProject<Kind>>,
     visibility: Visibility,
 }
 
 impl<Kind: ProjectKind> WorktreeGroup<Kind> {
-    pub(crate) fn new(primary: Project<Kind>, linked: Vec<Project<Kind>>) -> Self {
+    pub(crate) fn new(primary: RustProject<Kind>, linked: Vec<RustProject<Kind>>) -> Self {
         Self {
             primary,
             linked,
@@ -1344,13 +1348,13 @@ impl<Kind: ProjectKind> WorktreeGroup<Kind> {
         }
     }
 
-    pub(crate) const fn primary(&self) -> &Project<Kind> { &self.primary }
+    pub(crate) const fn primary(&self) -> &RustProject<Kind> { &self.primary }
 
-    pub(crate) const fn primary_mut(&mut self) -> &mut Project<Kind> { &mut self.primary }
+    pub(crate) const fn primary_mut(&mut self) -> &mut RustProject<Kind> { &mut self.primary }
 
-    pub(crate) fn linked(&self) -> &[Project<Kind>] { &self.linked }
+    pub(crate) fn linked(&self) -> &[RustProject<Kind>] { &self.linked }
 
-    pub(crate) const fn linked_mut(&mut self) -> &mut Vec<Project<Kind>> { &mut self.linked }
+    pub(crate) const fn linked_mut(&mut self) -> &mut Vec<RustProject<Kind>> { &mut self.linked }
 
     pub(crate) const fn visibility(&self) -> Visibility { self.visibility }
 }
@@ -1377,9 +1381,9 @@ impl Clone for WorktreeGroup<Package> {
 
 /// The top-level enum for the project list.
 pub(crate) enum ProjectListItem {
-    Workspace(Project<Workspace>),
-    Package(Project<Package>),
-    NonRust(Project<NonRust>),
+    Workspace(RustProject<Workspace>),
+    Package(RustProject<Package>),
+    NonRust(RustProject<NonRust>),
     WorkspaceWorktrees(WorktreeGroup<Workspace>),
     PackageWorktrees(WorktreeGroup<Package>),
 }
@@ -1464,9 +1468,11 @@ impl ProjectListItem {
     /// Language icon for the project list.
     pub(crate) const fn lang_icon(&self) -> &'static str {
         match self {
-            Self::Workspace(_) | Self::WorkspaceWorktrees(_) => Project::<Workspace>::lang_icon(),
-            Self::Package(_) | Self::PackageWorktrees(_) => Project::<Package>::lang_icon(),
-            Self::NonRust(_) => Project::<NonRust>::lang_icon(),
+            Self::Workspace(_) | Self::WorkspaceWorktrees(_) => {
+                RustProject::<Workspace>::lang_icon()
+            },
+            Self::Package(_) | Self::PackageWorktrees(_) => RustProject::<Package>::lang_icon(),
+            Self::NonRust(_) => RustProject::<NonRust>::lang_icon(),
         }
     }
 
@@ -1600,21 +1606,21 @@ impl ProjectListItem {
 pub(crate) enum MemberGroup {
     Named {
         name:    String,
-        members: Vec<Project<Package>>,
+        members: Vec<RustProject<Package>>,
     },
     Inline {
-        members: Vec<Project<Package>>,
+        members: Vec<RustProject<Package>>,
     },
 }
 
 impl MemberGroup {
-    pub(crate) fn members(&self) -> &[Project<Package>] {
+    pub(crate) fn members(&self) -> &[RustProject<Package>] {
         match self {
             Self::Named { members, .. } | Self::Inline { members } => members,
         }
     }
 
-    pub(crate) const fn members_mut(&mut self) -> &mut Vec<Project<Package>> {
+    pub(crate) const fn members_mut(&mut self) -> &mut Vec<RustProject<Package>> {
         match self {
             Self::Named { members, .. } | Self::Inline { members } => members,
         }

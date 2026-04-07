@@ -27,8 +27,8 @@ use crate::lint::LintStatus;
 use crate::lint::RegisterProjectRequest;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
-use crate::project::Project;
 use crate::project::ProjectListItem;
+use crate::project::RustProject;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Visible;
 use crate::project::Workspace;
@@ -1321,7 +1321,7 @@ impl App {
                     }
                 },
                 crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
-                    let all_ws: Vec<&Project<Workspace>> = std::iter::once(wtg.primary())
+                    let all_ws: Vec<&RustProject<Workspace>> = std::iter::once(wtg.primary())
                         .chain(wtg.linked().iter())
                         .collect();
                     for ws in &all_ws {

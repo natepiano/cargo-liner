@@ -16,8 +16,8 @@ use crate::constants::SYNC_UP;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::Package;
-use crate::project::Project;
 use crate::project::ProjectListItem;
+use crate::project::RustProject;
 use crate::project::Visibility;
 use crate::tui::detail::DetailField;
 use crate::tui::shortcuts::InputContext;
@@ -219,14 +219,22 @@ impl App {
         match item {
             ProjectListItem::WorkspaceWorktrees(wtg) => {
                 let live = std::iter::once(wtg.primary().visibility())
-                    .chain(wtg.linked().iter().map(crate::project::Project::visibility))
+                    .chain(
+                        wtg.linked()
+                            .iter()
+                            .map(crate::project::RustProject::visibility),
+                    )
                     .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
                     .count();
                 if live <= 1 { 0 } else { live }
             },
             ProjectListItem::PackageWorktrees(wtg) => {
                 let live = std::iter::once(wtg.primary().visibility())
-                    .chain(wtg.linked().iter().map(crate::project::Project::visibility))
+                    .chain(
+                        wtg.linked()
+                            .iter()
+                            .map(crate::project::RustProject::visibility),
+                    )
                     .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
                     .count();
                 if live <= 1 { 0 } else { live }
@@ -365,21 +373,23 @@ impl App {
         // Include vendored projects whose parent is active.
         for item in &self.project_list_items {
             let vendored_paths: Vec<&Path> = match item {
-                ProjectListItem::Workspace(ws) => {
-                    ws.vendored().iter().map(Project::<Package>::path).collect()
-                },
+                ProjectListItem::Workspace(ws) => ws
+                    .vendored()
+                    .iter()
+                    .map(RustProject::<Package>::path)
+                    .collect(),
                 ProjectListItem::Package(pkg) => pkg
                     .vendored()
                     .iter()
-                    .map(Project::<Package>::path)
+                    .map(RustProject::<Package>::path)
                     .collect(),
                 ProjectListItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
                     .chain(wtg.linked().iter())
-                    .flat_map(|ws| ws.vendored().iter().map(Project::<Package>::path))
+                    .flat_map(|ws| ws.vendored().iter().map(RustProject::<Package>::path))
                     .collect(),
                 ProjectListItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
                     .chain(wtg.linked().iter())
-                    .flat_map(|pkg| pkg.vendored().iter().map(Project::<Package>::path))
+                    .flat_map(|pkg| pkg.vendored().iter().map(RustProject::<Package>::path))
                     .collect(),
                 ProjectListItem::NonRust(_) => Vec::new(),
             };

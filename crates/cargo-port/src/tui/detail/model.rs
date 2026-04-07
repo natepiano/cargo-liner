@@ -11,9 +11,9 @@ use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::NonRust;
 use crate::project::Package;
-use crate::project::Project;
 use crate::project::ProjectListItem;
 use crate::project::ProjectType;
+use crate::project::RustProject;
 use crate::project::Workspace;
 use crate::tui::app::App;
 
@@ -29,9 +29,9 @@ struct ProjectCounts {
 }
 
 impl ProjectCounts {
-    fn add_package(&mut self, project: &Project<Package>) { self.add_cargo(project.cargo()); }
+    fn add_package(&mut self, project: &RustProject<Package>) { self.add_cargo(project.cargo()); }
 
-    fn add_workspace(&mut self, ws: &Project<Workspace>) {
+    fn add_workspace(&mut self, ws: &RustProject<Workspace>) {
         self.workspaces += 1;
         self.add_cargo(ws.cargo());
     }
@@ -447,7 +447,7 @@ fn resolve_package_title(app: &App, item: &ProjectListItem) -> String {
 }
 
 /// Resolve the package title for a non-root package (member or vendored).
-fn resolve_package_title_for_package(app: &App, pkg: &Project<Package>) -> String {
+fn resolve_package_title_for_package(app: &App, pkg: &RustProject<Package>) -> String {
     let display = pkg.display_path();
     if app.is_vendored_path(&display) {
         "Vendored Crate".to_string()
@@ -602,7 +602,7 @@ pub fn build_detail_info(app: &App, item: &ProjectListItem) -> DetailInfo {
 }
 
 /// Build `DetailInfo` for a `Project<Package>` (member or vendored row).
-pub fn build_detail_info_for_member(app: &App, pkg: &Project<Package>) -> DetailInfo {
+pub fn build_detail_info_for_member(app: &App, pkg: &RustProject<Package>) -> DetailInfo {
     let display_path = pkg.display_path();
     build_detail_info_for_package(app, pkg, &display_path, false, None)
 }
@@ -610,7 +610,7 @@ pub fn build_detail_info_for_member(app: &App, pkg: &Project<Package>) -> Detail
 /// Build `DetailInfo` for a linked `Project<Workspace>` worktree entry.
 pub fn build_detail_info_for_workspace_ref(
     app: &App,
-    ws: &Project<Workspace>,
+    ws: &RustProject<Workspace>,
     display_path: &str,
 ) -> DetailInfo {
     build_detail_info_for_workspace(app, ws, display_path, false, None)
@@ -618,7 +618,7 @@ pub fn build_detail_info_for_workspace_ref(
 
 fn build_detail_info_for_workspace(
     app: &App,
-    ws: &Project<Workspace>,
+    ws: &RustProject<Workspace>,
     display_path: &str,
     is_wt_group: bool,
     wt_item: Option<&ProjectListItem>,
@@ -655,7 +655,7 @@ fn build_detail_info_for_workspace(
 
 fn build_detail_info_for_package(
     app: &App,
-    pkg: &Project<Package>,
+    pkg: &RustProject<Package>,
     display_path: &str,
     is_wt_group: bool,
     wt_item: Option<&ProjectListItem>,
@@ -690,7 +690,7 @@ fn build_detail_info_for_package(
 
 fn build_detail_info_non_rust(
     app: &App,
-    nr: &Project<NonRust>,
+    nr: &RustProject<NonRust>,
     display_path: &str,
     is_wt_group: bool,
     wt_item: Option<&ProjectListItem>,

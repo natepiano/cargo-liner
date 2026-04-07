@@ -28,14 +28,14 @@ use super::http::ServiceSignal;
 use super::lint::LintStatus;
 use super::perf_log;
 use super::project::Cargo;
-use super::project::CargoProject;
+use super::project::CargoParseResult;
 use super::project::GitInfo;
 use super::project::GitPathState;
 use super::project::GitRepoPresence;
 use super::project::MemberGroup;
 use super::project::Package;
-use super::project::Project;
 use super::project::ProjectListItem;
+use super::project::RustProject;
 use super::project::Workspace;
 use super::project::WorktreeGroup;
 
@@ -546,7 +546,7 @@ pub(crate) fn build_tree(
         let ws_path = ws.path().to_path_buf();
         let member_paths = workspace_member_paths_new(&ws_path, items);
 
-        let mut all_members: Vec<Project<Package>> = items
+        let mut all_members: Vec<RustProject<Package>> = items
             .iter()
             .enumerate()
             .filter(|(j, candidate)| {
@@ -560,7 +560,7 @@ pub(crate) fn build_tree(
                     Some(pkg.clone())
                 } else if let ProjectListItem::Workspace(nested_ws) = candidate {
                     // Nested workspace treated as a package member
-                    Some(Project::<Package>::new(
+                    Some(RustProject::<Package>::new(
                         nested_ws.path().to_path_buf(),
                         nested_ws.name().map(str::to_string),
                         nested_ws.cargo().clone(),
@@ -815,7 +815,7 @@ fn merge_worktrees_new(items: &mut Vec<ProjectListItem>) {
         let primary_item = &items[*idx];
         let replacement = match primary_item {
             ProjectListItem::Workspace(ws) => {
-                let linked_ws: Vec<Project<Workspace>> = linked
+                let linked_ws: Vec<RustProject<Workspace>> = linked
                     .into_iter()
                     .filter_map(|item| {
                         if let ProjectListItem::Workspace(linked_ws) = item {
@@ -828,7 +828,7 @@ fn merge_worktrees_new(items: &mut Vec<ProjectListItem>) {
                 ProjectListItem::WorkspaceWorktrees(WorktreeGroup::new(ws.clone(), linked_ws))
             },
             ProjectListItem::Package(pkg) => {
-                let linked_pkg: Vec<Project<Package>> = linked
+                let linked_pkg: Vec<RustProject<Package>> = linked
                     .into_iter()
                     .filter_map(|item| {
                         if let ProjectListItem::Package(linked_pkg) = item {
@@ -890,11 +890,11 @@ fn extract_vendored_new(items: &mut Vec<ProjectListItem>) {
     remove_indices.dedup();
 
     // Convert vendored items to Project<Package>
-    let mut vendored_projects: Vec<(usize, Project<Package>)> = Vec::new();
+    let mut vendored_projects: Vec<(usize, RustProject<Package>)> = Vec::new();
     for &(vi, ni) in &vendored_map {
         let pkg = match &items[vi] {
             ProjectListItem::Package(p) => p.clone(),
-            ProjectListItem::Workspace(ws) => Project::<Package>::new(
+            ProjectListItem::Workspace(ws) => RustProject::<Package>::new(
                 ws.path().to_path_buf(),
                 ws.name().map(str::to_string),
                 ws.cargo().clone(),
@@ -902,7 +902,7 @@ fn extract_vendored_new(items: &mut Vec<ProjectListItem>) {
                 ws.worktree_name().map(str::to_string),
                 ws.worktree_primary_abs_path().map(Path::to_path_buf),
             ),
-            ProjectListItem::NonRust(nr) => Project::<Package>::new(
+            ProjectListItem::NonRust(nr) => RustProject::<Package>::new(
                 nr.path().to_path_buf(),
                 nr.name().map(str::to_string),
                 Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -947,10 +947,10 @@ fn extract_vendored_new(items: &mut Vec<ProjectListItem>) {
 
 fn group_members_new(
     workspace_path: &Path,
-    members: Vec<Project<Package>>,
+    members: Vec<RustProject<Package>>,
     inline_dirs: &[String],
 ) -> Vec<MemberGroup> {
-    let mut group_map: HashMap<String, Vec<Project<Package>>> = HashMap::new();
+    let mut group_map: HashMap<String, Vec<RustProject<Package>>> = HashMap::new();
 
     for member in members {
         let relative = member
@@ -1089,10 +1089,10 @@ pub(crate) fn build_flat_entries(items: &[ProjectListItem]) -> Vec<FlatEntry> {
 }
 
 /// Convert a `CargoProject` (from `from_cargo_toml()`) into a `ProjectListItem`.
-pub(crate) fn cargo_project_to_item(cp: CargoProject) -> ProjectListItem {
+pub(crate) fn cargo_project_to_item(cp: CargoParseResult) -> ProjectListItem {
     match cp {
-        CargoProject::Workspace(ws) => ProjectListItem::Workspace(ws),
-        CargoProject::Package(pkg) => ProjectListItem::Package(pkg),
+        CargoParseResult::Workspace(ws) => ProjectListItem::Workspace(ws),
+        CargoParseResult::Package(pkg) => ProjectListItem::Package(pkg),
     }
 }
 
@@ -1992,7 +1992,7 @@ mod tests {
         worktree_name: Option<&str>,
         primary_abs: Option<&str>,
     ) -> ProjectListItem {
-        ProjectListItem::Workspace(Project::<Workspace>::new(
+        ProjectListItem::Workspace(RustProject::<Workspace>::new(
             PathBuf::from(abs_path),
             name.map(String::from),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -2009,7 +2009,7 @@ mod tests {
         worktree_name: Option<&str>,
         primary_abs: Option<&str>,
     ) -> ProjectListItem {
-        ProjectListItem::Package(Project::<Package>::new(
+        ProjectListItem::Package(RustProject::<Package>::new(
             PathBuf::from(abs_path),
             name.map(String::from),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),

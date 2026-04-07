@@ -28,9 +28,9 @@ use super::types::PaneId;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
 use crate::project::Package;
-use crate::project::Project;
 use crate::project::ProjectListItem;
 use crate::project::ProjectType;
+use crate::project::RustProject;
 use crate::project::Workspace;
 
 /// A searchable item in the universal finder.
@@ -173,7 +173,7 @@ fn branch_for(
 
 fn add_workspace_items(
     items: &mut Vec<FinderItem>,
-    ws: &Project<Workspace>,
+    ws: &RustProject<Workspace>,
     git_info: &HashMap<std::path::PathBuf, GitInfo>,
 ) {
     let root_path = ws.display_path();
@@ -212,7 +212,7 @@ fn add_workspace_items(
 
 fn add_package_items(
     items: &mut Vec<FinderItem>,
-    pkg: &Project<Package>,
+    pkg: &RustProject<Package>,
     git_info: &HashMap<std::path::PathBuf, GitInfo>,
 ) {
     let root_path = pkg.display_path();
@@ -236,7 +236,7 @@ fn add_package_items(
 
 fn add_vendored_items_typed(
     items: &mut Vec<FinderItem>,
-    project: &Project<Package>,
+    project: &RustProject<Package>,
     parent_name: &str,
 ) {
     let project_name = project.display_name();
@@ -729,18 +729,18 @@ mod tests {
     use super::*;
     use crate::project::Cargo;
     use crate::project::Package;
-    use crate::project::Project;
     use crate::project::ProjectListItem;
+    use crate::project::RustProject;
     use crate::project::Workspace;
 
     #[test]
     fn build_finder_index_includes_vendored_projects() {
-        let ws = Project::<Workspace>::new(
+        let ws = RustProject::<Workspace>::new(
             PathBuf::from("~/rust/hana"),
             Some("hana".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
             Vec::new(),
-            vec![Project::<Package>::new(
+            vec![RustProject::<Package>::new(
                 PathBuf::from("~/rust/hana/crates/clay-layout"),
                 Some("clay-layout".to_string()),
                 Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),

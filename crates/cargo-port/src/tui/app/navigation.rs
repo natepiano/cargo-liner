@@ -16,8 +16,8 @@ use super::types::SearchMode;
 use super::types::VisibleRow;
 use crate::constants::WORKTREE;
 use crate::project::Package;
-use crate::project::Project;
 use crate::project::ProjectListItem;
+use crate::project::RustProject;
 use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::tui;
@@ -57,14 +57,22 @@ impl App {
         let live = match item {
             ProjectListItem::WorkspaceWorktrees(wtg) => {
                 let count = std::iter::once(wtg.primary().visibility())
-                    .chain(wtg.linked().iter().map(crate::project::Project::visibility))
+                    .chain(
+                        wtg.linked()
+                            .iter()
+                            .map(crate::project::RustProject::visibility),
+                    )
                     .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
                     .count();
                 if count <= 1 { 0 } else { count }
             },
             ProjectListItem::PackageWorktrees(wtg) => {
                 let count = std::iter::once(wtg.primary().visibility())
-                    .chain(wtg.linked().iter().map(crate::project::Project::visibility))
+                    .chain(
+                        wtg.linked()
+                            .iter()
+                            .map(crate::project::RustProject::visibility),
+                    )
                     .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
                     .count();
                 if count <= 1 { 0 } else { count }
@@ -170,7 +178,7 @@ impl App {
         item: &ProjectListItem,
         group_index: usize,
         member_index: usize,
-    ) -> Option<&Project<Package>> {
+    ) -> Option<&RustProject<Package>> {
         match item {
             ProjectListItem::Workspace(ws) => {
                 ws.groups().get(group_index)?.members().get(member_index)
@@ -183,7 +191,7 @@ impl App {
     fn resolve_vendored(
         item: &ProjectListItem,
         vendored_index: usize,
-    ) -> Option<&Project<Package>> {
+    ) -> Option<&RustProject<Package>> {
         match item {
             ProjectListItem::Workspace(ws) => ws.vendored().get(vendored_index),
             ProjectListItem::Package(pkg) => pkg.vendored().get(vendored_index),
@@ -197,7 +205,7 @@ impl App {
         worktree_index: usize,
         group_index: usize,
         member_index: usize,
-    ) -> Option<&Project<Package>> {
+    ) -> Option<&RustProject<Package>> {
         match item {
             ProjectListItem::WorkspaceWorktrees(wtg) => {
                 let ws = wtg.linked().get(worktree_index)?;
@@ -212,7 +220,7 @@ impl App {
         item: &ProjectListItem,
         worktree_index: usize,
         vendored_index: usize,
-    ) -> Option<&Project<Package>> {
+    ) -> Option<&RustProject<Package>> {
         match item {
             ProjectListItem::WorkspaceWorktrees(wtg) => {
                 let ws = wtg.linked().get(worktree_index)?;
@@ -359,10 +367,10 @@ impl App {
                 let item = self.project_list_items.get(node_index)?;
                 match item {
                     ProjectListItem::Workspace(ws) => {
-                        ws.vendored().get(vendored_index).map(Project::path)
+                        ws.vendored().get(vendored_index).map(RustProject::path)
                     },
                     ProjectListItem::Package(pkg) => {
-                        pkg.vendored().get(vendored_index).map(Project::path)
+                        pkg.vendored().get(vendored_index).map(RustProject::path)
                     },
                     _ => None,
                 }
@@ -435,13 +443,14 @@ impl App {
             } => {
                 let item = self.project_list_items.get(node_index)?;
                 match item {
-                    ProjectListItem::Workspace(ws) => {
-                        ws.vendored().get(vendored_index).map(Project::display_path)
-                    },
+                    ProjectListItem::Workspace(ws) => ws
+                        .vendored()
+                        .get(vendored_index)
+                        .map(RustProject::display_path),
                     ProjectListItem::Package(pkg) => pkg
                         .vendored()
                         .get(vendored_index)
-                        .map(Project::display_path),
+                        .map(RustProject::display_path),
                     _ => None,
                 }
             },
@@ -586,14 +595,14 @@ impl App {
                 if wi == 0 {
                     Some(wtg.primary().display_path())
                 } else {
-                    wtg.linked().get(wi - 1).map(Project::display_path)
+                    wtg.linked().get(wi - 1).map(RustProject::display_path)
                 }
             },
             ProjectListItem::PackageWorktrees(wtg) => {
                 if wi == 0 {
                     Some(wtg.primary().display_path())
                 } else {
-                    wtg.linked().get(wi - 1).map(Project::display_path)
+                    wtg.linked().get(wi - 1).map(RustProject::display_path)
                 }
             },
             _ => None,
@@ -614,7 +623,7 @@ impl App {
                     wtg.linked().get(wi - 1)?
                 };
                 let group = ws.groups().get(gi)?;
-                group.members().get(mi).map(Project::display_path)
+                group.members().get(mi).map(RustProject::display_path)
             },
             _ => None,
         }
@@ -632,7 +641,7 @@ impl App {
                 } else {
                     wtg.linked().get(wi - 1)?
                 };
-                ws.vendored().get(vi).map(Project::display_path)
+                ws.vendored().get(vi).map(RustProject::display_path)
             },
             ProjectListItem::PackageWorktrees(wtg) => {
                 let pkg = if wi == 0 {
@@ -640,7 +649,7 @@ impl App {
                 } else {
                     wtg.linked().get(wi - 1)?
                 };
-                pkg.vendored().get(vi).map(Project::display_path)
+                pkg.vendored().get(vi).map(RustProject::display_path)
             },
             _ => None,
         }
@@ -714,14 +723,14 @@ impl App {
                 if wi == 0 {
                     Some(wtg.primary().path())
                 } else {
-                    wtg.linked().get(wi - 1).map(Project::path)
+                    wtg.linked().get(wi - 1).map(RustProject::path)
                 }
             },
             ProjectListItem::PackageWorktrees(wtg) => {
                 if wi == 0 {
                     Some(wtg.primary().path())
                 } else {
-                    wtg.linked().get(wi - 1).map(Project::path)
+                    wtg.linked().get(wi - 1).map(RustProject::path)
                 }
             },
             _ => None,
@@ -742,7 +751,7 @@ impl App {
                     wtg.linked().get(wi - 1)?
                 };
                 let group = ws.groups().get(gi)?;
-                group.members().get(mi).map(Project::path)
+                group.members().get(mi).map(RustProject::path)
             },
             _ => None,
         }
@@ -756,7 +765,7 @@ impl App {
                 } else {
                     wtg.linked().get(wi - 1)?
                 };
-                ws.vendored().get(vi).map(Project::path)
+                ws.vendored().get(vi).map(RustProject::path)
             },
             ProjectListItem::PackageWorktrees(wtg) => {
                 let pkg = if wi == 0 {
@@ -764,7 +773,7 @@ impl App {
                 } else {
                     wtg.linked().get(wi - 1)?
                 };
-                pkg.vendored().get(vi).map(Project::path)
+                pkg.vendored().get(vi).map(RustProject::path)
             },
             _ => None,
         }
@@ -1079,7 +1088,7 @@ impl App {
                     }
                 },
                 ProjectListItem::WorkspaceWorktrees(wtg) => {
-                    let all_ws: Vec<&Project<Workspace>> = std::iter::once(wtg.primary())
+                    let all_ws: Vec<&RustProject<Workspace>> = std::iter::once(wtg.primary())
                         .chain(wtg.linked().iter())
                         .collect();
                     for (wi, ws) in all_ws.iter().enumerate() {
@@ -1181,7 +1190,7 @@ impl App {
                 },
                 ProjectListItem::NonRust(_) => {},
                 ProjectListItem::WorkspaceWorktrees(wtg) => {
-                    let all_ws: Vec<&Project<Workspace>> = std::iter::once(wtg.primary())
+                    let all_ws: Vec<&RustProject<Workspace>> = std::iter::once(wtg.primary())
                         .chain(wtg.linked().iter())
                         .collect();
                     for (wi, ws) in all_ws.iter().enumerate() {
@@ -1208,7 +1217,7 @@ impl App {
                     }
                 },
                 ProjectListItem::PackageWorktrees(wtg) => {
-                    let all_pkg: Vec<&Project<Package>> = std::iter::once(wtg.primary())
+                    let all_pkg: Vec<&RustProject<Package>> = std::iter::once(wtg.primary())
                         .chain(wtg.linked().iter())
                         .collect();
                     for (wi, pkg) in all_pkg.iter().enumerate() {

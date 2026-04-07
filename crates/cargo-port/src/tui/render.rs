@@ -830,7 +830,7 @@ fn render_root_item(
 /// Build a `ListItem` for a child project (workspace member or worktree).
 fn render_child_item(
     app: &App,
-    project: &project::Project<project::Package>,
+    project: &project::RustProject<project::Package>,
     name: &str,
     child_sorted: &[u64],
     prefix: &'static str,
@@ -840,7 +840,7 @@ fn render_child_item(
     let disk = app.formatted_disk(path);
     let disk_bytes = app.disk_usage.get(path).copied();
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
-    let lang = project::Project::<project::Package>::lang_icon();
+    let lang = project::RustProject::<project::Package>::lang_icon();
     let cargo_active = app.is_cargo_active_path(path);
     let lint = if cargo_active {
         app.lint_icon(path)
@@ -1150,7 +1150,7 @@ fn render_wt_vendored_item(
         _ => None,
     };
     let vendored_display_name =
-        vendored_pkg.map_or_else(String::new, crate::project::Project::display_name);
+        vendored_pkg.map_or_else(String::new, crate::project::RustProject::display_name);
     let name = format!("{vendored_display_name} (vendored)");
     vendored_pkg.map_or_else(
         || {
