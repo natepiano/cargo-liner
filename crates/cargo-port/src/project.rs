@@ -1232,6 +1232,496 @@ fn detect_worktree_primary(project_dir: &Path) -> Option<String> {
     }
 }
 
+// ── New hierarchical data model ────────────────────────────────────────
+
+/// Visibility state for projects and worktree groups.
+/// Progression: `Visible -> Deleted -> Dismissed`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Visibility {
+    #[default]
+    Visible,
+    Deleted,
+    Dismissed,
+}
+
+/// Associated types that drive the structure per project kind.
+pub trait ProjectKind: Clone + 'static {
+    type Cargo: Clone;
+    type Groups: Clone;
+    type Vendored: Clone;
+}
+
+#[derive(Clone)]
+pub struct Workspace;
+
+impl ProjectKind for Workspace {
+    type Cargo = Cargo;
+    type Groups = Vec<NewMemberGroup>;
+    type Vendored = Vec<TypedProject<Package>>;
+}
+
+#[derive(Clone)]
+pub struct Package;
+
+impl ProjectKind for Package {
+    type Cargo = Cargo;
+    type Groups = ();
+    type Vendored = Vec<TypedProject<Package>>;
+}
+
+#[derive(Clone)]
+pub struct NonRust;
+
+impl ProjectKind for NonRust {
+    type Cargo = ();
+    type Groups = ();
+    type Vendored = ();
+}
+
+/// Shared Cargo fields extracted from `Cargo.toml`.
+#[derive(Clone, Debug)]
+pub struct Cargo {
+    version:                Option<String>,
+    description:            Option<String>,
+    types:                  Vec<ProjectType>,
+    examples:               Vec<ExampleGroup>,
+    benches:                Vec<String>,
+    test_count:             usize,
+    local_dependency_paths: Vec<String>,
+}
+
+impl Cargo {
+    pub fn new(
+        version: Option<String>,
+        description: Option<String>,
+        types: Vec<ProjectType>,
+        examples: Vec<ExampleGroup>,
+        benches: Vec<String>,
+        test_count: usize,
+        local_dependency_paths: Vec<String>,
+    ) -> Self {
+        Self {
+            version,
+            description,
+            types,
+            examples,
+            benches,
+            test_count,
+            local_dependency_paths,
+        }
+    }
+
+    pub fn version(&self) -> Option<&str> { self.version.as_deref() }
+
+    pub fn description(&self) -> Option<&str> { self.description.as_deref() }
+
+    pub fn types(&self) -> &[ProjectType] { &self.types }
+
+    pub fn examples(&self) -> &[ExampleGroup] { &self.examples }
+
+    pub fn benches(&self) -> &[String] { &self.benches }
+
+    pub const fn test_count(&self) -> usize { self.test_count }
+
+    pub fn local_dependency_paths(&self) -> &[String] { &self.local_dependency_paths }
+
+    pub fn example_count(&self) -> usize { self.examples.iter().map(|g| g.names.len()).sum() }
+}
+
+/// The core project type, parameterized by kind.
+/// Private fields with accessors enforce what's available per kind.
+pub struct TypedProject<Kind: ProjectKind> {
+    path:                      PathBuf,
+    name:                      Option<String>,
+    visibility:                Visibility,
+    cargo:                     Kind::Cargo,
+    groups:                    Kind::Groups,
+    vendored:                  Kind::Vendored,
+    worktree_name:             Option<String>,
+    worktree_primary_abs_path: Option<PathBuf>,
+}
+
+impl Clone for TypedProject<Workspace> {
+    fn clone(&self) -> Self {
+        Self {
+            path:                      self.path.clone(),
+            name:                      self.name.clone(),
+            visibility:                self.visibility,
+            cargo:                     self.cargo.clone(),
+            groups:                    self.groups.clone(),
+            vendored:                  self.vendored.clone(),
+            worktree_name:             self.worktree_name.clone(),
+            worktree_primary_abs_path: self.worktree_primary_abs_path.clone(),
+        }
+    }
+}
+
+impl Clone for TypedProject<Package> {
+    fn clone(&self) -> Self {
+        Self {
+            path:                      self.path.clone(),
+            name:                      self.name.clone(),
+            visibility:                self.visibility,
+            cargo:                     self.cargo.clone(),
+            groups:                    (),
+            vendored:                  self.vendored.clone(),
+            worktree_name:             self.worktree_name.clone(),
+            worktree_primary_abs_path: self.worktree_primary_abs_path.clone(),
+        }
+    }
+}
+
+impl Clone for TypedProject<NonRust> {
+    fn clone(&self) -> Self {
+        Self {
+            path:                      self.path.clone(),
+            name:                      self.name.clone(),
+            visibility:                self.visibility,
+            cargo:                     (),
+            groups:                    (),
+            vendored:                  (),
+            worktree_name:             self.worktree_name.clone(),
+            worktree_primary_abs_path: self.worktree_primary_abs_path.clone(),
+        }
+    }
+}
+
+// Shared accessors for all kinds.
+impl<Kind: ProjectKind> TypedProject<Kind> {
+    pub fn path(&self) -> &Path { &self.path }
+
+    pub fn name(&self) -> Option<&str> { self.name.as_deref() }
+
+    pub const fn visibility(&self) -> Visibility { self.visibility }
+
+    pub fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
+
+    pub fn worktree_name(&self) -> Option<&str> { self.worktree_name.as_deref() }
+
+    pub fn worktree_primary_abs_path(&self) -> Option<&Path> {
+        self.worktree_primary_abs_path.as_deref()
+    }
+
+    /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
+    pub fn display_path(&self) -> String { home_relative_path(&self.path) }
+
+    /// Display name: project name or last path component.
+    pub fn display_name(&self) -> String {
+        self.name
+            .as_deref()
+            .unwrap_or_else(|| {
+                self.path
+                    .file_name()
+                    .map_or("", |n| n.to_str().unwrap_or(""))
+            })
+            .to_string()
+    }
+}
+
+// Workspace-specific accessors.
+impl TypedProject<Workspace> {
+    pub fn cargo(&self) -> &Cargo { &self.cargo }
+
+    pub fn groups(&self) -> &[NewMemberGroup] { &self.groups }
+
+    pub fn groups_mut(&mut self) -> &mut Vec<NewMemberGroup> { &mut self.groups }
+
+    pub fn vendored(&self) -> &[TypedProject<Package>] { &self.vendored }
+
+    pub fn vendored_mut(&mut self) -> &mut Vec<TypedProject<Package>> { &mut self.vendored }
+
+    pub fn new(
+        path: PathBuf,
+        name: Option<String>,
+        cargo: Cargo,
+        groups: Vec<NewMemberGroup>,
+        vendored: Vec<TypedProject<Package>>,
+        worktree_name: Option<String>,
+        worktree_primary_abs_path: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            path,
+            name,
+            visibility: Visibility::default(),
+            cargo,
+            groups,
+            vendored,
+            worktree_name,
+            worktree_primary_abs_path,
+        }
+    }
+
+    pub fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members().is_empty()) }
+
+    /// Language icon for the project list.
+    pub const fn lang_icon(&self) -> &'static str { "\u{1f980}" }
+}
+
+// Package-specific accessors.
+impl TypedProject<Package> {
+    pub fn cargo(&self) -> &Cargo { &self.cargo }
+
+    pub fn vendored(&self) -> &[TypedProject<Package>] { &self.vendored }
+
+    pub fn vendored_mut(&mut self) -> &mut Vec<TypedProject<Package>> { &mut self.vendored }
+
+    pub fn new(
+        path: PathBuf,
+        name: Option<String>,
+        cargo: Cargo,
+        vendored: Vec<TypedProject<Package>>,
+        worktree_name: Option<String>,
+        worktree_primary_abs_path: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            path,
+            name,
+            visibility: Visibility::default(),
+            cargo,
+            groups: (),
+            vendored,
+            worktree_name,
+            worktree_primary_abs_path,
+        }
+    }
+
+    /// Language icon for the project list.
+    pub const fn lang_icon(&self) -> &'static str { "\u{1f980}" }
+}
+
+// NonRust-specific constructor.
+impl TypedProject<NonRust> {
+    pub fn new(
+        path: PathBuf,
+        name: Option<String>,
+        worktree_name: Option<String>,
+        worktree_primary_abs_path: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            path,
+            name,
+            visibility: Visibility::default(),
+            cargo: (),
+            groups: (),
+            vendored: (),
+            worktree_name,
+            worktree_primary_abs_path,
+        }
+    }
+
+    /// Language icon for the project list.
+    pub const fn lang_icon(&self) -> &'static str { "  " }
+}
+
+/// A generic worktree group: primary + linked checkouts.
+pub struct WorktreeGroup<Kind: ProjectKind> {
+    primary:    TypedProject<Kind>,
+    linked:     Vec<TypedProject<Kind>>,
+    visibility: Visibility,
+}
+
+impl<Kind: ProjectKind> WorktreeGroup<Kind> {
+    pub fn new(primary: TypedProject<Kind>, linked: Vec<TypedProject<Kind>>) -> Self {
+        Self {
+            primary,
+            linked,
+            visibility: Visibility::default(),
+        }
+    }
+
+    pub fn primary(&self) -> &TypedProject<Kind> { &self.primary }
+
+    pub fn primary_mut(&mut self) -> &mut TypedProject<Kind> { &mut self.primary }
+
+    pub fn linked(&self) -> &[TypedProject<Kind>] { &self.linked }
+
+    pub fn linked_mut(&mut self) -> &mut Vec<TypedProject<Kind>> { &mut self.linked }
+
+    pub const fn visibility(&self) -> Visibility { self.visibility }
+
+    pub fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
+
+    pub fn linked_count(&self) -> usize { self.linked.len() }
+}
+
+impl Clone for WorktreeGroup<Workspace> {
+    fn clone(&self) -> Self {
+        Self {
+            primary:    self.primary.clone(),
+            linked:     self.linked.clone(),
+            visibility: self.visibility,
+        }
+    }
+}
+
+impl Clone for WorktreeGroup<Package> {
+    fn clone(&self) -> Self {
+        Self {
+            primary:    self.primary.clone(),
+            linked:     self.linked.clone(),
+            visibility: self.visibility,
+        }
+    }
+}
+
+/// The top-level enum for the project list.
+pub enum ProjectListItem {
+    Workspace(TypedProject<Workspace>),
+    Package(TypedProject<Package>),
+    NonRust(TypedProject<NonRust>),
+    WorkspaceWorktrees(WorktreeGroup<Workspace>),
+    PackageWorktrees(WorktreeGroup<Package>),
+}
+
+impl Clone for ProjectListItem {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Workspace(p) => Self::Workspace(p.clone()),
+            Self::Package(p) => Self::Package(p.clone()),
+            Self::NonRust(p) => Self::NonRust(p.clone()),
+            Self::WorkspaceWorktrees(g) => Self::WorkspaceWorktrees(g.clone()),
+            Self::PackageWorktrees(g) => Self::PackageWorktrees(g.clone()),
+        }
+    }
+}
+
+impl ProjectListItem {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Workspace(p) => p.path(),
+            Self::Package(p) => p.path(),
+            Self::NonRust(p) => p.path(),
+            Self::WorkspaceWorktrees(g) => g.primary().path(),
+            Self::PackageWorktrees(g) => g.primary().path(),
+        }
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Self::Workspace(p) => p.name(),
+            Self::Package(p) => p.name(),
+            Self::NonRust(p) => p.name(),
+            Self::WorkspaceWorktrees(g) => g.primary().name(),
+            Self::PackageWorktrees(g) => g.primary().name(),
+        }
+    }
+
+    pub fn visibility(&self) -> Visibility {
+        match self {
+            Self::Workspace(p) => p.visibility(),
+            Self::Package(p) => p.visibility(),
+            Self::NonRust(p) => p.visibility(),
+            Self::WorkspaceWorktrees(g) => g.visibility(),
+            Self::PackageWorktrees(g) => g.visibility(),
+        }
+    }
+
+    pub fn set_visibility(&mut self, v: Visibility) {
+        match self {
+            Self::Workspace(p) => p.set_visibility(v),
+            Self::Package(p) => p.set_visibility(v),
+            Self::NonRust(p) => p.set_visibility(v),
+            Self::WorkspaceWorktrees(g) => g.set_visibility(v),
+            Self::PackageWorktrees(g) => g.set_visibility(v),
+        }
+    }
+
+    pub fn display_path(&self) -> String {
+        match self {
+            Self::Workspace(p) => p.display_path(),
+            Self::Package(p) => p.display_path(),
+            Self::NonRust(p) => p.display_path(),
+            Self::WorkspaceWorktrees(g) => g.primary().display_path(),
+            Self::PackageWorktrees(g) => g.primary().display_path(),
+        }
+    }
+
+    pub fn display_name(&self) -> String {
+        match self {
+            Self::Workspace(p) => p.display_name(),
+            Self::Package(p) => p.display_name(),
+            Self::NonRust(p) => p.display_name(),
+            Self::WorkspaceWorktrees(g) => g.primary().display_name(),
+            Self::PackageWorktrees(g) => g.primary().display_name(),
+        }
+    }
+
+    /// Whether this item has expandable children.
+    pub fn has_children(&self) -> bool {
+        match self {
+            Self::Workspace(ws) => {
+                ws.groups().iter().any(|g| !g.members().is_empty()) || !ws.vendored().is_empty()
+            },
+            Self::Package(pkg) => !pkg.vendored().is_empty(),
+            Self::NonRust(_) => false,
+            Self::WorkspaceWorktrees(g) => !g.linked().is_empty(),
+            Self::PackageWorktrees(g) => !g.linked().is_empty(),
+        }
+    }
+
+    /// Language icon for the project list.
+    pub fn lang_icon(&self) -> &'static str {
+        match self {
+            Self::Workspace(_)
+            | Self::Package(_)
+            | Self::WorkspaceWorktrees(_)
+            | Self::PackageWorktrees(_) => "\u{1f980}",
+            Self::NonRust(_) => "  ",
+        }
+    }
+
+    /// Whether this is a Rust project (has Cargo.toml).
+    pub const fn is_rust(&self) -> bool {
+        matches!(
+            self,
+            Self::Workspace(_)
+                | Self::Package(_)
+                | Self::WorkspaceWorktrees(_)
+                | Self::PackageWorktrees(_)
+        )
+    }
+
+    /// Whether this is a workspace.
+    pub const fn is_workspace(&self) -> bool {
+        matches!(self, Self::Workspace(_) | Self::WorkspaceWorktrees(_))
+    }
+}
+
+/// Members within a workspace organized into groups.
+#[derive(Clone)]
+pub enum NewMemberGroup {
+    Named {
+        name:    String,
+        members: Vec<TypedProject<Package>>,
+    },
+    Inline {
+        members: Vec<TypedProject<Package>>,
+    },
+}
+
+impl NewMemberGroup {
+    pub fn members(&self) -> &[TypedProject<Package>] {
+        match self {
+            Self::Named { members, .. } | Self::Inline { members } => members,
+        }
+    }
+
+    pub fn members_mut(&mut self) -> &mut Vec<TypedProject<Package>> {
+        match self {
+            Self::Named { members, .. } | Self::Inline { members } => members,
+        }
+    }
+
+    pub fn group_name(&self) -> &str {
+        match self {
+            Self::Named { name, .. } => name,
+            Self::Inline { .. } => "",
+        }
+    }
+
+    pub const fn is_named(&self) -> bool { matches!(self, Self::Named { .. }) }
+}
+
 fn count_rs_files_recursive(dir: &Path) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;

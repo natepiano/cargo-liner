@@ -104,12 +104,17 @@ impl App {
     }
 
     pub(super) fn is_ci_owner_path(&self, path: &str) -> bool {
-        self.nodes.iter().any(|node| {
-            node.project.path == path
-                || node
-                    .worktrees
-                    .iter()
-                    .any(|worktree| worktree.project.path == path)
+        self.project_list_items.iter().any(|item| {
+            item.display_path() == path
+                || match item {
+                    crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+                        wtg.linked().iter().any(|l| l.display_path() == path)
+                    },
+                    crate::project::ProjectListItem::PackageWorktrees(wtg) => {
+                        wtg.linked().iter().any(|l| l.display_path() == path)
+                    },
+                    _ => false,
+                }
         })
     }
 

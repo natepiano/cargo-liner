@@ -29,6 +29,7 @@ use crate::project::GitInfo;
 use crate::project::GitPathState;
 use crate::project::Project;
 use crate::project::ProjectLanguage::Rust;
+use crate::project::ProjectListItem;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::FlatEntry;
@@ -49,6 +50,7 @@ impl App {
         &mut self,
         nodes: Vec<ProjectNode>,
         flat_entries: Vec<FlatEntry>,
+        project_list_items: Vec<ProjectListItem>,
     ) {
         let selected_path = self
             .selected_project()
@@ -56,6 +58,7 @@ impl App {
             .or_else(|| self.selection_paths.last_selected.clone());
         let should_focus_project_list = false;
         self.nodes = nodes;
+        self.project_list_items = project_list_items;
         self.flat_entries = flat_entries;
         self.dirty.finder.mark_dirty();
         self.dirty.rows.mark_dirty();
@@ -77,17 +80,36 @@ impl App {
         }
 
         // Propagate git info and stars from workspace roots to their members.
-        for node in &self.nodes {
-            if let Some(info) = self.git_info.get(&node.project.path).cloned() {
-                for member in Self::all_group_members(node) {
+        for item in &self.project_list_items {
+            let root_path = item.display_path();
+            let member_paths: Vec<String> = match item {
+                crate::project::ProjectListItem::Workspace(ws) => ws
+                    .groups()
+                    .iter()
+                    .flat_map(|g| g.members().iter().map(|m| m.display_path()))
+                    .collect(),
+                crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+                    std::iter::once(wtg.primary())
+                        .chain(wtg.linked().iter())
+                        .flat_map(|ws| {
+                            ws.groups()
+                                .iter()
+                                .flat_map(|g| g.members().iter().map(|m| m.display_path()))
+                        })
+                        .collect()
+                },
+                _ => Vec::new(),
+            };
+            if let Some(info) = self.git_info.get(&root_path).cloned() {
+                for member_path in &member_paths {
                     self.git_info
-                        .entry(member.path.clone())
+                        .entry(member_path.clone())
                         .or_insert_with(|| info.clone());
                 }
             }
-            if let Some(&stars) = self.stars.get(&node.project.path) {
-                for member in Self::all_group_members(node) {
-                    self.stars.entry(member.path.clone()).or_insert(stars);
+            if let Some(&stars) = self.stars.get(&root_path) {
+                for member_path in &member_paths {
+                    self.stars.entry(member_path.clone()).or_insert(stars);
                 }
             }
         }
@@ -95,7 +117,7 @@ impl App {
         // Try to restore selection
         if let Some(path) = selected_path {
             self.select_project_in_tree(&path);
-        } else if !self.nodes.is_empty() {
+        } else if !self.project_list_items.is_empty() {
             self.list_state.select(Some(0));
         }
         if should_focus_project_list {
@@ -790,6 +812,7 @@ impl App {
             let started = Instant::now();
             let nodes = scan::build_tree(&projects, &inline_dirs);
             let flat_entries = scan::build_flat_entries(&nodes);
+            let project_list_items = scan::build_project_list(&nodes);
             crate::perf_log::log_duration(
                 "tree_build",
                 started.elapsed(),
@@ -806,6 +829,7 @@ impl App {
                 build_id,
                 nodes,
                 flat_entries,
+                project_list_items,
             });
         });
     }
@@ -817,7 +841,7 @@ impl App {
                 continue;
             }
             self.builds.tree.active = None;
-            self.apply_tree_build(result.nodes, result.flat_entries);
+            self.apply_tree_build(result.nodes, result.flat_entries, result.project_list_items);
             applied += 1;
             if result.build_id != self.builds.tree.latest {
                 self.spawn_tree_build(self.builds.tree.latest);

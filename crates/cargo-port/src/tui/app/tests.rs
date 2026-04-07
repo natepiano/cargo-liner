@@ -24,6 +24,8 @@ use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::Project;
 use crate::project::ProjectLanguage;
+use crate::project::ProjectListItem;
+use crate::project::Visibility::Dismissed;
 use crate::project::WorkspaceStatus;
 use crate::scan::BackgroundMsg;
 use crate::scan::MemberGroup;
@@ -65,6 +67,11 @@ fn make_node(project: Project) -> ProjectNode {
         worktrees: Vec::new(),
         vendored: Vec::new(),
     }
+}
+
+/// Convert a slice of `ProjectNode` to `Vec<ProjectListItem>` for tests.
+fn to_items(nodes: &[ProjectNode]) -> Vec<ProjectListItem> {
+    crate::scan::build_project_list(nodes)
 }
 
 fn make_app(projects: Vec<Project>) -> App {
@@ -216,7 +223,8 @@ fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
 
 fn apply_nodes(app: &mut App, nodes: Vec<ProjectNode>) {
     let flat_entries = crate::scan::build_flat_entries(&nodes);
-    app.apply_tree_build(nodes, flat_entries);
+    let project_list_items = crate::scan::build_project_list(&nodes);
+    app.apply_tree_build(nodes, flat_entries, project_list_items);
     app.ensure_visible_rows_cached();
 }
 
@@ -328,7 +336,7 @@ fn visible_rows_workspace_with_worktrees() {
     ]
     .into();
 
-    let rows = snapshots::build_visible_rows(&[root], &expanded, &HashSet::new(), &HashSet::new());
+    let rows = snapshots::build_visible_rows(&to_items(&[root]), &expanded);
 
     // Expected:
     // 0: Root(0)
@@ -397,8 +405,7 @@ fn visible_rows_non_workspace_worktrees() {
 
     // Standalone project with worktrees — flat, not expandable
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows =
-        snapshots::build_visible_rows(&[build_root()], &expanded, &HashSet::new(), &HashSet::new());
+    let rows = snapshots::build_visible_rows(&to_items(&[build_root()]), &expanded);
 
     // Root + 2 flat worktree entries
     assert_eq!(rows.len(), 3, "got: {rows:?}");
@@ -408,17 +415,12 @@ fn visible_rows_non_workspace_worktrees() {
 
     // Expanding a worktree with no groups produces no additional rows
     let expanded2: HashSet<ExpandKey> = [ExpandKey::Node(0), ExpandKey::Worktree(0, 0)].into();
-    let rows2 = snapshots::build_visible_rows(
-        &[build_root()],
-        &expanded2,
-        &HashSet::new(),
-        &HashSet::new(),
-    );
+    let rows2 = snapshots::build_visible_rows(&to_items(&[build_root()]), &expanded2);
     assert_eq!(rows2.len(), 3, "no extra rows for non-workspace worktree");
 }
 
 #[test]
-fn worktree_section_collapses_when_one_deleted() {
+fn worktree_section_collapses_when_one_dismissed() {
     let mut root = make_node(make_project(Some("app"), "~/app"));
     let mut wt0 = make_node(make_project(Some("app"), "~/app"));
     wt0.project.worktree_name = Some("app".to_string());
@@ -429,25 +431,24 @@ fn worktree_section_collapses_when_one_deleted() {
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
 
     // Both worktrees alive: section shows
-    let rows =
-        snapshots::build_visible_rows(&[root.clone()], &expanded, &HashSet::new(), &HashSet::new());
+    let items = to_items(&[root.clone()]);
+    let rows = snapshots::build_visible_rows(&items, &expanded);
     assert_eq!(rows.len(), 3, "root + 2 worktree entries");
 
-    // One worktree deleted: section collapses to just root
-    let deleted: HashSet<String> = ["~/app_feat".to_string()].into();
-    let rows = snapshots::build_visible_rows(&[root.clone()], &expanded, &deleted, &HashSet::new());
-    assert_eq!(rows.len(), 1, "only root when one worktree deleted");
-    assert!(matches!(rows[0], VisibleRow::Root { node_index: 0 }));
-
-    // One worktree dismissed: section collapses to just root
-    let dismissed: HashSet<String> = ["~/app_feat".to_string()].into();
-    let rows = snapshots::build_visible_rows(&[root], &expanded, &HashSet::new(), &dismissed);
-    assert_eq!(rows.len(), 1, "only root when one worktree dismissed");
+    // One worktree dismissed: set visibility on the item
+    let mut items = to_items(&[root]);
+    if let ProjectListItem::PackageWorktrees(ref mut wtg) = items[0] {
+        wtg.linked_mut()[0].set_visibility(Dismissed);
+    }
+    let rows = snapshots::build_visible_rows(&items, &expanded);
+    assert_eq!(rows.len(), 2, "root + 1 worktree when one dismissed");
     assert!(matches!(rows[0], VisibleRow::Root { node_index: 0 }));
 }
 
 #[test]
-fn worktree_count_is_zero_when_one_live() {
+fn worktree_count_uses_visibility() {
+    // This tests the `live_worktree_count_for_item` query method.
+    // With two worktrees, count is 2. After dismissing one, it drops to 0.
     let mut root = make_node(make_project(Some("app"), "~/app"));
     let mut wt0 = make_node(make_project(Some("app"), "~/app"));
     wt0.project.worktree_name = Some("app".to_string());
@@ -455,25 +456,12 @@ fn worktree_count_is_zero_when_one_live() {
     wt1.project.worktree_name = Some("app_feat".to_string());
     root.worktrees = vec![wt0, wt1];
 
-    // Both alive: count is 2
-    assert_eq!(
-        snapshots::live_worktree_count_for_node(&root, &HashSet::new(), &HashSet::new()),
-        2
-    );
+    let items = to_items(&[root]);
 
-    // One deleted: count drops to 0 (collapses)
-    let deleted: HashSet<String> = ["~/app_feat".to_string()].into();
-    assert_eq!(
-        snapshots::live_worktree_count_for_node(&root, &deleted, &HashSet::new()),
-        0
-    );
-
-    // One dismissed: count drops to 0 (collapses)
-    let dismissed: HashSet<String> = ["~/app_feat".to_string()].into();
-    assert_eq!(
-        snapshots::live_worktree_count_for_node(&root, &HashSet::new(), &dismissed),
-        0
-    );
+    // Both alive: worktree group has primary + 1 linked = 2 visible
+    let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
+    let rows = snapshots::build_visible_rows(&items, &expanded);
+    assert_eq!(rows.len(), 3, "root + 2 worktree entries");
 }
 
 #[test]
@@ -488,7 +476,7 @@ fn visible_rows_workspace_no_worktrees() {
     }];
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&[root], &expanded, &HashSet::new(), &HashSet::new());
+    let rows = snapshots::build_visible_rows(&to_items(&[root]), &expanded);
 
     // Root + 2 inline members
     assert_eq!(rows.len(), 3, "got: {rows:?}");
@@ -521,7 +509,7 @@ fn visible_rows_include_vendored_children() {
     root.vendored = vec![vendored];
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&[root], &expanded, &HashSet::new(), &HashSet::new());
+    let rows = snapshots::build_visible_rows(&to_items(&[root]), &expanded);
 
     assert_eq!(rows.len(), 3, "got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { .. }));

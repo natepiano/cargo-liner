@@ -12,7 +12,11 @@ use super::types::ExpandKey;
 use super::types::SearchMode;
 use super::types::VisibleRow;
 use crate::constants::WORKTREE;
+use crate::project::Package;
 use crate::project::Project;
+use crate::project::ProjectListItem;
+use crate::project::TypedProject;
+use crate::project::Workspace;
 use crate::scan::ProjectNode;
 use crate::tui;
 use crate::tui::columns::COL_NAME;
@@ -25,12 +29,8 @@ impl App {
             return;
         }
         self.dirty.rows.mark_clean();
-        self.cached_visible_rows = snapshots::build_visible_rows(
-            &self.nodes,
-            &self.expanded,
-            &self.deleted_projects,
-            &self.dismissed_projects,
-        );
+        self.cached_visible_rows =
+            snapshots::build_visible_rows(&self.project_list_items, &self.expanded);
     }
 
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
@@ -164,6 +164,14 @@ impl App {
         }
     }
 
+    /// Returns the `ProjectListItem` when a root row is selected.
+    pub fn selected_item(&self) -> Option<&ProjectListItem> {
+        match self.selected_row()? {
+            VisibleRow::Root { node_index } => self.project_list_items.get(node_index),
+            _ => None,
+        }
+    }
+
     pub fn selected_project(&self) -> Option<&Project> {
         if self.is_searching() && !self.search_query.is_empty() {
             let selected = self.list_state.selected()?;
@@ -171,64 +179,187 @@ impl App {
             let entry = self.flat_entries.get(flat_idx)?;
             self.project_by_path(&entry.path)
         } else {
-            let rows = self.visible_rows();
-            let selected = self.list_state.selected()?;
-            match rows.get(selected)? {
-                VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                    Some(&self.nodes.get(*node_index)?.project)
-                },
-                VisibleRow::Member {
-                    node_index,
-                    group_index,
-                    member_index,
-                } => {
-                    let node = self.nodes.get(*node_index)?;
-                    let group = node.groups.get(*group_index)?;
-                    group.members.get(*member_index)
-                },
-                VisibleRow::Vendored {
-                    node_index,
-                    vendored_index,
-                } => self.nodes.get(*node_index)?.vendored.get(*vendored_index),
-                VisibleRow::WorktreeEntry {
-                    node_index,
-                    worktree_index,
+            let display_path = self.selected_display_path()?;
+            self.project_by_path(&display_path)
+        }
+    }
+
+    /// Resolve the display path of the currently selected row using `project_list_items`.
+    fn selected_display_path(&self) -> Option<String> {
+        let rows = self.visible_rows();
+        let selected = self.list_state.selected()?;
+        let row = rows.get(selected)?;
+        self.display_path_for_row(*row)
+    }
+
+    /// Given a VisibleRow, resolve the display path from `project_list_items`.
+    pub fn display_path_for_row(&self, row: VisibleRow) -> Option<String> {
+        match row {
+            VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
+                let item = self.project_list_items.get(node_index)?;
+                Some(item.display_path())
+            },
+            VisibleRow::Member {
+                node_index,
+                group_index,
+                member_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                match item {
+                    ProjectListItem::Workspace(ws) => {
+                        let group = ws.groups().get(group_index)?;
+                        let member = group.members().get(member_index)?;
+                        Some(member.display_path())
+                    },
+                    _ => None,
                 }
-                | VisibleRow::WorktreeGroupHeader {
-                    node_index,
-                    worktree_index,
-                    ..
-                } => {
-                    let node = self.nodes.get(*node_index)?;
-                    let wt = node.worktrees.get(*worktree_index)?;
-                    Some(&wt.project)
-                },
-                VisibleRow::WorktreeMember {
-                    node_index,
-                    worktree_index,
-                    group_index,
-                    member_index,
-                } => {
-                    let wt = self
-                        .nodes
-                        .get(*node_index)?
-                        .worktrees
-                        .get(*worktree_index)?;
-                    let group = wt.groups.get(*group_index)?;
-                    group.members.get(*member_index)
-                },
-                VisibleRow::WorktreeVendored {
-                    node_index,
-                    worktree_index,
-                    vendored_index,
-                } => self
-                    .nodes
-                    .get(*node_index)?
-                    .worktrees
-                    .get(*worktree_index)?
-                    .vendored
-                    .get(*vendored_index),
+            },
+            VisibleRow::Vendored {
+                node_index,
+                vendored_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                match item {
+                    ProjectListItem::Workspace(ws) => ws
+                        .vendored()
+                        .get(vendored_index)
+                        .map(TypedProject::display_path),
+                    ProjectListItem::Package(pkg) => pkg
+                        .vendored()
+                        .get(vendored_index)
+                        .map(TypedProject::display_path),
+                    _ => None,
+                }
+            },
+            VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
             }
+            | VisibleRow::WorktreeGroupHeader {
+                node_index,
+                worktree_index,
+                ..
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                self.worktree_display_path(item, worktree_index)
+            },
+            VisibleRow::WorktreeMember {
+                node_index,
+                worktree_index,
+                group_index,
+                member_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                self.worktree_member_display_path(item, worktree_index, group_index, member_index)
+            },
+            VisibleRow::WorktreeVendored {
+                node_index,
+                worktree_index,
+                vendored_index,
+            } => {
+                let item = self.project_list_items.get(node_index)?;
+                self.worktree_vendored_display_path(item, worktree_index, vendored_index)
+            },
+        }
+    }
+
+    /// Check if a group at the given indices is an inline (unnamed) group.
+    fn is_inline_group(&self, ni: usize, gi: usize) -> bool {
+        let Some(item) = self.project_list_items.get(ni) else {
+            return true;
+        };
+        match item {
+            ProjectListItem::Workspace(ws) => ws.groups().get(gi).is_some_and(|g| !g.is_named()),
+            _ => true,
+        }
+    }
+
+    /// Check if a worktree group at the given indices is an inline (unnamed) group.
+    fn is_worktree_inline_group(&self, ni: usize, wi: usize, gi: usize) -> bool {
+        let Some(item) = self.project_list_items.get(ni) else {
+            return true;
+        };
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                let ws = if wi == 0 {
+                    wtg.primary()
+                } else {
+                    match wtg.linked().get(wi - 1) {
+                        Some(ws) => ws,
+                        None => return true,
+                    }
+                };
+                ws.groups().get(gi).is_some_and(|g| !g.is_named())
+            },
+            _ => true,
+        }
+    }
+
+    fn worktree_display_path(&self, item: &ProjectListItem, wi: usize) -> Option<String> {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                if wi == 0 {
+                    Some(wtg.primary().display_path())
+                } else {
+                    wtg.linked().get(wi - 1).map(TypedProject::display_path)
+                }
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                if wi == 0 {
+                    Some(wtg.primary().display_path())
+                } else {
+                    wtg.linked().get(wi - 1).map(TypedProject::display_path)
+                }
+            },
+            _ => None,
+        }
+    }
+
+    fn worktree_member_display_path(
+        &self,
+        item: &ProjectListItem,
+        wi: usize,
+        gi: usize,
+        mi: usize,
+    ) -> Option<String> {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                let ws = if wi == 0 {
+                    wtg.primary()
+                } else {
+                    wtg.linked().get(wi - 1)?
+                };
+                let group = ws.groups().get(gi)?;
+                group.members().get(mi).map(TypedProject::display_path)
+            },
+            _ => None,
+        }
+    }
+
+    fn worktree_vendored_display_path(
+        &self,
+        item: &ProjectListItem,
+        wi: usize,
+        vi: usize,
+    ) -> Option<String> {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                let ws = if wi == 0 {
+                    wtg.primary()
+                } else {
+                    wtg.linked().get(wi - 1)?
+                };
+                ws.vendored().get(vi).map(TypedProject::display_path)
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                let pkg = if wi == 0 {
+                    wtg.primary()
+                } else {
+                    wtg.linked().get(wi - 1)?
+                };
+                pkg.vendored().get(vi).map(TypedProject::display_path)
+            },
+            _ => None,
         }
     }
 
@@ -241,19 +372,26 @@ impl App {
             return false;
         };
         match rows.get(selected) {
-            Some(VisibleRow::Root { node_index }) => self.nodes[*node_index].has_children(),
+            Some(VisibleRow::Root { node_index }) => self
+                .project_list_items
+                .get(*node_index)
+                .is_some_and(ProjectListItem::has_children),
             Some(VisibleRow::GroupHeader { .. } | VisibleRow::WorktreeGroupHeader { .. }) => true,
-            Some(VisibleRow::WorktreeEntry {
-                node_index,
-                worktree_index,
-            }) => self.nodes[*node_index].worktrees[*worktree_index].has_children(),
+            Some(VisibleRow::WorktreeEntry { .. }) => {
+                // Worktree entries in the new model are always leaf rows
+                // (they are individual checkout rows within a WorktreeGroup).
+                // The WorktreeGroup itself is the Root row.
+                false
+            },
             _ => false,
         }
     }
 
     pub(super) fn expand_key_for_row(&self, row: VisibleRow) -> Option<ExpandKey> {
         match row {
-            VisibleRow::Root { node_index } => self.nodes[node_index]
+            VisibleRow::Root { node_index } => self
+                .project_list_items
+                .get(node_index)?
                 .has_children()
                 .then_some(ExpandKey::Node(node_index)),
             VisibleRow::GroupHeader {
@@ -263,9 +401,23 @@ impl App {
             VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
-            } => self.nodes[node_index].worktrees[worktree_index]
-                .has_children()
-                .then_some(ExpandKey::Worktree(node_index, worktree_index)),
+            } => {
+                // In the new model, worktree entries don't expand themselves.
+                // But we keep the expand key for backward compat with workspace worktrees.
+                let item = self.project_list_items.get(node_index)?;
+                match item {
+                    ProjectListItem::WorkspaceWorktrees(wtg) => {
+                        let ws = if worktree_index == 0 {
+                            wtg.primary()
+                        } else {
+                            wtg.linked().get(worktree_index - 1)?
+                        };
+                        ws.has_members()
+                            .then_some(ExpandKey::Worktree(node_index, worktree_index))
+                    },
+                    _ => None,
+                }
+            },
             VisibleRow::WorktreeGroupHeader {
                 node_index,
                 worktree_index,
@@ -357,7 +509,7 @@ impl App {
                 group_index: gi,
                 ..
             } => {
-                if self.nodes[ni].groups[gi].name.is_empty() {
+                if self.is_inline_group(ni, gi) {
                     self.collapse_to(&ExpandKey::Node(ni), VisibleRow::Root { node_index: ni });
                 } else {
                     self.collapse_to(
@@ -401,7 +553,7 @@ impl App {
                 group_index: gi,
                 ..
             } => {
-                if self.nodes[ni].worktrees[wi].groups[gi].name.is_empty() {
+                if self.is_worktree_inline_group(ni, wi, gi) {
                     self.collapse_to(
                         &ExpandKey::Worktree(ni, wi),
                         VisibleRow::WorktreeEntry {
@@ -513,30 +665,34 @@ impl App {
             .take()
             .or_else(|| self.selected_project().map(|project| project.path.clone()));
         self.selection_paths.collapsed_anchor = None;
-        for (node_index, node) in self.nodes.iter().enumerate() {
-            if node.has_children() {
-                self.expanded.insert(ExpandKey::Node(node_index));
+        for (ni, item) in self.project_list_items.iter().enumerate() {
+            if item.has_children() {
+                self.expanded.insert(ExpandKey::Node(ni));
             }
-            for (group_index, group) in node.groups.iter().enumerate() {
-                if !group.name.is_empty() {
-                    self.expanded
-                        .insert(ExpandKey::Group(node_index, group_index));
-                }
-            }
-            for (worktree_index, worktree) in node.worktrees.iter().enumerate() {
-                if worktree.has_children() {
-                    self.expanded
-                        .insert(ExpandKey::Worktree(node_index, worktree_index));
-                }
-                for (group_index, group) in worktree.groups.iter().enumerate() {
-                    if !group.name.is_empty() {
-                        self.expanded.insert(ExpandKey::WorktreeGroup(
-                            node_index,
-                            worktree_index,
-                            group_index,
-                        ));
+            match item {
+                ProjectListItem::Workspace(ws) => {
+                    for (gi, group) in ws.groups().iter().enumerate() {
+                        if group.is_named() {
+                            self.expanded.insert(ExpandKey::Group(ni, gi));
+                        }
                     }
-                }
+                },
+                ProjectListItem::WorkspaceWorktrees(wtg) => {
+                    let all_ws: Vec<&TypedProject<Workspace>> = std::iter::once(wtg.primary())
+                        .chain(wtg.linked().iter())
+                        .collect();
+                    for (wi, ws) in all_ws.iter().enumerate() {
+                        if ws.has_members() {
+                            self.expanded.insert(ExpandKey::Worktree(ni, wi));
+                        }
+                        for (gi, group) in ws.groups().iter().enumerate() {
+                            if group.is_named() {
+                                self.expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                            }
+                        }
+                    }
+                },
+                _ => {},
             }
         }
         self.dirty.rows.mark_dirty();
@@ -572,7 +728,7 @@ impl App {
         self.filtered.clear();
         self.dirty.rows.mark_dirty();
         self.close_overlay();
-        if !self.nodes.is_empty() {
+        if !self.project_list_items.is_empty() {
             self.list_state.select(Some(0));
         }
     }
@@ -591,91 +747,83 @@ impl App {
     }
 
     pub(super) fn expand_path_in_tree(&mut self, target_path: &str) {
-        for (ni, node) in self.nodes.iter().enumerate() {
-            for (gi, group) in node.groups.iter().enumerate() {
-                for member in &group.members {
-                    if member.path == target_path {
-                        self.expanded.insert(ExpandKey::Node(ni));
-                        if !group.name.is_empty() {
-                            self.expanded.insert(ExpandKey::Group(ni, gi));
-                        }
-                    }
-                }
-            }
-            for vendored in &node.vendored {
-                if vendored.path == target_path {
-                    self.expanded.insert(ExpandKey::Node(ni));
-                }
-            }
-            for (wi, wt) in node.worktrees.iter().enumerate() {
-                if wt.project.path == target_path {
-                    self.expanded.insert(ExpandKey::Node(ni));
-                }
-                for (gi, group) in wt.groups.iter().enumerate() {
-                    for member in &group.members {
-                        if member.path == target_path {
-                            self.expanded.insert(ExpandKey::Node(ni));
-                            self.expanded.insert(ExpandKey::Worktree(ni, wi));
-                            if !group.name.is_empty() {
-                                self.expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+        for (ni, item) in self.project_list_items.iter().enumerate() {
+            match item {
+                ProjectListItem::Workspace(ws) => {
+                    for (gi, group) in ws.groups().iter().enumerate() {
+                        for member in group.members() {
+                            if member.display_path() == target_path {
+                                self.expanded.insert(ExpandKey::Node(ni));
+                                if group.is_named() {
+                                    self.expanded.insert(ExpandKey::Group(ni, gi));
+                                }
                             }
                         }
                     }
-                }
-                for vendored in &wt.vendored {
-                    if vendored.path == target_path {
-                        self.expanded.insert(ExpandKey::Node(ni));
-                        self.expanded.insert(ExpandKey::Worktree(ni, wi));
+                    for vendored in ws.vendored() {
+                        if vendored.display_path() == target_path {
+                            self.expanded.insert(ExpandKey::Node(ni));
+                        }
                     }
-                }
+                },
+                ProjectListItem::Package(pkg) => {
+                    for vendored in pkg.vendored() {
+                        if vendored.display_path() == target_path {
+                            self.expanded.insert(ExpandKey::Node(ni));
+                        }
+                    }
+                },
+                ProjectListItem::NonRust(_) => {},
+                ProjectListItem::WorkspaceWorktrees(wtg) => {
+                    let all_ws: Vec<&TypedProject<Workspace>> = std::iter::once(wtg.primary())
+                        .chain(wtg.linked().iter())
+                        .collect();
+                    for (wi, ws) in all_ws.iter().enumerate() {
+                        if ws.display_path() == target_path {
+                            self.expanded.insert(ExpandKey::Node(ni));
+                        }
+                        for (gi, group) in ws.groups().iter().enumerate() {
+                            for member in group.members() {
+                                if member.display_path() == target_path {
+                                    self.expanded.insert(ExpandKey::Node(ni));
+                                    self.expanded.insert(ExpandKey::Worktree(ni, wi));
+                                    if group.is_named() {
+                                        self.expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                                    }
+                                }
+                            }
+                        }
+                        for vendored in ws.vendored() {
+                            if vendored.display_path() == target_path {
+                                self.expanded.insert(ExpandKey::Node(ni));
+                                self.expanded.insert(ExpandKey::Worktree(ni, wi));
+                            }
+                        }
+                    }
+                },
+                ProjectListItem::PackageWorktrees(wtg) => {
+                    let all_pkg: Vec<&TypedProject<Package>> = std::iter::once(wtg.primary())
+                        .chain(wtg.linked().iter())
+                        .collect();
+                    for (wi, pkg) in all_pkg.iter().enumerate() {
+                        if pkg.display_path() == target_path {
+                            self.expanded.insert(ExpandKey::Node(ni));
+                        }
+                        for vendored in pkg.vendored() {
+                            if vendored.display_path() == target_path {
+                                self.expanded.insert(ExpandKey::Node(ni));
+                                self.expanded.insert(ExpandKey::Worktree(ni, wi));
+                            }
+                        }
+                    }
+                },
             }
         }
     }
 
     pub(super) fn row_matches_project_path(&self, row: VisibleRow, target_path: &str) -> bool {
-        match row {
-            VisibleRow::Root { node_index } => self.nodes[node_index].project.path == target_path,
-            VisibleRow::Member {
-                node_index,
-                group_index,
-                member_index,
-            } => {
-                self.nodes[node_index].groups[group_index].members[member_index].path == target_path
-            },
-            VisibleRow::WorktreeEntry {
-                node_index,
-                worktree_index,
-            } => {
-                self.nodes[node_index].worktrees[worktree_index]
-                    .project
-                    .path
-                    == target_path
-            },
-            VisibleRow::WorktreeMember {
-                node_index,
-                worktree_index,
-                group_index,
-                member_index,
-            } => {
-                self.nodes[node_index].worktrees[worktree_index].groups[group_index].members
-                    [member_index]
-                    .path
-                    == target_path
-            },
-            VisibleRow::Vendored {
-                node_index,
-                vendored_index,
-            } => self.nodes[node_index].vendored[vendored_index].path == target_path,
-            VisibleRow::WorktreeVendored {
-                node_index,
-                worktree_index,
-                vendored_index,
-            } => {
-                self.nodes[node_index].worktrees[worktree_index].vendored[vendored_index].path
-                    == target_path
-            },
-            VisibleRow::GroupHeader { .. } | VisibleRow::WorktreeGroupHeader { .. } => false,
-        }
+        self.display_path_for_row(row)
+            .is_some_and(|dp| dp == target_path)
     }
 
     pub(super) fn select_matching_visible_row(&mut self, target_path: &str) {

@@ -11,7 +11,14 @@ use crate::constants::SYNC_UP;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
+use crate::project::NewMemberGroup;
+use crate::project::Package;
 use crate::project::Project;
+use crate::project::ProjectListItem;
+use crate::project::TypedProject;
+use crate::project::Visibility;
+use crate::project::Workspace;
+use crate::project::WorktreeGroup;
 use crate::scan::MemberGroup;
 use crate::scan::ProjectNode;
 use crate::tui::columns;
@@ -30,105 +37,201 @@ use crate::tui::render::PREFIX_WT_MEMBER_INLINE;
 use crate::tui::render::PREFIX_WT_MEMBER_NAMED;
 use crate::tui::render::PREFIX_WT_VENDORED;
 
-/// Build the flat list of visible rows from the node tree and expansion state.
+/// Build the flat list of visible rows from the project list and expansion state.
 pub(super) fn build_visible_rows(
-    nodes: &[ProjectNode],
+    items: &[ProjectListItem],
     expanded: &HashSet<ExpandKey>,
-    deleted: &HashSet<String>,
-    dismissed: &HashSet<String>,
 ) -> Vec<VisibleRow> {
     let mut rows = Vec::new();
-    for (ni, node) in nodes.iter().enumerate() {
-        if dismissed.contains(&node.project.path) {
+    for (ni, item) in items.iter().enumerate() {
+        if matches!(item.visibility(), Visibility::Dismissed) {
             continue;
         }
         rows.push(VisibleRow::Root { node_index: ni });
-        if expanded.contains(&ExpandKey::Node(ni)) {
-            for (gi, group) in node.groups.iter().enumerate() {
-                if group.name.is_empty() {
-                    for (mi, _) in group.members.iter().enumerate() {
+        if !expanded.contains(&ExpandKey::Node(ni)) {
+            continue;
+        }
+
+        match item {
+            ProjectListItem::Workspace(ws) => {
+                emit_groups(&mut rows, ni, ws.groups(), expanded);
+                emit_vendored_rows(&mut rows, ni, ws.vendored());
+            },
+            ProjectListItem::Package(pkg) => {
+                emit_vendored_rows(&mut rows, ni, pkg.vendored());
+            },
+            ProjectListItem::NonRust(_) => {},
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                emit_workspace_worktree_group(&mut rows, ni, wtg, expanded);
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                emit_package_worktree_group(&mut rows, ni, wtg, expanded);
+            },
+        }
+    }
+    rows
+}
+
+fn emit_groups(
+    rows: &mut Vec<VisibleRow>,
+    ni: usize,
+    groups: &[NewMemberGroup],
+    expanded: &HashSet<ExpandKey>,
+) {
+    for (gi, group) in groups.iter().enumerate() {
+        match group {
+            NewMemberGroup::Inline { members } => {
+                for (mi, _) in members.iter().enumerate() {
+                    rows.push(VisibleRow::Member {
+                        node_index:   ni,
+                        group_index:  gi,
+                        member_index: mi,
+                    });
+                }
+            },
+            NewMemberGroup::Named { members, .. } => {
+                rows.push(VisibleRow::GroupHeader {
+                    node_index:  ni,
+                    group_index: gi,
+                });
+                if expanded.contains(&ExpandKey::Group(ni, gi)) {
+                    for (mi, _) in members.iter().enumerate() {
                         rows.push(VisibleRow::Member {
                             node_index:   ni,
                             group_index:  gi,
                             member_index: mi,
                         });
                     }
-                } else {
-                    rows.push(VisibleRow::GroupHeader {
-                        node_index:  ni,
-                        group_index: gi,
-                    });
-                    if expanded.contains(&ExpandKey::Group(ni, gi)) {
-                        for (mi, _) in group.members.iter().enumerate() {
-                            rows.push(VisibleRow::Member {
-                                node_index:   ni,
-                                group_index:  gi,
-                                member_index: mi,
-                            });
-                        }
-                    }
                 }
-            }
-
-            for (vi, _) in node.vendored.iter().enumerate() {
-                rows.push(VisibleRow::Vendored {
-                    node_index:     ni,
-                    vendored_index: vi,
-                });
-            }
-
-            if live_worktree_count_for_node(node, deleted, dismissed) > 1 {
-                for (wi, wt) in node.worktrees.iter().enumerate() {
-                    if dismissed.contains(&wt.project.path) {
-                        continue;
-                    }
-                    rows.push(VisibleRow::WorktreeEntry {
-                        node_index:     ni,
-                        worktree_index: wi,
-                    });
-                    if wt.has_children() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
-                        for (gi, group) in wt.groups.iter().enumerate() {
-                            if group.name.is_empty() {
-                                for (mi, _) in group.members.iter().enumerate() {
-                                    rows.push(VisibleRow::WorktreeMember {
-                                        node_index:     ni,
-                                        worktree_index: wi,
-                                        group_index:    gi,
-                                        member_index:   mi,
-                                    });
-                                }
-                            } else {
-                                rows.push(VisibleRow::WorktreeGroupHeader {
-                                    node_index:     ni,
-                                    worktree_index: wi,
-                                    group_index:    gi,
-                                });
-                                if expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
-                                    for (mi, _) in group.members.iter().enumerate() {
-                                        rows.push(VisibleRow::WorktreeMember {
-                                            node_index:     ni,
-                                            worktree_index: wi,
-                                            group_index:    gi,
-                                            member_index:   mi,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-
-                        for (vi, _) in wt.vendored.iter().enumerate() {
-                            rows.push(VisibleRow::WorktreeVendored {
-                                node_index:     ni,
-                                worktree_index: wi,
-                                vendored_index: vi,
-                            });
-                        }
-                    }
-                }
-            }
+            },
         }
     }
-    rows
+}
+
+fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[TypedProject<Package>]) {
+    for (vi, _) in vendored.iter().enumerate() {
+        rows.push(VisibleRow::Vendored {
+            node_index:     ni,
+            vendored_index: vi,
+        });
+    }
+}
+
+/// Emit worktree entries for a `WorktreeGroup<Workspace>`.
+fn emit_workspace_worktree_group(
+    rows: &mut Vec<VisibleRow>,
+    ni: usize,
+    wtg: &WorktreeGroup<Workspace>,
+    expanded: &HashSet<ExpandKey>,
+) {
+    // Primary at index 0
+    if !matches!(wtg.primary().visibility(), Visibility::Dismissed) {
+        let wi = 0;
+        rows.push(VisibleRow::WorktreeEntry {
+            node_index:     ni,
+            worktree_index: wi,
+        });
+        if wtg.primary().has_members() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
+            emit_worktree_children(
+                rows,
+                ni,
+                wi,
+                wtg.primary().groups(),
+                wtg.primary().vendored(),
+                expanded,
+            );
+        }
+    }
+    // Linked at indices 1..
+    for (i, linked) in wtg.linked().iter().enumerate() {
+        if matches!(linked.visibility(), Visibility::Dismissed) {
+            continue;
+        }
+        let wi = i + 1;
+        rows.push(VisibleRow::WorktreeEntry {
+            node_index:     ni,
+            worktree_index: wi,
+        });
+        if linked.has_members() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
+            emit_worktree_children(rows, ni, wi, linked.groups(), linked.vendored(), expanded);
+        }
+    }
+}
+
+/// Emit worktree entries for a `WorktreeGroup<Package>`.
+fn emit_package_worktree_group(
+    rows: &mut Vec<VisibleRow>,
+    ni: usize,
+    wtg: &WorktreeGroup<Package>,
+    _expanded: &HashSet<ExpandKey>,
+) {
+    // Primary at index 0
+    if !matches!(wtg.primary().visibility(), Visibility::Dismissed) {
+        rows.push(VisibleRow::WorktreeEntry {
+            node_index:     ni,
+            worktree_index: 0,
+        });
+    }
+    // Linked at indices 1..
+    for (i, linked) in wtg.linked().iter().enumerate() {
+        if matches!(linked.visibility(), Visibility::Dismissed) {
+            continue;
+        }
+        rows.push(VisibleRow::WorktreeEntry {
+            node_index:     ni,
+            worktree_index: i + 1,
+        });
+    }
+}
+
+/// Emit group headers, members, and vendored rows for an expanded worktree entry.
+fn emit_worktree_children(
+    rows: &mut Vec<VisibleRow>,
+    ni: usize,
+    wi: usize,
+    groups: &[NewMemberGroup],
+    vendored: &[TypedProject<Package>],
+    expanded: &HashSet<ExpandKey>,
+) {
+    for (gi, group) in groups.iter().enumerate() {
+        match group {
+            NewMemberGroup::Inline { members } => {
+                for (mi, _) in members.iter().enumerate() {
+                    rows.push(VisibleRow::WorktreeMember {
+                        node_index:     ni,
+                        worktree_index: wi,
+                        group_index:    gi,
+                        member_index:   mi,
+                    });
+                }
+            },
+            NewMemberGroup::Named { members, .. } => {
+                rows.push(VisibleRow::WorktreeGroupHeader {
+                    node_index:     ni,
+                    worktree_index: wi,
+                    group_index:    gi,
+                });
+                if expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
+                    for (mi, _) in members.iter().enumerate() {
+                        rows.push(VisibleRow::WorktreeMember {
+                            node_index:     ni,
+                            worktree_index: wi,
+                            group_index:    gi,
+                            member_index:   mi,
+                        });
+                    }
+                }
+            },
+        }
+    }
+
+    for (vi, _) in vendored.iter().enumerate() {
+        rows.push(VisibleRow::WorktreeVendored {
+            node_index:     ni,
+            worktree_index: wi,
+            vendored_index: vi,
+        });
+    }
 }
 
 pub(super) fn live_worktree_count_for_node(

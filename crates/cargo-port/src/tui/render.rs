@@ -778,21 +778,22 @@ fn render_root_item(
     root_sorted: &[u64],
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
-    let node = &app.nodes[node_index];
-    let project = &node.project;
-    let mut name = project.display_name();
-    let live_wt = app.live_worktree_count(node);
+    let item = &app.project_list_items[node_index];
+    let display_path = item.display_path();
+    let project = app.project_by_path(&display_path);
+    let mut name = item.display_name();
+    let live_wt = app.live_worktree_count_for_item(item);
     if live_wt > 0 {
         name = format!("{name} {WORKTREE}:{live_wt}");
     }
-    let disk = app.formatted_disk_for_node(node);
-    let disk_bytes = app.disk_bytes_for_node(node);
+    let disk = app.formatted_disk_for_item(item);
+    let disk_bytes = app.disk_bytes_for_item(item);
     let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
-    let ci = app.ci_for_node(node);
-    let lang = project.lang_icon();
+    let ci = app.ci_for_item(item);
+    let lang = item.lang_icon();
     let lint = app.lint_icon_for_root(node_index);
-    let sync = app.git_sync(project);
-    let prefix = if node.has_children() {
+    let sync = project.map_or_else(String::new, |p| app.git_sync(p));
+    let prefix = if item.has_children() {
         if app.expanded.contains(&ExpandKey::Node(node_index)) {
             PREFIX_ROOT_EXPANDED
         } else {
@@ -801,7 +802,7 @@ fn render_root_item(
     } else {
         PREFIX_ROOT_LEAF
     };
-    let deleted = app.is_deleted(&project.path);
+    let deleted = app.is_deleted(&display_path);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         (
             "0.0",
@@ -814,7 +815,7 @@ fn render_root_item(
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name: &name,
-        git_path_state: app.git_path_state_for(&project.path),
+        git_path_state: app.git_path_state_for(&display_path),
         lint_icon: lint,
         disk: disk_text,
         disk_style: ds,
@@ -894,16 +895,53 @@ fn render_worktree_entry<'a>(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ResolvedWidths,
 ) -> ListItem<'a> {
-    let wt = &app.nodes[ni].worktrees[wi];
+    let item = &app.project_list_items[ni];
+    let display_path = app.display_path_for_row(VisibleRow::WorktreeEntry {
+        node_index:     ni,
+        worktree_index: wi,
+    });
+    let dp = display_path.unwrap_or_default();
+    let project = app.project_by_path(&dp);
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
-    let name = wt
-        .project
-        .worktree_name
-        .as_deref()
-        .unwrap_or(&wt.project.path)
-        .to_string();
-    let prefix = if wt.has_children() {
+
+    let wt_name = match item {
+        crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+            let ws = if wi == 0 {
+                wtg.primary()
+            } else {
+                wtg.linked().get(wi - 1).unwrap_or_else(|| wtg.primary())
+            };
+            ws.worktree_name()
+                .map(str::to_string)
+                .unwrap_or_else(|| ws.display_name())
+        },
+        crate::project::ProjectListItem::PackageWorktrees(wtg) => {
+            let pkg = if wi == 0 {
+                wtg.primary()
+            } else {
+                wtg.linked().get(wi - 1).unwrap_or_else(|| wtg.primary())
+            };
+            pkg.worktree_name()
+                .map(str::to_string)
+                .unwrap_or_else(|| pkg.display_name())
+        },
+        _ => dp.clone(),
+    };
+
+    let has_expandable_children = match item {
+        crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+            let ws = if wi == 0 {
+                wtg.primary()
+            } else {
+                wtg.linked().get(wi - 1).unwrap_or_else(|| wtg.primary())
+            };
+            ws.has_members()
+        },
+        _ => false,
+    };
+
+    let prefix = if has_expandable_children {
         if app.expanded.contains(&ExpandKey::Worktree(ni, wi)) {
             PREFIX_WT_EXPANDED
         } else {
@@ -912,14 +950,17 @@ fn render_worktree_entry<'a>(
     } else {
         PREFIX_WT_FLAT
     };
-    let disk = app.formatted_disk(&wt.project);
-    let disk_bytes = app.disk_usage.get(&wt.project.path).copied();
+    let disk = project.map_or_else(
+        || crate::tui::render::format_bytes(0),
+        |p| app.formatted_disk(p),
+    );
+    let disk_bytes = app.disk_usage.get(&dp).copied();
     let ds = disk_color(disk_percentile(disk_bytes, sorted));
-    let lang = wt.project.lang_icon();
+    let lang = item.lang_icon();
     let lint = app.lint_icon_for_worktree(ni, wi);
-    let ci = app.ci_for(&wt.project);
-    let sync = app.git_sync(&wt.project);
-    let deleted = app.is_deleted(&wt.project.path);
+    let ci = project.and_then(|p| app.ci_for(p));
+    let sync = project.map_or_else(String::new, |p| app.git_sync(p));
+    let deleted = app.is_deleted(&dp);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         (
             "0.0",
@@ -931,8 +972,8 @@ fn render_worktree_entry<'a>(
     };
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
-        name: &name,
-        git_path_state: app.git_path_state_for(&wt.project.path),
+        name: &wt_name,
+        git_path_state: app.git_path_state_for(&dp),
         lint_icon: lint,
         disk: disk_text,
         disk_style: ds,
@@ -953,13 +994,25 @@ fn render_wt_group_header<'a>(
     gi: usize,
     widths: &ResolvedWidths,
 ) -> ListItem<'a> {
-    let group = &app.nodes[ni].worktrees[wi].groups[gi];
+    let item = &app.project_list_items[ni];
+    let (group_name, member_count) = match item {
+        crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+            let ws = if wi == 0 {
+                wtg.primary()
+            } else {
+                wtg.linked().get(wi - 1).unwrap_or_else(|| wtg.primary())
+            };
+            let group = &ws.groups()[gi];
+            (group.group_name().to_string(), group.members().len())
+        },
+        _ => (String::new(), 0),
+    };
     let prefix = if app.expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
         PREFIX_WT_GROUP_EXPANDED
     } else {
         PREFIX_WT_GROUP_COLLAPSED
     };
-    let label = format!("{} ({})", group.name, group.members.len());
+    let label = format!("{group_name} ({member_count})");
     let row = super::columns::build_group_header_cells(prefix, &label);
     ListItem::new(super::columns::row_to_line(&row, widths))
 }
@@ -973,18 +1026,39 @@ fn render_wt_member<'a>(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ResolvedWidths,
 ) -> ListItem<'a> {
-    let wt = &app.nodes[ni].worktrees[wi];
-    let group = &wt.groups[gi];
-    let member = &group.members[mi];
+    let item = &app.project_list_items[ni];
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
-    let indent = if group.name.is_empty() {
-        PREFIX_WT_MEMBER_INLINE
-    } else {
-        PREFIX_WT_MEMBER_NAMED
+
+    let (member_path, member_name, is_named_group) = match item {
+        crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+            let ws = if wi == 0 {
+                wtg.primary()
+            } else {
+                wtg.linked().get(wi - 1).unwrap_or_else(|| wtg.primary())
+            };
+            let group = &ws.groups()[gi];
+            let member = &group.members()[mi];
+            (
+                member.display_path(),
+                member.display_name(),
+                group.is_named(),
+            )
+        },
+        _ => (String::new(), String::new(), false),
     };
-    let name = member.display_name();
-    render_child_item(app, member, &name, sorted, indent, widths)
+    let indent = if is_named_group {
+        PREFIX_WT_MEMBER_NAMED
+    } else {
+        PREFIX_WT_MEMBER_INLINE
+    };
+    if let Some(project) = app.project_by_path(&member_path) {
+        render_child_item(app, project, &member_name, sorted, indent, widths)
+    } else {
+        // Fallback: render with minimal info
+        let row = super::columns::build_group_header_cells(indent, &member_name);
+        ListItem::new(super::columns::row_to_line(&row, widths))
+    }
 }
 
 pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListItem<'static>> {
@@ -1001,7 +1075,14 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                 node_index,
                 group_index,
             } => {
-                let group = &app.nodes[*node_index].groups[*group_index];
+                let item = &app.project_list_items[*node_index];
+                let (group_name, member_count) = match item {
+                    crate::project::ProjectListItem::Workspace(ws) => {
+                        let group = &ws.groups()[*group_index];
+                        (group.group_name().to_string(), group.members().len())
+                    },
+                    _ => (String::new(), 0),
+                };
                 let prefix = if app
                     .expanded
                     .contains(&ExpandKey::Group(*node_index, *group_index))
@@ -1010,7 +1091,7 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                 } else {
                     PREFIX_GROUP_COLLAPSED
                 };
-                let label = format!("{} ({})", group.name, group.members.len());
+                let label = format!("{group_name} ({member_count})");
                 let row = super::columns::build_group_header_cells(prefix, &label);
                 ListItem::new(super::columns::row_to_line(&row, widths))
             },
@@ -1019,27 +1100,58 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                 group_index,
                 member_index,
             } => {
-                let group = &app.nodes[*node_index].groups[*group_index];
-                let member = &group.members[*member_index];
+                let item = &app.project_list_items[*node_index];
                 let empty = Vec::new();
                 let sorted = child_sorted.get(node_index).unwrap_or(&empty);
-                let indent = if group.name.is_empty() {
-                    PREFIX_MEMBER_INLINE
-                } else {
-                    PREFIX_MEMBER_NAMED
+                let (member_path, member_name, is_named) = match item {
+                    crate::project::ProjectListItem::Workspace(ws) => {
+                        let group = &ws.groups()[*group_index];
+                        let member = &group.members()[*member_index];
+                        (
+                            member.display_path(),
+                            member.display_name(),
+                            group.is_named(),
+                        )
+                    },
+                    _ => (String::new(), String::new(), false),
                 };
-                let name = member.display_name();
-                render_child_item(app, member, &name, sorted, indent, widths)
+                let indent = if is_named {
+                    PREFIX_MEMBER_NAMED
+                } else {
+                    PREFIX_MEMBER_INLINE
+                };
+                if let Some(project) = app.project_by_path(&member_path) {
+                    render_child_item(app, project, &member_name, sorted, indent, widths)
+                } else {
+                    let row = super::columns::build_group_header_cells(indent, &member_name);
+                    ListItem::new(super::columns::row_to_line(&row, widths))
+                }
             },
             VisibleRow::Vendored {
                 node_index,
                 vendored_index,
             } => {
-                let vendored = &app.nodes[*node_index].vendored[*vendored_index];
+                let item = &app.project_list_items[*node_index];
                 let empty = Vec::new();
                 let sorted = child_sorted.get(node_index).unwrap_or(&empty);
-                let name = format!("{} (vendored)", vendored.display_name());
-                render_child_item(app, vendored, &name, sorted, PREFIX_VENDORED, widths)
+                let (vendored_path, vendored_display_name) = match item {
+                    crate::project::ProjectListItem::Workspace(ws) => {
+                        let v = &ws.vendored()[*vendored_index];
+                        (v.display_path(), v.display_name())
+                    },
+                    crate::project::ProjectListItem::Package(pkg) => {
+                        let v = &pkg.vendored()[*vendored_index];
+                        (v.display_path(), v.display_name())
+                    },
+                    _ => (String::new(), String::new()),
+                };
+                let name = format!("{vendored_display_name} (vendored)");
+                if let Some(project) = app.project_by_path(&vendored_path) {
+                    render_child_item(app, project, &name, sorted, PREFIX_VENDORED, widths)
+                } else {
+                    let row = super::columns::build_group_header_cells(PREFIX_VENDORED, &name);
+                    ListItem::new(super::columns::row_to_line(&row, widths))
+                }
             },
             VisibleRow::WorktreeEntry {
                 node_index,
@@ -1069,12 +1181,52 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                 worktree_index,
                 vendored_index,
             } => {
-                let vendored =
-                    &app.nodes[*node_index].worktrees[*worktree_index].vendored[*vendored_index];
+                let item = &app.project_list_items[*node_index];
                 let empty = Vec::new();
                 let sorted = child_sorted.get(node_index).unwrap_or(&empty);
-                let name = format!("{} (vendored)", vendored.display_name());
-                render_child_item(app, vendored, &name, sorted, PREFIX_WT_VENDORED, widths)
+                let dp = app
+                    .display_path_for_row(VisibleRow::WorktreeVendored {
+                        node_index:     *node_index,
+                        worktree_index: *worktree_index,
+                        vendored_index: *vendored_index,
+                    })
+                    .unwrap_or_default();
+                let vendored_display_name = match item {
+                    crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+                        let ws = if *worktree_index == 0 {
+                            wtg.primary()
+                        } else {
+                            wtg.linked()
+                                .get(*worktree_index - 1)
+                                .unwrap_or_else(|| wtg.primary())
+                        };
+                        ws.vendored()
+                            .get(*vendored_index)
+                            .map(|v| v.display_name())
+                            .unwrap_or_default()
+                    },
+                    crate::project::ProjectListItem::PackageWorktrees(wtg) => {
+                        let pkg = if *worktree_index == 0 {
+                            wtg.primary()
+                        } else {
+                            wtg.linked()
+                                .get(*worktree_index - 1)
+                                .unwrap_or_else(|| wtg.primary())
+                        };
+                        pkg.vendored()
+                            .get(*vendored_index)
+                            .map(|v| v.display_name())
+                            .unwrap_or_default()
+                    },
+                    _ => String::new(),
+                };
+                let name = format!("{vendored_display_name} (vendored)");
+                if let Some(project) = app.project_by_path(&dp) {
+                    render_child_item(app, project, &name, sorted, PREFIX_WT_VENDORED, widths)
+                } else {
+                    let row = super::columns::build_group_header_cells(PREFIX_WT_VENDORED, &name);
+                    ListItem::new(super::columns::row_to_line(&row, widths))
+                }
             },
         })
         .collect()

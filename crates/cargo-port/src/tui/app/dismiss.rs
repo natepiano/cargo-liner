@@ -67,12 +67,22 @@ impl App {
     /// If `path` is a worktree entry's project path, return the parent
     /// node index so the selection can jump to the Root row after dismiss.
     fn worktree_parent_node_index(&self, path: &str) -> Option<usize> {
-        self.nodes.iter().enumerate().find_map(|(ni, node)| {
-            node.worktrees
-                .iter()
-                .any(|wt| wt.project.path == path)
-                .then_some(ni)
-        })
+        self.project_list_items
+            .iter()
+            .enumerate()
+            .find_map(|(ni, item)| match item {
+                crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+                    let has_match = wtg.primary().display_path() == path
+                        || wtg.linked().iter().any(|l| l.display_path() == path);
+                    has_match.then_some(ni)
+                },
+                crate::project::ProjectListItem::PackageWorktrees(wtg) => {
+                    let has_match = wtg.primary().display_path() == path
+                        || wtg.linked().iter().any(|l| l.display_path() == path);
+                    has_match.then_some(ni)
+                },
+                _ => None,
+            })
     }
 
     /// Select the `Root` row for the given node index.

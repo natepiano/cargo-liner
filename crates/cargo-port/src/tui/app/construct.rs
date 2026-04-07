@@ -32,6 +32,7 @@ use crate::lint;
 use crate::lint::RuntimeHandle;
 use crate::project::Project;
 use crate::project::ProjectLanguage::Rust;
+use crate::project::ProjectListItem;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::FlatEntry;
@@ -81,14 +82,15 @@ impl AppChannels {
 }
 
 struct AppInit {
-    config_path:      Option<PathBuf>,
-    config_last_seen: Option<ConfigFileStamp>,
-    lint_warning:     Option<String>,
-    lint_runtime:     Option<RuntimeHandle>,
-    watch_tx:         mpsc::Sender<WatchRequest>,
-    nodes:            Vec<ProjectNode>,
-    flat_entries:     Vec<FlatEntry>,
-    list_state:       ListState,
+    config_path:        Option<PathBuf>,
+    config_last_seen:   Option<ConfigFileStamp>,
+    lint_warning:       Option<String>,
+    lint_runtime:       Option<RuntimeHandle>,
+    watch_tx:           mpsc::Sender<WatchRequest>,
+    nodes:              Vec<ProjectNode>,
+    project_list_items: Vec<ProjectListItem>,
+    flat_entries:       Vec<FlatEntry>,
+    list_state:         ListState,
 }
 
 impl AppInit {
@@ -114,6 +116,7 @@ impl AppInit {
         let tree_projects = App::filter_tree_projects(projects, cfg.tui.include_non_rust);
         let nodes = scan::build_tree(&tree_projects, &cfg.tui.inline_dirs);
         let flat_entries = scan::build_flat_entries(&nodes);
+        let project_list_items = scan::build_project_list(&nodes);
         let list_state = initial_list_state(&nodes);
 
         Self {
@@ -123,6 +126,7 @@ impl AppInit {
             lint_runtime: lint_spawn.handle,
             watch_tx,
             nodes,
+            project_list_items,
             flat_entries,
             list_state,
         }
@@ -209,6 +213,7 @@ impl App {
             http_client: inputs.http_client,
             all_projects: inputs.projects,
             nodes: init.nodes,
+            project_list_items: init.project_list_items,
             flat_entries: init.flat_entries,
             disk_usage: HashMap::new(),
             ci_state: HashMap::new(),

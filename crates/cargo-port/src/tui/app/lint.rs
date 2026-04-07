@@ -5,7 +5,7 @@ use super::types::LintRollupKey;
 use super::types::VisibleRow;
 use crate::lint::LintStatus;
 use crate::project::Project;
-use crate::scan::ProjectNode;
+use crate::project::ProjectListItem;
 
 impl App {
     pub(super) fn rebuild_lint_rollups(&mut self) {
@@ -14,19 +14,50 @@ impl App {
         self.lint_rollup_keys_by_path.clear();
 
         let mut registrations: Vec<(LintRollupKey, Vec<String>)> = Vec::new();
-        for (node_index, node) in self.nodes.iter().enumerate() {
+        for (node_index, item) in self.project_list_items.iter().enumerate() {
             registrations.push((
                 LintRollupKey::Root { node_index },
-                Self::lint_root_paths_for_node(node),
+                Self::lint_root_paths_for_item(item),
             ));
-            for (worktree_index, worktree) in node.worktrees.iter().enumerate() {
-                registrations.push((
-                    LintRollupKey::Worktree {
-                        node_index,
-                        worktree_index,
-                    },
-                    Self::lint_root_paths_for_worktree(worktree),
-                ));
+            match item {
+                ProjectListItem::WorkspaceWorktrees(wtg) => {
+                    // Primary at wi=0, linked at wi=1+
+                    registrations.push((
+                        LintRollupKey::Worktree {
+                            node_index,
+                            worktree_index: 0,
+                        },
+                        vec![wtg.primary().display_path()],
+                    ));
+                    for (i, linked) in wtg.linked().iter().enumerate() {
+                        registrations.push((
+                            LintRollupKey::Worktree {
+                                node_index,
+                                worktree_index: i + 1,
+                            },
+                            vec![linked.display_path()],
+                        ));
+                    }
+                },
+                ProjectListItem::PackageWorktrees(wtg) => {
+                    registrations.push((
+                        LintRollupKey::Worktree {
+                            node_index,
+                            worktree_index: 0,
+                        },
+                        vec![wtg.primary().display_path()],
+                    ));
+                    for (i, linked) in wtg.linked().iter().enumerate() {
+                        registrations.push((
+                            LintRollupKey::Worktree {
+                                node_index,
+                                worktree_index: i + 1,
+                            },
+                            vec![linked.display_path()],
+                        ));
+                    }
+                },
+                _ => {},
             }
         }
 
@@ -90,18 +121,18 @@ impl App {
         LintStatus::aggregate(statuses.iter().cloned())
     }
 
-    fn lint_root_paths_for_node(node: &ProjectNode) -> Vec<String> {
-        std::iter::once(node.project.path.clone())
-            .chain(
-                node.worktrees
-                    .iter()
-                    .map(|worktree| worktree.project.path.clone()),
-            )
-            .collect()
-    }
-
-    fn lint_root_paths_for_worktree(node: &ProjectNode) -> Vec<String> {
-        vec![node.project.path.clone()]
+    fn lint_root_paths_for_item(item: &ProjectListItem) -> Vec<String> {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                std::iter::once(wtg.primary().display_path())
+                    .chain(wtg.linked().iter().map(|l| l.display_path()))
+                    .collect()
+            },
+            ProjectListItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary().display_path())
+                .chain(wtg.linked().iter().map(|l| l.display_path()))
+                .collect(),
+            _ => vec![item.display_path()],
+        }
     }
 
     pub(super) fn selected_lint_rollup_key(&self) -> Option<LintRollupKey> {

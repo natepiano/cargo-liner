@@ -27,10 +27,20 @@ use super::http::ServiceKind;
 use super::http::ServiceSignal;
 use super::lint::LintStatus;
 use super::perf_log;
+use super::project::Cargo;
 use super::project::GitInfo;
 use super::project::GitPathState;
 use super::project::GitRepoPresence;
+use super::project::NewMemberGroup;
+use super::project::NonRust;
+use super::project::Package;
 use super::project::Project;
+use super::project::ProjectLanguage;
+use super::project::ProjectListItem;
+use super::project::TypedProject;
+use super::project::Workspace;
+use super::project::WorkspaceStatus;
+use super::project::WorktreeGroup;
 
 /// Members within a workspace are organized into groups by their first subdirectory.
 /// The "inline" group (empty name) contains members directly under the workspace root
@@ -987,6 +997,162 @@ pub fn build_flat_entries(nodes: &[ProjectNode]) -> Vec<FlatEntry> {
         }
     }
     entries
+}
+
+// ── New type system: build_project_list ────────────────────────────
+
+/// Convert an old `Project` into a `TypedProject<Package>`.
+fn old_project_to_package(p: &Project) -> TypedProject<Package> {
+    TypedProject::<Package>::new(
+        PathBuf::from(&p.abs_path),
+        p.name.clone(),
+        Cargo::new(
+            p.version.clone(),
+            p.description.clone(),
+            p.types.clone(),
+            p.examples.clone(),
+            p.benches.clone(),
+            p.test_count,
+            p.local_dependency_paths.clone(),
+        ),
+        Vec::new(),
+        p.worktree_name.clone(),
+        p.worktree_primary_abs_path.as_ref().map(PathBuf::from),
+    )
+}
+
+/// Convert an old `Project` into a `TypedProject<Workspace>`.
+fn old_project_to_workspace(
+    p: &Project,
+    groups: Vec<NewMemberGroup>,
+    vendored: Vec<TypedProject<Package>>,
+) -> TypedProject<Workspace> {
+    TypedProject::<Workspace>::new(
+        PathBuf::from(&p.abs_path),
+        p.name.clone(),
+        Cargo::new(
+            p.version.clone(),
+            p.description.clone(),
+            p.types.clone(),
+            p.examples.clone(),
+            p.benches.clone(),
+            p.test_count,
+            p.local_dependency_paths.clone(),
+        ),
+        groups,
+        vendored,
+        p.worktree_name.clone(),
+        p.worktree_primary_abs_path.as_ref().map(PathBuf::from),
+    )
+}
+
+/// Convert an old `Project` into a `TypedProject<NonRust>`.
+fn old_project_to_nonrust(p: &Project) -> TypedProject<NonRust> {
+    TypedProject::<NonRust>::new(
+        PathBuf::from(&p.abs_path),
+        p.name.clone(),
+        p.worktree_name.clone(),
+        p.worktree_primary_abs_path.as_ref().map(PathBuf::from),
+    )
+}
+
+/// Convert old `MemberGroup`s to new `NewMemberGroup`s.
+fn convert_member_groups(groups: &[MemberGroup]) -> Vec<NewMemberGroup> {
+    groups
+        .iter()
+        .map(|g| {
+            let members: Vec<TypedProject<Package>> =
+                g.members.iter().map(old_project_to_package).collect();
+            if g.name.is_empty() {
+                NewMemberGroup::Inline { members }
+            } else {
+                NewMemberGroup::Named {
+                    name: g.name.clone(),
+                    members,
+                }
+            }
+        })
+        .collect()
+}
+
+/// Build `Vec<ProjectListItem>` from existing `ProjectNode` tree.
+/// This bridges the old and new type systems during migration.
+pub fn build_project_list(nodes: &[ProjectNode]) -> Vec<ProjectListItem> {
+    let mut items = Vec::new();
+    for node in nodes {
+        let is_rust = matches!(node.project.is_rust, ProjectLanguage::Rust);
+        let is_workspace = matches!(node.project.is_workspace, WorkspaceStatus::Workspace)
+            || !node.groups.is_empty()
+            || node.worktrees.iter().any(|wt| !wt.groups.is_empty());
+        let has_worktrees = !node.worktrees.is_empty();
+
+        if !is_rust {
+            if has_worktrees {
+                // NonRust doesn't have worktrees in the new model, skip worktree grouping.
+                // Just emit the primary as NonRust.
+                items.push(ProjectListItem::NonRust(old_project_to_nonrust(
+                    &node.project,
+                )));
+            } else {
+                items.push(ProjectListItem::NonRust(old_project_to_nonrust(
+                    &node.project,
+                )));
+            }
+        } else if has_worktrees {
+            // Build worktree group. The first worktree entry is the primary.
+            if is_workspace {
+                let primary_wt = &node.worktrees[0];
+                let primary = old_project_to_workspace(
+                    &primary_wt.project,
+                    convert_member_groups(&primary_wt.groups),
+                    primary_wt
+                        .vendored
+                        .iter()
+                        .map(old_project_to_package)
+                        .collect(),
+                );
+                let linked: Vec<TypedProject<Workspace>> = node.worktrees[1..]
+                    .iter()
+                    .map(|wt| {
+                        old_project_to_workspace(
+                            &wt.project,
+                            convert_member_groups(&wt.groups),
+                            wt.vendored.iter().map(old_project_to_package).collect(),
+                        )
+                    })
+                    .collect();
+                items.push(ProjectListItem::WorkspaceWorktrees(WorktreeGroup::new(
+                    primary, linked,
+                )));
+            } else {
+                let primary_wt = &node.worktrees[0];
+                let primary = old_project_to_package(&primary_wt.project);
+                let linked: Vec<TypedProject<Package>> = node.worktrees[1..]
+                    .iter()
+                    .map(|wt| old_project_to_package(&wt.project))
+                    .collect();
+                items.push(ProjectListItem::PackageWorktrees(WorktreeGroup::new(
+                    primary, linked,
+                )));
+            }
+        } else if is_workspace {
+            let groups = convert_member_groups(&node.groups);
+            let vendored: Vec<TypedProject<Package>> =
+                node.vendored.iter().map(old_project_to_package).collect();
+            items.push(ProjectListItem::Workspace(old_project_to_workspace(
+                &node.project,
+                groups,
+                vendored,
+            )));
+        } else {
+            let mut pkg = old_project_to_package(&node.project);
+            if !node.vendored.is_empty() {
+                *pkg.vendored_mut() = node.vendored.iter().map(old_project_to_package).collect();
+            }
+            items.push(ProjectListItem::Package(pkg));
+        }
+    }
+    items
 }
 
 /// Shared network context passed to `fetch_project_details`.

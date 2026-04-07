@@ -19,6 +19,10 @@ use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::Project;
 use crate::project::ProjectLanguage::Rust;
+use crate::project::ProjectListItem;
+use crate::project::TypedProject;
+use crate::project::Visibility;
+use crate::project::Workspace;
 use crate::scan::ProjectNode;
 use crate::tui::detail::DetailField;
 use crate::tui::detail::ProjectCounts;
@@ -173,30 +177,43 @@ impl App {
     }
 
     pub fn workspace_counts(&self, project: &Project) -> Option<ProjectCounts> {
-        // Check top-level nodes first
-        if let Some(node) = self.nodes.iter().find(|n| n.project.path == project.path)
-            && node.has_members()
-        {
-            let mut counts = ProjectCounts::default();
-            counts.add_project(&node.project);
-            for member in Self::all_group_members(node) {
-                counts.add_project(member);
-            }
-            return Some(counts);
-        }
-        // Check worktree entries (workspace worktrees have their own groups)
-        for node in &self.nodes {
-            for wt in &node.worktrees {
-                if wt.project.path == project.path && wt.has_members() {
+        for item in &self.project_list_items {
+            match item {
+                ProjectListItem::Workspace(ws) if ws.display_path() == project.path => {
+                    if !ws.has_members() {
+                        return None;
+                    }
                     let mut counts = ProjectCounts::default();
-                    counts.add_project(&wt.project);
-                    for group in &wt.groups {
-                        for member in &group.members {
-                            counts.add_project(member);
+                    counts.add_project(project);
+                    for group in ws.groups() {
+                        for member in group.members() {
+                            if let Some(p) = self.project_by_path(&member.display_path()) {
+                                counts.add_project(p);
+                            }
                         }
                     }
                     return Some(counts);
-                }
+                },
+                ProjectListItem::WorkspaceWorktrees(wtg) => {
+                    let all_ws: Vec<&TypedProject<Workspace>> = std::iter::once(wtg.primary())
+                        .chain(wtg.linked().iter())
+                        .collect();
+                    for ws in &all_ws {
+                        if ws.display_path() == project.path && ws.has_members() {
+                            let mut counts = ProjectCounts::default();
+                            counts.add_project(project);
+                            for group in ws.groups() {
+                                for member in group.members() {
+                                    if let Some(p) = self.project_by_path(&member.display_path()) {
+                                        counts.add_project(p);
+                                    }
+                                }
+                            }
+                            return Some(counts);
+                        }
+                    }
+                },
+                _ => {},
             }
         }
         None
@@ -309,32 +326,145 @@ impl App {
             .flatten()
     }
 
+    // ── ProjectListItem query methods ──────────────────────────────
+
+    /// Count live (visible) worktree entries for a `ProjectListItem`.
+    pub fn live_worktree_count_for_item(&self, item: &ProjectListItem) -> usize {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                let live = std::iter::once(wtg.primary().visibility())
+                    .chain(wtg.linked().iter().map(|l| l.visibility()))
+                    .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
+                    .count();
+                if live <= 1 { 0 } else { live }
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                let live = std::iter::once(wtg.primary().visibility())
+                    .chain(wtg.linked().iter().map(|l| l.visibility()))
+                    .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
+                    .count();
+                if live <= 1 { 0 } else { live }
+            },
+            _ => 0,
+        }
+    }
+
+    /// All display paths for a `ProjectListItem` (root + worktrees).
+    fn unique_item_display_paths(&self, item: &ProjectListItem) -> Vec<String> {
+        let mut paths = Vec::new();
+        paths.push(item.display_path());
+        match item {
+            ProjectListItem::WorkspaceWorktrees(wtg) => {
+                for linked in wtg.linked() {
+                    let dp = linked.display_path();
+                    if !paths.contains(&dp) {
+                        paths.push(dp);
+                    }
+                }
+            },
+            ProjectListItem::PackageWorktrees(wtg) => {
+                for linked in wtg.linked() {
+                    let dp = linked.display_path();
+                    if !paths.contains(&dp) {
+                        paths.push(dp);
+                    }
+                }
+            },
+            _ => {},
+        }
+        paths
+    }
+
+    /// Aggregate disk usage for a `ProjectListItem`.
+    pub fn formatted_disk_for_item(&self, item: &ProjectListItem) -> String {
+        self.disk_bytes_for_item(item).map_or_else(
+            || crate::tui::render::format_bytes(0),
+            crate::tui::render::format_bytes,
+        )
+    }
+
+    /// Get total disk bytes for a `ProjectListItem` (sum of root + worktrees).
+    pub fn disk_bytes_for_item(&self, item: &ProjectListItem) -> Option<u64> {
+        let paths = self.unique_item_display_paths(item);
+        if paths.len() == 1 {
+            return self.disk_usage.get(&paths[0]).copied();
+        }
+        let mut total: u64 = 0;
+        let mut any_data = false;
+        for path in &paths {
+            if let Some(&bytes) = self.disk_usage.get(path.as_str()) {
+                total += bytes;
+                any_data = true;
+            }
+        }
+        if any_data { Some(total) } else { None }
+    }
+
+    /// Aggregate CI for a `ProjectListItem`.
+    pub fn ci_for_item(&self, item: &ProjectListItem) -> Option<Conclusion> {
+        let paths = self.unique_item_display_paths(item);
+        if paths.len() == 1 {
+            return self.project_by_path(&paths[0]).and_then(|p| self.ci_for(p));
+        }
+        let mut any_red = false;
+        let mut all_green = true;
+        let mut any_data = false;
+        for path in &paths {
+            if let Some(run) = self.latest_ci_run_for_path(path) {
+                any_data = true;
+                if run.conclusion.is_failure() {
+                    any_red = true;
+                    all_green = false;
+                } else if !run.conclusion.is_success() {
+                    all_green = false;
+                }
+            }
+        }
+        if !any_data {
+            None
+        } else if any_red {
+            Some(Conclusion::Failure)
+        } else if all_green {
+            Some(Conclusion::Success)
+        } else {
+            None
+        }
+    }
+
     pub fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
 
     pub fn is_vendored_path(&self, path: &str) -> bool {
-        self.nodes.iter().any(|node| {
-            node.vendored.iter().any(|project| project.path == path)
-                || node
-                    .worktrees
-                    .iter()
-                    .any(|worktree| worktree.vendored.iter().any(|project| project.path == path))
+        self.project_list_items.iter().any(|item| match item {
+            ProjectListItem::Workspace(ws) => {
+                ws.vendored().iter().any(|v| v.display_path() == path)
+            },
+            ProjectListItem::Package(pkg) => {
+                pkg.vendored().iter().any(|v| v.display_path() == path)
+            },
+            ProjectListItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
+                .chain(wtg.linked().iter())
+                .any(|ws| ws.vendored().iter().any(|v| v.display_path() == path)),
+            ProjectListItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
+                .chain(wtg.linked().iter())
+                .any(|pkg| pkg.vendored().iter().any(|v| v.display_path() == path)),
+            ProjectListItem::NonRust(_) => false,
         })
     }
 
     pub fn is_workspace_member_path(&self, path: &str) -> bool {
-        self.nodes.iter().any(|node| {
-            node.project.is_workspace()
-                && node
-                    .groups
-                    .iter()
-                    .any(|group| group.members.iter().any(|member| member.path == path))
-                || node.worktrees.iter().any(|worktree| {
-                    worktree.project.is_workspace()
-                        && worktree
-                            .groups
-                            .iter()
-                            .any(|group| group.members.iter().any(|member| member.path == path))
-                })
+        self.project_list_items.iter().any(|item| match item {
+            ProjectListItem::Workspace(ws) => ws
+                .groups()
+                .iter()
+                .any(|g| g.members().iter().any(|m| m.display_path() == path)),
+            ProjectListItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
+                .chain(wtg.linked().iter())
+                .any(|ws| {
+                    ws.groups()
+                        .iter()
+                        .any(|g| g.members().iter().any(|m| m.display_path() == path))
+                }),
+            _ => false,
         })
     }
 
