@@ -20,6 +20,7 @@ use crate::config::ScrollDirection;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::lint::LintStatus;
+use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
@@ -612,7 +613,7 @@ fn ci_runs_stay_on_owner_rows_not_workspace_members() {
     let mut app = make_app(&[workspace, member]);
     apply_items(&mut app, &[root]);
 
-    app.insert_ci_runs("~/ws", vec![make_ci_run(1, Conclusion::Success)]);
+    app.insert_ci_runs(Path::new("~/ws"), vec![make_ci_run(1, Conclusion::Success)]);
 
     assert_eq!(app.ci_for(Path::new("~/ws")), Some(Conclusion::Success));
     assert!(app.ci_state.contains_key(Path::new("~/ws")));
@@ -775,7 +776,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     assert!(app.lint_toast.is_none());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project_a.display_path(),
+        path:   AbsolutePath::new(project_a.path().to_path_buf()),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
     });
 
@@ -800,7 +801,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     assert!(app.lint_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project_a.display_path(),
+        path:   AbsolutePath::new(project_a.path().to_path_buf()),
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
 
@@ -837,20 +838,20 @@ fn lint_toast_reappears_for_new_running_lints() {
     app.scan.phase = ScanPhase::Complete;
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project.display_path(),
+        path:   AbsolutePath::new(project.path().to_path_buf()),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
     });
     let first_toast = app.lint_toast;
     assert!(first_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project.display_path(),
+        path:   AbsolutePath::new(project.path().to_path_buf()),
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
     assert!(app.lint_toast.is_none());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
-        path:   project.display_path(),
+        path:   AbsolutePath::new(project.path().to_path_buf()),
         status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
     });
     assert!(app.lint_toast.is_some());
@@ -1279,7 +1280,7 @@ fn zero_byte_update_marks_deleted_child_member() {
     apply_items(&mut app, &[root]);
 
     std::fs::remove_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
-    app.handle_disk_usage(&member_path, 0);
+    app.handle_disk_usage(Path::new(&member_path), 0);
 }
 
 #[test]
@@ -1299,11 +1300,11 @@ fn disk_updates_skip_git_path_refresh_during_scan() {
     ));
     let mut app = make_app(&[project]);
 
-    app.handle_disk_usage(&abs_str, 123);
+    app.handle_disk_usage(Path::new(&abs_str), 123);
     assert!(!app.git_path_states.contains_key(Path::new(&abs_str)));
 
     app.scan.phase = ScanPhase::Complete;
-    app.handle_disk_usage(&abs_str, 123);
+    app.handle_disk_usage(Path::new(&abs_str), 123);
     assert_eq!(
         app.git_path_states.get(Path::new(&abs_str)),
         Some(&GitPathState::OutsideRepo)

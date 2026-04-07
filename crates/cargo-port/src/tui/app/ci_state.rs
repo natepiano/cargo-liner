@@ -12,8 +12,8 @@ use crate::tui::detail::CiFetchKind;
 
 impl App {
     /// Insert CI runs from the initial scan for a CI owner path.
-    pub(super) fn insert_ci_runs(&mut self, path: &str, runs: Vec<CiRun>) {
-        let abs = PathBuf::from(path);
+    pub(super) fn insert_ci_runs(&mut self, path: &Path, runs: Vec<CiRun>) {
+        let abs = path.to_path_buf();
         if !self.is_cargo_active_path(&abs) {
             self.ci_state.remove(&abs);
             return;

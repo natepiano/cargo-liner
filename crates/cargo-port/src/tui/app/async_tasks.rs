@@ -25,6 +25,7 @@ use crate::keymap::KeymapErrorReason::ParseError;
 use crate::lint;
 use crate::lint::LintStatus;
 use crate::lint::RegisterProjectRequest;
+use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
 use crate::project::ProjectListItem;
@@ -473,14 +474,17 @@ impl App {
         std::thread::spawn(move || {
             let states = crate::project::detect_git_path_states_batch(&projects);
             for (path, state) in states {
-                let _ = tx.send(BackgroundMsg::GitPathState { path, state });
+                let _ = tx.send(BackgroundMsg::GitPathState {
+                    path: AbsolutePath::new(PathBuf::from(path)),
+                    state,
+                });
             }
         });
     }
 
     pub(super) fn schedule_git_first_commit_refreshes(&self) {
         let tx = self.bg_tx.clone();
-        let mut projects_by_repo: HashMap<PathBuf, Vec<String>> = HashMap::new();
+        let mut projects_by_repo: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         for item in &self.discovered_projects {
             let abs_path = item.path().to_path_buf();
             let Some(repo_root) = crate::project::git_repo_root(&abs_path) else {
@@ -489,7 +493,7 @@ impl App {
             projects_by_repo
                 .entry(repo_root)
                 .or_default()
-                .push(abs_path.to_string_lossy().to_string());
+                .push(abs_path);
         }
         std::thread::spawn(move || {
             for (repo_root, paths) in projects_by_repo {
@@ -504,7 +508,7 @@ impl App {
                 );
                 for path in paths {
                     let _ = tx.send(BackgroundMsg::GitFirstCommit {
-                        path,
+                        path:         AbsolutePath::new(path),
                         first_commit: first_commit.clone(),
                     });
                 }
@@ -1346,17 +1350,16 @@ impl App {
         }
     }
 
-    pub(super) fn handle_disk_usage(&mut self, path: &str, bytes: u64) {
-        let abs = PathBuf::from(path);
-        if self.running_clean_paths.remove(&abs) {
+    pub(super) fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
+        if self.running_clean_paths.remove(path) {
             self.sync_running_clean_toast();
         }
-        self.apply_disk_usage(&abs, bytes, self.is_scan_complete());
+        self.apply_disk_usage(path, bytes, self.is_scan_complete());
     }
 
-    pub(super) fn handle_disk_usage_batch(&mut self, entries: Vec<(String, u64)>) {
+    pub(super) fn handle_disk_usage_batch(&mut self, entries: Vec<(AbsolutePath, u64)>) {
         for (path, bytes) in entries {
-            self.apply_disk_usage(&PathBuf::from(&path), bytes, false);
+            self.apply_disk_usage(path.as_path(), bytes, false);
         }
     }
 
@@ -1405,9 +1408,9 @@ impl App {
         }
     }
 
-    pub(super) fn handle_git_info(&mut self, path: &str, info: GitInfo) {
+    pub(super) fn handle_git_info(&mut self, path: &Path, info: GitInfo) {
         self.dirty.fit_widths.mark_dirty();
-        let abs = PathBuf::from(path);
+        let abs = path.to_path_buf();
         let preserved_first_commit = self
             .git_info
             .get(&abs)
@@ -1470,7 +1473,7 @@ impl App {
         self.dirty.finder.mark_dirty();
     }
 
-    pub(super) fn handle_git_first_commit(&mut self, path: &str, first_commit: Option<String>) {
+    pub(super) fn handle_git_first_commit(&mut self, path: &Path, first_commit: Option<String>) {
         let Some(info) = self.git_info.get_mut(Path::new(path)) else {
             return;
         };
@@ -1485,8 +1488,13 @@ impl App {
         self.maybe_log_startup_phase_completions();
     }
 
-    pub(super) fn handle_repo_meta(&mut self, path: &str, stars: u64, description: Option<String>) {
-        let abs = PathBuf::from(path);
+    pub(super) fn handle_repo_meta(
+        &mut self,
+        path: &Path,
+        stars: u64,
+        description: Option<String>,
+    ) {
+        let abs = path.to_path_buf();
         // Propagate stars to workspace members.
         for item in &self.project_list_items {
             match item {
@@ -1625,38 +1633,42 @@ impl App {
         }
     }
 
-    fn handle_disk_usage_msg(&mut self, path: &str, bytes: u64) {
+    fn handle_disk_usage_msg(&mut self, path: &Path, bytes: u64) {
         self.scan
             .startup_phases
             .disk_seen
-            .insert(PathBuf::from(path));
+            .insert(path.to_path_buf());
         self.handle_disk_usage(path, bytes);
         self.maybe_log_startup_phase_completions();
     }
 
-    fn handle_disk_usage_batch_msg(&mut self, root_path: String, entries: Vec<(String, u64)>) {
+    fn handle_disk_usage_batch_msg(
+        &mut self,
+        root_path: &AbsolutePath,
+        entries: Vec<(AbsolutePath, u64)>,
+    ) {
         self.data_generation += 1;
         if entries
             .iter()
-            .any(|(path, _)| self.detail_path_is_affected(path))
+            .any(|(path, _)| self.detail_path_is_affected(path.as_path()))
         {
             self.detail_generation += 1;
         }
         self.scan
             .startup_phases
             .disk_seen
-            .insert(PathBuf::from(root_path));
+            .insert(root_path.to_path_buf());
         self.handle_disk_usage_batch(entries);
         self.maybe_log_startup_phase_completions();
     }
 
-    fn handle_git_path_state_msg(&mut self, path: String, state: GitPathState) {
+    fn handle_git_path_state_msg(&mut self, path: &AbsolutePath, state: GitPathState) {
         tracing::info!(path = %path, state = %state.label(), "app_git_path_state_applied");
-        self.git_path_states.insert(PathBuf::from(path), state);
+        self.git_path_states.insert(path.to_path_buf(), state);
     }
 
-    fn handle_crates_io_version_msg(&mut self, path: &str, version: String, downloads: u64) {
-        let abs = PathBuf::from(path);
+    fn handle_crates_io_version_msg(&mut self, path: &Path, version: String, downloads: u64) {
+        let abs = path.to_path_buf();
         if self.is_cargo_active_path(&abs) {
             self.crates_versions.insert(abs.clone(), version);
             self.crates_downloads.insert(abs, downloads);
@@ -1666,8 +1678,8 @@ impl App {
         }
     }
 
-    fn handle_lint_status_msg(&mut self, path: &str, status: LintStatus) {
-        let abs = PathBuf::from(path);
+    fn handle_lint_status_msg(&mut self, path: &Path, status: LintStatus) {
+        let abs = path.to_path_buf();
         let status_started = matches!(status, LintStatus::Running(_));
         let status_is_terminal = matches!(
             status,
@@ -1845,17 +1857,21 @@ impl App {
     pub(super) fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
         self.update_generations_for_msg(&msg);
         match msg {
-            BackgroundMsg::DiskUsage { path, bytes } => self.handle_disk_usage_msg(&path, bytes),
+            BackgroundMsg::DiskUsage { path, bytes } => {
+                self.handle_disk_usage_msg(path.as_path(), bytes);
+            },
             BackgroundMsg::DiskUsageBatch { root_path, entries } => {
-                self.handle_disk_usage_batch_msg(root_path, entries);
+                self.handle_disk_usage_batch_msg(&root_path, entries);
             },
             BackgroundMsg::LocalGitQueued { path } => {
                 self.scan
                     .startup_phases
                     .git_expected
-                    .insert(PathBuf::from(path));
+                    .insert(path.to_path_buf());
             },
-            BackgroundMsg::CiRuns { path, runs } => self.insert_ci_runs(&path, runs),
+            BackgroundMsg::CiRuns { path, runs } => {
+                self.insert_ci_runs(path.as_path(), runs);
+            },
             BackgroundMsg::RepoFetchQueued { key } => {
                 self.scan
                     .startup_phases
@@ -1863,23 +1879,25 @@ impl App {
                     .insert(PathBuf::from(key));
             },
             BackgroundMsg::RepoFetchComplete { key } => self.handle_repo_fetch_complete(key),
-            BackgroundMsg::GitInfo { path, info } => self.handle_git_info(&path, info),
+            BackgroundMsg::GitInfo { path, info } => {
+                self.handle_git_info(path.as_path(), info);
+            },
             BackgroundMsg::GitFirstCommit { path, first_commit } => {
-                self.handle_git_first_commit(&path, first_commit);
+                self.handle_git_first_commit(path.as_path(), first_commit);
             },
             BackgroundMsg::GitPathState { path, state } => {
-                self.handle_git_path_state_msg(path, state);
+                self.handle_git_path_state_msg(&path, state);
             },
             BackgroundMsg::CratesIoVersion {
                 path,
                 version,
                 downloads,
-            } => self.handle_crates_io_version_msg(&path, version, downloads),
+            } => self.handle_crates_io_version_msg(path.as_path(), version, downloads),
             BackgroundMsg::RepoMeta {
                 path,
                 stars,
                 description,
-            } => self.handle_repo_meta(&path, stars, description),
+            } => self.handle_repo_meta(path.as_path(), stars, description),
             BackgroundMsg::ScanResult {
                 project_list_items,
                 flat_entries,
@@ -1912,7 +1930,7 @@ impl App {
                 self.refresh_lint_cache_usage_from_disk();
             },
             BackgroundMsg::LintStatus { path, status } => {
-                self.handle_lint_status_msg(&path, status);
+                self.handle_lint_status_msg(path.as_path(), status);
             },
             BackgroundMsg::ServiceReachable { service } => {
                 self.apply_service_signal(ServiceSignal::Reachable(service));
@@ -1927,11 +1945,11 @@ impl App {
         false
     }
 
-    pub(super) fn detail_path_is_affected(&self, path: &str) -> bool {
+    pub(super) fn detail_path_is_affected(&self, path: &Path) -> bool {
         let Some(selected_path) = self.selected_project_path() else {
             return false;
         };
-        let abs = Path::new(path);
+        let abs = path;
         self.selected_lint_rollup_key().map_or_else(
             || selected_path == abs,
             |key| {

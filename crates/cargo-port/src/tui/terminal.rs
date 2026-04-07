@@ -38,6 +38,7 @@ use super::render;
 use crate::ci;
 use crate::config;
 use crate::http::HttpClient;
+use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::GitRepoPresence;
 use crate::project::ProjectListItem;
@@ -579,7 +580,6 @@ fn save_last_selected(project_path: &str) {
 pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name: Option<&String>) {
     let tx = app.bg_tx.clone();
     let client = app.http_client.clone();
-    let project_path = abs_path.to_string();
     let abs = PathBuf::from(abs_path);
     let repo_presence = if crate::project::git_repo_root(&abs).is_some() {
         GitRepoPresence::InRepo
@@ -590,8 +590,9 @@ pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name:
     let project_name = name.cloned();
 
     thread::spawn(move || {
+        let path = AbsolutePath::new(abs.clone());
         let _ = tx.send(BackgroundMsg::GitPathState {
-            path:  project_path.clone(),
+            path:  path.clone(),
             state: crate::project::detect_git_path_state(&abs),
         });
         // Git detection can be expensive on some repos; keep it off the UI thread.
@@ -602,7 +603,7 @@ pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name:
         };
         if let Some(ref info) = git_info {
             let _ = tx.send(BackgroundMsg::GitInfo {
-                path: project_path.clone(),
+                path: path.clone(),
                 info: info.clone(),
             });
         }
@@ -619,14 +620,14 @@ pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name:
                 CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
             };
             let _ = tx.send(BackgroundMsg::CiRuns {
-                path: project_path.clone(),
+                path: path.clone(),
                 runs,
             });
         }
 
         let bytes = scan::dir_size(&abs);
         let _ = tx.send(BackgroundMsg::DiskUsage {
-            path: project_path.clone(),
+            path: path.clone(),
             bytes,
         });
 
@@ -635,8 +636,8 @@ pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name:
             scan::emit_service_signal(&tx, signal);
             if let Some(info) = info {
                 let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                    path:      project_path,
-                    version:   info.version,
+                    path,
+                    version: info.version,
                     downloads: info.downloads,
                 });
             }

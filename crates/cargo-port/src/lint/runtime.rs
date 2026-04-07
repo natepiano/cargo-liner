@@ -32,6 +32,7 @@ use crate::config::DiscoveryLint;
 use crate::config::LintCommandConfig;
 use crate::config::LintConfig;
 use crate::constants::LINTS_LATEST_JSON;
+use crate::project::AbsolutePath;
 use crate::scan::BackgroundMsg;
 
 const LINT_DEBOUNCE: Duration = Duration::from_millis(750);
@@ -101,9 +102,8 @@ enum SupervisorMsg {
 }
 
 struct ProjectWorker {
-    project_path: String,
-    stop:         Arc<AtomicBool>,
-    handle:       JoinHandle<()>,
+    stop:   Arc<AtomicBool>,
+    handle: JoinHandle<()>,
 }
 
 pub fn spawn(config: &CargoPortConfig, bg_tx: mpsc::Sender<BackgroundMsg>) -> SpawnResult {
@@ -157,27 +157,25 @@ fn supervisor_loop(
             Ok(SupervisorMsg::RegisterProject { project }) => {
                 if should_watch_project(&lint, &project) {
                     let abs_path = project.abs_path.clone();
-                    let project_path = project.project_path.clone();
                     workers.entry(abs_path.clone()).or_insert_with(|| {
                         spawn_project_worker(
-                            project_path,
+                            project.project_path.clone(),
                             abs_path.clone(),
                             &worker_config,
                             bg_tx.clone(),
                         )
                     });
                     let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                        path:   abs_path.to_string_lossy().into_owned(),
+                        path:   AbsolutePath::new(abs_path.clone()),
                         status: cached_status_for_project(&status_cache, &abs_path),
                     });
                 }
             },
             Ok(SupervisorMsg::UnregisterProject { abs_path }) => {
                 if let Some(worker) = workers.remove(&abs_path) {
-                    let project_path = worker.project_path.clone();
                     stop_worker(worker);
                     let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                        path:   project_path,
+                        path:   AbsolutePath::new(abs_path),
                         status: LintStatus::NoLog,
                     });
                 }
@@ -218,7 +216,7 @@ fn emit_current_statuses(
 ) {
     for request in desired.values() {
         let _ = bg_tx.send(BackgroundMsg::LintStatus {
-            path:   request.project_path.clone(),
+            path:   AbsolutePath::new(request.abs_path.clone()),
             status: cached_status_for_project(status_cache, &request.abs_path),
         });
     }
@@ -268,10 +266,9 @@ fn reconcile_workers(
         .collect();
     for path in stale {
         if let Some(worker) = workers.remove(&path) {
-            let project_path = worker.project_path.clone();
             stop_worker(worker);
             let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                path:   project_path,
+                path:   AbsolutePath::new(path),
                 status: LintStatus::NoLog,
             });
         }
@@ -301,7 +298,7 @@ fn spawn_project_worker(
 ) -> ProjectWorker {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::clone(&stop);
-    let worker_project_path = project_path.clone();
+    let worker_project_path = project_path;
     let cache_root = config.cache_root.clone();
     let commands = config.commands.clone();
     let cache_size_bytes = config.cache_size_bytes;
@@ -366,11 +363,7 @@ fn spawn_project_worker(
             }
         }
     });
-    ProjectWorker {
-        project_path,
-        stop,
-        handle,
-    }
+    ProjectWorker { stop, handle }
 }
 
 fn should_watch_project(lint: &LintConfig, request: &RegisterProjectRequest) -> bool {
@@ -512,7 +505,6 @@ pub fn run_commands_for_project(
     publish_status(
         status_cache,
         project_root,
-        project_path,
         status::read_status_under(cache_root, project_root),
         bg_tx,
     );
@@ -520,13 +512,7 @@ pub fn run_commands_for_project(
     let result = execute_commands(project_root, cache_root, commands, &output_dir, &mut run)?;
     if matches!(result, CommandsResult::ProjectRemoved) {
         let _ = read_write::clear_latest_under(cache_root, project_root);
-        publish_status(
-            status_cache,
-            project_root,
-            project_path,
-            LintStatus::NoLog,
-            bg_tx,
-        );
+        publish_status(status_cache, project_root, LintStatus::NoLog, bg_tx);
         return Ok(());
     }
 
@@ -550,7 +536,6 @@ pub fn run_commands_for_project(
     publish_status(
         status_cache,
         project_root,
-        project_path,
         status::read_status_under(cache_root, project_root),
         bg_tx,
     );
@@ -604,7 +589,6 @@ fn execute_commands(
 fn publish_status(
     status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
     project_root: &Path,
-    project_path: &str,
     status: LintStatus,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
 ) {
@@ -617,7 +601,7 @@ fn publish_status(
         }
     }
     let _ = bg_tx.send(BackgroundMsg::LintStatus {
-        path: project_path.to_string(),
+        path: AbsolutePath::new(project_root.to_path_buf()),
         status,
     });
 }
@@ -998,13 +982,6 @@ mod tests {
             }
             exited_flag.store(true, Ordering::Relaxed);
         });
-        (
-            ProjectWorker {
-                project_path: "~/rust/demo".to_string(),
-                stop,
-                handle,
-            },
-            exited,
-        )
+        (ProjectWorker { stop, handle }, exited)
     }
 }

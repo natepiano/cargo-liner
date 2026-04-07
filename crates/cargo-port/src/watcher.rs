@@ -32,6 +32,7 @@ use super::constants::WATCHER_DISK_CONCURRENCY;
 use super::constants::WATCHER_GIT_CONCURRENCY;
 use super::http::HttpClient;
 use super::project;
+use super::project::AbsolutePath;
 use super::project::GitInfo;
 use super::project::GitRepoPresence;
 use super::scan;
@@ -679,7 +680,7 @@ fn emit_root_git_path_refresh(
         "watcher_root_git_path_refresh"
     );
     let _ = bg_tx.send(BackgroundMsg::GitPathState {
-        path: root_entry.project_path.clone(),
+        path: AbsolutePath::new(root_entry.abs_path.clone()),
         state,
     });
 }
@@ -782,7 +783,7 @@ fn spawn_git_refresh(
             if let Some(info) = git_info {
                 for (path, _) in &affected {
                     let _ = bg_tx.send(BackgroundMsg::GitInfo {
-                        path: path.clone(),
+                        path: AbsolutePath::new(PathBuf::from(path)),
                         info: info.clone(),
                     });
                 }
@@ -802,7 +803,10 @@ fn spawn_git_refresh(
         let git_path_states_elapsed_ms = state_started.elapsed().as_millis();
         if let Some(git_path_states) = git_path_states {
             for (path, state) in git_path_states {
-                let _ = bg_tx.send(BackgroundMsg::GitPathState { path, state });
+                let _ = bg_tx.send(BackgroundMsg::GitPathState {
+                    path: AbsolutePath::new(PathBuf::from(path)),
+                    state,
+                });
             }
         }
         tracing::info!(
@@ -882,6 +886,7 @@ fn spawn_disk_update(
         );
 
         let started = Instant::now();
+        let abs_for_msg = AbsolutePath::new(abs_path.clone());
         let bytes = tokio::task::spawn_blocking(move || scan::dir_size(&abs_path))
             .await
             .ok()
@@ -893,7 +898,7 @@ fn spawn_disk_update(
             "watcher_disk_usage"
         );
         let _ = bg_tx.send(BackgroundMsg::DiskUsage {
-            path: project_path.clone(),
+            path: abs_for_msg,
             bytes,
         });
         let _ = disk_done_tx.send(project_path);
@@ -923,7 +928,7 @@ fn probe_new_projects(
             // can mark it as deleted if it was a tracked project.
             discovered.remove(&dir);
             let _ = bg_tx.send(BackgroundMsg::DiskUsage {
-                path:  dir.to_string_lossy().into_owned(),
+                path:  AbsolutePath::new(dir),
                 bytes: 0,
             });
             continue;
@@ -1356,7 +1361,7 @@ edition = "2024"
             member_key,
             ProjectEntry {
                 project_path: "~/my_project/crates/member".to_string(),
-                abs_path:     member_dir,
+                abs_path:     member_dir.clone(),
                 repo_root:    Some(project_dir.clone()),
                 git_dir:      Some(project_dir.join(".git")),
             },
@@ -1396,7 +1401,7 @@ edition = "2024"
         );
         let messages = collect_messages_until(
             &bg_rx,
-            |msg| matches!(msg, BackgroundMsg::GitPathState { path, .. } if path == "~/my_project"),
+            |msg| matches!(msg, BackgroundMsg::GitPathState { path, .. } if path.as_path() == project_dir),
         );
 
         let mut got_git_info = false;
@@ -1405,12 +1410,10 @@ edition = "2024"
         for msg in messages {
             match msg {
                 BackgroundMsg::GitInfo { .. } => got_git_info = true,
-                BackgroundMsg::GitPathState { path, .. } if path == "~/my_project" => {
+                BackgroundMsg::GitPathState { path, .. } if path.as_path() == project_dir => {
                     got_root_git_state = true;
                 },
-                BackgroundMsg::GitPathState { path, .. }
-                    if path == "~/my_project/crates/member" =>
-                {
+                BackgroundMsg::GitPathState { path, .. } if path.as_path() == member_dir => {
                     got_member_git_state = true;
                 },
                 _ => {},
@@ -1508,7 +1511,7 @@ edition = "2024"
             member_key,
             ProjectEntry {
                 project_path: "~/my_project/crates/member".to_string(),
-                abs_path:     member_dir,
+                abs_path:     member_dir.clone(),
                 repo_root:    Some(project_dir.clone()),
                 git_dir:      Some(project_dir.join(".git")),
             },
@@ -1548,7 +1551,7 @@ edition = "2024"
         );
         let messages = collect_messages_until(
             &bg_rx,
-            |msg| matches!(msg, BackgroundMsg::GitPathState { path, .. } if path == "~/my_project"),
+            |msg| matches!(msg, BackgroundMsg::GitPathState { path, .. } if path.as_path() == project_dir),
         );
 
         let mut got_git_info = false;
@@ -1557,12 +1560,10 @@ edition = "2024"
         for msg in messages {
             match msg {
                 BackgroundMsg::GitInfo { .. } => got_git_info = true,
-                BackgroundMsg::GitPathState { path, .. } if path == "~/my_project" => {
+                BackgroundMsg::GitPathState { path, .. } if path.as_path() == project_dir => {
                     got_root_git_state = true;
                 },
-                BackgroundMsg::GitPathState { path, .. }
-                    if path == "~/my_project/crates/member" =>
-                {
+                BackgroundMsg::GitPathState { path, .. } if path.as_path() == member_dir => {
                     got_member_git_state = true;
                 },
                 _ => {},
@@ -2054,8 +2055,12 @@ edition = "2024"
         let mut got_git = false;
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                BackgroundMsg::DiskUsage { path, .. } if path == "~/my_project" => got_disk = true,
-                BackgroundMsg::GitInfo { path, .. } if path == "~/my_project" => got_git = true,
+                BackgroundMsg::DiskUsage { path, .. } if path.as_path() == project_dir => {
+                    got_disk = true;
+                },
+                BackgroundMsg::GitInfo { path, .. } if path.as_path() == project_dir => {
+                    got_git = true;
+                },
                 _ => {},
             }
         }
@@ -2080,7 +2085,7 @@ edition = "2024"
             dir_key,
             ProjectEntry {
                 project_path: "~/no_git".to_string(),
-                abs_path:     project_dir,
+                abs_path:     project_dir.clone(),
                 repo_root:    None,
                 git_dir:      None,
             },
@@ -2113,7 +2118,9 @@ edition = "2024"
         let mut got_git = false;
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                BackgroundMsg::DiskUsage { path, .. } if path == "~/no_git" => got_disk = true,
+                BackgroundMsg::DiskUsage { path, .. } if path.as_path() == project_dir => {
+                    got_disk = true;
+                },
                 BackgroundMsg::GitInfo { .. } => got_git = true,
                 _ => {},
             }

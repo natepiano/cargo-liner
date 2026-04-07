@@ -26,6 +26,7 @@ use super::http::HttpClient;
 use super::http::ServiceKind;
 use super::http::ServiceSignal;
 use super::lint::LintStatus;
+use super::project::AbsolutePath;
 use super::project::Cargo;
 use super::project::CargoParseResult;
 use super::project::GitInfo;
@@ -47,18 +48,18 @@ pub(crate) struct FlatEntry {
 
 pub(crate) enum BackgroundMsg {
     DiskUsage {
-        path:  String,
+        path:  AbsolutePath,
         bytes: u64,
     },
     DiskUsageBatch {
-        root_path: String,
-        entries:   Vec<(String, u64)>,
+        root_path: AbsolutePath,
+        entries:   Vec<(AbsolutePath, u64)>,
     },
     LocalGitQueued {
-        path: String,
+        path: AbsolutePath,
     },
     CiRuns {
-        path: String,
+        path: AbsolutePath,
         runs: Vec<CiRun>,
     },
     RepoFetchQueued {
@@ -68,24 +69,24 @@ pub(crate) enum BackgroundMsg {
         key: String,
     },
     GitInfo {
-        path: String,
+        path: AbsolutePath,
         info: GitInfo,
     },
     GitFirstCommit {
-        path:         String,
+        path:         AbsolutePath,
         first_commit: Option<String>,
     },
     GitPathState {
-        path:  String,
+        path:  AbsolutePath,
         state: GitPathState,
     },
     CratesIoVersion {
-        path:      String,
+        path:      AbsolutePath,
         version:   String,
         downloads: u64,
     },
     RepoMeta {
-        path:        String,
+        path:        AbsolutePath,
         stars:       u64,
         description: Option<String>,
     },
@@ -101,7 +102,7 @@ pub(crate) enum BackgroundMsg {
         item: ProjectListItem,
     },
     LintStatus {
-        path:   String,
+        path:   AbsolutePath,
         status: LintStatus,
     },
     LintCachePruned {
@@ -121,7 +122,7 @@ pub(crate) enum BackgroundMsg {
 
 impl BackgroundMsg {
     /// Returns the project path this message relates to, if any.
-    pub(crate) fn path(&self) -> Option<&str> {
+    pub(crate) fn path(&self) -> Option<&Path> {
         match self {
             Self::DiskUsage { path, .. }
             | Self::LocalGitQueued { path }
@@ -131,10 +132,8 @@ impl BackgroundMsg {
             | Self::GitPathState { path, .. }
             | Self::CratesIoVersion { path, .. }
             | Self::RepoMeta { path, .. }
-            | Self::LintStatus { path, .. } => Some(path),
-            Self::ProjectDiscovered { item } | Self::ProjectRefreshed { item } => {
-                Some(item.path().to_str().unwrap_or(""))
-            },
+            | Self::LintStatus { path, .. } => Some(path.as_path()),
+            Self::ProjectDiscovered { item } | Self::ProjectRefreshed { item } => Some(item.path()),
             Self::ScanResult { .. }
             | Self::DiskUsageBatch { .. }
             | Self::RepoFetchQueued { .. }
@@ -1119,13 +1118,14 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let tx = req.tx;
     let ctx = req.ctx;
     let abs_path = req.abs_path;
+    let abs = AbsolutePath::new(abs_path.to_path_buf());
     let project_name = req.project_name;
     let repo_presence = req.repo_presence;
     let ci_run_count = req.ci_run_count;
     let client = &ctx.client;
     let repo_cache = &ctx.repo_cache;
     let _ = tx.send(BackgroundMsg::GitPathState {
-        path:  abs_path.to_string_lossy().into_owned(),
+        path:  abs.clone(),
         state: super::project::detect_git_path_state(abs_path),
     });
     // Git info first (local, instant) — also provides the repo URL for CI cache lookup
@@ -1136,7 +1136,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     };
     if let Some(ref info) = git_info {
         let _ = tx.send(BackgroundMsg::GitInfo {
-            path: abs_path.to_string_lossy().into_owned(),
+            path: abs.clone(),
             info: info.clone(),
         });
     }
@@ -1169,12 +1169,12 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         });
 
         let _ = tx.send(BackgroundMsg::CiRuns {
-            path: abs_path.to_string_lossy().into_owned(),
+            path: abs.clone(),
             runs: data.runs,
         });
         if let Some(meta) = data.meta {
             let _ = tx.send(BackgroundMsg::RepoMeta {
-                path:        abs_path.to_string_lossy().into_owned(),
+                path:        abs.clone(),
                 stars:       meta.stars,
                 description: meta.description,
             });
@@ -1187,7 +1187,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         emit_service_signal(tx, signal);
         if let Some(info) = info {
             let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                path:      abs_path.to_string_lossy().into_owned(),
+                path:      abs.clone(),
                 version:   info.version,
                 downloads: info.downloads,
             });
@@ -1197,10 +1197,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     // Disk usage last — walking large `target/` dirs is the slowest
     // local operation and doesn't block anything else.
     let bytes = dir_size(abs_path);
-    let _ = tx.send(BackgroundMsg::DiskUsage {
-        path: abs_path.to_string_lossy().into_owned(),
-        bytes,
-    });
+    let _ = tx.send(BackgroundMsg::DiskUsage { path: abs, bytes });
 }
 
 #[derive(Clone)]
@@ -1257,8 +1254,7 @@ fn expand_home_path(raw: &str) -> PathBuf {
 /// used to drive async HTTP dispatch and disk usage.
 #[derive(Clone)]
 struct DiscoveredProject {
-    path:       String,
-    abs_path:   PathBuf,
+    abs_path:   AbsolutePath,
     name:       Option<String>,
     repo_url:   Option<String>,
     owner_repo: Option<(String, String)>,
@@ -1399,16 +1395,15 @@ fn discover_non_rust_project(
 ) {
     let project = super::project::from_git_dir(entry_path);
     let abs_path = project.path().to_path_buf();
-    let display_path = project.display_path();
     stats.projects += 1;
     stats.non_rust_projects += 1;
 
     let item = ProjectListItem::NonRust(project);
     items.push(item);
 
+    let abs = AbsolutePath::new(abs_path.clone());
     let discovered = DiscoveredProject {
-        path:       display_path,
-        abs_path:   abs_path.clone(),
+        abs_path:   abs.clone(),
         name:       None,
         repo_url:   None,
         owner_repo: None,
@@ -1475,7 +1470,7 @@ fn phase1_discover(
                 stats.projects += 1;
                 let item = cargo_project_to_item(cargo_project);
                 let abs_path = item.path().to_path_buf();
-                let display_path = item.display_path();
+                let abs = AbsolutePath::new(abs_path.clone());
                 let project_name = item.name().map(str::to_string);
                 let repo_presence_started = std::time::Instant::now();
                 let repo_presence = if super::project::git_repo_root(&abs_path).is_some() {
@@ -1485,7 +1480,7 @@ fn phase1_discover(
                 };
                 tracing::info!(
                     elapsed_ms = crate::perf_log::ms(repo_presence_started.elapsed().as_millis()),
-                    path = %display_path,
+                    path = %abs,
                     in_repo = repo_presence.is_in_repo(),
                     "phase1_repo_presence"
                 );
@@ -1493,8 +1488,7 @@ fn phase1_discover(
                 items.push(item);
 
                 let discovered = DiscoveredProject {
-                    path:       display_path,
-                    abs_path:   abs_path.clone(),
+                    abs_path:   abs.clone(),
                     name:       project_name,
                     repo_url:   None,
                     owner_repo: None,
@@ -1524,10 +1518,10 @@ fn spawn_initial_disk_usage(
 fn spawn_project_http(scan_context: &StreamingScanContext, project: &DiscoveredProject) {
     if let Some((owner, repo)) = &project.owner_repo {
         let key = repo_dispatch_key(owner, repo, project.branch.as_deref());
-        let abs_path_str = project.abs_path.to_string_lossy().into_owned();
-        match register_repo_path(&scan_context.repo_dispatch, &key, &abs_path_str) {
+        let abs = project.abs_path.clone();
+        match register_repo_path(&scan_context.repo_dispatch, &key, &abs) {
             RepoDispatchRegistration::Cached(data) => {
-                send_repo_data(&scan_context.tx, std::slice::from_ref(&abs_path_str), &data);
+                send_repo_data(&scan_context.tx, std::slice::from_ref(&abs), &data);
             },
             RepoDispatchRegistration::SpawnFetch => {
                 let _ = scan_context
@@ -1537,7 +1531,7 @@ fn spawn_project_http(scan_context: &StreamingScanContext, project: &DiscoveredP
                     scan_context,
                     RepoFetchRequest {
                         key,
-                        project_path: project.path.clone(),
+                        project_path: project.abs_path.display_path().to_string(),
                         repo_url: project.repo_url.clone().unwrap_or_default(),
                         owner: owner.clone(),
                         repo: repo.clone(),
@@ -1554,7 +1548,7 @@ fn spawn_project_http(scan_context: &StreamingScanContext, project: &DiscoveredP
             &scan_context.client,
             &scan_context.tx,
             &scan_context.http_limit,
-            &project.abs_path.to_string_lossy(),
+            project.abs_path.as_path(),
             name,
         );
     }
@@ -1579,7 +1573,7 @@ fn spawn_project_local_work(
     let scan_context = scan_context.clone();
     if repo_presence.is_in_repo() {
         let _ = tx.send(BackgroundMsg::LocalGitQueued {
-            path: project.abs_path.to_string_lossy().into_owned(),
+            path: project.abs_path.clone(),
         });
     }
 
@@ -1590,8 +1584,8 @@ fn spawn_project_local_work(
         };
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
-            path = %project.path,
-            abs_path = %project.abs_path.display(),
+            path = %project.abs_path.display_path(),
+            abs_path = %project.abs_path,
             "tokio_local_queue_wait"
         );
         let run_started = std::time::Instant::now();
@@ -1612,8 +1606,8 @@ fn spawn_project_local_work(
         };
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(run_started.elapsed().as_millis()),
-            path = %discovered.path,
-            abs_path = %discovered.abs_path.display(),
+            path = %discovered.abs_path.display_path(),
+            abs_path = %discovered.abs_path,
             "tokio_local_work"
         );
         spawn_project_http(&scan_context, &discovered);
@@ -1622,14 +1616,13 @@ fn spawn_project_local_work(
 
 #[derive(Clone)]
 struct DiskUsageTree {
-    root_path:     String,
     root_abs_path: PathBuf,
-    entries:       Vec<(String, PathBuf)>,
+    entries:       Vec<PathBuf>,
 }
 
 fn group_disk_usage_trees(disk_entries: &[(String, PathBuf)]) -> Vec<DiskUsageTree> {
-    let mut sorted = disk_entries.to_vec();
-    sorted.sort_by(|(_, left), (_, right)| {
+    let mut sorted: Vec<PathBuf> = disk_entries.iter().map(|(_, p)| p.clone()).collect();
+    sorted.sort_by(|left, right| {
         left.components()
             .count()
             .cmp(&right.components().count())
@@ -1637,17 +1630,17 @@ fn group_disk_usage_trees(disk_entries: &[(String, PathBuf)]) -> Vec<DiskUsageTr
     });
 
     let mut trees: Vec<DiskUsageTree> = Vec::new();
-    for (path, abs_path) in sorted {
+    for abs_path in sorted {
         if let Some(tree) = trees
             .iter_mut()
             .find(|tree| abs_path.starts_with(&tree.root_abs_path))
         {
-            tree.entries.push((path, abs_path));
+            tree.entries.push(abs_path);
         } else {
+            let root = abs_path.clone();
             trees.push(DiskUsageTree {
-                root_path:     path.clone(),
-                root_abs_path: abs_path.clone(),
-                entries:       vec![(path, abs_path)],
+                root_abs_path: root,
+                entries:       vec![abs_path],
             });
         }
     }
@@ -1667,7 +1660,6 @@ fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTre
         let queue_elapsed = queue_started.elapsed();
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(queue_elapsed.as_millis()),
-            path = %tree.root_path,
             abs_path = %tree.root_abs_path.display(),
             rows = tree.entries.len(),
             "tokio_disk_queue_wait"
@@ -1681,31 +1673,23 @@ fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTre
         };
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(run_started.elapsed().as_millis()),
-            path = %tree.root_path,
             abs_path = %tree.root_abs_path.display(),
             rows = tree.entries.len(),
             "tokio_disk_usage"
         );
         let _ = tx.send(BackgroundMsg::DiskUsageBatch {
-            root_path: tree.root_path,
+            root_path: AbsolutePath::new(tree.root_abs_path),
             entries:   results,
         });
     });
 }
 
-fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(String, u64)> {
-    let mut totals: HashMap<String, u64> = tree
+fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, u64)> {
+    let mut totals: HashMap<PathBuf, u64> = tree
         .entries
         .iter()
-        .map(|(path, _)| (path.clone(), 0))
+        .map(|abs_path| (abs_path.clone(), 0))
         .collect();
-    let entry_paths_by_abs: HashMap<PathBuf, Vec<String>> =
-        tree.entries
-            .iter()
-            .fold(HashMap::new(), |mut acc, (path, abs_path)| {
-                acc.entry(abs_path.clone()).or_default().push(path.clone());
-                acc
-            });
 
     for entry in WalkDir::new(&tree.root_abs_path).into_iter().flatten() {
         if !entry.file_type().is_file() {
@@ -1717,10 +1701,8 @@ fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(String, u64)> {
         let bytes = metadata.len();
         let mut current = entry.path().parent();
         while let Some(dir) = current {
-            if let Some(paths) = entry_paths_by_abs.get(dir) {
-                for path in paths {
-                    *totals.entry(path.clone()).or_default() += bytes;
-                }
+            if let Some(total) = totals.get_mut(dir) {
+                *total += bytes;
             }
             if dir == tree.root_abs_path {
                 break;
@@ -1731,26 +1713,30 @@ fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(String, u64)> {
 
     tree.entries
         .iter()
-        .map(|(path, _)| (path.clone(), totals.get(path).copied().unwrap_or(0)))
+        .map(|abs_path| {
+            let bytes = totals.get(abs_path).copied().unwrap_or(0);
+            (AbsolutePath::new(abs_path.clone()), bytes)
+        })
         .collect()
 }
 
 fn register_repo_path(
     repo_dispatch: &RepoDispatchMap,
     key: &str,
-    path: &str,
+    path: &AbsolutePath,
 ) -> RepoDispatchRegistration {
+    let path_str = path.to_string();
     let Ok(mut dispatch) = repo_dispatch.lock() else {
         return RepoDispatchRegistration::SpawnFetch;
     };
     let state = dispatch
         .entry(key.to_string())
-        .or_insert_with(|| RepoDispatchState::Pending(vec![path.to_string()]));
+        .or_insert_with(|| RepoDispatchState::Pending(vec![path_str.clone()]));
 
     match state {
         RepoDispatchState::Pending(paths) => {
-            if paths.iter().all(|known_path| known_path != path) {
-                paths.push(path.to_string());
+            if paths.iter().all(|known_path| *known_path != path_str) {
+                paths.push(path_str);
             }
             if paths.len() == 1 {
                 RepoDispatchRegistration::SpawnFetch
@@ -1766,18 +1752,21 @@ fn finish_repo_fetch(
     repo_dispatch: &RepoDispatchMap,
     key: &str,
     data: CachedRepoData,
-) -> Vec<String> {
+) -> Vec<AbsolutePath> {
     let Ok(mut dispatch) = repo_dispatch.lock() else {
         return Vec::new();
     };
     let previous = dispatch.insert(key.to_string(), RepoDispatchState::Ready(data));
     match previous {
-        Some(RepoDispatchState::Pending(paths)) => paths,
+        Some(RepoDispatchState::Pending(paths)) => paths
+            .into_iter()
+            .map(|s| AbsolutePath::new(PathBuf::from(s)))
+            .collect(),
         Some(RepoDispatchState::Ready(_)) | None => Vec::new(),
     }
 }
 
-fn send_repo_data(tx: &mpsc::Sender<BackgroundMsg>, paths: &[String], data: &CachedRepoData) {
+fn send_repo_data(tx: &mpsc::Sender<BackgroundMsg>, paths: &[AbsolutePath], data: &CachedRepoData) {
     for path in paths {
         let _ = tx.send(BackgroundMsg::CiRuns {
             path: path.clone(),
@@ -1848,14 +1837,14 @@ fn spawn_crates_fetch(
     client: &HttpClient,
     tx: &mpsc::Sender<BackgroundMsg>,
     http_limit: &Arc<tokio::sync::Semaphore>,
-    project_path: &str,
+    project_path: &Path,
     crate_name: &str,
 ) {
     let client = client.clone();
     let handle = client.handle.clone();
     let tx = tx.clone();
     let http_limit = Arc::clone(http_limit);
-    let project_path = project_path.to_string();
+    let abs = AbsolutePath::new(project_path.to_path_buf());
     let crate_name = crate_name.to_string();
 
     handle.spawn(async move {
@@ -1865,7 +1854,7 @@ fn spawn_crates_fetch(
         };
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
-            path = %project_path,
+            path = %abs,
             crate_name = %crate_name,
             "tokio_crates_fetch_queue_wait"
         );
@@ -1874,14 +1863,14 @@ fn spawn_crates_fetch(
         emit_service_signal(&tx, signal);
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(fetch_started.elapsed().as_millis()),
-            path = %project_path,
+            path = %abs,
             crate_name = %crate_name,
             found = info.is_some(),
             "tokio_crates_fetch"
         );
         if let Some(info) = info {
             let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                path:      project_path,
+                path:      abs,
                 version:   info.version,
                 downloads: info.downloads,
             });
@@ -1899,13 +1888,13 @@ fn phase1_local_work(
 ) -> DiscoveredProject {
     let started = std::time::Instant::now();
     let git_info = if repo_presence.is_in_repo() {
-        cached_git_info(git_info_cache, &project.abs_path)
+        cached_git_info(git_info_cache, project.abs_path.as_path())
     } else {
         None
     };
     if let Some(ref info) = git_info {
         let _ = tx.send(BackgroundMsg::GitInfo {
-            path: project.path.clone(),
+            path: project.abs_path.clone(),
             info: info.clone(),
         });
     }
@@ -1918,7 +1907,7 @@ fn phase1_local_work(
     project.branch = git_info.as_ref().and_then(|g| g.branch.clone());
     tracing::info!(
         elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
-        path = %project.path,
+        path = %project.abs_path.display_path(),
         in_repo = repo_presence.is_in_repo(),
         has_git_info = git_info.is_some(),
         branch = project.branch.as_deref().unwrap_or("-"),
@@ -2160,9 +2149,15 @@ mod tests {
         ]);
 
         assert_eq!(trees.len(), 2);
-        assert_eq!(trees[0].root_path, "~/rust/bevy");
+        assert_eq!(
+            trees[0].root_abs_path,
+            PathBuf::from("/home/user/rust/bevy")
+        );
         assert_eq!(trees[0].entries.len(), 3);
-        assert_eq!(trees[1].root_path, "~/rust/hana");
+        assert_eq!(
+            trees[1].root_abs_path,
+            PathBuf::from("/home/user/rust/hana")
+        );
         assert_eq!(trees[1].entries.len(), 1);
     }
 
@@ -2178,16 +2173,15 @@ mod tests {
             .unwrap_or_else(|_| std::process::abort());
 
         let sizes = dir_sizes_for_tree(&DiskUsageTree {
-            root_path:     "~/rust/bevy".to_string(),
             root_abs_path: root.clone(),
-            entries:       vec![
-                ("~/rust/bevy".to_string(), root),
-                ("~/rust/bevy/crates/bevy_ecs".to_string(), child),
-            ],
+            entries:       vec![root.clone(), child.clone()],
         });
-        let sizes: HashMap<String, u64> = sizes.into_iter().collect();
+        let sizes: HashMap<PathBuf, u64> = sizes
+            .into_iter()
+            .map(|(abs, bytes)| (abs.to_path_buf(), bytes))
+            .collect();
 
-        assert_eq!(sizes.get("~/rust/bevy"), Some(&12));
-        assert_eq!(sizes.get("~/rust/bevy/crates/bevy_ecs"), Some(&7));
+        assert_eq!(sizes.get(&root), Some(&12));
+        assert_eq!(sizes.get(&child), Some(&7));
     }
 }

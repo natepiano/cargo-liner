@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
@@ -14,6 +15,50 @@ use toml::Value;
 use crate::constants::GIT_CLONE;
 use crate::constants::GIT_FORK;
 use crate::constants::GIT_LOCAL;
+
+/// An absolute filesystem path. Used as `HashMap` keys and for filesystem operations.
+/// Wraps `PathBuf`. Created from absolute paths only.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct AbsolutePath(PathBuf);
+
+impl AbsolutePath {
+    pub(crate) const fn new(path: PathBuf) -> Self { Self(path) }
+
+    pub(crate) fn as_path(&self) -> &Path { &self.0 }
+
+    pub(crate) fn to_path_buf(&self) -> PathBuf { self.0.clone() }
+
+    pub(crate) fn display_path(&self) -> DisplayPath {
+        DisplayPath::new(home_relative_path(&self.0))
+    }
+}
+
+impl AsRef<Path> for AbsolutePath {
+    fn as_ref(&self) -> &Path { &self.0 }
+}
+
+impl Borrow<Path> for AbsolutePath {
+    fn borrow(&self) -> &Path { &self.0 }
+}
+
+impl fmt::Display for AbsolutePath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.display().fmt(f) }
+}
+
+/// A display path for the UI (e.g. `~/rust/bevy`). Never used as a `HashMap` key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DisplayPath(String);
+
+impl DisplayPath {
+    pub(crate) const fn new(s: String) -> Self { Self(s) }
+
+    pub(crate) fn as_str(&self) -> &str { &self.0 }
+}
+
+impl fmt::Display for DisplayPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
+}
+
 /// Whether a project is a plain clone or a fork (has an "upstream" remote).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
