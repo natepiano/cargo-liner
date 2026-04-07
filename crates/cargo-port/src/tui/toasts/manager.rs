@@ -300,7 +300,7 @@ impl ToastManager {
         let now = Instant::now();
         let deadline = now + linger;
         for toast in &mut self.toasts {
-            if toast.task_id == Some(task_id) {
+            if toast.task_id == Some(task_id) && !toast.finished_task {
                 toast.finished_task = true;
                 toast.finished_at = Some(now);
                 toast.linger_duration = Some(linger);
@@ -308,6 +308,26 @@ impl ToastManager {
                 toast.persistence = ToastPersistence::Timed;
             }
         }
+    }
+
+    /// Reactivate a finished or active task toast. If already active this is a
+    /// no-op. Returns `true` if the toast was found (whether it needed
+    /// reactivation or not).
+    pub fn reactivate_task(&mut self, task_id: ToastTaskId) -> bool {
+        for toast in &mut self.toasts {
+            if toast.task_id == Some(task_id) {
+                if toast.finished_task {
+                    toast.finished_task = false;
+                    toast.finished_at = None;
+                    toast.linger_duration = None;
+                    toast.timeout_at = None;
+                    toast.exit_started_at = None;
+                    toast.persistence = ToastPersistence::Task;
+                }
+                return true;
+            }
+        }
+        false
     }
 
     #[cfg(test)]

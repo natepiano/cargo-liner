@@ -831,7 +831,7 @@ fn startup_lint_toast_body_shows_paths_then_others() {
 }
 
 #[test]
-fn lint_toast_reappears_for_new_running_lints() {
+fn lint_toast_reuses_existing_on_restart() {
     let project = make_project(Some("a"), "~/a");
     let mut app = make_app(std::slice::from_ref(&project));
     app.scan.phase = ScanPhase::Complete;
@@ -843,18 +843,19 @@ fn lint_toast_reappears_for_new_running_lints() {
     let first_toast = app.lint_toast;
     assert!(first_toast.is_some());
 
+    // Lint finishes — toast id is kept for reuse.
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project.path().to_path_buf().into(),
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
-    assert!(app.lint_toast.is_none());
+    assert_eq!(app.lint_toast, first_toast);
 
+    // Lint restarts — reactivates the same toast.
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project.path().to_path_buf().into(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
     });
-    assert!(app.lint_toast.is_some());
-    assert_ne!(app.lint_toast, first_toast);
+    assert_eq!(app.lint_toast, first_toast);
 }
 
 #[test]

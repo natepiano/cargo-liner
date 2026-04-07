@@ -983,7 +983,7 @@ impl App {
 
     pub(super) fn sync_running_lint_toast(&mut self) {
         if self.running_lint_paths.is_empty() {
-            if let Some(task_id) = self.lint_toast.take() {
+            if let Some(task_id) = self.lint_toast {
                 self.finish_task_toast(task_id);
             }
             return;
@@ -998,7 +998,9 @@ impl App {
             })
             .collect();
         let body = self.running_lint_toast_body();
-        if let Some(task_id) = self.lint_toast {
+        if let Some(task_id) = self.lint_toast
+            && self.toasts.reactivate_task(task_id)
+        {
             self.set_task_tracked_items(task_id, &items);
         } else {
             let task_id = self.start_task_toast("Lints", body);
