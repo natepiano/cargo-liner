@@ -12,6 +12,8 @@ use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
+use super::constants::SECTION_HEADER_INDENT;
+use super::constants::SECTION_ITEM_INDENT;
 use super::constants::SETTINGS_POPUP_WIDTH;
 use crate::config;
 
@@ -152,6 +154,7 @@ fn settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
             "Inline dirs",
             format_sorted_list(&cfg.tui.inline_dirs),
         ),
+        (None, "Toasts", String::new()),
         (
             Some(SettingOption::StatusFlashSecs),
             "Status flash secs",
@@ -420,7 +423,7 @@ pub(super) fn build_settings_lines(
     for (setting, name, value) in settings {
         if setting.is_none() {
             lines.push(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(SECTION_HEADER_INDENT),
                 Span::styled(
                     format!("{name}:"),
                     Style::default()
@@ -438,7 +441,7 @@ pub(super) fn build_settings_lines(
         };
         let is_selected = app.settings_pane.pos() == selection_index;
         let setting = *setting;
-        let label = format!("  {cursor}{name:<max_label$}  ");
+        let label = format!("{SECTION_ITEM_INDENT}{cursor}{name:<max_label$}  ");
 
         if is_selected && app.inline_error.is_some() && !app.is_settings_editing() {
             let error = app.inline_error.clone().unwrap_or_default();

@@ -2,7 +2,6 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use ratatui::Frame;
-use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -11,6 +10,8 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
 use super::app::App;
+use super::constants::SECTION_HEADER_INDENT;
+use super::constants::SECTION_ITEM_INDENT;
 use crate::keymap::CiRunsAction;
 use crate::keymap::GitAction;
 use crate::keymap::GlobalAction;
@@ -468,37 +469,28 @@ fn save_keymap_to_disk(app: &mut App) {
 
 // ── Rendering ────────────────────────────────────────────────────────
 
-const BASE_POPUP_WIDTH: u16 = 48;
+const BASE_POPUP_WIDTH: u16 = 52;
 
 fn build_lines<'a>(
     rows: &[KeymapRow],
     app: &App,
-    inner: Rect,
     selected_pos: usize,
     is_awaiting: bool,
 ) -> Vec<Line<'a>> {
-    let inner_w = usize::from(inner.width);
     let mut selectable_index = 0usize;
-    let mut lines = Vec::new();
+    let mut lines = vec![Line::from("")];
 
     for row in rows {
         if row.is_header {
-            let label = format!(" {} ", row.scope);
-            let label_len = label.len();
-            let dash_total = inner_w.saturating_sub(label_len);
-            let left_dashes = dash_total / 2;
-            let right_dashes = dash_total - left_dashes;
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "{}{}{}",
-                    "─".repeat(left_dashes),
-                    label,
-                    "─".repeat(right_dashes),
+            lines.push(Line::from(vec![
+                Span::raw(SECTION_HEADER_INDENT),
+                Span::styled(
+                    format!("{}:", row.scope),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )));
+            ]));
             continue;
         }
 
@@ -517,7 +509,7 @@ fn build_lines<'a>(
         let line = if is_selected && is_awaiting && app.inline_error.is_some() {
             Line::from(vec![
                 Span::styled(
-                    format!("  {padded_desc}"),
+                    format!("{SECTION_ITEM_INDENT}  {padded_desc}"),
                     Style::default().fg(Color::White),
                 ),
                 Span::styled(key_text, Style::default().fg(Color::Red)),
@@ -525,7 +517,7 @@ fn build_lines<'a>(
         } else if is_selected {
             Line::from(vec![
                 Span::styled(
-                    format!("▸ {padded_desc}"),
+                    format!("{SECTION_ITEM_INDENT}▸ {padded_desc}"),
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
@@ -546,7 +538,7 @@ fn build_lines<'a>(
         } else {
             Line::from(vec![
                 Span::styled(
-                    format!("  {padded_desc}"),
+                    format!("{SECTION_ITEM_INDENT}  {padded_desc}"),
                     Style::default().fg(Color::White),
                 ),
                 Span::styled(key_text, Style::default().fg(Color::DarkGray)),
@@ -557,6 +549,7 @@ fn build_lines<'a>(
         selectable_index += 1;
     }
 
+    lines.push(Line::from(""));
     lines
 }
 
@@ -587,7 +580,7 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
 
     let selected_pos = app.keymap_pane.pos();
     let is_awaiting = app.ui_modes.keymap.is_awaiting_key();
-    let lines = build_lines(&rows, app, inner, selected_pos, is_awaiting);
+    let lines = build_lines(&rows, app, selected_pos, is_awaiting);
 
     // Scroll to keep selection visible.
     let visible_height = usize::from(inner.height);

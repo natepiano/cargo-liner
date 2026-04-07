@@ -246,6 +246,25 @@ fn render_toast_card(
     } else {
         Style::default()
     };
+    // Countdown on the bottom border row, right-aligned.
+    if let Some(secs) = toast.remaining_secs() {
+        let countdown = format!(" Closing in {secs} ");
+        let countdown_width = u16::try_from(countdown.len()).unwrap_or(u16::MAX);
+        let countdown_rect = Rect {
+            x:      card.x + card.width.saturating_sub(countdown_width + 1),
+            y:      card.y + card.height.saturating_sub(1),
+            width:  countdown_width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                countdown,
+                Style::default().fg(Color::DarkGray),
+            ))),
+            countdown_rect,
+        );
+    }
+
     // Interior lines available = alloc_height - 2 (borders).
     let alloc_interior = alloc_height.saturating_sub(2);
     render_toast_body(frame, toast, body_style, inner, alloc_interior);

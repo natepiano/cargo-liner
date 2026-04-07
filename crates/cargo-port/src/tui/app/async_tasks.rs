@@ -994,20 +994,31 @@ impl App {
             return;
         }
 
-        let items: Vec<TrackedItem> = self
+        // Build the current set of running labels.
+        let running_labels: HashSet<String> = self
             .running_lint_paths
             .iter()
-            .map(|p| TrackedItem {
-                label:        crate::project::home_relative_path(p),
-                completed_at: None,
-            })
+            .map(|p| crate::project::home_relative_path(p))
             .collect();
-        let body = self.running_lint_toast_body();
+
         if let Some(task_id) = self.lint_toast
             && self.toasts.reactivate_task(task_id)
         {
-            self.set_task_tracked_items(task_id, &items);
+            // Mark items no longer running as completed.
+            self.toasts.complete_missing_items(task_id, &running_labels);
+            // Add new items that aren't already tracked.
+            let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+            self.toasts
+                .add_new_tracked_items(task_id, &running_labels, linger);
         } else {
+            let items: Vec<TrackedItem> = running_labels
+                .iter()
+                .map(|label| TrackedItem {
+                    label:        label.clone(),
+                    completed_at: None,
+                })
+                .collect();
+            let body = self.running_lint_toast_body();
             let task_id = self.start_task_toast("Lints", body);
             self.set_task_tracked_items(task_id, &items);
             self.lint_toast = Some(task_id);

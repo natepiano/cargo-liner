@@ -21,4 +21,8 @@ pub(super) const TOAST_LINE_REVEAL_MS: u64 = 150;
 
 pub(super) const MAX_FINDER_RESULTS: usize = 50;
 
+// Popup section layout
+pub(super) const SECTION_HEADER_INDENT: &str = "  ";
+pub(super) const SECTION_ITEM_INDENT: &str = "    ";
+
 pub(super) const CI_EXTRA_ROWS: usize = 1;

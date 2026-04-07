@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -138,6 +139,9 @@ pub struct ToastView<'a> {
     /// 0.0 = just finished, 1.0 = linger complete, about to exit. None = not lingering.
     linger_progress:    Option<f64>,
     tracked_items:      Vec<TrackedItemView>,
+    /// Seconds remaining before the toast begins its exit animation. `None`
+    /// for permanent/task toasts that have no timeout.
+    remaining_secs:     Option<u64>,
 }
 
 /// A tracked item in a toast, with per-item linger progress.
@@ -163,6 +167,9 @@ impl<'a> ToastView<'a> {
 
     /// Linger progress: 0.0 = just finished, 1.0 = about to exit. None if not lingering.
     pub const fn linger_progress(&self) -> Option<f64> { self.linger_progress }
+
+    /// Seconds remaining before exit. `None` for non-timed toasts.
+    pub const fn remaining_secs(&self) -> Option<u64> { self.remaining_secs }
 
     /// Tracked items with per-item linger progress.
     pub fn tracked_items(&self) -> &[TrackedItemView] { &self.tracked_items }
@@ -375,6 +382,56 @@ impl ToastManager {
             .map_or(0, |t| t.tracked_items.len())
     }
 
+    /// Mark tracked items as completed if their label is NOT in the active set.
+    pub fn complete_missing_items(&mut self, task_id: ToastTaskId, active: &HashSet<String>) {
+        let now = Instant::now();
+        for toast in &mut self.toasts {
+            if toast.task_id == Some(task_id) {
+                for item in &mut toast.tracked_items {
+                    if item.completed_at.is_none() && !active.contains(&item.label) {
+                        item.completed_at = Some(now);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Add tracked items for labels in `active` that aren't already tracked.
+    pub fn add_new_tracked_items(
+        &mut self,
+        task_id: ToastTaskId,
+        active: &HashSet<String>,
+        item_linger: Duration,
+    ) {
+        for toast in &mut self.toasts {
+            if toast.task_id == Some(task_id) {
+                let existing: HashSet<String> = toast
+                    .tracked_items
+                    .iter()
+                    .map(|i| i.label.clone())
+                    .collect();
+                for label in active {
+                    if !existing.contains(label) {
+                        toast.tracked_items.push(TrackedItem {
+                            label:        label.clone(),
+                            completed_at: None,
+                        });
+                    }
+                }
+                toast.item_linger = Some(item_linger);
+                let body: String = toast
+                    .tracked_items
+                    .iter()
+                    .map(|i| i.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                toast.target_height = compute_target_height(&body, toast.min_interior_lines);
+                toast.body = body;
+                break;
+            }
+        }
+    }
+
     /// Mark a tracked item as completed by label.
     pub fn mark_item_completed(&mut self, task_id: ToastTaskId, label: &str) {
         let now = Instant::now();
@@ -469,6 +526,13 @@ impl ToastManager {
                         }
                     })
                     .collect();
+                let remaining_secs = toast.timeout_at.and_then(|deadline| {
+                    if deadline > now {
+                        Some(deadline.duration_since(now).as_secs().saturating_add(1))
+                    } else {
+                        None
+                    }
+                });
                 ToastView {
                     id: toast.id,
                     title: &toast.title,
@@ -480,6 +544,7 @@ impl ToastManager {
                     target_height: toast.target_height,
                     linger_progress,
                     tracked_items,
+                    remaining_secs,
                 }
             })
             .collect()
