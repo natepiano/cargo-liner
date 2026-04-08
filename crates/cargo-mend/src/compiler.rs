@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -863,12 +864,19 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
 
     let mut sink = FindingsSink::default();
     let crate_items = tcx.hir_crate_items(());
+    let cache_roots: Vec<&Path> = if settings.config_root == settings.package_root {
+        vec![&src_root]
+    } else {
+        vec![&src_root, &settings.config_root]
+    };
+    let source_cache = SourceCache::build(&cache_roots)?;
     let ctx = VisibilityContext {
         tcx,
         settings,
         src_root: &src_root,
         root_module: &crate_root_file,
         effective_visibilities: tcx.effective_visibilities(()),
+        source_cache: &source_cache,
     };
 
     let t0 = std::time::Instant::now();
@@ -962,12 +970,63 @@ struct FindingsSink {
     pub_use_fix_facts: Vec<StoredPubUseFixFact>,
 }
 
+/// Pre-loaded source file contents, built once before the analysis loops to avoid
+/// re-reading the same `.rs` files hundreds of times during visibility analysis.
+struct SourceCache {
+    contents:     HashMap<PathBuf, String>,
+    files_by_dir: HashMap<PathBuf, Vec<PathBuf>>,
+}
+
+impl SourceCache {
+    fn build(roots: &[&Path]) -> Result<Self> {
+        let mut contents = HashMap::new();
+        for root in roots {
+            for file in rust_source_files(root)? {
+                contents
+                    .entry(file.clone())
+                    .or_insert(fs::read_to_string(&file).with_context(|| {
+                        format!("failed to pre-read source file {}", file.display())
+                    })?);
+            }
+        }
+        let mut files_by_dir: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        for path in contents.keys() {
+            if let Some(parent) = path.parent() {
+                files_by_dir
+                    .entry(parent.to_path_buf())
+                    .or_default()
+                    .push(path.clone());
+            }
+        }
+        Ok(Self {
+            contents,
+            files_by_dir,
+        })
+    }
+
+    fn source_files_under(&self, dir: &Path) -> Vec<&Path> {
+        self.files_by_dir
+            .iter()
+            .filter(|(d, _)| d.starts_with(dir))
+            .flat_map(|(_, files)| files.iter().map(PathBuf::as_path))
+            .collect()
+    }
+
+    fn read_source(&self, path: &Path) -> Result<&str> {
+        self.contents
+            .get(path)
+            .map(String::as_str)
+            .with_context(|| format!("source file not in cache: {}", path.display()))
+    }
+}
+
 struct VisibilityContext<'a, 'tcx> {
     tcx:                    TyCtxt<'tcx>,
     settings:               &'a DriverSettings,
     src_root:               &'a Path,
     root_module:            &'a Path,
     effective_visibilities: &'a rustc_middle::middle::privacy::EffectiveVisibilities,
+    source_cache:           &'a SourceCache,
 }
 
 struct ItemInfo<'a> {
@@ -1244,13 +1303,13 @@ fn maybe_record_narrow_to_pub_crate(
         return Ok(());
     };
     // Check if the item itself is re-exported by the crate root.
-    if root_module_exports_item(ctx.root_module, item.file_path, item_name)? {
+    if root_module_exports_item(ctx.source_cache, ctx.root_module, item.file_path, item_name)? {
         return Ok(());
     }
     // For impl items (methods, consts, types), also check if the self type
     // is re-exported — pub methods on re-exported types must stay pub.
     if let Some(self_name) = &item.impl_self_name
-        && root_module_exports_item(ctx.root_module, item.file_path, self_name)?
+        && root_module_exports_item(ctx.source_cache, ctx.root_module, item.file_path, self_name)?
     {
         return Ok(());
     }
@@ -1288,7 +1347,13 @@ fn maybe_record_suspicious_pub(
             let Some(status) = input
                 .item_name
                 .map(|name| {
-                    parent_facade_export_status(ctx.settings, ctx.src_root, input.file_path, name)
+                    parent_facade_export_status(
+                        ctx.source_cache,
+                        ctx.settings,
+                        ctx.src_root,
+                        input.file_path,
+                        name,
+                    )
                 })
                 .transpose()?
                 .flatten()
@@ -1296,6 +1361,7 @@ fn maybe_record_suspicious_pub(
                 return Ok(());
             };
             sink.findings.push(build_line_finding(
+                ctx.source_cache,
                 &status.parent_path,
                 status.parent_line,
                 FindingParams {
@@ -1374,7 +1440,15 @@ fn classify_suspicious_pub(
 
     let parent_facade_export = input
         .item_name
-        .map(|name| parent_facade_export_status(ctx.settings, ctx.src_root, input.file_path, name))
+        .map(|name| {
+            parent_facade_export_status(
+                ctx.source_cache,
+                ctx.settings,
+                ctx.src_root,
+                input.file_path,
+                name,
+            )
+        })
         .transpose()?
         .flatten();
 
@@ -1383,6 +1457,7 @@ fn classify_suspicious_pub(
     }
 
     if let Some(allowance) = assess_signature_exposure_allowance(
+        ctx.source_cache,
         ctx.settings,
         ctx.src_root,
         input.file_path,
@@ -1494,6 +1569,7 @@ fn assess_parent_facade_usage(
 }
 
 fn assess_signature_exposure_allowance(
+    source_cache: &SourceCache,
     settings: &DriverSettings,
     src_root: &Path,
     file_path: &Path,
@@ -1503,15 +1579,30 @@ fn assess_signature_exposure_allowance(
         return Ok(None);
     };
     if child_item_is_exposed_by_other_crate_visible_signature(
-        settings, src_root, file_path, item_name,
-    )? || impl_item_is_exposed_by_exported_self_type(settings, src_root, file_path, item_name)?
-        || child_item_is_exposed_by_sibling_boundary_signature(
-            settings, src_root, file_path, item_name,
-        )?
-        || parent_boundary_public_signature_exposes_child_used_outside_parent(
-            settings, src_root, file_path, item_name,
-        )?
-    {
+        source_cache,
+        settings,
+        src_root,
+        file_path,
+        item_name,
+    )? || impl_item_is_exposed_by_exported_self_type(
+        source_cache,
+        settings,
+        src_root,
+        file_path,
+        item_name,
+    )? || child_item_is_exposed_by_sibling_boundary_signature(
+        source_cache,
+        settings,
+        src_root,
+        file_path,
+        item_name,
+    )? || parent_boundary_public_signature_exposes_child_used_outside_parent(
+        source_cache,
+        settings,
+        src_root,
+        file_path,
+        item_name,
+    )? {
         return Ok(Some(AllowanceReason::ExposedByOtherCrateVisibleSignature));
     }
     Ok(None)
@@ -1551,12 +1642,12 @@ fn build_finding(
 }
 
 fn build_line_finding(
+    source_cache: &SourceCache,
     file_path: &Path,
     line: usize,
     params: FindingParams,
 ) -> Result<StoredFinding> {
-    let text = fs::read_to_string(file_path)
-        .with_context(|| format!("failed to read source file {}", file_path.display()))?;
+    let text = source_cache.read_source(file_path)?;
     let source_line = text
         .lines()
         .nth(line.saturating_sub(1))
@@ -1623,6 +1714,7 @@ fn resolve_module_location(tcx: TyCtxt<'_>, parent_def: LocalDefId) -> ModuleLoc
 /// Check whether `root_module` (lib.rs / main.rs) re-exports `item_name`
 /// from the child module that `child_file` belongs to.
 fn root_module_exports_item(
+    source_cache: &SourceCache,
     root_module: &Path,
     child_file: &Path,
     item_name: &str,
@@ -1631,13 +1723,13 @@ fn root_module_exports_item(
     else {
         return Ok(false);
     };
-    let source = fs::read_to_string(root_module)
-        .with_context(|| format!("failed to read root module {}", root_module.display()))?;
+    let source = source_cache.read_source(root_module)?;
     let exports = exported_names_from_parent_boundary(&source, child_module_name, item_name)?;
     Ok(!exports.explicit.is_empty())
 }
 
 fn parent_facade_export_status(
+    source_cache: &SourceCache,
     settings: &DriverSettings,
     src_root: &Path,
     child_file: &Path,
@@ -1659,13 +1751,8 @@ fn parent_facade_export_status(
             return Ok(None);
         };
 
-        let source = fs::read_to_string(&parent_boundary.boundary_file).with_context(|| {
-            format!(
-                "failed to read parent boundary file {}",
-                parent_boundary.boundary_file.display()
-            )
-        })?;
-        let exports = exported_names_from_parent_boundary(&source, child_module_name, item_name)?;
+        let source = source_cache.read_source(&parent_boundary.boundary_file)?;
+        let exports = exported_names_from_parent_boundary(source, child_module_name, item_name)?;
 
         if !exports.explicit.is_empty() {
             break (exports, source);
@@ -1687,7 +1774,13 @@ fn parent_facade_export_status(
         .replace('\\', "/");
     let parent_line = first_line_matching(&parent_source, item_name).unwrap_or(1);
 
-    let usage = scan_facade_usage(settings, src_root, &parent_boundary, &exported_names)?;
+    let usage = scan_facade_usage(
+        source_cache,
+        settings,
+        src_root,
+        &parent_boundary,
+        &exported_names,
+    )?;
 
     Ok(Some(ParentFacadeExportStatus {
         usage,
@@ -1702,23 +1795,23 @@ fn parent_facade_export_status(
 }
 
 fn scan_facade_usage(
+    source_cache: &SourceCache,
     settings: &DriverSettings,
     src_root: &Path,
     parent_boundary: &ParentBoundary,
     exported_names: &ParentFacadeExports,
 ) -> Result<ParentFacadeUsage> {
     let mut usage = ParentFacadeUsage::Unused;
-    for file in rust_source_files(src_root)? {
+    for file in source_cache.source_files_under(src_root) {
         if file == parent_boundary.boundary_file {
             continue;
         }
-        let Some(current_module_path) = module_path_from_source_file(src_root, &file) else {
+        let Some(current_module_path) = module_path_from_source_file(src_root, file) else {
             continue;
         };
-        let source = fs::read_to_string(&file)
-            .with_context(|| format!("failed to read source file {}", file.display()))?;
+        let source = source_cache.read_source(file)?;
         match source_references_parent_export(
-            &source,
+            source,
             &current_module_path,
             &parent_boundary.module_path,
             &exported_names.explicit,
@@ -1765,6 +1858,7 @@ fn scan_facade_usage(
 
     if !matches!(usage, ParentFacadeUsage::UsedOutsideParentSubtree)
         && workspace_source_mentions_parent_export_literal(
+            source_cache,
             settings,
             parent_boundary,
             &exported_names.explicit,
@@ -1777,6 +1871,7 @@ fn scan_facade_usage(
 }
 
 fn workspace_source_mentions_parent_export_literal(
+    source_cache: &SourceCache,
     settings: &DriverSettings,
     parent_boundary: &ParentBoundary,
     exported_names: &[String],
@@ -1795,15 +1890,14 @@ fn workspace_source_mentions_parent_export_literal(
         .parent()
         .map_or_else(|| settings.findings_dir.clone(), Path::to_path_buf);
 
-    for file in rust_source_files(&settings.config_root)? {
+    for file in source_cache.source_files_under(&settings.config_root) {
         if file.starts_with(&settings.package_root)
             || file.starts_with(&settings.findings_dir)
             || file.starts_with(&findings_root)
         {
             continue;
         }
-        let source = fs::read_to_string(&file)
-            .with_context(|| format!("failed to read source file {}", file.display()))?;
+        let source = source_cache.read_source(file)?;
         if exported_names.iter().any(|name| {
             let pattern = format!("{module_prefix}::{name}");
             source.contains(&pattern)
@@ -2151,14 +2245,14 @@ fn resolve_module_relative_paths(
 }
 
 fn child_item_is_exposed_by_other_crate_visible_signature(
+    source_cache: &SourceCache,
     settings: &DriverSettings,
     src_root: &Path,
     child_file: &Path,
     item_name: &str,
 ) -> Result<bool> {
-    let child_source = fs::read_to_string(child_file)
-        .with_context(|| format!("failed to read child file {}", child_file.display()))?;
-    let file = syn::parse_file(&child_source)
+    let child_source = source_cache.read_source(child_file)?;
+    let file = syn::parse_file(child_source)
         .with_context(|| format!("failed to parse child file {}", child_file.display()))?;
 
     for item in &file.items {
@@ -2171,7 +2265,13 @@ fn child_item_is_exposed_by_other_crate_visible_signature(
         if !public_item_surface_mentions_name(item, item_name) {
             continue;
         }
-        if type_is_exposed_outside_parent(settings, src_root, child_file, &exposing_item_name)? {
+        if type_is_exposed_outside_parent(
+            source_cache,
+            settings,
+            src_root,
+            child_file,
+            &exposing_item_name,
+        )? {
             return Ok(true);
         }
     }
@@ -2189,7 +2289,13 @@ fn child_item_is_exposed_by_other_crate_visible_signature(
         if !outward_impl_surface_mentions_name(item_impl, item_name) {
             continue;
         }
-        if type_is_exposed_outside_parent(settings, src_root, child_file, &self_type_name)? {
+        if type_is_exposed_outside_parent(
+            source_cache,
+            settings,
+            src_root,
+            child_file,
+            &self_type_name,
+        )? {
             return Ok(true);
         }
     }
@@ -2198,6 +2304,7 @@ fn child_item_is_exposed_by_other_crate_visible_signature(
 }
 
 fn child_item_is_exposed_by_sibling_boundary_signature(
+    source_cache: &SourceCache,
     settings: &DriverSettings,
     src_root: &Path,
     child_file: &Path,
@@ -2207,15 +2314,13 @@ fn child_item_is_exposed_by_sibling_boundary_signature(
         return Ok(false);
     };
 
-    for candidate_file in rust_source_files(&parent_boundary.subtree_root)? {
-        if candidate_file == *child_file || candidate_file == parent_boundary.boundary_file {
+    for candidate_file in source_cache.source_files_under(&parent_boundary.subtree_root) {
+        if candidate_file == child_file || candidate_file == parent_boundary.boundary_file {
             continue;
         }
 
-        let candidate_source = fs::read_to_string(&candidate_file).with_context(|| {
-            format!("failed to read candidate file {}", candidate_file.display())
-        })?;
-        let file = syn::parse_file(&candidate_source).with_context(|| {
+        let candidate_source = source_cache.read_source(candidate_file)?;
+        let file = syn::parse_file(candidate_source).with_context(|| {
             format!(
                 "failed to parse candidate file {}",
                 candidate_file.display()
@@ -2233,9 +2338,10 @@ fn child_item_is_exposed_by_sibling_boundary_signature(
                 continue;
             }
             if type_is_exposed_outside_parent(
+                source_cache,
                 settings,
                 src_root,
-                &candidate_file,
+                candidate_file,
                 &exposing_item_name,
             )? {
                 return Ok(true);
@@ -2255,8 +2361,13 @@ fn child_item_is_exposed_by_sibling_boundary_signature(
             if !outward_impl_surface_mentions_name(item_impl, item_name) {
                 continue;
             }
-            if type_is_exposed_outside_parent(settings, src_root, &candidate_file, &self_type_name)?
-            {
+            if type_is_exposed_outside_parent(
+                source_cache,
+                settings,
+                src_root,
+                candidate_file,
+                &self_type_name,
+            )? {
                 return Ok(true);
             }
         }
@@ -2266,14 +2377,14 @@ fn child_item_is_exposed_by_sibling_boundary_signature(
 }
 
 fn impl_item_is_exposed_by_exported_self_type(
+    source_cache: &SourceCache,
     settings: &DriverSettings,
     src_root: &Path,
     child_file: &Path,
     item_name: &str,
 ) -> Result<bool> {
-    let child_source = fs::read_to_string(child_file)
-        .with_context(|| format!("failed to read child file {}", child_file.display()))?;
-    let file = syn::parse_file(&child_source)
+    let child_source = source_cache.read_source(child_file)?;
+    let file = syn::parse_file(child_source)
         .with_context(|| format!("failed to parse child file {}", child_file.display()))?;
 
     for item in &file.items {
@@ -2308,10 +2419,16 @@ fn impl_item_is_exposed_by_exported_self_type(
             };
 
             if is_target {
-                let definition_file = find_type_definition_file(child_file, &self_type_name)?;
+                let definition_file =
+                    find_type_definition_file(source_cache, child_file, &self_type_name)?;
                 let check_file = definition_file.as_deref().unwrap_or(child_file);
-                if type_is_exposed_outside_parent(settings, src_root, check_file, &self_type_name)?
-                {
+                if type_is_exposed_outside_parent(
+                    source_cache,
+                    settings,
+                    src_root,
+                    check_file,
+                    &self_type_name,
+                )? {
                     return Ok(true);
                 }
             }
@@ -2329,30 +2446,26 @@ fn impl_item_is_exposed_by_exported_self_type(
 ///
 /// Returns `Some(path)` if the type is defined in a sibling file, `None` if it
 /// is defined in `child_file` itself or cannot be located.
-fn find_type_definition_file(child_file: &Path, type_name: &str) -> Result<Option<PathBuf>> {
-    let source = fs::read_to_string(child_file)
-        .with_context(|| format!("failed to read {}", child_file.display()))?;
-    if file_defines_type(&source, type_name)? {
+fn find_type_definition_file(
+    source_cache: &SourceCache,
+    child_file: &Path,
+    type_name: &str,
+) -> Result<Option<PathBuf>> {
+    let source = source_cache.read_source(child_file)?;
+    if file_defines_type(source, type_name)? {
         return Ok(None);
     }
 
     let Some(parent_dir) = child_file.parent() else {
         return Ok(None);
     };
-    for entry in fs::read_dir(parent_dir)
-        .with_context(|| format!("failed to read directory {}", parent_dir.display()))?
-    {
-        let path = entry?.path();
-        if path == child_file
-            || path.extension().and_then(|ext| ext.to_str()) != Some("rs")
-            || path.is_dir()
-        {
+    for path in source_cache.source_files_under(parent_dir) {
+        if path == child_file {
             continue;
         }
-        let sibling_source = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        if file_defines_type(&sibling_source, type_name)? {
-            return Ok(Some(path));
+        let sibling_source = source_cache.read_source(path)?;
+        if file_defines_type(sibling_source, type_name)? {
+            return Ok(Some(path.to_path_buf()));
         }
     }
 
@@ -2377,6 +2490,7 @@ fn file_defines_type(source: &str, type_name: &str) -> Result<bool> {
 }
 
 fn parent_boundary_public_signature_exposes_child_used_outside_parent(
+    source_cache: &SourceCache,
     settings: &DriverSettings,
     src_root: &Path,
     child_file: &Path,
@@ -2386,13 +2500,8 @@ fn parent_boundary_public_signature_exposes_child_used_outside_parent(
         return Ok(false);
     };
 
-    let parent_source = fs::read_to_string(&parent_boundary.boundary_file).with_context(|| {
-        format!(
-            "failed to read parent boundary file {}",
-            parent_boundary.boundary_file.display()
-        )
-    })?;
-    let file = syn::parse_file(&parent_source).with_context(|| {
+    let parent_source = source_cache.read_source(&parent_boundary.boundary_file)?;
+    let file = syn::parse_file(parent_source).with_context(|| {
         format!(
             "failed to parse parent boundary file {}",
             parent_boundary.boundary_file.display()
@@ -2413,20 +2522,19 @@ fn parent_boundary_public_signature_exposes_child_used_outside_parent(
         return Ok(false);
     }
 
-    for source_file in rust_source_files(src_root)? {
+    for source_file in source_cache.source_files_under(src_root) {
         if source_file == parent_boundary.boundary_file
             || source_file.starts_with(&parent_boundary.subtree_root)
         {
             continue;
         }
-        let source = fs::read_to_string(&source_file)
-            .with_context(|| format!("failed to read source file {}", source_file.display()))?;
-        let Some(current_module_path) = module_path_from_source_file(src_root, &source_file) else {
+        let source = source_cache.read_source(source_file)?;
+        let Some(current_module_path) = module_path_from_source_file(src_root, source_file) else {
             continue;
         };
         if !matches!(
             source_references_parent_export(
-                &source,
+                source,
                 &current_module_path,
                 &parent_boundary.module_path,
                 &exposing_names,
@@ -2437,8 +2545,12 @@ fn parent_boundary_public_signature_exposes_child_used_outside_parent(
         }
     }
 
-    if workspace_source_mentions_parent_export_literal(settings, &parent_boundary, &exposing_names)?
-    {
+    if workspace_source_mentions_parent_export_literal(
+        source_cache,
+        settings,
+        &parent_boundary,
+        &exposing_names,
+    )? {
         return Ok(true);
     }
 
@@ -2731,28 +2843,48 @@ fn outward_impl_surface_mentions_name(item_impl: &syn::ItemImpl, item_name: &str
 }
 
 fn type_is_exposed_outside_parent(
+    source_cache: &SourceCache,
     settings: &DriverSettings,
     src_root: &Path,
     child_file: &Path,
     item_name: &str,
 ) -> Result<bool> {
     Ok(
-        parent_facade_export_status(settings, src_root, child_file, item_name)?
+        parent_facade_export_status(source_cache, settings, src_root, child_file, item_name)?
             .is_some_and(|status| status.usage == ParentFacadeUsage::UsedOutsideParentSubtree)
-            || public_reexport_exists_outside_parent(settings, src_root, child_file, item_name)?
+            || public_reexport_exists_outside_parent(
+                source_cache,
+                settings,
+                src_root,
+                child_file,
+                item_name,
+            )?
             || child_item_is_exposed_by_other_crate_visible_signature(
-                settings, src_root, child_file, item_name,
+                source_cache,
+                settings,
+                src_root,
+                child_file,
+                item_name,
             )?
             || child_item_is_exposed_by_sibling_boundary_signature(
-                settings, src_root, child_file, item_name,
+                source_cache,
+                settings,
+                src_root,
+                child_file,
+                item_name,
             )?
             || parent_boundary_public_signature_exposes_child_used_outside_parent(
-                settings, src_root, child_file, item_name,
+                source_cache,
+                settings,
+                src_root,
+                child_file,
+                item_name,
             )?,
     )
 }
 
 fn public_reexport_exists_outside_parent(
+    source_cache: &SourceCache,
     settings: &DriverSettings,
     src_root: &Path,
     child_file: &Path,
@@ -2765,15 +2897,14 @@ fn public_reexport_exists_outside_parent(
         return Ok(false);
     };
 
-    for source_file in rust_source_files(src_root)? {
+    for source_file in source_cache.source_files_under(src_root) {
         if source_file.starts_with(&parent_boundary.subtree_root) {
             continue;
         }
-        let source = fs::read_to_string(&source_file)
-            .with_context(|| format!("failed to read source file {}", source_file.display()))?;
-        let file = syn::parse_file(&source)
+        let source = source_cache.read_source(source_file)?;
+        let file = syn::parse_file(source)
             .with_context(|| format!("failed to parse source file {}", source_file.display()))?;
-        let Some(current_module_path) = module_path_from_source_file(src_root, &source_file) else {
+        let Some(current_module_path) = module_path_from_source_file(src_root, source_file) else {
             continue;
         };
 
@@ -2808,15 +2939,14 @@ fn public_reexport_exists_outside_parent(
             .parent()
             .map_or_else(|| settings.findings_dir.clone(), Path::to_path_buf);
 
-        for file in rust_source_files(&settings.config_root)? {
+        for file in source_cache.source_files_under(&settings.config_root) {
             if file.starts_with(&settings.package_root)
                 || file.starts_with(&settings.findings_dir)
                 || file.starts_with(&findings_root)
             {
                 continue;
             }
-            let source = fs::read_to_string(&file)
-                .with_context(|| format!("failed to read source file {}", file.display()))?;
+            let source = source_cache.read_source(file)?;
             let pattern = format!("{module_prefix}::{item_name}");
             if source.contains(&pattern) {
                 return Ok(true);
