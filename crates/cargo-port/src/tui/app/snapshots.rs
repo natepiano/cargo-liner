@@ -400,13 +400,13 @@ fn observe_workspace_worktree_entry_fit_widths(
     let dw = columns::display_width;
     let wt_name = ws
         .worktree_name()
-        .unwrap_or_else(|| ws.path().to_str().unwrap_or(""));
+        .map_or_else(|| ws.display_name(), String::from);
     let prefix = if ws.has_members() {
         PREFIX_WT_COLLAPSED
     } else {
         PREFIX_WT_FLAT
     };
-    App::observe_name_width(widths, dw(prefix) + dw(wt_name));
+    App::observe_name_width(widths, dw(prefix) + dw(&wt_name));
     widths.observe(COL_DISK, dw(&formatted_disk(ws.disk_usage_bytes())));
     widths.observe(
         COL_SYNC,
@@ -428,8 +428,8 @@ fn observe_package_worktree_entry_fit_widths(
     let dw = columns::display_width;
     let wt_name = pkg
         .worktree_name()
-        .unwrap_or_else(|| pkg.path().to_str().unwrap_or(""));
-    App::observe_name_width(widths, dw(PREFIX_WT_FLAT) + dw(wt_name));
+        .map_or_else(|| pkg.display_name(), String::from);
+    App::observe_name_width(widths, dw(PREFIX_WT_FLAT) + dw(&wt_name));
     widths.observe(COL_DISK, dw(&formatted_disk(pkg.disk_usage_bytes())));
     widths.observe(
         COL_SYNC,

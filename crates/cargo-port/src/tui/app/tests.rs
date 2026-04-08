@@ -921,6 +921,82 @@ fn worktree_count_uses_visibility() {
 }
 
 #[test]
+fn workspace_worktree_fit_widths_use_display_name_for_primary_entry() {
+    let item = make_workspace_worktrees_item(
+        make_workspace_raw(
+            Some("obsidian_knife"),
+            "/tmp/really/long/path/to/obsidian_knife",
+            Vec::new(),
+            None,
+        ),
+        vec![make_workspace_raw(
+            Some("obsidian_knife"),
+            "/tmp/really/long/path/to/obsidian_knife_test",
+            Vec::new(),
+            Some("obsidian_knife_test"),
+        )],
+    );
+    let git_path_states = std::collections::HashMap::new();
+    let widths = snapshots::build_fit_widths_snapshot(
+        std::slice::from_ref(&item),
+        &snapshots::FitWidthsState {
+            git_path_states: &git_path_states,
+        },
+        true,
+        0,
+    );
+    let root_width = App::fit_name_for_item(&item);
+    let primary_entry_width =
+        crate::tui::columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
+            + crate::tui::columns::display_width("obsidian_knife");
+    let linked_entry_width = crate::tui::columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
+        + crate::tui::columns::display_width("obsidian_knife_test");
+
+    assert_eq!(
+        widths.get(crate::tui::columns::COL_NAME),
+        App::name_width_with_gutter(root_width.max(primary_entry_width).max(linked_entry_width)),
+        "fit widths should use rendered worktree labels, not the absolute primary worktree path"
+    );
+}
+
+#[test]
+fn package_worktree_fit_widths_use_display_name_for_primary_entry() {
+    let item = make_package_worktrees_item(
+        make_package_raw(
+            Some("cargo-port"),
+            "/tmp/really/long/path/to/cargo-port",
+            None,
+        ),
+        vec![make_package_raw(
+            Some("cargo-port"),
+            "/tmp/really/long/path/to/cargo-port_test",
+            Some("cargo-port_test"),
+        )],
+    );
+    let git_path_states = std::collections::HashMap::new();
+    let widths = snapshots::build_fit_widths_snapshot(
+        std::slice::from_ref(&item),
+        &snapshots::FitWidthsState {
+            git_path_states: &git_path_states,
+        },
+        true,
+        0,
+    );
+    let root_width = App::fit_name_for_item(&item);
+    let primary_entry_width =
+        crate::tui::columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
+            + crate::tui::columns::display_width("cargo-port");
+    let linked_entry_width = crate::tui::columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
+        + crate::tui::columns::display_width("cargo-port_test");
+
+    assert_eq!(
+        widths.get(crate::tui::columns::COL_NAME),
+        App::name_width_with_gutter(root_width.max(primary_entry_width).max(linked_entry_width)),
+        "fit widths should use rendered worktree labels, not the absolute primary worktree path"
+    );
+}
+
+#[test]
 fn visible_rows_workspace_no_worktrees() {
     let root = make_workspace_with_members(
         None,
