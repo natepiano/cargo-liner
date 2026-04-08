@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::path::Path;
@@ -34,6 +35,51 @@ pub(crate) struct SearchableItem<'a> {
 
 impl ProjectList {
     pub(crate) const fn new(items: Vec<RootItem>) -> Self { Self { root_items: items } }
+
+    pub(crate) fn resolved_root_labels(&self, include_non_rust: bool) -> Vec<String> {
+        let mut labels: Vec<String> = self
+            .root_items
+            .iter()
+            .map(RootItem::root_name_base)
+            .collect();
+        let mut collision_sets: HashMap<String, Vec<usize>> = HashMap::new();
+
+        for (index, item) in self.root_items.iter().enumerate() {
+            if matches!(item.visibility(), Visibility::Dismissed) {
+                continue;
+            }
+            if !include_non_rust && !item.is_rust() {
+                continue;
+            }
+            collision_sets
+                .entry(item.root_name_base())
+                .or_default()
+                .push(index);
+        }
+
+        for indices in collision_sets
+            .into_values()
+            .filter(|indices| indices.len() > 1)
+        {
+            let suffixes = shortest_unique_suffixes(
+                &indices
+                    .iter()
+                    .map(|&index| self.root_items[index].display_path())
+                    .collect::<Vec<_>>(),
+            );
+            for (index, suffix) in indices.into_iter().zip(suffixes) {
+                labels[index] = format!("{} [{suffix}]", labels[index]);
+            }
+        }
+
+        for (label, item) in labels.iter_mut().zip(&self.root_items) {
+            if let Some(suffix) = item.worktree_badge_suffix() {
+                label.push_str(&suffix);
+            }
+        }
+
+        labels
+    }
 
     // -- Leaf iteration ---------------------------------------------------
 
@@ -123,23 +169,19 @@ impl ProjectList {
             let found = match item {
                 RootItem::Workspace(ws) => find_workspace_searchable(ws, target),
                 RootItem::Package(pkg) => find_package_searchable(pkg, target),
-                RootItem::NonRust(nr) => {
-                    (nr.path() == target).then(|| non_rust_searchable(nr))
-                },
-                RootItem::WorkspaceWorktrees(g) => {
-                    find_workspace_searchable(g.primary(), target).or_else(|| {
+                RootItem::NonRust(nr) => (nr.path() == target).then(|| non_rust_searchable(nr)),
+                RootItem::WorkspaceWorktrees(g) => find_workspace_searchable(g.primary(), target)
+                    .or_else(|| {
                         g.linked()
                             .iter()
                             .find_map(|ws| find_workspace_searchable(ws, target))
-                    })
-                },
-                RootItem::PackageWorktrees(g) => {
-                    find_package_searchable(g.primary(), target).or_else(|| {
+                    }),
+                RootItem::PackageWorktrees(g) => find_package_searchable(g.primary(), target)
+                    .or_else(|| {
                         g.linked()
                             .iter()
                             .find_map(|pkg| find_package_searchable(pkg, target))
-                    })
-                },
+                    }),
             };
             if found.is_some() {
                 return found;
@@ -169,9 +211,7 @@ impl ProjectList {
     ) -> Option<RootItem> {
         for item in &mut self.root_items {
             match item {
-                RootItem::Workspace(_)
-                | RootItem::Package(_)
-                | RootItem::NonRust(_) => {
+                RootItem::Workspace(_) | RootItem::Package(_) | RootItem::NonRust(_) => {
                     if item.path() == path {
                         std::mem::swap(item, &mut replacement);
                         return Some(replacement);
@@ -311,6 +351,55 @@ impl ProjectList {
     pub(crate) fn push(&mut self, item: RootItem) { self.root_items.push(item); }
 }
 
+fn shortest_unique_suffixes(paths: &[String]) -> Vec<String> {
+    let segments: Vec<Vec<&str>> = paths
+        .iter()
+        .map(|path| display_path_segments(path))
+        .collect();
+    let mut suffix_len = vec![1usize; paths.len()];
+
+    loop {
+        let mut collisions: HashMap<String, Vec<usize>> = HashMap::new();
+        for (index, path_segments) in segments.iter().enumerate() {
+            collisions
+                .entry(join_suffix(path_segments, suffix_len[index]))
+                .or_default()
+                .push(index);
+        }
+
+        let mut changed = false;
+        for indices in collisions.into_values().filter(|indices| indices.len() > 1) {
+            for index in indices {
+                if suffix_len[index] < segments[index].len() {
+                    suffix_len[index] += 1;
+                    changed = true;
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    segments
+        .iter()
+        .enumerate()
+        .map(|(index, path_segments)| join_suffix(path_segments, suffix_len[index]))
+        .collect()
+}
+
+fn display_path_segments(path: &str) -> Vec<&str> {
+    path.split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+fn join_suffix(segments: &[&str], suffix_len: usize) -> String {
+    let len = suffix_len.min(segments.len());
+    segments[segments.len().saturating_sub(len)..].join("/")
+}
+
 fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
     let existing_identity = item_worktree_identity(existing).map(Path::to_path_buf);
 
@@ -322,10 +411,8 @@ fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
                 if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
             {
                 let primary = primary.clone();
-                *existing = RootItem::WorkspaceWorktrees(WorktreeGroup::new(
-                    primary,
-                    vec![linked.clone()],
-                ));
+                *existing =
+                    RootItem::WorkspaceWorktrees(WorktreeGroup::new(primary, vec![linked.clone()]));
                 return true;
             },
             RootItem::WorkspaceWorktrees(group)
@@ -346,10 +433,8 @@ fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
                 if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
             {
                 let primary = primary.clone();
-                *existing = RootItem::PackageWorktrees(WorktreeGroup::new(
-                    primary,
-                    vec![linked.clone()],
-                ));
+                *existing =
+                    RootItem::PackageWorktrees(WorktreeGroup::new(primary, vec![linked.clone()]));
                 return true;
             },
             RootItem::PackageWorktrees(group)
@@ -617,11 +702,7 @@ fn find_workspace_searchable<'a>(
         .map(vendored_searchable)
 }
 
-fn try_insert_member(
-    ws: &mut RustProject<Workspace>,
-    item_path: &Path,
-    item: &RootItem,
-) -> bool {
+fn try_insert_member(ws: &mut RustProject<Workspace>, item_path: &Path, item: &RootItem) -> bool {
     if !item_path.starts_with(ws.path()) || item_path == ws.path() {
         return false;
     }

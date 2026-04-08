@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::mpsc;
 use std::sync::OnceLock;
+use std::sync::mpsc;
 use std::time::Instant;
 
 use chrono::DateTime;
@@ -92,6 +92,8 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
     app.ensure_visible_rows_cached();
     let widths = snapshots::build_fit_widths_snapshot(
         &app.projects,
+        &app.projects
+            .resolved_root_labels(app.include_non_rust().includes_non_rust()),
         &snapshots::FitWidthsState {
             git_path_states: &app.git_path_states,
         },
@@ -117,6 +119,10 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
             row.trim_end().to_string()
         })
         .collect()
+}
+
+fn resolved_root_label(item: &RootItem) -> String {
+    ProjectList::new(vec![item.clone()]).resolved_root_labels(true)[0].clone()
 }
 
 fn make_non_rust_project(name: Option<&str>, path: &str) -> RootItem {
@@ -415,10 +421,11 @@ fn external_config_reload_keeps_last_good_config_on_parse_error() {
 
     assert_eq!(app.editor(), "zed");
     assert_eq!(app.current_config.tui.editor, "zed");
-    assert!(app
-        .status_flash
-        .as_ref()
-        .is_some_and(|(msg, _)| msg.contains("Config reload failed")));
+    assert!(
+        app.status_flash
+            .as_ref()
+            .is_some_and(|(msg, _)| msg.contains("Config reload failed"))
+    );
 }
 
 #[test]
@@ -460,10 +467,11 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
 
     assert!(app.is_scan_complete());
     assert_eq!(app.projects.len(), 2);
-    assert!(app
-        .projects
-        .iter()
-        .any(|item| item.display_path() == "~/js"));
+    assert!(
+        app.projects
+            .iter()
+            .any(|item| item.display_path() == "~/js")
+    );
 }
 
 #[test]
@@ -989,15 +997,18 @@ fn workspace_worktree_fit_widths_use_display_name_for_primary_entry() {
         )],
     );
     let git_path_states = std::collections::HashMap::new();
+    let root_label = resolved_root_label(&item);
     let widths = snapshots::build_fit_widths_snapshot(
         std::slice::from_ref(&item),
+        std::slice::from_ref(&root_label),
         &snapshots::FitWidthsState {
             git_path_states: &git_path_states,
         },
         true,
         0,
     );
-    let root_width = App::fit_name_for_item(&item);
+    let root_width = crate::tui::columns::display_width(crate::tui::render::PREFIX_ROOT_COLLAPSED)
+        + crate::tui::columns::display_width(&root_label);
     let primary_entry_width =
         crate::tui::columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
             + crate::tui::columns::display_width("obsidian_knife");
@@ -1026,15 +1037,18 @@ fn package_worktree_fit_widths_use_display_name_for_primary_entry() {
         )],
     );
     let git_path_states = std::collections::HashMap::new();
+    let root_label = resolved_root_label(&item);
     let widths = snapshots::build_fit_widths_snapshot(
         std::slice::from_ref(&item),
+        std::slice::from_ref(&root_label),
         &snapshots::FitWidthsState {
             git_path_states: &git_path_states,
         },
         true,
         0,
     );
-    let root_width = App::fit_name_for_item(&item);
+    let root_width = crate::tui::columns::display_width(crate::tui::render::PREFIX_ROOT_COLLAPSED)
+        + crate::tui::columns::display_width(&root_label);
     let primary_entry_width =
         crate::tui::columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
             + crate::tui::columns::display_width("cargo-port");
@@ -1058,12 +1072,16 @@ fn root_rows_disambiguate_same_project_names_with_leaf_dir_suffix() {
     let names = rendered_root_name_cells(&mut app);
 
     assert!(
-        names[0].contains("cargo-port") && names[0].contains("cargo-port-old"),
-        "root label should include the unique leaf dir when names collide: {names:?}"
+        names
+            .iter()
+            .any(|name| name.contains("cargo-port [cargo-port]")),
+        "one root label should use the leaf dir suffix when it is uniquely sufficient: {names:?}"
     );
     assert!(
-        names[1].contains("cargo-port") && names[1].contains("cargo-port-old"),
-        "root label should include the unique leaf dir when names collide: {names:?}"
+        names
+            .iter()
+            .any(|name| name.contains("cargo-port [cargo-port-old]")),
+        "one root label should use the unique differing leaf dir: {names:?}"
     );
     assert_ne!(
         names[0], names[1],
@@ -1074,19 +1092,34 @@ fn root_rows_disambiguate_same_project_names_with_leaf_dir_suffix() {
 #[test]
 fn root_rows_extend_dir_suffix_until_same_leaf_dirs_become_unique() {
     let mut app = make_app(&[
-        make_project(Some("cargo-port"), "/tmp/active/cargo-port"),
+        make_package_worktrees_item(
+            make_package_raw(Some("cargo-port"), "/tmp/rust/cargo-port", None),
+            vec![make_package_raw(
+                Some("cargo-port"),
+                "/tmp/rust/cargo-port_test",
+                Some("cargo-port_test"),
+            )],
+        ),
         make_project(Some("cargo-port"), "/tmp/archive/cargo-port"),
     ]);
 
     let names = rendered_root_name_cells(&mut app);
 
     assert!(
-        names[0].contains("cargo-port") && names[0].contains("active"),
-        "root label should add parent context when leaf dirs still collide: {names:?}"
+        names
+            .iter()
+            .any(|name| name.contains("cargo-port [rust/cargo-port]")),
+        "root label should prepend parents until the suffix becomes unique: {names:?}"
     );
     assert!(
-        names[1].contains("cargo-port") && names[1].contains("archive"),
-        "root label should add parent context when leaf dirs still collide: {names:?}"
+        names
+            .iter()
+            .any(|name| name.contains("cargo-port [archive/cargo-port]")),
+        "root label should prepend parents until the suffix becomes unique: {names:?}"
+    );
+    assert!(
+        names.iter().any(|name| name.contains(crate::constants::WORKTREE)),
+        "worktree root should still render its badge after disambiguation: {names:?}"
     );
     assert_ne!(
         names[0], names[1],
@@ -1358,14 +1391,16 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(Path::new(&project_a.display_path())));
-    assert!(!app
-        .scan
-        .startup_phases
-        .lint_seen_terminal
-        .contains(Path::new(&project_a.display_path())));
-    assert!(app
-        .running_lint_paths
-        .contains_key(Path::new(&project_a.display_path())));
+    assert!(
+        !app.scan
+            .startup_phases
+            .lint_seen_terminal
+            .contains(Path::new(&project_a.display_path()))
+    );
+    assert!(
+        app.running_lint_paths
+            .contains_key(Path::new(&project_a.display_path()))
+    );
     assert!(app.lint_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
@@ -2040,16 +2075,18 @@ fn search_finds_workspace_members_and_vendored_crates() {
     apply_items(&mut app, &[workspace]);
 
     app.update_search("member");
-    assert!(app
-        .filtered
-        .iter()
-        .any(|hit| hit.display_path == member_path && hit.name == "member"));
+    assert!(
+        app.filtered
+            .iter()
+            .any(|hit| hit.display_path == member_path && hit.name == "member")
+    );
 
     app.update_search("helper");
-    assert!(app
-        .filtered
-        .iter()
-        .any(|hit| hit.display_path == vendored_path && hit.name == "helper (vendored)"));
+    assert!(
+        app.filtered
+            .iter()
+            .any(|hit| hit.display_path == vendored_path && hit.name == "helper (vendored)")
+    );
 }
 
 #[test]
@@ -2074,10 +2111,11 @@ fn search_finds_linked_worktree_children_and_confirms_selection() {
     apply_items(&mut app, &[item]);
 
     app.update_search("helper_feat");
-    assert!(app
-        .filtered
-        .iter()
-        .any(|hit| hit.display_path == vendored_path && hit.name == "helper_feat (vendored)"));
+    assert!(
+        app.filtered
+            .iter()
+            .any(|hit| hit.display_path == vendored_path && hit.name == "helper_feat (vendored)")
+    );
 
     app.update_search("member_feat");
     app.confirm_search();

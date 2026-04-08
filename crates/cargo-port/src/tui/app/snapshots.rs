@@ -20,9 +20,9 @@ use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::tui::columns;
-use crate::tui::columns::ResolvedWidths;
 use crate::tui::columns::COL_DISK;
 use crate::tui::columns::COL_SYNC;
+use crate::tui::columns::ResolvedWidths;
 use crate::tui::render;
 use crate::tui::render::PREFIX_GROUP_COLLAPSED;
 use crate::tui::render::PREFIX_MEMBER_INLINE;
@@ -283,14 +283,15 @@ pub(super) struct FitWidthsState<'a> {
 
 pub(super) fn build_fit_widths_snapshot(
     items: &[RootItem],
+    root_labels: &[String],
     state: &FitWidthsState<'_>,
     lint_enabled: bool,
     generation: u64,
 ) -> ResolvedWidths {
     let mut widths = ResolvedWidths::new(lint_enabled);
 
-    for item in items {
-        observe_item_fit_widths(&mut widths, item, state);
+    for (index, item) in items.iter().enumerate() {
+        observe_item_fit_widths(&mut widths, item, &root_labels[index], state);
     }
 
     widths.generation = generation;
@@ -300,12 +301,13 @@ pub(super) fn build_fit_widths_snapshot(
 fn observe_item_fit_widths(
     widths: &mut ResolvedWidths,
     item: &RootItem,
+    root_label: &str,
     state: &FitWidthsState<'_>,
 ) {
     let dw = columns::display_width;
     let root_path = item.path();
 
-    App::observe_name_width(widths, App::fit_name_for_item(item));
+    App::observe_name_width(widths, dw(render::PREFIX_ROOT_COLLAPSED) + dw(root_label));
     widths.observe(COL_DISK, dw(&formatted_disk(item.disk_usage_bytes())));
     widths.observe(
         COL_SYNC,

@@ -1563,6 +1563,21 @@ impl RootItem {
         }
     }
 
+    pub(crate) fn root_name_base(&self) -> String { self.display_name() }
+
+    pub(crate) fn worktree_badge_suffix(&self) -> Option<String> {
+        let live_worktrees = match self {
+            Self::WorkspaceWorktrees(group) if group.renders_as_group() => group.live_entry_count(),
+            Self::PackageWorktrees(group) if group.renders_as_group() => group.live_entry_count(),
+            Self::Workspace(_)
+            | Self::Package(_)
+            | Self::NonRust(_)
+            | Self::WorkspaceWorktrees(_)
+            | Self::PackageWorktrees(_) => 0,
+        };
+        (live_worktrees > 0).then(|| format!(" {}:{live_worktrees}", crate::constants::WORKTREE))
+    }
+
     /// Whether this item has expandable children.
     pub(crate) fn has_children(&self) -> bool {
         match self {

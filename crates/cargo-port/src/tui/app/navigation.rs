@@ -15,16 +15,13 @@ use super::types::ExpandKey;
 use super::types::SearchHit;
 use super::types::SearchMode;
 use super::types::VisibleRow;
-use crate::constants::WORKTREE;
 use crate::project::Package;
 use crate::project::RootItem;
 use crate::project::RustProject;
-use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::tui;
 use crate::tui::columns::COL_NAME;
 use crate::tui::columns::ResolvedWidths;
-use crate::tui::render::PREFIX_ROOT_COLLAPSED;
 
 impl App {
     pub fn ensure_visible_rows_cached(&mut self) {
@@ -53,40 +50,6 @@ impl App {
 
     pub(super) const fn name_width_with_gutter(content_width: usize) -> usize {
         content_width.saturating_add(1)
-    }
-
-    pub(super) fn fit_name_for_item(item: &RootItem) -> usize {
-        let dw = tui::columns::display_width;
-        let mut name = item.display_name();
-        let live = match item {
-            RootItem::WorkspaceWorktrees(wtg) => {
-                let count = std::iter::once(wtg.primary().visibility())
-                    .chain(
-                        wtg.linked()
-                            .iter()
-                            .map(crate::project::RustProject::visibility),
-                    )
-                    .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
-                    .count();
-                if count <= 1 { 0 } else { count }
-            },
-            RootItem::PackageWorktrees(wtg) => {
-                let count = std::iter::once(wtg.primary().visibility())
-                    .chain(
-                        wtg.linked()
-                            .iter()
-                            .map(crate::project::RustProject::visibility),
-                    )
-                    .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
-                    .count();
-                if count <= 1 { 0 } else { count }
-            },
-            _ => 0,
-        };
-        if live > 0 {
-            name = format!("{name} {WORKTREE}:{live}");
-        }
-        dw(PREFIX_ROOT_COLLAPSED) + dw(&name)
     }
 
     /// Keep disk sort caches rebuilding in the background, never inline on the UI thread.
@@ -184,18 +147,13 @@ impl App {
         member_index: usize,
     ) -> Option<&RustProject<Package>> {
         match item {
-            RootItem::Workspace(ws) => {
-                ws.groups().get(group_index)?.members().get(member_index)
-            },
+            RootItem::Workspace(ws) => ws.groups().get(group_index)?.members().get(member_index),
             _ => None,
         }
     }
 
     /// Resolve a vendored `Project<Package>` from a `RootItem`.
-    fn resolve_vendored(
-        item: &RootItem,
-        vendored_index: usize,
-    ) -> Option<&RustProject<Package>> {
+    fn resolve_vendored(item: &RootItem, vendored_index: usize) -> Option<&RustProject<Package>> {
         match item {
             RootItem::Workspace(ws) => ws.vendored().get(vendored_index),
             RootItem::Package(pkg) => pkg.vendored().get(vendored_index),
@@ -633,11 +591,7 @@ impl App {
         }
     }
 
-    fn worktree_vendored_display_path(
-        item: &RootItem,
-        wi: usize,
-        vi: usize,
-    ) -> Option<String> {
+    fn worktree_vendored_display_path(item: &RootItem, wi: usize, vi: usize) -> Option<String> {
         match item {
             RootItem::WorkspaceWorktrees(wtg) => {
                 let ws = if wi == 0 {
@@ -741,12 +695,7 @@ impl App {
         }
     }
 
-    fn worktree_member_path_ref(
-        item: &RootItem,
-        wi: usize,
-        gi: usize,
-        mi: usize,
-    ) -> Option<&Path> {
+    fn worktree_member_path_ref(item: &RootItem, wi: usize, gi: usize, mi: usize) -> Option<&Path> {
         match item {
             RootItem::WorkspaceWorktrees(wtg) => {
                 let ws = if wi == 0 {

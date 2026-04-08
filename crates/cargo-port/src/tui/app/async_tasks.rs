@@ -83,16 +83,14 @@ impl App {
                     .iter()
                     .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
                     .collect(),
-                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
-                    std::iter::once(wtg.primary())
-                        .chain(wtg.linked().iter())
-                        .flat_map(|ws| {
-                            ws.groups()
-                                .iter()
-                                .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
-                        })
-                        .collect()
-                },
+                crate::project::RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
+                    .chain(wtg.linked().iter())
+                    .flat_map(|ws| {
+                        ws.groups()
+                            .iter()
+                            .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
+                    })
+                    .collect(),
                 _ => Vec::new(),
             };
             if let Some(info) = self
@@ -514,18 +512,14 @@ impl App {
 
         for item in &self.projects {
             let items: Vec<(&Path, bool)> = match item {
-                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
-                    std::iter::once(wtg.primary())
-                        .chain(wtg.linked().iter())
-                        .map(|p| (p.path(), true))
-                        .collect()
-                },
-                crate::project::RootItem::PackageWorktrees(wtg) => {
-                    std::iter::once(wtg.primary())
-                        .chain(wtg.linked().iter())
-                        .map(|p| (p.path(), true))
-                        .collect()
-                },
+                crate::project::RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
+                    .chain(wtg.linked().iter())
+                    .map(|p| (p.path(), true))
+                    .collect(),
+                crate::project::RootItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
+                    .chain(wtg.linked().iter())
+                    .map(|p| (p.path(), true))
+                    .collect(),
                 _ => vec![(item.path(), item.is_rust())],
             };
             for (path, is_rust) in items {
@@ -1025,6 +1019,9 @@ impl App {
     pub(super) fn spawn_fit_widths_build(&mut self, build_id: u64) {
         let tx = self.builds.fit.tx.clone();
         let items = self.projects.clone();
+        let root_labels = self
+            .projects
+            .resolved_root_labels(self.include_non_rust().includes_non_rust());
         let git_path_states = self.git_path_states.clone();
         let lint_enabled = self.lint_enabled();
         self.builds.fit.active = Some(build_id);
@@ -1033,8 +1030,13 @@ impl App {
             let state = super::snapshots::FitWidthsState {
                 git_path_states: &git_path_states,
             };
-            let widths =
-                super::snapshots::build_fit_widths_snapshot(&items, &state, lint_enabled, build_id);
+            let widths = super::snapshots::build_fit_widths_snapshot(
+                &items,
+                &root_labels,
+                &state,
+                lint_enabled,
+                build_id,
+            );
             let elapsed = started.elapsed();
             if elapsed.as_millis() >= crate::perf_log::SLOW_WORKER_MS {
                 tracing::info!(
@@ -1435,9 +1437,7 @@ impl App {
                         );
                     }
                 },
-                crate::project::RootItem::PackageWorktrees(wtg)
-                    if wtg.primary().path() == path =>
-                {
+                crate::project::RootItem::PackageWorktrees(wtg) if wtg.primary().path() == path => {
                     fallback_worktree_paths.extend(
                         wtg.linked()
                             .iter()
@@ -1782,11 +1782,7 @@ impl App {
         self.maybe_log_startup_phase_completions();
     }
 
-    fn handle_scan_result(
-        &mut self,
-        projects: Vec<RootItem>,
-        disk_entries: &[(String, PathBuf)],
-    ) {
+    fn handle_scan_result(&mut self, projects: Vec<RootItem>, disk_entries: &[(String, PathBuf)]) {
         let kind = if self.scan.run_count == 1 {
             "initial"
         } else {

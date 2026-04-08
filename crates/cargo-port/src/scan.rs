@@ -504,10 +504,7 @@ pub(crate) fn dir_size(path: &Path) -> u64 {
 /// 1. Nests workspace members into their parent workspace's `groups`
 /// 2. Detects vendored crates nested inside other projects
 /// 3. Merges worktree checkouts into `WorktreeGroup` variants
-pub(crate) fn build_tree(
-    items: &[RootItem],
-    inline_dirs: &[String],
-) -> Vec<RootItem> {
+pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<RootItem> {
     let workspace_paths: Vec<PathBuf> = items
         .iter()
         .filter(|item| matches!(item, RootItem::Workspace(_)))

@@ -38,7 +38,6 @@ use super::types::Pane;
 use super::types::PaneId;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
-use crate::constants::WORKTREE;
 use crate::project;
 use crate::project::GitOrigin;
 use crate::project::RootItem;
@@ -761,23 +760,12 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 fn render_root_item(
     app: &App,
     node_index: usize,
+    root_labels: &[String],
     root_sorted: &[u64],
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
     let item = &app.projects[node_index];
-    let mut name = item.display_name();
-    let live_wt = match item {
-        RootItem::WorkspaceWorktrees(group) if group.renders_as_group() => group.live_entry_count(),
-        RootItem::PackageWorktrees(group) if group.renders_as_group() => group.live_entry_count(),
-        RootItem::Workspace(_)
-        | RootItem::Package(_)
-        | RootItem::NonRust(_)
-        | RootItem::WorkspaceWorktrees(_)
-        | RootItem::PackageWorktrees(_) => 0,
-    };
-    if live_wt > 0 {
-        name = format!("{name} {WORKTREE}:{live_wt}");
-    }
+    let name = &root_labels[node_index];
     let disk = App::formatted_disk_for_item(item);
     let disk_bytes = item.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
@@ -806,7 +794,7 @@ fn render_root_item(
     };
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
-        name: &name,
+        name,
         git_path_state: app.git_path_state_for(item.path()),
         lint_icon: lint,
         disk: disk_text,
@@ -1158,12 +1146,15 @@ fn render_wt_vendored_item(
 pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListItem<'static>> {
     let root_sorted = &app.cached_root_sorted;
     let child_sorted = &app.cached_child_sorted;
+    let root_labels = app
+        .projects
+        .resolved_root_labels(app.include_non_rust().includes_non_rust());
 
     let rows = app.visible_rows();
     rows.iter()
         .map(|row| match row {
             VisibleRow::Root { node_index } => {
-                render_root_item(app, *node_index, root_sorted, widths)
+                render_root_item(app, *node_index, &root_labels, root_sorted, widths)
             },
             VisibleRow::GroupHeader {
                 node_index,

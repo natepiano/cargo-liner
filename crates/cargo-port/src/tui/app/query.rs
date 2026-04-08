@@ -309,12 +309,8 @@ impl App {
 
     pub fn is_vendored_path(&self, path: &str) -> bool {
         self.projects.iter().any(|item| match item {
-            RootItem::Workspace(ws) => {
-                ws.vendored().iter().any(|v| v.display_path() == path)
-            },
-            RootItem::Package(pkg) => {
-                pkg.vendored().iter().any(|v| v.display_path() == path)
-            },
+            RootItem::Workspace(ws) => ws.vendored().iter().any(|v| v.display_path() == path),
+            RootItem::Package(pkg) => pkg.vendored().iter().any(|v| v.display_path() == path),
             RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
                 .chain(wtg.linked().iter())
                 .any(|ws| ws.vendored().iter().any(|v| v.display_path() == path)),
