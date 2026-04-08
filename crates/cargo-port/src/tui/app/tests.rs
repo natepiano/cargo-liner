@@ -184,13 +184,7 @@ fn named_group(name: &str, members: Vec<RustProject<Package>>) -> MemberGroup {
 }
 
 fn wait_for_tree_build(app: &mut App) {
-    for _ in 0..100 {
-        let _ = app.poll_tree_builds();
-        if app.builds.tree.active.is_none() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // Tree rebuilds no longer exist — just ensure derived state is fresh.
     app.ensure_visible_rows_cached();
 }
 

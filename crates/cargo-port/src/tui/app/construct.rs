@@ -149,18 +149,6 @@ impl App {
         found
     }
 
-    /// Snapshot of leaf projects for tree builds.
-    ///
-    /// Collects all leaves from `project_list_items` (the single source of
-    /// truth). All runtime data lives on these items.
-    pub fn tree_projects_snapshot(&self) -> Vec<ProjectListItem> {
-        let mut leaves = Vec::new();
-        self.projects.for_each_leaf(|item| {
-            leaves.push(item.clone());
-        });
-        leaves
-    }
-
     pub fn new(
         scan_root: PathBuf,
         projects: &[ProjectListItem],

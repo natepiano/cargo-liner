@@ -670,7 +670,7 @@ fn workspace_member_patterns(manifest_path: &Path) -> Option<(Vec<String>, Vec<S
     Some((members, excludes))
 }
 
-fn normalize_workspace_path(path: &Path) -> String {
+pub(crate) fn normalize_workspace_path(path: &Path) -> String {
     path.components()
         .filter_map(|component| match component {
             std::path::Component::Normal(segment) => Some(segment.to_string_lossy().to_string()),

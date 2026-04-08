@@ -1882,6 +1882,12 @@ impl MemberGroup {
     pub(crate) const fn is_named(&self) -> bool { matches!(self, Self::Named { .. }) }
 
     pub(crate) const fn is_inline(&self) -> bool { matches!(self, Self::Inline { .. }) }
+
+    pub(crate) fn into_members(self) -> Vec<RustProject<Package>> {
+        match self {
+            Self::Named { members, .. } | Self::Inline { members } => members,
+        }
+    }
 }
 
 fn count_rs_files_recursive(dir: &Path) -> usize {

@@ -22,10 +22,8 @@ use crate::lint::LintStatus;
 use crate::lint::RuntimeHandle;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
-use crate::project::ProjectListItem;
 use crate::project_list::ProjectList;
 use crate::scan::BackgroundMsg;
-use crate::scan::FlatEntry;
 use crate::tui::columns::ResolvedWidths;
 use crate::tui::detail::DetailInfo;
 use crate::tui::detail::PendingCiFetch;
@@ -67,12 +65,6 @@ pub struct PendingClean {
 pub struct ConfigFileStamp {
     pub modified: Option<SystemTime>,
     pub len:      u64,
-}
-
-pub struct TreeBuildResult {
-    pub build_id:     u64,
-    pub flat_entries: Vec<FlatEntry>,
-    pub projects:     ProjectList,
 }
 
 pub struct FitWidthsBuildResult {
@@ -327,7 +319,6 @@ impl<T> BuildQueue<T> {
 }
 
 pub struct AsyncBuildState {
-    pub tree: BuildQueue<TreeBuildResult>,
     pub fit:  BuildQueue<FitWidthsBuildResult>,
     pub disk: BuildQueue<DiskCacheBuildResult>,
 }
@@ -335,7 +326,6 @@ pub struct AsyncBuildState {
 impl AsyncBuildState {
     pub fn new(channels: BuildChannels) -> Self {
         Self {
-            tree: BuildQueue::new(channels.tree_tx, channels.tree_rx),
             fit:  BuildQueue::new(channels.fit_tx, channels.fit_rx),
             disk: BuildQueue::new(channels.disk_tx, channels.disk_rx),
         }
@@ -343,8 +333,6 @@ impl AsyncBuildState {
 }
 
 pub struct BuildChannels {
-    pub tree_tx: mpsc::Sender<TreeBuildResult>,
-    pub tree_rx: Receiver<TreeBuildResult>,
     pub fit_tx:  mpsc::Sender<FitWidthsBuildResult>,
     pub fit_rx:  Receiver<FitWidthsBuildResult>,
     pub disk_tx: mpsc::Sender<DiskCacheBuildResult>,
@@ -353,12 +341,9 @@ pub struct BuildChannels {
 
 impl BuildChannels {
     pub fn new() -> Self {
-        let (tree_tx, tree_rx) = mpsc::channel();
         let (fit_tx, fit_rx) = mpsc::channel();
         let (disk_tx, disk_rx) = mpsc::channel();
         Self {
-            tree_tx,
-            tree_rx,
             fit_tx,
             fit_rx,
             disk_tx,

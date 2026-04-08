@@ -15,7 +15,6 @@ use super::types::FitWidthsBuildResult;
 use super::types::PollBackgroundStats;
 use super::types::ScanPhase;
 use super::types::StartupPhaseTracker;
-use super::types::TreeBuildResult;
 use crate::config::CargoPortConfig;
 use crate::constants::SERVICE_RETRY_SECS;
 use crate::http::ServiceKind;
@@ -126,8 +125,6 @@ impl App {
         }
         self.sync_selected_project();
     }
-
-    pub(super) fn rebuild_tree(&mut self) { self.request_tree_rebuild(); }
 
     pub(super) fn config_file_stamp(path: &Path) -> Option<ConfigFileStamp> {
         let metadata = std::fs::metadata(path).ok()?;
@@ -319,7 +316,11 @@ impl App {
                 self.respawn_watcher();
             }
             if actions.rebuild_tree {
-                self.rebuild_tree();
+                // Regroup workspace members in-place based on updated
+                // inline_dirs, then refresh derived state.
+                self.projects
+                    .regroup_members(&self.current_config.tui.inline_dirs);
+                self.refresh_derived_state();
             }
         }
     }
@@ -1002,60 +1003,6 @@ impl App {
         }
     }
 
-    pub(super) fn request_tree_rebuild(&mut self) {
-        self.builds.tree.latest = self.builds.tree.latest.wrapping_add(1);
-        if self.builds.tree.active.is_some() {
-            return;
-        }
-        self.spawn_tree_build(self.builds.tree.latest);
-    }
-
-    pub(super) fn spawn_tree_build(&mut self, build_id: u64) {
-        let tx = self.builds.tree.tx.clone();
-        let projects = self.tree_projects_snapshot();
-        let inline_dirs = self.current_config.tui.inline_dirs.clone();
-        let include_non_rust = self.include_non_rust().includes_non_rust();
-        self.builds.tree.active = Some(build_id);
-        std::thread::spawn(move || {
-            let started = Instant::now();
-            let input_count = projects.len();
-            let built = scan::build_tree(&projects, &inline_dirs);
-            let flat_entries = scan::build_flat_entries(&built, include_non_rust);
-            let elapsed = started.elapsed();
-            if elapsed.as_millis() >= crate::perf_log::SLOW_WORKER_MS {
-                tracing::info!(
-                    elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
-                    build_id,
-                    input = input_count,
-                    items = built.len(),
-                    flat_entries = flat_entries.len(),
-                    "tree_build"
-                );
-            }
-            let _ = tx.send(TreeBuildResult {
-                build_id,
-                flat_entries,
-                projects: ProjectList::new(built),
-            });
-        });
-    }
-
-    pub(super) fn poll_tree_builds(&mut self) -> usize {
-        let mut applied = 0;
-        while let Ok(result) = self.builds.tree.rx.try_recv() {
-            if self.builds.tree.active != Some(result.build_id) {
-                continue;
-            }
-            self.builds.tree.active = None;
-            self.apply_tree_build(result.flat_entries, result.projects);
-            applied += 1;
-            if result.build_id != self.builds.tree.latest {
-                self.spawn_tree_build(self.builds.tree.latest);
-            }
-        }
-        applied
-    }
-
     pub(super) fn request_fit_widths_build(&mut self) {
         if !self.dirty.fit_widths.is_dirty() {
             return;
@@ -1226,8 +1173,6 @@ impl App {
         self.dirty.rows.mark_dirty();
         self.dirty.disk_cache.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
-        self.builds.tree.active = None;
-        self.builds.tree.latest = 0;
         self.builds.fit.active = None;
         self.builds.fit.latest = 0;
         self.builds.disk.active = None;
@@ -1270,7 +1215,7 @@ impl App {
         stats.example_msgs = self.poll_example_msgs();
         self.poll_clean_msgs();
 
-        stats.tree_results = self.poll_tree_builds();
+        stats.tree_results = 0;
         stats.fit_results = self.poll_fit_width_builds();
         stats.disk_results = self.poll_disk_cache_builds();
 

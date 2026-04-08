@@ -165,6 +165,28 @@ impl ProjectList {
         false
     }
 
+    // -- Config-driven regrouping -------------------------------------------
+
+    /// Regroup workspace members based on `inline_dirs` config. Walks all
+    /// workspaces (including inside worktree groups) and re-sorts their
+    /// members into `Named` / `Inline` groups.
+    pub(crate) fn regroup_members(&mut self, inline_dirs: &[String]) {
+        for item in &mut self.items {
+            match item {
+                ProjectListItem::Workspace(ws) => {
+                    regroup_workspace(ws, inline_dirs);
+                },
+                ProjectListItem::WorkspaceWorktrees(g) => {
+                    regroup_workspace(g.primary_mut(), inline_dirs);
+                    for linked in g.linked_mut() {
+                        regroup_workspace(linked, inline_dirs);
+                    }
+                },
+                _ => {},
+            }
+        }
+    }
+
     // -- Flat entries (search index) -----------------------------------------
 
     pub(crate) fn flat_entries(&self) -> &[FlatEntry] { &self.flat_entries }
@@ -219,6 +241,56 @@ impl<'a> IntoIterator for &'a mut ProjectList {
 }
 
 // -- Helpers --------------------------------------------------------------
+
+fn regroup_workspace(ws: &mut RustProject<Workspace>, inline_dirs: &[String]) {
+    // Collect all members from all existing groups.
+    let members: Vec<RustProject<Package>> = ws
+        .groups_mut()
+        .drain(..)
+        .flat_map(|g| g.into_members())
+        .collect();
+
+    // Re-sort into groups based on subdirectory and inline_dirs.
+    let mut group_map: std::collections::HashMap<String, Vec<RustProject<Package>>> =
+        std::collections::HashMap::new();
+    for member in members {
+        let relative = member
+            .path()
+            .strip_prefix(ws.path())
+            .ok()
+            .map(crate::scan::normalize_workspace_path)
+            .unwrap_or_default();
+        let subdir = relative.split('/').next().unwrap_or("").to_string();
+        let group_name = if inline_dirs.contains(&subdir) || !relative.contains('/') {
+            String::new()
+        } else {
+            subdir
+        };
+        group_map.entry(group_name).or_default().push(member);
+    }
+
+    let mut groups: Vec<MemberGroup> = group_map
+        .into_iter()
+        .map(|(name, members)| {
+            if name.is_empty() {
+                MemberGroup::Inline { members }
+            } else {
+                MemberGroup::Named { name, members }
+            }
+        })
+        .collect();
+    groups.sort_by(|a, b| {
+        let a_inline = a.group_name().is_empty();
+        let b_inline = b.group_name().is_empty();
+        match (a_inline, b_inline) {
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            _ => a.group_name().cmp(b.group_name()),
+        }
+    });
+
+    *ws.groups_mut() = groups;
+}
 
 fn try_insert_member(
     ws: &mut RustProject<Workspace>,
