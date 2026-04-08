@@ -639,7 +639,6 @@ fn run_command(
         .arg("-c")
         .arg(&command.command)
         .current_dir(project_root)
-        .env_remove("RUSTUP_TOOLCHAIN")
         .env("PROJECT_DIR", project_root)
         .env("MANIFEST_PATH", manifest_path)
         .env("LINT_OUTPUT_DIR", output_dir)
