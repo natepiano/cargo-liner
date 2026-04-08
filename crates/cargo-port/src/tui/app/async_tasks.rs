@@ -1168,6 +1168,27 @@ impl App {
         applied
     }
 
+    /// Lightweight refresh of derived state after in-place hierarchy changes
+    /// (discovery, refresh). Rebuilds flat_entries and marks caches dirty
+    /// without a full tree rebuild.
+    pub(super) fn refresh_derived_state(&mut self) {
+        self.flat_entries = scan::build_flat_entries(
+            &self.project_list_items,
+            self.include_non_rust().includes_non_rust(),
+        );
+        self.recompute_cargo_active_paths();
+        self.data_generation += 1;
+        self.detail_generation += 1;
+        self.dirty.finder.mark_dirty();
+        self.dirty.rows.mark_dirty();
+        self.dirty.disk_cache.mark_dirty();
+        self.dirty.fit_widths.mark_dirty();
+        if self.is_searching() && !self.search_query.is_empty() {
+            let query = self.search_query.clone();
+            self.update_search(&query);
+        }
+    }
+
     pub(super) fn refresh_async_caches(&mut self) {
         self.request_disk_cache_build();
         self.request_fit_widths_build();
@@ -1256,7 +1277,7 @@ impl App {
         stats.disk_results = self.poll_disk_cache_builds();
 
         if needs_rebuild {
-            self.request_tree_rebuild();
+            self.refresh_derived_state();
             self.maybe_priority_fetch();
         }
         stats.needs_rebuild = needs_rebuild;
@@ -1582,20 +1603,9 @@ impl App {
         // Insert into the hierarchy directly — under a parent workspace if
         // one exists, otherwise as a top-level peer.
         crate::project::insert_into_hierarchy(&mut self.project_list_items, item);
-
-        // Refresh derived state without a full tree rebuild.
-        self.flat_entries = scan::build_flat_entries(
-            &self.project_list_items,
-            self.include_non_rust().includes_non_rust(),
-        );
-        self.recompute_cargo_active_paths();
-        self.data_generation += 1;
-        self.dirty.finder.mark_dirty();
-        self.dirty.rows.mark_dirty();
-        self.dirty.disk_cache.mark_dirty();
-        self.dirty.fit_widths.mark_dirty();
-        // Return false — no tree rebuild needed.
-        false
+        // Signal that derived state (flat_entries, dirty flags) needs refresh.
+        // The caller batches multiple discoveries before refreshing once.
+        true
     }
 
     pub(super) fn handle_project_refreshed(&mut self, mut item: ProjectListItem) -> bool {
@@ -1613,28 +1623,9 @@ impl App {
         }
         // Re-replace with the runtime-data-enriched version.
         crate::project::replace_leaf_by_path(&mut self.project_list_items, &path, item);
-
-        // Refresh derived state — no tree rebuild needed since the hierarchy
-        // is unchanged, only leaf metadata was updated.
-        self.flat_entries = scan::build_flat_entries(
-            &self.project_list_items,
-            self.include_non_rust().includes_non_rust(),
-        );
-        self.recompute_cargo_active_paths();
-        self.prune_inactive_project_state();
         self.cached_detail = None;
-        self.data_generation += 1;
-        self.detail_generation += 1;
-        self.dirty.finder.mark_dirty();
-        self.dirty.rows.mark_dirty();
-        self.dirty.disk_cache.mark_dirty();
-        self.dirty.fit_widths.mark_dirty();
-        if self.is_searching() && !self.search_query.is_empty() {
-            let query = self.search_query.clone();
-            self.update_search(&query);
-        }
-        // No tree rebuild needed — hierarchy is unchanged.
-        false
+        // Signal that derived state needs refresh (batched by caller).
+        true
     }
 
     pub(super) fn apply_service_signal(&mut self, signal: ServiceSignal) {
