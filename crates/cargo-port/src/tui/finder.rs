@@ -37,21 +37,21 @@ use crate::project::Workspace;
 #[derive(Clone)]
 pub(super) struct FinderItem {
     /// Display name shown in the results list.
-    pub display_name: String,
-    /// The haystack string used for fuzzy matching (includes parent context).
-    pub search_text:  String,
+    pub display_name:  String,
+    /// Search tokens derived from visible fields and path segments.
+    pub search_tokens: Vec<String>,
     /// What kind of item this is.
-    pub kind:         FinderKind,
+    pub kind:          FinderKind,
     /// Path of the project this item belongs to (for navigation).
-    pub project_path: String,
+    pub project_path:  String,
     /// For targets: the cargo target name (used with --example/--bench).
-    pub target_name:  Option<String>,
+    pub target_name:   Option<String>,
     /// Parent project display name (shown dimmed for non-project items).
-    pub parent_label: String,
+    pub parent_label:  String,
     /// Git branch, if known. Distinguishes worktrees.
-    pub branch:       String,
+    pub branch:        String,
     /// Directory name (last path component).
-    pub dir:          String,
+    pub dir:           String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -245,10 +245,14 @@ fn add_vendored_items_typed(
     let display_name = format!("{project_name} (vendored)");
 
     items.push(FinderItem {
-        search_text: format!(
-            "{display_name} {project_name} {parent_name} {dir} vendored {}",
-            FinderKind::Project.label()
-        ),
+        search_tokens: build_search_tokens(&[
+            &display_name,
+            &project_name,
+            parent_name,
+            &dir,
+            "vendored",
+            FinderKind::Project.label(),
+        ]),
         display_name,
         kind: FinderKind::Project,
         project_path: dir.clone(),
@@ -263,10 +267,14 @@ fn add_vendored_items_typed(
     if cargo.types().contains(&ProjectType::Binary) {
         let kind = FinderKind::Binary;
         items.push(FinderItem {
-            search_text: format!(
-                "{project_name} {project_name} {parent_name} {dir} vendored {}",
-                kind.label()
-            ),
+            search_tokens: build_search_tokens(&[
+                &project_name,
+                &project_name,
+                parent_name,
+                &dir,
+                "vendored",
+                kind.label(),
+            ]),
             display_name: project_name.clone(),
             kind,
             project_path: dir.clone(),
@@ -286,10 +294,14 @@ fn add_vendored_items_typed(
             };
             let kind = FinderKind::Example;
             items.push(FinderItem {
-                search_text: format!(
-                    "{display} {project_name} {parent_name} {dir} vendored {}",
-                    kind.label()
-                ),
+                search_tokens: build_search_tokens(&[
+                    &display,
+                    &project_name,
+                    parent_name,
+                    &dir,
+                    "vendored",
+                    kind.label(),
+                ]),
                 display_name: display,
                 kind,
                 project_path: dir.clone(),
@@ -304,10 +316,14 @@ fn add_vendored_items_typed(
     for name in cargo.benches() {
         let kind = FinderKind::Bench;
         items.push(FinderItem {
-            search_text: format!(
-                "{name} {project_name} {parent_name} {dir} vendored {}",
-                kind.label()
-            ),
+            search_tokens: build_search_tokens(&[
+                name,
+                &project_name,
+                parent_name,
+                &dir,
+                "vendored",
+                kind.label(),
+            ]),
             display_name: name.clone(),
             kind,
             project_path: dir.clone(),
@@ -335,7 +351,7 @@ fn add_project_items_from_typed(
     // The project itself
     let kind = FinderKind::Project;
     items.push(FinderItem {
-        search_text: format!("{project_name} {dir} {branch} {}", kind.label()),
+        search_tokens: build_search_tokens(&[&project_name, &dir, &branch, kind.label()]),
         display_name: project_name.clone(),
         kind,
         project_path: dir.clone(),
@@ -349,10 +365,13 @@ fn add_project_items_from_typed(
     if types.contains(&ProjectType::Binary) {
         let kind = FinderKind::Binary;
         items.push(FinderItem {
-            search_text: format!(
-                "{project_name} {project_name} {dir} {branch} {}",
-                kind.label()
-            ),
+            search_tokens: build_search_tokens(&[
+                &project_name,
+                &project_name,
+                &dir,
+                &branch,
+                kind.label(),
+            ]),
             display_name: project_name.clone(),
             kind,
             project_path: dir.clone(),
@@ -373,7 +392,13 @@ fn add_project_items_from_typed(
             };
             let kind = FinderKind::Example;
             items.push(FinderItem {
-                search_text: format!("{display} {project_name} {dir} {branch} {}", kind.label()),
+                search_tokens: build_search_tokens(&[
+                    &display,
+                    &project_name,
+                    &dir,
+                    &branch,
+                    kind.label(),
+                ]),
                 display_name: display,
                 kind,
                 project_path: dir.clone(),
@@ -389,7 +414,7 @@ fn add_project_items_from_typed(
     for name in benches {
         let kind = FinderKind::Bench;
         items.push(FinderItem {
-            search_text: format!("{name} {project_name} {dir} {branch} {}", kind.label()),
+            search_tokens: build_search_tokens(&[name, &project_name, &dir, &branch, kind.label()]),
             display_name: name.clone(),
             kind,
             project_path: dir.clone(),
@@ -399,6 +424,32 @@ fn add_project_items_from_typed(
             dir: dir.clone(),
         });
     }
+}
+
+fn build_search_tokens(fields: &[&str]) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for field in fields {
+        for segment in field
+            .split(|ch: char| ch.is_whitespace() || matches!(ch, '/' | '\\'))
+            .filter(|segment| !segment.is_empty())
+        {
+            push_search_token(&mut tokens, segment);
+            for fragment in segment.split(|ch: char| !ch.is_alphanumeric()) {
+                push_search_token(&mut tokens, fragment);
+            }
+        }
+    }
+    tokens
+}
+
+fn push_search_token(tokens: &mut Vec<String>, token: &str) {
+    if token.is_empty() || !token.chars().any(char::is_alphanumeric) {
+        return;
+    }
+    if tokens.iter().any(|existing| existing == token) {
+        return;
+    }
+    tokens.push(token.to_string());
 }
 
 /// Fuzzy-match the query against the finder index. Returns `(indices, total_matches)`.
@@ -420,17 +471,17 @@ pub(super) fn search_finder(
         return (Vec::new(), 0);
     }
 
-    // Single word: fuzzy for forgiving typo-tolerant search.
-    // Multiple words: each must be a substring so extra terms narrow, not widen.
-    let kind = if words.len() == 1 {
-        AtomKind::Fuzzy
-    } else {
-        AtomKind::Substring
-    };
-
     let atoms: Vec<Atom> = words
         .iter()
-        .map(|w| Atom::new(w, CaseMatching::Smart, Normalization::Smart, kind, false))
+        .map(|word| {
+            Atom::new(
+                word,
+                CaseMatching::Smart,
+                Normalization::Smart,
+                AtomKind::Fuzzy,
+                false,
+            )
+        })
         .collect();
 
     let mut matcher = Matcher::default();
@@ -438,11 +489,17 @@ pub(super) fn search_finder(
         .iter()
         .enumerate()
         .filter_map(|(i, item)| {
-            let mut buf = Vec::new();
-            let haystack = Utf32Str::new(&item.search_text, &mut buf);
             let mut total_score: u16 = 0;
             for atom in &atoms {
-                let score = atom.score(haystack, &mut matcher)?;
+                let score = item
+                    .search_tokens
+                    .iter()
+                    .filter_map(|token| {
+                        let mut buf = Vec::new();
+                        let haystack = Utf32Str::new(token, &mut buf);
+                        atom.score(haystack, &mut matcher)
+                    })
+                    .max()?;
                 total_score = total_score.saturating_add(score);
             }
             Some((i, total_score))
@@ -728,8 +785,10 @@ mod tests {
 
     use super::*;
     use crate::project::Cargo;
+    use crate::project::ExampleGroup;
     use crate::project::Package;
     use crate::project::ProjectListItem;
+    use crate::project::ProjectType;
     use crate::project::RustProject;
     use crate::project::Workspace;
 
@@ -757,6 +816,109 @@ mod tests {
             item.project_path == "~/rust/hana/crates/clay-layout"
                 && item.display_name == "clay-layout (vendored)"
                 && item.branch.is_empty()
+        }));
+    }
+
+    #[test]
+    fn finder_single_word_does_not_match_across_unrelated_tokens() {
+        let item = FinderItem {
+            display_name:  "clay-layout (vendored)".to_string(),
+            search_tokens: build_search_tokens(&[
+                "clay-layout (vendored)",
+                "clay-layout",
+                "clay-layout",
+                "~/rust/bevy_diegetic/clay-layout",
+                "vendored",
+                FinderKind::Project.label(),
+            ]),
+            kind:          FinderKind::Project,
+            project_path:  "~/rust/bevy_diegetic/clay-layout".to_string(),
+            target_name:   None,
+            parent_label:  "clay-layout".to_string(),
+            branch:        String::new(),
+            dir:           "~/rust/bevy_diegetic/clay-layout".to_string(),
+        };
+
+        let (results, total) = search_finder(&[item], "android", 50);
+        assert!(results.is_empty());
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn finder_single_word_matches_directory_token() {
+        let item = FinderItem {
+            display_name:  "raylib_renderer".to_string(),
+            search_tokens: build_search_tokens(&[
+                "raylib_renderer",
+                "clay-layout",
+                "~/rust/bevy_diegetic/clay-layout",
+                "",
+                FinderKind::Example.label(),
+            ]),
+            kind:          FinderKind::Example,
+            project_path:  "~/rust/bevy_diegetic/clay-layout".to_string(),
+            target_name:   Some("raylib_renderer".to_string()),
+            parent_label:  "clay-layout".to_string(),
+            branch:        String::new(),
+            dir:           "~/rust/bevy_diegetic/clay-layout".to_string(),
+        };
+
+        let (results, total) = search_finder(&[item], "diegetic", 50);
+        assert_eq!(results, vec![0]);
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn finder_multi_word_matches_across_tokens() {
+        let item = FinderItem {
+            display_name:  "build-easefunction-graphs".to_string(),
+            search_tokens: build_search_tokens(&[
+                "build-easefunction-graphs",
+                "build-easefunction-graphs",
+                "~/rust/bevy/tools/build-easefunction-graphs",
+                "fix/position-before-size-v0.19",
+                FinderKind::Binary.label(),
+            ]),
+            kind:          FinderKind::Binary,
+            project_path:  "~/rust/bevy/tools/build-easefunction-graphs".to_string(),
+            target_name:   Some("build-easefunction-graphs".to_string()),
+            parent_label:  "build-easefunction-graphs".to_string(),
+            branch:        "fix/position-before-size-v0.19".to_string(),
+            dir:           "~/rust/bevy/tools/build-easefunction-graphs".to_string(),
+        };
+
+        let (results, total) = search_finder(&[item], "tools graphs", 50);
+        assert_eq!(results, vec![0]);
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn build_finder_index_tokenizes_display_name_and_dir_segments() {
+        let pkg = RustProject::<Package>::new(
+            PathBuf::from("~/rust/bevy/tools/build-easefunction-graphs"),
+            Some("build-easefunction-graphs".to_string()),
+            Cargo::new(
+                None,
+                None,
+                vec![ProjectType::Binary],
+                vec![ExampleGroup {
+                    category: String::new(),
+                    names:    vec!["raylib_renderer".to_string()],
+                }],
+                Vec::new(),
+                0,
+            ),
+            Vec::new(),
+            None,
+            None,
+        );
+
+        let (items, _widths) =
+            build_finder_index(&[ProjectListItem::Package(pkg)], &HashMap::new());
+        assert!(items.iter().any(|item| {
+            item.display_name == "build-easefunction-graphs"
+                && item.search_tokens.iter().any(|token| token == "tools")
+                && item.search_tokens.iter().any(|token| token == "graphs")
         }));
     }
 }
