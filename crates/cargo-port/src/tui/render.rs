@@ -445,7 +445,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
 
     let total_project_rows = items.len();
     let total_bytes: u64 = app
-        .project_list_items
+        .projects
         .iter()
         .filter_map(ProjectListItem::disk_usage_bytes)
         .sum();
@@ -771,7 +771,7 @@ fn render_root_item(
     root_sorted: &[u64],
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
-    let item = &app.project_list_items[node_index];
+    let item = &app.projects[node_index];
     let mut name = item.display_name();
     let live_wt = App::live_worktree_count_for_item(item);
     if live_wt > 0 {
@@ -883,7 +883,7 @@ fn render_worktree_entry<'a>(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ResolvedWidths,
 ) -> ListItem<'a> {
-    let item = &app.project_list_items[ni];
+    let item = &app.projects[ni];
     let display_path = app.display_path_for_row(VisibleRow::WorktreeEntry {
         node_index:     ni,
         worktree_index: wi,
@@ -981,7 +981,7 @@ fn render_wt_group_header<'a>(
     gi: usize,
     widths: &ResolvedWidths,
 ) -> ListItem<'a> {
-    let item = &app.project_list_items[ni];
+    let item = &app.projects[ni];
     let (group_name, member_count) = match item {
         crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
             let ws = if wi == 0 {
@@ -1013,7 +1013,7 @@ fn render_wt_member<'a>(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ResolvedWidths,
 ) -> ListItem<'a> {
-    let item = &app.project_list_items[ni];
+    let item = &app.projects[ni];
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
@@ -1052,7 +1052,7 @@ fn render_member_item(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
-    let item = &app.project_list_items[node_index];
+    let item = &app.projects[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let (member, member_name, is_named) = match item {
@@ -1084,7 +1084,7 @@ fn render_vendored_item(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
-    let item = &app.project_list_items[node_index];
+    let item = &app.projects[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let (vendored, vendored_display_name) = match item {
@@ -1116,7 +1116,7 @@ fn render_wt_vendored_item(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
-    let item = &app.project_list_items[node_index];
+    let item = &app.projects[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let vendored_pkg = match item {
@@ -1168,7 +1168,7 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                 node_index,
                 group_index,
             } => {
-                let item = &app.project_list_items[*node_index];
+                let item = &app.projects[*node_index];
                 let (group_name, member_count) = match item {
                     crate::project::ProjectListItem::Workspace(ws) => {
                         let group = &ws.groups()[*group_index];
@@ -1251,7 +1251,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             let entry = app.flat_entries.get(flat_idx)?;
             let item = {
                 let mut found = None;
-                crate::project::for_each_leaf(&app.project_list_items, |leaf| {
+                app.projects.for_each_leaf(|leaf| {
                     if found.is_none() && leaf.display_path() == entry.path {
                         found = Some(leaf.clone());
                     }

@@ -123,7 +123,7 @@ impl App {
             return false;
         }
         let mut is_rust = false;
-        crate::project::for_each_leaf_path(&self.project_list_items, |p, rust| {
+        self.projects.for_each_leaf_path(|p, rust| {
             if p == path {
                 is_rust = rust;
             }
@@ -197,14 +197,14 @@ impl App {
 
     pub fn is_deleted(&self, path: &Path) -> bool {
         use crate::project::Visibility;
-        self.project_list_items
+        self.projects
             .iter()
             .any(|item| item.has_project_with_visibility_by_path(path, Visibility::Deleted))
     }
 
     pub fn formatted_disk(&self, path: &Path) -> String {
         let mut bytes = 0u64;
-        crate::project::for_each_leaf(&self.project_list_items, |item| {
+        self.projects.for_each_leaf(|item| {
             if item.path() == path {
                 bytes = item.disk_usage_bytes().unwrap_or(0);
             }
@@ -333,7 +333,7 @@ impl App {
     pub fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
 
     pub fn is_vendored_path(&self, path: &str) -> bool {
-        self.project_list_items.iter().any(|item| match item {
+        self.projects.iter().any(|item| match item {
             ProjectListItem::Workspace(ws) => {
                 ws.vendored().iter().any(|v| v.display_path() == path)
             },
@@ -351,7 +351,7 @@ impl App {
     }
 
     pub fn is_workspace_member_path(&self, path: &str) -> bool {
-        self.project_list_items.iter().any(|item| match item {
+        self.projects.iter().any(|item| match item {
             ProjectListItem::Workspace(ws) => ws
                 .groups()
                 .iter()
@@ -369,14 +369,14 @@ impl App {
 
     pub fn recompute_cargo_active_paths(&mut self) {
         let mut active_paths: HashSet<PathBuf> = HashSet::new();
-        crate::project::for_each_leaf(&self.project_list_items, |item| {
+        self.projects.for_each_leaf(|item| {
             if !self.is_vendored_path(&item.display_path()) {
                 active_paths.insert(item.path().to_path_buf());
             }
         });
 
         // Include vendored projects whose parent is active.
-        for item in &self.project_list_items {
+        for item in &self.projects {
             let vendored_paths: Vec<&Path> = match item {
                 ProjectListItem::Workspace(ws) => ws
                     .vendored()
@@ -426,7 +426,7 @@ impl App {
 
     pub fn prune_inactive_project_state(&mut self) {
         let mut all_paths: HashSet<PathBuf> = HashSet::new();
-        crate::project::for_each_leaf_path(&self.project_list_items, |path, _| {
+        self.projects.for_each_leaf_path(|path, _| {
             all_paths.insert(path.to_path_buf());
         });
         self.git_path_states

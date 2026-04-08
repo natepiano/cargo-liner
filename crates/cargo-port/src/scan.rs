@@ -91,9 +91,9 @@ pub(crate) enum BackgroundMsg {
         description: Option<String>,
     },
     ScanResult {
-        project_list_items: Vec<ProjectListItem>,
-        flat_entries:       Vec<FlatEntry>,
-        disk_entries:       Vec<(String, PathBuf)>,
+        projects:     Vec<ProjectListItem>,
+        flat_entries: Vec<FlatEntry>,
+        disk_entries: Vec<(String, PathBuf)>,
     },
     ProjectDiscovered {
         item: ProjectListItem,
@@ -1355,18 +1355,18 @@ pub(crate) fn spawn_streaming_scan(
         );
 
         let tree_started = std::time::Instant::now();
-        let project_list_items = build_tree(&phase1.items, &inline_dirs);
-        let flat_entries = build_flat_entries(&project_list_items, true);
+        let projects = build_tree(&phase1.items, &inline_dirs);
+        let flat_entries = build_flat_entries(&projects, true);
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(tree_started.elapsed().as_millis()),
             input_items = phase1.items.len(),
-            tree_items = project_list_items.len(),
+            tree_items = projects.len(),
             flat_entries = flat_entries.len(),
             "scan_tree_build"
         );
 
         let _ = scan_tx.send(BackgroundMsg::ScanResult {
-            project_list_items,
+            projects,
             flat_entries,
             disk_entries: phase1.disk_entries.clone(),
         });

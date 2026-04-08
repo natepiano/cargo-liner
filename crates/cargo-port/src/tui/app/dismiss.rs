@@ -49,7 +49,7 @@ impl App {
             DismissTarget::Toast(id) => self.dismiss_toast(id),
             DismissTarget::DeletedProject(path) => {
                 let parent_node_index = self.worktree_parent_node_index(&path);
-                for item in &mut self.project_list_items {
+                for item in &mut self.projects {
                     if item.set_visibility_by_path(&path, Dismissed) {
                         break;
                     }
@@ -73,7 +73,7 @@ impl App {
     /// If `path` is a worktree entry's project path, return the parent
     /// node index so the selection can jump to the Root row after dismiss.
     fn worktree_parent_node_index(&self, path: &str) -> Option<usize> {
-        self.project_list_items
+        self.projects
             .iter()
             .enumerate()
             .find_map(|(ni, item)| match item {

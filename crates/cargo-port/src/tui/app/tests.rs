@@ -262,7 +262,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     app.scan.phase = ScanPhase::Complete;
 
     // All items live in project_list_items regardless of non-rust config.
-    assert_eq!(app.project_list_items.len(), 2);
+    assert_eq!(app.projects.len(), 2);
 
     let mut hide_cfg = cfg.clone();
     hide_cfg.tui.include_non_rust = NonRustInclusion::Exclude;
@@ -271,14 +271,14 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
 
     assert!(app.is_scan_complete());
     // Items are still in project_list_items — non-rust filtering is at render time.
-    assert_eq!(app.project_list_items.len(), 2);
+    assert_eq!(app.projects.len(), 2);
     app.ensure_visible_rows_cached();
     let visible: Vec<_> = app
         .visible_rows()
         .iter()
         .filter_map(|row| match row {
             super::types::VisibleRow::Root { node_index } => {
-                Some(app.project_list_items[*node_index].display_path())
+                Some(app.projects[*node_index].display_path())
             },
             _ => None,
         })
@@ -290,9 +290,9 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     wait_for_tree_build(&mut app);
 
     assert!(app.is_scan_complete());
-    assert_eq!(app.project_list_items.len(), 2);
+    assert_eq!(app.projects.len(), 2);
     assert!(
-        app.project_list_items
+        app.projects
             .iter()
             .any(|item| item.display_path() == "~/js")
     );
@@ -308,13 +308,16 @@ fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
     cfg.tui.include_non_rust = NonRustInclusion::Include;
     app.apply_config(&cfg);
 
-    assert!(app.project_list_items.is_empty());
+    assert!(app.projects.is_empty());
     assert!(!app.is_scan_complete());
 }
 
 fn apply_items(app: &mut App, items: &[ProjectListItem]) {
     let flat_entries = crate::scan::build_flat_entries(items, true);
-    app.apply_tree_build(flat_entries, items.to_vec());
+    app.apply_tree_build(
+        flat_entries,
+        crate::project_list::ProjectList::new(items.to_vec()),
+    );
     app.ensure_visible_rows_cached();
 }
 
@@ -724,10 +727,7 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
     );
 
     // ci_for_item on the worktree group item should aggregate across worktrees
-    assert_eq!(
-        app.ci_for_item(&app.project_list_items[0]),
-        Some(Conclusion::Failure)
-    );
+    assert_eq!(app.ci_for_item(&app.projects[0]), Some(Conclusion::Failure));
     assert!(app.ci_state_for(member.path()).is_none());
 }
 
@@ -1507,9 +1507,9 @@ fn disk_rollup_deduplicates_primary_worktree_path() {
     app.handle_disk_usage(Path::new("~/ws"), 15);
     app.handle_disk_usage(Path::new("~/ws_feat"), 21);
 
-    assert_eq!(app.project_list_items[0].disk_usage_bytes(), Some(36));
+    assert_eq!(app.projects[0].disk_usage_bytes(), Some(36));
     assert_eq!(
-        App::formatted_disk_for_item(&app.project_list_items[0]),
+        App::formatted_disk_for_item(&app.projects[0]),
         crate::tui::render::format_bytes(36)
     );
 }
@@ -1525,7 +1525,7 @@ fn handle_project_discovered_deduplicates_by_path() {
     app.handle_project_discovered(pkg1);
     app.handle_project_discovered(pkg2); // duplicate — should be rejected
     app.handle_project_discovered(pkg3);
-    assert_eq!(app.project_list_items.len(), 2);
+    assert_eq!(app.projects.len(), 2);
 }
 
 #[test]
@@ -1541,7 +1541,7 @@ fn handle_project_discovered_does_not_allocate_per_comparison() {
         app.handle_project_discovered(item);
     }
     let elapsed = start.elapsed();
-    assert_eq!(app.project_list_items.len(), 200);
+    assert_eq!(app.projects.len(), 200);
     // With PathBuf comparison this should be well under 100ms.
     // With display_path() allocation it would be much slower.
     assert!(
@@ -1557,13 +1557,13 @@ fn is_deleted_does_not_allocate_display_paths() {
     for i in 0..200 {
         let path = format!("/abs/project_{i}");
         let item = ProjectListItem::Package(make_package_raw(None, &path, None));
-        app.project_list_items.push(item);
+        app.projects.push(item);
     }
     // Mark one as deleted
-    let dp = app.project_list_items[100].display_path();
-    app.project_list_items[100].set_visibility_by_path(&dp, Deleted);
+    let dp = app.projects[100].display_path();
+    app.projects[100].set_visibility_by_path(&dp, Deleted);
 
-    let target = app.project_list_items[100].path().to_path_buf();
+    let target = app.projects[100].path().to_path_buf();
     let start = std::time::Instant::now();
     for _ in 0..1000 {
         let _ = app.is_deleted(&target);

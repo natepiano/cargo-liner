@@ -77,14 +77,14 @@ impl AppChannels {
 }
 
 struct AppInit {
-    config_path:        Option<PathBuf>,
-    config_last_seen:   Option<ConfigFileStamp>,
-    lint_warning:       Option<String>,
-    lint_runtime:       Option<RuntimeHandle>,
-    watch_tx:           mpsc::Sender<WatchRequest>,
-    project_list_items: Vec<ProjectListItem>,
-    flat_entries:       Vec<FlatEntry>,
-    list_state:         ListState,
+    config_path:      Option<PathBuf>,
+    config_last_seen: Option<ConfigFileStamp>,
+    lint_warning:     Option<String>,
+    lint_runtime:     Option<RuntimeHandle>,
+    watch_tx:         mpsc::Sender<WatchRequest>,
+    projects:         crate::project_list::ProjectList,
+    flat_entries:     Vec<FlatEntry>,
+    list_state:       ListState,
 }
 
 impl AppInit {
@@ -107,10 +107,11 @@ impl AppInit {
             cfg.tui.include_dirs.clone(),
             http_client.clone(),
         );
-        let project_list_items = scan::build_tree(projects, &cfg.tui.inline_dirs);
+        let built = scan::build_tree(projects, &cfg.tui.inline_dirs);
         let include_non_rust = cfg.tui.include_non_rust.includes_non_rust();
-        let flat_entries = scan::build_flat_entries(&project_list_items, include_non_rust);
-        let list_state = initial_list_state(&project_list_items);
+        let flat_entries = scan::build_flat_entries(&built, include_non_rust);
+        let list_state = initial_list_state(&built);
+        let projects = crate::project_list::ProjectList::new(built);
 
         Self {
             config_path,
@@ -118,7 +119,7 @@ impl AppInit {
             lint_warning: lint_spawn.warning,
             lint_runtime: lint_spawn.handle,
             watch_tx,
-            project_list_items,
+            projects,
             flat_entries,
             list_state,
         }
@@ -141,7 +142,7 @@ struct CoreInputs {
 impl App {
     pub fn has_cached_non_rust_projects(&self) -> bool {
         let mut found = false;
-        crate::project::for_each_leaf(&self.project_list_items, |item| {
+        self.projects.for_each_leaf(|item| {
             if !item.is_rust() {
                 found = true;
             }
@@ -155,7 +156,7 @@ impl App {
     /// truth). All runtime data lives on these items.
     pub fn tree_projects_snapshot(&self) -> Vec<ProjectListItem> {
         let mut leaves = Vec::new();
-        crate::project::for_each_leaf(&self.project_list_items, |item| {
+        self.projects.for_each_leaf(|item| {
             leaves.push(item.clone());
         });
         leaves
@@ -198,7 +199,7 @@ impl App {
             current_config: inputs.cfg,
             scan_root: inputs.scan_root,
             http_client: inputs.http_client,
-            project_list_items: init.project_list_items,
+            projects: init.projects,
             flat_entries: init.flat_entries,
             ci_state: HashMap::new(),
             lint_status: HashMap::new(),

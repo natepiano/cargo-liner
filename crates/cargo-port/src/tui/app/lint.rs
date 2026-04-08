@@ -15,7 +15,7 @@ impl App {
         self.lint_rollup_keys_by_path.clear();
 
         let mut registrations: Vec<(LintRollupKey, Vec<PathBuf>)> = Vec::new();
-        for (node_index, item) in self.project_list_items.iter().enumerate() {
+        for (node_index, item) in self.projects.iter().enumerate() {
             registrations.push((
                 LintRollupKey::Root { node_index },
                 Self::lint_root_paths_for_item(item),

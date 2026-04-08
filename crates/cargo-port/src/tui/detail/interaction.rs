@@ -320,7 +320,7 @@ fn open_cargo_toml(app: &App) {
         return;
     };
     let project_dir = app
-        .project_list_items
+        .projects
         .iter()
         .find_map(|item| match item {
             crate::project::ProjectListItem::Workspace(ws)

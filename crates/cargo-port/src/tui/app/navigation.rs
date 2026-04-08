@@ -32,7 +32,7 @@ impl App {
         }
         self.dirty.rows.mark_clean();
         self.cached_visible_rows = snapshots::build_visible_rows(
-            &self.project_list_items,
+            &self.projects,
             &self.expanded,
             self.include_non_rust().includes_non_rust(),
         );
@@ -116,7 +116,7 @@ impl App {
         let row = self.selected_row()?;
         match row {
             VisibleRow::Root { node_index } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 Some(tui::detail::build_detail_info(self, item))
             },
             VisibleRow::Member {
@@ -124,7 +124,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 let pkg = Self::resolve_member(item, group_index, member_index)?;
                 Some(tui::detail::build_detail_info_for_member(self, pkg))
             },
@@ -132,13 +132,13 @@ impl App {
                 node_index,
                 vendored_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 let pkg = Self::resolve_vendored(item, vendored_index)?;
                 Some(tui::detail::build_detail_info_for_member(self, pkg))
             },
             VisibleRow::GroupHeader { node_index, .. } => {
                 // Group headers show the parent project's detail
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 Some(tui::detail::build_detail_info(self, item))
             },
             VisibleRow::WorktreeEntry {
@@ -150,7 +150,7 @@ impl App {
                 worktree_index,
                 ..
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 self.build_worktree_detail(item, worktree_index)
             },
             VisibleRow::WorktreeMember {
@@ -159,7 +159,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 let pkg =
                     Self::worktree_member_ref(item, worktree_index, group_index, member_index)?;
                 Some(tui::detail::build_detail_info_for_member(self, pkg))
@@ -169,7 +169,7 @@ impl App {
                 worktree_index,
                 vendored_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 let pkg = Self::worktree_vendored_ref(item, worktree_index, vendored_index)?;
                 Some(tui::detail::build_detail_info_for_member(self, pkg))
             },
@@ -321,7 +321,7 @@ impl App {
     /// Returns the `ProjectListItem` when a root row is selected.
     pub fn selected_item(&self) -> Option<&ProjectListItem> {
         match self.selected_row()? {
-            VisibleRow::Root { node_index } => self.project_list_items.get(node_index),
+            VisibleRow::Root { node_index } => self.projects.get(node_index),
             _ => None,
         }
     }
@@ -345,7 +345,7 @@ impl App {
     pub fn path_for_row(&self, row: VisibleRow) -> Option<&Path> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 Some(item.path())
             },
             VisibleRow::Member {
@@ -353,7 +353,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 match item {
                     ProjectListItem::Workspace(ws) => {
                         let group = ws.groups().get(group_index)?;
@@ -367,7 +367,7 @@ impl App {
                 node_index,
                 vendored_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 match item {
                     ProjectListItem::Workspace(ws) => {
                         ws.vendored().get(vendored_index).map(RustProject::path)
@@ -387,7 +387,7 @@ impl App {
                 worktree_index,
                 ..
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 Self::worktree_path_ref(item, worktree_index)
             },
             VisibleRow::WorktreeMember {
@@ -396,7 +396,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 Self::worktree_member_path_ref(item, worktree_index, group_index, member_index)
             },
             VisibleRow::WorktreeVendored {
@@ -404,7 +404,7 @@ impl App {
                 worktree_index,
                 vendored_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 Self::worktree_vendored_path_ref(item, worktree_index, vendored_index)
             },
         }
@@ -422,7 +422,7 @@ impl App {
     pub fn display_path_for_row(&self, row: VisibleRow) -> Option<String> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 Some(item.display_path())
             },
             VisibleRow::Member {
@@ -430,7 +430,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 match item {
                     ProjectListItem::Workspace(ws) => {
                         let group = ws.groups().get(group_index)?;
@@ -444,7 +444,7 @@ impl App {
                 node_index,
                 vendored_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 match item {
                     ProjectListItem::Workspace(ws) => ws
                         .vendored()
@@ -466,7 +466,7 @@ impl App {
                 worktree_index,
                 ..
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 Self::worktree_display_path(item, worktree_index)
             },
             VisibleRow::WorktreeMember {
@@ -475,7 +475,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 Self::worktree_member_display_path(item, worktree_index, group_index, member_index)
             },
             VisibleRow::WorktreeVendored {
@@ -483,7 +483,7 @@ impl App {
                 worktree_index,
                 vendored_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 Self::worktree_vendored_display_path(item, worktree_index, vendored_index)
             },
         }
@@ -493,7 +493,7 @@ impl App {
     pub fn abs_path_for_row(&self, row: VisibleRow) -> Option<PathBuf> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 Some(item.path().to_path_buf())
             },
             VisibleRow::Member {
@@ -501,7 +501,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 match item {
                     ProjectListItem::Workspace(ws) => {
                         let group = ws.groups().get(group_index)?;
@@ -515,7 +515,7 @@ impl App {
                 node_index,
                 vendored_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 match item {
                     ProjectListItem::Workspace(ws) => ws
                         .vendored()
@@ -537,7 +537,7 @@ impl App {
                 worktree_index,
                 ..
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 Self::worktree_abs_path(item, worktree_index)
             },
             VisibleRow::WorktreeMember {
@@ -546,7 +546,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 Self::worktree_member_abs_path(item, worktree_index, group_index, member_index)
             },
             VisibleRow::WorktreeVendored {
@@ -554,7 +554,7 @@ impl App {
                 worktree_index,
                 vendored_index,
             } => {
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 Self::worktree_vendored_abs_path(item, worktree_index, vendored_index)
             },
         }
@@ -562,7 +562,7 @@ impl App {
 
     /// Check if a group at the given indices is an inline (unnamed) group.
     fn is_inline_group(&self, ni: usize, gi: usize) -> bool {
-        let Some(item) = self.project_list_items.get(ni) else {
+        let Some(item) = self.projects.get(ni) else {
             return true;
         };
         match item {
@@ -573,7 +573,7 @@ impl App {
 
     /// Check if a worktree group at the given indices is an inline (unnamed) group.
     fn is_worktree_inline_group(&self, ni: usize, wi: usize, gi: usize) -> bool {
-        let Some(item) = self.project_list_items.get(ni) else {
+        let Some(item) = self.projects.get(ni) else {
             return true;
         };
         match item {
@@ -792,7 +792,7 @@ impl App {
         };
         match rows.get(selected) {
             Some(VisibleRow::Root { node_index }) => self
-                .project_list_items
+                .projects
                 .get(*node_index)
                 .is_some_and(ProjectListItem::has_children),
             Some(VisibleRow::GroupHeader { .. } | VisibleRow::WorktreeGroupHeader { .. }) => true,
@@ -803,7 +803,7 @@ impl App {
     pub(super) fn expand_key_for_row(&self, row: VisibleRow) -> Option<ExpandKey> {
         match row {
             VisibleRow::Root { node_index } => self
-                .project_list_items
+                .projects
                 .get(node_index)?
                 .has_children()
                 .then_some(ExpandKey::Node(node_index)),
@@ -817,7 +817,7 @@ impl App {
             } => {
                 // In the new model, worktree entries don't expand themselves.
                 // But we keep the expand key for backward compat with workspace worktrees.
-                let item = self.project_list_items.get(node_index)?;
+                let item = self.projects.get(node_index)?;
                 match item {
                     ProjectListItem::WorkspaceWorktrees(wtg) => {
                         let ws = if worktree_index == 0 {
@@ -1078,7 +1078,7 @@ impl App {
             .take()
             .or_else(|| self.selected_display_path());
         self.selection_paths.collapsed_anchor = None;
-        for (ni, item) in self.project_list_items.iter().enumerate() {
+        for (ni, item) in self.projects.iter().enumerate() {
             if item.has_children() {
                 self.expanded.insert(ExpandKey::Node(ni));
             }
@@ -1141,7 +1141,7 @@ impl App {
         self.filtered.clear();
         self.dirty.rows.mark_dirty();
         self.close_overlay();
-        if !self.project_list_items.is_empty() {
+        if !self.projects.is_empty() {
             self.list_state.select(Some(0));
         }
     }
@@ -1165,7 +1165,7 @@ impl App {
     }
 
     pub(super) fn expand_path_in_tree(&mut self, target_path: &str) {
-        for (ni, item) in self.project_list_items.iter().enumerate() {
+        for (ni, item) in self.projects.iter().enumerate() {
             match item {
                 ProjectListItem::Workspace(ws) => {
                     for (gi, group) in ws.groups().iter().enumerate() {

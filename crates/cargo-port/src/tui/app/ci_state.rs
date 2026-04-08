@@ -108,7 +108,7 @@ impl App {
     }
 
     pub(super) fn is_ci_owner_path(&self, path: &Path) -> bool {
-        self.project_list_items.iter().any(|item| {
+        self.projects.iter().any(|item| {
             item.path() == path
                 || match item {
                     crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {

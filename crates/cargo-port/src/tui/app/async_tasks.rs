@@ -33,6 +33,7 @@ use crate::project::RustProject;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Visible;
 use crate::project::Workspace;
+use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::FlatEntry;
@@ -49,16 +50,12 @@ use crate::watcher;
 use crate::watcher::WatchRequest;
 
 impl App {
-    pub(super) fn apply_tree_build(
-        &mut self,
-        flat_entries: Vec<FlatEntry>,
-        project_list_items: Vec<ProjectListItem>,
-    ) {
+    pub(super) fn apply_tree_build(&mut self, flat_entries: Vec<FlatEntry>, projects: ProjectList) {
         let selected_path = self
             .selected_display_path()
             .or_else(|| self.selection_paths.last_selected.clone());
         let should_focus_project_list = false;
-        self.project_list_items = project_list_items;
+        self.projects = projects;
         self.flat_entries = flat_entries;
         self.dirty.finder.mark_dirty();
         self.dirty.rows.mark_dirty();
@@ -80,7 +77,7 @@ impl App {
         }
 
         // Propagate git info and stars from workspace roots to their members.
-        for item in &self.project_list_items {
+        for item in &self.projects {
             let root_path = item.path();
             let member_paths: Vec<PathBuf> = match item {
                 crate::project::ProjectListItem::Workspace(ws) => ws
@@ -117,7 +114,7 @@ impl App {
         // Try to restore selection
         if let Some(path) = selected_path {
             self.select_project_in_tree(&path);
-        } else if !self.project_list_items.is_empty() {
+        } else if !self.projects.is_empty() {
             self.list_state.select(Some(0));
         }
         if should_focus_project_list {
@@ -356,7 +353,7 @@ impl App {
     }
 
     pub(super) fn register_existing_projects(&self) {
-        crate::project::for_each_leaf(&self.project_list_items, |item| {
+        self.projects.for_each_leaf(|item| {
             self.register_item_background_services(item);
         });
     }
@@ -365,7 +362,7 @@ impl App {
         self.lint_runs.clear();
         let paths: Vec<PathBuf> = {
             let mut v = Vec::new();
-            crate::project::for_each_leaf_path(&self.project_list_items, |path, _| {
+            self.projects.for_each_leaf_path(|path, _| {
                 v.push(path.to_path_buf());
             });
             v
@@ -384,7 +381,7 @@ impl App {
 
     pub(super) fn reload_lint_history(&mut self, project_path: &Path) {
         let mut found = false;
-        crate::project::for_each_leaf_path(&self.project_list_items, |path, _| {
+        self.projects.for_each_leaf_path(|path, _| {
             if path == project_path {
                 found = true;
             }
@@ -416,7 +413,7 @@ impl App {
     fn register_background_services_for_tree(&self) {
         let started = Instant::now();
         let mut count = 0usize;
-        for item in &self.project_list_items {
+        for item in &self.projects {
             self.register_item_background_services(item);
             count += 1;
         }
@@ -448,7 +445,7 @@ impl App {
     pub(super) fn schedule_git_path_state_refreshes(&self) {
         let tx = self.bg_tx.clone();
         let mut projects: Vec<(String, String)> = Vec::new();
-        crate::project::for_each_leaf_path(&self.project_list_items, |path, _| {
+        self.projects.for_each_leaf_path(|path, _| {
             let abs = path.to_string_lossy().to_string();
             projects.push((abs.clone(), abs));
         });
@@ -466,7 +463,7 @@ impl App {
     pub(super) fn schedule_git_first_commit_refreshes(&self) {
         let tx = self.bg_tx.clone();
         let mut projects_by_repo: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
-        crate::project::for_each_leaf_path(&self.project_list_items, |path, _| {
+        self.projects.for_each_leaf_path(|path, _| {
             let abs_path = path.to_path_buf();
             let Some(repo_root) = crate::project::git_repo_root(&abs_path) else {
                 return;
@@ -502,7 +499,7 @@ impl App {
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
 
-        for item in &self.project_list_items {
+        for item in &self.projects {
             let items: Vec<(&Path, bool)> = match item {
                 crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
                     std::iter::once(wtg.primary())
@@ -556,7 +553,7 @@ impl App {
             return;
         };
         let mut count = 0;
-        for item in &self.project_list_items {
+        for item in &self.projects {
             match item {
                 ProjectListItem::Workspace(ws) => {
                     runtime.register_project(crate::lint::RegisterProjectRequest {
@@ -608,7 +605,7 @@ impl App {
         let path = item.path();
         // Skip workspace members — the workspace root's watcher covers them.
         let mut is_member = false;
-        crate::project::for_each_leaf(&self.project_list_items, |existing| {
+        self.projects.for_each_leaf(|existing| {
             if matches!(existing, ProjectListItem::Workspace(_))
                 && existing.path() != path
                 && path.starts_with(existing.path())
@@ -634,7 +631,7 @@ impl App {
 
     fn register_lint_for_path(&self, display_path: &str) {
         if let Some(item) = self
-            .project_list_items
+            .projects
             .iter()
             .find(|i| i.display_path() == display_path)
         {
@@ -643,7 +640,7 @@ impl App {
     }
 
     pub(super) fn initialize_startup_phase_tracker(&mut self) {
-        let disk_expected = super::snapshots::initial_disk_batch_count(&self.project_list_items);
+        let disk_expected = super::snapshots::initial_disk_batch_count(&self.projects);
         let git_seen = self
             .scan
             .startup_phases
@@ -1018,15 +1015,15 @@ impl App {
         std::thread::spawn(move || {
             let started = Instant::now();
             let input_count = projects.len();
-            let project_list_items = scan::build_tree(&projects, &inline_dirs);
-            let flat_entries = scan::build_flat_entries(&project_list_items, include_non_rust);
+            let built = scan::build_tree(&projects, &inline_dirs);
+            let flat_entries = scan::build_flat_entries(&built, include_non_rust);
             let elapsed = started.elapsed();
             if elapsed.as_millis() >= crate::perf_log::SLOW_WORKER_MS {
                 tracing::info!(
                     elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
                     build_id,
-                    projects = input_count,
-                    items = project_list_items.len(),
+                    input = input_count,
+                    items = built.len(),
                     flat_entries = flat_entries.len(),
                     "tree_build"
                 );
@@ -1034,7 +1031,7 @@ impl App {
             let _ = tx.send(TreeBuildResult {
                 build_id,
                 flat_entries,
-                project_list_items,
+                projects: ProjectList::new(built),
             });
         });
     }
@@ -1046,7 +1043,7 @@ impl App {
                 continue;
             }
             self.builds.tree.active = None;
-            self.apply_tree_build(result.flat_entries, result.project_list_items);
+            self.apply_tree_build(result.flat_entries, result.projects);
             applied += 1;
             if result.build_id != self.builds.tree.latest {
                 self.spawn_tree_build(self.builds.tree.latest);
@@ -1068,7 +1065,7 @@ impl App {
 
     pub(super) fn spawn_fit_widths_build(&mut self, build_id: u64) {
         let tx = self.builds.fit.tx.clone();
-        let items = self.project_list_items.clone();
+        let items = self.projects.clone();
         let git_info = self.git_info.clone();
         let git_path_states = self.git_path_states.clone();
         let lint_enabled = self.lint_enabled();
@@ -1125,7 +1122,7 @@ impl App {
 
     pub(super) fn spawn_disk_cache_build(&mut self, build_id: u64) {
         let tx = self.builds.disk.tx.clone();
-        let items = self.project_list_items.clone();
+        let items = self.projects.clone();
         self.builds.disk.active = Some(build_id);
         std::thread::spawn(move || {
             let started = Instant::now();
@@ -1172,10 +1169,8 @@ impl App {
     /// (discovery, refresh). Rebuilds `flat_entries` and marks caches dirty
     /// without a full tree rebuild.
     pub(super) fn refresh_derived_state(&mut self) {
-        self.flat_entries = scan::build_flat_entries(
-            &self.project_list_items,
-            self.include_non_rust().includes_non_rust(),
-        );
+        self.flat_entries =
+            scan::build_flat_entries(&self.projects, self.include_non_rust().includes_non_rust());
         self.recompute_cargo_active_paths();
         self.data_generation += 1;
         self.detail_generation += 1;
@@ -1195,7 +1190,7 @@ impl App {
     }
 
     pub fn rescan(&mut self) {
-        self.project_list_items.clear();
+        self.projects.clear();
         self.flat_entries.clear();
         // disk_usage lives on project items — cleared when project_list_items is cleared above
         self.ci_state.clear();
@@ -1294,7 +1289,7 @@ impl App {
                 fit_results = stats.fit_results,
                 disk_results = stats.disk_results,
                 needs_rebuild = stats.needs_rebuild,
-                items = self.project_list_items.len(),
+                items = self.projects.len(),
                 "poll_background"
             );
         }
@@ -1392,7 +1387,7 @@ impl App {
                 CleanMsg::Finished(path) => {
                     let abs = PathBuf::from(&path);
                     let already_zero = self
-                        .project_list_items
+                        .projects
                         .iter()
                         .find(|i| i.path() == abs)
                         .and_then(ProjectListItem::disk_usage_bytes)
@@ -1435,7 +1430,7 @@ impl App {
         // Set disk usage on the matching project item and update visibility.
         let display = crate::project::home_relative_path(path);
         let mut lint_runtime_changed = false;
-        for item in &mut self.project_list_items {
+        for item in &mut self.projects {
             if !item.set_disk_usage_by_path(path, bytes) {
                 continue;
             }
@@ -1472,7 +1467,7 @@ impl App {
             info.first_commit = preserved_first_commit;
         }
         // Propagate git info to workspace members and worktrees.
-        for item in &self.project_list_items {
+        for item in &self.projects {
             match item {
                 crate::project::ProjectListItem::Workspace(ws) if ws.path() == abs => {
                     for group in ws.groups() {
@@ -1554,7 +1549,7 @@ impl App {
     ) {
         let abs = path.to_path_buf();
         // Propagate stars to workspace members.
-        for item in &self.project_list_items {
+        for item in &self.projects {
             match item {
                 crate::project::ProjectListItem::Workspace(ws) if ws.path() == abs => {
                     for group in ws.groups() {
@@ -1590,7 +1585,7 @@ impl App {
     pub(super) fn handle_project_discovered(&mut self, item: ProjectListItem) -> bool {
         let display = item.display_path();
         let mut already_exists = false;
-        crate::project::for_each_leaf_path(&self.project_list_items, |path, _| {
+        self.projects.for_each_leaf_path(|path, _| {
             if crate::project::home_relative_path(path) == display {
                 already_exists = true;
             }
@@ -1602,7 +1597,7 @@ impl App {
         self.register_item_background_services(&item);
         // Insert into the hierarchy directly — under a parent workspace if
         // one exists, otherwise as a top-level peer.
-        crate::project::insert_into_hierarchy(&mut self.project_list_items, item);
+        self.projects.insert_into_hierarchy(item);
         // Signal that derived state (flat_entries, dirty flags) needs refresh.
         // The caller batches multiple discoveries before refreshing once.
         true
@@ -1613,16 +1608,14 @@ impl App {
 
         // Replace the leaf in project_list_items, transferring runtime data
         // from the old item to the incoming one.
-        let Some(old) =
-            crate::project::replace_leaf_by_path(&mut self.project_list_items, &path, item.clone())
-        else {
+        let Some(old) = self.projects.replace_leaf_by_path(&path, item.clone()) else {
             return false;
         };
         for (disk_path, bytes) in old.collect_disk_usage() {
             item.set_disk_usage_by_path(&disk_path, bytes);
         }
         // Re-replace with the runtime-data-enriched version.
-        crate::project::replace_leaf_by_path(&mut self.project_list_items, &path, item);
+        self.projects.replace_leaf_by_path(&path, item);
         self.cached_detail = None;
         // Signal that derived state needs refresh (batched by caller).
         true
@@ -1749,7 +1742,7 @@ impl App {
             return;
         }
         let mut is_rust = false;
-        crate::project::for_each_leaf_path(&self.project_list_items, |path, rust| {
+        self.projects.for_each_leaf_path(|path, rust| {
             if path == abs.as_path() {
                 is_rust = rust;
             }
@@ -1807,7 +1800,7 @@ impl App {
 
     fn handle_scan_result(
         &mut self,
-        project_list_items: Vec<ProjectListItem>,
+        projects: Vec<ProjectListItem>,
         flat_entries: Vec<FlatEntry>,
         disk_entries: &[(String, PathBuf)],
     ) {
@@ -1821,7 +1814,7 @@ impl App {
             elapsed_ms = crate::perf_log::ms(self.scan.started_at.elapsed().as_millis()),
             kind,
             run = self.scan.run_count,
-            tree_items = project_list_items.len(),
+            tree_items = projects.len(),
             flat_entries = flat_entries.len(),
             disk_entries = disk_entries.len(),
             "scan_result_applied"
@@ -1832,7 +1825,7 @@ impl App {
         let selected_path = self
             .selected_display_path()
             .or_else(|| self.selection_paths.last_selected.clone());
-        self.project_list_items = project_list_items;
+        self.projects = ProjectList::new(projects);
         self.flat_entries = flat_entries;
         self.dirty.finder.mark_dirty();
         self.dirty.rows.mark_dirty();
@@ -1854,7 +1847,7 @@ impl App {
         }
 
         // Propagate git info and stars from workspace roots to members.
-        for item in &self.project_list_items {
+        for item in &self.projects {
             let root_path = item.path();
             let member_paths: Vec<PathBuf> = match item {
                 ProjectListItem::Workspace(ws) => ws
@@ -1889,7 +1882,7 @@ impl App {
         // Restore selection.
         if let Some(path) = selected_path {
             self.select_project_in_tree(&path);
-        } else if !self.project_list_items.is_empty() {
+        } else if !self.projects.is_empty() {
             self.list_state.select(Some(0));
         }
         self.sync_selected_project();
@@ -1950,11 +1943,11 @@ impl App {
                 description,
             } => self.handle_repo_meta(path.as_path(), stars, description),
             BackgroundMsg::ScanResult {
-                project_list_items,
+                projects,
                 flat_entries,
                 disk_entries,
             } => {
-                self.handle_scan_result(project_list_items, flat_entries, &disk_entries);
+                self.handle_scan_result(projects, flat_entries, &disk_entries);
             },
             BackgroundMsg::ProjectDiscovered { item } => {
                 if self.handle_project_discovered(item) {

@@ -23,6 +23,7 @@ use crate::lint::RuntimeHandle;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
 use crate::project::ProjectListItem;
+use crate::project_list::ProjectList;
 use crate::scan::BackgroundMsg;
 use crate::scan::FlatEntry;
 use crate::tui::columns::ResolvedWidths;
@@ -69,9 +70,9 @@ pub struct ConfigFileStamp {
 }
 
 pub struct TreeBuildResult {
-    pub build_id:           u64,
-    pub flat_entries:       Vec<FlatEntry>,
-    pub project_list_items: Vec<ProjectListItem>,
+    pub build_id:     u64,
+    pub flat_entries: Vec<FlatEntry>,
+    pub projects:     ProjectList,
 }
 
 pub struct FitWidthsBuildResult {
@@ -493,7 +494,7 @@ pub struct App {
     pub current_config:           CargoPortConfig,
     pub scan_root:                PathBuf,
     pub http_client:              HttpClient,
-    pub project_list_items:       Vec<ProjectListItem>,
+    pub projects:                 ProjectList,
     pub flat_entries:             Vec<FlatEntry>,
     pub ci_state:                 HashMap<PathBuf, CiState>,
     pub lint_status:              HashMap<PathBuf, LintStatus>,

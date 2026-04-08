@@ -14,6 +14,7 @@ mod keymap;
 mod lint;
 mod perf_log;
 mod project;
+mod project_list;
 mod scan;
 mod tui;
 mod watcher;
