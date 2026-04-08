@@ -332,7 +332,7 @@ impl App {
         if self.is_searching() && !self.search_query.is_empty() {
             let selected = self.list_state.selected()?;
             let flat_idx = *self.filtered.get(selected)?;
-            let entry = self.flat_entries.get(flat_idx)?;
+            let entry = self.projects.flat_entries().get(flat_idx)?;
             Some(entry.abs_path.as_path())
         } else {
             let row = self.selected_row()?;
@@ -1151,7 +1151,7 @@ impl App {
             .list_state
             .selected()
             .and_then(|sel| self.filtered.get(sel).copied())
-            .and_then(|flat_idx| self.flat_entries.get(flat_idx))
+            .and_then(|flat_idx| self.projects.flat_entries().get(flat_idx))
             .map(|entry| entry.path.clone());
         self.end_search();
         self.search_query.clear();
@@ -1283,7 +1283,8 @@ impl App {
         );
 
         let mut scored: Vec<(usize, u16)> = self
-            .flat_entries
+            .projects
+            .flat_entries()
             .iter()
             .enumerate()
             .filter_map(|(i, entry)| {

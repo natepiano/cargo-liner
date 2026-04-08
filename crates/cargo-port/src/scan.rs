@@ -40,6 +40,7 @@ use super::project::Workspace;
 use super::project::WorktreeGroup;
 
 /// A flattened entry for fuzzy search.
+#[derive(Clone)]
 pub(crate) struct FlatEntry {
     pub path:     String,
     pub abs_path: PathBuf,

@@ -1248,7 +1248,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
     app.filtered
         .iter()
         .filter_map(|&flat_idx| {
-            let entry = app.flat_entries.get(flat_idx)?;
+            let entry = app.projects.flat_entries().get(flat_idx)?;
             let item = {
                 let mut found = None;
                 app.projects.for_each_leaf(|leaf| {

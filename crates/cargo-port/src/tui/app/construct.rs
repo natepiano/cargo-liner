@@ -83,7 +83,6 @@ struct AppInit {
     lint_runtime:     Option<RuntimeHandle>,
     watch_tx:         mpsc::Sender<WatchRequest>,
     projects:         crate::project_list::ProjectList,
-    flat_entries:     Vec<FlatEntry>,
     list_state:       ListState,
 }
 
@@ -111,7 +110,8 @@ impl AppInit {
         let include_non_rust = cfg.tui.include_non_rust.includes_non_rust();
         let flat_entries = scan::build_flat_entries(&built, include_non_rust);
         let list_state = initial_list_state(&built);
-        let projects = crate::project_list::ProjectList::new(built);
+        let mut projects = crate::project_list::ProjectList::new(built);
+        projects.set_flat_entries(flat_entries);
 
         Self {
             config_path,
@@ -120,7 +120,6 @@ impl AppInit {
             lint_runtime: lint_spawn.handle,
             watch_tx,
             projects,
-            flat_entries,
             list_state,
         }
     }
@@ -200,7 +199,6 @@ impl App {
             scan_root: inputs.scan_root,
             http_client: inputs.http_client,
             projects: init.projects,
-            flat_entries: init.flat_entries,
             ci_state: HashMap::new(),
             lint_status: HashMap::new(),
             lint_cache_usage: crate::lint::CacheUsage::default(),

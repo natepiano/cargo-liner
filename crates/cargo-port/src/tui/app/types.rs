@@ -495,7 +495,6 @@ pub struct App {
     pub scan_root:                PathBuf,
     pub http_client:              HttpClient,
     pub projects:                 ProjectList,
-    pub flat_entries:             Vec<FlatEntry>,
     pub ci_state:                 HashMap<PathBuf, CiState>,
     pub lint_status:              HashMap<PathBuf, LintStatus>,
     pub lint_cache_usage:         CacheUsage,

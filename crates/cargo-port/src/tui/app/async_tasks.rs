@@ -50,13 +50,17 @@ use crate::watcher;
 use crate::watcher::WatchRequest;
 
 impl App {
-    pub(super) fn apply_tree_build(&mut self, flat_entries: Vec<FlatEntry>, projects: ProjectList) {
+    pub(super) fn apply_tree_build(
+        &mut self,
+        flat_entries: Vec<FlatEntry>,
+        mut projects: ProjectList,
+    ) {
         let selected_path = self
             .selected_display_path()
             .or_else(|| self.selection_paths.last_selected.clone());
         let should_focus_project_list = false;
+        projects.set_flat_entries(flat_entries);
         self.projects = projects;
-        self.flat_entries = flat_entries;
         self.dirty.finder.mark_dirty();
         self.dirty.rows.mark_dirty();
         self.dirty.disk_cache.mark_dirty();
@@ -1169,8 +1173,8 @@ impl App {
     /// (discovery, refresh). Rebuilds `flat_entries` and marks caches dirty
     /// without a full tree rebuild.
     pub(super) fn refresh_derived_state(&mut self) {
-        self.flat_entries =
-            scan::build_flat_entries(&self.projects, self.include_non_rust().includes_non_rust());
+        self.projects
+            .rebuild_flat_entries(self.include_non_rust().includes_non_rust());
         self.recompute_cargo_active_paths();
         self.data_generation += 1;
         self.detail_generation += 1;
@@ -1191,8 +1195,7 @@ impl App {
 
     pub fn rescan(&mut self) {
         self.projects.clear();
-        self.flat_entries.clear();
-        // disk_usage lives on project items — cleared when project_list_items is cleared above
+        // disk_usage lives on project items — cleared with projects above
         self.ci_state.clear();
         self.lint_status.clear();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
@@ -1825,8 +1828,9 @@ impl App {
         let selected_path = self
             .selected_display_path()
             .or_else(|| self.selection_paths.last_selected.clone());
-        self.projects = ProjectList::new(projects);
-        self.flat_entries = flat_entries;
+        let mut new_projects = ProjectList::new(projects);
+        new_projects.set_flat_entries(flat_entries);
+        self.projects = new_projects;
         self.dirty.finder.mark_dirty();
         self.dirty.rows.mark_dirty();
         self.dirty.disk_cache.mark_dirty();
