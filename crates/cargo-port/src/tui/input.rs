@@ -97,6 +97,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         PaneId::Package | PaneId::Git | PaneId::Targets => {
             detail::handle_detail_key(app, &normalized);
         },
+        PaneId::Lints => detail::handle_lints_key(app, &normalized),
         PaneId::CiRuns => detail::handle_ci_runs_key(app, &normalized),
         PaneId::Toasts => handle_toast_key(app, &normalized),
         _ => handle_normal_key(app, &normalized),
@@ -284,18 +285,12 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    let clicked_row = if app.showing_lints() {
-        app.lint_pane.clicked_row(pos)
-    } else {
-        app.ci_pane.clicked_row(pos)
-    };
-    if let Some(clicked_row) = clicked_row {
+    if let Some(clicked_row) = app.lint_pane.clicked_row(pos) {
+        app.focus_pane(PaneId::Lints);
+        app.lint_pane.set_pos(clicked_row);
+    } else if let Some(clicked_row) = app.ci_pane.clicked_row(pos) {
         app.focus_pane(PaneId::CiRuns);
-        if app.showing_lints() {
-            app.lint_pane.set_pos(clicked_row);
-        } else {
-            app.ci_pane.set_pos(clicked_row);
-        }
+        app.ci_pane.set_pos(clicked_row);
     }
 }
 

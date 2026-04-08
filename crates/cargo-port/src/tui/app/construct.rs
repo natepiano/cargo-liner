@@ -13,7 +13,6 @@ use ratatui::widgets::ListState;
 
 use super::types::App;
 use super::types::AsyncBuildState;
-use super::types::BottomPanel;
 use super::types::BuildChannels;
 use super::types::ConfigFileStamp;
 use super::types::DirtyState;
@@ -243,7 +242,6 @@ impl App {
             ci_pane: Pane::new(),
             toast_pane: Pane::new(),
             lint_pane: Pane::new(),
-            bottom_panel: BottomPanel::CiRuns,
             pending_example_run: None,
             pending_ci_fetch: None,
             pending_cleans: VecDeque::new(),
@@ -260,7 +258,7 @@ impl App {
             example_rx: channels.example_rx,
             running_clean_paths: HashSet::new(),
             clean_toast: None,
-            running_lint_paths: HashSet::new(),
+            running_lint_paths: HashMap::new(),
             lint_toast: None,
             watch_tx: init.watch_tx,
             lint_runtime: init.lint_runtime,

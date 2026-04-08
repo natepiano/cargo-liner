@@ -277,7 +277,11 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let detail_info = app.cached_detail.as_ref().map(|c| c.info.clone());
     let selected_ci_state = app.selected_ci_state();
     let selected_has_ci_owner = app.selected_ci_path().is_some();
-    let has_ci = selected_ci_state.is_some();
+    let has_workflows = app
+        .selected_project_path()
+        .and_then(|path| app.git_info.get(path))
+        .is_some_and(|g| g.workflows.is_present());
+    let has_ci = selected_ci_state.is_some() && has_workflows;
     let detail_lint_runs = app
         .selected_project_path()
         .and_then(|path| app.lint_runs.get(path))
@@ -359,23 +363,6 @@ fn render_empty_ci_panel(
     selected_has_ci_owner: bool,
     area: Rect,
 ) {
-    let ci_focused = app.is_focused(PaneId::CiRuns);
-    let border_style = if ci_focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" CI ")
-        .title_style(Style::default().fg(Color::DarkGray))
-        .border_style(border_style);
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    // Determine why there's no CI
     let has_git = project_path.is_some_and(|path| app.git_info.contains_key(path));
     let has_url = project_path
         .filter(|_| selected_has_ci_owner)
@@ -385,27 +372,30 @@ fn render_empty_ci_panel(
         .filter(|_| selected_has_ci_owner)
         .and_then(|path| app.git_info.get(path))
         .is_some_and(|g| g.origin == GitOrigin::Local);
+    let has_workflows = project_path
+        .and_then(|path| app.git_info.get(path))
+        .is_some_and(|g| g.workflows.is_present());
 
-    let msg = if project_path.is_some() && !selected_has_ci_owner {
-        "CI is shown on branch/worktree rows"
+    let title = if project_path.is_some() && !selected_has_ci_owner {
+        " CI Runs — shown on branch/worktree rows "
     } else if !has_git {
-        "Not a git repository"
+        " CI Runs — not a git repository "
     } else if is_local || !has_url {
-        "CI requires a GitHub origin remote"
+        " CI Runs — requires a GitHub origin remote "
+    } else if !has_workflows {
+        " CI Runs — no .yml or .yaml in .github/workflows/ "
     } else if !app.is_scan_complete() {
-        "Loading..."
+        " CI Runs — loading… "
     } else {
-        "No CI runs found"
+        " No CI Runs "
     };
 
-    if inner.height > 0 {
-        let text = Paragraph::new(Line::from(Span::styled(
-            msg,
-            Style::default().fg(Color::DarkGray),
-        )))
-        .alignment(ratatui::layout::Alignment::Center);
-        frame.render_widget(text, inner);
-    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(block, area);
 }
 
 pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {

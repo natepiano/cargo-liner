@@ -2,7 +2,6 @@ use std::borrow::Cow;
 
 use crate::keymap::CiRunsAction;
 use crate::keymap::GlobalAction;
-use crate::keymap::LintsAction;
 use crate::keymap::PackageAction;
 use crate::keymap::ProjectListAction;
 use crate::keymap::ResolvedKeymap;
@@ -120,7 +119,7 @@ pub(super) fn for_status_bar(
         },
         InputContext::CiRuns => ci_groups(enter_action, km),
         InputContext::Toasts => toast_groups(km),
-        InputContext::Lints => lints_groups(enter_action, km),
+        InputContext::Lints => lints_groups(enter_action),
         InputContext::ProjectList => project_list_groups(enter_action, is_rust, km),
     };
 
@@ -194,10 +193,6 @@ fn ci_groups(
         km.ci_runs.display_key_for(CiRunsAction::ClearCache),
         "clear cache",
     ));
-    actions.push(Shortcut::from_keymap(
-        km.ci_runs.display_key_for(CiRunsAction::TogglePanel),
-        "switch",
-    ));
 
     (navigation, actions)
 }
@@ -212,20 +207,13 @@ fn toast_groups(km: &ResolvedKeymap) -> (Vec<Shortcut>, Vec<Shortcut>) {
     )
 }
 
-fn lints_groups(
-    enter_action: Option<&'static str>,
-    km: &ResolvedKeymap,
-) -> (Vec<Shortcut>, Vec<Shortcut>) {
+fn lints_groups(enter_action: Option<&'static str>) -> (Vec<Shortcut>, Vec<Shortcut>) {
     let navigation = vec![NAV, TAB_PANE];
 
     let mut actions = Vec::new();
     if let Some(action) = enter_action {
         actions.push(enter(action));
     }
-    actions.push(Shortcut::from_keymap(
-        km.lints.display_key_for(LintsAction::TogglePanel),
-        "switch",
-    ));
 
     (navigation, actions)
 }

@@ -308,6 +308,7 @@ impl App {
             Ok(cfg) => {
                 self.apply_config(&cfg);
                 self.sync_config_watch_state();
+                self.show_timed_toast("Settings", "Reloaded from disk");
             },
             Err(err) => self.record_config_reload_failure(&err),
         }
@@ -903,6 +904,8 @@ impl App {
                 };
                 TrackedItem {
                     label,
+                    key: AbsolutePath::from(path.as_path()),
+                    started_at: None,
                     completed_at,
                 }
             })
@@ -942,7 +945,8 @@ impl App {
     }
 
     pub(super) fn running_lint_toast_body(&self) -> String {
-        Self::startup_lint_toast_body_for(&self.running_lint_paths, &HashSet::new())
+        let paths: HashSet<PathBuf> = self.running_lint_paths.keys().cloned().collect();
+        Self::startup_lint_toast_body_for(&paths, &HashSet::new())
     }
 
     pub(super) fn sync_running_clean_toast(&mut self) {
@@ -958,6 +962,8 @@ impl App {
             .iter()
             .map(|p| TrackedItem {
                 label:        crate::project::home_relative_path(p),
+                key:          AbsolutePath::from(p.as_path()),
+                started_at:   None,
                 completed_at: None,
             })
             .collect();
@@ -983,41 +989,46 @@ impl App {
 
     pub(super) fn sync_running_lint_toast(&mut self) {
         if self.running_lint_paths.is_empty() {
-            // Don't finish immediately — let tracked items linger with
-            // strikethrough animation. The toast finishes when all tracked
-            // items have been pruned (empty body).
             if let Some(task_id) = self.lint_toast {
-                if self.toasts.tracked_item_count(task_id) == 0 {
-                    self.finish_task_toast(task_id);
+                // Mark all remaining tracked items as completed (starts fade).
+                let empty: HashSet<String> = HashSet::new();
+                self.toasts.complete_missing_items(task_id, &empty);
+                // Start countdown only once (finish_task is idempotent check via finished_task
+                // flag).
+                if !self.toasts.is_task_finished(task_id) {
+                    let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+                    self.toasts.finish_task(task_id, linger);
                 }
             }
             return;
         }
 
-        // Build the current set of running labels.
-        let running_labels: HashSet<String> = self
+        let running_items: Vec<TrackedItem> = self
             .running_lint_paths
             .iter()
-            .map(|p| crate::project::home_relative_path(p))
+            .map(|(p, &started)| TrackedItem {
+                label:        crate::project::home_relative_path(p),
+                key:          AbsolutePath::from(p.as_path()),
+                started_at:   Some(started),
+                completed_at: None,
+            })
+            .collect();
+        let running_keys: HashSet<String> = running_items
+            .iter()
+            .map(|item| item.key.to_string())
             .collect();
 
         if let Some(task_id) = self.lint_toast
             && self.toasts.reactivate_task(task_id)
         {
             // Mark items no longer running as completed.
-            self.toasts.complete_missing_items(task_id, &running_labels);
+            self.toasts.complete_missing_items(task_id, &running_keys);
             // Add new items that aren't already tracked.
             let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
             self.toasts
-                .add_new_tracked_items(task_id, &running_labels, linger);
+                .add_new_tracked_items(task_id, &running_items, linger);
         } else {
-            let items: Vec<TrackedItem> = running_labels
-                .iter()
-                .map(|label| TrackedItem {
-                    label:        label.clone(),
-                    completed_at: None,
-                })
-                .collect();
+            let items = running_items;
             let body = self.running_lint_toast_body();
             let task_id = self.start_task_toast("Lints", body);
             self.set_task_tracked_items(task_id, &items);
@@ -1780,7 +1791,7 @@ impl App {
         }
         self.update_lint_rollups_for_path(&abs);
         if status_started {
-            self.running_lint_paths.insert(abs.clone());
+            self.running_lint_paths.insert(abs.clone(), Instant::now());
         }
         if status_is_terminal {
             self.running_lint_paths.remove(&abs);

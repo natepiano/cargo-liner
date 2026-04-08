@@ -299,9 +299,8 @@ action_enum! {
 action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum CiRunsAction {
-        Activate    => "activate",     "Open run or fetch more";
-        ClearCache  => "clear_cache",  "Clear CI cache";
-        TogglePanel => "toggle_panel", "Switch CI/Lints panel";
+        Activate   => "activate",    "Open run or fetch more";
+        ClearCache => "clear_cache", "Clear CI cache";
     }
 }
 
@@ -310,7 +309,6 @@ action_enum! {
     pub enum LintsAction {
         Activate     => "activate",      "Open lint output";
         ClearHistory => "clear_history", "Clear lint history";
-        TogglePanel  => "toggle_panel",  "Switch CI/Lints panel";
     }
 }
 
@@ -441,10 +439,6 @@ impl ResolvedKeymap {
             .insert(KeyBind::plain(KeyCode::Enter), CiRunsAction::Activate);
         km.ci_runs
             .insert(KeyBind::plain(KeyCode::Char('c')), CiRunsAction::ClearCache);
-        km.ci_runs.insert(
-            KeyBind::plain(KeyCode::Char('p')),
-            CiRunsAction::TogglePanel,
-        );
 
         // Lints
         km.lints
@@ -453,8 +447,6 @@ impl ResolvedKeymap {
             KeyBind::plain(KeyCode::Char('c')),
             LintsAction::ClearHistory,
         );
-        km.lints
-            .insert(KeyBind::plain(KeyCode::Char('p')), LintsAction::TogglePanel);
 
         km
     }

@@ -21,16 +21,16 @@ use super::manager::TrackedItemView;
     clippy::cast_sign_loss,
     reason = "p is clamped to [0.0, 1.0], so (255 * (1-p)) is in [0, 255]"
 )]
-fn fade_to_green_line<'a>(text: &str, progress: f64) -> Line<'a> {
+fn fade_to_green_style(progress: f64) -> Style {
     let p = progress.clamp(0.0, 1.0);
-    // Exponential curve: stays mostly white, then snaps to green at the end.
     let curve = p * p * p;
     let r = (255.0 * (1.0 - curve)) as u8;
     let b = (255.0 * (1.0 - curve)) as u8;
-    Line::from(Span::styled(
-        text.to_owned(),
-        Style::default().fg(Color::Rgb(r, 255, b)),
-    ))
+    Style::default().fg(Color::Rgb(r, 255, b))
+}
+
+fn fade_to_green_line<'a>(text: &str, progress: f64) -> Line<'a> {
+    Line::from(Span::styled(text.to_owned(), fade_to_green_style(progress)))
 }
 use crate::tui::app::ClickAction;
 use crate::tui::app::DismissTarget;
@@ -319,6 +319,7 @@ fn body_lines_tracked<'a>(
     tracked: &[TrackedItemView],
     body_style: Style,
     lines_for_body: usize,
+    line_width: usize,
 ) -> Vec<Line<'a>> {
     let total_items = tracked.len();
     let needs_truncation = total_items > lines_for_body;
@@ -332,12 +333,7 @@ fn body_lines_tracked<'a>(
 
     let mut result: Vec<Line<'_>> = visible_items
         .iter()
-        .map(|item| {
-            item.linger_progress.map_or_else(
-                || Line::from(Span::styled(item.label.clone(), body_style)),
-                |progress| fade_to_green_line(&item.label, progress),
-            )
-        })
+        .map(|item| tracked_item_line(item, body_style, line_width))
         .collect();
     if let Some(overflow) = overflow_line {
         let overflow_style = Style::default()
@@ -346,6 +342,37 @@ fn body_lines_tracked<'a>(
         result.push(Line::from(Span::styled(overflow, overflow_style)));
     }
     result
+}
+
+fn tracked_item_line<'a>(item: &TrackedItemView, body_style: Style, line_width: usize) -> Line<'a> {
+    let label_style = item
+        .linger_progress
+        .map_or(body_style, |p| fade_to_green_style(p));
+    let Some(secs) = item.elapsed_secs else {
+        return Line::from(Span::styled(item.label.clone(), label_style));
+    };
+
+    let duration_suffix = format!(" {secs}s");
+    let suffix_width = duration_suffix.len();
+    let label_budget = line_width.saturating_sub(suffix_width);
+    let label = if item.label.len() > label_budget && label_budget > 1 {
+        format!("{}…", &item.label[..label_budget.saturating_sub(1)])
+    } else {
+        item.label.clone()
+    };
+    let padding = line_width
+        .saturating_sub(label.len())
+        .saturating_sub(suffix_width);
+    let duration_style = item
+        .linger_progress
+        .map_or(Style::default().fg(Color::Yellow), |p| {
+            fade_to_green_style(p)
+        });
+    Line::from(vec![
+        Span::styled(label, label_style),
+        Span::raw(" ".repeat(padding)),
+        Span::styled(duration_suffix, duration_style),
+    ])
 }
 
 fn render_toast_body(
@@ -369,7 +396,12 @@ fn render_toast_body(
     let lines: Vec<Line<'_>> = if tracked.is_empty() {
         body_lines_plain(toast, body_style, lines_for_body)
     } else {
-        body_lines_tracked(tracked, body_style, lines_for_body)
+        body_lines_tracked(
+            tracked,
+            body_style,
+            lines_for_body,
+            usize::from(body_area.width),
+        )
     };
 
     if has_action {

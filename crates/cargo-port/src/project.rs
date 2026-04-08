@@ -93,6 +93,19 @@ impl GitOrigin {
     }
 }
 
+/// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum WorkflowPresence {
+    /// At least one workflow YAML file exists.
+    Present,
+    /// No workflow files found (or no `.github/workflows/` directory).
+    Missing,
+}
+
+impl WorkflowPresence {
+    pub(crate) const fn is_present(self) -> bool { matches!(self, Self::Present) }
+}
+
 /// Git metadata for a project: origin type, owner, repo URL, and current branch.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct GitInfo {
@@ -116,6 +129,8 @@ pub(crate) struct GitInfo {
     pub ahead_behind_origin: Option<(usize, usize)>,
     /// Commits ahead and behind the local `{default_branch}`.
     pub ahead_behind_local:  Option<(usize, usize)>,
+    /// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
+    pub workflows:           WorkflowPresence,
 }
 
 impl GitInfo {
@@ -213,7 +228,24 @@ impl GitInfo {
             default_branch,
             ahead_behind_origin,
             ahead_behind_local,
+            workflows: detect_workflow_presence(&repo_root),
         })
+    }
+}
+
+fn detect_workflow_presence(repo_root: &Path) -> WorkflowPresence {
+    let workflows_dir = repo_root.join(".github").join("workflows");
+    let has_yaml = std::fs::read_dir(workflows_dir).is_ok_and(|entries| {
+        entries.filter_map(Result::ok).any(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.ends_with(".yml") || name.ends_with(".yaml")
+        })
+    });
+    if has_yaml {
+        WorkflowPresence::Present
+    } else {
+        WorkflowPresence::Missing
     }
 }
 
@@ -1514,7 +1546,7 @@ impl ProjectListItem {
     }
 
     /// Check if any project in the hierarchy matches the absolute path and visibility.
-    pub fn has_project_with_visibility_by_path(&self, path: &Path, v: Visibility) -> bool {
+    pub(crate) fn has_project_with_visibility_by_path(&self, path: &Path, v: Visibility) -> bool {
         match self {
             Self::Workspace(p) => {
                 if p.path() == path && p.visibility() == v {

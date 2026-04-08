@@ -30,7 +30,9 @@ use crate::project::NonRustProject;
 use crate::project::Package;
 use crate::project::ProjectListItem;
 use crate::project::RustProject;
+use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Dismissed;
+use crate::project::WorkflowPresence;
 use crate::project::Workspace;
 use crate::scan::BackgroundMsg;
 use crate::tui::shortcuts::InputContext;
@@ -335,6 +337,7 @@ fn make_git_info(url: Option<&str>) -> GitInfo {
         default_branch:      Some("main".to_string()),
         ahead_behind_origin: None,
         ahead_behind_local:  None,
+        workflows:           WorkflowPresence::Present,
     }
 }
 
@@ -734,6 +737,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
             default_branch:      Some("main".to_string()),
             ahead_behind_origin: None,
             ahead_behind_local:  None,
+            workflows:           WorkflowPresence::Present,
         },
     );
     app.ci_state.insert(
@@ -795,7 +799,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     );
     assert!(
         app.running_lint_paths
-            .contains(Path::new(&project_a.display_path()))
+            .contains_key(Path::new(&project_a.display_path()))
     );
     assert!(app.lint_toast.is_some());
 
@@ -998,6 +1002,7 @@ fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
             default_branch:      Some("main".to_string()),
             ahead_behind_origin: None,
             ahead_behind_local:  None,
+            workflows:           WorkflowPresence::Present,
         },
     );
 
@@ -1054,6 +1059,7 @@ fn tabbable_panes_follow_canonical_order() {
             default_branch:      None,
             ahead_behind_origin: None,
             ahead_behind_local:  None,
+            workflows:           WorkflowPresence::Present,
         },
     );
     app.detail_generation += 1;
@@ -1552,7 +1558,7 @@ fn is_deleted_does_not_allocate_display_paths() {
     }
     // Mark one as deleted
     let dp = app.project_list_items[100].display_path();
-    app.project_list_items[100].set_visibility_by_path(&dp, crate::project::Visibility::Deleted);
+    app.project_list_items[100].set_visibility_by_path(&dp, Deleted);
 
     let target = app.project_list_items[100].path().to_path_buf();
     let start = std::time::Instant::now();

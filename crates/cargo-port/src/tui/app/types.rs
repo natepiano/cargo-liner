@@ -41,12 +41,6 @@ use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
 use crate::watcher::WatchRequest;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BottomPanel {
-    CiRuns,
-    Lints,
-}
-
 /// An expand key: a node, group, worktree entry, or group within a worktree.
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub enum ExpandKey {
@@ -537,7 +531,6 @@ pub struct App {
     pub ci_pane:                  Pane,
     pub toast_pane:               Pane,
     pub lint_pane:                Pane,
-    pub bottom_panel:             BottomPanel,
     pub pending_example_run:      Option<PendingExampleRun>,
     pub pending_ci_fetch:         Option<PendingCiFetch>,
     pub pending_cleans:           VecDeque<PendingClean>,
@@ -554,7 +547,7 @@ pub struct App {
     pub example_rx:               mpsc::Receiver<ExampleMsg>,
     pub running_clean_paths:      HashSet<PathBuf>,
     pub clean_toast:              Option<ToastTaskId>,
-    pub running_lint_paths:       HashSet<PathBuf>,
+    pub running_lint_paths:       HashMap<PathBuf, Instant>,
     pub lint_toast:               Option<ToastTaskId>,
 
     // Disk watcher

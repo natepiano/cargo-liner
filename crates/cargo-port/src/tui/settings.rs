@@ -352,7 +352,10 @@ fn toggle_vim_mode(app: &mut App) {
 
 fn save_updated_config(app: &mut App, cfg: &config::CargoPortConfig) -> bool {
     match app.save_and_apply_config(cfg) {
-        Ok(()) => true,
+        Ok(()) => {
+            app.show_timed_toast("Settings", "Saved");
+            true
+        },
         Err(err) => {
             app.inline_error = Some(err);
             false
@@ -403,6 +406,49 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
+}
+
+const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {
+    matches!(
+        setting,
+        Some(
+            SettingOption::InvertScroll
+                | SettingOption::IncludeNonRust
+                | SettingOption::NavigationKeys
+                | SettingOption::LintsEnabled
+                | SettingOption::LintOnDiscovery,
+        )
+    )
+}
+
+fn push_toggle_row(
+    _app: &App,
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    value: &str,
+    is_selected: bool,
+    highlight_style: Style,
+    label_style: Style,
+) {
+    let is_on = value == "ON";
+    let toggle_style = if is_on {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    };
+    let row_style = if is_selected {
+        highlight_style
+    } else {
+        label_style
+    };
+    lines.push(Line::from(vec![
+        Span::styled(label.to_owned(), row_style),
+        Span::styled("< ", Style::default().fg(Color::DarkGray)),
+        Span::styled(value.to_owned(), toggle_style),
+        Span::styled(" >", Style::default().fg(Color::DarkGray)),
+    ]));
 }
 
 pub(super) fn build_settings_lines(
@@ -462,40 +508,16 @@ pub(super) fn build_settings_lines(
                 Style::default().fg(Color::Yellow),
                 content_width,
             );
-        } else if setting == Some(SettingOption::InvertScroll)
-            || setting == Some(SettingOption::IncludeNonRust)
-            || setting == Some(SettingOption::NavigationKeys)
-            || setting == Some(SettingOption::LintsEnabled)
-            || setting == Some(SettingOption::LintOnDiscovery)
-        {
-            let is_on = match setting {
-                Some(SettingOption::InvertScroll) => app.invert_scroll().is_inverted(),
-                Some(SettingOption::IncludeNonRust) => app.include_non_rust().includes_non_rust(),
-                Some(SettingOption::NavigationKeys) => app.navigation_keys().uses_vim(),
-                Some(SettingOption::LintsEnabled) => app.lint_enabled(),
-                Some(SettingOption::LintOnDiscovery) => {
-                    app.current_config.lint.on_discovery.is_immediate()
-                },
-                _ => false,
-            };
-            let toggle_style = if is_on {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-            };
-            let row_style = if is_selected {
-                highlight_style
-            } else {
-                label_style
-            };
-            lines.push(Line::from(vec![
-                Span::styled(label, row_style),
-                Span::styled("< ", Style::default().fg(Color::DarkGray)),
-                Span::styled((*value).clone(), toggle_style),
-                Span::styled(" >", Style::default().fg(Color::DarkGray)),
-            ]));
+        } else if is_toggle_setting(setting) {
+            push_toggle_row(
+                app,
+                lines,
+                &label,
+                value,
+                is_selected,
+                highlight_style,
+                label_style,
+            );
         } else if setting == Some(SettingOption::CiRunCount)
             && is_selected
             && !app.is_settings_editing()
@@ -671,16 +693,15 @@ fn apply_settings_edit(app: &mut App) {
     let setting = SettingOption::from_index(app.settings_pane.pos());
     let value = app.settings_edit_buf.clone();
     match setting {
-        Some(SettingOption::CiRunCount) => match value.parse::<u32>() {
-            Ok(n) => {
+        Some(SettingOption::CiRunCount) => {
+            if let Ok(n) = value.parse::<u32>() {
                 let mut cfg = app.current_config.clone();
                 cfg.tui.ci_run_count = n.max(1);
                 let _ = save_updated_config(app, &cfg);
-            },
-            Err(_) => {
+            } else {
                 finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
                 return;
-            },
+            }
         },
         Some(SettingOption::InlineDirs) => {
             let dirs = normalize_sorted_list(&value);
@@ -716,40 +737,37 @@ fn apply_settings_edit(app: &mut App) {
                 app.show_timed_toast("Settings", "Lint commands updated");
             }
         },
-        Some(SettingOption::LintCacheSize) => match parse_lint_cache_size(&value) {
-            Ok(cache_size) => {
+        Some(SettingOption::LintCacheSize) => {
+            if let Ok(cache_size) = parse_lint_cache_size(&value) {
                 let mut cfg = app.current_config.clone();
                 cfg.lint.cache_size = cache_size;
                 if save_updated_config(app, &cfg) {
                     app.show_timed_toast("Settings", "Lint cache size updated");
                 }
-            },
-            Err(err) => {
-                finish_settings_edit_with_error(app, err);
+            } else {
+                finish_settings_edit_with_error(app, format!("Invalid cache size: {value}"));
                 return;
-            },
+            }
         },
-        Some(SettingOption::StatusFlashSecs) => match value.parse::<f64>() {
-            Ok(secs) => {
+        Some(SettingOption::StatusFlashSecs) => {
+            if let Ok(secs) = value.parse::<f64>() {
                 let mut cfg = app.current_config.clone();
                 cfg.tui.status_flash_secs = secs.max(0.0);
                 let _ = save_updated_config(app, &cfg);
-            },
-            Err(_) => {
+            } else {
                 finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
                 return;
-            },
+            }
         },
-        Some(SettingOption::TaskLingerSecs) => match value.parse::<f64>() {
-            Ok(secs) => {
+        Some(SettingOption::TaskLingerSecs) => {
+            if let Ok(secs) = value.parse::<f64>() {
                 let mut cfg = app.current_config.clone();
                 cfg.tui.task_linger_secs = secs.max(0.0);
                 let _ = save_updated_config(app, &cfg);
-            },
-            Err(_) => {
+            } else {
                 finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
                 return;
-            },
+            }
         },
         Some(
             SettingOption::InvertScroll

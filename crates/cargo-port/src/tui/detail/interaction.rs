@@ -170,11 +170,6 @@ fn open_url(url: &str) {
 }
 
 pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
-    if app.showing_lints() {
-        handle_lints_key(app, event);
-        return;
-    }
-
     // Navigation keys stay hardcoded.
     match event.code {
         KeyCode::Up => return app.ci_pane.up(),
@@ -196,7 +191,6 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
                 clear_ci_cache(app, &path);
             }
         },
-        CiRunsAction::TogglePanel => app.toggle_bottom_panel(),
     }
 }
 
@@ -231,7 +225,7 @@ fn handle_ci_enter(app: &mut App) {
     }
 }
 
-fn handle_lints_key(app: &mut App, event: &KeyEvent) {
+pub fn handle_lints_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
         KeyCode::Up => return app.lint_pane.up(),
@@ -249,7 +243,6 @@ fn handle_lints_key(app: &mut App, event: &KeyEvent) {
     match action {
         LintsAction::Activate => open_lint_run_output(app),
         LintsAction::ClearHistory => clear_lint_history(app),
-        LintsAction::TogglePanel => app.toggle_bottom_panel(),
     }
 }
 

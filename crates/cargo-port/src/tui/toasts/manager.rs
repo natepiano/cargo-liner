@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::project::AbsolutePath;
 use crate::tui::constants::TOAST_LINE_REVEAL_MS;
 use crate::tui::constants::TOAST_WIDTH;
 
@@ -52,6 +53,8 @@ struct Toast {
 #[derive(Clone, Debug)]
 pub struct TrackedItem {
     pub label:        String,
+    pub key:          AbsolutePath,
+    pub started_at:   Option<Instant>,
     pub completed_at: Option<Instant>,
 }
 
@@ -150,6 +153,8 @@ pub struct TrackedItemView {
     pub label:           String,
     /// None = pending. Some(0.0..1.0) = lingering with strikethrough progress.
     pub linger_progress: Option<f64>,
+    /// Elapsed seconds since the item started. `None` if no start time recorded.
+    pub elapsed_secs:    Option<u64>,
 }
 
 impl<'a> ToastView<'a> {
@@ -374,6 +379,14 @@ impl ToastManager {
         }
     }
 
+    /// Check if a task toast has been finished (countdown started).
+    pub fn is_task_finished(&self, task_id: ToastTaskId) -> bool {
+        self.toasts
+            .iter()
+            .find(|t| t.task_id == Some(task_id))
+            .is_some_and(|t| t.finished_task)
+    }
+
     /// Count remaining tracked items for a task toast.
     pub fn tracked_item_count(&self, task_id: ToastTaskId) -> usize {
         self.toasts
@@ -382,13 +395,13 @@ impl ToastManager {
             .map_or(0, |t| t.tracked_items.len())
     }
 
-    /// Mark tracked items as completed if their label is NOT in the active set.
-    pub fn complete_missing_items(&mut self, task_id: ToastTaskId, active: &HashSet<String>) {
+    /// Mark tracked items as completed if their key is NOT in the active set.
+    pub fn complete_missing_items(&mut self, task_id: ToastTaskId, active_keys: &HashSet<String>) {
         let now = Instant::now();
         for toast in &mut self.toasts {
             if toast.task_id == Some(task_id) {
                 for item in &mut toast.tracked_items {
-                    if item.completed_at.is_none() && !active.contains(&item.label) {
+                    if item.completed_at.is_none() && !active_keys.contains(&item.key.to_string()) {
                         item.completed_at = Some(now);
                     }
                 }
@@ -396,11 +409,11 @@ impl ToastManager {
         }
     }
 
-    /// Add tracked items for labels in `active` that aren't already tracked.
+    /// Add tracked items that aren't already tracked (matched by key).
     pub fn add_new_tracked_items(
         &mut self,
         task_id: ToastTaskId,
-        active: &HashSet<String>,
+        new_items: &[TrackedItem],
         item_linger: Duration,
     ) {
         for toast in &mut self.toasts {
@@ -408,14 +421,11 @@ impl ToastManager {
                 let existing: HashSet<String> = toast
                     .tracked_items
                     .iter()
-                    .map(|i| i.label.clone())
+                    .map(|i| i.key.to_string())
                     .collect();
-                for label in active {
-                    if !existing.contains(label) {
-                        toast.tracked_items.push(TrackedItem {
-                            label:        label.clone(),
-                            completed_at: None,
-                        });
+                for item in new_items {
+                    if !existing.contains(&item.key.to_string()) {
+                        toast.tracked_items.push(item.clone());
                     }
                 }
                 toast.item_linger = Some(item_linger);
@@ -520,9 +530,14 @@ impl ToastManager {
                                 }
                             })
                         });
+                        let elapsed_secs = item.started_at.map(|started| {
+                            let end = item.completed_at.unwrap_or(now);
+                            end.duration_since(started).as_secs()
+                        });
                         TrackedItemView {
-                            label:           item.label.clone(),
+                            label: item.label.clone(),
                             linger_progress: item_progress,
+                            elapsed_secs,
                         }
                     })
                     .collect();

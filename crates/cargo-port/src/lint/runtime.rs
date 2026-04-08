@@ -345,6 +345,11 @@ fn spawn_project_worker(
                         && Instant::now() >= deadline
                     {
                         if project_still_runnable(&project_root) {
+                            tracing::info!(
+                                path = %project_root.display(),
+                                "lint_worker_run_start"
+                            );
+                            let run_started = Instant::now();
                             let _ = run_commands_for_project(
                                 &project_root,
                                 &worker_project_path,
@@ -353,6 +358,11 @@ fn spawn_project_worker(
                                 cache_size_bytes,
                                 &status_cache,
                                 &bg_tx,
+                            );
+                            tracing::info!(
+                                path = %project_root.display(),
+                                duration_ms = run_started.elapsed().as_millis() as u64,
+                                "lint_worker_run_complete"
                             );
                         }
                         next_run_at = None;
@@ -560,7 +570,15 @@ fn execute_commands(
         if !project_still_runnable(project_root) {
             return Ok(CommandsResult::ProjectRemoved);
         }
+        let cmd_started = Instant::now();
         let execution = run_command(project_root, &manifest_path, output_dir, command, index)?;
+        tracing::info!(
+            command = %command.name,
+            duration_ms = cmd_started.elapsed().as_millis() as u64,
+            success = execution.success,
+            path = %project_root.display(),
+            "lint_command_finished"
+        );
         if let Some(command_run) = run.commands.get_mut(index) {
             command_run.status = if execution.success {
                 LintCommandStatus::Passed
@@ -618,9 +636,10 @@ fn run_command(
 
     let started = Instant::now();
     let shell_output = Command::new("/bin/sh")
-        .arg("-lc")
+        .arg("-c")
         .arg(&command.command)
         .current_dir(project_root)
+        .env_remove("RUSTUP_TOOLCHAIN")
         .env("PROJECT_DIR", project_root)
         .env("MANIFEST_PATH", manifest_path)
         .env("LINT_OUTPUT_DIR", output_dir)

@@ -1,5 +1,4 @@
 use super::types::App;
-use super::types::BottomPanel;
 use super::types::ExitMode;
 use super::types::FinderMode;
 use super::types::KeymapMode;
@@ -170,9 +169,13 @@ impl App {
                     c.info.is_binary || !c.info.examples.is_empty() || !c.info.benches.is_empty()
                 }),
                 PaneId::Lints => self.selected_project_path().is_some() && self.lint_enabled(),
-                PaneId::CiRuns => self
-                    .selected_project_path()
-                    .is_some_and(|path| self.bottom_panel_available(path)),
+                PaneId::CiRuns => self.selected_project_path().is_some_and(|path| {
+                    self.bottom_panel_available(path)
+                        && self
+                            .git_info
+                            .get(path)
+                            .is_some_and(|info| info.workflows.is_present())
+                }),
                 PaneId::Toasts => !self.active_toasts().is_empty(),
                 PaneId::Search | PaneId::Settings | PaneId::Finder | PaneId::Keymap => false,
             })
@@ -234,13 +237,4 @@ impl App {
     }
 
     pub fn remembers_selection(&self, pane: PaneId) -> bool { self.visited_panes.contains(&pane) }
-
-    pub const fn toggle_bottom_panel(&mut self) {
-        self.bottom_panel = match self.bottom_panel {
-            BottomPanel::CiRuns => BottomPanel::Lints,
-            BottomPanel::Lints => BottomPanel::CiRuns,
-        };
-    }
-
-    pub const fn showing_lints(&self) -> bool { matches!(self.bottom_panel, BottomPanel::Lints) }
 }
