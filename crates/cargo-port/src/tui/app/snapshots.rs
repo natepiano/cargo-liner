@@ -64,10 +64,19 @@ pub(super) fn build_visible_rows(
             },
             ProjectListItem::NonRust(_) => {},
             ProjectListItem::WorkspaceWorktrees(wtg) => {
-                emit_workspace_worktree_group(&mut rows, ni, wtg, expanded);
+                if wtg.live_entry_count() > 1 {
+                    emit_workspace_worktree_group(&mut rows, ni, wtg, expanded);
+                } else if let Some(workspace) = wtg.single_live() {
+                    emit_groups(&mut rows, ni, workspace.groups(), expanded);
+                    emit_vendored_rows(&mut rows, ni, workspace.vendored());
+                }
             },
             ProjectListItem::PackageWorktrees(wtg) => {
-                emit_package_worktree_group(&mut rows, ni, wtg, expanded);
+                if wtg.live_entry_count() > 1 {
+                    emit_package_worktree_group(&mut rows, ni, wtg, expanded);
+                } else if let Some(package) = wtg.single_live() {
+                    emit_vendored_rows(&mut rows, ni, package.vendored());
+                }
             },
         }
     }

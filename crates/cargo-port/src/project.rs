@@ -1444,6 +1444,28 @@ impl<Kind: CargoKind> WorktreeGroup<Kind> {
     pub(crate) const fn linked_mut(&mut self) -> &mut Vec<RustProject<Kind>> { &mut self.linked }
 
     pub(crate) const fn visibility(&self) -> Visibility { self.visibility }
+
+    pub(crate) fn live_entry_count(&self) -> usize {
+        std::iter::once(self.primary.visibility())
+            .chain(self.linked.iter().map(RustProject::visibility))
+            .filter(|visibility| !matches!(visibility, Visibility::Deleted | Visibility::Dismissed))
+            .count()
+    }
+
+    pub(crate) fn single_live(&self) -> Option<&RustProject<Kind>> {
+        if self.live_entry_count() != 1 {
+            return None;
+        }
+
+        std::iter::once(&self.primary)
+            .chain(self.linked.iter())
+            .find(|project| {
+                !matches!(
+                    project.visibility(),
+                    Visibility::Deleted | Visibility::Dismissed
+                )
+            })
+    }
 }
 
 impl Clone for WorktreeGroup<Workspace> {
@@ -1547,8 +1569,23 @@ impl ProjectListItem {
             },
             Self::Package(pkg) => !pkg.vendored().is_empty(),
             Self::NonRust(_) => false,
-            Self::WorkspaceWorktrees(g) => !g.linked().is_empty(),
-            Self::PackageWorktrees(g) => !g.linked().is_empty(),
+            Self::WorkspaceWorktrees(g) => {
+                if g.live_entry_count() > 1 {
+                    true
+                } else {
+                    g.single_live().is_some_and(|workspace| {
+                        workspace.has_members() || !workspace.vendored().is_empty()
+                    })
+                }
+            },
+            Self::PackageWorktrees(g) => {
+                if g.live_entry_count() > 1 {
+                    true
+                } else {
+                    g.single_live()
+                        .is_some_and(|package| !package.vendored().is_empty())
+                }
+            },
         }
     }
 

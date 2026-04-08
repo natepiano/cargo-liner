@@ -2001,10 +2001,61 @@ edition = "2024"
             .output()
             .expect("git init");
         Command::new(git_binary())
+            .args(["config", "user.name", "cargo-port-tests"])
+            .current_dir(dir)
+            .output()
+            .expect("git config user.name");
+        Command::new(git_binary())
+            .args(["config", "user.email", "cargo-port-tests@example.com"])
+            .current_dir(dir)
+            .output()
+            .expect("git config user.email");
+        Command::new(git_binary())
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .expect("git add");
+        Command::new(git_binary())
             .args(["commit", "--allow-empty", "-m", "init"])
             .current_dir(dir)
             .output()
             .expect("git commit");
+    }
+
+    fn manifest_contents(name: &str, workspace: bool) -> String {
+        let workspace_section = if workspace { "\n[workspace]\n" } else { "" };
+        format!(
+            r#"[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2024"
+{workspace_section}
+"#
+        )
+    }
+
+    fn init_cargo_git_repo(dir: &Path, name: &str, workspace: bool) {
+        std::fs::create_dir_all(dir.join("src")).expect("create src");
+        std::fs::write(dir.join("Cargo.toml"), manifest_contents(name, workspace))
+            .expect("write Cargo.toml");
+        std::fs::write(dir.join("src").join("main.rs"), "fn main() {}\n")
+            .expect("write main.rs");
+        init_git_repo(dir);
+    }
+
+    fn add_git_worktree(primary_dir: &Path, worktree_dir: &Path, branch: &str) {
+        let status = Command::new(git_binary())
+            .args([
+                "worktree",
+                "add",
+                worktree_dir.to_str().expect("utf-8 worktree path"),
+                "-b",
+                branch,
+            ])
+            .current_dir(primary_dir)
+            .status()
+            .expect("git worktree add");
+        assert!(status.success(), "git worktree add should succeed");
     }
 
     #[test]
@@ -2140,5 +2191,241 @@ edition = "2024"
         handle_disk_completion(&mut pending, "~/rust/bevy");
 
         assert_pending_disk(&pending, "~/rust/bevy");
+    }
+
+    #[test]
+    fn probe_new_package_worktree_emits_discovered_item() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let primary_dir = tmp.path().join("app");
+        let linked_dir = tmp.path().join("app_test");
+        init_cargo_git_repo(&primary_dir, "app", false);
+        add_git_worktree(&primary_dir, &linked_dir, "test/app");
+
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let past = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("1s subtraction should not underflow");
+        let mut pending_new = HashMap::from([(linked_dir.clone(), past)]);
+        let mut discovered = HashSet::new();
+
+        probe_new_projects(
+            &bg_tx,
+            &mut pending_new,
+            &mut discovered,
+            5,
+            NonRustInclusion::default(),
+            &crate::http::HttpClient::new(test_runtime().handle().clone())
+                .expect("http client"),
+        );
+
+        let BackgroundMsg::ProjectDiscovered { item } = bg_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("project discovered message")
+        else {
+            panic!("unexpected message");
+        };
+        let ProjectListItem::Package(pkg) = item else {
+            panic!("expected package worktree item");
+        };
+        assert_eq!(pkg.path(), linked_dir.as_path());
+        assert_eq!(pkg.worktree_name(), Some("app_test"));
+        assert_eq!(
+            pkg.worktree_primary_abs_path(),
+            Some(primary_dir.canonicalize().expect("canonical primary").as_path())
+        );
+    }
+
+    #[test]
+    fn probe_new_workspace_worktree_emits_discovered_item() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let primary_dir = tmp.path().join("obsidian_knife");
+        let linked_dir = tmp.path().join("obsidian_knife_test");
+        init_cargo_git_repo(&primary_dir, "obsidian_knife", true);
+        add_git_worktree(&primary_dir, &linked_dir, "test/obsidian");
+
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let past = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("1s subtraction should not underflow");
+        let mut pending_new = HashMap::from([(linked_dir.clone(), past)]);
+        let mut discovered = HashSet::new();
+
+        probe_new_projects(
+            &bg_tx,
+            &mut pending_new,
+            &mut discovered,
+            5,
+            NonRustInclusion::default(),
+            &crate::http::HttpClient::new(test_runtime().handle().clone())
+                .expect("http client"),
+        );
+
+        let BackgroundMsg::ProjectDiscovered { item } = bg_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("project discovered message")
+        else {
+            panic!("unexpected message");
+        };
+        let ProjectListItem::Workspace(ws) = item else {
+            panic!("expected workspace worktree item");
+        };
+        assert_eq!(ws.path(), linked_dir.as_path());
+        assert_eq!(ws.worktree_name(), Some("obsidian_knife_test"));
+        assert_eq!(
+            ws.worktree_primary_abs_path(),
+            Some(primary_dir.canonicalize().expect("canonical primary").as_path())
+        );
+    }
+
+    #[test]
+    fn removed_package_worktree_emits_zero_disk_usage() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let primary_dir = tmp.path().join("app");
+        let linked_dir = tmp.path().join("app_test");
+        init_cargo_git_repo(&primary_dir, "app", false);
+        add_git_worktree(&primary_dir, &linked_dir, "test/app");
+
+        let mut projects = HashMap::new();
+        projects.insert(
+            linked_dir.clone(),
+            ProjectEntry {
+                project_path: "~/app_test".to_string(),
+                abs_path:     linked_dir.clone(),
+                repo_root:    None,
+                git_dir:      None,
+            },
+        );
+        let scan_root = tmp.path().to_path_buf();
+        let project_parents = HashSet::from([scan_root.clone()]);
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        std::fs::remove_dir_all(&linked_dir).expect("remove linked worktree");
+        handle_event(
+            &linked_dir.join("Cargo.toml"),
+            &ctx,
+            &bg_tx,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        let past = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("1s subtraction should not underflow");
+        pending_disk.insert(
+            "~/app_test".to_string(),
+            DiskState::Pending {
+                debounce_deadline: past,
+                max_deadline:      past,
+            },
+        );
+        let disk_limit = Arc::new(tokio::sync::Semaphore::new(1));
+        let (disk_done_tx, disk_done_rx) = mpsc::channel();
+        fire_disk_updates(
+            test_runtime().handle(),
+            &disk_limit,
+            &disk_done_tx,
+            &bg_tx,
+            &projects,
+            &mut pending_disk,
+        );
+        wait_for_completion(&disk_done_rx);
+
+        let mut got_zero = false;
+        while let Ok(msg) = bg_rx.try_recv() {
+            if let BackgroundMsg::DiskUsage { path, bytes } = msg
+                && path.as_path() == linked_dir
+                && bytes == 0
+            {
+                got_zero = true;
+            }
+        }
+        assert!(got_zero, "expected zero-byte disk usage for removed package worktree");
+    }
+
+    #[test]
+    fn removed_workspace_worktree_emits_zero_disk_usage() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let primary_dir = tmp.path().join("obsidian_knife");
+        let linked_dir = tmp.path().join("obsidian_knife_test");
+        init_cargo_git_repo(&primary_dir, "obsidian_knife", true);
+        add_git_worktree(&primary_dir, &linked_dir, "test/obsidian");
+
+        let mut projects = HashMap::new();
+        projects.insert(
+            linked_dir.clone(),
+            ProjectEntry {
+                project_path: "~/obsidian_knife_test".to_string(),
+                abs_path:     linked_dir.clone(),
+                repo_root:    None,
+                git_dir:      None,
+            },
+        );
+        let scan_root = tmp.path().to_path_buf();
+        let project_parents = HashSet::from([scan_root.clone()]);
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        std::fs::remove_dir_all(&linked_dir).expect("remove linked worktree");
+        handle_event(
+            &linked_dir.join("Cargo.toml"),
+            &ctx,
+            &bg_tx,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        let past = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("1s subtraction should not underflow");
+        pending_disk.insert(
+            "~/obsidian_knife_test".to_string(),
+            DiskState::Pending {
+                debounce_deadline: past,
+                max_deadline:      past,
+            },
+        );
+        let disk_limit = Arc::new(tokio::sync::Semaphore::new(1));
+        let (disk_done_tx, disk_done_rx) = mpsc::channel();
+        fire_disk_updates(
+            test_runtime().handle(),
+            &disk_limit,
+            &disk_done_tx,
+            &bg_tx,
+            &projects,
+            &mut pending_disk,
+        );
+        wait_for_completion(&disk_done_rx);
+
+        let mut got_zero = false;
+        while let Ok(msg) = bg_rx.try_recv() {
+            if let BackgroundMsg::DiskUsage { path, bytes } = msg
+                && path.as_path() == linked_dir
+                && bytes == 0
+            {
+                got_zero = true;
+            }
+        }
+        assert!(got_zero, "expected zero-byte disk usage for removed workspace worktree");
     }
 }

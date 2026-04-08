@@ -1598,6 +1598,7 @@ impl App {
         }
         // Re-replace with the runtime-data-enriched version.
         self.projects.replace_leaf_by_path(&path, item);
+        self.projects.regroup_top_level_worktrees();
         self.cached_detail = None;
         // Signal that derived state needs refresh (batched by caller).
         true

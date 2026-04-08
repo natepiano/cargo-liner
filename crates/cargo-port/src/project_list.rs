@@ -11,6 +11,7 @@ use crate::project::ProjectListItem;
 use crate::project::RustProject;
 use crate::project::Visibility;
 use crate::project::Workspace;
+use crate::project::WorktreeGroup;
 
 /// Owning wrapper around the project hierarchy.
 ///
@@ -228,6 +229,10 @@ impl ProjectList {
     pub(crate) fn insert_into_hierarchy(&mut self, item: ProjectListItem) -> bool {
         let item_path = item.path().to_path_buf();
         for existing in &mut self.items {
+            if try_attach_worktree(existing, &item) {
+                return false;
+            }
+
             let inserted = match existing {
                 ProjectListItem::Workspace(ws) => try_insert_member(ws, &item_path, &item),
                 ProjectListItem::WorkspaceWorktrees(g) => {
@@ -269,12 +274,128 @@ impl ProjectList {
         }
     }
 
+    pub(crate) fn regroup_top_level_worktrees(&mut self) {
+        let mut index = 0;
+        while index < self.items.len() {
+            let Some(identity) = linked_worktree_identity(&self.items[index]).map(Path::to_path_buf)
+            else {
+                index += 1;
+                continue;
+            };
+            let Some(mut target_index) =
+                find_matching_worktree_container(&self.items, index, identity.as_path())
+            else {
+                index += 1;
+                continue;
+            };
+
+            let linked_item = self.items.remove(index);
+            if target_index > index {
+                target_index -= 1;
+            }
+            let attached = try_attach_worktree(&mut self.items[target_index], &linked_item);
+            debug_assert!(attached, "linked worktree regroup should attach after container match");
+            if target_index >= index {
+                index += 1;
+            }
+        }
+    }
+
     // -- Vec-like operations -------------------------------------------------
 
     pub(crate) fn clear(&mut self) { self.items.clear(); }
 
     #[cfg(test)]
     pub(crate) fn push(&mut self, item: ProjectListItem) { self.items.push(item); }
+}
+
+fn try_attach_worktree(existing: &mut ProjectListItem, item: &ProjectListItem) -> bool {
+    let existing_identity = item_worktree_identity(existing).map(Path::to_path_buf);
+
+    if let ProjectListItem::Workspace(linked) = item
+        && linked.worktree_name().is_some()
+    {
+        match existing {
+            ProjectListItem::Workspace(primary)
+                if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
+            {
+                let primary = primary.clone();
+                *existing = ProjectListItem::WorkspaceWorktrees(WorktreeGroup::new(
+                    primary,
+                    vec![linked.clone()],
+                ));
+                return true;
+            },
+            ProjectListItem::WorkspaceWorktrees(group)
+                if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
+            {
+                group.linked_mut().push(linked.clone());
+                return true;
+            },
+            _ => {},
+        }
+    }
+
+    if let ProjectListItem::Package(linked) = item
+        && linked.worktree_name().is_some()
+    {
+        match existing {
+            ProjectListItem::Package(primary)
+                if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
+            {
+                let primary = primary.clone();
+                *existing = ProjectListItem::PackageWorktrees(WorktreeGroup::new(
+                    primary,
+                    vec![linked.clone()],
+                ));
+                return true;
+            },
+            ProjectListItem::PackageWorktrees(group)
+                if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
+            {
+                group.linked_mut().push(linked.clone());
+                return true;
+            },
+            _ => {},
+        }
+    }
+
+    false
+}
+
+fn item_worktree_identity(item: &ProjectListItem) -> Option<&Path> {
+    match item {
+        ProjectListItem::Workspace(project) => project.worktree_primary_abs_path(),
+        ProjectListItem::Package(project) => project.worktree_primary_abs_path(),
+        ProjectListItem::WorkspaceWorktrees(group) => group.primary().worktree_primary_abs_path(),
+        ProjectListItem::PackageWorktrees(group) => group.primary().worktree_primary_abs_path(),
+        ProjectListItem::NonRust(_) => None,
+    }
+}
+
+fn linked_worktree_identity(item: &ProjectListItem) -> Option<&Path> {
+    match item {
+        ProjectListItem::Workspace(project) if project.worktree_name().is_some() => {
+            project.worktree_primary_abs_path()
+        },
+        ProjectListItem::Package(project) if project.worktree_name().is_some() => {
+            project.worktree_primary_abs_path()
+        },
+        _ => None,
+    }
+}
+
+fn find_matching_worktree_container(
+    items: &[ProjectListItem],
+    linked_index: usize,
+    identity: &Path,
+) -> Option<usize> {
+    items.iter().enumerate().find_map(|(index, item)| {
+        if index == linked_index {
+            return None;
+        }
+        (item_worktree_identity(item) == Some(identity)).then_some(index)
+    })
 }
 
 // -- Deref to slice for read access ---------------------------------------

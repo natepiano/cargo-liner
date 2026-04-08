@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::time::Instant;
@@ -147,13 +148,22 @@ fn make_package_raw(
     path: &str,
     worktree_name: Option<&str>,
 ) -> RustProject<Package> {
+    make_package_raw_with_primary(name, path, worktree_name, None)
+}
+
+fn make_package_raw_with_primary(
+    name: Option<&str>,
+    path: &str,
+    worktree_name: Option<&str>,
+    primary_abs_path: Option<&str>,
+) -> RustProject<Package> {
     RustProject::<Package>::new(
         PathBuf::from(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
         Vec::new(),
         worktree_name.map(String::from),
-        None,
+        primary_abs_path.map(PathBuf::from),
     )
 }
 
@@ -163,6 +173,16 @@ fn make_workspace_raw(
     groups: Vec<MemberGroup>,
     worktree_name: Option<&str>,
 ) -> RustProject<Workspace> {
+    make_workspace_raw_with_primary(name, path, groups, worktree_name, None)
+}
+
+fn make_workspace_raw_with_primary(
+    name: Option<&str>,
+    path: &str,
+    groups: Vec<MemberGroup>,
+    worktree_name: Option<&str>,
+    primary_abs_path: Option<&str>,
+) -> RustProject<Workspace> {
     RustProject::<Workspace>::new(
         PathBuf::from(path),
         name.map(String::from),
@@ -170,7 +190,7 @@ fn make_workspace_raw(
         groups,
         Vec::new(),
         worktree_name.map(String::from),
-        None,
+        primary_abs_path.map(PathBuf::from),
     )
 }
 
@@ -220,6 +240,89 @@ fn make_workspace_raw_with_vendored(
 
 fn wait_for_tree_build(app: &mut App) {
     // Tree rebuilds no longer exist — just ensure derived state is fresh.
+    app.ensure_visible_rows_cached();
+}
+
+fn git_binary() -> &'static str {
+    if Path::new("/usr/bin/git").is_file() {
+        "/usr/bin/git"
+    } else {
+        "git"
+    }
+}
+
+fn manifest_contents(name: &str, workspace: bool) -> String {
+    let workspace_section = if workspace { "\n[workspace]\n" } else { "" };
+    format!(
+        r#"[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2024"
+{workspace_section}
+"#
+    )
+}
+
+fn init_git_project(dir: &Path, name: &str, workspace: bool) {
+    std::fs::create_dir_all(dir.join("src")).unwrap_or_else(|_| std::process::abort());
+    std::fs::write(dir.join("Cargo.toml"), manifest_contents(name, workspace))
+        .unwrap_or_else(|_| std::process::abort());
+    std::fs::write(dir.join("src").join("main.rs"), "fn main() {}\n")
+        .unwrap_or_else(|_| std::process::abort());
+
+    Command::new(git_binary())
+        .args(["init"])
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|_| std::process::abort());
+    Command::new(git_binary())
+        .args(["config", "user.name", "cargo-port-tests"])
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|_| std::process::abort());
+    Command::new(git_binary())
+        .args(["config", "user.email", "cargo-port-tests@example.com"])
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|_| std::process::abort());
+    Command::new(git_binary())
+        .args(["add", "."])
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|_| std::process::abort());
+    Command::new(git_binary())
+        .args(["commit", "-m", "init"])
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|_| std::process::abort());
+}
+
+fn add_git_worktree(primary_dir: &Path, worktree_dir: &Path, branch: &str) {
+    let status = Command::new(git_binary())
+        .args([
+            "worktree",
+            "add",
+            worktree_dir.to_str().unwrap_or_else(|| std::process::abort()),
+            "-b",
+            branch,
+        ])
+        .current_dir(primary_dir)
+        .status()
+        .unwrap_or_else(|_| std::process::abort());
+    assert!(status.success(), "git worktree add should succeed");
+}
+
+fn item_from_project_dir(dir: &Path) -> ProjectListItem {
+    let cargo_toml = dir.join("Cargo.toml");
+    let parsed = crate::project::from_cargo_toml(&cargo_toml)
+        .unwrap_or_else(|_| std::process::abort());
+    crate::scan::cargo_project_to_item(parsed)
+}
+
+fn apply_bg_msg(app: &mut App, msg: BackgroundMsg) {
+    if app.handle_bg_msg(msg) {
+        app.refresh_derived_state();
+    }
     app.ensure_visible_rows_cached();
 }
 
@@ -653,8 +756,139 @@ fn worktree_section_collapses_when_one_dismissed() {
         .expect("linked worktree should exist")
         .visibility = Dismissed;
     let rows = snapshots::build_visible_rows(&items, &expanded, true);
-    assert_eq!(rows.len(), 2, "root + 1 worktree when one dismissed");
-    assert!(matches!(rows[0], VisibleRow::Root { node_index: 0 }));
+    assert_eq!(rows.len(), 1, "only the root should remain when one worktree is left");
+    assert_eq!(rows, vec![VisibleRow::Root { node_index: 0 }]);
+}
+
+#[test]
+fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("app");
+    let linked_dir = tmp.path().join("app_feat");
+    std::fs::create_dir_all(&primary_dir).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+
+    let primary_path = primary_dir.to_string_lossy().to_string();
+    let linked_path = linked_dir.to_string_lossy().to_string();
+    let root = make_package_worktrees_item(
+        make_package_raw(Some("app"), &primary_path, None),
+        vec![make_package_raw(
+            Some("app"),
+            &linked_path,
+            Some("app_feat"),
+        )],
+    );
+    let mut app = make_app(&[root]);
+
+    app.list_state.select(Some(0));
+    assert!(app.expand(), "root worktree group should expand");
+    app.ensure_visible_rows_cached();
+    assert_eq!(app.visible_rows().len(), 3, "root + 2 worktree entries");
+
+    std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+    app.handle_disk_usage(Path::new(&linked_path), 0);
+
+    let linked_abs = PathBuf::from(&linked_path);
+    assert!(app.is_deleted(&linked_abs), "linked worktree should be deleted");
+
+    app.ensure_visible_rows_cached();
+    assert_eq!(
+        app.visible_rows().len(),
+        3,
+        "deleted worktree should still render until dismissed"
+    );
+
+    app.list_state.select(Some(2));
+    let target = app
+        .focused_dismiss_target()
+        .expect("deleted linked worktree should be dismissable");
+    app.dismiss(target);
+
+    app.ensure_visible_rows_cached();
+    assert_eq!(
+        app.visible_rows(),
+        &[VisibleRow::Root { node_index: 0 }],
+        "dismissing the deleted worktree should collapse the group to the root row"
+    );
+    assert_eq!(
+        App::live_worktree_count_for_item(&app.projects[0]),
+        0,
+        "the remaining primary should no longer render as a worktree group"
+    );
+    assert_eq!(
+        app.selected_project_path(),
+        Some(Path::new(&primary_path)),
+        "selection should move back to the surviving top-level project"
+    );
+    assert_eq!(
+        app.projects
+            .at_path(&linked_abs)
+            .expect("linked worktree should remain in the hierarchy")
+            .visibility,
+        Dismissed
+    );
+}
+
+#[test]
+fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("ws");
+    let linked_dir = tmp.path().join("ws_feat");
+    std::fs::create_dir_all(&primary_dir).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+
+    let primary_path = primary_dir.to_string_lossy().to_string();
+    let linked_path = linked_dir.to_string_lossy().to_string();
+    let root = make_workspace_worktrees_item(
+        make_workspace_raw(Some("ws"), &primary_path, Vec::new(), None),
+        vec![make_workspace_raw(
+            Some("ws"),
+            &linked_path,
+            Vec::new(),
+            Some("ws_feat"),
+        )],
+    );
+    let mut app = make_app(&[root]);
+
+    app.list_state.select(Some(0));
+    assert!(app.expand(), "root worktree group should expand");
+    app.ensure_visible_rows_cached();
+    assert_eq!(app.visible_rows().len(), 3, "root + 2 worktree entries");
+
+    std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::DiskUsage {
+            path:  PathBuf::from(&linked_path).into(),
+            bytes: 0,
+        },
+    );
+
+    let linked_abs = PathBuf::from(&linked_path);
+    assert!(app.is_deleted(&linked_abs), "linked workspace should be deleted");
+    assert_eq!(
+        app.visible_rows().len(),
+        3,
+        "deleted linked workspace should still render until dismissed"
+    );
+
+    app.list_state.select(Some(2));
+    let target = app
+        .focused_dismiss_target()
+        .expect("deleted linked workspace should be dismissable");
+    app.dismiss(target);
+    app.ensure_visible_rows_cached();
+
+    assert_eq!(
+        app.visible_rows(),
+        &[VisibleRow::Root { node_index: 0 }],
+        "dismissing the deleted workspace worktree should collapse to the root row"
+    );
+    assert_eq!(
+        App::live_worktree_count_for_item(&app.projects[0]),
+        0,
+        "the remaining primary should no longer render as a worktree group"
+    );
 }
 
 #[test]
@@ -1869,6 +2103,637 @@ fn handle_project_discovered_deduplicates_by_path() {
     app.handle_project_discovered(pkg2); // duplicate — should be rejected
     app.handle_project_discovered(pkg3);
     assert_eq!(app.projects.len(), 2);
+}
+
+#[test]
+fn handle_project_discovered_creates_worktree_group_from_single_primary() {
+    let primary_path = "/abs/app";
+    let linked_path = "/abs/app_feat";
+    let primary = ProjectListItem::Package(make_package_raw_with_primary(
+        Some("app"),
+        primary_path,
+        None,
+        Some("/canonical/app"),
+    ));
+    let linked = ProjectListItem::Package(make_package_raw_with_primary(
+        Some("app"),
+        linked_path,
+        Some("app_feat"),
+        Some("/canonical/app"),
+    ));
+
+    let mut app = make_app(&[primary]);
+    assert!(app.handle_project_discovered(linked));
+    assert_eq!(app.projects.len(), 1, "new linked checkout should regroup with the primary");
+
+    let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
+        panic!("expected discovered worktree to create a package worktree group");
+    };
+    assert_eq!(group.primary().path(), Path::new(primary_path));
+    assert_eq!(group.linked().len(), 1);
+    assert_eq!(group.linked()[0].path(), Path::new(linked_path));
+}
+
+#[test]
+fn handle_project_discovered_slots_new_worktree_into_existing_group() {
+    let primary_path = "/abs/app";
+    let existing_linked_path = "/abs/app_feat";
+    let new_linked_path = "/abs/app_fix";
+    let root = make_package_worktrees_item(
+        make_package_raw_with_primary(Some("app"), primary_path, None, Some("/canonical/app")),
+        vec![make_package_raw_with_primary(
+            Some("app"),
+            existing_linked_path,
+            Some("app_feat"),
+            Some("/canonical/app"),
+        )],
+    );
+    let new_linked = ProjectListItem::Package(make_package_raw_with_primary(
+        Some("app"),
+        new_linked_path,
+        Some("app_fix"),
+        Some("/canonical/app"),
+    ));
+
+    let mut app = make_app(&[root]);
+    assert!(app.handle_project_discovered(new_linked));
+    assert_eq!(app.projects.len(), 1, "new linked checkout should stay inside the existing group");
+
+    let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
+        panic!("expected existing root to remain a package worktree group");
+    };
+    assert_eq!(group.linked().len(), 2);
+    assert!(
+        group.linked().iter().any(|linked| linked.path() == Path::new(existing_linked_path)),
+        "existing linked worktree should remain in the group"
+    );
+    assert!(
+        group.linked().iter().any(|linked| linked.path() == Path::new(new_linked_path)),
+        "new linked worktree should be appended to the group"
+    );
+}
+
+#[test]
+fn handle_project_discovered_creates_workspace_worktree_group_from_single_primary() {
+    let primary_path = "/abs/obsidian_knife";
+    let linked_path = "/abs/obsidian_knife_test";
+    let primary = ProjectListItem::Workspace(make_workspace_raw_with_primary(
+        Some("obsidian_knife"),
+        primary_path,
+        Vec::new(),
+        None,
+        Some("/canonical/obsidian_knife"),
+    ));
+    let linked = ProjectListItem::Workspace(make_workspace_raw_with_primary(
+        Some("obsidian_knife"),
+        linked_path,
+        Vec::new(),
+        Some("obsidian_knife_test"),
+        Some("/canonical/obsidian_knife"),
+    ));
+
+    let mut app = make_app(&[primary]);
+    assert!(app.handle_project_discovered(linked));
+    assert_eq!(app.projects.len(), 1, "new linked workspace should regroup with the primary");
+
+    let ProjectListItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+        panic!("expected discovered workspace worktree to create a worktree group");
+    };
+    assert_eq!(group.primary().path(), Path::new(primary_path));
+    assert_eq!(group.linked().len(), 1);
+    assert_eq!(group.linked()[0].path(), Path::new(linked_path));
+}
+
+#[test]
+fn handle_project_discovered_slots_new_workspace_worktree_into_existing_group() {
+    let primary_path = "/abs/obsidian_knife";
+    let existing_linked_path = "/abs/obsidian_knife_feat";
+    let new_linked_path = "/abs/obsidian_knife_test";
+    let root = make_workspace_worktrees_item(
+        make_workspace_raw_with_primary(
+            Some("obsidian_knife"),
+            primary_path,
+            Vec::new(),
+            None,
+            Some("/canonical/obsidian_knife"),
+        ),
+        vec![make_workspace_raw_with_primary(
+            Some("obsidian_knife"),
+            existing_linked_path,
+            Vec::new(),
+            Some("obsidian_knife_feat"),
+            Some("/canonical/obsidian_knife"),
+        )],
+    );
+    let new_linked = ProjectListItem::Workspace(make_workspace_raw_with_primary(
+        Some("obsidian_knife"),
+        new_linked_path,
+        Vec::new(),
+        Some("obsidian_knife_test"),
+        Some("/canonical/obsidian_knife"),
+    ));
+
+    let mut app = make_app(&[root]);
+    assert!(app.handle_project_discovered(new_linked));
+    assert_eq!(
+        app.projects.len(),
+        1,
+        "new linked workspace should stay inside the existing worktree group"
+    );
+
+    let ProjectListItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+        panic!("expected existing root to remain a workspace worktree group");
+    };
+    assert_eq!(group.linked().len(), 2);
+    assert!(
+        group.linked().iter().any(|linked| linked.path() == Path::new(existing_linked_path)),
+        "existing linked workspace should remain in the group"
+    );
+    assert!(
+        group.linked().iter().any(|linked| linked.path() == Path::new(new_linked_path)),
+        "new linked workspace should be appended to the group"
+    );
+}
+
+#[test]
+fn background_discovery_from_real_package_worktree_creates_group() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("app");
+    let linked_dir = tmp.path().join("app_test");
+    init_git_project(&primary_dir, "app", false);
+
+    let primary_item = item_from_project_dir(&primary_dir);
+    let mut app = make_app(&[primary_item]);
+
+    add_git_worktree(&primary_dir, &linked_dir, "test/app");
+    let linked_item = item_from_project_dir(&linked_dir);
+    apply_bg_msg(&mut app, BackgroundMsg::ProjectDiscovered { item: linked_item });
+
+    assert_eq!(app.projects.len(), 1);
+    let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
+        panic!("expected package worktree group after real worktree discovery");
+    };
+    assert_eq!(group.linked().len(), 1);
+
+    app.list_state.select(Some(0));
+    assert!(app.expand(), "root should expand into package worktree entries");
+    app.ensure_visible_rows_cached();
+    assert_eq!(app.visible_rows().len(), 3);
+}
+
+#[test]
+fn background_discovery_from_real_workspace_worktree_creates_group() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("obsidian_knife");
+    let linked_dir = tmp.path().join("obsidian_knife_test");
+    init_git_project(&primary_dir, "obsidian_knife", true);
+
+    let primary_item = item_from_project_dir(&primary_dir);
+    let mut app = make_app(&[primary_item]);
+
+    add_git_worktree(&primary_dir, &linked_dir, "test/obsidian");
+    let linked_item = item_from_project_dir(&linked_dir);
+    apply_bg_msg(&mut app, BackgroundMsg::ProjectDiscovered { item: linked_item });
+
+    assert_eq!(app.projects.len(), 1);
+    let ProjectListItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+        panic!("expected workspace worktree group after real worktree discovery");
+    };
+    assert_eq!(group.linked().len(), 1);
+
+    app.list_state.select(Some(0));
+    assert!(app.expand(), "root should expand into workspace worktree entries");
+    app.ensure_visible_rows_cached();
+    assert_eq!(app.visible_rows().len(), 3);
+}
+
+#[test]
+fn background_discovery_from_real_package_worktree_appends_existing_group() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("app");
+    let linked_one_dir = tmp.path().join("app_feat");
+    let linked_two_dir = tmp.path().join("app_test");
+    init_git_project(&primary_dir, "app", false);
+    add_git_worktree(&primary_dir, &linked_one_dir, "feat/app");
+
+    let primary_item = item_from_project_dir(&primary_dir);
+    let linked_one_item = item_from_project_dir(&linked_one_dir);
+    let mut app = make_app(&[primary_item, linked_one_item]);
+
+    add_git_worktree(&primary_dir, &linked_two_dir, "test/app");
+    let linked_two_item = item_from_project_dir(&linked_two_dir);
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectDiscovered {
+            item: linked_two_item,
+        },
+    );
+
+    assert_eq!(app.projects.len(), 1);
+    let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
+        panic!("expected package worktree group after second real worktree discovery");
+    };
+    assert_eq!(group.linked().len(), 2);
+}
+
+#[test]
+fn background_discovery_from_real_workspace_worktree_appends_existing_group() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("obsidian_knife");
+    let linked_one_dir = tmp.path().join("obsidian_knife_feat");
+    let linked_two_dir = tmp.path().join("obsidian_knife_test");
+    init_git_project(&primary_dir, "obsidian_knife", true);
+    add_git_worktree(&primary_dir, &linked_one_dir, "feat/obsidian");
+
+    let primary_item = item_from_project_dir(&primary_dir);
+    let linked_one_item = item_from_project_dir(&linked_one_dir);
+    let mut app = make_app(&[primary_item, linked_one_item]);
+
+    add_git_worktree(&primary_dir, &linked_two_dir, "test/obsidian");
+    let linked_two_item = item_from_project_dir(&linked_two_dir);
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectDiscovered {
+            item: linked_two_item,
+        },
+    );
+
+    assert_eq!(app.projects.len(), 1);
+    let ProjectListItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+        panic!("expected workspace worktree group after second real worktree discovery");
+    };
+    assert_eq!(group.linked().len(), 2);
+}
+
+#[test]
+fn refreshed_workspace_worktree_metadata_regroups_stale_top_level_discovery() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("obsidian_knife");
+    let linked_dir = tmp.path().join("obsidian_knife_test");
+    init_git_project(&primary_dir, "obsidian_knife", true);
+
+    let primary_item = item_from_project_dir(&primary_dir);
+    let mut app = make_app(&[primary_item]);
+
+    add_git_worktree(&primary_dir, &linked_dir, "test/obsidian");
+
+    // Simulate the bad runtime path: discovery happens before worktree
+    // metadata is available, so the linked checkout is inserted as a plain
+    // top-level workspace instead of a worktree child.
+    let stale_discovery = ProjectListItem::Workspace(make_workspace_raw(
+        Some("obsidian_knife"),
+        &linked_dir.to_string_lossy(),
+        Vec::new(),
+        None,
+    ));
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectDiscovered {
+            item: stale_discovery,
+        },
+    );
+    assert_eq!(app.projects.len(), 2, "stale discovery should currently append a top-level row");
+
+    // A later refresh for the same path carries the correct worktree metadata.
+    let refreshed = item_from_project_dir(&linked_dir);
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectRefreshed { item: refreshed },
+    );
+
+    assert_eq!(
+        app.projects.len(),
+        1,
+        "refreshing the stale top-level row should regroup it under the primary worktree container"
+    );
+    let ProjectListItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+        panic!("expected regrouped workspace worktree container after refresh");
+    };
+    assert_eq!(group.linked().len(), 1);
+    assert_eq!(group.linked()[0].path(), linked_dir.as_path());
+}
+
+#[test]
+fn refreshed_package_worktree_metadata_regroups_stale_top_level_discovery() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("app");
+    let linked_dir = tmp.path().join("app_test");
+    init_git_project(&primary_dir, "app", false);
+
+    let primary_item = item_from_project_dir(&primary_dir);
+    let mut app = make_app(&[primary_item]);
+
+    add_git_worktree(&primary_dir, &linked_dir, "test/app");
+
+    let stale_discovery = ProjectListItem::Package(make_package_raw(
+        Some("app"),
+        &linked_dir.to_string_lossy(),
+        None,
+    ));
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectDiscovered {
+            item: stale_discovery,
+        },
+    );
+    assert_eq!(app.projects.len(), 2, "stale discovery should currently append a top-level row");
+
+    let refreshed = item_from_project_dir(&linked_dir);
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectRefreshed { item: refreshed },
+    );
+
+    assert_eq!(
+        app.projects.len(),
+        1,
+        "refreshing the stale top-level row should regroup it under the primary worktree container"
+    );
+    let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
+        panic!("expected regrouped package worktree container after refresh");
+    };
+    assert_eq!(group.linked().len(), 1);
+    assert_eq!(group.linked()[0].path(), linked_dir.as_path());
+}
+
+#[test]
+fn refreshed_workspace_worktree_metadata_appends_into_existing_group() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("obsidian_knife");
+    let linked_one_dir = tmp.path().join("obsidian_knife_feat");
+    let linked_two_dir = tmp.path().join("obsidian_knife_test");
+    init_git_project(&primary_dir, "obsidian_knife", true);
+    add_git_worktree(&primary_dir, &linked_one_dir, "feat/obsidian");
+
+    let primary_item = item_from_project_dir(&primary_dir);
+    let linked_one_item = item_from_project_dir(&linked_one_dir);
+    let mut app = make_app(&[primary_item, linked_one_item]);
+
+    add_git_worktree(&primary_dir, &linked_two_dir, "test/obsidian");
+
+    let stale_discovery = ProjectListItem::Workspace(make_workspace_raw(
+        Some("obsidian_knife"),
+        &linked_two_dir.to_string_lossy(),
+        Vec::new(),
+        None,
+    ));
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectDiscovered {
+            item: stale_discovery,
+        },
+    );
+    assert_eq!(app.projects.len(), 2, "stale discovery should temporarily append a top-level row");
+
+    let refreshed = item_from_project_dir(&linked_two_dir);
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectRefreshed { item: refreshed },
+    );
+
+    assert_eq!(
+        app.projects.len(),
+        1,
+        "refresh should fold the stale row into the existing workspace worktree group"
+    );
+    let ProjectListItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+        panic!("expected workspace worktree group after refresh regroup");
+    };
+    assert_eq!(group.linked().len(), 2);
+    assert!(
+        group.linked().iter().any(|linked| linked.path() == linked_one_dir.as_path()),
+        "existing linked workspace should remain in the group"
+    );
+    assert!(
+        group.linked().iter().any(|linked| linked.path() == linked_two_dir.as_path()),
+        "refreshed linked workspace should join the existing group"
+    );
+}
+
+#[test]
+fn refreshed_package_worktree_metadata_appends_into_existing_group() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("app");
+    let linked_one_dir = tmp.path().join("app_feat");
+    let linked_two_dir = tmp.path().join("app_test");
+    init_git_project(&primary_dir, "app", false);
+    add_git_worktree(&primary_dir, &linked_one_dir, "feat/app");
+
+    let primary_item = item_from_project_dir(&primary_dir);
+    let linked_one_item = item_from_project_dir(&linked_one_dir);
+    let mut app = make_app(&[primary_item, linked_one_item]);
+
+    add_git_worktree(&primary_dir, &linked_two_dir, "test/app");
+
+    let stale_discovery = ProjectListItem::Package(make_package_raw(
+        Some("app"),
+        &linked_two_dir.to_string_lossy(),
+        None,
+    ));
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectDiscovered {
+            item: stale_discovery,
+        },
+    );
+    assert_eq!(app.projects.len(), 2, "stale discovery should temporarily append a top-level row");
+
+    let refreshed = item_from_project_dir(&linked_two_dir);
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectRefreshed { item: refreshed },
+    );
+
+    assert_eq!(
+        app.projects.len(),
+        1,
+        "refresh should fold the stale row into the existing package worktree group"
+    );
+    let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
+        panic!("expected package worktree group after refresh regroup");
+    };
+    assert_eq!(group.linked().len(), 2);
+    assert!(
+        group.linked().iter().any(|linked| linked.path() == linked_one_dir.as_path()),
+        "existing linked package should remain in the group"
+    );
+    assert!(
+        group.linked().iter().any(|linked| linked.path() == linked_two_dir.as_path()),
+        "refreshed linked package should join the existing group"
+    );
+}
+
+#[test]
+fn stale_discovery_refresh_then_delete_dismiss_workspace_returns_to_root() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("obsidian_knife");
+    let linked_dir = tmp.path().join("obsidian_knife_test");
+    init_git_project(&primary_dir, "obsidian_knife", true);
+
+    let primary_item = item_from_project_dir(&primary_dir);
+    let mut app = make_app(&[primary_item]);
+
+    add_git_worktree(&primary_dir, &linked_dir, "test/obsidian");
+
+    let stale_discovery = ProjectListItem::Workspace(make_workspace_raw(
+        Some("obsidian_knife"),
+        &linked_dir.to_string_lossy(),
+        Vec::new(),
+        None,
+    ));
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectDiscovered {
+            item: stale_discovery,
+        },
+    );
+    let refreshed = item_from_project_dir(&linked_dir);
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectRefreshed { item: refreshed },
+    );
+
+    app.list_state.select(Some(0));
+    assert!(app.expand(), "root should expand into worktree entries after regroup");
+    app.ensure_visible_rows_cached();
+    assert_eq!(app.visible_rows().len(), 3);
+
+    std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::DiskUsage {
+            path:  linked_dir.clone().into(),
+            bytes: 0,
+        },
+    );
+    app.list_state.select(Some(2));
+    let target = app
+        .focused_dismiss_target()
+        .expect("deleted linked workspace should be dismissable after regroup");
+    app.dismiss(target);
+    app.ensure_visible_rows_cached();
+    assert_eq!(app.visible_rows(), &[VisibleRow::Root { node_index: 0 }]);
+}
+
+#[test]
+fn stale_discovery_refresh_then_delete_dismiss_package_returns_to_root() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("app");
+    let linked_dir = tmp.path().join("app_test");
+    init_git_project(&primary_dir, "app", false);
+
+    let primary_item = item_from_project_dir(&primary_dir);
+    let mut app = make_app(&[primary_item]);
+
+    add_git_worktree(&primary_dir, &linked_dir, "test/app");
+
+    let stale_discovery = ProjectListItem::Package(make_package_raw(
+        Some("app"),
+        &linked_dir.to_string_lossy(),
+        None,
+    ));
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectDiscovered {
+            item: stale_discovery,
+        },
+    );
+    let refreshed = item_from_project_dir(&linked_dir);
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectRefreshed { item: refreshed },
+    );
+
+    app.list_state.select(Some(0));
+    assert!(app.expand(), "root should expand into worktree entries after regroup");
+    app.ensure_visible_rows_cached();
+    assert_eq!(app.visible_rows().len(), 3);
+
+    std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::DiskUsage {
+            path:  linked_dir.clone().into(),
+            bytes: 0,
+        },
+    );
+    app.list_state.select(Some(2));
+    let target = app
+        .focused_dismiss_target()
+        .expect("deleted linked package should be dismissable after regroup");
+    app.dismiss(target);
+    app.ensure_visible_rows_cached();
+    assert_eq!(app.visible_rows(), &[VisibleRow::Root { node_index: 0 }]);
+}
+
+#[test]
+fn background_disk_zero_from_real_package_worktree_can_be_dismissed_to_root() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("app");
+    let linked_dir = tmp.path().join("app_test");
+    init_git_project(&primary_dir, "app", false);
+    add_git_worktree(&primary_dir, &linked_dir, "test/app");
+
+    let primary_item = item_from_project_dir(&primary_dir);
+    let linked_item = item_from_project_dir(&linked_dir);
+    let mut app = make_app(&[primary_item, linked_item]);
+
+    app.list_state.select(Some(0));
+    assert!(app.expand(), "root should expand into worktree entries");
+    app.ensure_visible_rows_cached();
+    assert_eq!(app.visible_rows().len(), 3);
+
+    std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::DiskUsage {
+            path:  linked_dir.clone().into(),
+            bytes: 0,
+        },
+    );
+    assert!(app.is_deleted(&linked_dir));
+    app.list_state.select(Some(2));
+    let target = app
+        .focused_dismiss_target()
+        .expect("deleted linked package should be dismissable");
+    app.dismiss(target);
+    app.ensure_visible_rows_cached();
+    assert_eq!(app.visible_rows(), &[VisibleRow::Root { node_index: 0 }]);
+}
+
+#[test]
+fn background_disk_zero_from_real_workspace_worktree_can_be_dismissed_to_root() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("obsidian_knife");
+    let linked_dir = tmp.path().join("obsidian_knife_test");
+    init_git_project(&primary_dir, "obsidian_knife", true);
+    add_git_worktree(&primary_dir, &linked_dir, "test/obsidian");
+
+    let primary_item = item_from_project_dir(&primary_dir);
+    let linked_item = item_from_project_dir(&linked_dir);
+    let mut app = make_app(&[primary_item, linked_item]);
+
+    app.list_state.select(Some(0));
+    assert!(app.expand(), "root should expand into worktree entries");
+    app.ensure_visible_rows_cached();
+    assert_eq!(app.visible_rows().len(), 3);
+
+    std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::DiskUsage {
+            path:  linked_dir.clone().into(),
+            bytes: 0,
+        },
+    );
+    assert!(app.is_deleted(&linked_dir));
+    app.list_state.select(Some(2));
+    let target = app
+        .focused_dismiss_target()
+        .expect("deleted linked workspace should be dismissable");
+    app.dismiss(target);
+    app.ensure_visible_rows_cached();
+    assert_eq!(app.visible_rows(), &[VisibleRow::Root { node_index: 0 }]);
 }
 
 #[test]
