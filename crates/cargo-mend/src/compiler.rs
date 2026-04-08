@@ -204,7 +204,17 @@ impl Callbacks for AnalysisCallbacks {
         _compiler: &rustc_interface::interface::Compiler,
         tcx: TyCtxt<'_>,
     ) -> Compilation {
-        match collect_and_store_findings(tcx, &self.settings) {
+        let analysis_start = std::time::Instant::now();
+        let result = collect_and_store_findings(tcx, &self.settings);
+        if let Ok(mut f) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/mend-cache-debug.log")
+        {
+            use std::io::Write;
+            let _ = writeln!(f, "after_analysis took: {:?}", analysis_start.elapsed());
+        }
+        match result {
             Ok(true | false) => Compilation::Continue,
             Err(err) => {
                 self.error = Some(err);
@@ -255,18 +265,13 @@ pub(crate) fn run_selection(
 
     if !missing_packages.is_empty() {
         for package in missing_packages {
-            let status = run_cargo_rustc_for_package(
-                package,
-                loaded_config,
-                &findings_dir,
-                &selection.target_directory,
-                output_mode,
-            )
-            .map_err(|err| {
-                MendFailure::Analysis(AnalysisFailure {
-                    cause: CompilerFailureCause::DriverSetup(err),
-                })
-            })?;
+            let status =
+                run_cargo_rustc_for_package(package, loaded_config, &findings_dir, output_mode)
+                    .map_err(|err| {
+                        MendFailure::Analysis(AnalysisFailure {
+                            cause: CompilerFailureCause::DriverSetup(err),
+                        })
+                    })?;
             if status.compiler_warnings.saw_unused_import_warnings() {
                 command_outcome.compiler_warnings = CompilerWarningFacts::UnusedImportWarnings;
             }
@@ -347,52 +352,18 @@ fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
     Ok(exit_code_from_i32(status.code().unwrap_or(1)))
 }
 
-/// When the mend binary was compiled with a different toolchain than the target project's
-/// default, `rustc_driver::run_compiler` inside the wrapper will read `.rmeta` files
-/// produced by a mismatched rustc. Detect this and return the toolchain name to force via
-/// `RUSTUP_TOOLCHAIN`, along with an isolated target directory to avoid corrupting the
-/// project's build cache.
-fn toolchain_override() -> Option<ToolchainOverride> {
-    let build_sysroot = option_env!("MEND_BUILD_SYSROOT")?;
-    let output = Command::new("rustc")
-        .args(["--print", "sysroot"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let current_sysroot = String::from_utf8(output.stdout).ok()?;
-    if build_sysroot == current_sysroot.trim() {
-        return None;
-    }
-
-    let build_path = Path::new(build_sysroot);
-    let mut components = build_path.components();
-    let toolchain_name = loop {
-        match components.next() {
-            Some(component) if component.as_os_str() == "toolchains" => {
-                break components.next()?.as_os_str().to_str()?.to_string();
-            },
-            Some(_) => {},
-            None => return None,
-        }
-    };
-
-    Some(ToolchainOverride { toolchain_name })
-}
-
-struct ToolchainOverride {
-    toolchain_name: String,
-}
-
-impl ToolchainOverride {
-    fn apply(&self, command: &mut Command, target_directory: &Path) {
-        command
-            .env("RUSTUP_TOOLCHAIN", &self.toolchain_name)
-            .env("CARGO_TARGET_DIR", target_directory.join("mend"));
-    }
-}
-
+/// Runs `cargo check` with `RUSTC_WORKSPACE_WRAPPER` pointing to the mend binary.
+///
+/// The wrapper uses nightly's `rustc_driver::run_compiler` to analyze workspace members,
+/// while dependencies are compiled by the project's default toolchain (typically stable).
+/// This relies on nightly's `rustc_driver` being able to read `.rmeta` files produced by
+/// stable — which works across close toolchain versions but is not guaranteed by rustc.
+///
+/// If a future rustc update breaks `.rmeta` compatibility between the mend binary's
+/// toolchain and the project's default, this function would need to force the mend
+/// binary's toolchain for the entire `cargo check` (via `RUSTUP_TOOLCHAIN`) and isolate
+/// artifacts in a separate target directory (via `CARGO_TARGET_DIR`) to avoid corrupting
+/// the project's build cache. See git history for the prior `ToolchainOverride` approach.
 fn run_cargo_check(
     selection: &Selection,
     loaded_config: &LoadedConfig,
@@ -414,8 +385,6 @@ fn run_cargo_check(
         },
     }
 
-    let toolchain_override = toolchain_override();
-
     command
         .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
         .env(DRIVER_ENV, "1")
@@ -429,10 +398,6 @@ fn run_cargo_check(
         .env(FINDINGS_DIR_ENV, findings_dir)
         .stdin(Stdio::inherit());
 
-    if let Some(tc) = &toolchain_override {
-        tc.apply(&mut command, &selection.target_directory);
-    }
-
     run_cargo_command(&mut command, output_mode).context("failed to run cargo check for mend")
 }
 
@@ -440,7 +405,6 @@ fn run_cargo_rustc_for_package(
     package: &SelectedPackage,
     loaded_config: &LoadedConfig,
     findings_dir: &Path,
-    target_directory: &Path,
     output_mode: BuildOutputMode,
 ) -> Result<CommandOutcome> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
@@ -457,8 +421,6 @@ fn run_cargo_rustc_for_package(
         command.arg(arg);
     }
 
-    let toolchain_override = toolchain_override();
-
     command
         .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
         .env(DRIVER_ENV, "1")
@@ -471,10 +433,6 @@ fn run_cargo_rustc_for_package(
         .env(CONFIG_FINGERPRINT_ENV, &loaded_config.fingerprint)
         .env(FINDINGS_DIR_ENV, findings_dir)
         .stdin(Stdio::inherit());
-
-    if let Some(tc) = &toolchain_override {
-        tc.apply(&mut command, target_directory);
-    }
 
     run_cargo_command(&mut command, output_mode).with_context(|| {
         format!(
@@ -662,12 +620,7 @@ fn flush_diagnostic_block(
     block.clear();
 }
 
-fn refresh_rustc_args() -> Vec<String> {
-    vec![
-        "--".to_string(),
-        format!("--cfg=mend_refresh_{}", std::process::id()),
-    ]
-}
+fn refresh_rustc_args() -> Vec<String> { vec!["--".to_string(), "--cfg=mend_refresh".to_string()] }
 
 fn cache_is_current_for(
     findings_dir: &Path,
@@ -918,19 +871,44 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
         effective_visibilities: tcx.effective_visibilities(()),
     };
 
+    let t0 = std::time::Instant::now();
+    let mut free_count = 0u32;
     for item_id in crate_items.free_items() {
         let item = tcx.hir_item(item_id);
         analyze_item(&ctx, item, &mut sink)?;
+        free_count += 1;
     }
+    let t1 = std::time::Instant::now();
 
+    let mut impl_count = 0u32;
     for item_id in crate_items.impl_items() {
         let item = tcx.hir_impl_item(item_id);
         analyze_impl_item(&ctx, item, &mut sink)?;
+        impl_count += 1;
     }
+    let t2 = std::time::Instant::now();
 
+    let mut foreign_count = 0u32;
     for item_id in crate_items.foreign_items() {
         let item = tcx.hir_foreign_item(item_id);
         analyze_foreign_item(&ctx, item, &mut sink)?;
+        foreign_count += 1;
+    }
+    let t3 = std::time::Instant::now();
+
+    if let Ok(mut f) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/mend-cache-debug.log")
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            f,
+            "analysis breakdown: free_items={free_count} in {:?}, impl_items={impl_count} in {:?}, foreign_items={foreign_count} in {:?}",
+            t1 - t0,
+            t2 - t1,
+            t3 - t2
+        );
     }
 
     let output_path = settings
@@ -3334,11 +3312,7 @@ mod tests {
     #[test]
     fn refresh_rustc_args_adds_mend_cfg() {
         let args = refresh_rustc_args();
-        assert_eq!(args.first().map(String::as_str), Some("--"));
-        assert!(
-            args.get(1)
-                .is_some_and(|arg| arg.starts_with("--cfg=mend_refresh_"))
-        );
+        assert_eq!(args.as_slice(), ["--", "--cfg=mend_refresh"]);
     }
 
     #[test]

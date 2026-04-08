@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Removed the toolchain override that forced nightly compilation into an isolated `target/mend/` directory — the wrapper now shares the project's normal `target/` directory, eliminating the multi-gigabyte duplicate build artifacts and 17-20s rebuild penalty on every file change
+- The `--cfg=mend_refresh_{pid}` cache-buster now uses a stable `--cfg=mend_refresh` flag, producing one reusable set of artifacts instead of unique unreusable ones per invocation that caused unbounded target directory growth
+
 ## [0.4.0] - 2026-04-06
 
 ### Added

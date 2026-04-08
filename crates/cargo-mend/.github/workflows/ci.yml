@@ -194,24 +194,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust stable and nightly
+      - name: Install Rust stable
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
           components: rust-src, rustc-dev, llvm-tools-preview
 
-      - name: Install nightly toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
-
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Build mend with stable
+      - name: Build mend (nightly via rust-toolchain.toml)
         run: cargo build
 
-      - name: Create test fixture with nightly default
+      - name: Create test fixture using stable
         run: |
           mkdir -p /tmp/mend-fixture/src
           cat > /tmp/mend-fixture/Cargo.toml << 'TOML'
@@ -222,16 +217,16 @@ jobs:
           TOML
           cat > /tmp/mend-fixture/rust-toolchain.toml << 'TOML'
           [toolchain]
-          channel = "nightly"
+          channel = "stable"
           TOML
           cat > /tmp/mend-fixture/src/main.rs << 'RS'
           fn main() { println!("hello"); }
           RS
 
-      - name: Run stable-built mend on nightly fixture
+      - name: Run nightly-built mend on stable fixture
         run: cargo run -- --manifest-path /tmp/mend-fixture/Cargo.toml
 
-      - name: Force cache miss and re-run on nightly fixture
+      - name: Force cache miss and re-run on stable fixture
         run: |
-          touch src/main.rs
+          touch /tmp/mend-fixture/src/main.rs
           cargo run -- --manifest-path /tmp/mend-fixture/Cargo.toml
