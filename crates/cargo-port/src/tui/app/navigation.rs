@@ -787,18 +787,14 @@ impl App {
         if self.is_searching() && !self.search_query.is_empty() {
             return false;
         }
-        let rows = self.visible_rows();
         let Some(selected) = self.list_state.selected() else {
             return false;
         };
-        match rows.get(selected) {
-            Some(VisibleRow::Root { node_index }) => self
-                .projects
-                .get(*node_index)
-                .is_some_and(ProjectListItem::has_children),
-            Some(VisibleRow::GroupHeader { .. } | VisibleRow::WorktreeGroupHeader { .. }) => true,
-            _ => false,
-        }
+        self.visible_rows()
+            .get(selected)
+            .copied()
+            .and_then(|row| self.expand_key_for_row(row))
+            .is_some()
     }
 
     pub(super) fn expand_key_for_row(&self, row: VisibleRow) -> Option<ExpandKey> {

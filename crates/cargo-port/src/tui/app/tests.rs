@@ -495,6 +495,112 @@ fn visible_rows_workspace_with_worktrees() {
 }
 
 #[test]
+fn expand_linked_workspace_worktree_renders_its_members() {
+    let member_a = make_member(Some("a"), "~/ws/a");
+    let member_b = make_member(Some("b"), "~/ws/b");
+
+    let primary = make_workspace_raw(
+        None,
+        "~/ws",
+        vec![inline_group(vec![member_a.clone(), member_b.clone()])],
+        None,
+    );
+    let linked = make_workspace_raw(
+        None,
+        "~/ws_feat",
+        vec![named_group("crates", vec![member_a, member_b])],
+        Some("ws_feat"),
+    );
+    let root = make_workspace_worktrees_item(primary, vec![linked]);
+    let mut app = make_app(&[root]);
+
+    app.ensure_visible_rows_cached();
+    assert_eq!(
+        app.visible_rows(),
+        &[VisibleRow::Root { node_index: 0 }],
+        "workspace worktree group should start collapsed"
+    );
+
+    assert!(app.expand(), "root workspace worktree group should expand");
+    app.ensure_visible_rows_cached();
+    assert_eq!(
+        app.visible_rows(),
+        &[
+            VisibleRow::Root { node_index: 0 },
+            VisibleRow::WorktreeEntry {
+                node_index:     0,
+                worktree_index: 0,
+            },
+            VisibleRow::WorktreeEntry {
+                node_index:     0,
+                worktree_index: 1,
+            },
+        ],
+        "expanding the root should show primary and linked worktree rows"
+    );
+
+    app.list_state.select(Some(2));
+    assert!(app.expand(), "linked workspace worktree row should expand");
+    app.ensure_visible_rows_cached();
+    assert_eq!(
+        app.visible_rows(),
+        &[
+            VisibleRow::Root { node_index: 0 },
+            VisibleRow::WorktreeEntry {
+                node_index:     0,
+                worktree_index: 0,
+            },
+            VisibleRow::WorktreeEntry {
+                node_index:     0,
+                worktree_index: 1,
+            },
+            VisibleRow::WorktreeGroupHeader {
+                node_index:     0,
+                worktree_index: 1,
+                group_index:    0,
+            },
+        ],
+        "expanding the linked workspace worktree should show its member group"
+    );
+
+    app.list_state.select(Some(3));
+    assert!(app.expand(), "linked workspace member group should expand");
+    app.ensure_visible_rows_cached();
+    assert_eq!(
+        app.visible_rows(),
+        &[
+            VisibleRow::Root { node_index: 0 },
+            VisibleRow::WorktreeEntry {
+                node_index:     0,
+                worktree_index: 0,
+            },
+            VisibleRow::WorktreeEntry {
+                node_index:     0,
+                worktree_index: 1,
+            },
+            VisibleRow::WorktreeGroupHeader {
+                node_index:     0,
+                worktree_index: 1,
+                group_index:    0,
+            },
+            VisibleRow::WorktreeMember {
+                node_index:     0,
+                worktree_index: 1,
+                group_index:    0,
+                member_index:   0,
+            },
+            VisibleRow::WorktreeMember {
+                node_index:     0,
+                worktree_index: 1,
+                group_index:    0,
+                member_index:   1,
+            },
+        ],
+        "expanding the linked workspace group should render its members"
+    );
+}
+
+#[test]
 fn visible_rows_non_workspace_worktrees() {
     let build_root = || {
         make_package_worktrees_item(
