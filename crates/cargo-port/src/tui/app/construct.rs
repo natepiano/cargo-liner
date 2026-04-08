@@ -168,30 +168,13 @@ impl App {
 
     /// Snapshot of leaf projects for tree builds.
     ///
-    /// Primarily reads from `project_list_items`. For items that have been
-    /// updated in `discovered_projects` (via `handle_project_refreshed`),
-    /// uses the `discovered_projects` version which may have newer metadata.
-    /// This bridge is removed in Phase 4 when `discovered_projects` is
-    /// eliminated.
+    /// Collects all leaves from `project_list_items` (the single source of
+    /// truth). All runtime data lives on these items.
     pub fn tree_projects_snapshot(&self) -> Vec<ProjectListItem> {
         let mut leaves = Vec::new();
         crate::project::for_each_leaf(&self.project_list_items, |item| {
-            // Prefer discovered_projects version if it exists (may have
-            // fresher metadata from handle_project_refreshed).
-            let preferred = self
-                .discovered_projects
-                .iter()
-                .find(|dp| dp.path() == item.path())
-                .cloned()
-                .unwrap_or_else(|| item.clone());
-            leaves.push(preferred);
+            leaves.push(item.clone());
         });
-        // Include items only in discovered_projects (e.g. newly discovered).
-        for dp in &self.discovered_projects {
-            if !leaves.iter().any(|l| l.path() == dp.path()) {
-                leaves.push(dp.clone());
-            }
-        }
         leaves
     }
 

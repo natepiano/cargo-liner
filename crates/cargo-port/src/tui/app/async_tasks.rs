@@ -1443,13 +1443,6 @@ impl App {
         self.dirty.disk_cache.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
 
-        // Keep discovered_projects in sync so tree rebuilds preserve disk data.
-        for item in &mut self.discovered_projects {
-            if item.set_disk_usage_by_path(path, bytes) {
-                break;
-            }
-        }
-
         // Set disk usage on the matching project item and update visibility.
         let display = crate::project::home_relative_path(path);
         let mut lint_runtime_changed = false;
@@ -1607,38 +1600,48 @@ impl App {
 
     pub(super) fn handle_project_discovered(&mut self, item: ProjectListItem) -> bool {
         let display = item.display_path();
-        if self
-            .discovered_projects
-            .iter()
-            .any(|existing| existing.display_path() == display)
-        {
+        let mut already_exists = false;
+        crate::project::for_each_leaf_path(&self.project_list_items, |path, _| {
+            if crate::project::home_relative_path(path) == display {
+                already_exists = true;
+            }
+        });
+        if already_exists {
             return false;
         }
 
         self.register_item_background_services(&item);
+        // Push directly into project_list_items; the subsequent tree rebuild
+        // will place it at the correct nesting level.
+        self.project_list_items.push(item.clone());
+        // Keep discovered_projects in sync (bridge — removed in Phase 4).
         self.discovered_projects.push(item);
         true
     }
 
     pub(super) fn handle_project_refreshed(&mut self, mut item: ProjectListItem) -> bool {
-        let display = item.display_path();
-        let updated = self
+        let path = item.path().to_path_buf();
+
+        // Replace the leaf in project_list_items, transferring runtime data
+        // from the old item to the incoming one.
+        let Some(old) =
+            crate::project::replace_leaf_by_path(&mut self.project_list_items, &path, item.clone())
+        else {
+            return false;
+        };
+        for (disk_path, bytes) in old.collect_disk_usage() {
+            item.set_disk_usage_by_path(&disk_path, bytes);
+        }
+        // Re-replace with the runtime-data-enriched version.
+        crate::project::replace_leaf_by_path(&mut self.project_list_items, &path, item.clone());
+
+        // Keep discovered_projects in sync (bridge — removed in Phase 4).
+        if let Some(existing) = self
             .discovered_projects
             .iter_mut()
-            .find(|existing| existing.display_path() == display)
-            .is_some_and(|existing| {
-                // Transfer runtime data (disk usage) from the old item before
-                // replacing — the incoming item was freshly built from disk and
-                // doesn't carry asynchronously-set fields.
-                for (path, bytes) in existing.collect_disk_usage() {
-                    item.set_disk_usage_by_path(&path, bytes);
-                }
-                *existing = item;
-                true
-            });
-
-        if !updated {
-            return false;
+            .find(|dp| dp.path() == path)
+        {
+            *existing = item;
         }
 
         // Trigger a tree rebuild so project_list_items picks up the change.
