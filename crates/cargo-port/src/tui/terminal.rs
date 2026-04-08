@@ -41,7 +41,7 @@ use crate::http::HttpClient;
 use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::GitRepoPresence;
-use crate::project::ProjectListItem;
+use crate::project::RootItem;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
@@ -133,7 +133,7 @@ pub fn run(path: &Path) -> ExitCode {
         cfg.tui.include_non_rust,
         http_client.clone(),
     );
-    let projects: Vec<ProjectListItem> = Vec::new();
+    let projects: Vec<RootItem> = Vec::new();
 
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {

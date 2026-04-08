@@ -14,15 +14,15 @@ use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::MemberGroup;
 use crate::project::Package;
-use crate::project::ProjectListItem;
+use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::tui::columns;
+use crate::tui::columns::ResolvedWidths;
 use crate::tui::columns::COL_DISK;
 use crate::tui::columns::COL_SYNC;
-use crate::tui::columns::ResolvedWidths;
 use crate::tui::render;
 use crate::tui::render::PREFIX_GROUP_COLLAPSED;
 use crate::tui::render::PREFIX_MEMBER_INLINE;
@@ -37,7 +37,7 @@ use crate::tui::render::PREFIX_WT_VENDORED;
 
 /// Build the flat list of visible rows from the project list and expansion state.
 pub(super) fn build_visible_rows(
-    items: &[ProjectListItem],
+    items: &[RootItem],
     expanded: &HashSet<ExpandKey>,
     include_non_rust: bool,
 ) -> Vec<VisibleRow> {
@@ -55,15 +55,15 @@ pub(super) fn build_visible_rows(
         }
 
         match item {
-            ProjectListItem::Workspace(ws) => {
+            RootItem::Workspace(ws) => {
                 emit_groups(&mut rows, ni, ws.groups(), expanded);
                 emit_vendored_rows(&mut rows, ni, ws.vendored());
             },
-            ProjectListItem::Package(pkg) => {
+            RootItem::Package(pkg) => {
                 emit_vendored_rows(&mut rows, ni, pkg.vendored());
             },
-            ProjectListItem::NonRust(_) => {},
-            ProjectListItem::WorkspaceWorktrees(wtg) => {
+            RootItem::NonRust(_) => {},
+            RootItem::WorkspaceWorktrees(wtg) => {
                 if wtg.live_entry_count() > 1 {
                     emit_workspace_worktree_group(&mut rows, ni, wtg, expanded);
                 } else if let Some(workspace) = wtg.single_live() {
@@ -71,7 +71,7 @@ pub(super) fn build_visible_rows(
                     emit_vendored_rows(&mut rows, ni, workspace.vendored());
                 }
             },
-            ProjectListItem::PackageWorktrees(wtg) => {
+            RootItem::PackageWorktrees(wtg) => {
                 if wtg.live_entry_count() > 1 {
                     emit_package_worktree_group(&mut rows, ni, wtg, expanded);
                 } else if let Some(package) = wtg.single_live() {
@@ -282,7 +282,7 @@ pub(super) struct FitWidthsState<'a> {
 }
 
 pub(super) fn build_fit_widths_snapshot(
-    items: &[ProjectListItem],
+    items: &[RootItem],
     state: &FitWidthsState<'_>,
     lint_enabled: bool,
     generation: u64,
@@ -299,7 +299,7 @@ pub(super) fn build_fit_widths_snapshot(
 
 fn observe_item_fit_widths(
     widths: &mut ResolvedWidths,
-    item: &ProjectListItem,
+    item: &RootItem,
     state: &FitWidthsState<'_>,
 ) {
     let dw = columns::display_width;
@@ -317,18 +317,18 @@ fn observe_item_fit_widths(
     );
 
     match item {
-        ProjectListItem::Workspace(ws) => {
+        RootItem::Workspace(ws) => {
             observe_new_member_group_fit_widths(widths, ws.groups(), state, false);
             observe_typed_vendored_fit_widths(widths, ws.vendored(), PREFIX_VENDORED);
         },
-        ProjectListItem::Package(pkg) => {
+        RootItem::Package(pkg) => {
             observe_typed_vendored_fit_widths(widths, pkg.vendored(), PREFIX_VENDORED);
         },
-        ProjectListItem::NonRust(_) => {},
-        ProjectListItem::WorkspaceWorktrees(wtg) => {
+        RootItem::NonRust(_) => {},
+        RootItem::WorkspaceWorktrees(wtg) => {
             observe_workspace_worktree_group_fit_widths(widths, wtg, state);
         },
-        ProjectListItem::PackageWorktrees(wtg) => {
+        RootItem::PackageWorktrees(wtg) => {
             observe_package_worktree_group_fit_widths(widths, wtg, state);
         },
     }
@@ -465,7 +465,7 @@ fn observe_package_worktree_group_fit_widths(
 }
 
 pub(super) fn build_disk_cache_snapshot(
-    items: &[ProjectListItem],
+    items: &[RootItem],
 ) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
     let mut root_sorted = Vec::new();
     for item in items {
@@ -489,17 +489,17 @@ pub(super) fn build_disk_cache_snapshot(
 }
 
 /// Collect disk bytes for all children (members, vendored, worktree entries) of an item.
-fn collect_child_disk_values(item: &ProjectListItem, values: &mut Vec<u64>) {
+fn collect_child_disk_values(item: &RootItem, values: &mut Vec<u64>) {
     match item {
-        ProjectListItem::Workspace(ws) => {
+        RootItem::Workspace(ws) => {
             collect_member_group_disk(ws.groups(), values);
             collect_vendored_disk(ws.vendored(), values);
         },
-        ProjectListItem::Package(pkg) => {
+        RootItem::Package(pkg) => {
             collect_vendored_disk(pkg.vendored(), values);
         },
-        ProjectListItem::NonRust(_) => {},
-        ProjectListItem::WorkspaceWorktrees(wtg) => {
+        RootItem::NonRust(_) => {},
+        RootItem::WorkspaceWorktrees(wtg) => {
             for ws in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
                 if let Some(bytes) = ws.disk_usage_bytes() {
                     values.push(bytes);
@@ -508,7 +508,7 @@ fn collect_child_disk_values(item: &ProjectListItem, values: &mut Vec<u64>) {
                 collect_vendored_disk(ws.vendored(), values);
             }
         },
-        ProjectListItem::PackageWorktrees(wtg) => {
+        RootItem::PackageWorktrees(wtg) => {
             for pkg in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
                 if let Some(bytes) = pkg.disk_usage_bytes() {
                     values.push(bytes);
@@ -537,8 +537,8 @@ fn collect_vendored_disk(vendored: &[RustProject<Package>], values: &mut Vec<u64
     }
 }
 
-pub(super) fn initial_disk_batch_count(projects: &[ProjectListItem]) -> usize {
-    let mut abs_paths: Vec<&Path> = projects.iter().map(ProjectListItem::path).collect();
+pub(super) fn initial_disk_batch_count(projects: &[RootItem]) -> usize {
+    let mut abs_paths: Vec<&Path> = projects.iter().map(RootItem::path).collect();
     abs_paths.sort_by(|left, right| {
         left.components()
             .count()

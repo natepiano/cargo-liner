@@ -348,7 +348,7 @@ fn open_in_editor(app: &App) {
         .projects
         .iter()
         .find_map(|item| match item {
-            crate::project::ProjectListItem::Workspace(ws)
+            crate::project::RootItem::Workspace(ws)
                 if ws.groups().iter().any(|g| {
                     g.members()
                         .iter()
@@ -449,7 +449,7 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
             if let Some(path) = app.selected_project_path()
                 && app
                     .selected_item()
-                    .is_some_and(crate::project::ProjectListItem::is_rust)
+                    .is_some_and(crate::project::RootItem::is_rust)
             {
                 app.confirm = Some(ConfirmAction::Clean(path.display().to_string()));
             }

@@ -11,7 +11,7 @@ use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::NonRustProject;
 use crate::project::Package;
-use crate::project::ProjectListItem;
+use crate::project::RootItem;
 use crate::project::ProjectType;
 use crate::project::RustProject;
 use crate::project::Workspace;
@@ -425,7 +425,7 @@ pub struct DetailInfo {
 }
 
 /// Resolve the title shown in the `Package` column header.
-fn resolve_package_title(app: &App, item: &ProjectListItem) -> String {
+fn resolve_package_title(app: &App, item: &RootItem) -> String {
     if !item.is_rust() {
         return "Project".to_string();
     }
@@ -435,7 +435,7 @@ fn resolve_package_title(app: &App, item: &ProjectListItem) -> String {
     }
     if matches!(
         item,
-        ProjectListItem::Workspace(_) | ProjectListItem::WorkspaceWorktrees(_)
+        RootItem::Workspace(_) | RootItem::WorkspaceWorktrees(_)
     ) {
         return "Workspace".to_string();
     }
@@ -544,18 +544,18 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     }
 }
 
-/// Check whether a `ProjectListItem` is a worktree group.
-const fn is_worktree_group(item: &ProjectListItem) -> bool {
+/// Check whether a `RootItem` is a worktree group.
+const fn is_worktree_group(item: &RootItem) -> bool {
     matches!(
         item,
-        ProjectListItem::WorkspaceWorktrees(_) | ProjectListItem::PackageWorktrees(_)
+        RootItem::WorkspaceWorktrees(_) | RootItem::PackageWorktrees(_)
     )
 }
 
 /// Collect worktree names from a worktree group item.
-fn worktree_names_from_item(item: &ProjectListItem) -> Vec<String> {
+fn worktree_names_from_item(item: &RootItem) -> Vec<String> {
     match item {
-        crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
+        crate::project::RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
             .chain(wtg.linked().iter())
             .map(|ws| {
                 ws.worktree_name()
@@ -563,7 +563,7 @@ fn worktree_names_from_item(item: &ProjectListItem) -> Vec<String> {
                     .to_string()
             })
             .collect(),
-        crate::project::ProjectListItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
+        crate::project::RootItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
             .chain(wtg.linked().iter())
             .map(|pkg| {
                 pkg.worktree_name()
@@ -575,26 +575,26 @@ fn worktree_names_from_item(item: &ProjectListItem) -> Vec<String> {
     }
 }
 
-/// Build `DetailInfo` for a root `ProjectListItem`.
-pub fn build_detail_info(app: &App, item: &ProjectListItem) -> DetailInfo {
+/// Build `DetailInfo` for a root `RootItem`.
+pub fn build_detail_info(app: &App, item: &RootItem) -> DetailInfo {
     let display_path = item.display_path();
     let is_wt_group = is_worktree_group(item);
 
     match item {
-        ProjectListItem::Workspace(ws) => {
+        RootItem::Workspace(ws) => {
             build_detail_info_for_workspace(app, ws, &display_path, is_wt_group, Some(item))
         },
-        ProjectListItem::Package(pkg) => {
+        RootItem::Package(pkg) => {
             build_detail_info_for_package(app, pkg, &display_path, is_wt_group, Some(item))
         },
-        ProjectListItem::NonRust(nr) => {
+        RootItem::NonRust(nr) => {
             build_detail_info_non_rust(app, nr, &display_path, is_wt_group, Some(item))
         },
-        ProjectListItem::WorkspaceWorktrees(wtg) => {
+        RootItem::WorkspaceWorktrees(wtg) => {
             let ws = wtg.primary();
             build_detail_info_for_workspace(app, ws, &display_path, true, Some(item))
         },
-        ProjectListItem::PackageWorktrees(wtg) => {
+        RootItem::PackageWorktrees(wtg) => {
             let pkg = wtg.primary();
             build_detail_info_for_package(app, pkg, &display_path, true, Some(item))
         },
@@ -621,7 +621,7 @@ fn build_detail_info_for_workspace(
     ws: &RustProject<Workspace>,
     display_path: &str,
     is_wt_group: bool,
-    wt_item: Option<&ProjectListItem>,
+    wt_item: Option<&RootItem>,
 ) -> DetailInfo {
     let abs_path = ws.path();
     let cargo = ws.cargo();
@@ -658,7 +658,7 @@ fn build_detail_info_for_package(
     pkg: &RustProject<Package>,
     display_path: &str,
     is_wt_group: bool,
-    wt_item: Option<&ProjectListItem>,
+    wt_item: Option<&RootItem>,
 ) -> DetailInfo {
     let abs_path = pkg.path();
     let cargo = pkg.cargo();
@@ -693,7 +693,7 @@ fn build_detail_info_non_rust(
     nr: &NonRustProject,
     display_path: &str,
     is_wt_group: bool,
-    wt_item: Option<&ProjectListItem>,
+    wt_item: Option<&RootItem>,
 ) -> DetailInfo {
     let abs_path = nr.path();
     let wt_item_ref = wt_item.filter(|_| is_wt_group);
@@ -719,7 +719,7 @@ struct DetailSource<'a> {
     name:          Option<&'a str>,
     cargo:         Option<&'a Cargo>,
     worktree_name: Option<&'a str>,
-    wt_item:       Option<&'a ProjectListItem>,
+    wt_item:       Option<&'a RootItem>,
     stats_rows:    Vec<(&'static str, usize)>,
     package_title: String,
 }

@@ -36,8 +36,8 @@ use super::project::GitInfo;
 use super::project::GitRepoPresence;
 use super::scan;
 use super::scan::BackgroundMsg;
-use crate::project::ProjectListItem;
-use crate::project::ProjectListItem::NonRust;
+use crate::project::RootItem;
+use crate::project::RootItem::NonRust;
 
 /// Request to register an already-known project with the watcher.
 pub(crate) struct WatchRequest {
@@ -1002,7 +1002,7 @@ fn project_level_dir(
 
 /// Check if a directory is a project (has `Cargo.toml`, or `.git` when
 /// `include_non_rust` is enabled).
-fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<ProjectListItem> {
+fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<RootItem> {
     let cargo_toml = dir.join("Cargo.toml");
     if cargo_toml.exists() {
         return crate::project::from_cargo_toml(&cargo_toml)
@@ -1316,13 +1316,13 @@ edition = "2024"
         assert_eq!(refreshed.path(), project_root.path());
         // Verify examples were parsed from the refreshed Cargo.toml
         let example_count = match &refreshed {
-            crate::project::ProjectListItem::Package(pkg) => pkg
+            crate::project::RootItem::Package(pkg) => pkg
                 .cargo()
                 .examples()
                 .iter()
                 .map(|g| g.names.len())
                 .sum::<usize>(),
-            crate::project::ProjectListItem::Workspace(ws) => ws
+            crate::project::RootItem::Workspace(ws) => ws
                 .cargo()
                 .examples()
                 .iter()
@@ -2222,7 +2222,7 @@ edition = "2024"
         else {
             panic!("unexpected message");
         };
-        let ProjectListItem::Package(pkg) = item else {
+        let RootItem::Package(pkg) = item else {
             panic!("expected package worktree item");
         };
         assert_eq!(pkg.path(), linked_dir.as_path());
@@ -2268,7 +2268,7 @@ edition = "2024"
         else {
             panic!("unexpected message");
         };
-        let ProjectListItem::Workspace(ws) = item else {
+        let RootItem::Workspace(ws) = item else {
             panic!("expected workspace worktree item");
         };
         assert_eq!(ws.path(), linked_dir.as_path());

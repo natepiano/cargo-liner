@@ -17,7 +17,7 @@ use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::Package;
-use crate::project::ProjectListItem;
+use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Visibility;
 use crate::tui::detail::DetailField;
@@ -239,12 +239,12 @@ impl App {
             .and_then(|project| project.git_info.as_ref())
     }
 
-    // ── ProjectListItem query methods ──────────────────────────────
+    // ── RootItem query methods ─────────────────────────────────────
 
-    /// Count live (visible) worktree entries for a `ProjectListItem`.
-    pub fn live_worktree_count_for_item(item: &ProjectListItem) -> usize {
+    /// Count live (visible) worktree entries for a `RootItem`.
+    pub fn live_worktree_count_for_item(item: &RootItem) -> usize {
         match item {
-            ProjectListItem::WorkspaceWorktrees(wtg) => {
+            RootItem::WorkspaceWorktrees(wtg) => {
                 let live = std::iter::once(wtg.primary().visibility())
                     .chain(
                         wtg.linked()
@@ -255,7 +255,7 @@ impl App {
                     .count();
                 if live <= 1 { 0 } else { live }
             },
-            ProjectListItem::PackageWorktrees(wtg) => {
+            RootItem::PackageWorktrees(wtg) => {
                 let live = std::iter::once(wtg.primary().visibility())
                     .chain(
                         wtg.linked()
@@ -270,12 +270,12 @@ impl App {
         }
     }
 
-    /// All absolute paths for a `ProjectListItem` (root + worktrees).
-    fn unique_item_paths(item: &ProjectListItem) -> Vec<PathBuf> {
+    /// All absolute paths for a `RootItem` (root + worktrees).
+    fn unique_item_paths(item: &RootItem) -> Vec<PathBuf> {
         let mut paths = Vec::new();
         paths.push(item.path().to_path_buf());
         match item {
-            ProjectListItem::WorkspaceWorktrees(wtg) => {
+            RootItem::WorkspaceWorktrees(wtg) => {
                 for linked in wtg.linked() {
                     let p = linked.path().to_path_buf();
                     if !paths.contains(&p) {
@@ -283,7 +283,7 @@ impl App {
                     }
                 }
             },
-            ProjectListItem::PackageWorktrees(wtg) => {
+            RootItem::PackageWorktrees(wtg) => {
                 for linked in wtg.linked() {
                     let p = linked.path().to_path_buf();
                     if !paths.contains(&p) {
@@ -296,16 +296,16 @@ impl App {
         paths
     }
 
-    /// Aggregate disk usage for a `ProjectListItem`.
-    pub fn formatted_disk_for_item(item: &ProjectListItem) -> String {
+    /// Aggregate disk usage for a `RootItem`.
+    pub fn formatted_disk_for_item(item: &RootItem) -> String {
         item.disk_usage_bytes().map_or_else(
             || crate::tui::render::format_bytes(0),
             crate::tui::render::format_bytes,
         )
     }
 
-    /// Aggregate CI for a `ProjectListItem`.
-    pub fn ci_for_item(&self, item: &ProjectListItem) -> Option<Conclusion> {
+    /// Aggregate CI for a `RootItem`.
+    pub fn ci_for_item(&self, item: &RootItem) -> Option<Conclusion> {
         let paths = Self::unique_item_paths(item);
         if paths.len() == 1 {
             return self.ci_for(&paths[0]);
@@ -339,29 +339,29 @@ impl App {
 
     pub fn is_vendored_path(&self, path: &str) -> bool {
         self.projects.iter().any(|item| match item {
-            ProjectListItem::Workspace(ws) => {
+            RootItem::Workspace(ws) => {
                 ws.vendored().iter().any(|v| v.display_path() == path)
             },
-            ProjectListItem::Package(pkg) => {
+            RootItem::Package(pkg) => {
                 pkg.vendored().iter().any(|v| v.display_path() == path)
             },
-            ProjectListItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
+            RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
                 .chain(wtg.linked().iter())
                 .any(|ws| ws.vendored().iter().any(|v| v.display_path() == path)),
-            ProjectListItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
+            RootItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
                 .chain(wtg.linked().iter())
                 .any(|pkg| pkg.vendored().iter().any(|v| v.display_path() == path)),
-            ProjectListItem::NonRust(_) => false,
+            RootItem::NonRust(_) => false,
         })
     }
 
     pub fn is_workspace_member_path(&self, path: &str) -> bool {
         self.projects.iter().any(|item| match item {
-            ProjectListItem::Workspace(ws) => ws
+            RootItem::Workspace(ws) => ws
                 .groups()
                 .iter()
                 .any(|g| g.members().iter().any(|m| m.display_path() == path)),
-            ProjectListItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
+            RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
                 .chain(wtg.linked().iter())
                 .any(|ws| {
                     ws.groups()
@@ -383,25 +383,25 @@ impl App {
         // Include vendored projects whose parent is active.
         for item in &self.projects {
             let vendored_paths: Vec<&Path> = match item {
-                ProjectListItem::Workspace(ws) => ws
+                RootItem::Workspace(ws) => ws
                     .vendored()
                     .iter()
                     .map(RustProject::<Package>::path)
                     .collect(),
-                ProjectListItem::Package(pkg) => pkg
+                RootItem::Package(pkg) => pkg
                     .vendored()
                     .iter()
                     .map(RustProject::<Package>::path)
                     .collect(),
-                ProjectListItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
+                RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
                     .chain(wtg.linked().iter())
                     .flat_map(|ws| ws.vendored().iter().map(RustProject::<Package>::path))
                     .collect(),
-                ProjectListItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
+                RootItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
                     .chain(wtg.linked().iter())
                     .flat_map(|pkg| pkg.vendored().iter().map(RustProject::<Package>::path))
                     .collect(),
-                ProjectListItem::NonRust(_) => Vec::new(),
+                RootItem::NonRust(_) => Vec::new(),
             };
             if active_paths.contains(item.path()) {
                 for vp in vendored_paths {

@@ -110,10 +110,10 @@ impl App {
         self.projects.iter().any(|item| {
             item.path() == path
                 || match item {
-                    crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+                    crate::project::RootItem::WorkspaceWorktrees(wtg) => {
                         wtg.linked().iter().any(|l| l.path() == path)
                     },
-                    crate::project::ProjectListItem::PackageWorktrees(wtg) => {
+                    crate::project::RootItem::PackageWorktrees(wtg) => {
                         wtg.linked().iter().any(|l| l.path() == path)
                     },
                     _ => false,

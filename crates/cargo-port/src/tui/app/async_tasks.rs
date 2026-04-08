@@ -27,7 +27,7 @@ use crate::lint::RegisterProjectRequest;
 use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
-use crate::project::ProjectListItem;
+use crate::project::RootItem;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Visible;
 use crate::project_list::ProjectList;
@@ -78,12 +78,12 @@ impl App {
         for item in &self.projects {
             let root_path = item.path();
             let member_paths: Vec<PathBuf> = match item {
-                crate::project::ProjectListItem::Workspace(ws) => ws
+                crate::project::RootItem::Workspace(ws) => ws
                     .groups()
                     .iter()
                     .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
                     .collect(),
-                crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
                     std::iter::once(wtg.primary())
                         .chain(wtg.linked().iter())
                         .flat_map(|ws| {
@@ -437,7 +437,7 @@ impl App {
         );
     }
 
-    pub(super) fn register_item_background_services(&self, item: &ProjectListItem) {
+    pub(super) fn register_item_background_services(&self, item: &RootItem) {
         let started = Instant::now();
         let abs_path = item.path().to_path_buf();
         let repo_root = crate::project::git_repo_root(&abs_path);
@@ -514,13 +514,13 @@ impl App {
 
         for item in &self.projects {
             let items: Vec<(&Path, bool)> = match item {
-                crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
                     std::iter::once(wtg.primary())
                         .chain(wtg.linked().iter())
                         .map(|p| (p.path(), true))
                         .collect()
                 },
-                crate::project::ProjectListItem::PackageWorktrees(wtg) => {
+                crate::project::RootItem::PackageWorktrees(wtg) => {
                     std::iter::once(wtg.primary())
                         .chain(wtg.linked().iter())
                         .map(|p| (p.path(), true))
@@ -568,7 +568,7 @@ impl App {
         let mut count = 0;
         for item in &self.projects {
             match item {
-                ProjectListItem::Workspace(ws) => {
+                RootItem::Workspace(ws) => {
                     runtime.register_project(crate::lint::RegisterProjectRequest {
                         project_path: ws.display_path(),
                         abs_path:     ws.path().to_path_buf(),
@@ -576,7 +576,7 @@ impl App {
                     });
                     count += 1;
                 },
-                ProjectListItem::Package(pkg) => {
+                RootItem::Package(pkg) => {
                     runtime.register_project(crate::lint::RegisterProjectRequest {
                         project_path: pkg.display_path(),
                         abs_path:     pkg.path().to_path_buf(),
@@ -584,7 +584,7 @@ impl App {
                     });
                     count += 1;
                 },
-                ProjectListItem::WorkspaceWorktrees(wtg) => {
+                RootItem::WorkspaceWorktrees(wtg) => {
                     for ws in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
                         runtime.register_project(crate::lint::RegisterProjectRequest {
                             project_path: ws.display_path(),
@@ -594,7 +594,7 @@ impl App {
                         count += 1;
                     }
                 },
-                ProjectListItem::PackageWorktrees(wtg) => {
+                RootItem::PackageWorktrees(wtg) => {
                     for pkg in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
                         runtime.register_project(crate::lint::RegisterProjectRequest {
                             project_path: pkg.display_path(),
@@ -604,13 +604,13 @@ impl App {
                         count += 1;
                     }
                 },
-                ProjectListItem::NonRust(_) => {},
+                RootItem::NonRust(_) => {},
             }
         }
         tracing::info!(count, "lint_register_root_items");
     }
 
-    fn register_lint_project_if_eligible(&self, item: &ProjectListItem) {
+    fn register_lint_project_if_eligible(&self, item: &RootItem) {
         if !item.is_rust() {
             tracing::info!(reason = "not_rust", path = %item.display_path(), "lint_register_skip");
             return;
@@ -619,7 +619,7 @@ impl App {
         // Skip workspace members — the workspace root's watcher covers them.
         let mut is_member = false;
         self.projects.for_each_leaf(|existing| {
-            if matches!(existing, ProjectListItem::Workspace(_))
+            if matches!(existing, RootItem::Workspace(_))
                 && existing.path() != path
                 && path.starts_with(existing.path())
             {
@@ -1340,7 +1340,7 @@ impl App {
                         .projects
                         .iter()
                         .find(|i| i.path() == abs)
-                        .and_then(ProjectListItem::disk_usage_bytes)
+                        .and_then(RootItem::disk_usage_bytes)
                         .is_none_or(|bytes| bytes == 0);
                     if already_zero {
                         self.running_clean_paths.remove(&abs);
@@ -1407,7 +1407,7 @@ impl App {
         let mut fallback_worktree_paths = Vec::new();
         for item in &self.projects {
             match item {
-                crate::project::ProjectListItem::Workspace(ws) if ws.path() == path => {
+                crate::project::RootItem::Workspace(ws) if ws.path() == path => {
                     member_paths.extend(ws.groups().iter().flat_map(|group| {
                         group
                             .members()
@@ -1415,7 +1415,7 @@ impl App {
                             .map(|member| member.path().to_path_buf())
                     }));
                 },
-                crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
                     for ws in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
                         if ws.path() == path {
                             member_paths.extend(ws.groups().iter().flat_map(|group| {
@@ -1435,7 +1435,7 @@ impl App {
                         );
                     }
                 },
-                crate::project::ProjectListItem::PackageWorktrees(wtg)
+                crate::project::RootItem::PackageWorktrees(wtg)
                     if wtg.primary().path() == path =>
                 {
                     fallback_worktree_paths.extend(
@@ -1532,7 +1532,7 @@ impl App {
         // Propagate stars to workspace members.
         for item in &self.projects {
             match item {
-                crate::project::ProjectListItem::Workspace(ws) if ws.path() == abs => {
+                crate::project::RootItem::Workspace(ws) if ws.path() == abs => {
                     for group in ws.groups() {
                         for member in group.members() {
                             self.stars
@@ -1541,7 +1541,7 @@ impl App {
                         }
                     }
                 },
-                crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
                     for ws in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
                         if ws.path() == abs {
                             for group in ws.groups() {
@@ -1563,7 +1563,7 @@ impl App {
         }
     }
 
-    pub(super) fn handle_project_discovered(&mut self, item: ProjectListItem) -> bool {
+    pub(super) fn handle_project_discovered(&mut self, item: RootItem) -> bool {
         let display = item.display_path();
         let mut already_exists = false;
         self.projects.for_each_leaf_path(|path, _| {
@@ -1584,7 +1584,7 @@ impl App {
         true
     }
 
-    pub(super) fn handle_project_refreshed(&mut self, mut item: ProjectListItem) -> bool {
+    pub(super) fn handle_project_refreshed(&mut self, mut item: RootItem) -> bool {
         let path = item.path().to_path_buf();
 
         // Replace the leaf in project_list_items, transferring runtime data
@@ -1784,7 +1784,7 @@ impl App {
 
     fn handle_scan_result(
         &mut self,
-        projects: Vec<ProjectListItem>,
+        projects: Vec<RootItem>,
         disk_entries: &[(String, PathBuf)],
     ) {
         let kind = if self.scan.run_count == 1 {
@@ -1833,12 +1833,12 @@ impl App {
         for item in &self.projects {
             let root_path = item.path();
             let member_paths: Vec<PathBuf> = match item {
-                ProjectListItem::Workspace(ws) => ws
+                RootItem::Workspace(ws) => ws
                     .groups()
                     .iter()
                     .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
                     .collect(),
-                ProjectListItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
+                RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
                     .chain(wtg.linked().iter())
                     .flat_map(|ws| {
                         ws.groups()

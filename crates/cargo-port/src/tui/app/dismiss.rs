@@ -76,12 +76,12 @@ impl App {
             .iter()
             .enumerate()
             .find_map(|(ni, item)| match item {
-                crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
                     let has_match = wtg.primary().path() == path
                         || wtg.linked().iter().any(|l| l.path() == path);
                     has_match.then_some(ni)
                 },
-                crate::project::ProjectListItem::PackageWorktrees(wtg) => {
+                crate::project::RootItem::PackageWorktrees(wtg) => {
                     let has_match = wtg.primary().path() == path
                         || wtg.linked().iter().any(|l| l.path() == path);
                     has_match.then_some(ni)

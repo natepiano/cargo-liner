@@ -7,7 +7,7 @@ use crate::project::MemberGroup;
 use crate::project::NonRustProject;
 use crate::project::Package;
 use crate::project::ProjectInfo;
-use crate::project::ProjectListItem;
+use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Visibility;
 use crate::project::Workspace;
@@ -20,7 +20,7 @@ use crate::project::WorktreeGroup;
 /// demand.
 #[derive(Clone, Default)]
 pub(crate) struct ProjectList {
-    items: Vec<ProjectListItem>,
+    root_items: Vec<RootItem>,
 }
 
 pub(crate) struct SearchableItem<'a> {
@@ -33,7 +33,7 @@ pub(crate) struct SearchableItem<'a> {
 }
 
 impl ProjectList {
-    pub(crate) const fn new(items: Vec<ProjectListItem>) -> Self { Self { items } }
+    pub(crate) const fn new(items: Vec<RootItem>) -> Self { Self { root_items: items } }
 
     // -- Leaf iteration ---------------------------------------------------
 
@@ -42,19 +42,19 @@ impl ProjectList {
     /// For `Workspace`, `Package`, `NonRust`: yields the item directly.
     /// For worktree groups: yields primary and each linked entry wrapped as
     /// `Workspace` or `Package`.
-    pub(crate) fn for_each_leaf(&self, mut f: impl FnMut(&ProjectListItem)) {
-        for item in &self.items {
+    pub(crate) fn for_each_leaf(&self, mut f: impl FnMut(&RootItem)) {
+        for item in &self.root_items {
             match item {
-                ProjectListItem::WorkspaceWorktrees(g) => {
-                    f(&ProjectListItem::Workspace(g.primary().clone()));
+                RootItem::WorkspaceWorktrees(g) => {
+                    f(&RootItem::Workspace(g.primary().clone()));
                     for linked in g.linked() {
-                        f(&ProjectListItem::Workspace(linked.clone()));
+                        f(&RootItem::Workspace(linked.clone()));
                     }
                 },
-                ProjectListItem::PackageWorktrees(g) => {
-                    f(&ProjectListItem::Package(g.primary().clone()));
+                RootItem::PackageWorktrees(g) => {
+                    f(&RootItem::Package(g.primary().clone()));
                     for linked in g.linked() {
-                        f(&ProjectListItem::Package(linked.clone()));
+                        f(&RootItem::Package(linked.clone()));
                     }
                 },
                 other => f(other),
@@ -63,16 +63,16 @@ impl ProjectList {
     }
 
     /// Zero-allocation leaf path iteration. Yields `(path, is_rust)` for
-    /// every leaf project without cloning any `ProjectListItem`.
+    /// every leaf project without cloning any `RootItem`.
     pub(crate) fn for_each_leaf_path(&self, mut f: impl FnMut(&Path, bool)) {
-        for item in &self.items {
+        for item in &self.root_items {
             match item {
-                ProjectListItem::WorkspaceWorktrees(g) => {
+                RootItem::WorkspaceWorktrees(g) => {
                     for ws in std::iter::once(g.primary()).chain(g.linked()) {
                         f(ws.path(), true);
                     }
                 },
-                ProjectListItem::PackageWorktrees(g) => {
+                RootItem::PackageWorktrees(g) => {
                     for pkg in std::iter::once(g.primary()).chain(g.linked()) {
                         f(pkg.path(), true);
                     }
@@ -85,12 +85,12 @@ impl ProjectList {
     /// Iterate every project-like item that search should match directly from
     /// the hierarchy without maintaining a synchronized flat cache.
     pub(crate) fn visit_searchables(&self, mut f: impl FnMut(SearchableItem<'_>)) {
-        for item in &self.items {
+        for item in &self.root_items {
             match item {
-                ProjectListItem::Workspace(ws) => visit_workspace_searchables(ws, &mut f),
-                ProjectListItem::Package(pkg) => visit_package_searchables(pkg, &mut f),
-                ProjectListItem::NonRust(nr) => f(non_rust_searchable(nr)),
-                ProjectListItem::WorkspaceWorktrees(g) => {
+                RootItem::Workspace(ws) => visit_workspace_searchables(ws, &mut f),
+                RootItem::Package(pkg) => visit_package_searchables(pkg, &mut f),
+                RootItem::NonRust(nr) => f(non_rust_searchable(nr)),
+                RootItem::WorkspaceWorktrees(g) => {
                     visit_workspace_searchables(g.primary(), &mut f);
                     for linked in g.linked() {
                         visit_workspace_searchables_with_root_name(
@@ -102,7 +102,7 @@ impl ProjectList {
                         );
                     }
                 },
-                ProjectListItem::PackageWorktrees(g) => {
+                RootItem::PackageWorktrees(g) => {
                     visit_package_searchables(g.primary(), &mut f);
                     for linked in g.linked() {
                         visit_package_searchables_with_root_name(
@@ -119,21 +119,21 @@ impl ProjectList {
     }
 
     pub(crate) fn find_searchable_by_abs_path(&self, target: &Path) -> Option<SearchableItem<'_>> {
-        for item in &self.items {
+        for item in &self.root_items {
             let found = match item {
-                ProjectListItem::Workspace(ws) => find_workspace_searchable(ws, target),
-                ProjectListItem::Package(pkg) => find_package_searchable(pkg, target),
-                ProjectListItem::NonRust(nr) => {
+                RootItem::Workspace(ws) => find_workspace_searchable(ws, target),
+                RootItem::Package(pkg) => find_package_searchable(pkg, target),
+                RootItem::NonRust(nr) => {
                     (nr.path() == target).then(|| non_rust_searchable(nr))
                 },
-                ProjectListItem::WorkspaceWorktrees(g) => {
+                RootItem::WorkspaceWorktrees(g) => {
                     find_workspace_searchable(g.primary(), target).or_else(|| {
                         g.linked()
                             .iter()
                             .find_map(|ws| find_workspace_searchable(ws, target))
                     })
                 },
-                ProjectListItem::PackageWorktrees(g) => {
+                RootItem::PackageWorktrees(g) => {
                     find_package_searchable(g.primary(), target).or_else(|| {
                         g.linked()
                             .iter()
@@ -149,11 +149,11 @@ impl ProjectList {
     }
 
     pub(crate) fn at_path(&self, target: &Path) -> Option<&ProjectInfo> {
-        self.items.iter().find_map(|item| item.at_path(target))
+        self.root_items.iter().find_map(|item| item.at_path(target))
     }
 
     pub(crate) fn at_path_mut(&mut self, target: &Path) -> Option<&mut ProjectInfo> {
-        self.items
+        self.root_items
             .iter_mut()
             .find_map(|item| item.at_path_mut(target))
     }
@@ -165,51 +165,51 @@ impl ProjectList {
     pub(crate) fn replace_leaf_by_path(
         &mut self,
         path: &Path,
-        mut replacement: ProjectListItem,
-    ) -> Option<ProjectListItem> {
-        for item in &mut self.items {
+        mut replacement: RootItem,
+    ) -> Option<RootItem> {
+        for item in &mut self.root_items {
             match item {
-                ProjectListItem::Workspace(_)
-                | ProjectListItem::Package(_)
-                | ProjectListItem::NonRust(_) => {
+                RootItem::Workspace(_)
+                | RootItem::Package(_)
+                | RootItem::NonRust(_) => {
                     if item.path() == path {
                         std::mem::swap(item, &mut replacement);
                         return Some(replacement);
                     }
                 },
-                ProjectListItem::WorkspaceWorktrees(g) => {
+                RootItem::WorkspaceWorktrees(g) => {
                     if g.primary().path() == path
-                        && let ProjectListItem::Workspace(ws) = replacement
+                        && let RootItem::Workspace(ws) = replacement
                     {
                         let old = g.primary().clone();
                         *g.primary_mut() = ws;
-                        return Some(ProjectListItem::Workspace(old));
+                        return Some(RootItem::Workspace(old));
                     }
                     for linked in g.linked_mut() {
                         if linked.path() == path
-                            && let ProjectListItem::Workspace(ws) = replacement
+                            && let RootItem::Workspace(ws) = replacement
                         {
                             let old = linked.clone();
                             *linked = ws;
-                            return Some(ProjectListItem::Workspace(old));
+                            return Some(RootItem::Workspace(old));
                         }
                     }
                 },
-                ProjectListItem::PackageWorktrees(g) => {
+                RootItem::PackageWorktrees(g) => {
                     if g.primary().path() == path
-                        && let ProjectListItem::Package(pkg) = replacement
+                        && let RootItem::Package(pkg) = replacement
                     {
                         let old = g.primary().clone();
                         *g.primary_mut() = pkg;
-                        return Some(ProjectListItem::Package(old));
+                        return Some(RootItem::Package(old));
                     }
                     for linked in g.linked_mut() {
                         if linked.path() == path
-                            && let ProjectListItem::Package(pkg) = replacement
+                            && let RootItem::Package(pkg) = replacement
                         {
                             let old = linked.clone();
                             *linked = pkg;
-                            return Some(ProjectListItem::Package(old));
+                            return Some(RootItem::Package(old));
                         }
                     }
                 },
@@ -224,16 +224,16 @@ impl ProjectList {
     /// top-level peer.
     ///
     /// Returns `true` if the item was inserted into an existing workspace.
-    pub(crate) fn insert_into_hierarchy(&mut self, item: ProjectListItem) -> bool {
+    pub(crate) fn insert_into_hierarchy(&mut self, item: RootItem) -> bool {
         let item_path = item.path().to_path_buf();
-        for existing in &mut self.items {
+        for existing in &mut self.root_items {
             if try_attach_worktree(existing, &item) {
                 return false;
             }
 
             let inserted = match existing {
-                ProjectListItem::Workspace(ws) => try_insert_member(ws, &item_path, &item),
-                ProjectListItem::WorkspaceWorktrees(g) => {
+                RootItem::Workspace(ws) => try_insert_member(ws, &item_path, &item),
+                RootItem::WorkspaceWorktrees(g) => {
                     try_insert_member(g.primary_mut(), &item_path, &item)
                         || g.linked_mut()
                             .iter_mut()
@@ -246,7 +246,7 @@ impl ProjectList {
             }
         }
         // No parent workspace found — add as top-level peer.
-        self.items.push(item);
+        self.root_items.push(item);
         false
     }
 
@@ -256,12 +256,12 @@ impl ProjectList {
     /// workspaces (including inside worktree groups) and re-sorts their
     /// members into `Named` / `Inline` groups.
     pub(crate) fn regroup_members(&mut self, inline_dirs: &[String]) {
-        for item in &mut self.items {
+        for item in &mut self.root_items {
             match item {
-                ProjectListItem::Workspace(ws) => {
+                RootItem::Workspace(ws) => {
                     regroup_workspace(ws, inline_dirs);
                 },
-                ProjectListItem::WorkspaceWorktrees(g) => {
+                RootItem::WorkspaceWorktrees(g) => {
                     regroup_workspace(g.primary_mut(), inline_dirs);
                     for linked in g.linked_mut() {
                         regroup_workspace(linked, inline_dirs);
@@ -274,25 +274,25 @@ impl ProjectList {
 
     pub(crate) fn regroup_top_level_worktrees(&mut self) {
         let mut index = 0;
-        while index < self.items.len() {
+        while index < self.root_items.len() {
             let Some(identity) =
-                linked_worktree_identity(&self.items[index]).map(Path::to_path_buf)
+                linked_worktree_identity(&self.root_items[index]).map(Path::to_path_buf)
             else {
                 index += 1;
                 continue;
             };
             let Some(mut target_index) =
-                find_matching_worktree_container(&self.items, index, identity.as_path())
+                find_matching_worktree_container(&self.root_items, index, identity.as_path())
             else {
                 index += 1;
                 continue;
             };
 
-            let linked_item = self.items.remove(index);
+            let linked_item = self.root_items.remove(index);
             if target_index > index {
                 target_index -= 1;
             }
-            let attached = try_attach_worktree(&mut self.items[target_index], &linked_item);
+            let attached = try_attach_worktree(&mut self.root_items[target_index], &linked_item);
             debug_assert!(
                 attached,
                 "linked worktree regroup should attach after container match"
@@ -305,30 +305,30 @@ impl ProjectList {
 
     // -- Vec-like operations -------------------------------------------------
 
-    pub(crate) fn clear(&mut self) { self.items.clear(); }
+    pub(crate) fn clear(&mut self) { self.root_items.clear(); }
 
     #[cfg(test)]
-    pub(crate) fn push(&mut self, item: ProjectListItem) { self.items.push(item); }
+    pub(crate) fn push(&mut self, item: RootItem) { self.root_items.push(item); }
 }
 
-fn try_attach_worktree(existing: &mut ProjectListItem, item: &ProjectListItem) -> bool {
+fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
     let existing_identity = item_worktree_identity(existing).map(Path::to_path_buf);
 
-    if let ProjectListItem::Workspace(linked) = item
+    if let RootItem::Workspace(linked) = item
         && linked.worktree_name().is_some()
     {
         match existing {
-            ProjectListItem::Workspace(primary)
+            RootItem::Workspace(primary)
                 if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
             {
                 let primary = primary.clone();
-                *existing = ProjectListItem::WorkspaceWorktrees(WorktreeGroup::new(
+                *existing = RootItem::WorkspaceWorktrees(WorktreeGroup::new(
                     primary,
                     vec![linked.clone()],
                 ));
                 return true;
             },
-            ProjectListItem::WorkspaceWorktrees(group)
+            RootItem::WorkspaceWorktrees(group)
                 if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
             {
                 group.linked_mut().push(linked.clone());
@@ -338,21 +338,21 @@ fn try_attach_worktree(existing: &mut ProjectListItem, item: &ProjectListItem) -
         }
     }
 
-    if let ProjectListItem::Package(linked) = item
+    if let RootItem::Package(linked) = item
         && linked.worktree_name().is_some()
     {
         match existing {
-            ProjectListItem::Package(primary)
+            RootItem::Package(primary)
                 if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
             {
                 let primary = primary.clone();
-                *existing = ProjectListItem::PackageWorktrees(WorktreeGroup::new(
+                *existing = RootItem::PackageWorktrees(WorktreeGroup::new(
                     primary,
                     vec![linked.clone()],
                 ));
                 return true;
             },
-            ProjectListItem::PackageWorktrees(group)
+            RootItem::PackageWorktrees(group)
                 if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
             {
                 group.linked_mut().push(linked.clone());
@@ -365,22 +365,22 @@ fn try_attach_worktree(existing: &mut ProjectListItem, item: &ProjectListItem) -
     false
 }
 
-fn item_worktree_identity(item: &ProjectListItem) -> Option<&Path> {
+fn item_worktree_identity(item: &RootItem) -> Option<&Path> {
     match item {
-        ProjectListItem::Workspace(project) => project.worktree_primary_abs_path(),
-        ProjectListItem::Package(project) => project.worktree_primary_abs_path(),
-        ProjectListItem::WorkspaceWorktrees(group) => group.primary().worktree_primary_abs_path(),
-        ProjectListItem::PackageWorktrees(group) => group.primary().worktree_primary_abs_path(),
-        ProjectListItem::NonRust(_) => None,
+        RootItem::Workspace(project) => project.worktree_primary_abs_path(),
+        RootItem::Package(project) => project.worktree_primary_abs_path(),
+        RootItem::WorkspaceWorktrees(group) => group.primary().worktree_primary_abs_path(),
+        RootItem::PackageWorktrees(group) => group.primary().worktree_primary_abs_path(),
+        RootItem::NonRust(_) => None,
     }
 }
 
-fn linked_worktree_identity(item: &ProjectListItem) -> Option<&Path> {
+fn linked_worktree_identity(item: &RootItem) -> Option<&Path> {
     match item {
-        ProjectListItem::Workspace(project) if project.worktree_name().is_some() => {
+        RootItem::Workspace(project) if project.worktree_name().is_some() => {
             project.worktree_primary_abs_path()
         },
-        ProjectListItem::Package(project) if project.worktree_name().is_some() => {
+        RootItem::Package(project) if project.worktree_name().is_some() => {
             project.worktree_primary_abs_path()
         },
         _ => None,
@@ -388,7 +388,7 @@ fn linked_worktree_identity(item: &ProjectListItem) -> Option<&Path> {
 }
 
 fn find_matching_worktree_container(
-    items: &[ProjectListItem],
+    items: &[RootItem],
     linked_index: usize,
     identity: &Path,
 ) -> Option<usize> {
@@ -403,29 +403,29 @@ fn find_matching_worktree_container(
 // -- Deref to slice for read access ---------------------------------------
 
 impl Deref for ProjectList {
-    type Target = [ProjectListItem];
+    type Target = [RootItem];
 
-    fn deref(&self) -> &[ProjectListItem] { &self.items }
+    fn deref(&self) -> &[RootItem] { &self.root_items }
 }
 
 impl DerefMut for ProjectList {
-    fn deref_mut(&mut self) -> &mut [ProjectListItem] { &mut self.items }
+    fn deref_mut(&mut self) -> &mut [RootItem] { &mut self.root_items }
 }
 
 // -- IntoIterator for `for item in &projects` / `for item in &mut projects`
 
 impl<'a> IntoIterator for &'a ProjectList {
-    type IntoIter = std::slice::Iter<'a, ProjectListItem>;
-    type Item = &'a ProjectListItem;
+    type IntoIter = std::slice::Iter<'a, RootItem>;
+    type Item = &'a RootItem;
 
-    fn into_iter(self) -> Self::IntoIter { self.items.iter() }
+    fn into_iter(self) -> Self::IntoIter { self.root_items.iter() }
 }
 
 impl<'a> IntoIterator for &'a mut ProjectList {
-    type IntoIter = std::slice::IterMut<'a, ProjectListItem>;
-    type Item = &'a mut ProjectListItem;
+    type IntoIter = std::slice::IterMut<'a, RootItem>;
+    type Item = &'a mut RootItem;
 
-    fn into_iter(self) -> Self::IntoIter { self.items.iter_mut() }
+    fn into_iter(self) -> Self::IntoIter { self.root_items.iter_mut() }
 }
 
 // -- Helpers --------------------------------------------------------------
@@ -620,12 +620,12 @@ fn find_workspace_searchable<'a>(
 fn try_insert_member(
     ws: &mut RustProject<Workspace>,
     item_path: &Path,
-    item: &ProjectListItem,
+    item: &RootItem,
 ) -> bool {
     if !item_path.starts_with(ws.path()) || item_path == ws.path() {
         return false;
     }
-    let ProjectListItem::Package(pkg) = item else {
+    let RootItem::Package(pkg) = item else {
         return false;
     };
     // Add to the first inline group, or create one.

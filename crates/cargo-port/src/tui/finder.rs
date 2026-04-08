@@ -1,11 +1,10 @@
 use crossterm::event::KeyCode;
-use nucleo_matcher::Matcher;
-use nucleo_matcher::Utf32Str;
 use nucleo_matcher::pattern::Atom;
 use nucleo_matcher::pattern::AtomKind;
 use nucleo_matcher::pattern::CaseMatching;
 use nucleo_matcher::pattern::Normalization;
-use ratatui::Frame;
+use nucleo_matcher::Matcher;
+use nucleo_matcher::Utf32Str;
 use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -17,6 +16,7 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use ratatui::Frame;
 
 use super::app::App;
 use super::constants::FINDER_POPUP_HEIGHT;
@@ -27,8 +27,8 @@ use super::types::PaneId;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
 use crate::project::Package;
-use crate::project::ProjectListItem;
 use crate::project::ProjectType;
+use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Workspace;
 
@@ -93,19 +93,19 @@ pub(super) const FINDER_HEADERS: [&str; FINDER_COLUMN_COUNT] =
 /// Returns `(items, col_widths)` where `col_widths` is the max display
 /// width of each column across the entire index.
 pub(super) fn build_finder_index(
-    list_items: &[ProjectListItem],
+    list_items: &[RootItem],
 ) -> (Vec<FinderItem>, [usize; FINDER_COLUMN_COUNT]) {
     let mut items = Vec::new();
 
     for list_item in list_items {
         match list_item {
-            ProjectListItem::Workspace(ws) => {
+            RootItem::Workspace(ws) => {
                 add_workspace_items(&mut items, ws);
             },
-            ProjectListItem::Package(pkg) => {
+            RootItem::Package(pkg) => {
                 add_package_items(&mut items, pkg);
             },
-            ProjectListItem::NonRust(nr) => {
+            RootItem::NonRust(nr) => {
                 let dp = nr.display_path();
                 let branch = branch_for(nr.git_info());
                 add_project_items_from_typed(
@@ -118,7 +118,7 @@ pub(super) fn build_finder_index(
                     &branch,
                 );
             },
-            ProjectListItem::WorkspaceWorktrees(wtg) => {
+            RootItem::WorkspaceWorktrees(wtg) => {
                 add_workspace_items(&mut items, wtg.primary());
                 for linked in wtg.linked() {
                     let dp = linked.display_path();
@@ -128,7 +128,7 @@ pub(super) fn build_finder_index(
                     add_workspace_items(&mut items, linked);
                 }
             },
-            ProjectListItem::PackageWorktrees(wtg) => {
+            RootItem::PackageWorktrees(wtg) => {
                 add_package_items(&mut items, wtg.primary());
                 for linked in wtg.linked() {
                     let dp = linked.display_path();
@@ -773,8 +773,8 @@ mod tests {
     use crate::project::Cargo;
     use crate::project::ExampleGroup;
     use crate::project::Package;
-    use crate::project::ProjectListItem;
     use crate::project::ProjectType;
+    use crate::project::RootItem;
     use crate::project::RustProject;
     use crate::project::Workspace;
 
@@ -796,7 +796,7 @@ mod tests {
             None,
             None,
         );
-        let list_items = vec![ProjectListItem::Workspace(ws)];
+        let list_items = vec![RootItem::Workspace(ws)];
         let (items, _widths) = build_finder_index(&list_items);
         assert!(items.iter().any(|item| {
             item.project_path == "~/rust/hana/crates/clay-layout"
@@ -899,7 +899,7 @@ mod tests {
             None,
         );
 
-        let (items, _widths) = build_finder_index(&[ProjectListItem::Package(pkg)]);
+        let (items, _widths) = build_finder_index(&[RootItem::Package(pkg)]);
         assert!(items.iter().any(|item| {
             item.display_name == "build-easefunction-graphs"
                 && item.search_tokens.iter().any(|token| token == "tools")

@@ -6,7 +6,7 @@ use super::types::App;
 use super::types::LintRollupKey;
 use super::types::VisibleRow;
 use crate::lint::LintStatus;
-use crate::project::ProjectListItem;
+use crate::project::RootItem;
 
 impl App {
     pub(super) fn rebuild_lint_rollups(&mut self) {
@@ -21,7 +21,7 @@ impl App {
                 Self::lint_root_paths_for_item(item),
             ));
             match item {
-                ProjectListItem::WorkspaceWorktrees(wtg) => {
+                RootItem::WorkspaceWorktrees(wtg) => {
                     // Primary at wi=0, linked at wi=1+
                     registrations.push((
                         LintRollupKey::Worktree {
@@ -40,7 +40,7 @@ impl App {
                         ));
                     }
                 },
-                ProjectListItem::PackageWorktrees(wtg) => {
+                RootItem::PackageWorktrees(wtg) => {
                     registrations.push((
                         LintRollupKey::Worktree {
                             node_index,
@@ -122,18 +122,16 @@ impl App {
         LintStatus::aggregate(statuses.iter().cloned())
     }
 
-    fn lint_root_paths_for_item(item: &ProjectListItem) -> Vec<PathBuf> {
+    fn lint_root_paths_for_item(item: &RootItem) -> Vec<PathBuf> {
         match item {
-            ProjectListItem::WorkspaceWorktrees(wtg) => {
+            RootItem::WorkspaceWorktrees(wtg) => {
                 std::iter::once(wtg.primary().path().to_path_buf())
                     .chain(wtg.linked().iter().map(|p| p.path().to_path_buf()))
                     .collect()
             },
-            ProjectListItem::PackageWorktrees(wtg) => {
-                std::iter::once(wtg.primary().path().to_path_buf())
-                    .chain(wtg.linked().iter().map(|p| p.path().to_path_buf()))
-                    .collect()
-            },
+            RootItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary().path().to_path_buf())
+                .chain(wtg.linked().iter().map(|p| p.path().to_path_buf()))
+                .collect(),
             _ => vec![item.path().to_path_buf()],
         }
     }

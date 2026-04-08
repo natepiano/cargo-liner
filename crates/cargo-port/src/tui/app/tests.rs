@@ -2,15 +2,19 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::OnceLock;
 use std::sync::mpsc;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use chrono::DateTime;
 use crossterm::event::KeyCode;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
+use ratatui::widgets::List;
+use ratatui::widgets::Widget;
 
 use super::snapshots;
 use super::types::*;
@@ -31,12 +35,13 @@ use crate::project::GitPathState;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
 use crate::project::Package;
-use crate::project::ProjectListItem;
+use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Dismissed;
 use crate::project::WorkflowPresence;
 use crate::project::Workspace;
+use crate::project_list::ProjectList;
 use crate::scan::BackgroundMsg;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastManager;
@@ -49,8 +54,8 @@ fn test_http_client() -> HttpClient {
     HttpClient::new(rt.handle().clone()).unwrap_or_else(|| std::process::abort())
 }
 
-fn make_project(name: Option<&str>, path: &str) -> ProjectListItem {
-    ProjectListItem::Package(RustProject::<Package>::new(
+fn make_project(name: Option<&str>, path: &str) -> RootItem {
+    RootItem::Package(RustProject::<Package>::new(
         PathBuf::from(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -60,11 +65,11 @@ fn make_project(name: Option<&str>, path: &str) -> ProjectListItem {
     ))
 }
 
-fn make_app(projects: &[ProjectListItem]) -> App {
+fn make_app(projects: &[RootItem]) -> App {
     make_app_with_config(projects, &CargoPortConfig::default())
 }
 
-fn make_app_with_config(projects: &[ProjectListItem], cfg: &CargoPortConfig) -> App {
+fn make_app_with_config(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
     let (bg_tx, bg_rx) = mpsc::channel();
     let scan_root =
         std::env::temp_dir().join(format!("cargo-port-polish-test-{}", std::process::id()));
@@ -83,15 +88,46 @@ fn make_app_with_config(projects: &[ProjectListItem], cfg: &CargoPortConfig) -> 
     app
 }
 
-fn make_non_rust_project(name: Option<&str>, path: &str) -> ProjectListItem {
-    ProjectListItem::NonRust(NonRustProject::new(
+fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
+    app.ensure_visible_rows_cached();
+    let widths = snapshots::build_fit_widths_snapshot(
+        &app.projects,
+        &snapshots::FitWidthsState {
+            git_path_states: &app.git_path_states,
+        },
+        app.lint_enabled(),
+        0,
+    );
+    let items = crate::tui::render::render_tree_items(app, &widths);
+    let area = Rect::new(
+        0,
+        0,
+        u16::try_from(widths.total_width()).unwrap_or(u16::MAX),
+        u16::try_from(items.len()).unwrap_or(u16::MAX),
+    );
+    let mut buffer = Buffer::empty(area);
+    List::new(items).render(area, &mut buffer);
+
+    (0..area.height)
+        .map(|y| {
+            let mut row = String::new();
+            for x in 0..area.width {
+                row.push_str(buffer.get(x, y).symbol());
+            }
+            row.trim_end().to_string()
+        })
+        .collect()
+}
+
+fn make_non_rust_project(name: Option<&str>, path: &str) -> RootItem {
+    RootItem::NonRust(NonRustProject::new(
         PathBuf::from(path),
         name.map(String::from),
     ))
 }
 
-fn make_workspace_project(name: Option<&str>, path: &str) -> ProjectListItem {
-    ProjectListItem::Workspace(RustProject::<Workspace>::new(
+fn make_workspace_project(name: Option<&str>, path: &str) -> RootItem {
+    RootItem::Workspace(RustProject::<Workspace>::new(
         PathBuf::from(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -106,8 +142,8 @@ fn make_workspace_with_members(
     name: Option<&str>,
     path: &str,
     groups: Vec<MemberGroup>,
-) -> ProjectListItem {
-    ProjectListItem::Workspace(RustProject::<Workspace>::new(
+) -> RootItem {
+    RootItem::Workspace(RustProject::<Workspace>::new(
         PathBuf::from(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -132,15 +168,15 @@ fn make_member(name: Option<&str>, path: &str) -> RustProject<Package> {
 fn make_workspace_worktrees_item(
     primary: RustProject<Workspace>,
     linked: Vec<RustProject<Workspace>>,
-) -> ProjectListItem {
-    ProjectListItem::WorkspaceWorktrees(crate::project::WorktreeGroup::new(primary, linked))
+) -> RootItem {
+    RootItem::WorkspaceWorktrees(crate::project::WorktreeGroup::new(primary, linked))
 }
 
 fn make_package_worktrees_item(
     primary: RustProject<Package>,
     linked: Vec<RustProject<Package>>,
-) -> ProjectListItem {
-    ProjectListItem::PackageWorktrees(crate::project::WorktreeGroup::new(primary, linked))
+) -> RootItem {
+    RootItem::PackageWorktrees(crate::project::WorktreeGroup::new(primary, linked))
 }
 
 fn make_package_raw(
@@ -314,7 +350,7 @@ fn add_git_worktree(primary_dir: &Path, worktree_dir: &Path, branch: &str) {
     assert!(status.success(), "git worktree add should succeed");
 }
 
-fn item_from_project_dir(dir: &Path) -> ProjectListItem {
+fn item_from_project_dir(dir: &Path) -> RootItem {
     let cargo_toml = dir.join("Cargo.toml");
     let parsed =
         crate::project::from_cargo_toml(&cargo_toml).unwrap_or_else(|_| std::process::abort());
@@ -379,11 +415,10 @@ fn external_config_reload_keeps_last_good_config_on_parse_error() {
 
     assert_eq!(app.editor(), "zed");
     assert_eq!(app.current_config.tui.editor, "zed");
-    assert!(
-        app.status_flash
-            .as_ref()
-            .is_some_and(|(msg, _)| msg.contains("Config reload failed"))
-    );
+    assert!(app
+        .status_flash
+        .as_ref()
+        .is_some_and(|(msg, _)| msg.contains("Config reload failed")));
 }
 
 #[test]
@@ -425,11 +460,10 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
 
     assert!(app.is_scan_complete());
     assert_eq!(app.projects.len(), 2);
-    assert!(
-        app.projects
-            .iter()
-            .any(|item| item.display_path() == "~/js")
-    );
+    assert!(app
+        .projects
+        .iter()
+        .any(|item| item.display_path() == "~/js"));
 }
 
 #[test]
@@ -446,8 +480,8 @@ fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
     assert!(!app.is_scan_complete());
 }
 
-fn apply_items(app: &mut App, items: &[ProjectListItem]) {
-    app.apply_tree_build(crate::project_list::ProjectList::new(items.to_vec()));
+fn apply_items(app: &mut App, items: &[RootItem]) {
+    app.apply_tree_build(ProjectList::new(items.to_vec()));
     app.ensure_visible_rows_cached();
 }
 
@@ -750,7 +784,7 @@ fn worktree_section_collapses_when_one_dismissed() {
 
     let mut items = vec![root];
     let linked_path = match &items[0] {
-        ProjectListItem::PackageWorktrees(wtg) => wtg.linked()[0].path().to_path_buf(),
+        RootItem::PackageWorktrees(wtg) => wtg.linked()[0].path().to_path_buf(),
         _ => unreachable!("expected package worktrees"),
     };
     items[0]
@@ -997,6 +1031,52 @@ fn package_worktree_fit_widths_use_display_name_for_primary_entry() {
 }
 
 #[test]
+fn root_rows_disambiguate_same_project_names_with_leaf_dir_suffix() {
+    let mut app = make_app(&[
+        make_project(Some("cargo-port"), "/tmp/rust/cargo-port"),
+        make_project(Some("cargo-port"), "/tmp/rust/cargo-port-old"),
+    ]);
+
+    let names = rendered_root_name_cells(&mut app);
+
+    assert!(
+        names[0].contains("cargo-port") && names[0].contains("cargo-port-old"),
+        "root label should include the unique leaf dir when names collide: {names:?}"
+    );
+    assert!(
+        names[1].contains("cargo-port") && names[1].contains("cargo-port-old"),
+        "root label should include the unique leaf dir when names collide: {names:?}"
+    );
+    assert_ne!(
+        names[0], names[1],
+        "colliding roots should render distinctly"
+    );
+}
+
+#[test]
+fn root_rows_extend_dir_suffix_until_same_leaf_dirs_become_unique() {
+    let mut app = make_app(&[
+        make_project(Some("cargo-port"), "/tmp/active/cargo-port"),
+        make_project(Some("cargo-port"), "/tmp/archive/cargo-port"),
+    ]);
+
+    let names = rendered_root_name_cells(&mut app);
+
+    assert!(
+        names[0].contains("cargo-port") && names[0].contains("active"),
+        "root label should add parent context when leaf dirs still collide: {names:?}"
+    );
+    assert!(
+        names[1].contains("cargo-port") && names[1].contains("archive"),
+        "root label should add parent context when leaf dirs still collide: {names:?}"
+    );
+    assert_ne!(
+        names[0], names[1],
+        "same-name same-leaf roots should render distinctly"
+    );
+}
+
+#[test]
 fn visible_rows_workspace_no_worktrees() {
     let root = make_workspace_with_members(
         None,
@@ -1043,7 +1123,7 @@ fn visible_rows_include_vendored_children() {
         None,
         None,
     );
-    let root = ProjectListItem::Workspace(ws);
+    let root = RootItem::Workspace(ws);
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
     let rows = snapshots::build_visible_rows(&[root], &expanded, true);
@@ -1260,16 +1340,14 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(Path::new(&project_a.display_path())));
-    assert!(
-        !app.scan
-            .startup_phases
-            .lint_seen_terminal
-            .contains(Path::new(&project_a.display_path()))
-    );
-    assert!(
-        app.running_lint_paths
-            .contains_key(Path::new(&project_a.display_path()))
-    );
+    assert!(!app
+        .scan
+        .startup_phases
+        .lint_seen_terminal
+        .contains(Path::new(&project_a.display_path())));
+    assert!(app
+        .running_lint_paths
+        .contains_key(Path::new(&project_a.display_path())));
     assert!(app.lint_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
@@ -1441,7 +1519,7 @@ fn vendored_path_dependency_becomes_cargo_active() {
             None,
             None,
         );
-        ProjectListItem::Package(pkg)
+        RootItem::Package(pkg)
     };
     let vendored = make_project(Some("helper"), "~/app/vendor/helper");
 
@@ -1492,7 +1570,7 @@ fn name_width_with_gutter_reserves_space_before_lint() {
 
 #[test]
 fn tabbable_panes_follow_canonical_order() {
-    let project = ProjectListItem::Package(RustProject::<Package>::new(
+    let project = RootItem::Package(RustProject::<Package>::new(
         PathBuf::from("~/demo"),
         Some("demo".to_string()),
         Cargo::new(
@@ -1601,7 +1679,7 @@ fn project_refresh_updates_selected_tree_project_targets() {
     assert_eq!(example_count, Some(0));
     assert!(!app.tabbable_panes().contains(&PaneId::Targets));
 
-    let refreshed = ProjectListItem::Package(RustProject::<Package>::new(
+    let refreshed = RootItem::Package(RustProject::<Package>::new(
         PathBuf::from("~/demo"),
         Some("demo".to_string()),
         Cargo::new(
@@ -1644,7 +1722,7 @@ fn first_non_empty_tree_build_focuses_project_list() {
 
 #[test]
 fn initial_disk_batch_count_groups_nested_projects_under_one_root() {
-    let projects: Vec<ProjectListItem> = [
+    let projects: Vec<RootItem> = [
         make_project(Some("bevy"), "~/rust/bevy"),
         make_project(Some("ecs"), "~/rust/bevy/crates/bevy_ecs"),
         make_project(Some("render"), "~/rust/bevy/crates/bevy_render"),
@@ -1908,7 +1986,7 @@ fn disk_updates_skip_git_path_refresh_during_scan() {
     std::fs::create_dir_all(&abs_path).unwrap_or_else(|_| std::process::abort());
 
     let abs_str = abs_path.to_string_lossy().to_string();
-    let project = ProjectListItem::Package(RustProject::<Package>::new(
+    let project = RootItem::Package(RustProject::<Package>::new(
         abs_path,
         Some("demo".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -1933,7 +2011,7 @@ fn disk_updates_skip_git_path_refresh_during_scan() {
 fn search_finds_workspace_members_and_vendored_crates() {
     let member_path = "~/ws/crates/member";
     let vendored_path = "~/ws/vendor/helper";
-    let workspace = ProjectListItem::Workspace(make_workspace_raw_with_vendored(
+    let workspace = RootItem::Workspace(make_workspace_raw_with_vendored(
         Some("ws"),
         "~/ws",
         vec![inline_group(vec![make_member(Some("member"), member_path)])],
@@ -1944,18 +2022,16 @@ fn search_finds_workspace_members_and_vendored_crates() {
     apply_items(&mut app, &[workspace]);
 
     app.update_search("member");
-    assert!(
-        app.filtered
-            .iter()
-            .any(|hit| hit.display_path == member_path && hit.name == "member")
-    );
+    assert!(app
+        .filtered
+        .iter()
+        .any(|hit| hit.display_path == member_path && hit.name == "member"));
 
     app.update_search("helper");
-    assert!(
-        app.filtered
-            .iter()
-            .any(|hit| hit.display_path == vendored_path && hit.name == "helper (vendored)")
-    );
+    assert!(app
+        .filtered
+        .iter()
+        .any(|hit| hit.display_path == vendored_path && hit.name == "helper (vendored)"));
 }
 
 #[test]
@@ -1980,11 +2056,10 @@ fn search_finds_linked_worktree_children_and_confirms_selection() {
     apply_items(&mut app, &[item]);
 
     app.update_search("helper_feat");
-    assert!(
-        app.filtered
-            .iter()
-            .any(|hit| hit.display_path == vendored_path && hit.name == "helper_feat (vendored)")
-    );
+    assert!(app
+        .filtered
+        .iter()
+        .any(|hit| hit.display_path == vendored_path && hit.name == "helper_feat (vendored)"));
 
     app.update_search("member_feat");
     app.confirm_search();
@@ -2183,9 +2258,9 @@ fn disk_rollup_deduplicates_primary_worktree_path() {
 fn handle_project_discovered_deduplicates_by_path() {
     let mut app = make_app(&[]);
 
-    let pkg1 = ProjectListItem::Package(make_package_raw(Some("foo"), "/abs/foo", None));
-    let pkg2 = ProjectListItem::Package(make_package_raw(Some("foo"), "/abs/foo", None));
-    let pkg3 = ProjectListItem::Package(make_package_raw(Some("bar"), "/abs/bar", None));
+    let pkg1 = RootItem::Package(make_package_raw(Some("foo"), "/abs/foo", None));
+    let pkg2 = RootItem::Package(make_package_raw(Some("foo"), "/abs/foo", None));
+    let pkg3 = RootItem::Package(make_package_raw(Some("bar"), "/abs/bar", None));
 
     app.handle_project_discovered(pkg1);
     app.handle_project_discovered(pkg2); // duplicate — should be rejected
@@ -2197,13 +2272,13 @@ fn handle_project_discovered_deduplicates_by_path() {
 fn handle_project_discovered_creates_worktree_group_from_single_primary() {
     let primary_path = "/abs/app";
     let linked_path = "/abs/app_feat";
-    let primary = ProjectListItem::Package(make_package_raw_with_primary(
+    let primary = RootItem::Package(make_package_raw_with_primary(
         Some("app"),
         primary_path,
         None,
         Some("/canonical/app"),
     ));
-    let linked = ProjectListItem::Package(make_package_raw_with_primary(
+    let linked = RootItem::Package(make_package_raw_with_primary(
         Some("app"),
         linked_path,
         Some("app_feat"),
@@ -2218,7 +2293,7 @@ fn handle_project_discovered_creates_worktree_group_from_single_primary() {
         "new linked checkout should regroup with the primary"
     );
 
-    let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
+    let RootItem::PackageWorktrees(group) = &app.projects[0] else {
         panic!("expected discovered worktree to create a package worktree group");
     };
     assert_eq!(group.primary().path(), Path::new(primary_path));
@@ -2240,7 +2315,7 @@ fn handle_project_discovered_slots_new_worktree_into_existing_group() {
             Some("/canonical/app"),
         )],
     );
-    let new_linked = ProjectListItem::Package(make_package_raw_with_primary(
+    let new_linked = RootItem::Package(make_package_raw_with_primary(
         Some("app"),
         new_linked_path,
         Some("app_fix"),
@@ -2255,7 +2330,7 @@ fn handle_project_discovered_slots_new_worktree_into_existing_group() {
         "new linked checkout should stay inside the existing group"
     );
 
-    let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
+    let RootItem::PackageWorktrees(group) = &app.projects[0] else {
         panic!("expected existing root to remain a package worktree group");
     };
     assert_eq!(group.linked().len(), 2);
@@ -2279,14 +2354,14 @@ fn handle_project_discovered_slots_new_worktree_into_existing_group() {
 fn handle_project_discovered_creates_workspace_worktree_group_from_single_primary() {
     let primary_path = "/abs/obsidian_knife";
     let linked_path = "/abs/obsidian_knife_test";
-    let primary = ProjectListItem::Workspace(make_workspace_raw_with_primary(
+    let primary = RootItem::Workspace(make_workspace_raw_with_primary(
         Some("obsidian_knife"),
         primary_path,
         Vec::new(),
         None,
         Some("/canonical/obsidian_knife"),
     ));
-    let linked = ProjectListItem::Workspace(make_workspace_raw_with_primary(
+    let linked = RootItem::Workspace(make_workspace_raw_with_primary(
         Some("obsidian_knife"),
         linked_path,
         Vec::new(),
@@ -2302,7 +2377,7 @@ fn handle_project_discovered_creates_workspace_worktree_group_from_single_primar
         "new linked workspace should regroup with the primary"
     );
 
-    let ProjectListItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+    let RootItem::WorkspaceWorktrees(group) = &app.projects[0] else {
         panic!("expected discovered workspace worktree to create a worktree group");
     };
     assert_eq!(group.primary().path(), Path::new(primary_path));
@@ -2331,7 +2406,7 @@ fn handle_project_discovered_slots_new_workspace_worktree_into_existing_group() 
             Some("/canonical/obsidian_knife"),
         )],
     );
-    let new_linked = ProjectListItem::Workspace(make_workspace_raw_with_primary(
+    let new_linked = RootItem::Workspace(make_workspace_raw_with_primary(
         Some("obsidian_knife"),
         new_linked_path,
         Vec::new(),
@@ -2347,7 +2422,7 @@ fn handle_project_discovered_slots_new_workspace_worktree_into_existing_group() 
         "new linked workspace should stay inside the existing worktree group"
     );
 
-    let ProjectListItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+    let RootItem::WorkspaceWorktrees(group) = &app.projects[0] else {
         panic!("expected existing root to remain a workspace worktree group");
     };
     assert_eq!(group.linked().len(), 2);
@@ -2385,7 +2460,7 @@ fn background_discovery_from_real_package_worktree_creates_group() {
     );
 
     assert_eq!(app.projects.len(), 1);
-    let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
+    let RootItem::PackageWorktrees(group) = &app.projects[0] else {
         panic!("expected package worktree group after real worktree discovery");
     };
     assert_eq!(group.linked().len(), 1);
@@ -2417,7 +2492,7 @@ fn background_discovery_from_real_workspace_worktree_creates_group() {
     );
 
     assert_eq!(app.projects.len(), 1);
-    let ProjectListItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+    let RootItem::WorkspaceWorktrees(group) = &app.projects[0] else {
         panic!("expected workspace worktree group after real worktree discovery");
     };
     assert_eq!(group.linked().len(), 1);
@@ -2454,7 +2529,7 @@ fn background_discovery_from_real_package_worktree_appends_existing_group() {
     );
 
     assert_eq!(app.projects.len(), 1);
-    let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
+    let RootItem::PackageWorktrees(group) = &app.projects[0] else {
         panic!("expected package worktree group after second real worktree discovery");
     };
     assert_eq!(group.linked().len(), 2);
@@ -2483,7 +2558,7 @@ fn background_discovery_from_real_workspace_worktree_appends_existing_group() {
     );
 
     assert_eq!(app.projects.len(), 1);
-    let ProjectListItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+    let RootItem::WorkspaceWorktrees(group) = &app.projects[0] else {
         panic!("expected workspace worktree group after second real worktree discovery");
     };
     assert_eq!(group.linked().len(), 2);
@@ -2504,7 +2579,7 @@ fn refreshed_workspace_worktree_metadata_regroups_stale_top_level_discovery() {
     // Simulate the bad runtime path: discovery happens before worktree
     // metadata is available, so the linked checkout is inserted as a plain
     // top-level workspace instead of a worktree child.
-    let stale_discovery = ProjectListItem::Workspace(make_workspace_raw(
+    let stale_discovery = RootItem::Workspace(make_workspace_raw(
         Some("obsidian_knife"),
         &linked_dir.to_string_lossy(),
         Vec::new(),
@@ -2534,7 +2609,7 @@ fn refreshed_workspace_worktree_metadata_regroups_stale_top_level_discovery() {
         1,
         "refreshing the stale top-level row should regroup it under the primary worktree container"
     );
-    let ProjectListItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+    let RootItem::WorkspaceWorktrees(group) = &app.projects[0] else {
         panic!("expected regrouped workspace worktree container after refresh");
     };
     assert_eq!(group.linked().len(), 1);
@@ -2553,7 +2628,7 @@ fn refreshed_package_worktree_metadata_regroups_stale_top_level_discovery() {
 
     add_git_worktree(&primary_dir, &linked_dir, "test/app");
 
-    let stale_discovery = ProjectListItem::Package(make_package_raw(
+    let stale_discovery = RootItem::Package(make_package_raw(
         Some("app"),
         &linked_dir.to_string_lossy(),
         None,
@@ -2581,7 +2656,7 @@ fn refreshed_package_worktree_metadata_regroups_stale_top_level_discovery() {
         1,
         "refreshing the stale top-level row should regroup it under the primary worktree container"
     );
-    let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
+    let RootItem::PackageWorktrees(group) = &app.projects[0] else {
         panic!("expected regrouped package worktree container after refresh");
     };
     assert_eq!(group.linked().len(), 1);
@@ -2603,7 +2678,7 @@ fn refreshed_workspace_worktree_metadata_appends_into_existing_group() {
 
     add_git_worktree(&primary_dir, &linked_two_dir, "test/obsidian");
 
-    let stale_discovery = ProjectListItem::Workspace(make_workspace_raw(
+    let stale_discovery = RootItem::Workspace(make_workspace_raw(
         Some("obsidian_knife"),
         &linked_two_dir.to_string_lossy(),
         Vec::new(),
@@ -2632,7 +2707,7 @@ fn refreshed_workspace_worktree_metadata_appends_into_existing_group() {
         1,
         "refresh should fold the stale row into the existing workspace worktree group"
     );
-    let ProjectListItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+    let RootItem::WorkspaceWorktrees(group) = &app.projects[0] else {
         panic!("expected workspace worktree group after refresh regroup");
     };
     assert_eq!(group.linked().len(), 2);
@@ -2667,7 +2742,7 @@ fn refreshed_package_worktree_metadata_appends_into_existing_group() {
 
     add_git_worktree(&primary_dir, &linked_two_dir, "test/app");
 
-    let stale_discovery = ProjectListItem::Package(make_package_raw(
+    let stale_discovery = RootItem::Package(make_package_raw(
         Some("app"),
         &linked_two_dir.to_string_lossy(),
         None,
@@ -2695,7 +2770,7 @@ fn refreshed_package_worktree_metadata_appends_into_existing_group() {
         1,
         "refresh should fold the stale row into the existing package worktree group"
     );
-    let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
+    let RootItem::PackageWorktrees(group) = &app.projects[0] else {
         panic!("expected package worktree group after refresh regroup");
     };
     assert_eq!(group.linked().len(), 2);
@@ -2727,7 +2802,7 @@ fn stale_discovery_refresh_then_delete_dismiss_workspace_returns_to_root() {
 
     add_git_worktree(&primary_dir, &linked_dir, "test/obsidian");
 
-    let stale_discovery = ProjectListItem::Workspace(make_workspace_raw(
+    let stale_discovery = RootItem::Workspace(make_workspace_raw(
         Some("obsidian_knife"),
         &linked_dir.to_string_lossy(),
         Vec::new(),
@@ -2782,7 +2857,7 @@ fn stale_discovery_refresh_then_delete_dismiss_package_returns_to_root() {
 
     add_git_worktree(&primary_dir, &linked_dir, "test/app");
 
-    let stale_discovery = ProjectListItem::Package(make_package_raw(
+    let stale_discovery = RootItem::Package(make_package_raw(
         Some("app"),
         &linked_dir.to_string_lossy(),
         None,
@@ -2903,7 +2978,7 @@ fn handle_project_discovered_does_not_allocate_per_comparison() {
     let start = std::time::Instant::now();
     for i in 0..200 {
         let path = format!("/abs/project_{i}");
-        let item = ProjectListItem::Package(make_package_raw(None, &path, None));
+        let item = RootItem::Package(make_package_raw(None, &path, None));
         app.handle_project_discovered(item);
     }
     let elapsed = start.elapsed();
@@ -2922,7 +2997,7 @@ fn is_deleted_does_not_allocate_display_paths() {
     // Populate with 200 projects
     for i in 0..200 {
         let path = format!("/abs/project_{i}");
-        let item = ProjectListItem::Package(make_package_raw(None, &path, None));
+        let item = RootItem::Package(make_package_raw(None, &path, None));
         app.projects.push(item);
     }
     // Mark one as deleted

@@ -1489,7 +1489,7 @@ impl Clone for WorktreeGroup<Package> {
 }
 
 /// The top-level enum for the project list.
-pub(crate) enum ProjectListItem {
+pub(crate) enum RootItem {
     Workspace(RustProject<Workspace>),
     Package(RustProject<Package>),
     NonRust(NonRustProject),
@@ -1497,7 +1497,7 @@ pub(crate) enum ProjectListItem {
     PackageWorktrees(WorktreeGroup<Package>),
 }
 
-impl Clone for ProjectListItem {
+impl Clone for RootItem {
     fn clone(&self) -> Self {
         match self {
             Self::Workspace(p) => Self::Workspace(p.clone()),
@@ -1509,7 +1509,7 @@ impl Clone for ProjectListItem {
     }
 }
 
-impl ProjectListItem {
+impl RootItem {
     pub(crate) const fn visibility(&self) -> Visibility {
         match self {
             Self::Workspace(p) => p.visibility(),

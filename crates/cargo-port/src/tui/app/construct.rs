@@ -3,10 +3,10 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use ratatui::widgets::ListState;
@@ -28,7 +28,7 @@ use crate::http::HttpClient;
 use crate::keymap;
 use crate::lint;
 use crate::lint::RuntimeHandle;
-use crate::project::ProjectListItem;
+use crate::project::RootItem;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -43,7 +43,7 @@ use crate::tui::types::PaneId;
 use crate::watcher;
 use crate::watcher::WatchRequest;
 
-fn initial_list_state(items: &[ProjectListItem]) -> ListState {
+fn initial_list_state(items: &[RootItem]) -> ListState {
     let mut state = ListState::default();
     if !items.is_empty() {
         state.select(Some(0));
@@ -89,7 +89,7 @@ struct AppInit {
 impl AppInit {
     fn new(
         scan_root: &Path,
-        projects: &[ProjectListItem],
+        projects: &[RootItem],
         bg_tx: &mpsc::Sender<BackgroundMsg>,
         cfg: &CargoPortConfig,
         http_client: &HttpClient,
@@ -148,7 +148,7 @@ impl App {
 
     pub fn new(
         scan_root: PathBuf,
-        projects: &[ProjectListItem],
+        projects: &[RootItem],
         bg_tx: mpsc::Sender<BackgroundMsg>,
         bg_rx: Receiver<BackgroundMsg>,
         cfg: &CargoPortConfig,

@@ -41,7 +41,7 @@ use crate::ci::Conclusion;
 use crate::constants::WORKTREE;
 use crate::project;
 use crate::project::GitOrigin;
-use crate::project::ProjectListItem;
+use crate::project::RootItem;
 use crate::project::Visibility;
 use crate::scan;
 
@@ -448,7 +448,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     let total_bytes: u64 = app
         .projects
         .iter()
-        .filter_map(ProjectListItem::disk_usage_bytes)
+        .filter_map(RootItem::disk_usage_bytes)
         .sum();
 
     let title = project_panel_title(app, area.width.saturating_sub(2).into());
@@ -687,7 +687,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let context = app.input_context();
     let enter_action = app.enter_action();
-    let is_rust = app.selected_item().is_some_and(ProjectListItem::is_rust);
+    let is_rust = app.selected_item().is_some_and(RootItem::is_rust);
     let groups =
         super::shortcuts::for_status_bar(context, enter_action, is_rust, &app.current_keymap);
 
@@ -890,7 +890,7 @@ fn render_worktree_entry<'a>(
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
     let wt_name = match item {
-        crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+        crate::project::RootItem::WorkspaceWorktrees(wtg) => {
             let ws = if wi == 0 {
                 wtg.primary()
             } else {
@@ -899,7 +899,7 @@ fn render_worktree_entry<'a>(
             ws.worktree_name()
                 .map_or_else(|| ws.display_name(), str::to_string)
         },
-        crate::project::ProjectListItem::PackageWorktrees(wtg) => {
+        crate::project::RootItem::PackageWorktrees(wtg) => {
             let pkg = if wi == 0 {
                 wtg.primary()
             } else {
@@ -912,7 +912,7 @@ fn render_worktree_entry<'a>(
     };
 
     let has_expandable_children = match item {
-        crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+        crate::project::RootItem::WorkspaceWorktrees(wtg) => {
             let ws = if wi == 0 {
                 wtg.primary()
             } else {
@@ -976,7 +976,7 @@ fn render_wt_group_header<'a>(
 ) -> ListItem<'a> {
     let item = &app.projects[ni];
     let (group_name, member_count) = match item {
-        crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+        crate::project::RootItem::WorkspaceWorktrees(wtg) => {
             let ws = if wi == 0 {
                 wtg.primary()
             } else {
@@ -1011,7 +1011,7 @@ fn render_wt_member<'a>(
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
     let (member, member_name, is_named_group) = match item {
-        crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+        crate::project::RootItem::WorkspaceWorktrees(wtg) => {
             let ws = if wi == 0 {
                 wtg.primary()
             } else {
@@ -1049,7 +1049,7 @@ fn render_member_item(
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let (member, member_name, is_named) = match item {
-        crate::project::ProjectListItem::Workspace(ws) => {
+        crate::project::RootItem::Workspace(ws) => {
             let group = &ws.groups()[group_index];
             let m = &group.members()[member_index];
             (Some(m), m.display_name(), group.is_named())
@@ -1081,11 +1081,11 @@ fn render_vendored_item(
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let (vendored, vendored_display_name) = match item {
-        crate::project::ProjectListItem::Workspace(ws) => {
+        crate::project::RootItem::Workspace(ws) => {
             let v = &ws.vendored()[vendored_index];
             (Some(v), v.display_name())
         },
-        crate::project::ProjectListItem::Package(pkg) => {
+        crate::project::RootItem::Package(pkg) => {
             let v = &pkg.vendored()[vendored_index];
             (Some(v), v.display_name())
         },
@@ -1113,7 +1113,7 @@ fn render_wt_vendored_item(
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let vendored_pkg = match item {
-        crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+        crate::project::RootItem::WorkspaceWorktrees(wtg) => {
             let ws = if worktree_index == 0 {
                 wtg.primary()
             } else {
@@ -1123,7 +1123,7 @@ fn render_wt_vendored_item(
             };
             ws.vendored().get(vendored_index)
         },
-        crate::project::ProjectListItem::PackageWorktrees(wtg) => {
+        crate::project::RootItem::PackageWorktrees(wtg) => {
             let pkg = if worktree_index == 0 {
                 wtg.primary()
             } else {
@@ -1163,7 +1163,7 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
             } => {
                 let item = &app.projects[*node_index];
                 let (group_name, member_count) = match item {
-                    crate::project::ProjectListItem::Workspace(ws) => {
+                    crate::project::RootItem::Workspace(ws) => {
                         let group = &ws.groups()[*group_index];
                         (group.group_name().to_string(), group.members().len())
                     },
