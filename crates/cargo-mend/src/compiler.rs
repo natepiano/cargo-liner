@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
@@ -55,6 +56,38 @@ use super::outcome::MendFailure;
 use super::selection::SelectedPackage;
 use super::selection::Selection;
 use super::selection::SelectionScope;
+
+#[derive(Default)]
+struct PerfStat {
+    calls: u32,
+    total: std::time::Duration,
+}
+
+#[derive(Default)]
+struct PerfStats {
+    stats: HashMap<&'static str, PerfStat>,
+}
+
+impl PerfStats {
+    fn record(&mut self, name: &'static str, elapsed: std::time::Duration) {
+        let stat = self.stats.entry(name).or_default();
+        stat.calls += 1;
+        stat.total += elapsed;
+    }
+}
+
+thread_local! {
+    static PERF: RefCell<PerfStats> = RefCell::new(PerfStats::default());
+}
+
+macro_rules! perf_record {
+    ($name:expr, $body:expr) => {{
+        let _start = std::time::Instant::now();
+        let _result = $body;
+        PERF.with(|p| p.borrow_mut().record($name, _start.elapsed()));
+        _result
+    }};
+}
 
 const DRIVER_ENV: &str = "MEND_DRIVER";
 const CONFIG_ROOT_ENV: &str = "MEND_CONFIG_ROOT";
@@ -917,7 +950,14 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
             t2 - t1,
             t3 - t2
         );
+        PERF.with(|p| {
+            let p = p.borrow();
+            for (name, stat) in &p.stats {
+                let _ = writeln!(f, "  {name}: calls={}, total={:?}", stat.calls, stat.total);
+            }
+        });
     }
+    PERF.with(|p| p.borrow_mut().stats.clear());
 
     let output_path = settings
         .findings_dir
@@ -973,10 +1013,18 @@ struct FindingsSink {
 /// Pre-loaded source file contents and parsed ASTs, built once before the analysis
 /// loops to avoid re-reading and re-parsing the same `.rs` files hundreds of times
 /// during visibility analysis.
+struct ExtractedPaths {
+    /// Flattened use-tree paths with their origin (`Relative`/`Crate`).
+    use_paths:  Vec<(Vec<String>, PathOrigin)>,
+    /// All `syn::Path` nodes found via AST visit, as raw segment strings with origin.
+    expr_paths: Vec<(Vec<String>, PathOrigin)>,
+}
+
 struct SourceCache {
-    contents:     HashMap<PathBuf, String>,
-    files_by_dir: HashMap<PathBuf, Vec<PathBuf>>,
-    parsed:       HashMap<PathBuf, syn::File>,
+    contents:        HashMap<PathBuf, String>,
+    files_by_dir:    HashMap<PathBuf, Vec<PathBuf>>,
+    parsed:          HashMap<PathBuf, syn::File>,
+    extracted_paths: HashMap<PathBuf, ExtractedPaths>,
 }
 
 impl SourceCache {
@@ -1006,10 +1054,15 @@ impl SourceCache {
                 parsed.insert(path.clone(), ast);
             }
         }
+        let mut extracted_paths = HashMap::new();
+        for (path, ast) in &parsed {
+            extracted_paths.insert(path.clone(), extract_paths(ast));
+        }
         Ok(Self {
             contents,
             files_by_dir,
             parsed,
+            extracted_paths,
         })
     }
 
@@ -1029,6 +1082,10 @@ impl SourceCache {
     }
 
     fn parsed_file(&self, path: &Path) -> Option<&syn::File> { self.parsed.get(path) }
+
+    fn extracted_paths(&self, path: &Path) -> Option<&ExtractedPaths> {
+        self.extracted_paths.get(path)
+    }
 }
 
 struct VisibilityContext<'a, 'tcx> {
@@ -1208,8 +1265,13 @@ fn record_visibility_findings(
     } else {
         CrateKind::Binary
     };
-    let config_rel_path = config_relative_path_for_settings(item.file_path, ctx.settings);
-    let parent_module = ctx.tcx.parent_module_from_def_id(item.def_id);
+    let config_rel_path = perf_record!(
+        "config_rel_path",
+        config_relative_path_for_settings(item.file_path, ctx.settings)
+    );
+    let parent_module = perf_record!("tcx_queries", {
+        ctx.tcx.parent_module_from_def_id(item.def_id)
+    });
     let parent_is_public = ctx
         .tcx
         .local_visibility(parent_module.to_local_def_id())
@@ -1282,24 +1344,30 @@ fn record_visibility_findings(
         && !parent_is_public
         && is_top_level_module_file(ctx.src_root, ctx.root_module, item.file_path)
     {
-        maybe_record_narrow_to_pub_crate(ctx, item, sink)?;
+        perf_record!(
+            "narrow_to_pub_crate",
+            maybe_record_narrow_to_pub_crate(ctx, item, sink)
+        )?;
     }
 
     if item.vis_text == "pub" && !is_boundary_file(ctx.src_root, ctx.root_module, item.file_path) {
-        maybe_record_suspicious_pub(
-            ctx,
-            &SuspiciousPubInput {
-                def_id: item.def_id,
-                file_path: item.file_path,
-                config_rel_path: config_rel_path.as_deref(),
-                parent_is_public,
-                module_location,
-                crate_kind,
-                kind_label: item.kind_label,
-                item_name: item.item_name,
-                highlight_span: item.highlight_span,
-            },
-            sink,
+        perf_record!(
+            "suspicious_pub",
+            maybe_record_suspicious_pub(
+                ctx,
+                &SuspiciousPubInput {
+                    def_id: item.def_id,
+                    file_path: item.file_path,
+                    config_rel_path: config_rel_path.as_deref(),
+                    parent_is_public,
+                    module_location,
+                    crate_kind,
+                    kind_label: item.kind_label,
+                    item_name: item.item_name,
+                    highlight_span: item.highlight_span,
+                },
+                sink,
+            )
         )?;
     }
     Ok(())
@@ -1825,11 +1893,11 @@ fn scan_facade_usage(
         let Some(current_module_path) = module_path_from_source_file(src_root, source_path) else {
             continue;
         };
-        let Some(parsed) = source_cache.parsed_file(source_path) else {
+        let Some(extracted) = source_cache.extracted_paths(source_path) else {
             continue;
         };
         match source_references_parent_export(
-            parsed,
+            extracted,
             &current_module_path,
             &parent_boundary.module_path,
             &exported_names.explicit,
@@ -2200,18 +2268,61 @@ enum ParentFacadeReferenceUsage {
 }
 
 fn source_references_parent_export(
-    file: &syn::File,
+    extracted: &ExtractedPaths,
     current_module_path: &[String],
     module_path: &[String],
     exported_names: &[String],
 ) -> ParentFacadeReferenceUsage {
-    let mut visitor =
-        ParentExportPathVisitor::new(current_module_path, module_path, exported_names);
-    visitor.visit_file(file);
-    match (visitor.found_direct_origin, visitor.found_import_usage) {
-        (Some(origin), _) => ParentFacadeReferenceUsage::DirectPath(origin),
-        (None, usage) => usage,
+    for (raw, origin) in &extracted.expr_paths {
+        if matching_origin_indexed(
+            raw,
+            *origin,
+            current_module_path,
+            module_path,
+            exported_names,
+        )
+        .is_some()
+        {
+            return ParentFacadeReferenceUsage::DirectPath(*origin);
+        }
     }
+
+    let mut import_usage = ParentFacadeReferenceUsage::None;
+    for (raw, origin) in &extracted.use_paths {
+        if matching_origin_indexed(
+            raw,
+            *origin,
+            current_module_path,
+            module_path,
+            exported_names,
+        )
+        .is_some()
+        {
+            import_usage =
+                merge_reference_usage(import_usage, ParentFacadeReferenceUsage::Import(*origin));
+        }
+    }
+
+    import_usage
+}
+
+fn matching_origin_indexed(
+    raw: &[String],
+    origin: PathOrigin,
+    current_module_path: &[String],
+    module_path: &[String],
+    exported_names: &[String],
+) -> Option<PathOrigin> {
+    resolve_module_relative_paths(raw, current_module_path)
+        .into_iter()
+        .find(|segments| {
+            segments.len() == module_path.len() + 1
+                && segments[..module_path.len()] == *module_path
+                && exported_names
+                    .iter()
+                    .any(|name| name == &segments[module_path.len()])
+        })
+        .map(|_| origin)
 }
 
 fn resolve_module_relative_paths(
@@ -2534,12 +2645,12 @@ fn parent_boundary_public_signature_exposes_child_used_outside_parent(
         let Some(current_module_path) = module_path_from_source_file(src_root, source_file) else {
             continue;
         };
-        let Some(parsed) = source_cache.parsed_file(source_file) else {
+        let Some(extracted) = source_cache.extracted_paths(source_file) else {
             continue;
         };
         if !matches!(
             source_references_parent_export(
-                parsed,
+                extracted,
                 &current_module_path,
                 &parent_boundary.module_path,
                 &exposing_names,
@@ -2562,94 +2673,54 @@ fn parent_boundary_public_signature_exposes_child_used_outside_parent(
     Ok(false)
 }
 
-struct ParentExportPathVisitor<'a> {
-    current_module_path: &'a [String],
-    module_path:         &'a [String],
-    exported_names:      &'a [String],
-    found_direct_origin: Option<PathOrigin>,
-    found_import_usage:  ParentFacadeReferenceUsage,
-}
-
-impl<'a> ParentExportPathVisitor<'a> {
-    const fn new(
-        current_module_path: &'a [String],
-        module_path: &'a [String],
-        exported_names: &'a [String],
-    ) -> Self {
-        Self {
-            current_module_path,
-            module_path,
-            exported_names,
-            found_direct_origin: None,
-            found_import_usage: ParentFacadeReferenceUsage::None,
-        }
-    }
-
-    fn matching_origin(&self, path: &syn::Path) -> Option<PathOrigin> {
-        let raw_segments = path
-            .segments
-            .iter()
-            .map(|segment| segment.ident.to_string())
-            .collect::<Vec<_>>();
-        let origin = path_origin(&raw_segments);
-        resolve_module_relative_paths(&raw_segments, self.current_module_path)
-            .into_iter()
-            .find(|segments| {
-                segments.len() == self.module_path.len() + 1
-                    && segments[..self.module_path.len()] == *self.module_path
-                    && self
-                        .exported_names
-                        .iter()
-                        .any(|name| name == &segments[self.module_path.len()])
-            })
-            .map(|_| origin)
-    }
-}
-
-impl<'ast> Visit<'ast> for ParentExportPathVisitor<'_> {
-    fn visit_item_use(&mut self, item_use: &'ast ItemUse) {
-        let mut paths = Vec::new();
-        flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
-        for path in paths {
-            let origin = path_origin(&path);
-            for resolved in resolve_module_relative_paths(&path, self.current_module_path) {
-                if resolved.len() != self.module_path.len() + 1 {
-                    continue;
-                }
-                if resolved[..self.module_path.len()] == *self.module_path
-                    && self
-                        .exported_names
-                        .iter()
-                        .any(|name| name == &resolved[self.module_path.len()])
-                {
-                    self.found_import_usage = merge_reference_usage(
-                        self.found_import_usage,
-                        ParentFacadeReferenceUsage::Import(origin),
-                    );
-                    break;
-                }
-            }
-        }
-        syn::visit::visit_item_use(self, item_use);
-    }
-
-    fn visit_path(&mut self, path: &'ast syn::Path) {
-        if self.found_direct_origin.is_some() {
-            return;
-        }
-        if let Some(origin) = self.matching_origin(path) {
-            self.found_direct_origin = Some(origin);
-            return;
-        }
-        syn::visit::visit_path(self, path);
-    }
-}
-
 fn path_origin(raw: &[String]) -> PathOrigin {
     if raw.first().map(String::as_str) == Some("crate") {
         PathOrigin::Crate
     } else {
         PathOrigin::Relative
+    }
+}
+
+struct PathExtractor {
+    use_paths:       Vec<(Vec<String>, PathOrigin)>,
+    expr_paths:      Vec<(Vec<String>, PathOrigin)>,
+    inside_use_item: bool,
+}
+
+impl<'ast> Visit<'ast> for PathExtractor {
+    fn visit_item_use(&mut self, item_use: &'ast ItemUse) {
+        let mut flat = Vec::new();
+        flatten_use_tree(Vec::new(), &item_use.tree, &mut flat);
+        for raw in flat {
+            let origin = path_origin(&raw);
+            self.use_paths.push((raw, origin));
+        }
+        self.inside_use_item = true;
+        syn::visit::visit_item_use(self, item_use);
+        self.inside_use_item = false;
+    }
+
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        if !self.inside_use_item {
+            let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+            let origin = path_origin(&segments);
+            self.expr_paths.push((segments, origin));
+        }
+        syn::visit::visit_path(self, path);
+    }
+}
+
+fn extract_paths(file: &syn::File) -> ExtractedPaths {
+    let mut extractor = PathExtractor {
+        use_paths:       Vec::new(),
+        expr_paths:      Vec::new(),
+        inside_use_item: false,
+    };
+    extractor.visit_file(file);
+
+    ExtractedPaths {
+        use_paths:  extractor.use_paths,
+        expr_paths: extractor.expr_paths,
     }
 }
 
