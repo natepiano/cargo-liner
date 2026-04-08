@@ -15,6 +15,8 @@ use super::app::App;
 use super::constants::SECTION_HEADER_INDENT;
 use super::constants::SECTION_ITEM_INDENT;
 use super::constants::SETTINGS_POPUP_WIDTH;
+use super::types::PaneId;
+use super::types::PaneSelectionState;
 use crate::config;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::EnumCount, strum::EnumIter)]
@@ -366,18 +368,10 @@ fn save_updated_config(app: &mut App, cfg: &config::CargoPortConfig) -> bool {
 pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     let rows = settings_rows(app, &app.current_config);
     let label_style = Style::default().fg(Color::DarkGray);
-    let highlight_style = Style::default().fg(Color::Black).bg(Color::Cyan);
     let content_width = usize::from(SETTINGS_POPUP_WIDTH.saturating_sub(2));
 
     let mut lines: Vec<Line<'static>> = vec![Line::from("")];
-    build_settings_lines(
-        app,
-        &rows,
-        &mut lines,
-        highlight_style,
-        label_style,
-        content_width,
-    );
+    build_settings_lines(app, &rows, &mut lines, label_style, content_width);
     lines.push(Line::from(""));
     let nav_keys_index = SettingOption::iter().position(|s| s == SettingOption::NavigationKeys);
     if !app.is_settings_editing() && Some(app.settings_pane.pos()) == nav_keys_index {
@@ -422,12 +416,10 @@ const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {
 }
 
 fn push_toggle_row(
-    _app: &App,
     lines: &mut Vec<Line<'static>>,
     label: &str,
     value: &str,
-    is_selected: bool,
-    highlight_style: Style,
+    selection: PaneSelectionState,
     label_style: Style,
 ) {
     let is_on = value == "ON";
@@ -438,16 +430,12 @@ fn push_toggle_row(
     } else {
         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
     };
-    let row_style = if is_selected {
-        highlight_style
-    } else {
-        label_style
-    };
+    let row_style = selection.patch(label_style);
     lines.push(Line::from(vec![
         Span::styled(label.to_owned(), row_style),
-        Span::styled("< ", Style::default().fg(Color::DarkGray)),
-        Span::styled(value.to_owned(), toggle_style),
-        Span::styled(" >", Style::default().fg(Color::DarkGray)),
+        Span::styled("< ", selection.patch(Style::default().fg(Color::DarkGray))),
+        Span::styled(value.to_owned(), selection.patch(toggle_style)),
+        Span::styled(" >", selection.patch(Style::default().fg(Color::DarkGray))),
     ]));
 }
 
@@ -455,7 +443,6 @@ pub(super) fn build_settings_lines(
     app: &App,
     settings: &[SettingsRow],
     lines: &mut Vec<Line<'static>>,
-    highlight_style: Style,
     label_style: Style,
     content_width: usize,
 ) {
@@ -485,58 +472,51 @@ pub(super) fn build_settings_lines(
         } else {
             "  "
         };
-        let is_selected = app.settings_pane.pos() == selection_index;
+        let selection = app
+            .settings_pane
+            .selection_state(selection_index, app.pane_focus_state(PaneId::Settings));
         let setting = *setting;
         let label = format!("{SECTION_ITEM_INDENT}{cursor}{name:<max_label$}  ");
 
-        if is_selected && app.inline_error.is_some() && !app.is_settings_editing() {
+        if selection != PaneSelectionState::Unselected
+            && app.inline_error.is_some()
+            && !app.is_settings_editing()
+        {
             let error = app.inline_error.clone().unwrap_or_default();
             push_wrapped_value_row(
                 lines,
                 &label,
                 &error,
-                highlight_style,
-                Style::default().fg(Color::Red),
+                selection.patch(label_style),
+                selection.patch(Style::default().fg(Color::Red)),
                 content_width,
             );
-        } else if app.is_settings_editing() && is_selected {
+        } else if app.is_settings_editing() && selection != PaneSelectionState::Unselected {
             push_wrapped_value_row(
                 lines,
                 &label,
                 &render_edit_buffer(&app.settings_edit_buf, app.settings_edit_cursor),
-                Style::default().fg(Color::Yellow),
-                Style::default().fg(Color::Yellow),
+                selection.patch(Style::default().fg(Color::Yellow)),
+                selection.patch(Style::default().fg(Color::Yellow)),
                 content_width,
             );
         } else if is_toggle_setting(setting) {
-            push_toggle_row(
-                app,
-                lines,
-                &label,
-                value,
-                is_selected,
-                highlight_style,
-                label_style,
-            );
+            push_toggle_row(lines, &label, value, selection, label_style);
         } else if setting == Some(SettingOption::CiRunCount)
-            && is_selected
+            && selection != PaneSelectionState::Unselected
             && !app.is_settings_editing()
         {
             lines.push(Line::from(vec![
-                Span::styled(label, highlight_style),
-                Span::styled("< ", Style::default().fg(Color::DarkGray)),
+                Span::styled(label, selection.patch(label_style)),
+                Span::styled("< ", selection.patch(Style::default().fg(Color::DarkGray))),
                 Span::styled(
                     (*value).clone(),
-                    Style::default().add_modifier(Modifier::BOLD),
+                    selection.patch(Style::default().add_modifier(Modifier::BOLD)),
                 ),
-                Span::styled(" >", Style::default().fg(Color::DarkGray)),
+                Span::styled(" >", selection.patch(Style::default().fg(Color::DarkGray))),
             ]));
         } else {
-            let style = if is_selected {
-                highlight_style
-            } else {
-                label_style
-            };
+            let style = selection.patch(label_style);
             push_wrapped_value_row(lines, &label, value, style, style, content_width);
         }
         selection_index += 1;

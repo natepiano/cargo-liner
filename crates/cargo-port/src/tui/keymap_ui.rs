@@ -12,6 +12,8 @@ use ratatui::widgets::Paragraph;
 use super::app::App;
 use super::constants::SECTION_HEADER_INDENT;
 use super::constants::SECTION_ITEM_INDENT;
+use super::types::PaneId;
+use super::types::PaneSelectionState;
 use crate::keymap::CiRunsAction;
 use crate::keymap::GitAction;
 use crate::keymap::GlobalAction;
@@ -471,12 +473,7 @@ fn save_keymap_to_disk(app: &mut App) {
 
 const BASE_POPUP_WIDTH: u16 = 52;
 
-fn build_lines<'a>(
-    rows: &[KeymapRow],
-    app: &App,
-    selected_pos: usize,
-    is_awaiting: bool,
-) -> Vec<Line<'a>> {
+fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line<'a>> {
     let mut selectable_index = 0usize;
     let mut lines = vec![Line::from("")];
 
@@ -494,8 +491,10 @@ fn build_lines<'a>(
             continue;
         }
 
-        let is_selected = selectable_index == selected_pos;
-        let key_text = if is_selected && is_awaiting {
+        let selection = app
+            .keymap_pane
+            .selection_state(selectable_index, app.pane_focus_state(PaneId::Keymap));
+        let key_text = if selection != PaneSelectionState::Unselected && is_awaiting {
             app.inline_error
                 .as_ref()
                 .map_or_else(|| "Press key...".to_string(), Clone::clone)
@@ -506,33 +505,32 @@ fn build_lines<'a>(
         let desc_width = 25usize;
         let padded_desc = format!("{:<width$}", row.description, width = desc_width);
 
-        let line = if is_selected && is_awaiting && app.inline_error.is_some() {
+        let line = if selection != PaneSelectionState::Unselected
+            && is_awaiting
+            && app.inline_error.is_some()
+        {
             Line::from(vec![
                 Span::styled(
                     format!("{SECTION_ITEM_INDENT}  {padded_desc}"),
-                    Style::default().fg(Color::White),
+                    selection.patch(Style::default().fg(Color::White)),
                 ),
-                Span::styled(key_text, Style::default().fg(Color::Red)),
+                Span::styled(key_text, selection.patch(Style::default().fg(Color::Red))),
             ])
-        } else if is_selected {
+        } else if selection != PaneSelectionState::Unselected {
             Line::from(vec![
                 Span::styled(
                     format!("{SECTION_ITEM_INDENT}▸ {padded_desc}"),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
+                    selection.patch(Style::default().fg(Color::White)),
                 ),
                 Span::styled(
                     key_text,
-                    if is_awaiting {
+                    selection.patch(if is_awaiting {
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
-                    },
+                        Style::default().fg(Color::DarkGray)
+                    }),
                 ),
             ])
         } else {
@@ -580,7 +578,7 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
 
     let selected_pos = app.keymap_pane.pos();
     let is_awaiting = app.ui_modes.keymap.is_awaiting_key();
-    let lines = build_lines(&rows, app, selected_pos, is_awaiting);
+    let lines = build_lines(&rows, app, is_awaiting);
 
     // Scroll to keep selection visible.
     let visible_height = usize::from(inner.height);

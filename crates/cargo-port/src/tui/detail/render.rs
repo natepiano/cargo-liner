@@ -24,6 +24,8 @@ use super::model::DetailInfo;
 use crate::constants::IN_SYNC;
 use crate::tui::app::App;
 use crate::tui::render;
+use crate::tui::types::Pane;
+use crate::tui::types::PaneFocusState;
 use crate::tui::types::PaneId;
 
 /// Compute the fixed stats column width from the stat rows.
@@ -45,38 +47,10 @@ pub(super) fn stats_column_width(stats_rows: &[(&str, usize)]) -> (u16, u16) {
 
 /// Shared style constants for detail panel rendering.
 struct RenderStyles {
-    highlight:       Style,
     readonly_label:  Style,
     active_border:   Style,
     inactive_border: Style,
     title:           Style,
-}
-
-struct ColumnFocus {
-    active:     bool,
-    remembered: bool,
-    cursor:     usize,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SelectionState {
-    Focused,
-    Remembered,
-    Unselected,
-}
-
-impl ColumnFocus {
-    const fn selection_state(&self, row: usize) -> SelectionState {
-        if row != self.cursor {
-            SelectionState::Unselected
-        } else if self.active {
-            SelectionState::Focused
-        } else if self.remembered {
-            SelectionState::Remembered
-        } else {
-            SelectionState::Unselected
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -126,7 +100,8 @@ fn render_column_inner(
     frame: &mut Frame,
     info: &DetailInfo,
     fields: &[DetailField],
-    focus: &ColumnFocus,
+    pane: &Pane,
+    focus: PaneFocusState,
     styles: &RenderStyles,
     area: Rect,
 ) {
@@ -134,30 +109,20 @@ fn render_column_inner(
     let mut focused_output_line: usize = 0;
     let label_width = package_label_width(fields);
     for (i, field) in fields.iter().enumerate() {
-        if focus.active && i == focus.cursor {
+        if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
             focused_output_line = lines.len();
         }
         let label = field.label();
-        let selection = focus.selection_state(i);
+        let selection = pane.selection_state(i, focus);
         let value = field.value(info);
         let base_label_style = styles.readonly_label;
-        let ls = match selection {
-            SelectionState::Focused => styles.highlight,
-            SelectionState::Remembered | SelectionState::Unselected => base_label_style,
+        let base_value_style = if *field == DetailField::Ci {
+            render::conclusion_style(info.ci)
+        } else {
+            Style::default()
         };
-        let vs = match selection {
-            SelectionState::Focused => styles.highlight,
-            SelectionState::Remembered => Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-            SelectionState::Unselected => {
-                if *field == DetailField::Ci {
-                    render::conclusion_style(info.ci)
-                } else {
-                    Style::default()
-                }
-            },
-        };
+        let ls = selection.patch(base_label_style);
+        let vs = selection.patch(base_value_style);
 
         if matches!(*field, DetailField::Description | DetailField::RepoDesc) && !value.is_empty() {
             let prefix = format!("  {label:<label_width$} ");
@@ -219,7 +184,7 @@ fn render_column_inner(
         }
     }
 
-    let scroll_y = if focus.active {
+    let scroll_y = if matches!(focus, PaneFocusState::Active) {
         let offset = focused_output_line.saturating_sub(area.height as usize / 2);
         u16::try_from(offset).unwrap_or(u16::MAX)
     } else {
@@ -241,7 +206,8 @@ fn render_git_column_inner(
     frame: &mut Frame,
     info: &DetailInfo,
     fields: &[DetailField],
-    focus: &ColumnFocus,
+    pane: &Pane,
+    focus: PaneFocusState,
     styles: &RenderStyles,
     area: Rect,
 ) {
@@ -249,7 +215,7 @@ fn render_git_column_inner(
     let mut focused_output_line: usize = 0;
 
     for (i, field) in fields.iter().enumerate() {
-        if focus.active && i == focus.cursor {
+        if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
             focused_output_line = lines.len();
         }
         let dynamic_label;
@@ -267,34 +233,24 @@ fn render_git_column_inner(
             _ => field.label(),
         };
         let value = field.value(info);
-        let selection = focus.selection_state(i);
-        let ls = match selection {
-            SelectionState::Focused => styles.highlight,
-            SelectionState::Remembered | SelectionState::Unselected => styles.readonly_label,
+        let selection = pane.selection_state(i, focus);
+        let base_value_style = if *field == DetailField::Origin && value.starts_with('⑂') {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else if matches!(
+            *field,
+            DetailField::Sync | DetailField::VsOrigin | DetailField::VsLocal
+        ) && value == IN_SYNC
+        {
+            Style::default().fg(Color::Green)
+        } else if *field == DetailField::Sync && value == "not published" {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
         };
-        let vs = match selection {
-            SelectionState::Focused => styles.highlight,
-            SelectionState::Remembered => Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-            SelectionState::Unselected => {
-                if *field == DetailField::Origin && value.starts_with('⑂') {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                } else if matches!(
-                    *field,
-                    DetailField::Sync | DetailField::VsOrigin | DetailField::VsLocal
-                ) && value == IN_SYNC
-                {
-                    Style::default().fg(Color::Green)
-                } else if *field == DetailField::Sync && value == "not published" {
-                    Style::default().fg(Color::DarkGray)
-                } else {
-                    Style::default()
-                }
-            },
-        };
+        let ls = selection.patch(styles.readonly_label);
+        let vs = selection.patch(base_value_style);
         if matches!(
             *field,
             DetailField::Repo | DetailField::Branch | DetailField::RepoDesc
@@ -339,7 +295,7 @@ fn render_git_column_inner(
 
     append_worktree_lines(&mut lines, info);
 
-    let scroll_y = if focus.active {
+    let scroll_y = if matches!(focus, PaneFocusState::Active) {
         let offset = focused_output_line.saturating_sub(area.height as usize / 2);
         u16::try_from(offset).unwrap_or(u16::MAX)
     } else {
@@ -396,7 +352,6 @@ pub fn render_detail_panel(
         app.layout_cache.detail_targets_col = spec.targets_col;
 
         let styles = RenderStyles {
-            highlight:       Style::default().fg(Color::Black).bg(Color::Cyan),
             readonly_label:  Style::default().fg(Color::DarkGray),
             active_border:   Style::default().fg(Color::Cyan),
             inactive_border: Style::default(),
@@ -415,16 +370,12 @@ pub fn render_detail_panel(
                 frame.render_widget(empty_git, columns[col]);
             } else {
                 app.git_pane.set_len(git.len());
-                let focus = ColumnFocus {
-                    active:     app.is_focused(PaneId::Git),
-                    remembered: app.remembers_selection(PaneId::Git),
-                    cursor:     app.git_pane.pos(),
-                };
+                let focus = app.pane_focus_state(PaneId::Git);
                 let git_block = Block::default()
                     .borders(Borders::ALL)
                     .title(" Git ")
                     .title_style(styles.title)
-                    .border_style(if focus.active {
+                    .border_style(if matches!(focus, PaneFocusState::Active) {
                         styles.active_border
                     } else {
                         styles.inactive_border
@@ -432,7 +383,15 @@ pub fn render_detail_panel(
                 let git_inner = git_block.inner(columns[col]);
                 app.git_pane.set_content_area(git_inner);
                 frame.render_widget(git_block, columns[col]);
-                render_git_column_inner(frame, info, &git, &focus, &styles, git_inner);
+                render_git_column_inner(
+                    frame,
+                    info,
+                    &git,
+                    &app.git_pane,
+                    focus,
+                    &styles,
+                    git_inner,
+                );
             }
         }
 
@@ -468,16 +427,12 @@ fn render_project_panel(
 ) {
     let fields = model::package_fields(info);
     app.package_pane.set_len(fields.len());
-    let focus = ColumnFocus {
-        active:     app.is_focused(PaneId::Package),
-        remembered: app.remembers_selection(PaneId::Package),
-        cursor:     app.package_pane.pos(),
-    };
+    let focus = app.pane_focus_state(PaneId::Package);
     let project_block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {} ", info.package_title))
         .title_style(styles.title)
-        .border_style(if focus.active {
+        .border_style(if matches!(focus, PaneFocusState::Active) {
             styles.active_border
         } else {
             styles.inactive_border
@@ -487,7 +442,15 @@ fn render_project_panel(
     frame.render_widget(project_block, area);
 
     if info.stats_rows.is_empty() {
-        render_column_inner(frame, info, &fields, &focus, styles, project_inner);
+        render_column_inner(
+            frame,
+            info,
+            &fields,
+            &app.package_pane,
+            focus,
+            styles,
+            project_inner,
+        );
     } else {
         let (stats_width, digit_width) = stats_column_width(&info.stats_rows);
 
@@ -496,7 +459,15 @@ fn render_project_panel(
             .constraints([Constraint::Min(20), Constraint::Length(stats_width)])
             .split(project_inner);
 
-        render_column_inner(frame, info, &fields, &focus, styles, sub_cols[0]);
+        render_column_inner(
+            frame,
+            info,
+            &fields,
+            &app.package_pane,
+            focus,
+            styles,
+            sub_cols[0],
+        );
 
         let stats_block = Block::default().borders(Borders::LEFT);
         let stats_inner = stats_block.inner(sub_cols[1]);
@@ -527,13 +498,16 @@ fn render_targets_panel(
     let ex_count: usize = info.examples.iter().map(|group| group.names.len()).sum();
     let bench_count = info.benches.len();
 
-    let is_active = app.is_focused(PaneId::Targets);
+    let focus = app.pane_focus_state(PaneId::Targets);
     let cursor = app.targets_pane.pos();
 
     let targets_title = {
         let mut parts = Vec::new();
         let section_indicator = |section_start: usize, section_len: usize| -> String {
-            if is_active && cursor >= section_start && cursor < section_start + section_len {
+            if matches!(focus, PaneFocusState::Active)
+                && cursor >= section_start
+                && cursor < section_start + section_len
+            {
                 crate::tui::types::scroll_indicator(cursor - section_start, section_len)
             } else {
                 section_len.to_string()
@@ -561,7 +535,7 @@ fn render_targets_panel(
         .borders(Borders::ALL)
         .title(targets_title)
         .title_style(styles.title)
-        .border_style(if is_active {
+        .border_style(if matches!(focus, PaneFocusState::Active) {
             styles.active_border
         } else {
             styles.inactive_border
@@ -579,23 +553,14 @@ fn render_targets_panel(
 
     let rows: Vec<Row> = entries
         .iter()
-        .enumerate()
-        .map(|(i, entry)| {
-            let name_style =
-                if i == cursor && !is_active && app.remembers_selection(PaneId::Targets) {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
+        .map(|entry| {
             let display = crate::tui::render::truncate_with_ellipsis(
                 &entry.display_name,
                 name_max_width,
                 "\u{2026}",
             );
             Row::new(vec![
-                Cell::from(display).style(name_style),
+                Cell::from(display),
                 Cell::from(Line::from(entry.kind.label()).alignment(Alignment::Right))
                     .style(Style::default().fg(entry.kind.color())),
             ])
@@ -603,18 +568,17 @@ fn render_targets_panel(
         .collect();
 
     let widths = [Constraint::Fill(1), Constraint::Length(7)];
-    let highlight_style = if is_active {
-        Style::default().fg(Color::Black).bg(Color::Cyan)
-    } else {
-        Style::default()
-    };
+    let highlight_style = Pane::selection_style(focus);
 
     let table = Table::new(rows, widths)
         .block(targets_block)
         .column_spacing(1)
         .row_highlight_style(highlight_style);
 
-    let selected = if is_active { Some(cursor) } else { None };
+    let selected = match focus {
+        PaneFocusState::Inactive => None,
+        PaneFocusState::Active | PaneFocusState::Remembered => Some(cursor),
+    };
     let mut table_state = TableState::default().with_selected(selected);
     frame.render_stateful_widget(table, area, &mut table_state);
     app.targets_pane.set_scroll_offset(table_state.offset());

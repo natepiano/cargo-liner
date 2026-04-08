@@ -1,5 +1,7 @@
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
+use ratatui::style::Style;
 
 use super::app::ClickAction;
 
@@ -51,6 +53,20 @@ pub(super) struct Pane {
     len:           usize,
     content_area:  Rect,
     scroll_offset: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PaneFocusState {
+    Active,
+    Remembered,
+    Inactive,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PaneSelectionState {
+    Active,
+    Remembered,
+    Unselected,
 }
 
 impl Pane {
@@ -105,6 +121,38 @@ impl Pane {
         let row = self.scroll_offset + inner_y;
         if row < self.len { Some(row) } else { None }
     }
+
+    pub const fn selection_state(&self, row: usize, focus: PaneFocusState) -> PaneSelectionState {
+        if row != self.pos() {
+            PaneSelectionState::Unselected
+        } else {
+            match focus {
+                PaneFocusState::Active => PaneSelectionState::Active,
+                PaneFocusState::Remembered => PaneSelectionState::Remembered,
+                PaneFocusState::Inactive => PaneSelectionState::Unselected,
+            }
+        }
+    }
+
+    pub fn selection_style(focus: PaneFocusState) -> Style {
+        match focus {
+            PaneFocusState::Active => Style::default().bg(Color::Cyan),
+            PaneFocusState::Remembered => Style::default().bg(Color::DarkGray),
+            PaneFocusState::Inactive => Style::default(),
+        }
+    }
+}
+
+impl PaneSelectionState {
+    pub fn overlay_style(self) -> Style {
+        match self {
+            Self::Active => Pane::selection_style(PaneFocusState::Active),
+            Self::Remembered => Pane::selection_style(PaneFocusState::Remembered),
+            Self::Unselected => Style::default(),
+        }
+    }
+
+    pub fn patch(self, style: Style) -> Style { style.patch(self.overlay_style()) }
 }
 
 /// Format a 1-based scroll position as `"{pos+1} of {len}"`.
@@ -149,4 +197,41 @@ pub(super) struct LayoutCache {
     pub detail_targets_col:  Option<usize>,
     pub dismiss_hitboxes:    Vec<ClickAction>,
     pub toast_cards:         Vec<ToastCardHitbox>,
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::style::Color;
+    use ratatui::style::Style;
+
+    use super::PaneFocusState;
+    use super::PaneSelectionState;
+
+    #[test]
+    fn active_selection_style_only_adds_background_and_emphasis() {
+        let style = super::Pane::selection_style(PaneFocusState::Active);
+
+        assert_eq!(style.fg, None);
+        assert_eq!(style.bg, Some(Color::Cyan));
+        assert_eq!(style.add_modifier, Default::default());
+    }
+
+    #[test]
+    fn selection_patch_preserves_existing_foreground() {
+        let base = Style::default().fg(Color::Red);
+        let patched = PaneSelectionState::Active.patch(base);
+
+        assert_eq!(patched.fg, Some(Color::Red));
+        assert_eq!(patched.bg, Some(Color::Cyan));
+        assert_eq!(patched.add_modifier, Default::default());
+    }
+
+    #[test]
+    fn remembered_selection_patch_preserves_existing_foreground() {
+        let base = Style::default().fg(Color::Green);
+        let patched = PaneSelectionState::Remembered.patch(base);
+
+        assert_eq!(patched.fg, Some(Color::Green));
+        assert_eq!(patched.bg, Some(Color::DarkGray));
+    }
 }

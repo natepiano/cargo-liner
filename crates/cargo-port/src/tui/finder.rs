@@ -22,6 +22,7 @@ use super::app::App;
 use super::constants::FINDER_POPUP_HEIGHT;
 use super::constants::MAX_FINDER_RESULTS;
 use super::detail::RunTargetKind;
+use super::types::Pane;
 use super::types::PaneId;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
@@ -753,7 +754,7 @@ fn render_finder_results(
             .map(|h| Cell::from(Span::styled(*h, header_style))),
     );
 
-    let highlight_style = Style::default().fg(Color::Black).bg(Color::Cyan);
+    let highlight_style = Pane::selection_style(app.pane_focus_state(PaneId::Finder));
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)

@@ -6,6 +6,7 @@ use super::types::SearchMode;
 use super::types::SelectionSync;
 use super::types::SettingsMode;
 use crate::tui::shortcuts::InputContext;
+use crate::tui::types::PaneFocusState;
 use crate::tui::types::PaneId;
 
 impl App {
@@ -123,6 +124,16 @@ impl App {
     }
 
     pub fn is_focused(&self, pane: PaneId) -> bool { self.focused_pane == pane }
+
+    pub fn pane_focus_state(&self, pane: PaneId) -> PaneFocusState {
+        if self.is_focused(pane) {
+            PaneFocusState::Active
+        } else if self.remembers_selection(pane) {
+            PaneFocusState::Remembered
+        } else {
+            PaneFocusState::Inactive
+        }
+    }
 
     pub fn base_focus(&self) -> PaneId {
         if self.focused_pane.is_overlay() {

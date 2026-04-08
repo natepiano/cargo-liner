@@ -1344,13 +1344,20 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
     let mut app = make_app(&[project]);
 
     app.ensure_visible_rows_cached();
-    assert_eq!(app.visible_rows().len(), 1, "top-level project should render");
+    assert_eq!(
+        app.visible_rows().len(),
+        1,
+        "top-level project should render"
+    );
 
     std::fs::remove_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
     app.handle_disk_usage(Path::new(&project_path), 0);
 
     let abs_path = PathBuf::from(&project_path);
-    assert!(app.is_deleted(&abs_path), "top-level project should be deleted");
+    assert!(
+        app.is_deleted(&abs_path),
+        "top-level project should be deleted"
+    );
     assert_eq!(
         app.projects
             .at_path(&abs_path)
@@ -1423,13 +1430,20 @@ fn top_level_deleted_project_can_be_dismissed_and_stops_rendering() {
     let mut app = make_app(&[project]);
 
     app.ensure_visible_rows_cached();
-    assert_eq!(app.visible_rows().len(), 1, "top-level project should render");
+    assert_eq!(
+        app.visible_rows().len(),
+        1,
+        "top-level project should render"
+    );
 
     std::fs::remove_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
     app.handle_disk_usage(Path::new(&project_path), 0);
 
     let abs_path = PathBuf::from(&project_path);
-    assert!(app.is_deleted(&abs_path), "top-level project should be deleted");
+    assert!(
+        app.is_deleted(&abs_path),
+        "top-level project should be deleted"
+    );
     assert_eq!(
         app.projects
             .at_path(&abs_path)

@@ -34,6 +34,7 @@ use super::constants::DETAIL_PANEL_HEIGHT;
 use super::constants::SEARCH_BAR_HEIGHT;
 use super::shortcuts::Shortcut;
 use super::types::LayoutCache;
+use super::types::Pane;
 use super::types::PaneId;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
@@ -511,16 +512,8 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     } else {
         content_area
     };
-    let project_list = List::new(items).highlight_style(if app.is_focused(PaneId::ProjectList) {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    });
+    let project_list_focus = app.pane_focus_state(PaneId::ProjectList);
+    let project_list = List::new(items).highlight_style(Pane::selection_style(project_list_focus));
 
     frame.render_stateful_widget(project_list, list_area, &mut app.list_state);
     app.layout_cache.project_list = list_area;

@@ -17,6 +17,7 @@ use crate::lint::LintCommandStatus;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::tui::app::App;
+use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
 
 fn format_bytes(bytes: u64) -> String {
@@ -215,11 +216,7 @@ pub fn render_lints_panel(
     )
     .block(block)
     .column_spacing(1)
-    .row_highlight_style(if focused {
-        Style::default().fg(Color::Black).bg(Color::Cyan)
-    } else {
-        Style::default()
-    });
+    .row_highlight_style(Pane::selection_style(app.pane_focus_state(PaneId::Lints)));
 
     let mut table_state = TableState::default().with_selected(Some(app.lint_pane.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);

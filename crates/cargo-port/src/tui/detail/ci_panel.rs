@@ -22,6 +22,7 @@ use crate::tui::app::CiState;
 use crate::tui::constants::CI_EXTRA_ROWS;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
 use crate::tui::render::CiColumn;
+use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
 
 /// Build the header `Row` for the CI table from the given columns.
@@ -381,11 +382,7 @@ pub fn render_ci_panel(
         elapsed,
     ));
 
-    let highlight_style = if ci_focused {
-        Style::default().fg(Color::Black).bg(Color::Cyan)
-    } else {
-        Style::default()
-    };
+    let highlight_style = Pane::selection_style(app.pane_focus_state(PaneId::CiRuns));
 
     let table = Table::new(rows, widths)
         .header(header)
