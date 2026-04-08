@@ -1579,10 +1579,23 @@ impl App {
         }
 
         self.register_item_background_services(&item);
-        // Push directly into project_list_items; the subsequent tree rebuild
-        // will place it at the correct nesting level.
-        self.project_list_items.push(item);
-        true
+        // Insert into the hierarchy directly — under a parent workspace if
+        // one exists, otherwise as a top-level peer.
+        crate::project::insert_into_hierarchy(&mut self.project_list_items, item);
+
+        // Refresh derived state without a full tree rebuild.
+        self.flat_entries = scan::build_flat_entries(
+            &self.project_list_items,
+            self.include_non_rust().includes_non_rust(),
+        );
+        self.recompute_cargo_active_paths();
+        self.data_generation += 1;
+        self.dirty.finder.mark_dirty();
+        self.dirty.rows.mark_dirty();
+        self.dirty.disk_cache.mark_dirty();
+        self.dirty.fit_widths.mark_dirty();
+        // Return false — no tree rebuild needed.
+        false
     }
 
     pub(super) fn handle_project_refreshed(&mut self, mut item: ProjectListItem) -> bool {
@@ -1601,15 +1614,27 @@ impl App {
         // Re-replace with the runtime-data-enriched version.
         crate::project::replace_leaf_by_path(&mut self.project_list_items, &path, item);
 
-        // Trigger a tree rebuild so project_list_items picks up the change.
-        self.rebuild_tree();
+        // Refresh derived state — no tree rebuild needed since the hierarchy
+        // is unchanged, only leaf metadata was updated.
+        self.flat_entries = scan::build_flat_entries(
+            &self.project_list_items,
+            self.include_non_rust().includes_non_rust(),
+        );
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
         self.cached_detail = None;
+        self.data_generation += 1;
+        self.detail_generation += 1;
         self.dirty.finder.mark_dirty();
         self.dirty.rows.mark_dirty();
+        self.dirty.disk_cache.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
-        true
+        if self.is_searching() && !self.search_query.is_empty() {
+            let query = self.search_query.clone();
+            self.update_search(&query);
+        }
+        // No tree rebuild needed — hierarchy is unchanged.
+        false
     }
 
     pub(super) fn apply_service_signal(&mut self, signal: ServiceSignal) {

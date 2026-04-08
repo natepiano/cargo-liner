@@ -1872,6 +1872,64 @@ pub(crate) fn replace_leaf_by_path(
     None
 }
 
+/// Insert a discovered item into the hierarchy. If the item is a package
+/// whose path falls inside an existing workspace, it is added as an inline
+/// member of that workspace. Otherwise it is pushed as a top-level peer.
+///
+/// Returns `true` if the item was inserted into an existing workspace.
+pub(crate) fn insert_into_hierarchy(
+    items: &mut Vec<ProjectListItem>,
+    item: ProjectListItem,
+) -> bool {
+    let item_path = item.path().to_path_buf();
+    for existing in items.iter_mut() {
+        let inserted = match existing {
+            ProjectListItem::Workspace(ws) => try_insert_member(ws, &item_path, &item),
+            ProjectListItem::WorkspaceWorktrees(g) => {
+                try_insert_member(g.primary_mut(), &item_path, &item)
+                    || g.linked_mut()
+                        .iter_mut()
+                        .any(|ws| try_insert_member(ws, &item_path, &item))
+            },
+            _ => false,
+        };
+        if inserted {
+            return true;
+        }
+    }
+    // No parent workspace found — add as top-level peer.
+    items.push(item);
+    false
+}
+
+fn try_insert_member(
+    ws: &mut RustProject<Workspace>,
+    item_path: &Path,
+    item: &ProjectListItem,
+) -> bool {
+    if !item_path.starts_with(ws.path()) || item_path == ws.path() {
+        return false;
+    }
+    let ProjectListItem::Package(pkg) = item else {
+        return false;
+    };
+    // Add to the first inline group, or create one.
+    let inline = ws.groups_mut().iter_mut().find(|g| g.is_inline());
+    if let Some(group) = inline {
+        group.members_mut().push(pkg.clone());
+        group.members_mut().sort_by(|a, b| {
+            let na = a.name().unwrap_or_else(|| a.path().to_str().unwrap_or(""));
+            let nb = b.name().unwrap_or_else(|| b.path().to_str().unwrap_or(""));
+            na.cmp(nb)
+        });
+    } else {
+        ws.groups_mut().push(MemberGroup::Inline {
+            members: vec![pkg.clone()],
+        });
+    }
+    true
+}
+
 fn sum_worktree_disk<Kind: CargoKind>(
     primary: &RustProject<Kind>,
     linked: &[RustProject<Kind>],
@@ -1985,6 +2043,8 @@ impl MemberGroup {
     }
 
     pub(crate) const fn is_named(&self) -> bool { matches!(self, Self::Named { .. }) }
+
+    pub(crate) const fn is_inline(&self) -> bool { matches!(self, Self::Inline { .. }) }
 }
 
 fn count_rs_files_recursive(dir: &Path) -> usize {

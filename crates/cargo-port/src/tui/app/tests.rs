@@ -1162,8 +1162,7 @@ fn project_refresh_updates_selected_tree_project_targets() {
         None,
     ));
 
-    assert!(app.handle_project_refreshed(refreshed));
-    wait_for_tree_build(&mut app);
+    app.handle_project_refreshed(refreshed);
     app.sync_selected_project();
 
     app.ensure_detail_cached();
@@ -1523,12 +1522,9 @@ fn handle_project_discovered_deduplicates_by_path() {
     let pkg2 = ProjectListItem::Package(make_package_raw(Some("foo"), "/abs/foo", None));
     let pkg3 = ProjectListItem::Package(make_package_raw(Some("bar"), "/abs/bar", None));
 
-    assert!(app.handle_project_discovered(pkg1));
-    assert!(
-        !app.handle_project_discovered(pkg2),
-        "duplicate path should be rejected"
-    );
-    assert!(app.handle_project_discovered(pkg3));
+    app.handle_project_discovered(pkg1);
+    app.handle_project_discovered(pkg2); // duplicate — should be rejected
+    app.handle_project_discovered(pkg3);
     assert_eq!(app.project_list_items.len(), 2);
 }
 
