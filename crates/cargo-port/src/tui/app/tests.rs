@@ -7,6 +7,9 @@ use std::time::Instant;
 
 use chrono::DateTime;
 use crossterm::event::KeyCode;
+use ratatui::style::Color;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
 
 use super::snapshots;
 use super::types::*;
@@ -1328,6 +1331,132 @@ fn zero_byte_update_marks_deleted_child_member() {
 
     std::fs::remove_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
     app.handle_disk_usage(Path::new(&member_path), 0);
+}
+
+#[test]
+fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+
+    let project_path = project_dir.to_string_lossy().to_string();
+    let project = make_project(Some("demo"), &project_path);
+    let mut app = make_app(&[project]);
+
+    app.ensure_visible_rows_cached();
+    assert_eq!(app.visible_rows().len(), 1, "top-level project should render");
+
+    std::fs::remove_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+    app.handle_disk_usage(Path::new(&project_path), 0);
+
+    let abs_path = PathBuf::from(&project_path);
+    assert!(app.is_deleted(&abs_path), "top-level project should be deleted");
+    assert_eq!(
+        app.projects
+            .at_path(&abs_path)
+            .expect("top-level project should still exist in hierarchy")
+            .visibility,
+        Deleted
+    );
+
+    app.ensure_visible_rows_cached();
+    assert_eq!(
+        app.visible_rows().len(),
+        1,
+        "deleted top-level project should still render before dismiss"
+    );
+
+    app.list_state.select(Some(0));
+    assert!(
+        app.focused_dismiss_target().is_some(),
+        "deleted top-level project should expose dismiss affordance"
+    );
+
+    let item = &app.projects[0];
+    let row = crate::tui::columns::build_row_cells(crate::tui::columns::ProjectRow {
+        prefix:            crate::tui::render::PREFIX_ROOT_LEAF,
+        name:              &item.display_name(),
+        git_path_state:    app.git_path_state_for(item.path()),
+        lint_icon:         app.lint_icon_for_root(0),
+        disk:              "0.0",
+        disk_style:        Style::default(),
+        disk_suffix:       Some(" [x]"),
+        disk_suffix_style: Some(Style::default().fg(Color::DarkGray)),
+        lang_icon:         item.lang_icon(),
+        git_sync:          &app.git_sync(item.path()),
+        ci:                app.ci_for_item(item),
+        deleted:           true,
+    });
+    let widths = crate::tui::columns::ResolvedWidths::new(true);
+    let line = crate::tui::columns::row_to_line(&row, &widths);
+
+    let suffix = line
+        .spans
+        .iter()
+        .find(|span| span.content.as_ref() == " [x]")
+        .expect("deleted row should render dismiss suffix");
+    assert_eq!(suffix.style.fg, Some(Color::DarkGray));
+    assert!(
+        !suffix.style.add_modifier.contains(Modifier::CROSSED_OUT),
+        "dismiss suffix should not be crossed out"
+    );
+
+    let crossed_out_non_suffix = line
+        .spans
+        .iter()
+        .filter(|span| span.content.as_ref() != " [x]")
+        .all(|span| span.style.add_modifier.contains(Modifier::CROSSED_OUT));
+    assert!(
+        crossed_out_non_suffix,
+        "deleted row content should be crossed out"
+    );
+}
+
+#[test]
+fn top_level_deleted_project_can_be_dismissed_and_stops_rendering() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+
+    let project_path = project_dir.to_string_lossy().to_string();
+    let project = make_project(Some("demo"), &project_path);
+    let mut app = make_app(&[project]);
+
+    app.ensure_visible_rows_cached();
+    assert_eq!(app.visible_rows().len(), 1, "top-level project should render");
+
+    std::fs::remove_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+    app.handle_disk_usage(Path::new(&project_path), 0);
+
+    let abs_path = PathBuf::from(&project_path);
+    assert!(app.is_deleted(&abs_path), "top-level project should be deleted");
+    assert_eq!(
+        app.projects
+            .at_path(&abs_path)
+            .expect("top-level project should still exist in hierarchy")
+            .visibility,
+        Deleted
+    );
+
+    app.list_state.select(Some(0));
+    let target = app
+        .focused_dismiss_target()
+        .expect("deleted top-level project should be dismissable");
+    app.dismiss(target);
+
+    app.ensure_visible_rows_cached();
+    assert_eq!(
+        app.visible_rows().len(),
+        0,
+        "dismissed top-level deleted project should no longer render"
+    );
+    assert_eq!(
+        app.projects
+            .at_path(&abs_path)
+            .expect("top-level project should remain in hierarchy after dismiss")
+            .visibility,
+        Dismissed
+    );
 }
 
 #[test]
