@@ -121,27 +121,32 @@ pub fn expected_summary_from_findings(expected_findings: &[ExpectedFinding]) -> 
     summary
 }
 
+/// Returns a substring that must appear in the rendered summary.
+/// Checks the first summary row (mend errors/warnings).
 pub fn expected_summary_text(report: &Report) -> String {
-    let mut parts = vec![
-        format!("{} error(s)", report.summary.errors),
-        format!("{} warning(s)", report.summary.warnings),
-    ];
-
-    if report.summary.fixable_with_fix > 0 {
-        parts.push(format!(
-            "{} fixable with `--fix`",
-            report.summary.fixable_with_fix
-        ));
+    if report.summary.errors > 0 {
+        return format!(
+            "{} {}",
+            report.summary.errors,
+            if report.summary.errors == 1 {
+                "mend error"
+            } else {
+                "mend errors"
+            }
+        );
     }
-
-    if report.summary.fixable_with_fix_pub_use > 0 {
-        parts.push(format!(
-            "{} fixable with `--fix-pub-use`",
-            report.summary.fixable_with_fix_pub_use
-        ));
+    if report.summary.warnings > 0 {
+        return format!(
+            "{} {}",
+            report.summary.warnings,
+            if report.summary.warnings == 1 {
+                "mend warning"
+            } else {
+                "mend warnings"
+            }
+        );
     }
-
-    format!("summary: {}", parts.join(", "))
+    "no issues found".to_string()
 }
 
 pub fn run_mend_json(manifest_path: &std::path::Path) -> Report {

@@ -5,6 +5,7 @@ use anyhow::Context;
 use anyhow::Result;
 
 use super::config::DiagnosticCode;
+use super::constants::PUB_VISIBILITY_PREFIX;
 use super::diagnostics::Report;
 use super::imports::UseFix;
 
@@ -29,14 +30,14 @@ pub(crate) fn scan_from_report(report: &Report) -> Result<NarrowPubCrateScan> {
             .find('\n')
             .map_or(source.len(), |pos| line_start + pos);
         let line_text = &source[line_start..line_end];
-        let Some(relative_start) = line_text.find("pub ") else {
+        let Some(relative_start) = line_text.find(PUB_VISIBILITY_PREFIX) else {
             continue;
         };
         let start = line_start + relative_start;
         fixes.push(UseFix {
             path: absolute_path,
             start,
-            end: start + 4,
+            end: start + PUB_VISIBILITY_PREFIX.len(),
             replacement: "pub(crate) ".to_string(),
         });
     }

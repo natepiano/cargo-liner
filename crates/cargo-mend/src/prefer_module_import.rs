@@ -15,6 +15,7 @@ use syn::visit::Visit;
 use walkdir::WalkDir;
 
 use super::config::DiagnosticCode;
+use super::constants::PUB_VISIBILITY_PREFIX;
 use super::diagnostics::Finding;
 use super::diagnostics::Severity;
 use super::fix_support::FixSupport;
@@ -422,7 +423,7 @@ fn common_prefix_len(left: &[String], right: &[String]) -> usize {
 
 fn extract_visibility_prefix(node: &ItemUse) -> String {
     match &node.vis {
-        syn::Visibility::Public(_) => "pub ".to_string(),
+        syn::Visibility::Public(_) => PUB_VISIBILITY_PREFIX.to_string(),
         syn::Visibility::Restricted(vis) => {
             let path = &vis.path;
             format!("pub({}) ", quote::quote!(#path))

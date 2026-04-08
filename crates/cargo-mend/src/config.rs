@@ -10,8 +10,8 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde::Serialize;
 
-const APP_NAME: &str = "cargo-mend";
-const GLOBAL_CONFIG_FILE: &str = "config.toml";
+use super::constants::APP_NAME;
+use super::constants::GLOBAL_CONFIG_FILE;
 
 // --- Diagnostic codes ---
 

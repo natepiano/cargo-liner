@@ -19,13 +19,13 @@ pub(crate) struct FixSelection {
 impl FixSelection {
     pub(crate) fn from_cli(fix_cli: &FixCli) -> Self {
         let mut kinds = BTreeSet::new();
-        if fix_cli.fix {
+        if fix_cli.fix || fix_cli.fix_all {
             kinds.insert(FixKind::ShortenImport);
             kinds.insert(FixKind::PreferModuleImport);
             kinds.insert(FixKind::InlinePathQualifiedType);
             kinds.insert(FixKind::NarrowToPubCrate);
         }
-        if fix_cli.fix_pub_use {
+        if fix_cli.fix_pub_use || fix_cli.fix_all {
             kinds.insert(FixKind::FixPubUse);
         }
         Self { kinds }
@@ -98,9 +98,11 @@ mod tests {
     #[test]
     fn operation_mode_is_read_only_without_fix_flags() {
         let cli = FixCli {
-            fix:         false,
-            fix_pub_use: false,
-            dry_run:     false,
+            fix:          false,
+            fix_pub_use:  false,
+            fix_compiler: false,
+            fix_all:      false,
+            dry_run:      false,
         };
         let mode = OperationMode::from_cli(&cli);
         assert_eq!(mode.intent, OperationIntent::ReadOnly);
@@ -109,9 +111,11 @@ mod tests {
     #[test]
     fn operation_mode_dry_run_alone_implies_all_fix_kinds() {
         let cli = FixCli {
-            fix:         false,
-            fix_pub_use: false,
-            dry_run:     true,
+            fix:          false,
+            fix_pub_use:  false,
+            fix_compiler: false,
+            fix_all:      false,
+            dry_run:      true,
         };
         let mode = OperationMode::from_cli(&cli);
         assert_eq!(mode.intent, OperationIntent::DryRun);
@@ -125,9 +129,11 @@ mod tests {
     #[test]
     fn operation_mode_allows_previewing_multiple_fix_kinds() {
         let cli = FixCli {
-            fix:         true,
-            fix_pub_use: true,
-            dry_run:     true,
+            fix:          true,
+            fix_pub_use:  true,
+            fix_compiler: false,
+            fix_all:      false,
+            dry_run:      true,
         };
         let mode = OperationMode::from_cli(&cli);
         assert_eq!(mode.intent, OperationIntent::DryRun);
@@ -139,9 +145,11 @@ mod tests {
     #[test]
     fn operation_mode_allows_applying_multiple_fix_kinds() {
         let cli = FixCli {
-            fix:         true,
-            fix_pub_use: true,
-            dry_run:     false,
+            fix:          true,
+            fix_pub_use:  true,
+            fix_compiler: false,
+            fix_all:      false,
+            dry_run:      false,
         };
         let mode = OperationMode::from_cli(&cli);
         assert_eq!(mode.intent, OperationIntent::Apply);

@@ -14,6 +14,7 @@ use syn::parse_file;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
+use super::constants::PUB_VISIBILITY_PREFIX;
 use super::diagnostics::Report;
 use super::imports::UseFix;
 use super::imports::ValidatedFixSet;
@@ -273,7 +274,7 @@ fn build_child_pub_super_fix(candidate: &PubUseCandidate) -> Result<UseFix> {
     let line_span = line_span(&source, candidate.child_line)
         .context("failed to compute child visibility line span")?;
     let line_text = &source[line_span.0..line_span.1];
-    let Some(relative_start) = line_text.find("pub ") else {
+    let Some(relative_start) = line_text.find(PUB_VISIBILITY_PREFIX) else {
         anyhow::bail!(
             "child item line {} does not contain a plain `pub ` prefix",
             candidate.child_line
@@ -282,14 +283,14 @@ fn build_child_pub_super_fix(candidate: &PubUseCandidate) -> Result<UseFix> {
     Ok(UseFix {
         path:        candidate.child_file.clone(),
         start:       line_span.0 + relative_start,
-        end:         line_span.0 + relative_start + 4,
+        end:         line_span.0 + relative_start + PUB_VISIBILITY_PREFIX.len(),
         replacement: "pub(super) ".to_string(),
     })
 }
 
 fn line_contains_plain_pub(source: &str, line: usize) -> Result<bool> {
     let line_span = line_span(source, line).context("failed to compute child item line span")?;
-    Ok(source[line_span.0..line_span.1].contains("pub "))
+    Ok(source[line_span.0..line_span.1].contains(PUB_VISIBILITY_PREFIX))
 }
 
 fn rewrite_subtree_imports_for_plans(

@@ -26,6 +26,7 @@ mod selection;
 
 use std::io::IsTerminal;
 use std::process::ExitCode;
+use std::time::Instant;
 
 use anyhow::Result;
 use config::DiagnosticsConfig;
@@ -78,7 +79,27 @@ fn run() -> Result<ExitCode, MendFailure> {
     )
     .map_err(MendFailure::Unexpected)?;
     let operation_mode = OperationMode::from_cli(&cli.fix);
-    let outcome = MendRunner::new(&selection, &config).run(operation_mode)?;
+    let color = color_mode();
+    let start = Instant::now();
+    let outcome = MendRunner::new(&selection, &config, color).run(operation_mode)?;
+
+    let fix_compiler_duration = if cli.fix.fix_compiler || cli.fix.fix_all {
+        Some(compiler::run_cargo_fix(&selection, color).map_err(MendFailure::Unexpected)?)
+    } else {
+        None
+    };
+
+    let total_duration = start.elapsed();
+    let check_duration = outcome.check_duration + fix_compiler_duration.unwrap_or_default();
+    let driver_duration = outcome.driver_duration;
+    let mend_duration = total_duration
+        .saturating_sub(check_duration)
+        .saturating_sub(driver_duration);
+
+    let compiler_stats = render::CompilerStats {
+        warning_count: outcome.compiler_warning_count,
+        fixable_count: outcome.compiler_fixable_count,
+    };
 
     if cli.json {
         println!(
@@ -87,13 +108,23 @@ fn run() -> Result<ExitCode, MendFailure> {
                 .map_err(|err| MendFailure::Unexpected(err.into()))?
         );
     } else {
-        let color = if color_output_enabled() {
-            render::ColorMode::Enabled
-        } else {
-            render::ColorMode::Disabled
-        };
-        print!("{}", render::render_human_report(&outcome.report, color));
+        print!(
+            "{}",
+            render::render_human_report(&outcome.report, &compiler_stats, color)
+        );
     }
+
+    eprintln!(
+        "{}",
+        render::render_timing(
+            total_duration,
+            check_duration,
+            driver_duration,
+            mend_duration,
+            color
+        )
+    );
+
     if let Some(notice) = outcome.notice {
         eprintln!("{}", notice.render());
     }
@@ -109,17 +140,17 @@ fn run() -> Result<ExitCode, MendFailure> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn color_output_enabled() -> bool {
+fn color_mode() -> render::ColorMode {
     if let Ok(choice) = std::env::var("CLICOLOR_FORCE")
         && choice != "0"
     {
-        return true;
+        return render::ColorMode::Enabled;
     }
 
     if let Ok(choice) = std::env::var("CARGO_TERM_COLOR") {
         match choice.to_ascii_lowercase().as_str() {
-            "never" => return false,
-            "always" => return true,
+            "never" => return render::ColorMode::Disabled,
+            "always" => return render::ColorMode::Enabled,
             _ => {},
         }
     }
@@ -127,14 +158,18 @@ fn color_output_enabled() -> bool {
     if let Ok(choice) = std::env::var("CLICOLOR")
         && choice == "0"
     {
-        return false;
+        return render::ColorMode::Disabled;
     }
 
     if std::io::stdout().is_terminal() || std::io::stderr().is_terminal() {
-        return true;
+        return render::ColorMode::Enabled;
     }
 
-    std::env::var("TERM").is_ok_and(|term| term != "dumb")
+    if std::env::var("TERM").is_ok_and(|term| term != "dumb") {
+        render::ColorMode::Enabled
+    } else {
+        render::ColorMode::Disabled
+    }
 }
 
 #[cfg(test)]
@@ -145,7 +180,8 @@ fn color_output_enabled() -> bool {
 mod tests {
     use std::ffi::OsString;
 
-    use super::color_output_enabled;
+    use super::color_mode;
+    use super::render::ColorMode;
 
     struct EnvGuard {
         key:      &'static str,
@@ -179,20 +215,20 @@ mod tests {
     #[test]
     fn cargo_term_color_never_disables_color() {
         let _guard = EnvGuard::set("CARGO_TERM_COLOR", "never");
-        assert!(!color_output_enabled());
+        assert!(matches!(color_mode(), ColorMode::Disabled));
     }
 
     #[test]
     fn cargo_term_color_always_enables_color() {
         let _guard = EnvGuard::set("CARGO_TERM_COLOR", "always");
-        assert!(color_output_enabled());
+        assert!(matches!(color_mode(), ColorMode::Enabled));
     }
 
     #[test]
     fn clicolor_zero_disables_color() {
         let _guard = EnvGuard::set("CLICOLOR", "0");
         let _cargo_term_color = EnvGuard::remove("CARGO_TERM_COLOR");
-        assert!(!color_output_enabled());
+        assert!(matches!(color_mode(), ColorMode::Disabled));
     }
 
     #[test]
@@ -201,6 +237,6 @@ mod tests {
         let _clicolor = EnvGuard::remove("CLICOLOR");
         let _clicolor_force = EnvGuard::remove("CLICOLOR_FORCE");
         let _term = EnvGuard::set("TERM", "xterm-256color");
-        assert!(color_output_enabled());
+        assert!(matches!(color_mode(), ColorMode::Enabled));
     }
 }

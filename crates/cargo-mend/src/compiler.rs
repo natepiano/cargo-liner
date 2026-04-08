@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::ExitCode;
 use std::process::Stdio;
+use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -38,7 +40,15 @@ use syn::visit::Visit;
 use super::config::DiagnosticCode;
 use super::config::LoadedConfig;
 use super::config::VisibilityConfig;
+use super::constants::CONFIG_FINGERPRINT_ENV;
+use super::constants::CONFIG_JSON_ENV;
+use super::constants::CONFIG_ROOT_ENV;
+use super::constants::DRIVER_ENV;
 use super::constants::EXIT_CODE_ERROR;
+use super::constants::FINDINGS_DIR_ENV;
+use super::constants::FINDINGS_SCHEMA_VERSION;
+use super::constants::PACKAGE_ROOT_ENV;
+use super::diagnostics::CompilerDiagnosticPresence;
 use super::diagnostics::CompilerWarningFacts;
 use super::diagnostics::Finding;
 use super::diagnostics::PubUseFixFact;
@@ -52,17 +62,10 @@ use super::module_paths;
 use super::outcome::AnalysisFailure;
 use super::outcome::CompilerFailureCause;
 use super::outcome::MendFailure;
+use super::render::ColorMode;
 use super::selection::SelectedPackage;
 use super::selection::Selection;
 use super::selection::SelectionScope;
-
-const DRIVER_ENV: &str = "MEND_DRIVER";
-const CONFIG_ROOT_ENV: &str = "MEND_CONFIG_ROOT";
-const CONFIG_JSON_ENV: &str = "MEND_CONFIG_JSON";
-const CONFIG_FINGERPRINT_ENV: &str = "MEND_CONFIG_FINGERPRINT";
-const FINDINGS_DIR_ENV: &str = "MEND_FINDINGS_DIR";
-const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
-const FINDINGS_SCHEMA_VERSION: u32 = 13;
 fn current_analysis_fingerprint() -> String {
     let version = env!("CARGO_PKG_VERSION");
     let git_hash = option_env!("MEND_GIT_HASH").unwrap_or("nogit");
@@ -74,18 +77,27 @@ fn current_analysis_fingerprint() -> String {
 pub(crate) enum BuildOutputMode {
     Full,
     SuppressUnusedImportWarnings,
+    Quiet,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiagnosticBlockKind {
     SuppressedUnusedImport,
+    CompilerWarningSummary {
+        warning_count: usize,
+        fixable_count: usize,
+    },
     ForwardedDiagnostic,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct CommandOutcome {
-    status:            std::process::ExitStatus,
-    compiler_warnings: CompilerWarningFacts,
+    status:                       std::process::ExitStatus,
+    compiler_warnings:            CompilerWarningFacts,
+    compiler_diagnostic_presence: CompilerDiagnosticPresence,
+    duration:                     Duration,
+    compiler_warning_count:       usize,
+    compiler_fixable_count:       usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -215,11 +227,20 @@ impl Callbacks for AnalysisCallbacks {
     }
 }
 
+pub(crate) struct SelectionResult {
+    pub report:                 Report,
+    pub check_duration:         Duration,
+    pub driver_duration:        Duration,
+    pub compiler_warning_count: usize,
+    pub compiler_fixable_count: usize,
+}
+
 pub(crate) fn run_selection(
     selection: &Selection,
     loaded_config: &LoadedConfig,
     output_mode: BuildOutputMode,
-) -> Result<Report, MendFailure> {
+    color: ColorMode,
+) -> Result<SelectionResult, MendFailure> {
     let findings_dir = selection.target_directory.join("mend-findings");
     fs::create_dir_all(&findings_dir).with_context(|| {
         format!(
@@ -228,12 +249,14 @@ pub(crate) fn run_selection(
         )
     })?;
 
-    let mut command_outcome = run_cargo_check(selection, loaded_config, &findings_dir, output_mode)
-        .map_err(|err| {
-            MendFailure::Analysis(AnalysisFailure {
-                cause: CompilerFailureCause::DriverSetup(err),
-            })
-        })?;
+    let mut command_outcome =
+        run_cargo_check(selection, loaded_config, &findings_dir, output_mode, color).map_err(
+            |err| {
+                MendFailure::Analysis(AnalysisFailure {
+                    cause: CompilerFailureCause::DriverSetup(err),
+                })
+            },
+        )?;
 
     if !command_outcome.status.success() {
         return Err(MendFailure::Analysis(AnalysisFailure {
@@ -254,18 +277,32 @@ pub(crate) fn run_selection(
         })
         .collect::<Vec<_>>();
 
+    let mut driver_duration = Duration::ZERO;
     if !missing_packages.is_empty() {
         for package in missing_packages {
-            let status =
-                run_cargo_rustc_for_package(package, loaded_config, &findings_dir, output_mode)
-                    .map_err(|err| {
-                        MendFailure::Analysis(AnalysisFailure {
-                            cause: CompilerFailureCause::DriverSetup(err),
-                        })
-                    })?;
+            if color.is_enabled() {
+                eprint!("    \x1b[1;32mAnalyzing\x1b[0m {} ...\r", package.name);
+            } else {
+                eprint!("    Analyzing {} ...\r", package.name);
+            }
+            let status = run_cargo_rustc_for_package(
+                package,
+                loaded_config,
+                &findings_dir,
+                BuildOutputMode::Quiet,
+                color,
+            )
+            .map_err(|err| {
+                MendFailure::Analysis(AnalysisFailure {
+                    cause: CompilerFailureCause::DriverSetup(err),
+                })
+            })?;
             if status.compiler_warnings.saw_unused_import_warnings() {
                 command_outcome.compiler_warnings = CompilerWarningFacts::UnusedImportWarnings;
             }
+            driver_duration += status.duration;
+            command_outcome.compiler_warning_count += status.compiler_warning_count;
+            command_outcome.compiler_fixable_count += status.compiler_fixable_count;
             if !status.status.success() {
                 return Err(MendFailure::Analysis(AnalysisFailure {
                     cause: CompilerFailureCause::CargoRustcRefresh {
@@ -284,7 +321,14 @@ pub(crate) fn run_selection(
 
     let mut report = report;
     report.facts.compiler_warnings = command_outcome.compiler_warnings;
-    Ok(report)
+    report.compiler_diagnostic_presence = command_outcome.compiler_diagnostic_presence;
+    Ok(SelectionResult {
+        report,
+        check_duration: command_outcome.duration,
+        driver_duration,
+        compiler_warning_count: command_outcome.compiler_warning_count,
+        compiler_fixable_count: command_outcome.compiler_fixable_count,
+    })
 }
 
 pub(crate) fn driver_main() -> ExitCode {
@@ -360,6 +404,7 @@ fn run_cargo_check(
     loaded_config: &LoadedConfig,
     findings_dir: &Path,
     output_mode: BuildOutputMode,
+    color: ColorMode,
 ) -> Result<CommandOutcome> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
     let mut command = Command::new("cargo");
@@ -389,7 +434,8 @@ fn run_cargo_check(
         .env(FINDINGS_DIR_ENV, findings_dir)
         .stdin(Stdio::inherit());
 
-    run_cargo_command(&mut command, output_mode).context("failed to run cargo check for mend")
+    run_cargo_command(&mut command, output_mode, color)
+        .context("failed to run cargo check for mend")
 }
 
 fn run_cargo_rustc_for_package(
@@ -397,6 +443,7 @@ fn run_cargo_rustc_for_package(
     loaded_config: &LoadedConfig,
     findings_dir: &Path,
     output_mode: BuildOutputMode,
+    color: ColorMode,
 ) -> Result<CommandOutcome> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
     let mut command = Command::new("cargo");
@@ -425,7 +472,7 @@ fn run_cargo_rustc_for_package(
         .env(FINDINGS_DIR_ENV, findings_dir)
         .stdin(Stdio::inherit());
 
-    run_cargo_command(&mut command, output_mode).with_context(|| {
+    run_cargo_command(&mut command, output_mode, color).with_context(|| {
         format!(
             "failed to run cargo rustc refresh for package {}",
             package.name
@@ -433,16 +480,60 @@ fn run_cargo_rustc_for_package(
     })
 }
 
+pub(crate) fn run_cargo_fix(selection: &Selection, color: ColorMode) -> Result<Duration> {
+    let start = Instant::now();
+    let mut command = Command::new("cargo");
+    command
+        .arg("fix")
+        .arg("--allow-dirty")
+        .arg("--allow-staged");
+
+    match selection.scope {
+        SelectionScope::Workspace => {
+            command.arg("--workspace");
+        },
+        SelectionScope::SinglePackage => {
+            command
+                .arg("--manifest-path")
+                .arg(selection.manifest_path.as_os_str());
+        },
+    }
+
+    if color.is_enabled() {
+        command.env("CARGO_TERM_COLOR", "always");
+    }
+
+    let status = command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .context("failed to run cargo fix")?;
+
+    if !status.success() {
+        anyhow::bail!("cargo fix failed");
+    }
+
+    Ok(start.elapsed())
+}
+
 fn run_cargo_command(
     command: &mut Command,
     output_mode: BuildOutputMode,
+    color: ColorMode,
 ) -> Result<CommandOutcome> {
+    if color.is_enabled() {
+        command.env("CARGO_TERM_COLOR", "always");
+    }
     command.stdin(Stdio::inherit());
     command.stderr(Stdio::piped());
     match output_mode {
         BuildOutputMode::Full => command.stdout(Stdio::inherit()),
-        BuildOutputMode::SuppressUnusedImportWarnings => command.stdout(Stdio::null()),
+        BuildOutputMode::SuppressUnusedImportWarnings | BuildOutputMode::Quiet => {
+            command.stdout(Stdio::null())
+        },
     };
+    let start = Instant::now();
     let mut child = command.spawn().context("failed to spawn cargo command")?;
     let stderr = child
         .stderr
@@ -450,15 +541,23 @@ fn run_cargo_command(
         .context("failed to capture cargo stderr")?;
     let stderr_outcome = stream_cargo_stderr(stderr, output_mode)?;
     let status = child.wait().context("failed to wait for cargo command")?;
+    let duration = start.elapsed();
     Ok(CommandOutcome {
         status,
         compiler_warnings: stderr_outcome.compiler_warnings,
+        compiler_diagnostic_presence: stderr_outcome.compiler_diagnostic_presence,
+        duration,
+        compiler_warning_count: stderr_outcome.compiler_warning_count,
+        compiler_fixable_count: stderr_outcome.compiler_fixable_count,
     })
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 struct StderrObservation {
-    compiler_warnings: CompilerWarningFacts,
+    compiler_warnings:            CompilerWarningFacts,
+    compiler_diagnostic_presence: CompilerDiagnosticPresence,
+    compiler_warning_count:       usize,
+    compiler_fixable_count:       usize,
 }
 
 fn stream_cargo_stderr(
@@ -470,6 +569,9 @@ fn stream_cargo_stderr(
     let mut block = Vec::new();
     let mut printed_suppression_notice = false;
     let mut compiler_warnings = CompilerWarningFacts::None;
+    let mut compiler_diagnostic_presence = CompilerDiagnosticPresence::None;
+    let mut compiler_warning_count: usize = 0;
+    let mut compiler_fixable_count: usize = 0;
 
     loop {
         line.clear();
@@ -479,6 +581,9 @@ fn stream_cargo_stderr(
                 &mut block,
                 &mut printed_suppression_notice,
                 &mut compiler_warnings,
+                &mut compiler_diagnostic_presence,
+                &mut compiler_warning_count,
+                &mut compiler_fixable_count,
                 output_mode,
             );
             break;
@@ -490,9 +595,15 @@ fn stream_cargo_stderr(
                 &mut block,
                 &mut printed_suppression_notice,
                 &mut compiler_warnings,
+                &mut compiler_diagnostic_presence,
+                &mut compiler_warning_count,
+                &mut compiler_fixable_count,
                 output_mode,
             );
-            eprint!("{current}");
+            // Suppress "Finished" lines and all progress in Quiet mode
+            if !is_finished_line(&current) && !matches!(output_mode, BuildOutputMode::Quiet) {
+                eprint!("{current}");
+            }
             continue;
         }
 
@@ -502,6 +613,9 @@ fn stream_cargo_stderr(
                 &mut block,
                 &mut printed_suppression_notice,
                 &mut compiler_warnings,
+                &mut compiler_diagnostic_presence,
+                &mut compiler_warning_count,
+                &mut compiler_fixable_count,
                 output_mode,
             );
         } else {
@@ -509,7 +623,12 @@ fn stream_cargo_stderr(
         }
     }
 
-    Ok(StderrObservation { compiler_warnings })
+    Ok(StderrObservation {
+        compiler_warnings,
+        compiler_diagnostic_presence,
+        compiler_warning_count,
+        compiler_fixable_count,
+    })
 }
 
 fn is_progress_line(line: &str) -> bool {
@@ -523,6 +642,11 @@ fn is_progress_line(line: &str) -> bool {
         || trimmed.starts_with("Compiling ")
         || trimmed.starts_with("Finished ")
         || trimmed.starts_with("Fresh ")
+}
+
+fn is_finished_line(line: &str) -> bool {
+    let sanitized = sanitize_for_match(line);
+    sanitized.trim_start().starts_with("Finished ")
 }
 
 fn sanitize_for_match(line: &str) -> String {
@@ -548,23 +672,50 @@ fn sanitize_for_match(line: &str) -> String {
     sanitized
 }
 
-fn classify_diagnostic_block(
-    block: &[String],
-    printed_suppression_notice: bool,
-) -> DiagnosticBlockKind {
+/// Parse cargo's "generated N warnings" summary line.
+/// Returns `(warning_count, fixable_count)` if the line matches.
+fn parse_compiler_warning_summary(line: &str) -> Option<(usize, usize)> {
+    let sanitized = sanitize_for_match(line);
+    let trimmed = sanitized.trim_start();
+
+    // Match: warning: `pkg` (target) generated N warning(s)
+    if !trimmed.starts_with("warning: `") || !trimmed.contains(" generated ") {
+        return None;
+    }
+
+    let after_generated = trimmed.split(" generated ").nth(1)?;
+    let warning_count: usize = after_generated.split_whitespace().next()?.parse().ok()?;
+
+    let fixable_count = if let Some(after_apply) = trimmed.split("to apply ").nth(1) {
+        after_apply
+            .split_whitespace()
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    Some((warning_count, fixable_count))
+}
+
+fn classify_diagnostic_block(block: &[String]) -> DiagnosticBlockKind {
     let first_non_empty = block.iter().find(|line| !line.trim().is_empty());
     first_non_empty.map_or(DiagnosticBlockKind::ForwardedDiagnostic, |line| {
         let sanitized = sanitize_for_match(line);
         let trimmed = sanitized.trim_start();
+
+        // Check for "generated N warnings" summary line first — always suppress
+        if let Some((warning_count, fixable_count)) = parse_compiler_warning_summary(trimmed) {
+            return DiagnosticBlockKind::CompilerWarningSummary {
+                warning_count,
+                fixable_count,
+            };
+        }
+
         let contains_unused_import_warning = trimmed.contains("warning: unused import:")
             || trimmed.contains("warning: unused imports:");
-        let contains_generated_warning_summary = printed_suppression_notice
-            && trimmed.contains("warning: `")
-            && ((trimmed.contains(" generated 1 warning ")
-                || trimmed.contains(" generated ") && trimmed.contains(" warnings "))
-                || trimmed.contains("to apply 1 suggestion")
-                || trimmed.contains("to apply ") && trimmed.contains(" suggestions"));
-        if contains_unused_import_warning || contains_generated_warning_summary {
+        if contains_unused_import_warning {
             DiagnosticBlockKind::SuppressedUnusedImport
         } else {
             DiagnosticBlockKind::ForwardedDiagnostic
@@ -576,15 +727,19 @@ fn flush_diagnostic_block(
     block: &mut Vec<String>,
     printed_suppression_notice: &mut bool,
     compiler_warnings: &mut CompilerWarningFacts,
+    compiler_diagnostic_presence: &mut CompilerDiagnosticPresence,
+    compiler_warning_count: &mut usize,
+    compiler_fixable_count: &mut usize,
     output_mode: BuildOutputMode,
 ) {
     if block.is_empty() {
         return;
     }
 
-    match classify_diagnostic_block(block, *printed_suppression_notice) {
+    match classify_diagnostic_block(block) {
         DiagnosticBlockKind::SuppressedUnusedImport => {
             *compiler_warnings = CompilerWarningFacts::UnusedImportWarnings;
+            *compiler_diagnostic_presence = CompilerDiagnosticPresence::Seen;
             match output_mode {
                 BuildOutputMode::SuppressUnusedImportWarnings if !*printed_suppression_notice => {
                     eprintln!(
@@ -598,12 +753,24 @@ fn flush_diagnostic_block(
                         eprint!("{line}");
                     }
                 },
-                BuildOutputMode::SuppressUnusedImportWarnings => {},
+                BuildOutputMode::SuppressUnusedImportWarnings | BuildOutputMode::Quiet => {},
             }
         },
+        DiagnosticBlockKind::CompilerWarningSummary {
+            warning_count,
+            fixable_count,
+        } => {
+            *compiler_warning_count += warning_count;
+            *compiler_fixable_count += fixable_count;
+            *compiler_diagnostic_presence = CompilerDiagnosticPresence::Seen;
+            // Suppressed — will be rendered in the unified summary
+        },
         DiagnosticBlockKind::ForwardedDiagnostic => {
-            for line in block.iter() {
-                eprint!("{line}");
+            *compiler_diagnostic_presence = CompilerDiagnosticPresence::Seen;
+            if !matches!(output_mode, BuildOutputMode::Quiet) {
+                for line in block.iter() {
+                    eprint!("{line}");
+                }
             }
         },
     }
@@ -776,6 +943,7 @@ fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
             pub_use:           PubUseFixFacts::from_vec(pub_use_fix_facts),
             compiler_warnings: CompilerWarningFacts::None,
         },
+        compiler_diagnostic_presence: CompilerDiagnosticPresence::None,
     })
 }
 
@@ -1669,39 +1837,22 @@ fn build_line_finding(
     })
 }
 
-const fn module_location(
-    parent_is_crate_root: bool,
-    grandparent_is_crate_root: bool,
-    great_grandparent_is_crate_root: bool,
-) -> ModuleLocation {
-    if parent_is_crate_root {
-        ModuleLocation::CrateRoot
-    } else if grandparent_is_crate_root || great_grandparent_is_crate_root {
-        ModuleLocation::TopLevelPrivateModule
-    } else {
-        ModuleLocation::NestedModule
-    }
-}
-
 fn resolve_module_location(tcx: TyCtxt<'_>, parent_def: LocalDefId) -> ModuleLocation {
-    let parent_is_crate_root = parent_def == CRATE_DEF_ID;
-    let grandparent_def = if parent_is_crate_root {
-        None
-    } else {
-        Some(tcx.parent_module_from_def_id(parent_def).to_local_def_id())
-    };
-    let grandparent_is_crate_root = grandparent_def == Some(CRATE_DEF_ID);
-    let great_grandparent_is_crate_root = match grandparent_def {
-        Some(gp) if gp != CRATE_DEF_ID => {
-            tcx.parent_module_from_def_id(gp).to_local_def_id() == CRATE_DEF_ID
-        },
-        _ => false,
-    };
-    module_location(
-        parent_is_crate_root,
-        grandparent_is_crate_root,
-        great_grandparent_is_crate_root,
-    )
+    if parent_def == CRATE_DEF_ID {
+        return ModuleLocation::CrateRoot;
+    }
+
+    let grandparent = tcx.parent_module_from_def_id(parent_def).to_local_def_id();
+    if grandparent == CRATE_DEF_ID {
+        return ModuleLocation::TopLevelPrivateModule;
+    }
+
+    let great_grandparent = tcx.parent_module_from_def_id(grandparent).to_local_def_id();
+    if great_grandparent == CRATE_DEF_ID {
+        return ModuleLocation::TopLevelPrivateModule;
+    }
+
+    ModuleLocation::NestedModule
 }
 
 /// Check whether `root_module` (lib.rs / main.rs) re-exports `item_name`
@@ -3265,14 +3416,9 @@ fn is_boundary_file(src_root: &Path, root_module: &Path, file: &Path) -> bool {
 
 #[cfg(test)]
 #[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
-#[allow(
     clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
 )]
-#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use std::fs;
     use std::path::Path;
@@ -3284,7 +3430,6 @@ mod tests {
     use super::DiagnosticBlockKind;
     use super::DiagnosticCode;
     use super::DriverSettings;
-    use super::FINDINGS_SCHEMA_VERSION;
     use super::ModuleLocation;
     use super::ParentFacadeExports;
     use super::ParentFacadeVisibility;
@@ -3302,12 +3447,12 @@ mod tests {
     use super::exported_names_from_parent_boundary;
     use super::forbidden_pub_crate_help;
     use super::is_progress_line;
-    use super::module_location;
     use super::module_path_from_source_file;
     use super::refresh_rustc_args;
     use super::suspicious_pub_note;
     use crate::config::LoadedConfig;
     use crate::config::VisibilityConfig;
+    use crate::constants::FINDINGS_SCHEMA_VERSION;
     use crate::diagnostics::CompilerWarningFacts;
     use crate::fix_support::FixSupport;
 
@@ -3363,30 +3508,6 @@ mod tests {
             ModuleLocation::NestedModule,
             false
         ));
-    }
-
-    #[test]
-    fn module_location_handles_crate_root() {
-        assert_eq!(
-            module_location(true, false, false),
-            ModuleLocation::CrateRoot
-        );
-    }
-
-    #[test]
-    fn module_location_handles_top_level_private_module() {
-        assert_eq!(
-            module_location(false, true, false),
-            ModuleLocation::TopLevelPrivateModule
-        );
-    }
-
-    #[test]
-    fn module_location_handles_child_of_top_level_module() {
-        assert_eq!(
-            module_location(false, false, true),
-            ModuleLocation::TopLevelPrivateModule
-        );
     }
 
     #[test]
@@ -3861,7 +3982,7 @@ mod tests {
         ];
 
         assert!(matches!(
-            classify_diagnostic_block(&block, false),
+            classify_diagnostic_block(&block),
             DiagnosticBlockKind::SuppressedUnusedImport
         ));
     }

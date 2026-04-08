@@ -1,5 +1,6 @@
 use std::fmt;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::Error;
 
@@ -9,8 +10,12 @@ use super::run_mode::OperationIntent;
 
 #[derive(Debug)]
 pub(crate) struct ExecutionOutcome {
-    pub report: Report,
-    pub notice: Option<ExecutionNotice>,
+    pub report:                 Report,
+    pub notice:                 Option<ExecutionNotice>,
+    pub check_duration:         Duration,
+    pub driver_duration:        Duration,
+    pub compiler_warning_count: usize,
+    pub compiler_fixable_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

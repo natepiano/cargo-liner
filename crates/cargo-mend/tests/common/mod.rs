@@ -40,6 +40,10 @@ pub(crate) mod cargo_mend_tests_support {
         reason = "include!() pulls in entire source files; only a subset is re-exported"
     )]
 
+    mod constants {
+        include!("../../src/constants.rs");
+    }
+
     mod config {
         include!("../../src/config.rs");
     }

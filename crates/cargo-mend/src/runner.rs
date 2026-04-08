@@ -1,7 +1,10 @@
+use std::time::Duration;
+
 use anyhow::Result;
 
 use super::compiler;
 use super::compiler::BuildOutputMode;
+use super::compiler::SelectionResult;
 use super::config::DiagnosticCode;
 use super::config::LoadedConfig;
 use super::diagnostics::Report;
@@ -25,6 +28,7 @@ use super::prefer_module_import;
 use super::prefer_module_import::PreferModuleImportScan;
 use super::pub_use_fixes;
 use super::pub_use_fixes::PubUseFixScan;
+use super::render;
 use super::run_mode::FixKind;
 use super::run_mode::OperationIntent;
 use super::run_mode::OperationMode;
@@ -33,6 +37,7 @@ use super::selection::Selection;
 pub(crate) struct MendRunner<'a> {
     selection: &'a Selection,
     config:    &'a LoadedConfig,
+    color:     render::ColorMode,
 }
 
 struct RunPlan {
@@ -43,11 +48,23 @@ struct RunPlan {
     inline_path_scan:          Option<InlinePathScan>,
     narrow_pub_crate_scan:     Option<NarrowPubCrateScan>,
     pub_use_scan:              Option<PubUseFixScan>,
+    check_duration:            Duration,
+    driver_duration:           Duration,
+    compiler_warning_count:    usize,
+    compiler_fixable_count:    usize,
 }
 
 impl<'a> MendRunner<'a> {
-    pub(crate) const fn new(selection: &'a Selection, config: &'a LoadedConfig) -> Self {
-        Self { selection, config }
+    pub(crate) const fn new(
+        selection: &'a Selection,
+        config: &'a LoadedConfig,
+        color: render::ColorMode,
+    ) -> Self {
+        Self {
+            selection,
+            config,
+            color,
+        }
     }
 
     pub(crate) fn run(&self, mode: OperationMode) -> Result<ExecutionOutcome, MendFailure> {
@@ -61,7 +78,12 @@ impl<'a> MendRunner<'a> {
         } else {
             BuildOutputMode::Full
         };
-        let report = self.build_report(output_mode)?;
+        let selection_result = self.build_selection(output_mode)?;
+        let report = selection_result.report;
+        let check_duration = selection_result.check_duration;
+        let driver_duration = selection_result.driver_duration;
+        let compiler_warning_count = selection_result.compiler_warning_count;
+        let compiler_fixable_count = selection_result.compiler_fixable_count;
         let diagnostics = &self.config.diagnostics;
         let import_scan = (mode.fixes.contains(FixKind::ShortenImport)
             && (diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
@@ -99,14 +121,26 @@ impl<'a> MendRunner<'a> {
             inline_path_scan,
             narrow_pub_crate_scan,
             pub_use_scan,
+            check_duration,
+            driver_duration,
+            compiler_warning_count,
+            compiler_fixable_count,
         })
     }
 
     fn execute(&self, planned: RunPlan) -> Result<ExecutionOutcome, MendFailure> {
+        let check_duration = planned.check_duration;
+        let driver_duration = planned.driver_duration;
+        let compiler_warning_count = planned.compiler_warning_count;
+        let compiler_fixable_count = planned.compiler_fixable_count;
         match planned.mode.intent {
             OperationIntent::ReadOnly => Ok(ExecutionOutcome {
                 report: planned.report,
                 notice: None,
+                check_duration,
+                driver_duration,
+                compiler_warning_count,
+                compiler_fixable_count,
             }),
             OperationIntent::DryRun => {
                 let notice = Self::build_fix_notice(
@@ -121,6 +155,10 @@ impl<'a> MendRunner<'a> {
                 Ok(ExecutionOutcome {
                     report: planned.report,
                     notice,
+                    check_duration,
+                    driver_duration,
+                    compiler_warning_count,
+                    compiler_fixable_count,
                 })
             },
             OperationIntent::Apply => self.apply(planned),
@@ -128,6 +166,10 @@ impl<'a> MendRunner<'a> {
     }
 
     fn apply(&self, planned: RunPlan) -> Result<ExecutionOutcome, MendFailure> {
+        let plan_check_duration = planned.check_duration;
+        let plan_driver_duration = planned.driver_duration;
+        let compiler_warning_count = planned.compiler_warning_count;
+        let compiler_fixable_count = planned.compiler_fixable_count;
         let fixes = Self::combined_fixes(
             planned.import_scan.as_ref(),
             planned.prefer_module_import_scan.as_ref(),
@@ -148,23 +190,36 @@ impl<'a> MendRunner<'a> {
             return Ok(ExecutionOutcome {
                 report: planned.report,
                 notice,
+                check_duration: plan_check_duration,
+                driver_duration: plan_driver_duration,
+                compiler_warning_count,
+                compiler_fixable_count,
             });
         }
 
         let snapshots = imports::snapshot_files(&fixes).map_err(MendFailure::Unexpected)?;
         imports::apply_fixes(&fixes).map_err(MendFailure::Unexpected)?;
-        match self.build_report(BuildOutputMode::Full) {
-            Ok(report) => {
+        match self.build_selection(BuildOutputMode::Quiet) {
+            Ok(validation) => {
+                let check_duration = plan_check_duration + validation.check_duration;
+                let driver_duration = plan_driver_duration + validation.driver_duration;
                 let notice = Self::build_fix_notice(
                     planned.mode.intent,
-                    Some(&report),
+                    Some(&validation.report),
                     planned.import_scan.as_ref(),
                     planned.prefer_module_import_scan.as_ref(),
                     planned.inline_path_scan.as_ref(),
                     planned.narrow_pub_crate_scan.as_ref(),
                     planned.pub_use_scan.as_ref(),
                 );
-                Ok(ExecutionOutcome { report, notice })
+                Ok(ExecutionOutcome {
+                    report: validation.report,
+                    notice,
+                    check_duration,
+                    driver_duration,
+                    compiler_warning_count,
+                    compiler_fixable_count,
+                })
             },
             Err(err) => {
                 let rollback = match imports::restore_files(&snapshots) {
@@ -274,8 +329,13 @@ impl<'a> MendRunner<'a> {
         }
     }
 
-    fn build_report(&self, output_mode: BuildOutputMode) -> Result<Report, MendFailure> {
-        let mut report = compiler::run_selection(self.selection, self.config, output_mode)?;
+    fn build_selection(
+        &self,
+        output_mode: BuildOutputMode,
+    ) -> Result<SelectionResult, MendFailure> {
+        let mut result =
+            compiler::run_selection(self.selection, self.config, output_mode, self.color)?;
+        let report = &mut result.report;
         let diagnostics = &self.config.diagnostics;
         if diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
             || diagnostics.is_enabled(DiagnosticCode::ReplaceDeepSuperImport)
@@ -331,6 +391,6 @@ impl<'a> MendRunner<'a> {
             .findings
             .retain(|f| self.config.diagnostics.is_enabled(f.code));
         report.refresh_summary();
-        Ok(report)
+        Ok(result)
     }
 }
