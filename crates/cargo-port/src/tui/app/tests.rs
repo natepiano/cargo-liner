@@ -112,7 +112,7 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
         .map(|y| {
             let mut row = String::new();
             for x in 0..area.width {
-                row.push_str(buffer.get(x, y).symbol());
+                row.push_str(buffer[(x, y)].symbol());
             }
             row.trim_end().to_string()
         })
@@ -854,7 +854,16 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
         "dismissing the deleted worktree should collapse the group to the root row"
     );
     assert_eq!(
-        App::live_worktree_count_for_item(&app.projects[0]),
+        match &app.projects[0] {
+            RootItem::PackageWorktrees(group) => {
+                assert_eq!(group.live_entry_count(), 1);
+                usize::from(group.renders_as_group())
+            },
+            RootItem::Workspace(_)
+            | RootItem::Package(_)
+            | RootItem::NonRust(_)
+            | RootItem::WorkspaceWorktrees(_) => 0,
+        },
         0,
         "the remaining primary should no longer render as a worktree group"
     );
@@ -931,7 +940,16 @@ fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() 
         "dismissing the deleted workspace worktree should collapse to the root row"
     );
     assert_eq!(
-        App::live_worktree_count_for_item(&app.projects[0]),
+        match &app.projects[0] {
+            RootItem::WorkspaceWorktrees(group) => {
+                assert_eq!(group.live_entry_count(), 1);
+                usize::from(group.renders_as_group())
+            },
+            RootItem::Workspace(_)
+            | RootItem::Package(_)
+            | RootItem::NonRust(_)
+            | RootItem::PackageWorktrees(_) => 0,
+        },
         0,
         "the remaining primary should no longer render as a worktree group"
     );

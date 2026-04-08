@@ -64,7 +64,7 @@ pub(super) fn build_visible_rows(
             },
             RootItem::NonRust(_) => {},
             RootItem::WorkspaceWorktrees(wtg) => {
-                if wtg.live_entry_count() > 1 {
+                if wtg.renders_as_group() {
                     emit_workspace_worktree_group(&mut rows, ni, wtg, expanded);
                 } else if let Some(workspace) = wtg.single_live() {
                     emit_groups(&mut rows, ni, workspace.groups(), expanded);
@@ -72,7 +72,7 @@ pub(super) fn build_visible_rows(
                 }
             },
             RootItem::PackageWorktrees(wtg) => {
-                if wtg.live_entry_count() > 1 {
+                if wtg.renders_as_group() {
                     emit_package_worktree_group(&mut rows, ni, wtg, expanded);
                 } else if let Some(package) = wtg.single_live() {
                     emit_vendored_rows(&mut rows, ni, package.vendored());

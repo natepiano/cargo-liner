@@ -1452,6 +1452,8 @@ impl<Kind: CargoKind> WorktreeGroup<Kind> {
             .count()
     }
 
+    pub(crate) fn renders_as_group(&self) -> bool { self.live_entry_count() > 1 }
+
     pub(crate) fn single_live(&self) -> Option<&RustProject<Kind>> {
         if self.live_entry_count() != 1 {
             return None;
@@ -1570,7 +1572,7 @@ impl RootItem {
             Self::Package(pkg) => !pkg.vendored().is_empty(),
             Self::NonRust(_) => false,
             Self::WorkspaceWorktrees(g) => {
-                if g.live_entry_count() > 1 {
+                if g.renders_as_group() {
                     true
                 } else {
                     g.single_live().is_some_and(|workspace| {
@@ -1579,7 +1581,7 @@ impl RootItem {
                 }
             },
             Self::PackageWorktrees(g) => {
-                if g.live_entry_count() > 1 {
+                if g.renders_as_group() {
                     true
                 } else {
                     g.single_live()

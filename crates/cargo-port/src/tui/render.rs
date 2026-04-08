@@ -766,7 +766,15 @@ fn render_root_item(
 ) -> ListItem<'static> {
     let item = &app.projects[node_index];
     let mut name = item.display_name();
-    let live_wt = App::live_worktree_count_for_item(item);
+    let live_wt = match item {
+        RootItem::WorkspaceWorktrees(group) if group.renders_as_group() => group.live_entry_count(),
+        RootItem::PackageWorktrees(group) if group.renders_as_group() => group.live_entry_count(),
+        RootItem::Workspace(_)
+        | RootItem::Package(_)
+        | RootItem::NonRust(_)
+        | RootItem::WorkspaceWorktrees(_)
+        | RootItem::PackageWorktrees(_) => 0,
+    };
     if live_wt > 0 {
         name = format!("{name} {WORKTREE}:{live_wt}");
     }

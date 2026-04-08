@@ -19,7 +19,6 @@ use crate::project::GitPathState;
 use crate::project::Package;
 use crate::project::RootItem;
 use crate::project::RustProject;
-use crate::project::Visibility;
 use crate::tui::detail::DetailField;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastTaskId;
@@ -240,35 +239,6 @@ impl App {
     }
 
     // ── RootItem query methods ─────────────────────────────────────
-
-    /// Count live (visible) worktree entries for a `RootItem`.
-    pub fn live_worktree_count_for_item(item: &RootItem) -> usize {
-        match item {
-            RootItem::WorkspaceWorktrees(wtg) => {
-                let live = std::iter::once(wtg.primary().visibility())
-                    .chain(
-                        wtg.linked()
-                            .iter()
-                            .map(crate::project::RustProject::visibility),
-                    )
-                    .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
-                    .count();
-                if live <= 1 { 0 } else { live }
-            },
-            RootItem::PackageWorktrees(wtg) => {
-                let live = std::iter::once(wtg.primary().visibility())
-                    .chain(
-                        wtg.linked()
-                            .iter()
-                            .map(crate::project::RustProject::visibility),
-                    )
-                    .filter(|v| !matches!(v, Visibility::Deleted | Visibility::Dismissed))
-                    .count();
-                if live <= 1 { 0 } else { live }
-            },
-            _ => 0,
-        }
-    }
 
     /// All absolute paths for a `RootItem` (root + worktrees).
     fn unique_item_paths(item: &RootItem) -> Vec<PathBuf> {
