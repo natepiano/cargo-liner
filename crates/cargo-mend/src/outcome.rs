@@ -103,12 +103,15 @@ impl fmt::Display for AnalysisFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.cause {
             CompilerFailureCause::CargoCheck => {
-                write!(f, "compiler failed while validating this crate")
+                write!(
+                    f,
+                    "compiler failed while validating this crate\n\nmend: did not run due to compiler errors"
+                )
             },
             CompilerFailureCause::CargoRustcRefresh { package } => {
                 write!(
                     f,
-                    "compiler refresh failed while validating package `{package}`"
+                    "compiler refresh failed while validating package `{package}`\n\nmend: did not complete due to compiler errors"
                 )
             },
             CompilerFailureCause::DriverSetup(error)
@@ -298,7 +301,20 @@ mod tests {
         };
         assert_eq!(
             failure.to_string(),
-            "compiler failed while validating this crate"
+            "compiler failed while validating this crate\n\nmend: did not run due to compiler errors"
+        );
+    }
+
+    #[test]
+    fn analysis_failure_message_distinguishes_incomplete_driver_refresh() {
+        let failure = AnalysisFailure {
+            cause: CompilerFailureCause::CargoRustcRefresh {
+                package: "fixture".to_string(),
+            },
+        };
+        assert_eq!(
+            failure.to_string(),
+            "compiler refresh failed while validating package `fixture`\n\nmend: did not complete due to compiler errors"
         );
     }
 

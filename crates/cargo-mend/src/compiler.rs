@@ -48,7 +48,6 @@ use super::constants::EXIT_CODE_ERROR;
 use super::constants::FINDINGS_DIR_ENV;
 use super::constants::FINDINGS_SCHEMA_VERSION;
 use super::constants::PACKAGE_ROOT_ENV;
-use super::diagnostics::CompilerDiagnosticPresence;
 use super::diagnostics::CompilerWarningFacts;
 use super::diagnostics::Finding;
 use super::diagnostics::PubUseFixFact;
@@ -92,12 +91,11 @@ enum DiagnosticBlockKind {
 
 #[derive(Debug, Clone, Copy)]
 struct CommandOutcome {
-    status:                       std::process::ExitStatus,
-    compiler_warnings:            CompilerWarningFacts,
-    compiler_diagnostic_presence: CompilerDiagnosticPresence,
-    duration:                     Duration,
-    compiler_warning_count:       usize,
-    compiler_fixable_count:       usize,
+    status:                 std::process::ExitStatus,
+    compiler_warnings:      CompilerWarningFacts,
+    duration:               Duration,
+    compiler_warning_count: usize,
+    compiler_fixable_count: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -301,8 +299,6 @@ pub(crate) fn run_selection(
                 command_outcome.compiler_warnings = CompilerWarningFacts::UnusedImportWarnings;
             }
             driver_duration += status.duration;
-            command_outcome.compiler_warning_count += status.compiler_warning_count;
-            command_outcome.compiler_fixable_count += status.compiler_fixable_count;
             if !status.status.success() {
                 return Err(MendFailure::Analysis(AnalysisFailure {
                     cause: CompilerFailureCause::CargoRustcRefresh {
@@ -321,7 +317,6 @@ pub(crate) fn run_selection(
 
     let mut report = report;
     report.facts.compiler_warnings = command_outcome.compiler_warnings;
-    report.compiler_diagnostic_presence = command_outcome.compiler_diagnostic_presence;
     Ok(SelectionResult {
         report,
         check_duration: command_outcome.duration,
@@ -545,7 +540,6 @@ fn run_cargo_command(
     Ok(CommandOutcome {
         status,
         compiler_warnings: stderr_outcome.compiler_warnings,
-        compiler_diagnostic_presence: stderr_outcome.compiler_diagnostic_presence,
         duration,
         compiler_warning_count: stderr_outcome.compiler_warning_count,
         compiler_fixable_count: stderr_outcome.compiler_fixable_count,
@@ -554,10 +548,9 @@ fn run_cargo_command(
 
 #[derive(Debug, Clone, Copy, Default)]
 struct StderrObservation {
-    compiler_warnings:            CompilerWarningFacts,
-    compiler_diagnostic_presence: CompilerDiagnosticPresence,
-    compiler_warning_count:       usize,
-    compiler_fixable_count:       usize,
+    compiler_warnings:      CompilerWarningFacts,
+    compiler_warning_count: usize,
+    compiler_fixable_count: usize,
 }
 
 fn stream_cargo_stderr(
@@ -569,7 +562,6 @@ fn stream_cargo_stderr(
     let mut block = Vec::new();
     let mut printed_suppression_notice = false;
     let mut compiler_warnings = CompilerWarningFacts::None;
-    let mut compiler_diagnostic_presence = CompilerDiagnosticPresence::None;
     let mut compiler_warning_count: usize = 0;
     let mut compiler_fixable_count: usize = 0;
 
@@ -581,7 +573,6 @@ fn stream_cargo_stderr(
                 &mut block,
                 &mut printed_suppression_notice,
                 &mut compiler_warnings,
-                &mut compiler_diagnostic_presence,
                 &mut compiler_warning_count,
                 &mut compiler_fixable_count,
                 output_mode,
@@ -595,7 +586,6 @@ fn stream_cargo_stderr(
                 &mut block,
                 &mut printed_suppression_notice,
                 &mut compiler_warnings,
-                &mut compiler_diagnostic_presence,
                 &mut compiler_warning_count,
                 &mut compiler_fixable_count,
                 output_mode,
@@ -613,7 +603,6 @@ fn stream_cargo_stderr(
                 &mut block,
                 &mut printed_suppression_notice,
                 &mut compiler_warnings,
-                &mut compiler_diagnostic_presence,
                 &mut compiler_warning_count,
                 &mut compiler_fixable_count,
                 output_mode,
@@ -625,7 +614,6 @@ fn stream_cargo_stderr(
 
     Ok(StderrObservation {
         compiler_warnings,
-        compiler_diagnostic_presence,
         compiler_warning_count,
         compiler_fixable_count,
     })
@@ -727,7 +715,6 @@ fn flush_diagnostic_block(
     block: &mut Vec<String>,
     printed_suppression_notice: &mut bool,
     compiler_warnings: &mut CompilerWarningFacts,
-    compiler_diagnostic_presence: &mut CompilerDiagnosticPresence,
     compiler_warning_count: &mut usize,
     compiler_fixable_count: &mut usize,
     output_mode: BuildOutputMode,
@@ -739,7 +726,6 @@ fn flush_diagnostic_block(
     match classify_diagnostic_block(block) {
         DiagnosticBlockKind::SuppressedUnusedImport => {
             *compiler_warnings = CompilerWarningFacts::UnusedImportWarnings;
-            *compiler_diagnostic_presence = CompilerDiagnosticPresence::Seen;
             match output_mode {
                 BuildOutputMode::SuppressUnusedImportWarnings if !*printed_suppression_notice => {
                     eprintln!(
@@ -760,13 +746,13 @@ fn flush_diagnostic_block(
             warning_count,
             fixable_count,
         } => {
-            *compiler_warning_count += warning_count;
-            *compiler_fixable_count += fixable_count;
-            *compiler_diagnostic_presence = CompilerDiagnosticPresence::Seen;
+            if !matches!(output_mode, BuildOutputMode::Quiet) {
+                *compiler_warning_count += warning_count;
+                *compiler_fixable_count += fixable_count;
+            }
             // Suppressed — will be rendered in the unified summary
         },
         DiagnosticBlockKind::ForwardedDiagnostic => {
-            *compiler_diagnostic_presence = CompilerDiagnosticPresence::Seen;
             if !matches!(output_mode, BuildOutputMode::Quiet) {
                 for line in block.iter() {
                     eprint!("{line}");
@@ -943,7 +929,6 @@ fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
             pub_use:           PubUseFixFacts::from_vec(pub_use_fix_facts),
             compiler_warnings: CompilerWarningFacts::None,
         },
-        compiler_diagnostic_presence: CompilerDiagnosticPresence::None,
     })
 }
 
@@ -3446,10 +3431,12 @@ mod tests {
     use super::current_analysis_fingerprint;
     use super::exported_names_from_parent_boundary;
     use super::forbidden_pub_crate_help;
+    use super::flush_diagnostic_block;
     use super::is_progress_line;
     use super::module_path_from_source_file;
     use super::refresh_rustc_args;
     use super::suspicious_pub_note;
+    use crate::compiler::BuildOutputMode;
     use crate::config::LoadedConfig;
     use crate::config::VisibilityConfig;
     use crate::constants::FINDINGS_SCHEMA_VERSION;
@@ -3985,5 +3972,30 @@ mod tests {
             classify_diagnostic_block(&block),
             DiagnosticBlockKind::SuppressedUnusedImport
         ));
+    }
+
+    #[test]
+    fn quiet_builds_do_not_accumulate_compiler_warning_summary_counts() {
+        let mut block = vec![
+            "warning: `fixture` (lib) generated 3 warnings (1 duplicate) (run `cargo fix --lib -p fixture` to apply 1 suggestion)\n"
+                .to_string(),
+            "\n".to_string(),
+        ];
+        let mut printed_suppression_notice = false;
+        let mut compiler_warnings = CompilerWarningFacts::None;
+        let mut compiler_warning_count = 0;
+        let mut compiler_fixable_count = 0;
+
+        flush_diagnostic_block(
+            &mut block,
+            &mut printed_suppression_notice,
+            &mut compiler_warnings,
+            &mut compiler_warning_count,
+            &mut compiler_fixable_count,
+            BuildOutputMode::Quiet,
+        );
+
+        assert_eq!(compiler_warning_count, 0);
+        assert_eq!(compiler_fixable_count, 0);
     }
 }

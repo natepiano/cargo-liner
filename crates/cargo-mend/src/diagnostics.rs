@@ -148,10 +148,6 @@ pub(crate) struct Report {
     pub findings:                     Vec<Finding>,
     #[serde(default)]
     pub facts:                        ReportFacts,
-    /// Whether any compiler diagnostics (warnings/errors) were printed to
-    /// stderr during the build. Not serialized — runtime-only.
-    #[serde(skip)]
-    pub compiler_diagnostic_presence: CompilerDiagnosticPresence,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -194,14 +190,6 @@ impl PubUseFixFacts {
     pub(crate) const fn from_vec(facts: Vec<PubUseFixFact>) -> Self { Self { facts } }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = &PubUseFixFact> { self.facts.iter() }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum CompilerDiagnosticPresence {
-    #[default]
-    None,
-    Seen,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
