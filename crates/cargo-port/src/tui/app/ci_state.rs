@@ -19,8 +19,7 @@ impl App {
             return;
         }
         let exhausted = self
-            .git_info
-            .get(&abs)
+            .git_info_for(&abs)
             .and_then(|git| {
                 git.url.as_ref().and_then(|url| {
                     ci::parse_owner_repo(url).map(|(owner, repo)| {
@@ -74,7 +73,7 @@ impl App {
 
         let found_new = merged.len() > prev_count;
         let exhausted = if found_new {
-            if let Some(git) = self.git_info.get(&abs)
+            if let Some(git) = self.git_info_for(&abs)
                 && let Some(ref url) = git.url
                 && let Some((owner, repo)) = ci::parse_owner_repo(url)
             {
@@ -82,7 +81,7 @@ impl App {
             }
             false
         } else {
-            if let Some(git) = self.git_info.get(&abs)
+            if let Some(git) = self.git_info_for(&abs)
                 && let Some(ref url) = git.url
                 && let Some((owner, repo)) = ci::parse_owner_repo(url)
             {
@@ -124,8 +123,7 @@ impl App {
 
     pub(super) fn latest_ci_run_for_path(&self, path: &Path) -> Option<&CiRun> {
         let branch = self
-            .git_info
-            .get(path)
+            .git_info_for(path)
             .and_then(|git| git.branch.as_deref());
         let state = self.ci_state.get(path)?;
         branch.map_or_else(

@@ -161,8 +161,7 @@ impl App {
                 PaneId::ProjectList => true,
                 PaneId::Package => self.selected_project_path().is_some(),
                 PaneId::Git => self.selected_project_path().is_some_and(|path| {
-                    self.git_info
-                        .get(path)
+                    self.git_info_for(path)
                         .is_some_and(|info| info.url.is_some())
                 }),
                 PaneId::Targets => self.cached_detail.as_ref().is_some_and(|c| {
@@ -172,8 +171,7 @@ impl App {
                 PaneId::CiRuns => self.selected_project_path().is_some_and(|path| {
                     self.bottom_panel_available(path)
                         && self
-                            .git_info
-                            .get(path)
+                            .git_info_for(path)
                             .is_some_and(|info| info.workflows.is_present())
                 }),
                 PaneId::Toasts => !self.active_toasts().is_empty(),

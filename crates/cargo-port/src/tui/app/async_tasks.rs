@@ -28,10 +28,8 @@ use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
 use crate::project::ProjectListItem;
-use crate::project::RustProject;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Visible;
-use crate::project::Workspace;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -76,6 +74,7 @@ impl App {
         }
 
         // Propagate git info and stars from workspace roots to their members.
+        let mut inherited_git_info = Vec::new();
         for item in &self.projects {
             let root_path = item.path();
             let member_paths: Vec<PathBuf> = match item {
@@ -96,17 +95,30 @@ impl App {
                 },
                 _ => Vec::new(),
             };
-            if let Some(info) = self.git_info.get(root_path).cloned() {
+            if let Some(info) = self
+                .projects
+                .at_path(root_path)
+                .and_then(|project| project.git_info.clone())
+            {
                 for member_path in &member_paths {
-                    self.git_info
-                        .entry(member_path.clone())
-                        .or_insert_with(|| info.clone());
+                    if self
+                        .projects
+                        .at_path(member_path)
+                        .is_none_or(|project| project.git_info.is_none())
+                    {
+                        inherited_git_info.push((member_path.clone(), info.clone()));
+                    }
                 }
             }
             if let Some(&stars) = self.stars.get(root_path) {
                 for member_path in &member_paths {
                     self.stars.entry(member_path.clone()).or_insert(stars);
                 }
+            }
+        }
+        for (member_path, info) in inherited_git_info {
+            if let Some(project) = self.projects.at_path_mut(&member_path) {
+                project.git_info = Some(info);
             }
         }
 
@@ -647,7 +659,7 @@ impl App {
             .startup_phases
             .git_expected
             .iter()
-            .filter(|path| self.git_info.contains_key(*path))
+            .filter(|path| self.git_info_for(path).is_some())
             .cloned()
             .collect::<HashSet<_>>();
         self.scan.startup_phases.disk_complete_at = None;
@@ -1013,14 +1025,12 @@ impl App {
     pub(super) fn spawn_fit_widths_build(&mut self, build_id: u64) {
         let tx = self.builds.fit.tx.clone();
         let items = self.projects.clone();
-        let git_info = self.git_info.clone();
         let git_path_states = self.git_path_states.clone();
         let lint_enabled = self.lint_enabled();
         self.builds.fit.active = Some(build_id);
         std::thread::spawn(move || {
             let started = Instant::now();
             let state = super::snapshots::FitWidthsState {
-                git_info:        &git_info,
                 git_path_states: &git_path_states,
             };
             let widths =
@@ -1140,7 +1150,6 @@ impl App {
         self.lint_status.clear();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
         self.lint_runs.clear();
-        self.git_info.clear();
         self.git_path_states.clear();
         self.cargo_active_paths.clear();
         self.crates_versions.clear();
@@ -1369,20 +1378,16 @@ impl App {
         self.dirty.fit_widths.mark_dirty();
 
         // Set disk usage on the matching project item and update visibility.
-        let display = crate::project::home_relative_path(path);
         let mut lint_runtime_changed = false;
-        for item in &mut self.projects {
-            if !item.set_disk_usage_by_path(path, bytes) {
-                continue;
-            }
-            if bytes == 0 && !path.exists() {
-                if item.set_visibility_by_path(&display, Deleted) {
-                    lint_runtime_changed = true;
-                }
-            } else if bytes > 0 && item.set_visibility_by_path(&display, Visible) {
+        if let Some(project) = self.projects.at_path_mut(path) {
+            project.disk_usage_bytes = Some(bytes);
+            if bytes == 0 && !path.exists() && project.visibility != Deleted {
+                project.visibility = Deleted;
+                lint_runtime_changed = true;
+            } else if bytes > 0 && project.visibility != Visible {
+                project.visibility = Visible;
                 lint_runtime_changed = true;
             }
-            break;
         }
         if lint_runtime_changed {
             if let Some(runtime) = &self.lint_runtime
@@ -1391,69 +1396,85 @@ impl App {
                 runtime.unregister_project(path.to_path_buf());
             }
             if bytes > 0 {
+                let display = crate::project::home_relative_path(path);
                 self.register_lint_for_path(&display);
             }
         }
+    }
+
+    fn inherited_git_info_paths(&self, path: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let mut member_paths = Vec::new();
+        let mut fallback_worktree_paths = Vec::new();
+        for item in &self.projects {
+            match item {
+                crate::project::ProjectListItem::Workspace(ws) if ws.path() == path => {
+                    member_paths.extend(ws.groups().iter().flat_map(|group| {
+                        group
+                            .members()
+                            .iter()
+                            .map(|member| member.path().to_path_buf())
+                    }));
+                },
+                crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
+                    for ws in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
+                        if ws.path() == path {
+                            member_paths.extend(ws.groups().iter().flat_map(|group| {
+                                group
+                                    .members()
+                                    .iter()
+                                    .map(|member| member.path().to_path_buf())
+                            }));
+                        }
+                    }
+                    if wtg.primary().path() == path {
+                        fallback_worktree_paths.extend(
+                            wtg.linked()
+                                .iter()
+                                .filter(|linked| self.git_info_for(linked.path()).is_none())
+                                .map(|linked| linked.path().to_path_buf()),
+                        );
+                    }
+                },
+                crate::project::ProjectListItem::PackageWorktrees(wtg)
+                    if wtg.primary().path() == path =>
+                {
+                    fallback_worktree_paths.extend(
+                        wtg.linked()
+                            .iter()
+                            .filter(|linked| self.git_info_for(linked.path()).is_none())
+                            .map(|linked| linked.path().to_path_buf()),
+                    );
+                },
+                _ => {},
+            }
+        }
+        (member_paths, fallback_worktree_paths)
     }
 
     pub(super) fn handle_git_info(&mut self, path: &Path, info: GitInfo) {
         self.dirty.fit_widths.mark_dirty();
         let abs = path.to_path_buf();
         let preserved_first_commit = self
-            .git_info
-            .get(&abs)
+            .git_info_for(&abs)
             .and_then(|existing| existing.first_commit.clone());
         let mut info = info;
         if info.first_commit.is_none() {
             info.first_commit = preserved_first_commit;
         }
-        // Propagate git info to workspace members and worktrees.
-        for item in &self.projects {
-            match item {
-                crate::project::ProjectListItem::Workspace(ws) if ws.path() == abs => {
-                    for group in ws.groups() {
-                        for member in group.members() {
-                            self.git_info
-                                .insert(member.path().to_path_buf(), info.clone());
-                        }
-                    }
-                },
-                crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
-                    let all_ws: Vec<&RustProject<Workspace>> = std::iter::once(wtg.primary())
-                        .chain(wtg.linked().iter())
-                        .collect();
-                    for ws in &all_ws {
-                        if ws.path() == abs {
-                            for group in ws.groups() {
-                                for member in group.members() {
-                                    self.git_info
-                                        .insert(member.path().to_path_buf(), info.clone());
-                                }
-                            }
-                        }
-                    }
-                    // Propagate from root to worktrees that don't have info yet
-                    if wtg.primary().path() == abs {
-                        for linked in wtg.linked() {
-                            self.git_info
-                                .entry(linked.path().to_path_buf())
-                                .or_insert_with(|| info.clone());
-                        }
-                    }
-                },
-                crate::project::ProjectListItem::PackageWorktrees(wtg) => {
-                    if wtg.primary().path() == abs {
-                        for linked in wtg.linked() {
-                            self.git_info
-                                .entry(linked.path().to_path_buf())
-                                .or_insert_with(|| info.clone());
-                        }
-                    }
-                },
-                _ => {},
+        let (member_paths, fallback_worktree_paths) = self.inherited_git_info_paths(&abs);
+        if let Some(project) = self.projects.at_path_mut(&abs) {
+            project.git_info = Some(info.clone());
+        }
+        for member_path in member_paths {
+            if let Some(project) = self.projects.at_path_mut(&member_path) {
+                project.git_info = Some(info.clone());
             }
         }
-        self.git_info.insert(abs.clone(), info);
+        for linked_path in fallback_worktree_paths {
+            if let Some(project) = self.projects.at_path_mut(&linked_path) {
+                project.git_info = Some(info.clone());
+            }
+        }
         if self.is_scan_complete() {
             self.scan.startup_phases.git_seen.insert(abs.clone());
             if let Some(git_toast) = self.scan.startup_phases.git_toast {
@@ -1466,10 +1487,28 @@ impl App {
     }
 
     pub(super) fn handle_git_first_commit(&mut self, path: &Path, first_commit: Option<String>) {
-        let Some(info) = self.git_info.get_mut(Path::new(path)) else {
+        let (member_paths, fallback_worktree_paths) = self.inherited_git_info_paths(path);
+        let Some(project) = self.projects.at_path_mut(path) else {
             return;
         };
-        info.first_commit = first_commit;
+        let Some(info) = project.git_info.as_mut() else {
+            return;
+        };
+        info.first_commit.clone_from(&first_commit);
+        for member_path in member_paths {
+            if let Some(project) = self.projects.at_path_mut(&member_path)
+                && let Some(info) = project.git_info.as_mut()
+            {
+                info.first_commit.clone_from(&first_commit);
+            }
+        }
+        for linked_path in fallback_worktree_paths {
+            if let Some(project) = self.projects.at_path_mut(&linked_path)
+                && let Some(info) = project.git_info.as_mut()
+            {
+                info.first_commit.clone_from(&first_commit);
+            }
+        }
     }
 
     pub(super) fn handle_repo_fetch_complete(&mut self, key: &str) {
@@ -1552,8 +1591,10 @@ impl App {
         let Some(old) = self.projects.replace_leaf_by_path(&path, item.clone()) else {
             return false;
         };
-        for (disk_path, bytes) in old.collect_disk_usage() {
-            item.set_disk_usage_by_path(&disk_path, bytes);
+        for (project_path, info) in old.collect_project_info() {
+            if let Some(project) = item.at_path_mut(&project_path) {
+                *project = info;
+            }
         }
         // Re-replace with the runtime-data-enriched version.
         self.projects.replace_leaf_by_path(&path, item);
@@ -1786,6 +1827,7 @@ impl App {
         }
 
         // Propagate git info and stars from workspace roots to members.
+        let mut inherited_git_info = Vec::new();
         for item in &self.projects {
             let root_path = item.path();
             let member_paths: Vec<PathBuf> = match item {
@@ -1804,17 +1846,30 @@ impl App {
                     .collect(),
                 _ => Vec::new(),
             };
-            if let Some(info) = self.git_info.get(root_path).cloned() {
+            if let Some(info) = self
+                .projects
+                .at_path(root_path)
+                .and_then(|project| project.git_info.clone())
+            {
                 for member_path in &member_paths {
-                    self.git_info
-                        .entry(member_path.clone())
-                        .or_insert_with(|| info.clone());
+                    if self
+                        .projects
+                        .at_path(member_path)
+                        .is_none_or(|project| project.git_info.is_none())
+                    {
+                        inherited_git_info.push((member_path.clone(), info.clone()));
+                    }
                 }
             }
             if let Some(&stars) = self.stars.get(root_path) {
                 for member_path in &member_paths {
                     self.stars.entry(member_path.clone()).or_insert(stars);
                 }
+            }
+        }
+        for (member_path, info) in inherited_git_info {
+            if let Some(project) = self.projects.at_path_mut(&member_path) {
+                project.git_info = Some(info);
             }
         }
 

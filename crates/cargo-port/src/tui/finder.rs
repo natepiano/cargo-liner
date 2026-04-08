@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crossterm::event::KeyCode;
 use nucleo_matcher::Matcher;
 use nucleo_matcher::Utf32Str;
@@ -95,21 +93,20 @@ pub(super) const FINDER_HEADERS: [&str; FINDER_COLUMN_COUNT] =
 /// width of each column across the entire index.
 pub(super) fn build_finder_index(
     list_items: &[ProjectListItem],
-    git_info: &HashMap<std::path::PathBuf, GitInfo>,
 ) -> (Vec<FinderItem>, [usize; FINDER_COLUMN_COUNT]) {
     let mut items = Vec::new();
 
     for list_item in list_items {
         match list_item {
             ProjectListItem::Workspace(ws) => {
-                add_workspace_items(&mut items, ws, git_info);
+                add_workspace_items(&mut items, ws);
             },
             ProjectListItem::Package(pkg) => {
-                add_package_items(&mut items, pkg, git_info);
+                add_package_items(&mut items, pkg);
             },
             ProjectListItem::NonRust(nr) => {
                 let dp = nr.display_path();
-                let branch = branch_for(nr.path(), git_info);
+                let branch = branch_for(nr.git_info());
                 add_project_items_from_typed(
                     &mut items,
                     &nr.display_name(),
@@ -121,23 +118,23 @@ pub(super) fn build_finder_index(
                 );
             },
             ProjectListItem::WorkspaceWorktrees(wtg) => {
-                add_workspace_items(&mut items, wtg.primary(), git_info);
+                add_workspace_items(&mut items, wtg.primary());
                 for linked in wtg.linked() {
                     let dp = linked.display_path();
                     if dp == wtg.primary().display_path() {
                         continue;
                     }
-                    add_workspace_items(&mut items, linked, git_info);
+                    add_workspace_items(&mut items, linked);
                 }
             },
             ProjectListItem::PackageWorktrees(wtg) => {
-                add_package_items(&mut items, wtg.primary(), git_info);
+                add_package_items(&mut items, wtg.primary());
                 for linked in wtg.linked() {
                     let dp = linked.display_path();
                     if dp == wtg.primary().display_path() {
                         continue;
                     }
-                    add_package_items(&mut items, linked, git_info);
+                    add_package_items(&mut items, linked);
                 }
             },
         }
@@ -160,24 +157,16 @@ pub(super) fn build_finder_index(
     (items, col_widths)
 }
 
-fn branch_for(
-    abs_path: &std::path::Path,
-    git_info: &HashMap<std::path::PathBuf, GitInfo>,
-) -> String {
+fn branch_for(git_info: Option<&GitInfo>) -> String {
     git_info
-        .get(abs_path)
         .and_then(|g| g.branch.as_deref())
         .unwrap_or("")
         .to_string()
 }
 
-fn add_workspace_items(
-    items: &mut Vec<FinderItem>,
-    ws: &RustProject<Workspace>,
-    git_info: &HashMap<std::path::PathBuf, GitInfo>,
-) {
+fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &RustProject<Workspace>) {
     let root_path = ws.display_path();
-    let root_branch = branch_for(ws.path(), git_info);
+    let root_branch = branch_for(ws.git_info());
     let cargo = ws.cargo();
 
     add_project_items_from_typed(
@@ -210,13 +199,9 @@ fn add_workspace_items(
     }
 }
 
-fn add_package_items(
-    items: &mut Vec<FinderItem>,
-    pkg: &RustProject<Package>,
-    git_info: &HashMap<std::path::PathBuf, GitInfo>,
-) {
+fn add_package_items(items: &mut Vec<FinderItem>, pkg: &RustProject<Package>) {
     let root_path = pkg.display_path();
-    let root_branch = branch_for(pkg.path(), git_info);
+    let root_branch = branch_for(pkg.git_info());
     let cargo = pkg.cargo();
 
     add_project_items_from_typed(
@@ -811,7 +796,7 @@ mod tests {
             None,
         );
         let list_items = vec![ProjectListItem::Workspace(ws)];
-        let (items, _widths) = build_finder_index(&list_items, &HashMap::new());
+        let (items, _widths) = build_finder_index(&list_items);
         assert!(items.iter().any(|item| {
             item.project_path == "~/rust/hana/crates/clay-layout"
                 && item.display_name == "clay-layout (vendored)"
@@ -913,8 +898,7 @@ mod tests {
             None,
         );
 
-        let (items, _widths) =
-            build_finder_index(&[ProjectListItem::Package(pkg)], &HashMap::new());
+        let (items, _widths) = build_finder_index(&[ProjectListItem::Package(pkg)]);
         assert!(items.iter().any(|item| {
             item.display_name == "build-easefunction-graphs"
                 && item.search_tokens.iter().any(|token| token == "tools")

@@ -248,7 +248,7 @@ pub fn handle_lints_key(app: &mut App, event: &KeyEvent) {
 
 /// Clear CI cache for a project and remove its runs from the app.
 fn clear_ci_cache(app: &mut App, abs: &Path) {
-    if let Some(git) = app.git_info.get(abs)
+    if let Some(git) = app.git_info_for(abs)
         && let Some(url) = git.url.as_deref()
         && let Some((owner, repo)) = ci::parse_owner_repo(url)
     {

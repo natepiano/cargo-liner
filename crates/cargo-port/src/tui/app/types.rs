@@ -20,7 +20,6 @@ use crate::lint::CacheUsage;
 use crate::lint::LintRun;
 use crate::lint::LintStatus;
 use crate::lint::RuntimeHandle;
-use crate::project::GitInfo;
 use crate::project::GitPathState;
 use crate::project_list::ProjectList;
 use crate::scan::BackgroundMsg;
@@ -496,7 +495,6 @@ pub struct App {
     pub lint_rollup_status:       HashMap<LintRollupKey, LintStatus>,
     pub lint_rollup_paths:        HashMap<LintRollupKey, Vec<PathBuf>>,
     pub lint_rollup_keys_by_path: HashMap<PathBuf, Vec<LintRollupKey>>,
-    pub git_info:                 HashMap<PathBuf, GitInfo>,
     pub git_path_states:          HashMap<PathBuf, GitPathState>,
     pub cargo_active_paths:       HashSet<PathBuf>,
     pub crates_versions:          HashMap<PathBuf, String>,

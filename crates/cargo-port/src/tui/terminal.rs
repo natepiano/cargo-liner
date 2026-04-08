@@ -517,7 +517,7 @@ fn spawn_clean_process(app: &mut App, pending: &PendingClean) {
 
 fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     // Derive (repo_url, owner, repo) from local git info — no network needed
-    let Some(git) = app.git_info.get(Path::new(&fetch.project_path)) else {
+    let Some(git) = app.git_info_for(Path::new(&fetch.project_path)) else {
         return;
     };
     let Some(repo_url) = &git.url else {

@@ -149,6 +149,16 @@ impl ProjectList {
         None
     }
 
+    pub(crate) fn at_path(&self, target: &Path) -> Option<&ProjectInfo> {
+        self.items.iter().find_map(|item| item.at_path(target))
+    }
+
+    pub(crate) fn at_path_mut(&mut self, target: &Path) -> Option<&mut ProjectInfo> {
+        self.items
+            .iter_mut()
+            .find_map(|item| item.at_path_mut(target))
+    }
+
     // -- Hierarchy mutations ----------------------------------------------
 
     /// Find a leaf item by absolute path and replace it, returning the old

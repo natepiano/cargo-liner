@@ -14,7 +14,6 @@ use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::MemberGroup;
 use crate::project::Package;
-use crate::project::ProjectInfo;
 use crate::project::ProjectListItem;
 use crate::project::RustProject;
 use crate::project::Visibility;
@@ -242,7 +241,7 @@ fn formatted_disk(bytes: Option<u64>) -> String {
 }
 
 pub(super) fn git_sync_snapshot(
-    git_info: &HashMap<PathBuf, GitInfo>,
+    git_info: Option<&GitInfo>,
     git_path_states: &HashMap<PathBuf, GitPathState>,
     path: &Path,
 ) -> String {
@@ -255,7 +254,7 @@ pub(super) fn git_sync_snapshot(
     ) {
         return String::new();
     }
-    let Some(info) = git_info.get(path) else {
+    let Some(info) = git_info else {
         return String::new();
     };
     match info.ahead_behind {
@@ -270,7 +269,6 @@ pub(super) fn git_sync_snapshot(
 
 /// Snapshot of project state needed for fit-width calculations.
 pub(super) struct FitWidthsState<'a> {
-    pub git_info:        &'a HashMap<PathBuf, GitInfo>,
     pub git_path_states: &'a HashMap<PathBuf, GitPathState>,
 }
 
@@ -303,7 +301,7 @@ fn observe_item_fit_widths(
     widths.observe(
         COL_SYNC,
         dw(&git_sync_snapshot(
-            state.git_info,
+            item.git_info(),
             state.git_path_states,
             root_path,
         )),
@@ -359,7 +357,7 @@ fn observe_new_member_group_fit_widths(
             widths.observe(
                 COL_SYNC,
                 dw(&git_sync_snapshot(
-                    state.git_info,
+                    member.git_info(),
                     state.git_path_states,
                     member.path(),
                 )),
@@ -404,7 +402,7 @@ fn observe_workspace_worktree_entry_fit_widths(
     widths.observe(
         COL_SYNC,
         dw(&git_sync_snapshot(
-            state.git_info,
+            ws.git_info(),
             state.git_path_states,
             ws.path(),
         )),
@@ -427,7 +425,7 @@ fn observe_package_worktree_entry_fit_widths(
     widths.observe(
         COL_SYNC,
         dw(&git_sync_snapshot(
-            state.git_info,
+            pkg.git_info(),
             state.git_path_states,
             pkg.path(),
         )),

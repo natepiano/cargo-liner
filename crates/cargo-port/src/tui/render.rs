@@ -40,7 +40,6 @@ use crate::ci::Conclusion;
 use crate::constants::WORKTREE;
 use crate::project;
 use crate::project::GitOrigin;
-use crate::project::ProjectInfo;
 use crate::project::ProjectListItem;
 use crate::project::Visibility;
 use crate::scan;
@@ -281,7 +280,7 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let selected_has_ci_owner = app.selected_ci_path().is_some();
     let has_workflows = app
         .selected_project_path()
-        .and_then(|path| app.git_info.get(path))
+        .and_then(|path| app.git_info_for(path))
         .is_some_and(|g| g.workflows.is_present());
     let has_ci = selected_ci_state.is_some() && has_workflows;
     let detail_lint_runs = app
@@ -365,17 +364,17 @@ fn render_empty_ci_panel(
     selected_has_ci_owner: bool,
     area: Rect,
 ) {
-    let has_git = project_path.is_some_and(|path| app.git_info.contains_key(path));
+    let has_git = project_path.is_some_and(|path| app.git_info_for(path).is_some());
     let has_url = project_path
         .filter(|_| selected_has_ci_owner)
-        .and_then(|path| app.git_info.get(path))
+        .and_then(|path| app.git_info_for(path))
         .is_some_and(|g| g.url.is_some());
     let is_local = project_path
         .filter(|_| selected_has_ci_owner)
-        .and_then(|path| app.git_info.get(path))
+        .and_then(|path| app.git_info_for(path))
         .is_some_and(|g| g.origin == GitOrigin::Local);
     let has_workflows = project_path
-        .and_then(|path| app.git_info.get(path))
+        .and_then(|path| app.git_info_for(path))
         .is_some_and(|g| g.workflows.is_present());
 
     let title = if project_path.is_some() && !selected_has_ci_owner {

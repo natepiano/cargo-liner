@@ -191,7 +191,6 @@ impl App {
             lint_rollup_status: HashMap::new(),
             lint_rollup_paths: HashMap::new(),
             lint_rollup_keys_by_path: HashMap::new(),
-            git_info: HashMap::new(),
             git_path_states: HashMap::new(),
             cargo_active_paths: HashSet::new(),
             crates_versions: HashMap::new(),

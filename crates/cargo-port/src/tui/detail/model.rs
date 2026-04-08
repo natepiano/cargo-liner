@@ -497,7 +497,7 @@ struct GitDetailFields {
 }
 
 fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
-    let git = app.git_info.get(abs_path);
+    let git = app.git_info_for(abs_path);
     let branch = git.and_then(|info| info.branch.clone());
     let sync = git
         .map(|info| match info.ahead_behind {

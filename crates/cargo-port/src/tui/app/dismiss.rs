@@ -1,3 +1,6 @@
+use std::path::Path;
+use std::path::PathBuf;
+
 use ratatui::layout::Rect;
 
 use super::types::App;
@@ -11,7 +14,7 @@ use crate::tui::types::PaneId;
 #[derive(Clone, Debug)]
 pub enum DismissTarget {
     Toast(u64),
-    DeletedProject(String),
+    DeletedProject(PathBuf),
 }
 
 /// A clickable dismiss affordance registered during rendering.
@@ -32,9 +35,7 @@ impl App {
             PaneId::ProjectList => {
                 let selected_path = self.selected_project_path()?;
                 if self.is_deleted(selected_path) {
-                    Some(DismissTarget::DeletedProject(
-                        selected_path.display().to_string(),
-                    ))
+                    Some(DismissTarget::DeletedProject(selected_path.to_path_buf()))
                 } else {
                     None
                 }
@@ -49,10 +50,8 @@ impl App {
             DismissTarget::Toast(id) => self.dismiss_toast(id),
             DismissTarget::DeletedProject(path) => {
                 let parent_node_index = self.worktree_parent_node_index(&path);
-                for item in &mut self.projects {
-                    if item.set_visibility_by_path(&path, Dismissed) {
-                        break;
-                    }
+                if let Some(project) = self.projects.at_path_mut(&path) {
+                    project.visibility = Dismissed;
                 }
                 self.dirty.rows.mark_dirty();
                 self.ensure_visible_rows_cached();
@@ -72,19 +71,19 @@ impl App {
 
     /// If `path` is a worktree entry's project path, return the parent
     /// node index so the selection can jump to the Root row after dismiss.
-    fn worktree_parent_node_index(&self, path: &str) -> Option<usize> {
+    fn worktree_parent_node_index(&self, path: &Path) -> Option<usize> {
         self.projects
             .iter()
             .enumerate()
             .find_map(|(ni, item)| match item {
                 crate::project::ProjectListItem::WorkspaceWorktrees(wtg) => {
-                    let has_match = wtg.primary().display_path() == path
-                        || wtg.linked().iter().any(|l| l.display_path() == path);
+                    let has_match = wtg.primary().path() == path
+                        || wtg.linked().iter().any(|l| l.path() == path);
                     has_match.then_some(ni)
                 },
                 crate::project::ProjectListItem::PackageWorktrees(wtg) => {
-                    let has_match = wtg.primary().display_path() == path
-                        || wtg.linked().iter().any(|l| l.display_path() == path);
+                    let has_match = wtg.primary().path() == path
+                        || wtg.linked().iter().any(|l| l.path() == path);
                     has_match.then_some(ni)
                 },
                 _ => None,

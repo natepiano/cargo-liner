@@ -535,9 +535,14 @@ fn worktree_section_collapses_when_one_dismissed() {
     assert_eq!(rows.len(), 3, "root + 2 worktree entries");
 
     let mut items = vec![root];
-    if let ProjectListItem::PackageWorktrees(ref mut wtg) = items[0] {
-        wtg.linked_mut()[0].set_visibility(Dismissed);
-    }
+    let linked_path = match &items[0] {
+        ProjectListItem::PackageWorktrees(wtg) => wtg.linked()[0].path().to_path_buf(),
+        _ => unreachable!("expected package worktrees"),
+    };
+    items[0]
+        .at_path_mut(&linked_path)
+        .expect("linked worktree should exist")
+        .visibility = Dismissed;
     let rows = snapshots::build_visible_rows(&items, &expanded, true);
     assert_eq!(rows.len(), 2, "root + 1 worktree when one dismissed");
     assert!(matches!(rows[0], VisibleRow::Root { node_index: 0 }));
@@ -684,8 +689,8 @@ fn non_owner_member_ignores_stale_ci_state_and_cannot_fetch() {
             exhausted: false,
         },
     );
-    app.git_info.insert(
-        member.path().to_path_buf(),
+    app.handle_git_info(
+        member.path(),
         make_git_info(Some("https://github.com/natepiano/demo")),
     );
 
@@ -757,8 +762,8 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
 fn ci_for_prefers_runs_matching_local_branch() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.git_info.insert(
-        project.path().to_path_buf(),
+    app.handle_git_info(
+        project.path(),
         GitInfo {
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),
@@ -1022,8 +1027,8 @@ fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
     let path = project.display_path();
     let mut app = make_app(std::slice::from_ref(&project));
 
-    app.git_info.insert(
-        PathBuf::from(&path),
+    app.handle_git_info(
+        Path::new(&path),
         GitInfo {
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),
@@ -1079,8 +1084,8 @@ fn tabbable_panes_follow_canonical_order() {
     app.toasts = ToastManager::default();
     app.toast_pane.set_len(0);
     app.scan.phase = ScanPhase::Complete;
-    app.git_info.insert(
-        project.path().to_path_buf(),
+    app.handle_git_info(
+        project.path(),
         GitInfo {
             origin:              GitOrigin::Clone,
             branch:              None,
@@ -1649,10 +1654,11 @@ fn is_deleted_does_not_allocate_display_paths() {
         app.projects.push(item);
     }
     // Mark one as deleted
-    let dp = app.projects[100].display_path();
-    app.projects[100].set_visibility_by_path(&dp, Deleted);
-
     let target = app.projects[100].path().to_path_buf();
+    app.projects
+        .at_path_mut(&target)
+        .expect("target project should exist")
+        .visibility = Deleted;
     let start = std::time::Instant::now();
     for _ in 0..1000 {
         let _ = app.is_deleted(&target);

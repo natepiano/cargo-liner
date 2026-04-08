@@ -1193,14 +1193,17 @@ impl Cargo {
     }
 }
 
-/// Runtime data that arrives asynchronously after scan.
-///
-/// Implemented by `RustProject<Kind>` and `NonRustProject`. `ProjectListItem`
-/// dispatches to these implementors but does NOT implement the trait itself
-/// because worktree groups need aggregation logic.
-pub(crate) trait ProjectInfo {
-    fn disk_usage_bytes(&self) -> Option<u64>;
-    fn set_disk_usage_bytes(&mut self, bytes: u64);
+#[derive(Clone, Default)]
+pub(crate) struct ProjectInfo {
+    pub disk_usage_bytes: Option<u64>,
+    pub git_info:         Option<GitInfo>,
+    pub visibility:       Visibility,
+}
+
+/// Per-node info access for hierarchy leaf types.
+pub(crate) trait InfoProvider {
+    fn info(&self) -> &ProjectInfo;
+    fn info_mut(&mut self) -> &mut ProjectInfo;
 }
 
 /// The core project type, parameterized by kind.
@@ -1208,8 +1211,7 @@ pub(crate) trait ProjectInfo {
 pub(crate) struct RustProject<Kind: CargoKind> {
     path:                      PathBuf,
     name:                      Option<String>,
-    visibility:                Visibility,
-    disk_usage_bytes:          Option<u64>,
+    info:                      ProjectInfo,
     cargo:                     Cargo,
     vendored:                  Vec<RustProject<Package>>,
     kind:                      Kind,
@@ -1219,27 +1221,25 @@ pub(crate) struct RustProject<Kind: CargoKind> {
 
 /// A non-Rust project. Separate struct, no generic parameter.
 pub(crate) struct NonRustProject {
-    path:             PathBuf,
-    name:             Option<String>,
-    visibility:       Visibility,
-    disk_usage_bytes: Option<u64>,
+    path: PathBuf,
+    name: Option<String>,
+    info: ProjectInfo,
 }
 
 impl Clone for NonRustProject {
     fn clone(&self) -> Self {
         Self {
-            path:             self.path.clone(),
-            name:             self.name.clone(),
-            visibility:       self.visibility,
-            disk_usage_bytes: self.disk_usage_bytes,
+            path: self.path.clone(),
+            name: self.name.clone(),
+            info: self.info.clone(),
         }
     }
 }
 
-impl ProjectInfo for NonRustProject {
-    fn disk_usage_bytes(&self) -> Option<u64> { self.disk_usage_bytes }
+impl InfoProvider for NonRustProject {
+    fn info(&self) -> &ProjectInfo { &self.info }
 
-    fn set_disk_usage_bytes(&mut self, bytes: u64) { self.disk_usage_bytes = Some(bytes); }
+    fn info_mut(&mut self) -> &mut ProjectInfo { &mut self.info }
 }
 
 impl NonRustProject {
@@ -1247,8 +1247,7 @@ impl NonRustProject {
         Self {
             path,
             name,
-            visibility: Visibility::default(),
-            disk_usage_bytes: None,
+            info: ProjectInfo::default(),
         }
     }
 
@@ -1256,9 +1255,11 @@ impl NonRustProject {
 
     pub(crate) fn name(&self) -> Option<&str> { self.name.as_deref() }
 
-    pub(crate) const fn visibility(&self) -> Visibility { self.visibility }
+    pub(crate) const fn visibility(&self) -> Visibility { self.info.visibility }
 
-    pub(crate) const fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
+    pub(crate) fn disk_usage_bytes(&self) -> Option<u64> { self.info.disk_usage_bytes }
+
+    pub(crate) fn git_info(&self) -> Option<&GitInfo> { self.info.git_info.as_ref() }
 
     /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
     pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }
@@ -1284,8 +1285,7 @@ impl Clone for RustProject<Workspace> {
         Self {
             path:                      self.path.clone(),
             name:                      self.name.clone(),
-            visibility:                self.visibility,
-            disk_usage_bytes:          self.disk_usage_bytes,
+            info:                      self.info.clone(),
             cargo:                     self.cargo.clone(),
             vendored:                  self.vendored.clone(),
             kind:                      self.kind.clone(),
@@ -1300,8 +1300,7 @@ impl Clone for RustProject<Package> {
         Self {
             path:                      self.path.clone(),
             name:                      self.name.clone(),
-            visibility:                self.visibility,
-            disk_usage_bytes:          self.disk_usage_bytes,
+            info:                      self.info.clone(),
             cargo:                     self.cargo.clone(),
             vendored:                  self.vendored.clone(),
             kind:                      Package,
@@ -1311,10 +1310,10 @@ impl Clone for RustProject<Package> {
     }
 }
 
-impl<Kind: CargoKind> ProjectInfo for RustProject<Kind> {
-    fn disk_usage_bytes(&self) -> Option<u64> { self.disk_usage_bytes }
+impl<Kind: CargoKind> InfoProvider for RustProject<Kind> {
+    fn info(&self) -> &ProjectInfo { &self.info }
 
-    fn set_disk_usage_bytes(&mut self, bytes: u64) { self.disk_usage_bytes = Some(bytes); }
+    fn info_mut(&mut self) -> &mut ProjectInfo { &mut self.info }
 }
 
 // Shared accessors for all CargoKind projects.
@@ -1323,9 +1322,11 @@ impl<Kind: CargoKind> RustProject<Kind> {
 
     pub(crate) fn name(&self) -> Option<&str> { self.name.as_deref() }
 
-    pub(crate) const fn visibility(&self) -> Visibility { self.visibility }
+    pub(crate) const fn visibility(&self) -> Visibility { self.info.visibility }
 
-    pub(crate) const fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
+    pub(crate) fn disk_usage_bytes(&self) -> Option<u64> { self.info.disk_usage_bytes }
+
+    pub(crate) fn git_info(&self) -> Option<&GitInfo> { self.info.git_info.as_ref() }
 
     /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
     pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }
@@ -1375,8 +1376,7 @@ impl RustProject<Workspace> {
         Self {
             path,
             name,
-            visibility: Visibility::default(),
-            disk_usage_bytes: None,
+            info: ProjectInfo::default(),
             cargo,
             vendored,
             kind: Workspace::new(groups),
@@ -1406,8 +1406,7 @@ impl RustProject<Package> {
         Self {
             path,
             name,
-            visibility: Visibility::default(),
-            disk_usage_bytes: None,
+            info: ProjectInfo::default(),
             cargo,
             vendored,
             kind: Package,
@@ -1575,46 +1574,6 @@ impl ProjectListItem {
         )
     }
 
-    /// Check if any project in the hierarchy matches the absolute path and visibility.
-    pub(crate) fn has_project_with_visibility_by_path(&self, path: &Path, v: Visibility) -> bool {
-        match self {
-            Self::Workspace(p) => {
-                if p.path() == path && p.visibility() == v {
-                    return true;
-                }
-                p.groups().iter().any(|g| {
-                    g.members()
-                        .iter()
-                        .any(|m| m.path() == path && m.visibility() == v)
-                }) || p
-                    .vendored()
-                    .iter()
-                    .any(|vp| vp.path() == path && vp.visibility() == v)
-            },
-            Self::Package(p) => {
-                if p.path() == path && p.visibility() == v {
-                    return true;
-                }
-                p.vendored()
-                    .iter()
-                    .any(|vp| vp.path() == path && vp.visibility() == v)
-            },
-            Self::NonRust(p) => p.path() == path && p.visibility() == v,
-            Self::WorkspaceWorktrees(g) => {
-                (g.primary().path() == path && g.primary().visibility() == v)
-                    || g.linked()
-                        .iter()
-                        .any(|l| l.path() == path && l.visibility() == v)
-            },
-            Self::PackageWorktrees(g) => {
-                (g.primary().path() == path && g.primary().visibility() == v)
-                    || g.linked()
-                        .iter()
-                        .any(|l| l.path() == path && l.visibility() == v)
-            },
-        }
-    }
-
     /// Disk usage for this item. Worktree groups sum primary + linked.
     pub(crate) fn disk_usage_bytes(&self) -> Option<u64> {
         match self {
@@ -1626,144 +1585,82 @@ impl ProjectListItem {
         }
     }
 
-    /// Set disk usage on a project anywhere in the hierarchy by absolute path.
-    pub(crate) fn set_disk_usage_by_path(&mut self, path: &Path, bytes: u64) -> bool {
+    pub(crate) fn git_info(&self) -> Option<&GitInfo> {
         match self {
-            Self::Workspace(p) => set_disk_in_workspace(p, path, bytes),
-            Self::Package(p) => set_disk_in_package(p, path, bytes),
-            Self::NonRust(p) => {
-                if p.path() == path {
-                    p.set_disk_usage_bytes(bytes);
-                    return true;
-                }
-                false
-            },
+            Self::Workspace(p) => p.git_info(),
+            Self::Package(p) => p.git_info(),
+            Self::NonRust(p) => p.git_info(),
+            Self::WorkspaceWorktrees(g) => g.primary().git_info(),
+            Self::PackageWorktrees(g) => g.primary().git_info(),
+        }
+    }
+
+    pub(crate) fn at_path(&self, path: &Path) -> Option<&ProjectInfo> {
+        match self {
+            Self::Workspace(p) => info_in_workspace(p, path),
+            Self::Package(p) => info_in_package(p, path),
+            Self::NonRust(p) => (p.path() == path).then(|| p.info()),
+            Self::WorkspaceWorktrees(g) => info_in_workspace(g.primary(), path).or_else(|| {
+                g.linked()
+                    .iter()
+                    .find_map(|linked| info_in_workspace(linked, path))
+            }),
+            Self::PackageWorktrees(g) => info_in_package(g.primary(), path).or_else(|| {
+                g.linked()
+                    .iter()
+                    .find_map(|linked| info_in_package(linked, path))
+            }),
+        }
+    }
+
+    pub(crate) fn at_path_mut(&mut self, path: &Path) -> Option<&mut ProjectInfo> {
+        match self {
+            Self::Workspace(p) => info_in_workspace_mut(p, path),
+            Self::Package(p) => info_in_package_mut(p, path),
+            Self::NonRust(p) => (p.path() == path).then(|| p.info_mut()),
             Self::WorkspaceWorktrees(g) => {
-                if set_disk_in_workspace(g.primary_mut(), path, bytes) {
-                    return true;
+                if g.primary().path() == path {
+                    return Some(g.primary_mut().info_mut());
                 }
-                for linked in g.linked_mut() {
-                    if set_disk_in_workspace(linked, path, bytes) {
-                        return true;
-                    }
-                }
-                false
+                let linked_index = g
+                    .linked()
+                    .iter()
+                    .position(|linked| info_in_workspace(linked, path).is_some())?;
+                info_in_workspace_mut(&mut g.linked_mut()[linked_index], path)
             },
             Self::PackageWorktrees(g) => {
-                if set_disk_in_package(g.primary_mut(), path, bytes) {
-                    return true;
+                if g.primary().path() == path {
+                    return Some(g.primary_mut().info_mut());
                 }
-                for linked in g.linked_mut() {
-                    if set_disk_in_package(linked, path, bytes) {
-                        return true;
-                    }
-                }
-                false
+                let linked_index = g
+                    .linked()
+                    .iter()
+                    .position(|linked| info_in_package(linked, path).is_some())?;
+                info_in_package_mut(&mut g.linked_mut()[linked_index], path)
             },
         }
     }
 
-    /// Collect all `(path, bytes)` pairs for runtime data transfer.
-    ///
-    /// Used when replacing an item (e.g. project refresh) to preserve disk
-    /// usage data that was set by the watcher.
-    pub(crate) fn collect_disk_usage(&self) -> Vec<(PathBuf, u64)> {
+    pub(crate) fn collect_project_info(&self) -> Vec<(PathBuf, ProjectInfo)> {
         let mut out = Vec::new();
         match self {
-            Self::Workspace(p) => collect_disk_from_workspace(p, &mut out),
-            Self::Package(p) => collect_disk_from_package(p, &mut out),
-            Self::NonRust(p) => {
-                if let Some(b) = p.disk_usage_bytes() {
-                    out.push((p.path().to_path_buf(), b));
-                }
-            },
+            Self::Workspace(p) => collect_project_info_from_workspace(p, &mut out),
+            Self::Package(p) => collect_project_info_from_package(p, &mut out),
+            Self::NonRust(p) => collect_project_info_from_non_rust(p, &mut out),
             Self::WorkspaceWorktrees(g) => {
-                collect_disk_from_workspace(g.primary(), &mut out);
+                collect_project_info_from_workspace(g.primary(), &mut out);
                 for linked in g.linked() {
-                    collect_disk_from_workspace(linked, &mut out);
+                    collect_project_info_from_workspace(linked, &mut out);
                 }
             },
             Self::PackageWorktrees(g) => {
-                collect_disk_from_package(g.primary(), &mut out);
+                collect_project_info_from_package(g.primary(), &mut out);
                 for linked in g.linked() {
-                    collect_disk_from_package(linked, &mut out);
+                    collect_project_info_from_package(linked, &mut out);
                 }
             },
         }
         out
-    }
-
-    /// Set visibility on a project anywhere in the hierarchy by display path.
-    pub(crate) fn set_visibility_by_path(&mut self, display_path: &str, v: Visibility) -> bool {
-        match self {
-            Self::Workspace(p) => {
-                if p.display_path() == display_path {
-                    p.set_visibility(v);
-                    return true;
-                }
-                for g in p.groups_mut() {
-                    for m in g.members_mut() {
-                        if m.display_path() == display_path {
-                            m.set_visibility(v);
-                            return true;
-                        }
-                    }
-                }
-                for vp in p.vendored_mut() {
-                    if vp.display_path() == display_path {
-                        vp.set_visibility(v);
-                        return true;
-                    }
-                }
-                false
-            },
-            Self::Package(p) => {
-                if p.display_path() == display_path {
-                    p.set_visibility(v);
-                    return true;
-                }
-                for vp in p.vendored_mut() {
-                    if vp.display_path() == display_path {
-                        vp.set_visibility(v);
-                        return true;
-                    }
-                }
-                false
-            },
-            Self::NonRust(p) => {
-                if p.display_path() == display_path {
-                    p.set_visibility(v);
-                    return true;
-                }
-                false
-            },
-            Self::WorkspaceWorktrees(g) => {
-                if g.primary().display_path() == display_path {
-                    g.primary_mut().set_visibility(v);
-                    return true;
-                }
-                for linked in g.linked_mut() {
-                    if linked.display_path() == display_path {
-                        linked.set_visibility(v);
-                        return true;
-                    }
-                }
-                false
-            },
-            Self::PackageWorktrees(g) => {
-                if g.primary().display_path() == display_path {
-                    g.primary_mut().set_visibility(v);
-                    return true;
-                }
-                for linked in g.linked_mut() {
-                    if linked.display_path() == display_path {
-                        linked.set_visibility(v);
-                        return true;
-                    }
-                }
-                false
-            },
-        }
     }
 }
 
@@ -1782,69 +1679,113 @@ fn sum_worktree_disk<Kind: CargoKind>(
     any.then_some(total)
 }
 
-fn set_disk_in_workspace(ws: &mut RustProject<Workspace>, path: &Path, bytes: u64) -> bool {
+fn info_in_workspace<'a>(ws: &'a RustProject<Workspace>, path: &Path) -> Option<&'a ProjectInfo> {
     if ws.path() == path {
-        ws.set_disk_usage_bytes(bytes);
-        return true;
+        return Some(ws.info());
     }
-    for g in ws.groups_mut() {
-        for m in g.members_mut() {
-            if m.path() == path {
-                m.set_disk_usage_bytes(bytes);
-                return true;
+    for group in ws.groups() {
+        for member in group.members() {
+            if member.path() == path {
+                return Some(member.info());
             }
         }
     }
-    for vp in ws.vendored_mut() {
-        if vp.path() == path {
-            vp.set_disk_usage_bytes(bytes);
-            return true;
+    for vendored in ws.vendored() {
+        if vendored.path() == path {
+            return Some(vendored.info());
         }
     }
-    false
+    None
 }
 
-fn set_disk_in_package(pkg: &mut RustProject<Package>, path: &Path, bytes: u64) -> bool {
+fn info_in_package<'a>(pkg: &'a RustProject<Package>, path: &Path) -> Option<&'a ProjectInfo> {
     if pkg.path() == path {
-        pkg.set_disk_usage_bytes(bytes);
-        return true;
+        return Some(pkg.info());
     }
-    for vp in pkg.vendored_mut() {
-        if vp.path() == path {
-            vp.set_disk_usage_bytes(bytes);
-            return true;
+    for vendored in pkg.vendored() {
+        if vendored.path() == path {
+            return Some(vendored.info());
         }
     }
-    false
+    None
 }
 
-fn collect_disk_from_workspace(ws: &RustProject<Workspace>, out: &mut Vec<(PathBuf, u64)>) {
-    if let Some(b) = ws.disk_usage_bytes() {
-        out.push((ws.path().to_path_buf(), b));
+fn info_in_workspace_mut<'a>(
+    ws: &'a mut RustProject<Workspace>,
+    path: &Path,
+) -> Option<&'a mut ProjectInfo> {
+    if ws.path() == path {
+        return Some(ws.info_mut());
     }
-    for g in ws.groups() {
-        for m in g.members() {
-            if let Some(b) = m.disk_usage_bytes() {
-                out.push((m.path().to_path_buf(), b));
-            }
+    let member_index = ws
+        .groups()
+        .iter()
+        .enumerate()
+        .find_map(|(group_index, group)| {
+            group
+                .members()
+                .iter()
+                .position(|member| member.path() == path)
+                .map(|member_index| (group_index, member_index))
+        });
+    if let Some((group_index, member_index)) = member_index {
+        return Some(ws.groups_mut()[group_index].members_mut()[member_index].info_mut());
+    }
+    let vendored_index = ws
+        .vendored()
+        .iter()
+        .position(|vendored| vendored.path() == path);
+    if let Some(vendored_index) = vendored_index {
+        return Some(ws.vendored_mut()[vendored_index].info_mut());
+    }
+    None
+}
+
+fn info_in_package_mut<'a>(
+    pkg: &'a mut RustProject<Package>,
+    path: &Path,
+) -> Option<&'a mut ProjectInfo> {
+    if pkg.path() == path {
+        return Some(pkg.info_mut());
+    }
+    for vendored in pkg.vendored_mut() {
+        if vendored.path() == path {
+            return Some(vendored.info_mut());
         }
     }
-    for vp in ws.vendored() {
-        if let Some(b) = vp.disk_usage_bytes() {
-            out.push((vp.path().to_path_buf(), b));
+    None
+}
+
+fn collect_project_info_from_workspace(
+    ws: &RustProject<Workspace>,
+    out: &mut Vec<(PathBuf, ProjectInfo)>,
+) {
+    out.push((ws.path().to_path_buf(), ws.info().clone()));
+    for group in ws.groups() {
+        for member in group.members() {
+            out.push((member.path().to_path_buf(), member.info().clone()));
         }
+    }
+    for vendored in ws.vendored() {
+        out.push((vendored.path().to_path_buf(), vendored.info().clone()));
     }
 }
 
-fn collect_disk_from_package(pkg: &RustProject<Package>, out: &mut Vec<(PathBuf, u64)>) {
-    if let Some(b) = pkg.disk_usage_bytes() {
-        out.push((pkg.path().to_path_buf(), b));
+fn collect_project_info_from_package(
+    pkg: &RustProject<Package>,
+    out: &mut Vec<(PathBuf, ProjectInfo)>,
+) {
+    out.push((pkg.path().to_path_buf(), pkg.info().clone()));
+    for vendored in pkg.vendored() {
+        out.push((vendored.path().to_path_buf(), vendored.info().clone()));
     }
-    for vp in pkg.vendored() {
-        if let Some(b) = vp.disk_usage_bytes() {
-            out.push((vp.path().to_path_buf(), b));
-        }
-    }
+}
+
+fn collect_project_info_from_non_rust(
+    project: &NonRustProject,
+    out: &mut Vec<(PathBuf, ProjectInfo)>,
+) {
+    out.push((project.path().to_path_buf(), project.info().clone()));
 }
 
 /// Members within a workspace organized into groups.

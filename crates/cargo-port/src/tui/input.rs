@@ -370,7 +370,7 @@ fn open_in_editor(app: &App) {
 
 fn open_finder(app: &mut App) {
     if app.dirty.finder.is_dirty() {
-        let (index, col_widths) = super::finder::build_finder_index(&app.projects, &app.git_info);
+        let (index, col_widths) = super::finder::build_finder_index(&app.projects);
         app.finder.index = index;
         app.finder.col_widths = col_widths;
         app.dirty.finder.mark_clean();

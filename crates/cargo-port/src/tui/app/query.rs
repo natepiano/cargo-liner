@@ -13,6 +13,7 @@ use crate::config::ScrollDirection;
 use crate::constants::IN_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
+use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::Package;
@@ -142,8 +143,7 @@ impl App {
                 .ci_state_for(path)
                 .is_some_and(|state| !state.runs().is_empty())
                 || self
-                    .git_info
-                    .get(path)
+                    .git_info_for(path)
                     .is_some_and(|info| info.url.is_some()));
         let has_lint_runs = self
             .lint_runs
@@ -198,17 +198,16 @@ impl App {
     pub fn is_deleted(&self, path: &Path) -> bool {
         use crate::project::Visibility;
         self.projects
-            .iter()
-            .any(|item| item.has_project_with_visibility_by_path(path, Visibility::Deleted))
+            .at_path(path)
+            .is_some_and(|project| project.visibility == Visibility::Deleted)
     }
 
     pub fn formatted_disk(&self, path: &Path) -> String {
-        let mut bytes = 0u64;
-        self.projects.for_each_leaf(|item| {
-            if item.path() == path {
-                bytes = item.disk_usage_bytes().unwrap_or(0);
-            }
-        });
+        let bytes = self
+            .projects
+            .at_path(path)
+            .and_then(|project| project.disk_usage_bytes)
+            .unwrap_or(0);
         crate::tui::render::format_bytes(bytes)
     }
 
@@ -232,6 +231,12 @@ impl App {
         self.is_ci_owner_path(path)
             .then(|| self.ci_state.get(path))
             .flatten()
+    }
+
+    pub fn git_info_for(&self, path: &Path) -> Option<&GitInfo> {
+        self.projects
+            .at_path(path)
+            .and_then(|project| project.git_info.as_ref())
     }
 
     // ── ProjectListItem query methods ──────────────────────────────
@@ -451,7 +456,7 @@ impl App {
         ) {
             return String::new();
         }
-        let Some(info) = self.git_info.get(path) else {
+        let Some(info) = self.git_info_for(path) else {
             return String::new();
         };
         match info.ahead_behind {
