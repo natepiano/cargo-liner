@@ -302,7 +302,9 @@ fn add_git_worktree(primary_dir: &Path, worktree_dir: &Path, branch: &str) {
         .args([
             "worktree",
             "add",
-            worktree_dir.to_str().unwrap_or_else(|| std::process::abort()),
+            worktree_dir
+                .to_str()
+                .unwrap_or_else(|| std::process::abort()),
             "-b",
             branch,
         ])
@@ -314,8 +316,8 @@ fn add_git_worktree(primary_dir: &Path, worktree_dir: &Path, branch: &str) {
 
 fn item_from_project_dir(dir: &Path) -> ProjectListItem {
     let cargo_toml = dir.join("Cargo.toml");
-    let parsed = crate::project::from_cargo_toml(&cargo_toml)
-        .unwrap_or_else(|_| std::process::abort());
+    let parsed =
+        crate::project::from_cargo_toml(&cargo_toml).unwrap_or_else(|_| std::process::abort());
     crate::scan::cargo_project_to_item(parsed)
 }
 
@@ -756,7 +758,11 @@ fn worktree_section_collapses_when_one_dismissed() {
         .expect("linked worktree should exist")
         .visibility = Dismissed;
     let rows = snapshots::build_visible_rows(&items, &expanded, true);
-    assert_eq!(rows.len(), 1, "only the root should remain when one worktree is left");
+    assert_eq!(
+        rows.len(),
+        1,
+        "only the root should remain when one worktree is left"
+    );
     assert_eq!(rows, vec![VisibleRow::Root { node_index: 0 }]);
 }
 
@@ -789,7 +795,10 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
     app.handle_disk_usage(Path::new(&linked_path), 0);
 
     let linked_abs = PathBuf::from(&linked_path);
-    assert!(app.is_deleted(&linked_abs), "linked worktree should be deleted");
+    assert!(
+        app.is_deleted(&linked_abs),
+        "linked worktree should be deleted"
+    );
 
     app.ensure_visible_rows_cached();
     assert_eq!(
@@ -865,7 +874,10 @@ fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() 
     );
 
     let linked_abs = PathBuf::from(&linked_path);
-    assert!(app.is_deleted(&linked_abs), "linked workspace should be deleted");
+    assert!(
+        app.is_deleted(&linked_abs),
+        "linked workspace should be deleted"
+    );
     assert_eq!(
         app.visible_rows().len(),
         3,
@@ -2124,7 +2136,11 @@ fn handle_project_discovered_creates_worktree_group_from_single_primary() {
 
     let mut app = make_app(&[primary]);
     assert!(app.handle_project_discovered(linked));
-    assert_eq!(app.projects.len(), 1, "new linked checkout should regroup with the primary");
+    assert_eq!(
+        app.projects.len(),
+        1,
+        "new linked checkout should regroup with the primary"
+    );
 
     let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
         panic!("expected discovered worktree to create a package worktree group");
@@ -2157,18 +2173,28 @@ fn handle_project_discovered_slots_new_worktree_into_existing_group() {
 
     let mut app = make_app(&[root]);
     assert!(app.handle_project_discovered(new_linked));
-    assert_eq!(app.projects.len(), 1, "new linked checkout should stay inside the existing group");
+    assert_eq!(
+        app.projects.len(),
+        1,
+        "new linked checkout should stay inside the existing group"
+    );
 
     let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
         panic!("expected existing root to remain a package worktree group");
     };
     assert_eq!(group.linked().len(), 2);
     assert!(
-        group.linked().iter().any(|linked| linked.path() == Path::new(existing_linked_path)),
+        group
+            .linked()
+            .iter()
+            .any(|linked| linked.path() == Path::new(existing_linked_path)),
         "existing linked worktree should remain in the group"
     );
     assert!(
-        group.linked().iter().any(|linked| linked.path() == Path::new(new_linked_path)),
+        group
+            .linked()
+            .iter()
+            .any(|linked| linked.path() == Path::new(new_linked_path)),
         "new linked worktree should be appended to the group"
     );
 }
@@ -2194,7 +2220,11 @@ fn handle_project_discovered_creates_workspace_worktree_group_from_single_primar
 
     let mut app = make_app(&[primary]);
     assert!(app.handle_project_discovered(linked));
-    assert_eq!(app.projects.len(), 1, "new linked workspace should regroup with the primary");
+    assert_eq!(
+        app.projects.len(),
+        1,
+        "new linked workspace should regroup with the primary"
+    );
 
     let ProjectListItem::WorkspaceWorktrees(group) = &app.projects[0] else {
         panic!("expected discovered workspace worktree to create a worktree group");
@@ -2246,11 +2276,17 @@ fn handle_project_discovered_slots_new_workspace_worktree_into_existing_group() 
     };
     assert_eq!(group.linked().len(), 2);
     assert!(
-        group.linked().iter().any(|linked| linked.path() == Path::new(existing_linked_path)),
+        group
+            .linked()
+            .iter()
+            .any(|linked| linked.path() == Path::new(existing_linked_path)),
         "existing linked workspace should remain in the group"
     );
     assert!(
-        group.linked().iter().any(|linked| linked.path() == Path::new(new_linked_path)),
+        group
+            .linked()
+            .iter()
+            .any(|linked| linked.path() == Path::new(new_linked_path)),
         "new linked workspace should be appended to the group"
     );
 }
@@ -2267,7 +2303,10 @@ fn background_discovery_from_real_package_worktree_creates_group() {
 
     add_git_worktree(&primary_dir, &linked_dir, "test/app");
     let linked_item = item_from_project_dir(&linked_dir);
-    apply_bg_msg(&mut app, BackgroundMsg::ProjectDiscovered { item: linked_item });
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectDiscovered { item: linked_item },
+    );
 
     assert_eq!(app.projects.len(), 1);
     let ProjectListItem::PackageWorktrees(group) = &app.projects[0] else {
@@ -2276,7 +2315,10 @@ fn background_discovery_from_real_package_worktree_creates_group() {
     assert_eq!(group.linked().len(), 1);
 
     app.list_state.select(Some(0));
-    assert!(app.expand(), "root should expand into package worktree entries");
+    assert!(
+        app.expand(),
+        "root should expand into package worktree entries"
+    );
     app.ensure_visible_rows_cached();
     assert_eq!(app.visible_rows().len(), 3);
 }
@@ -2293,7 +2335,10 @@ fn background_discovery_from_real_workspace_worktree_creates_group() {
 
     add_git_worktree(&primary_dir, &linked_dir, "test/obsidian");
     let linked_item = item_from_project_dir(&linked_dir);
-    apply_bg_msg(&mut app, BackgroundMsg::ProjectDiscovered { item: linked_item });
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectDiscovered { item: linked_item },
+    );
 
     assert_eq!(app.projects.len(), 1);
     let ProjectListItem::WorkspaceWorktrees(group) = &app.projects[0] else {
@@ -2302,7 +2347,10 @@ fn background_discovery_from_real_workspace_worktree_creates_group() {
     assert_eq!(group.linked().len(), 1);
 
     app.list_state.select(Some(0));
-    assert!(app.expand(), "root should expand into workspace worktree entries");
+    assert!(
+        app.expand(),
+        "root should expand into workspace worktree entries"
+    );
     app.ensure_visible_rows_cached();
     assert_eq!(app.visible_rows().len(), 3);
 }
@@ -2392,7 +2440,11 @@ fn refreshed_workspace_worktree_metadata_regroups_stale_top_level_discovery() {
             item: stale_discovery,
         },
     );
-    assert_eq!(app.projects.len(), 2, "stale discovery should currently append a top-level row");
+    assert_eq!(
+        app.projects.len(),
+        2,
+        "stale discovery should currently append a top-level row"
+    );
 
     // A later refresh for the same path carries the correct worktree metadata.
     let refreshed = item_from_project_dir(&linked_dir);
@@ -2436,7 +2488,11 @@ fn refreshed_package_worktree_metadata_regroups_stale_top_level_discovery() {
             item: stale_discovery,
         },
     );
-    assert_eq!(app.projects.len(), 2, "stale discovery should currently append a top-level row");
+    assert_eq!(
+        app.projects.len(),
+        2,
+        "stale discovery should currently append a top-level row"
+    );
 
     let refreshed = item_from_project_dir(&linked_dir);
     apply_bg_msg(
@@ -2483,7 +2539,11 @@ fn refreshed_workspace_worktree_metadata_appends_into_existing_group() {
             item: stale_discovery,
         },
     );
-    assert_eq!(app.projects.len(), 2, "stale discovery should temporarily append a top-level row");
+    assert_eq!(
+        app.projects.len(),
+        2,
+        "stale discovery should temporarily append a top-level row"
+    );
 
     let refreshed = item_from_project_dir(&linked_two_dir);
     apply_bg_msg(
@@ -2501,11 +2561,17 @@ fn refreshed_workspace_worktree_metadata_appends_into_existing_group() {
     };
     assert_eq!(group.linked().len(), 2);
     assert!(
-        group.linked().iter().any(|linked| linked.path() == linked_one_dir.as_path()),
+        group
+            .linked()
+            .iter()
+            .any(|linked| linked.path() == linked_one_dir.as_path()),
         "existing linked workspace should remain in the group"
     );
     assert!(
-        group.linked().iter().any(|linked| linked.path() == linked_two_dir.as_path()),
+        group
+            .linked()
+            .iter()
+            .any(|linked| linked.path() == linked_two_dir.as_path()),
         "refreshed linked workspace should join the existing group"
     );
 }
@@ -2536,7 +2602,11 @@ fn refreshed_package_worktree_metadata_appends_into_existing_group() {
             item: stale_discovery,
         },
     );
-    assert_eq!(app.projects.len(), 2, "stale discovery should temporarily append a top-level row");
+    assert_eq!(
+        app.projects.len(),
+        2,
+        "stale discovery should temporarily append a top-level row"
+    );
 
     let refreshed = item_from_project_dir(&linked_two_dir);
     apply_bg_msg(
@@ -2554,11 +2624,17 @@ fn refreshed_package_worktree_metadata_appends_into_existing_group() {
     };
     assert_eq!(group.linked().len(), 2);
     assert!(
-        group.linked().iter().any(|linked| linked.path() == linked_one_dir.as_path()),
+        group
+            .linked()
+            .iter()
+            .any(|linked| linked.path() == linked_one_dir.as_path()),
         "existing linked package should remain in the group"
     );
     assert!(
-        group.linked().iter().any(|linked| linked.path() == linked_two_dir.as_path()),
+        group
+            .linked()
+            .iter()
+            .any(|linked| linked.path() == linked_two_dir.as_path()),
         "refreshed linked package should join the existing group"
     );
 }
@@ -2594,7 +2670,10 @@ fn stale_discovery_refresh_then_delete_dismiss_workspace_returns_to_root() {
     );
 
     app.list_state.select(Some(0));
-    assert!(app.expand(), "root should expand into worktree entries after regroup");
+    assert!(
+        app.expand(),
+        "root should expand into worktree entries after regroup"
+    );
     app.ensure_visible_rows_cached();
     assert_eq!(app.visible_rows().len(), 3);
 
@@ -2602,7 +2681,7 @@ fn stale_discovery_refresh_then_delete_dismiss_workspace_returns_to_root() {
     apply_bg_msg(
         &mut app,
         BackgroundMsg::DiskUsage {
-            path:  linked_dir.clone().into(),
+            path:  linked_dir.into(),
             bytes: 0,
         },
     );
@@ -2645,7 +2724,10 @@ fn stale_discovery_refresh_then_delete_dismiss_package_returns_to_root() {
     );
 
     app.list_state.select(Some(0));
-    assert!(app.expand(), "root should expand into worktree entries after regroup");
+    assert!(
+        app.expand(),
+        "root should expand into worktree entries after regroup"
+    );
     app.ensure_visible_rows_cached();
     assert_eq!(app.visible_rows().len(), 3);
 
@@ -2653,7 +2735,7 @@ fn stale_discovery_refresh_then_delete_dismiss_package_returns_to_root() {
     apply_bg_msg(
         &mut app,
         BackgroundMsg::DiskUsage {
-            path:  linked_dir.clone().into(),
+            path:  linked_dir.into(),
             bytes: 0,
         },
     );

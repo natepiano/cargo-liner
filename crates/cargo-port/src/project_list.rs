@@ -97,8 +97,7 @@ impl ProjectList {
                             linked,
                             linked
                                 .worktree_name()
-                                .map(Cow::Borrowed)
-                                .unwrap_or_else(|| Cow::Owned(linked.display_name())),
+                                .map_or_else(|| Cow::Owned(linked.display_name()), Cow::Borrowed),
                             &mut f,
                         );
                     }
@@ -110,8 +109,7 @@ impl ProjectList {
                             linked,
                             linked
                                 .worktree_name()
-                                .map(Cow::Borrowed)
-                                .unwrap_or_else(|| Cow::Owned(linked.display_name())),
+                                .map_or_else(|| Cow::Owned(linked.display_name()), Cow::Borrowed),
                             &mut f,
                         );
                     }
@@ -277,7 +275,8 @@ impl ProjectList {
     pub(crate) fn regroup_top_level_worktrees(&mut self) {
         let mut index = 0;
         while index < self.items.len() {
-            let Some(identity) = linked_worktree_identity(&self.items[index]).map(Path::to_path_buf)
+            let Some(identity) =
+                linked_worktree_identity(&self.items[index]).map(Path::to_path_buf)
             else {
                 index += 1;
                 continue;
@@ -294,7 +293,10 @@ impl ProjectList {
                 target_index -= 1;
             }
             let attached = try_attach_worktree(&mut self.items[target_index], &linked_item);
-            debug_assert!(attached, "linked worktree regroup should attach after container match");
+            debug_assert!(
+                attached,
+                "linked worktree regroup should attach after container match"
+            );
             if target_index >= index {
                 index += 1;
             }

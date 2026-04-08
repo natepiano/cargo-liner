@@ -1486,8 +1486,9 @@ impl App {
         self.dirty.finder.mark_dirty();
     }
 
-    pub(super) fn handle_git_first_commit(&mut self, path: &Path, first_commit: Option<String>) {
+    pub(super) fn handle_git_first_commit(&mut self, path: &Path, first_commit: Option<&str>) {
         let (member_paths, fallback_worktree_paths) = self.inherited_git_info_paths(path);
+        let first_commit = first_commit.map(String::from);
         let Some(project) = self.projects.at_path_mut(path) else {
             return;
         };
@@ -1922,7 +1923,7 @@ impl App {
                 self.handle_git_info(path.as_path(), info);
             },
             BackgroundMsg::GitFirstCommit { path, first_commit } => {
-                self.handle_git_first_commit(path.as_path(), first_commit);
+                self.handle_git_first_commit(path.as_path(), first_commit.as_deref());
             },
             BackgroundMsg::GitPathState { path, state } => {
                 self.handle_git_path_state_msg(&path, state);

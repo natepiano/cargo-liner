@@ -1257,9 +1257,9 @@ impl NonRustProject {
 
     pub(crate) const fn visibility(&self) -> Visibility { self.info.visibility }
 
-    pub(crate) fn disk_usage_bytes(&self) -> Option<u64> { self.info.disk_usage_bytes }
+    pub(crate) const fn disk_usage_bytes(&self) -> Option<u64> { self.info.disk_usage_bytes }
 
-    pub(crate) fn git_info(&self) -> Option<&GitInfo> { self.info.git_info.as_ref() }
+    pub(crate) const fn git_info(&self) -> Option<&GitInfo> { self.info.git_info.as_ref() }
 
     /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
     pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }
@@ -1324,9 +1324,9 @@ impl<Kind: CargoKind> RustProject<Kind> {
 
     pub(crate) const fn visibility(&self) -> Visibility { self.info.visibility }
 
-    pub(crate) fn disk_usage_bytes(&self) -> Option<u64> { self.info.disk_usage_bytes }
+    pub(crate) const fn disk_usage_bytes(&self) -> Option<u64> { self.info.disk_usage_bytes }
 
-    pub(crate) fn git_info(&self) -> Option<&GitInfo> { self.info.git_info.as_ref() }
+    pub(crate) const fn git_info(&self) -> Option<&GitInfo> { self.info.git_info.as_ref() }
 
     /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
     pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }
@@ -1622,7 +1622,7 @@ impl ProjectListItem {
         }
     }
 
-    pub(crate) fn git_info(&self) -> Option<&GitInfo> {
+    pub(crate) const fn git_info(&self) -> Option<&GitInfo> {
         match self {
             Self::Workspace(p) => p.git_info(),
             Self::Package(p) => p.git_info(),

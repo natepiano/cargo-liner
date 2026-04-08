@@ -123,14 +123,14 @@ impl Pane {
     }
 
     pub const fn selection_state(&self, row: usize, focus: PaneFocusState) -> PaneSelectionState {
-        if row != self.pos() {
-            PaneSelectionState::Unselected
-        } else {
+        if row == self.pos() {
             match focus {
                 PaneFocusState::Active => PaneSelectionState::Active,
                 PaneFocusState::Remembered => PaneSelectionState::Remembered,
                 PaneFocusState::Inactive => PaneSelectionState::Unselected,
             }
+        } else {
+            PaneSelectionState::Unselected
         }
     }
 
@@ -202,6 +202,7 @@ pub(super) struct LayoutCache {
 #[cfg(test)]
 mod tests {
     use ratatui::style::Color;
+    use ratatui::style::Modifier;
     use ratatui::style::Style;
 
     use super::PaneFocusState;
@@ -213,7 +214,7 @@ mod tests {
 
         assert_eq!(style.fg, None);
         assert_eq!(style.bg, Some(Color::Cyan));
-        assert_eq!(style.add_modifier, Default::default());
+        assert_eq!(style.add_modifier, Modifier::default());
     }
 
     #[test]
@@ -223,7 +224,7 @@ mod tests {
 
         assert_eq!(patched.fg, Some(Color::Red));
         assert_eq!(patched.bg, Some(Color::Cyan));
-        assert_eq!(patched.add_modifier, Default::default());
+        assert_eq!(patched.add_modifier, Modifier::default());
     }
 
     #[test]

@@ -2038,8 +2038,7 @@ edition = "2024"
         std::fs::create_dir_all(dir.join("src")).expect("create src");
         std::fs::write(dir.join("Cargo.toml"), manifest_contents(name, workspace))
             .expect("write Cargo.toml");
-        std::fs::write(dir.join("src").join("main.rs"), "fn main() {}\n")
-            .expect("write main.rs");
+        std::fs::write(dir.join("src").join("main.rs"), "fn main() {}\n").expect("write main.rs");
         init_git_repo(dir);
     }
 
@@ -2214,8 +2213,7 @@ edition = "2024"
             &mut discovered,
             5,
             NonRustInclusion::default(),
-            &crate::http::HttpClient::new(test_runtime().handle().clone())
-                .expect("http client"),
+            &crate::http::HttpClient::new(test_runtime().handle().clone()).expect("http client"),
         );
 
         let BackgroundMsg::ProjectDiscovered { item } = bg_rx
@@ -2231,7 +2229,12 @@ edition = "2024"
         assert_eq!(pkg.worktree_name(), Some("app_test"));
         assert_eq!(
             pkg.worktree_primary_abs_path(),
-            Some(primary_dir.canonicalize().expect("canonical primary").as_path())
+            Some(
+                primary_dir
+                    .canonicalize()
+                    .expect("canonical primary")
+                    .as_path()
+            )
         );
     }
 
@@ -2256,8 +2259,7 @@ edition = "2024"
             &mut discovered,
             5,
             NonRustInclusion::default(),
-            &crate::http::HttpClient::new(test_runtime().handle().clone())
-                .expect("http client"),
+            &crate::http::HttpClient::new(test_runtime().handle().clone()).expect("http client"),
         );
 
         let BackgroundMsg::ProjectDiscovered { item } = bg_rx
@@ -2273,7 +2275,12 @@ edition = "2024"
         assert_eq!(ws.worktree_name(), Some("obsidian_knife_test"));
         assert_eq!(
             ws.worktree_primary_abs_path(),
-            Some(primary_dir.canonicalize().expect("canonical primary").as_path())
+            Some(
+                primary_dir
+                    .canonicalize()
+                    .expect("canonical primary")
+                    .as_path()
+            )
         );
     }
 
@@ -2350,7 +2357,10 @@ edition = "2024"
                 got_zero = true;
             }
         }
-        assert!(got_zero, "expected zero-byte disk usage for removed package worktree");
+        assert!(
+            got_zero,
+            "expected zero-byte disk usage for removed package worktree"
+        );
     }
 
     #[test]
@@ -2426,6 +2436,9 @@ edition = "2024"
                 got_zero = true;
             }
         }
-        assert!(got_zero, "expected zero-byte disk usage for removed workspace worktree");
+        assert!(
+            got_zero,
+            "expected zero-byte disk usage for removed workspace worktree"
+        );
     }
 }
