@@ -35,7 +35,6 @@ use crate::project::Workspace;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
-use crate::scan::FlatEntry;
 use crate::tui::columns::ResolvedWidths;
 use crate::tui::config_reload;
 use crate::tui::terminal::CiFetchMsg;
@@ -50,16 +49,11 @@ use crate::watcher::WatchRequest;
 
 impl App {
     #[cfg(test)]
-    pub(super) fn apply_tree_build(
-        &mut self,
-        flat_entries: Vec<FlatEntry>,
-        mut projects: ProjectList,
-    ) {
+    pub(super) fn apply_tree_build(&mut self, projects: ProjectList) {
         let selected_path = self
             .selected_display_path()
             .or_else(|| self.selection_paths.last_selected.clone());
         let should_focus_project_list = false;
-        projects.set_flat_entries(flat_entries);
         self.projects = projects;
         self.dirty.finder.mark_dirty();
         self.dirty.rows.mark_dirty();
@@ -72,7 +66,8 @@ impl App {
         self.data_generation += 1;
         self.detail_generation += 1;
 
-        // Re-run search if active so filtered indices match new flat_entries
+        // Re-run search if active so filtered results match the latest
+        // hierarchy state.
         if self.is_searching() && !self.search_query.is_empty() {
             let query = self.search_query.clone();
             self.update_search(&query);
@@ -1118,11 +1113,8 @@ impl App {
     }
 
     /// Lightweight refresh of derived state after in-place hierarchy changes
-    /// (discovery, refresh). Rebuilds `flat_entries` and marks caches dirty
-    /// without a full tree rebuild.
+    /// (discovery, refresh). Marks caches dirty without a full tree rebuild.
     pub(super) fn refresh_derived_state(&mut self) {
-        self.projects
-            .rebuild_flat_entries(self.include_non_rust().includes_non_rust());
         self.recompute_cargo_active_paths();
         self.data_generation += 1;
         self.detail_generation += 1;
@@ -1547,7 +1539,7 @@ impl App {
         // Insert into the hierarchy directly — under a parent workspace if
         // one exists, otherwise as a top-level peer.
         self.projects.insert_into_hierarchy(item);
-        // Signal that derived state (flat_entries, dirty flags) needs refresh.
+        // Signal that derived state and caches need refresh.
         // The caller batches multiple discoveries before refreshing once.
         true
     }
@@ -1750,7 +1742,6 @@ impl App {
     fn handle_scan_result(
         &mut self,
         projects: Vec<ProjectListItem>,
-        flat_entries: Vec<FlatEntry>,
         disk_entries: &[(String, PathBuf)],
     ) {
         let kind = if self.scan.run_count == 1 {
@@ -1764,7 +1755,6 @@ impl App {
             kind,
             run = self.scan.run_count,
             tree_items = projects.len(),
-            flat_entries = flat_entries.len(),
             disk_entries = disk_entries.len(),
             "scan_result_applied"
         );
@@ -1774,9 +1764,7 @@ impl App {
         let selected_path = self
             .selected_display_path()
             .or_else(|| self.selection_paths.last_selected.clone());
-        let mut new_projects = ProjectList::new(projects);
-        new_projects.set_flat_entries(flat_entries);
-        self.projects = new_projects;
+        self.projects = ProjectList::new(projects);
         self.dirty.finder.mark_dirty();
         self.dirty.rows.mark_dirty();
         self.dirty.disk_cache.mark_dirty();
@@ -1788,7 +1776,8 @@ impl App {
         self.data_generation += 1;
         self.detail_generation += 1;
 
-        // Re-run search if active so filtered indices match new flat_entries.
+        // Re-run search if active so filtered results match the latest
+        // hierarchy state.
         if self.is_searching() && !self.search_query.is_empty() {
             let query = self.search_query.clone();
             self.update_search(&query);
@@ -1894,10 +1883,9 @@ impl App {
             } => self.handle_repo_meta(path.as_path(), stars, description),
             BackgroundMsg::ScanResult {
                 projects,
-                flat_entries,
                 disk_entries,
             } => {
-                self.handle_scan_result(projects, flat_entries, &disk_entries);
+                self.handle_scan_result(projects, &disk_entries);
             },
             BackgroundMsg::ProjectDiscovered { item } => {
                 if self.handle_project_discovered(item) {

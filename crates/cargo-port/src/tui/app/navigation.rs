@@ -12,6 +12,7 @@ use super::snapshots;
 use super::types::App;
 use super::types::DetailCache;
 use super::types::ExpandKey;
+use super::types::SearchHit;
 use super::types::SearchMode;
 use super::types::VisibleRow;
 use crate::constants::WORKTREE;
@@ -327,13 +328,13 @@ impl App {
     }
 
     /// Returns the absolute path of the currently selected project, borrowed
-    /// from `project_list_items` (or `flat_entries` during search).
+    /// from `project_list_items` (or `filtered` search hits during search).
     pub fn selected_project_path(&self) -> Option<&Path> {
         if self.is_searching() && !self.search_query.is_empty() {
             let selected = self.list_state.selected()?;
-            let flat_idx = *self.filtered.get(selected)?;
-            let entry = self.projects.flat_entries().get(flat_idx)?;
-            Some(entry.abs_path.as_path())
+            self.filtered
+                .get(selected)
+                .map(|hit| hit.abs_path.as_path())
         } else {
             let row = self.selected_row()?;
             self.path_for_row(row)
@@ -1150,9 +1151,8 @@ impl App {
         let project_path = self
             .list_state
             .selected()
-            .and_then(|sel| self.filtered.get(sel).copied())
-            .and_then(|flat_idx| self.projects.flat_entries().get(flat_idx))
-            .map(|entry| entry.path.clone());
+            .and_then(|sel| self.filtered.get(sel))
+            .map(|hit| hit.display_path.clone());
         self.end_search();
         self.search_query.clear();
         self.filtered.clear();
@@ -1282,20 +1282,32 @@ impl App {
             false,
         );
 
-        let mut scored: Vec<(usize, u16)> = self
-            .projects
-            .flat_entries()
-            .iter()
-            .enumerate()
-            .filter_map(|(i, entry)| {
-                let mut buf = Vec::new();
-                let haystack = Utf32Str::new(&entry.name, &mut buf);
-                atom.score(haystack, &mut matcher).map(|score| (i, score))
-            })
-            .collect();
+        let include_non_rust = self.include_non_rust().includes_non_rust();
+        let mut scored = Vec::new();
+        self.projects.visit_searchables(|item| {
+            if !include_non_rust && !item.is_rust {
+                return;
+            }
 
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
-        self.filtered = scored.into_iter().map(|(i, _)| i).collect();
+            let mut buf = Vec::new();
+            let haystack = Utf32Str::new(item.name.as_ref(), &mut buf);
+            if let Some(score) = atom.score(haystack, &mut matcher) {
+                scored.push(SearchHit {
+                    abs_path: item.abs_path.to_path_buf(),
+                    display_path: item.display_path.into_owned(),
+                    name: item.name.into_owned(),
+                    score,
+                    is_rust: item.is_rust,
+                });
+            }
+        });
+
+        scored.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| a.display_path.cmp(&b.display_path))
+        });
+        self.filtered = scored;
 
         if self.filtered.is_empty() {
             self.list_state.select(None);

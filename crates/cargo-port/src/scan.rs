@@ -39,14 +39,6 @@ use super::project::RustProject;
 use super::project::Workspace;
 use super::project::WorktreeGroup;
 
-/// A flattened entry for fuzzy search.
-#[derive(Clone)]
-pub(crate) struct FlatEntry {
-    pub path:     String,
-    pub abs_path: PathBuf,
-    pub name:     String,
-}
-
 pub(crate) enum BackgroundMsg {
     DiskUsage {
         path:  AbsolutePath,
@@ -93,7 +85,6 @@ pub(crate) enum BackgroundMsg {
     },
     ScanResult {
         projects:     Vec<ProjectListItem>,
-        flat_entries: Vec<FlatEntry>,
         disk_entries: Vec<(String, PathBuf)>,
     },
     ProjectDiscovered {
@@ -995,106 +986,6 @@ fn group_members_new(
     groups
 }
 
-/// Build a flat list of entries for fuzzy search from the project tree.
-pub(crate) fn build_flat_entries(
-    items: &[ProjectListItem],
-    include_non_rust: bool,
-) -> Vec<FlatEntry> {
-    let mut entries = Vec::new();
-    for item in items {
-        if !include_non_rust && !item.is_rust() {
-            continue;
-        }
-        entries.push(FlatEntry {
-            path:     item.display_path(),
-            abs_path: item.path().to_path_buf(),
-            name:     item.display_name(),
-        });
-
-        match item {
-            ProjectListItem::Workspace(ws) => {
-                for group in ws.groups() {
-                    for member in group.members() {
-                        entries.push(FlatEntry {
-                            path:     member.display_path(),
-                            abs_path: member.path().to_path_buf(),
-                            name:     member.display_name(),
-                        });
-                    }
-                }
-                for vendored in ws.vendored() {
-                    entries.push(FlatEntry {
-                        path:     vendored.display_path(),
-                        abs_path: vendored.path().to_path_buf(),
-                        name:     format!("{} (vendored)", vendored.display_name()),
-                    });
-                }
-            },
-            ProjectListItem::Package(pkg) => {
-                for vendored in pkg.vendored() {
-                    entries.push(FlatEntry {
-                        path:     vendored.display_path(),
-                        abs_path: vendored.path().to_path_buf(),
-                        name:     format!("{} (vendored)", vendored.display_name()),
-                    });
-                }
-            },
-            ProjectListItem::WorkspaceWorktrees(wtg) => {
-                for linked in wtg.linked() {
-                    entries.push(FlatEntry {
-                        path:     linked.display_path(),
-                        abs_path: linked.path().to_path_buf(),
-                        name:     linked
-                            .worktree_name()
-                            .unwrap_or_else(|| linked.name().unwrap_or(""))
-                            .to_string(),
-                    });
-                    for group in linked.groups() {
-                        for member in group.members() {
-                            entries.push(FlatEntry {
-                                path:     member.display_path(),
-                                abs_path: member.path().to_path_buf(),
-                                name:     member.display_name(),
-                            });
-                        }
-                    }
-                }
-                // Also emit primary's groups
-                for group in wtg.primary().groups() {
-                    for member in group.members() {
-                        entries.push(FlatEntry {
-                            path:     member.display_path(),
-                            abs_path: member.path().to_path_buf(),
-                            name:     member.display_name(),
-                        });
-                    }
-                }
-                for vendored in wtg.primary().vendored() {
-                    entries.push(FlatEntry {
-                        path:     vendored.display_path(),
-                        abs_path: vendored.path().to_path_buf(),
-                        name:     format!("{} (vendored)", vendored.display_name()),
-                    });
-                }
-            },
-            ProjectListItem::PackageWorktrees(wtg) => {
-                for linked in wtg.linked() {
-                    entries.push(FlatEntry {
-                        path:     linked.display_path(),
-                        abs_path: linked.path().to_path_buf(),
-                        name:     linked
-                            .worktree_name()
-                            .unwrap_or_else(|| linked.name().unwrap_or(""))
-                            .to_string(),
-                    });
-                }
-            },
-            ProjectListItem::NonRust(_) => {},
-        }
-    }
-    entries
-}
-
 /// Convert a `CargoProject` (from `from_cargo_toml()`) into a `ProjectListItem`.
 pub(crate) fn cargo_project_to_item(cp: CargoParseResult) -> ProjectListItem {
     match cp {
@@ -1357,18 +1248,15 @@ pub(crate) fn spawn_streaming_scan(
 
         let tree_started = std::time::Instant::now();
         let projects = build_tree(&phase1.items, &inline_dirs);
-        let flat_entries = build_flat_entries(&projects, true);
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(tree_started.elapsed().as_millis()),
             input_items = phase1.items.len(),
             tree_items = projects.len(),
-            flat_entries = flat_entries.len(),
             "scan_tree_build"
         );
 
         let _ = scan_tx.send(BackgroundMsg::ScanResult {
             projects,
-            flat_entries,
             disk_entries: phase1.disk_entries.clone(),
         });
         spawn_initial_disk_usage(&scan_context, &phase1.disk_entries);

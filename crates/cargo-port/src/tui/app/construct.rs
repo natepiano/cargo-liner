@@ -107,11 +107,8 @@ impl AppInit {
             http_client.clone(),
         );
         let built = scan::build_tree(projects, &cfg.tui.inline_dirs);
-        let include_non_rust = cfg.tui.include_non_rust.includes_non_rust();
-        let flat_entries = scan::build_flat_entries(&built, include_non_rust);
         let list_state = initial_list_state(&built);
-        let mut projects = crate::project_list::ProjectList::new(built);
-        projects.set_flat_entries(flat_entries);
+        let projects = crate::project_list::ProjectList::new(built);
 
         Self {
             config_path,

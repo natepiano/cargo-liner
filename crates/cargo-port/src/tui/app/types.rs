@@ -78,6 +78,15 @@ pub struct DiskCacheBuildResult {
     pub child_sorted: HashMap<usize, Vec<u64>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchHit {
+    pub abs_path:     PathBuf,
+    pub display_path: String,
+    pub name:         String,
+    pub score:        u16,
+    pub is_rust:      bool,
+}
+
 #[derive(Debug, Default)]
 pub struct StartupPhaseTracker {
     pub scan_complete_at:    Option<Instant>,
@@ -501,7 +510,7 @@ pub struct App {
     pub expanded:                 HashSet<ExpandKey>,
     pub list_state:               ListState,
     pub search_query:             String,
-    pub filtered:                 Vec<usize>,
+    pub filtered:                 Vec<SearchHit>,
     pub settings_pane:            Pane,
     pub settings_edit_buf:        String,
     pub settings_edit_cursor:     usize,

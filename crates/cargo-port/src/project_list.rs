@@ -1,32 +1,38 @@
+use std::borrow::Cow;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::path::Path;
 
 use crate::project::MemberGroup;
+use crate::project::NonRustProject;
 use crate::project::Package;
+use crate::project::ProjectInfo;
 use crate::project::ProjectListItem;
 use crate::project::RustProject;
+use crate::project::Visibility;
 use crate::project::Workspace;
-use crate::scan::FlatEntry;
 
 /// Owning wrapper around the project hierarchy.
 ///
 /// `ProjectList` is the single source of truth for all project data.
-/// Mutations go through its methods; derived state (flat entries, visible
-/// rows) is computed from it on demand.
+/// Mutations go through its methods; derived state is computed from it on
+/// demand.
 #[derive(Clone, Default)]
 pub(crate) struct ProjectList {
-    items:        Vec<ProjectListItem>,
-    flat_entries: Vec<FlatEntry>,
+    items: Vec<ProjectListItem>,
+}
+
+pub(crate) struct SearchableItem<'a> {
+    pub abs_path:         &'a Path,
+    pub display_path:     Cow<'a, str>,
+    pub name:             Cow<'a, str>,
+    pub is_rust:          bool,
+    pub visibility:       Visibility,
+    pub disk_usage_bytes: Option<u64>,
 }
 
 impl ProjectList {
-    pub(crate) const fn new(items: Vec<ProjectListItem>) -> Self {
-        Self {
-            items,
-            flat_entries: Vec::new(),
-        }
-    }
+    pub(crate) const fn new(items: Vec<ProjectListItem>) -> Self { Self { items } }
 
     // -- Leaf iteration ---------------------------------------------------
 
@@ -73,6 +79,74 @@ impl ProjectList {
                 other => f(other.path(), other.is_rust()),
             }
         }
+    }
+
+    /// Iterate every project-like item that search should match directly from
+    /// the hierarchy without maintaining a synchronized flat cache.
+    pub(crate) fn visit_searchables(&self, mut f: impl FnMut(SearchableItem<'_>)) {
+        for item in &self.items {
+            match item {
+                ProjectListItem::Workspace(ws) => visit_workspace_searchables(ws, &mut f),
+                ProjectListItem::Package(pkg) => visit_package_searchables(pkg, &mut f),
+                ProjectListItem::NonRust(nr) => f(non_rust_searchable(nr)),
+                ProjectListItem::WorkspaceWorktrees(g) => {
+                    visit_workspace_searchables(g.primary(), &mut f);
+                    for linked in g.linked() {
+                        visit_workspace_searchables_with_root_name(
+                            linked,
+                            linked
+                                .worktree_name()
+                                .map(Cow::Borrowed)
+                                .unwrap_or_else(|| Cow::Owned(linked.display_name())),
+                            &mut f,
+                        );
+                    }
+                },
+                ProjectListItem::PackageWorktrees(g) => {
+                    visit_package_searchables(g.primary(), &mut f);
+                    for linked in g.linked() {
+                        visit_package_searchables_with_root_name(
+                            linked,
+                            linked
+                                .worktree_name()
+                                .map(Cow::Borrowed)
+                                .unwrap_or_else(|| Cow::Owned(linked.display_name())),
+                            &mut f,
+                        );
+                    }
+                },
+            }
+        }
+    }
+
+    pub(crate) fn find_searchable_by_abs_path(&self, target: &Path) -> Option<SearchableItem<'_>> {
+        for item in &self.items {
+            let found = match item {
+                ProjectListItem::Workspace(ws) => find_workspace_searchable(ws, target),
+                ProjectListItem::Package(pkg) => find_package_searchable(pkg, target),
+                ProjectListItem::NonRust(nr) => {
+                    (nr.path() == target).then(|| non_rust_searchable(nr))
+                },
+                ProjectListItem::WorkspaceWorktrees(g) => {
+                    find_workspace_searchable(g.primary(), target).or_else(|| {
+                        g.linked()
+                            .iter()
+                            .find_map(|ws| find_workspace_searchable(ws, target))
+                    })
+                },
+                ProjectListItem::PackageWorktrees(g) => {
+                    find_package_searchable(g.primary(), target).or_else(|| {
+                        g.linked()
+                            .iter()
+                            .find_map(|pkg| find_package_searchable(pkg, target))
+                    })
+                },
+            };
+            if found.is_some() {
+                return found;
+            }
+        }
+        None
     }
 
     // -- Hierarchy mutations ----------------------------------------------
@@ -185,27 +259,9 @@ impl ProjectList {
         }
     }
 
-    // -- Flat entries (search index) -----------------------------------------
-
-    pub(crate) fn flat_entries(&self) -> &[FlatEntry] { &self.flat_entries }
-
-    /// Rebuild the flat entries cache. Call after batch mutations.
-    pub(crate) fn rebuild_flat_entries(&mut self, include_non_rust: bool) {
-        self.flat_entries = crate::scan::build_flat_entries(&self.items, include_non_rust);
-    }
-
-    /// Replace the flat entries cache directly (e.g. from a scan result that
-    /// already built them on a background thread).
-    pub(crate) fn set_flat_entries(&mut self, entries: Vec<FlatEntry>) {
-        self.flat_entries = entries;
-    }
-
     // -- Vec-like operations -------------------------------------------------
 
-    pub(crate) fn clear(&mut self) {
-        self.items.clear();
-        self.flat_entries.clear();
-    }
+    pub(crate) fn clear(&mut self) { self.items.clear(); }
 
     #[cfg(test)]
     pub(crate) fn push(&mut self, item: ProjectListItem) { self.items.push(item); }
@@ -289,6 +345,143 @@ fn regroup_workspace(ws: &mut RustProject<Workspace>, inline_dirs: &[String]) {
     });
 
     *ws.groups_mut() = groups;
+}
+
+fn non_rust_searchable(project: &NonRustProject) -> SearchableItem<'_> {
+    SearchableItem {
+        abs_path:         project.path(),
+        display_path:     Cow::Owned(project.display_path()),
+        name:             Cow::Owned(project.display_name()),
+        is_rust:          false,
+        visibility:       project.visibility(),
+        disk_usage_bytes: project.disk_usage_bytes(),
+    }
+}
+
+fn package_searchable<'a>(
+    project: &'a RustProject<Package>,
+    name: Cow<'a, str>,
+) -> SearchableItem<'a> {
+    SearchableItem {
+        abs_path: project.path(),
+        display_path: Cow::Owned(project.display_path()),
+        name,
+        is_rust: true,
+        visibility: project.visibility(),
+        disk_usage_bytes: project.disk_usage_bytes(),
+    }
+}
+
+fn workspace_searchable<'a>(
+    project: &'a RustProject<Workspace>,
+    name: Cow<'a, str>,
+) -> SearchableItem<'a> {
+    SearchableItem {
+        abs_path: project.path(),
+        display_path: Cow::Owned(project.display_path()),
+        name,
+        is_rust: true,
+        visibility: project.visibility(),
+        disk_usage_bytes: project.disk_usage_bytes(),
+    }
+}
+
+fn vendored_searchable(project: &RustProject<Package>) -> SearchableItem<'_> {
+    SearchableItem {
+        abs_path:         project.path(),
+        display_path:     Cow::Owned(project.display_path()),
+        name:             Cow::Owned(format!("{} (vendored)", project.display_name())),
+        is_rust:          true,
+        visibility:       project.visibility(),
+        disk_usage_bytes: project.disk_usage_bytes(),
+    }
+}
+
+fn visit_package_searchables(pkg: &RustProject<Package>, f: &mut impl FnMut(SearchableItem<'_>)) {
+    visit_package_searchables_with_root_name(pkg, Cow::Owned(pkg.display_name()), f);
+}
+
+fn visit_package_searchables_with_root_name<'a>(
+    pkg: &'a RustProject<Package>,
+    root_name: Cow<'a, str>,
+    f: &mut impl FnMut(SearchableItem<'a>),
+) {
+    f(package_searchable(pkg, root_name));
+    for vendored in pkg.vendored() {
+        f(vendored_searchable(vendored));
+    }
+}
+
+fn find_package_searchable<'a>(
+    pkg: &'a RustProject<Package>,
+    target: &Path,
+) -> Option<SearchableItem<'a>> {
+    if pkg.path() == target {
+        return Some(package_searchable(pkg, Cow::Owned(pkg.display_name())));
+    }
+    pkg.vendored()
+        .iter()
+        .find(|vendored| vendored.path() == target)
+        .map(vendored_searchable)
+}
+
+fn visit_workspace_searchables(
+    ws: &RustProject<Workspace>,
+    f: &mut impl FnMut(SearchableItem<'_>),
+) {
+    visit_workspace_searchables_with_root_name(ws, Cow::Owned(ws.display_name()), f);
+}
+
+fn visit_workspace_searchables_with_root_name<'a>(
+    ws: &'a RustProject<Workspace>,
+    root_name: Cow<'a, str>,
+    f: &mut impl FnMut(SearchableItem<'a>),
+) {
+    f(workspace_searchable(ws, root_name));
+    for group in ws.groups() {
+        for member in group.members() {
+            f(package_searchable(
+                member,
+                Cow::Owned(member.display_name()),
+            ));
+            for vendored in member.vendored() {
+                f(vendored_searchable(vendored));
+            }
+        }
+    }
+    for vendored in ws.vendored() {
+        f(vendored_searchable(vendored));
+    }
+}
+
+fn find_workspace_searchable<'a>(
+    ws: &'a RustProject<Workspace>,
+    target: &Path,
+) -> Option<SearchableItem<'a>> {
+    if ws.path() == target {
+        return Some(workspace_searchable(ws, Cow::Owned(ws.display_name())));
+    }
+    for group in ws.groups() {
+        for member in group.members() {
+            if member.path() == target {
+                return Some(package_searchable(
+                    member,
+                    Cow::Owned(member.display_name()),
+                ));
+            }
+            if let Some(vendored) = member
+                .vendored()
+                .iter()
+                .find(|vendored| vendored.path() == target)
+            {
+                return Some(vendored_searchable(vendored));
+            }
+        }
+    }
+    ws.vendored()
+        .iter()
+        .find(|vendored| vendored.path() == target)
+        .map(vendored_searchable)
 }
 
 fn try_insert_member(

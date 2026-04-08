@@ -182,6 +182,39 @@ fn named_group(name: &str, members: Vec<RustProject<Package>>) -> MemberGroup {
     }
 }
 
+fn make_package_with_vendored(
+    name: Option<&str>,
+    path: &str,
+    vendored: Vec<RustProject<Package>>,
+) -> RustProject<Package> {
+    RustProject::<Package>::new(
+        PathBuf::from(path),
+        name.map(String::from),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        vendored,
+        None,
+        None,
+    )
+}
+
+fn make_workspace_raw_with_vendored(
+    name: Option<&str>,
+    path: &str,
+    groups: Vec<MemberGroup>,
+    vendored: Vec<RustProject<Package>>,
+    worktree_name: Option<&str>,
+) -> RustProject<Workspace> {
+    RustProject::<Workspace>::new(
+        PathBuf::from(path),
+        name.map(String::from),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        groups,
+        vendored,
+        worktree_name.map(String::from),
+        None,
+    )
+}
+
 fn wait_for_tree_build(app: &mut App) {
     // Tree rebuilds no longer exist — just ensure derived state is fresh.
     app.ensure_visible_rows_cached();
@@ -306,11 +339,7 @@ fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
 }
 
 fn apply_items(app: &mut App, items: &[ProjectListItem]) {
-    let flat_entries = crate::scan::build_flat_entries(items, true);
-    app.apply_tree_build(
-        flat_entries,
-        crate::project_list::ProjectList::new(items.to_vec()),
-    );
+    app.apply_tree_build(crate::project_list::ProjectList::new(items.to_vec()));
     app.ensure_visible_rows_cached();
 }
 
@@ -1321,6 +1350,73 @@ fn disk_updates_skip_git_path_refresh_during_scan() {
     assert_eq!(
         app.git_path_states.get(Path::new(&abs_str)),
         Some(&GitPathState::OutsideRepo)
+    );
+}
+
+#[test]
+fn search_finds_workspace_members_and_vendored_crates() {
+    let member_path = "~/ws/crates/member";
+    let vendored_path = "~/ws/vendor/helper";
+    let workspace = ProjectListItem::Workspace(make_workspace_raw_with_vendored(
+        Some("ws"),
+        "~/ws",
+        vec![inline_group(vec![make_member(Some("member"), member_path)])],
+        vec![make_member(Some("helper"), vendored_path)],
+        None,
+    ));
+    let mut app = make_app(&[make_workspace_project(Some("ws"), "~/ws")]);
+    apply_items(&mut app, &[workspace]);
+
+    app.update_search("member");
+    assert!(
+        app.filtered
+            .iter()
+            .any(|hit| hit.display_path == member_path && hit.name == "member")
+    );
+
+    app.update_search("helper");
+    assert!(
+        app.filtered
+            .iter()
+            .any(|hit| hit.display_path == vendored_path && hit.name == "helper (vendored)")
+    );
+}
+
+#[test]
+fn search_finds_linked_worktree_children_and_confirms_selection() {
+    let member_path = "~/ws_feat/crates/member_feat";
+    let vendored_path = "~/ws_feat/vendor/helper_feat";
+    let item = make_workspace_worktrees_item(
+        make_workspace_raw(Some("ws"), "~/ws", Vec::new(), None),
+        vec![make_workspace_raw_with_vendored(
+            Some("ws"),
+            "~/ws_feat",
+            vec![inline_group(vec![make_package_with_vendored(
+                Some("member_feat"),
+                member_path,
+                vec![make_member(Some("helper_feat"), vendored_path)],
+            )])],
+            Vec::new(),
+            Some("ws_feat"),
+        )],
+    );
+    let mut app = make_app(&[make_workspace_project(Some("ws"), "~/ws")]);
+    apply_items(&mut app, &[item]);
+
+    app.update_search("helper_feat");
+    assert!(
+        app.filtered
+            .iter()
+            .any(|hit| hit.display_path == vendored_path && hit.name == "helper_feat (vendored)")
+    );
+
+    app.update_search("member_feat");
+    app.confirm_search();
+
+    assert_eq!(app.selected_display_path().as_deref(), Some(member_path));
+    assert_eq!(
+        app.selected_project_path().map(Path::to_path_buf),
+        Some(PathBuf::from(member_path))
     );
 }
 

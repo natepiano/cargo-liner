@@ -42,6 +42,7 @@ use crate::project;
 use crate::project::GitOrigin;
 use crate::project::ProjectInfo;
 use crate::project::ProjectListItem;
+use crate::project::Visibility;
 use crate::scan;
 
 #[derive(Clone, Copy)]
@@ -1247,24 +1248,18 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
     let root_sorted = &app.cached_root_sorted;
     app.filtered
         .iter()
-        .filter_map(|&flat_idx| {
-            let entry = app.projects.flat_entries().get(flat_idx)?;
-            let item = {
-                let mut found = None;
-                app.projects.for_each_leaf(|leaf| {
-                    if found.is_none() && leaf.display_path() == entry.path {
-                        found = Some(leaf.clone());
-                    }
-                });
-                found
-            }?;
-            let item = &item;
-            let abs = item.path();
+        .map(|hit| {
+            let abs = hit.abs_path.as_path();
+            let metadata = app.projects.find_searchable_by_abs_path(abs);
             let cargo_active = app.is_cargo_active_path(abs);
-            let disk = app.formatted_disk(abs);
-            let disk_bytes = item.disk_usage_bytes();
+            let disk_bytes = metadata.as_ref().and_then(|item| item.disk_usage_bytes);
+            let disk = format_bytes(disk_bytes.unwrap_or(0));
             let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
-            let lang = item.lang_icon();
+            let lang = if metadata.as_ref().is_some_and(|item| item.is_rust) || hit.is_rust {
+                crate::project::RustProject::<crate::project::Package>::lang_icon()
+            } else {
+                "  "
+            };
             let lint = if cargo_active {
                 app.lint_icon(abs)
             } else {
@@ -1279,7 +1274,9 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             } else {
                 app.git_sync(abs)
             };
-            let deleted = app.is_deleted(abs);
+            let deleted = metadata
+                .as_ref()
+                .is_some_and(|item| matches!(item.visibility, Visibility::Deleted));
             let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
                 (
                     "0.0",
@@ -1291,7 +1288,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             };
             let row = super::columns::build_row_cells(super::columns::ProjectRow {
                 prefix: "  ",
-                name: &entry.name,
+                name: &hit.name,
                 git_path_state: app.git_path_state_for(abs),
                 lint_icon: lint,
                 disk: disk_text,
@@ -1303,7 +1300,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
                 ci,
                 deleted,
             });
-            Some(ListItem::new(super::columns::row_to_line(&row, widths)))
+            ListItem::new(super::columns::row_to_line(&row, widths))
         })
         .collect()
 }
