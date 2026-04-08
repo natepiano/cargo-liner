@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
@@ -56,38 +55,6 @@ use super::outcome::MendFailure;
 use super::selection::SelectedPackage;
 use super::selection::Selection;
 use super::selection::SelectionScope;
-
-#[derive(Default)]
-struct PerfStat {
-    calls: u32,
-    total: std::time::Duration,
-}
-
-#[derive(Default)]
-struct PerfStats {
-    stats: HashMap<&'static str, PerfStat>,
-}
-
-impl PerfStats {
-    fn record(&mut self, name: &'static str, elapsed: std::time::Duration) {
-        let stat = self.stats.entry(name).or_default();
-        stat.calls += 1;
-        stat.total += elapsed;
-    }
-}
-
-thread_local! {
-    static PERF: RefCell<PerfStats> = RefCell::new(PerfStats::default());
-}
-
-macro_rules! perf_record {
-    ($name:expr, $body:expr) => {{
-        let _start = std::time::Instant::now();
-        let _result = $body;
-        PERF.with(|p| p.borrow_mut().record($name, _start.elapsed()));
-        _result
-    }};
-}
 
 const DRIVER_ENV: &str = "MEND_DRIVER";
 const CONFIG_ROOT_ENV: &str = "MEND_CONFIG_ROOT";
@@ -238,17 +205,7 @@ impl Callbacks for AnalysisCallbacks {
         _compiler: &rustc_interface::interface::Compiler,
         tcx: TyCtxt<'_>,
     ) -> Compilation {
-        let analysis_start = std::time::Instant::now();
-        let result = collect_and_store_findings(tcx, &self.settings);
-        if let Ok(mut f) = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/mend-cache-debug.log")
-        {
-            use std::io::Write;
-            let _ = writeln!(f, "after_analysis took: {:?}", analysis_start.elapsed());
-        }
-        match result {
+        match collect_and_store_findings(tcx, &self.settings) {
             Ok(true | false) => Compilation::Continue,
             Err(err) => {
                 self.error = Some(err);
@@ -912,52 +869,20 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
         source_cache: &source_cache,
     };
 
-    let t0 = std::time::Instant::now();
-    let mut free_count = 0u32;
     for item_id in crate_items.free_items() {
         let item = tcx.hir_item(item_id);
         analyze_item(&ctx, item, &mut sink)?;
-        free_count += 1;
     }
-    let t1 = std::time::Instant::now();
 
-    let mut impl_count = 0u32;
     for item_id in crate_items.impl_items() {
         let item = tcx.hir_impl_item(item_id);
         analyze_impl_item(&ctx, item, &mut sink)?;
-        impl_count += 1;
     }
-    let t2 = std::time::Instant::now();
 
-    let mut foreign_count = 0u32;
     for item_id in crate_items.foreign_items() {
         let item = tcx.hir_foreign_item(item_id);
         analyze_foreign_item(&ctx, item, &mut sink)?;
-        foreign_count += 1;
     }
-    let t3 = std::time::Instant::now();
-
-    if let Ok(mut f) = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/mend-cache-debug.log")
-    {
-        use std::io::Write;
-        let _ = writeln!(
-            f,
-            "analysis breakdown: free_items={free_count} in {:?}, impl_items={impl_count} in {:?}, foreign_items={foreign_count} in {:?}",
-            t1 - t0,
-            t2 - t1,
-            t3 - t2
-        );
-        PERF.with(|p| {
-            let p = p.borrow();
-            for (name, stat) in &p.stats {
-                let _ = writeln!(f, "  {name}: calls={}, total={:?}", stat.calls, stat.total);
-            }
-        });
-    }
-    PERF.with(|p| p.borrow_mut().stats.clear());
 
     let output_path = settings
         .findings_dir
@@ -1265,13 +1190,8 @@ fn record_visibility_findings(
     } else {
         CrateKind::Binary
     };
-    let config_rel_path = perf_record!(
-        "config_rel_path",
-        config_relative_path_for_settings(item.file_path, ctx.settings)
-    );
-    let parent_module = perf_record!("tcx_queries", {
-        ctx.tcx.parent_module_from_def_id(item.def_id)
-    });
+    let config_rel_path = config_relative_path_for_settings(item.file_path, ctx.settings);
+    let parent_module = ctx.tcx.parent_module_from_def_id(item.def_id);
     let parent_is_public = ctx
         .tcx
         .local_visibility(parent_module.to_local_def_id())
@@ -1344,30 +1264,24 @@ fn record_visibility_findings(
         && !parent_is_public
         && is_top_level_module_file(ctx.src_root, ctx.root_module, item.file_path)
     {
-        perf_record!(
-            "narrow_to_pub_crate",
-            maybe_record_narrow_to_pub_crate(ctx, item, sink)
-        )?;
+        maybe_record_narrow_to_pub_crate(ctx, item, sink)?;
     }
 
     if item.vis_text == "pub" && !is_boundary_file(ctx.src_root, ctx.root_module, item.file_path) {
-        perf_record!(
-            "suspicious_pub",
-            maybe_record_suspicious_pub(
-                ctx,
-                &SuspiciousPubInput {
-                    def_id: item.def_id,
-                    file_path: item.file_path,
-                    config_rel_path: config_rel_path.as_deref(),
-                    parent_is_public,
-                    module_location,
-                    crate_kind,
-                    kind_label: item.kind_label,
-                    item_name: item.item_name,
-                    highlight_span: item.highlight_span,
-                },
-                sink,
-            )
+        maybe_record_suspicious_pub(
+            ctx,
+            &SuspiciousPubInput {
+                def_id: item.def_id,
+                file_path: item.file_path,
+                config_rel_path: config_rel_path.as_deref(),
+                parent_is_public,
+                module_location,
+                crate_kind,
+                kind_label: item.kind_label,
+                item_name: item.item_name,
+                highlight_span: item.highlight_span,
+            },
+            sink,
         )?;
     }
     Ok(())
