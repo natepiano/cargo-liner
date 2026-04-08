@@ -1494,15 +1494,12 @@ fn disk_rollup_deduplicates_primary_worktree_path() {
 
     let mut app = make_app(&[make_project(None, "~/ws")]);
     apply_items(&mut app, &[root]);
-    app.disk_usage.insert(PathBuf::from("~/ws"), 15);
-    app.disk_usage.insert(PathBuf::from("~/ws_feat"), 21);
+    app.handle_disk_usage(Path::new("~/ws"), 15);
+    app.handle_disk_usage(Path::new("~/ws_feat"), 21);
 
+    assert_eq!(app.project_list_items[0].disk_usage_bytes(), Some(36));
     assert_eq!(
-        app.disk_bytes_for_item(&app.project_list_items[0]),
-        Some(36)
-    );
-    assert_eq!(
-        app.formatted_disk_for_item(&app.project_list_items[0]),
+        App::formatted_disk_for_item(&app.project_list_items[0]),
         crate::tui::render::format_bytes(36)
     );
 }

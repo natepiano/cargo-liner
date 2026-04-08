@@ -207,7 +207,6 @@ impl App {
             discovered_projects: inputs.discovered,
             project_list_items: init.project_list_items,
             flat_entries: init.flat_entries,
-            disk_usage: HashMap::new(),
             ci_state: HashMap::new(),
             lint_status: HashMap::new(),
             lint_cache_usage: crate::lint::CacheUsage::default(),

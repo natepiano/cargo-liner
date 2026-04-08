@@ -1103,7 +1103,6 @@ impl App {
     pub(super) fn spawn_fit_widths_build(&mut self, build_id: u64) {
         let tx = self.builds.fit.tx.clone();
         let items = self.project_list_items.clone();
-        let disk_usage = self.disk_usage.clone();
         let git_info = self.git_info.clone();
         let git_path_states = self.git_path_states.clone();
         let lint_enabled = self.lint_enabled();
@@ -1111,7 +1110,6 @@ impl App {
         std::thread::spawn(move || {
             let started = Instant::now();
             let state = super::snapshots::FitWidthsState {
-                disk_usage:      &disk_usage,
                 git_info:        &git_info,
                 git_path_states: &git_path_states,
             };
@@ -1162,12 +1160,10 @@ impl App {
     pub(super) fn spawn_disk_cache_build(&mut self, build_id: u64) {
         let tx = self.builds.disk.tx.clone();
         let items = self.project_list_items.clone();
-        let disk_usage = self.disk_usage.clone();
         self.builds.disk.active = Some(build_id);
         std::thread::spawn(move || {
             let started = Instant::now();
-            let (root_sorted, child_sorted) =
-                super::snapshots::build_disk_cache_snapshot(&items, &disk_usage);
+            let (root_sorted, child_sorted) = super::snapshots::build_disk_cache_snapshot(&items);
             let elapsed = started.elapsed();
             if elapsed.as_millis() >= crate::perf_log::SLOW_WORKER_MS {
                 tracing::info!(
@@ -1215,7 +1211,7 @@ impl App {
         self.discovered_projects.clear();
         self.project_list_items.clear();
         self.flat_entries.clear();
-        self.disk_usage.clear();
+        // disk_usage lives on project items — cleared when project_list_items is cleared above
         self.ci_state.clear();
         self.lint_status.clear();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
@@ -1410,7 +1406,12 @@ impl App {
             match msg {
                 CleanMsg::Finished(path) => {
                     let abs = PathBuf::from(&path);
-                    let already_zero = self.disk_usage.get(&abs).is_none_or(|&bytes| bytes == 0);
+                    let already_zero = self
+                        .project_list_items
+                        .iter()
+                        .find(|i| i.path() == abs)
+                        .and_then(ProjectListItem::disk_usage_bytes)
+                        .is_none_or(|bytes| bytes == 0);
                     if already_zero {
                         self.running_clean_paths.remove(&abs);
                         self.sync_running_clean_toast();
@@ -1440,30 +1441,27 @@ impl App {
         refresh_git_path_state: bool,
     ) {
         self.fully_loaded.insert(path.to_path_buf());
-        self.disk_usage.insert(path.to_path_buf(), bytes);
         if refresh_git_path_state {
             self.refresh_git_path_state(path);
         }
         self.dirty.disk_cache.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
-        let mut lint_runtime_changed = false;
+
+        // Set disk usage on the matching project item and update visibility.
         let display = crate::project::home_relative_path(path);
-        if bytes == 0 {
-            if !path.exists() {
-                for item in &mut self.project_list_items {
-                    if item.set_visibility_by_path(&display, Deleted) {
-                        lint_runtime_changed = true;
-                        break;
-                    }
-                }
+        let mut lint_runtime_changed = false;
+        for item in &mut self.project_list_items {
+            if !item.set_disk_usage_by_path(path, bytes) {
+                continue;
             }
-        } else {
-            for item in &mut self.project_list_items {
-                if item.set_visibility_by_path(&display, Visible) {
+            if bytes == 0 && !path.exists() {
+                if item.set_visibility_by_path(&display, Deleted) {
                     lint_runtime_changed = true;
-                    break;
                 }
+            } else if bytes > 0 && item.set_visibility_by_path(&display, Visible) {
+                lint_runtime_changed = true;
             }
+            break;
         }
         if lint_runtime_changed {
             if let Some(runtime) = &self.lint_runtime
@@ -1471,7 +1469,6 @@ impl App {
             {
                 runtime.unregister_project(path.to_path_buf());
             }
-            // Project restored — re-register if eligible
             if bytes > 0 {
                 self.register_lint_for_path(&display);
             }

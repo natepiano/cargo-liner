@@ -361,7 +361,7 @@ fn spawn_project_worker(
                             );
                             tracing::info!(
                                 path = %project_root.display(),
-                                duration_ms = run_started.elapsed().as_millis() as u64,
+                                duration_ms = crate::perf_log::ms(run_started.elapsed().as_millis()),
                                 "lint_worker_run_complete"
                             );
                         }
@@ -574,7 +574,7 @@ fn execute_commands(
         let execution = run_command(project_root, &manifest_path, output_dir, command, index)?;
         tracing::info!(
             command = %command.name,
-            duration_ms = cmd_started.elapsed().as_millis() as u64,
+            duration_ms = crate::perf_log::ms(cmd_started.elapsed().as_millis()),
             success = execution.success,
             path = %project_root.display(),
             "lint_command_finished"

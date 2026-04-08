@@ -496,7 +496,6 @@ pub struct App {
     pub discovered_projects:      Vec<ProjectListItem>,
     pub project_list_items:       Vec<ProjectListItem>,
     pub flat_entries:             Vec<FlatEntry>,
-    pub disk_usage:               HashMap<PathBuf, u64>,
     pub ci_state:                 HashMap<PathBuf, CiState>,
     pub lint_status:              HashMap<PathBuf, LintStatus>,
     pub lint_cache_usage:         CacheUsage,

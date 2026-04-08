@@ -1193,12 +1193,23 @@ impl Cargo {
     }
 }
 
+/// Runtime data that arrives asynchronously after scan.
+///
+/// Implemented by `RustProject<Kind>` and `NonRustProject`. `ProjectListItem`
+/// dispatches to these implementors but does NOT implement the trait itself
+/// because worktree groups need aggregation logic.
+pub(crate) trait ProjectInfo {
+    fn disk_usage_bytes(&self) -> Option<u64>;
+    fn set_disk_usage_bytes(&mut self, bytes: u64);
+}
+
 /// The core project type, parameterized by kind.
 /// Private fields with accessors enforce what's available per kind.
 pub(crate) struct RustProject<Kind: CargoKind> {
     path:                      PathBuf,
     name:                      Option<String>,
     visibility:                Visibility,
+    disk_usage_bytes:          Option<u64>,
     cargo:                     Cargo,
     vendored:                  Vec<RustProject<Package>>,
     kind:                      Kind,
@@ -1208,19 +1219,27 @@ pub(crate) struct RustProject<Kind: CargoKind> {
 
 /// A non-Rust project. Separate struct, no generic parameter.
 pub(crate) struct NonRustProject {
-    path:       PathBuf,
-    name:       Option<String>,
-    visibility: Visibility,
+    path:             PathBuf,
+    name:             Option<String>,
+    visibility:       Visibility,
+    disk_usage_bytes: Option<u64>,
 }
 
 impl Clone for NonRustProject {
     fn clone(&self) -> Self {
         Self {
-            path:       self.path.clone(),
-            name:       self.name.clone(),
-            visibility: self.visibility,
+            path:             self.path.clone(),
+            name:             self.name.clone(),
+            visibility:       self.visibility,
+            disk_usage_bytes: self.disk_usage_bytes,
         }
     }
+}
+
+impl ProjectInfo for NonRustProject {
+    fn disk_usage_bytes(&self) -> Option<u64> { self.disk_usage_bytes }
+
+    fn set_disk_usage_bytes(&mut self, bytes: u64) { self.disk_usage_bytes = Some(bytes); }
 }
 
 impl NonRustProject {
@@ -1229,6 +1248,7 @@ impl NonRustProject {
             path,
             name,
             visibility: Visibility::default(),
+            disk_usage_bytes: None,
         }
     }
 
@@ -1265,6 +1285,7 @@ impl Clone for RustProject<Workspace> {
             path:                      self.path.clone(),
             name:                      self.name.clone(),
             visibility:                self.visibility,
+            disk_usage_bytes:          self.disk_usage_bytes,
             cargo:                     self.cargo.clone(),
             vendored:                  self.vendored.clone(),
             kind:                      self.kind.clone(),
@@ -1280,6 +1301,7 @@ impl Clone for RustProject<Package> {
             path:                      self.path.clone(),
             name:                      self.name.clone(),
             visibility:                self.visibility,
+            disk_usage_bytes:          self.disk_usage_bytes,
             cargo:                     self.cargo.clone(),
             vendored:                  self.vendored.clone(),
             kind:                      Package,
@@ -1287,6 +1309,12 @@ impl Clone for RustProject<Package> {
             worktree_primary_abs_path: self.worktree_primary_abs_path.clone(),
         }
     }
+}
+
+impl<Kind: CargoKind> ProjectInfo for RustProject<Kind> {
+    fn disk_usage_bytes(&self) -> Option<u64> { self.disk_usage_bytes }
+
+    fn set_disk_usage_bytes(&mut self, bytes: u64) { self.disk_usage_bytes = Some(bytes); }
 }
 
 // Shared accessors for all CargoKind projects.
@@ -1298,6 +1326,9 @@ impl<Kind: CargoKind> RustProject<Kind> {
     pub(crate) const fn visibility(&self) -> Visibility { self.visibility }
 
     pub(crate) const fn set_visibility(&mut self, v: Visibility) { self.visibility = v; }
+
+    /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
+    pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }
 
     pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
 
@@ -1312,9 +1343,6 @@ impl<Kind: CargoKind> RustProject<Kind> {
     pub(crate) fn worktree_primary_abs_path(&self) -> Option<&Path> {
         self.worktree_primary_abs_path.as_deref()
     }
-
-    /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
-    pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }
 
     /// Display name: project name or last path component.
     pub(crate) fn display_name(&self) -> String {
@@ -1348,6 +1376,7 @@ impl RustProject<Workspace> {
             path,
             name,
             visibility: Visibility::default(),
+            disk_usage_bytes: None,
             cargo,
             vendored,
             kind: Workspace::new(groups),
@@ -1378,6 +1407,7 @@ impl RustProject<Package> {
             path,
             name,
             visibility: Visibility::default(),
+            disk_usage_bytes: None,
             cargo,
             vendored,
             kind: Package,
@@ -1585,6 +1615,54 @@ impl ProjectListItem {
         }
     }
 
+    /// Disk usage for this item. Worktree groups sum primary + linked.
+    pub(crate) fn disk_usage_bytes(&self) -> Option<u64> {
+        match self {
+            Self::Workspace(p) => p.disk_usage_bytes(),
+            Self::Package(p) => p.disk_usage_bytes(),
+            Self::NonRust(p) => p.disk_usage_bytes(),
+            Self::WorkspaceWorktrees(g) => sum_worktree_disk(g.primary(), g.linked()),
+            Self::PackageWorktrees(g) => sum_worktree_disk(g.primary(), g.linked()),
+        }
+    }
+
+    /// Set disk usage on a project anywhere in the hierarchy by absolute path.
+    pub(crate) fn set_disk_usage_by_path(&mut self, path: &Path, bytes: u64) -> bool {
+        match self {
+            Self::Workspace(p) => set_disk_in_workspace(p, path, bytes),
+            Self::Package(p) => set_disk_in_package(p, path, bytes),
+            Self::NonRust(p) => {
+                if p.path() == path {
+                    p.set_disk_usage_bytes(bytes);
+                    return true;
+                }
+                false
+            },
+            Self::WorkspaceWorktrees(g) => {
+                if set_disk_in_workspace(g.primary_mut(), path, bytes) {
+                    return true;
+                }
+                for linked in g.linked_mut() {
+                    if set_disk_in_workspace(linked, path, bytes) {
+                        return true;
+                    }
+                }
+                false
+            },
+            Self::PackageWorktrees(g) => {
+                if set_disk_in_package(g.primary_mut(), path, bytes) {
+                    return true;
+                }
+                for linked in g.linked_mut() {
+                    if set_disk_in_package(linked, path, bytes) {
+                        return true;
+                    }
+                }
+                false
+            },
+        }
+    }
+
     /// Set visibility on a project anywhere in the hierarchy by display path.
     pub(crate) fn set_visibility_by_path(&mut self, display_path: &str, v: Visibility) -> bool {
         match self {
@@ -1657,6 +1735,57 @@ impl ProjectListItem {
             },
         }
     }
+}
+
+fn sum_worktree_disk<Kind: CargoKind>(
+    primary: &RustProject<Kind>,
+    linked: &[RustProject<Kind>],
+) -> Option<u64> {
+    let mut total = 0u64;
+    let mut any = false;
+    for p in std::iter::once(primary).chain(linked) {
+        if let Some(b) = p.disk_usage_bytes() {
+            total += b;
+            any = true;
+        }
+    }
+    any.then_some(total)
+}
+
+fn set_disk_in_workspace(ws: &mut RustProject<Workspace>, path: &Path, bytes: u64) -> bool {
+    if ws.path() == path {
+        ws.set_disk_usage_bytes(bytes);
+        return true;
+    }
+    for g in ws.groups_mut() {
+        for m in g.members_mut() {
+            if m.path() == path {
+                m.set_disk_usage_bytes(bytes);
+                return true;
+            }
+        }
+    }
+    for vp in ws.vendored_mut() {
+        if vp.path() == path {
+            vp.set_disk_usage_bytes(bytes);
+            return true;
+        }
+    }
+    false
+}
+
+fn set_disk_in_package(pkg: &mut RustProject<Package>, path: &Path, bytes: u64) -> bool {
+    if pkg.path() == path {
+        pkg.set_disk_usage_bytes(bytes);
+        return true;
+    }
+    for vp in pkg.vendored_mut() {
+        if vp.path() == path {
+            vp.set_disk_usage_bytes(bytes);
+            return true;
+        }
+    }
+    false
 }
 
 /// Members within a workspace organized into groups.

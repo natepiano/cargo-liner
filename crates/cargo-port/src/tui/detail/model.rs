@@ -743,7 +743,7 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
             };
             (app.formatted_disk(abs_path), ci)
         },
-        |item| (app.formatted_disk_for_item(item), app.ci_for_item(item)),
+        |item| (App::formatted_disk_for_item(item), app.ci_for_item(item)),
     );
 
     let worktree_names = wt_item.map_or_else(Vec::new, worktree_names_from_item);

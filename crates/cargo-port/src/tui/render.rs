@@ -40,6 +40,7 @@ use crate::ci::Conclusion;
 use crate::constants::WORKTREE;
 use crate::project;
 use crate::project::GitOrigin;
+use crate::project::ProjectInfo;
 use crate::project::ProjectListItem;
 use crate::scan;
 
@@ -443,7 +444,11 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     };
 
     let total_project_rows = items.len();
-    let total_bytes: u64 = app.disk_usage.values().sum();
+    let total_bytes: u64 = app
+        .project_list_items
+        .iter()
+        .filter_map(ProjectListItem::disk_usage_bytes)
+        .sum();
 
     let title = project_panel_title(app, area.width.saturating_sub(2).into());
     let block = Block::default()
@@ -772,8 +777,8 @@ fn render_root_item(
     if live_wt > 0 {
         name = format!("{name} {WORKTREE}:{live_wt}");
     }
-    let disk = app.formatted_disk_for_item(item);
-    let disk_bytes = app.disk_bytes_for_item(item);
+    let disk = App::formatted_disk_for_item(item);
+    let disk_bytes = item.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
     let ci = app.ci_for_item(item);
     let lang = item.lang_icon();
@@ -826,7 +831,7 @@ fn render_child_item(
 ) -> ListItem<'static> {
     let path = project.path();
     let disk = app.formatted_disk(path);
-    let disk_bytes = app.disk_usage.get(path).copied();
+    let disk_bytes = project.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
     let lang = project::RustProject::<project::Package>::lang_icon();
     let cargo_active = app.is_cargo_active_path(path);
@@ -936,7 +941,7 @@ fn render_worktree_entry<'a>(
     };
     let wt_abs = abs_path.as_deref().unwrap_or_else(|| Path::new(""));
     let disk = app.formatted_disk(wt_abs);
-    let disk_bytes = app.disk_usage.get(wt_abs).copied();
+    let disk_bytes = item.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, sorted));
     let lang = item.lang_icon();
     let lint = app.lint_icon_for_worktree(ni, wi);
@@ -1251,7 +1256,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             let abs = item.path();
             let cargo_active = app.is_cargo_active_path(abs);
             let disk = app.formatted_disk(abs);
-            let disk_bytes = app.disk_usage.get(abs).copied();
+            let disk_bytes = item.disk_usage_bytes();
             let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
             let lang = item.lang_icon();
             let lint = if cargo_active {

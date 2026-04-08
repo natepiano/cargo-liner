@@ -345,9 +345,7 @@ fn body_lines_tracked<'a>(
 }
 
 fn tracked_item_line<'a>(item: &TrackedItemView, body_style: Style, line_width: usize) -> Line<'a> {
-    let label_style = item
-        .linger_progress
-        .map_or(body_style, |p| fade_to_green_style(p));
+    let label_style = item.linger_progress.map_or(body_style, fade_to_green_style);
     let Some(secs) = item.elapsed_secs else {
         return Line::from(Span::styled(item.label.clone(), label_style));
     };
@@ -365,9 +363,7 @@ fn tracked_item_line<'a>(item: &TrackedItemView, body_style: Style, line_width: 
         .saturating_sub(suffix_width);
     let duration_style = item
         .linger_progress
-        .map_or(Style::default().fg(Color::Yellow), |p| {
-            fade_to_green_style(p)
-        });
+        .map_or_else(|| Style::default().fg(Color::Yellow), fade_to_green_style);
     Line::from(vec![
         Span::styled(label, label_style),
         Span::raw(" ".repeat(padding)),

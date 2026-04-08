@@ -201,10 +201,13 @@ impl App {
     }
 
     pub fn formatted_disk(&self, path: &Path) -> String {
-        match self.disk_usage.get(path) {
-            Some(&bytes) => crate::tui::render::format_bytes(bytes),
-            None => crate::tui::render::format_bytes(0),
-        }
+        let bytes = self
+            .discovered_projects
+            .iter()
+            .find(|item| item.path() == path)
+            .and_then(ProjectListItem::disk_usage_bytes)
+            .unwrap_or(0);
+        crate::tui::render::format_bytes(bytes)
     }
 
     pub fn selected_ci_path(&self) -> Option<&Path> {
@@ -287,28 +290,11 @@ impl App {
     }
 
     /// Aggregate disk usage for a `ProjectListItem`.
-    pub fn formatted_disk_for_item(&self, item: &ProjectListItem) -> String {
-        self.disk_bytes_for_item(item).map_or_else(
+    pub fn formatted_disk_for_item(item: &ProjectListItem) -> String {
+        item.disk_usage_bytes().map_or_else(
             || crate::tui::render::format_bytes(0),
             crate::tui::render::format_bytes,
         )
-    }
-
-    /// Get total disk bytes for a `ProjectListItem` (sum of root + worktrees).
-    pub fn disk_bytes_for_item(&self, item: &ProjectListItem) -> Option<u64> {
-        let paths = Self::unique_item_paths(item);
-        if paths.len() == 1 {
-            return self.disk_usage.get(&paths[0]).copied();
-        }
-        let mut total: u64 = 0;
-        let mut any_data = false;
-        for path in &paths {
-            if let Some(&bytes) = self.disk_usage.get(path.as_path()) {
-                total += bytes;
-                any_data = true;
-            }
-        }
-        if any_data { Some(total) } else { None }
     }
 
     /// Aggregate CI for a `ProjectListItem`.
