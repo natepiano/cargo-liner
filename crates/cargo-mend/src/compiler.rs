@@ -1314,13 +1314,13 @@ fn maybe_record_narrow_to_pub_crate(
         return Ok(());
     };
     // Check if the item itself is re-exported by the crate root.
-    if root_module_exports_item(ctx.source_cache, ctx.root_module, item.file_path, item_name)? {
+    if root_module_exports_item(ctx.source_cache, ctx.root_module, item.file_path, item_name) {
         return Ok(());
     }
     // For impl items (methods, consts, types), also check if the self type
     // is re-exported — pub methods on re-exported types must stay pub.
     if let Some(self_name) = &item.impl_self_name
-        && root_module_exports_item(ctx.source_cache, ctx.root_module, item.file_path, self_name)?
+        && root_module_exports_item(ctx.source_cache, ctx.root_module, item.file_path, self_name)
     {
         return Ok(());
     }
@@ -1729,16 +1729,16 @@ fn root_module_exports_item(
     root_module: &Path,
     child_file: &Path,
     item_name: &str,
-) -> Result<bool> {
+) -> bool {
     let Some(child_module_name) = module_paths::module_name_for_child_boundary_file(child_file)
     else {
-        return Ok(false);
+        return false;
     };
     let Some(file) = source_cache.parsed_file(root_module) else {
-        return Ok(false);
+        return false;
     };
     let exports = exported_names_from_parent_boundary(file, child_module_name, item_name);
-    Ok(!exports.explicit.is_empty())
+    !exports.explicit.is_empty()
 }
 
 fn parent_facade_export_status(
@@ -2429,7 +2429,7 @@ fn impl_item_is_exposed_by_exported_self_type(
 
             if is_target {
                 let definition_file =
-                    find_type_definition_file(source_cache, child_file, &self_type_name)?;
+                    find_type_definition_file(source_cache, child_file, &self_type_name);
                 let check_file = definition_file.as_deref().unwrap_or(child_file);
                 if type_is_exposed_outside_parent(
                     source_cache,
@@ -2459,24 +2459,24 @@ fn find_type_definition_file(
     source_cache: &SourceCache,
     child_file: &Path,
     type_name: &str,
-) -> Result<Option<PathBuf>> {
+) -> Option<PathBuf> {
     if file_defines_type(source_cache, child_file, type_name) {
-        return Ok(None);
+        return None;
     }
 
     let Some(parent_dir) = child_file.parent() else {
-        return Ok(None);
+        return None;
     };
     for path in source_cache.source_files_under(parent_dir) {
         if path == child_file {
             continue;
         }
         if file_defines_type(source_cache, path, type_name) {
-            return Ok(Some(path.to_path_buf()));
+            return Some(path.to_path_buf());
         }
     }
 
-    Ok(None)
+    None
 }
 
 fn file_defines_type(source_cache: &SourceCache, path: &Path, type_name: &str) -> bool {
