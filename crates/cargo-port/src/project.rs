@@ -1663,6 +1663,36 @@ impl ProjectListItem {
         }
     }
 
+    /// Collect all `(path, bytes)` pairs for runtime data transfer.
+    ///
+    /// Used when replacing an item (e.g. project refresh) to preserve disk
+    /// usage data that was set by the watcher.
+    pub(crate) fn collect_disk_usage(&self) -> Vec<(PathBuf, u64)> {
+        let mut out = Vec::new();
+        match self {
+            Self::Workspace(p) => collect_disk_from_workspace(p, &mut out),
+            Self::Package(p) => collect_disk_from_package(p, &mut out),
+            Self::NonRust(p) => {
+                if let Some(b) = p.disk_usage_bytes() {
+                    out.push((p.path().to_path_buf(), b));
+                }
+            },
+            Self::WorkspaceWorktrees(g) => {
+                collect_disk_from_workspace(g.primary(), &mut out);
+                for linked in g.linked() {
+                    collect_disk_from_workspace(linked, &mut out);
+                }
+            },
+            Self::PackageWorktrees(g) => {
+                collect_disk_from_package(g.primary(), &mut out);
+                for linked in g.linked() {
+                    collect_disk_from_package(linked, &mut out);
+                }
+            },
+        }
+        out
+    }
+
     /// Set visibility on a project anywhere in the hierarchy by display path.
     pub(crate) fn set_visibility_by_path(&mut self, display_path: &str, v: Visibility) -> bool {
         match self {
@@ -1786,6 +1816,35 @@ fn set_disk_in_package(pkg: &mut RustProject<Package>, path: &Path, bytes: u64) 
         }
     }
     false
+}
+
+fn collect_disk_from_workspace(ws: &RustProject<Workspace>, out: &mut Vec<(PathBuf, u64)>) {
+    if let Some(b) = ws.disk_usage_bytes() {
+        out.push((ws.path().to_path_buf(), b));
+    }
+    for g in ws.groups() {
+        for m in g.members() {
+            if let Some(b) = m.disk_usage_bytes() {
+                out.push((m.path().to_path_buf(), b));
+            }
+        }
+    }
+    for vp in ws.vendored() {
+        if let Some(b) = vp.disk_usage_bytes() {
+            out.push((vp.path().to_path_buf(), b));
+        }
+    }
+}
+
+fn collect_disk_from_package(pkg: &RustProject<Package>, out: &mut Vec<(PathBuf, u64)>) {
+    if let Some(b) = pkg.disk_usage_bytes() {
+        out.push((pkg.path().to_path_buf(), b));
+    }
+    for vp in pkg.vendored() {
+        if let Some(b) = vp.disk_usage_bytes() {
+            out.push((vp.path().to_path_buf(), b));
+        }
+    }
 }
 
 /// Members within a workspace organized into groups.

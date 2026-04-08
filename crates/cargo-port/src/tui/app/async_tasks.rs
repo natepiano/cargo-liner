@@ -1447,6 +1447,13 @@ impl App {
         self.dirty.disk_cache.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
 
+        // Keep discovered_projects in sync so tree rebuilds preserve disk data.
+        for item in &mut self.discovered_projects {
+            if item.set_disk_usage_by_path(path, bytes) {
+                break;
+            }
+        }
+
         // Set disk usage on the matching project item and update visibility.
         let display = crate::project::home_relative_path(path);
         let mut lint_runtime_changed = false;
@@ -1617,13 +1624,19 @@ impl App {
         true
     }
 
-    pub(super) fn handle_project_refreshed(&mut self, item: ProjectListItem) -> bool {
+    pub(super) fn handle_project_refreshed(&mut self, mut item: ProjectListItem) -> bool {
         let display = item.display_path();
         let updated = self
             .discovered_projects
             .iter_mut()
             .find(|existing| existing.display_path() == display)
             .is_some_and(|existing| {
+                // Transfer runtime data (disk usage) from the old item before
+                // replacing — the incoming item was freshly built from disk and
+                // doesn't carry asynchronously-set fields.
+                for (path, bytes) in existing.collect_disk_usage() {
+                    item.set_disk_usage_by_path(&path, bytes);
+                }
                 *existing = item;
                 true
             });

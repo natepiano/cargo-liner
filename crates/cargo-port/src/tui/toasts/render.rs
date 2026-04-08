@@ -15,22 +15,22 @@ use super::manager::ToastStyle;
 use super::manager::ToastView;
 use super::manager::TrackedItemView;
 
-/// Morph text color from white to green based on progress (0.0 = white, 1.0 = green).
+/// Fade text from white to grey based on progress (0.0 = white, 1.0 = grey).
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "p is clamped to [0.0, 1.0], so (255 * (1-p)) is in [0, 255]"
+    reason = "p is clamped to [0.0, 1.0], so the result is in [TARGET, 255]"
 )]
-fn fade_to_green_style(progress: f64) -> Style {
+fn fade_to_style(progress: f64) -> Style {
     let p = progress.clamp(0.0, 1.0);
     let curve = p * p * p;
-    let r = (255.0 * (1.0 - curve)) as u8;
-    let b = (255.0 * (1.0 - curve)) as u8;
-    Style::default().fg(Color::Rgb(r, 255, b))
+    // Fade from 255 (white) to 128 (grey).
+    let v = (255.0 - 127.0 * curve) as u8;
+    Style::default().fg(Color::Rgb(v, v, v))
 }
 
-fn fade_to_green_line<'a>(text: &str, progress: f64) -> Line<'a> {
-    Line::from(Span::styled(text.to_owned(), fade_to_green_style(progress)))
+fn fade_to_color<'a>(text: &str, progress: f64) -> Line<'a> {
+    Line::from(Span::styled(text.to_owned(), fade_to_style(progress)))
 }
 use crate::tui::app::ClickAction;
 use crate::tui::app::DismissTarget;
@@ -298,7 +298,7 @@ fn body_lines_plain<'a>(
         .map(|l| {
             toast.linger_progress().map_or_else(
                 || Line::from(Span::styled(l.to_owned(), body_style)),
-                |progress| fade_to_green_line(l, progress),
+                |progress| fade_to_color(l, progress),
             )
         })
         .collect();
@@ -308,7 +308,7 @@ fn body_lines_plain<'a>(
             .add_modifier(Modifier::ITALIC);
         result.push(toast.linger_progress().map_or_else(
             || Line::from(Span::styled(overflow.clone(), overflow_style)),
-            |progress| fade_to_green_line(&overflow, progress),
+            |progress| fade_to_color(&overflow, progress),
         ));
     }
     result
@@ -345,7 +345,7 @@ fn body_lines_tracked<'a>(
 }
 
 fn tracked_item_line<'a>(item: &TrackedItemView, body_style: Style, line_width: usize) -> Line<'a> {
-    let label_style = item.linger_progress.map_or(body_style, fade_to_green_style);
+    let label_style = item.linger_progress.map_or(body_style, fade_to_style);
     let Some(secs) = item.elapsed_secs else {
         return Line::from(Span::styled(item.label.clone(), label_style));
     };
@@ -363,7 +363,7 @@ fn tracked_item_line<'a>(item: &TrackedItemView, body_style: Style, line_width: 
         .saturating_sub(suffix_width);
     let duration_style = item
         .linger_progress
-        .map_or_else(|| Style::default().fg(Color::Yellow), fade_to_green_style);
+        .map_or_else(|| Style::default().fg(Color::Yellow), fade_to_style);
     Line::from(vec![
         Span::styled(label, label_style),
         Span::raw(" ".repeat(padding)),
