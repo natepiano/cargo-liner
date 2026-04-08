@@ -1169,7 +1169,7 @@ impl App {
     }
 
     /// Lightweight refresh of derived state after in-place hierarchy changes
-    /// (discovery, refresh). Rebuilds flat_entries and marks caches dirty
+    /// (discovery, refresh). Rebuilds `flat_entries` and marks caches dirty
     /// without a full tree rebuild.
     pub(super) fn refresh_derived_state(&mut self) {
         self.flat_entries = scan::build_flat_entries(
