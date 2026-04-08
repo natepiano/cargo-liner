@@ -29,9 +29,9 @@ use crate::keymap;
 use crate::lint;
 use crate::lint::RuntimeHandle;
 use crate::project::ProjectListItem;
+use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
-use crate::scan::FlatEntry;
 use crate::tui::columns::ResolvedWidths;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
@@ -82,7 +82,7 @@ struct AppInit {
     lint_warning:     Option<String>,
     lint_runtime:     Option<RuntimeHandle>,
     watch_tx:         mpsc::Sender<WatchRequest>,
-    projects:         crate::project_list::ProjectList,
+    projects:         ProjectList,
     list_state:       ListState,
 }
 

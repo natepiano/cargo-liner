@@ -49,6 +49,7 @@ use crate::watcher;
 use crate::watcher::WatchRequest;
 
 impl App {
+    #[cfg(test)]
     pub(super) fn apply_tree_build(
         &mut self,
         flat_entries: Vec<FlatEntry>,

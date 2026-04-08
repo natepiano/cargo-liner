@@ -21,14 +21,12 @@ pub(crate) struct ProjectList {
 }
 
 impl ProjectList {
-    pub(crate) fn new(items: Vec<ProjectListItem>) -> Self {
+    pub(crate) const fn new(items: Vec<ProjectListItem>) -> Self {
         Self {
             items,
             flat_entries: Vec::new(),
         }
     }
-
-    pub(crate) fn into_inner(self) -> Vec<ProjectListItem> { self.items }
 
     // -- Leaf iteration ---------------------------------------------------
 
@@ -86,7 +84,7 @@ impl ProjectList {
         path: &Path,
         mut replacement: ProjectListItem,
     ) -> Option<ProjectListItem> {
-        for item in self.items.iter_mut() {
+        for item in &mut self.items {
             match item {
                 ProjectListItem::Workspace(_)
                 | ProjectListItem::Package(_)
@@ -145,7 +143,7 @@ impl ProjectList {
     /// Returns `true` if the item was inserted into an existing workspace.
     pub(crate) fn insert_into_hierarchy(&mut self, item: ProjectListItem) -> bool {
         let item_path = item.path().to_path_buf();
-        for existing in self.items.iter_mut() {
+        for existing in &mut self.items {
             let inserted = match existing {
                 ProjectListItem::Workspace(ws) => try_insert_member(ws, &item_path, &item),
                 ProjectListItem::WorkspaceWorktrees(g) => {
@@ -209,6 +207,7 @@ impl ProjectList {
         self.flat_entries.clear();
     }
 
+    #[cfg(test)]
     pub(crate) fn push(&mut self, item: ProjectListItem) { self.items.push(item); }
 }
 
@@ -247,7 +246,7 @@ fn regroup_workspace(ws: &mut RustProject<Workspace>, inline_dirs: &[String]) {
     let members: Vec<RustProject<Package>> = ws
         .groups_mut()
         .drain(..)
-        .flat_map(|g| g.into_members())
+        .flat_map(MemberGroup::into_members)
         .collect();
 
     // Re-sort into groups based on subdirectory and inline_dirs.
