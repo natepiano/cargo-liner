@@ -261,7 +261,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     let mut app = make_app_with_config(&[rust_project, non_rust_project], &cfg);
     app.scan.phase = ScanPhase::Complete;
 
-    assert_eq!(app.discovered_projects.len(), 2);
+    // All items live in project_list_items regardless of non-rust config.
     assert_eq!(app.project_list_items.len(), 2);
 
     let mut hide_cfg = cfg.clone();
@@ -269,15 +269,26 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     app.apply_config(&hide_cfg);
     wait_for_tree_build(&mut app);
 
-    assert_eq!(app.discovered_projects.len(), 2);
     assert!(app.is_scan_complete());
-    assert_eq!(app.project_list_items.len(), 1);
-    assert_eq!(app.project_list_items[0].display_path(), "~/rust");
+    // Items are still in project_list_items — non-rust filtering is at render time.
+    assert_eq!(app.project_list_items.len(), 2);
+    app.ensure_visible_rows_cached();
+    let visible: Vec<_> = app
+        .visible_rows()
+        .iter()
+        .filter_map(|row| match row {
+            super::types::VisibleRow::Root { node_index } => {
+                Some(app.project_list_items[*node_index].display_path())
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0], "~/rust");
 
     app.apply_config(&cfg);
     wait_for_tree_build(&mut app);
 
-    assert_eq!(app.discovered_projects.len(), 2);
     assert!(app.is_scan_complete());
     assert_eq!(app.project_list_items.len(), 2);
     assert!(
@@ -302,7 +313,7 @@ fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
 }
 
 fn apply_items(app: &mut App, items: &[ProjectListItem]) {
-    let flat_entries = crate::scan::build_flat_entries(items);
+    let flat_entries = crate::scan::build_flat_entries(items, true);
     app.apply_tree_build(flat_entries, items.to_vec());
     app.ensure_visible_rows_cached();
 }
@@ -409,7 +420,7 @@ fn visible_rows_workspace_with_worktrees() {
     ]
     .into();
 
-    let rows = snapshots::build_visible_rows(&[root], &expanded);
+    let rows = snapshots::build_visible_rows(&[root], &expanded, true);
 
     assert_eq!(rows.len(), 8, "expected 8 rows, got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { node_index: 0 }));
@@ -469,7 +480,7 @@ fn visible_rows_non_workspace_worktrees() {
     };
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&[build_root()], &expanded);
+    let rows = snapshots::build_visible_rows(&[build_root()], &expanded, true);
 
     assert_eq!(rows.len(), 3, "got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -477,7 +488,7 @@ fn visible_rows_non_workspace_worktrees() {
     assert!(matches!(rows[2], VisibleRow::WorktreeEntry { .. }));
 
     let expanded2: HashSet<ExpandKey> = [ExpandKey::Node(0), ExpandKey::Worktree(0, 0)].into();
-    let rows2 = snapshots::build_visible_rows(&[build_root()], &expanded2);
+    let rows2 = snapshots::build_visible_rows(&[build_root()], &expanded2, true);
     assert_eq!(rows2.len(), 3, "no extra rows for non-workspace worktree");
 }
 
@@ -495,14 +506,14 @@ fn worktree_section_collapses_when_one_dismissed() {
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
 
     let items = vec![root.clone()];
-    let rows = snapshots::build_visible_rows(&items, &expanded);
+    let rows = snapshots::build_visible_rows(&items, &expanded, true);
     assert_eq!(rows.len(), 3, "root + 2 worktree entries");
 
     let mut items = vec![root];
     if let ProjectListItem::PackageWorktrees(ref mut wtg) = items[0] {
         wtg.linked_mut()[0].set_visibility(Dismissed);
     }
-    let rows = snapshots::build_visible_rows(&items, &expanded);
+    let rows = snapshots::build_visible_rows(&items, &expanded, true);
     assert_eq!(rows.len(), 2, "root + 1 worktree when one dismissed");
     assert!(matches!(rows[0], VisibleRow::Root { node_index: 0 }));
 }
@@ -520,7 +531,7 @@ fn worktree_count_uses_visibility() {
 
     let items = vec![root];
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&items, &expanded);
+    let rows = snapshots::build_visible_rows(&items, &expanded, true);
     assert_eq!(rows.len(), 3, "root + 2 worktree entries");
 }
 
@@ -536,7 +547,7 @@ fn visible_rows_workspace_no_worktrees() {
     );
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&[root], &expanded);
+    let rows = snapshots::build_visible_rows(&[root], &expanded, true);
 
     // Root + 2 inline members
     assert_eq!(rows.len(), 3, "got: {rows:?}");
@@ -574,7 +585,7 @@ fn visible_rows_include_vendored_children() {
     let root = ProjectListItem::Workspace(ws);
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&[root], &expanded);
+    let rows = snapshots::build_visible_rows(&[root], &expanded, true);
 
     assert_eq!(rows.len(), 3, "got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { .. }));

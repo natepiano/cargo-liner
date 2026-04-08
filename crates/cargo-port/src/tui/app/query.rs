@@ -122,10 +122,12 @@ impl App {
         if !self.lint_enabled() {
             return false;
         }
-        let is_rust = self
-            .discovered_projects
-            .iter()
-            .any(|item| item.path() == path && item.is_rust());
+        let mut is_rust = false;
+        crate::project::for_each_leaf_path(&self.project_list_items, |p, rust| {
+            if p == path {
+                is_rust = rust;
+            }
+        });
         crate::lint::project_is_eligible(
             &self.current_config.lint,
             &path.to_string_lossy(),
@@ -201,12 +203,12 @@ impl App {
     }
 
     pub fn formatted_disk(&self, path: &Path) -> String {
-        let bytes = self
-            .discovered_projects
-            .iter()
-            .find(|item| item.path() == path)
-            .and_then(ProjectListItem::disk_usage_bytes)
-            .unwrap_or(0);
+        let mut bytes = 0u64;
+        crate::project::for_each_leaf(&self.project_list_items, |item| {
+            if item.path() == path {
+                bytes = item.disk_usage_bytes().unwrap_or(0);
+            }
+        });
         crate::tui::render::format_bytes(bytes)
     }
 
@@ -366,12 +368,12 @@ impl App {
     }
 
     pub fn recompute_cargo_active_paths(&mut self) {
-        let mut active_paths: HashSet<PathBuf> = self
-            .discovered_projects
-            .iter()
-            .filter(|item| !self.is_vendored_path(&item.display_path()))
-            .map(|item| item.path().to_path_buf())
-            .collect();
+        let mut active_paths: HashSet<PathBuf> = HashSet::new();
+        crate::project::for_each_leaf(&self.project_list_items, |item| {
+            if !self.is_vendored_path(&item.display_path()) {
+                active_paths.insert(item.path().to_path_buf());
+            }
+        });
 
         // Include vendored projects whose parent is active.
         for item in &self.project_list_items {
@@ -423,11 +425,10 @@ impl App {
     }
 
     pub fn prune_inactive_project_state(&mut self) {
-        let all_paths: HashSet<PathBuf> = self
-            .discovered_projects
-            .iter()
-            .map(|item| item.path().to_path_buf())
-            .collect();
+        let mut all_paths: HashSet<PathBuf> = HashSet::new();
+        crate::project::for_each_leaf_path(&self.project_list_items, |path, _| {
+            all_paths.insert(path.to_path_buf());
+        });
         self.git_path_states
             .retain(|path, _| all_paths.contains(path));
         for path in &all_paths {

@@ -108,9 +108,9 @@ impl AppInit {
             cfg.tui.include_dirs.clone(),
             http_client.clone(),
         );
-        let tree_input = App::filter_discovered_projects(projects, cfg.tui.include_non_rust);
-        let project_list_items = scan::build_tree(&tree_input, &cfg.tui.inline_dirs);
-        let flat_entries = scan::build_flat_entries(&project_list_items);
+        let project_list_items = scan::build_tree(projects, &cfg.tui.inline_dirs);
+        let include_non_rust = cfg.tui.include_non_rust.includes_non_rust();
+        let flat_entries = scan::build_flat_entries(&project_list_items, include_non_rust);
         let list_state = initial_list_state(&project_list_items);
 
         Self {
@@ -142,7 +142,13 @@ struct CoreInputs {
 
 impl App {
     pub fn has_cached_non_rust_projects(&self) -> bool {
-        self.discovered_projects.iter().any(|item| !item.is_rust())
+        let mut found = false;
+        crate::project::for_each_leaf(&self.project_list_items, |item| {
+            if !item.is_rust() {
+                found = true;
+            }
+        });
+        found
     }
 
     fn filter_discovered_projects(
@@ -160,9 +166,33 @@ impl App {
         }
     }
 
-    /// Snapshot of discovered projects for tree builds.
+    /// Snapshot of leaf projects for tree builds.
+    ///
+    /// Primarily reads from `project_list_items`. For items that have been
+    /// updated in `discovered_projects` (via `handle_project_refreshed`),
+    /// uses the `discovered_projects` version which may have newer metadata.
+    /// This bridge is removed in Phase 4 when `discovered_projects` is
+    /// eliminated.
     pub fn tree_projects_snapshot(&self) -> Vec<ProjectListItem> {
-        Self::filter_discovered_projects(&self.discovered_projects, self.include_non_rust())
+        let mut leaves = Vec::new();
+        crate::project::for_each_leaf(&self.project_list_items, |item| {
+            // Prefer discovered_projects version if it exists (may have
+            // fresher metadata from handle_project_refreshed).
+            let preferred = self
+                .discovered_projects
+                .iter()
+                .find(|dp| dp.path() == item.path())
+                .cloned()
+                .unwrap_or_else(|| item.clone());
+            leaves.push(preferred);
+        });
+        // Include items only in discovered_projects (e.g. newly discovered).
+        for dp in &self.discovered_projects {
+            if !leaves.iter().any(|l| l.path() == dp.path()) {
+                leaves.push(dp.clone());
+            }
+        }
+        leaves
     }
 
     pub fn new(

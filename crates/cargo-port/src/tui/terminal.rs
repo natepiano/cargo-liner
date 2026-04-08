@@ -383,8 +383,7 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         fit_results = bg_stats.fit_results,
         disk_results = bg_stats.disk_results,
         needs_rebuild = bg_stats.needs_rebuild,
-        projects = app.discovered_projects.len(),
-        nodes = app.project_list_items.len(),
+        items = app.project_list_items.len(),
         scan_complete = app.is_scan_complete(),
         "slow_frame"
     );

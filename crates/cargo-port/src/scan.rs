@@ -995,9 +995,15 @@ fn group_members_new(
 }
 
 /// Build a flat list of entries for fuzzy search from the project tree.
-pub(crate) fn build_flat_entries(items: &[ProjectListItem]) -> Vec<FlatEntry> {
+pub(crate) fn build_flat_entries(
+    items: &[ProjectListItem],
+    include_non_rust: bool,
+) -> Vec<FlatEntry> {
     let mut entries = Vec::new();
     for item in items {
+        if !include_non_rust && !item.is_rust() {
+            continue;
+        }
         entries.push(FlatEntry {
             path:     item.display_path(),
             abs_path: item.path().to_path_buf(),
@@ -1350,7 +1356,7 @@ pub(crate) fn spawn_streaming_scan(
 
         let tree_started = std::time::Instant::now();
         let project_list_items = build_tree(&phase1.items, &inline_dirs);
-        let flat_entries = build_flat_entries(&project_list_items);
+        let flat_entries = build_flat_entries(&project_list_items, true);
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(tree_started.elapsed().as_millis()),
             input_items = phase1.items.len(),

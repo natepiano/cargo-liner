@@ -1249,10 +1249,16 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
         .iter()
         .filter_map(|&flat_idx| {
             let entry = app.flat_entries.get(flat_idx)?;
-            let item = app
-                .discovered_projects
-                .iter()
-                .find(|item| item.display_path() == entry.path)?;
+            let item = {
+                let mut found = None;
+                crate::project::for_each_leaf(&app.project_list_items, |leaf| {
+                    if found.is_none() && leaf.display_path() == entry.path {
+                        found = Some(leaf.clone());
+                    }
+                });
+                found
+            }?;
+            let item = &item;
             let abs = item.path();
             let cargo_active = app.is_cargo_active_path(abs);
             let disk = app.formatted_disk(abs);

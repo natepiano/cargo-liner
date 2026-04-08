@@ -31,8 +31,11 @@ impl App {
             return;
         }
         self.dirty.rows.mark_clean();
-        self.cached_visible_rows =
-            snapshots::build_visible_rows(&self.project_list_items, &self.expanded);
+        self.cached_visible_rows = snapshots::build_visible_rows(
+            &self.project_list_items,
+            &self.expanded,
+            self.include_non_rust().includes_non_rust(),
+        );
     }
 
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.

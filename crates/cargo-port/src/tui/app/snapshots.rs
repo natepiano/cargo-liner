@@ -40,10 +40,14 @@ use crate::tui::render::PREFIX_WT_VENDORED;
 pub(super) fn build_visible_rows(
     items: &[ProjectListItem],
     expanded: &HashSet<ExpandKey>,
+    include_non_rust: bool,
 ) -> Vec<VisibleRow> {
     let mut rows = Vec::new();
     for (ni, item) in items.iter().enumerate() {
         if matches!(item.visibility(), Visibility::Dismissed) {
+            continue;
+        }
+        if !include_non_rust && !item.is_rust() {
             continue;
         }
         rows.push(VisibleRow::Root { node_index: ni });

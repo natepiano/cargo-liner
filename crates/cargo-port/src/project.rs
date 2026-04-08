@@ -1767,6 +1767,111 @@ impl ProjectListItem {
     }
 }
 
+/// Iterate all leaf-level projects from the hierarchy.
+///
+/// For `Workspace`, `Package`, `NonRust`: yields the item directly.
+/// For worktree groups: yields primary and each linked entry wrapped as
+/// `Workspace` or `Package`.
+pub(crate) fn for_each_leaf(items: &[ProjectListItem], mut f: impl FnMut(&ProjectListItem)) {
+    for item in items {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(g) => {
+                f(&ProjectListItem::Workspace(g.primary().clone()));
+                for linked in g.linked() {
+                    f(&ProjectListItem::Workspace(linked.clone()));
+                }
+            },
+            ProjectListItem::PackageWorktrees(g) => {
+                f(&ProjectListItem::Package(g.primary().clone()));
+                for linked in g.linked() {
+                    f(&ProjectListItem::Package(linked.clone()));
+                }
+            },
+            other => f(other),
+        }
+    }
+}
+
+/// Zero-allocation leaf path iteration. Yields `(path, is_rust)` for every
+/// leaf project without cloning any `ProjectListItem`.
+pub(crate) fn for_each_leaf_path(items: &[ProjectListItem], mut f: impl FnMut(&Path, bool)) {
+    for item in items {
+        match item {
+            ProjectListItem::WorkspaceWorktrees(g) => {
+                for ws in std::iter::once(g.primary()).chain(g.linked()) {
+                    f(ws.path(), true);
+                }
+            },
+            ProjectListItem::PackageWorktrees(g) => {
+                for pkg in std::iter::once(g.primary()).chain(g.linked()) {
+                    f(pkg.path(), true);
+                }
+            },
+            other => f(other.path(), other.is_rust()),
+        }
+    }
+}
+
+/// Find a leaf item by absolute path and replace it, returning the old item.
+///
+/// Descends into worktree groups to find matching entries. Returns `None` if
+/// no leaf with the given path exists.
+pub(crate) fn replace_leaf_by_path(
+    items: &mut [ProjectListItem],
+    path: &Path,
+    mut replacement: ProjectListItem,
+) -> Option<ProjectListItem> {
+    for item in items.iter_mut() {
+        match item {
+            ProjectListItem::Workspace(_)
+            | ProjectListItem::Package(_)
+            | ProjectListItem::NonRust(_) => {
+                if item.path() == path {
+                    std::mem::swap(item, &mut replacement);
+                    return Some(replacement);
+                }
+            },
+            ProjectListItem::WorkspaceWorktrees(g) => {
+                if g.primary().path() == path {
+                    if let ProjectListItem::Workspace(ws) = replacement {
+                        let old = g.primary().clone();
+                        *g.primary_mut() = ws;
+                        return Some(ProjectListItem::Workspace(old));
+                    }
+                }
+                for linked in g.linked_mut() {
+                    if linked.path() == path {
+                        if let ProjectListItem::Workspace(ws) = replacement {
+                            let old = linked.clone();
+                            *linked = ws;
+                            return Some(ProjectListItem::Workspace(old));
+                        }
+                    }
+                }
+            },
+            ProjectListItem::PackageWorktrees(g) => {
+                if g.primary().path() == path {
+                    if let ProjectListItem::Package(pkg) = replacement {
+                        let old = g.primary().clone();
+                        *g.primary_mut() = pkg;
+                        return Some(ProjectListItem::Package(old));
+                    }
+                }
+                for linked in g.linked_mut() {
+                    if linked.path() == path {
+                        if let ProjectListItem::Package(pkg) = replacement {
+                            let old = linked.clone();
+                            *linked = pkg;
+                            return Some(ProjectListItem::Package(old));
+                        }
+                    }
+                }
+            },
+        }
+    }
+    None
+}
+
 fn sum_worktree_disk<Kind: CargoKind>(
     primary: &RustProject<Kind>,
     linked: &[RustProject<Kind>],
