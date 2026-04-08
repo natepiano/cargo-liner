@@ -2464,9 +2464,7 @@ fn find_type_definition_file(
         return None;
     }
 
-    let Some(parent_dir) = child_file.parent() else {
-        return None;
-    };
+    let parent_dir = child_file.parent()?;
     for path in source_cache.source_files_under(parent_dir) {
         if path == child_file {
             continue;
