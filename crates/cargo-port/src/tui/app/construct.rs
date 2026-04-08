@@ -24,7 +24,6 @@ use super::types::SelectionPaths;
 use super::types::SelectionSync;
 use super::types::UiModes;
 use crate::config::CargoPortConfig;
-use crate::config::NonRustInclusion;
 use crate::http::HttpClient;
 use crate::keymap;
 use crate::lint;
@@ -128,7 +127,6 @@ impl AppInit {
 
 struct CoreInputs {
     scan_root:       PathBuf,
-    discovered:      Vec<ProjectListItem>,
     http_client:     HttpClient,
     bg_tx:           mpsc::Sender<BackgroundMsg>,
     bg_rx:           Receiver<BackgroundMsg>,
@@ -149,21 +147,6 @@ impl App {
             }
         });
         found
-    }
-
-    fn filter_discovered_projects(
-        projects: &[ProjectListItem],
-        include_non_rust: NonRustInclusion,
-    ) -> Vec<ProjectListItem> {
-        if include_non_rust.includes_non_rust() {
-            projects.to_vec()
-        } else {
-            projects
-                .iter()
-                .filter(|item| item.is_rust())
-                .cloned()
-                .collect()
-        }
     }
 
     /// Snapshot of leaf projects for tree builds.
@@ -191,10 +174,8 @@ impl App {
         let builds = AsyncBuildState::new(BuildChannels::new());
         let init = AppInit::new(&scan_root, projects, &bg_tx, cfg, &http_client);
         let status_flash = init.lint_warning.clone().map(|w| (w, Instant::now()));
-        let discovered: Vec<ProjectListItem> = projects.to_vec();
         let mut app = Self::build_core(CoreInputs {
             scan_root,
-            discovered,
             http_client,
             bg_tx,
             bg_rx,
@@ -217,7 +198,6 @@ impl App {
             current_config: inputs.cfg,
             scan_root: inputs.scan_root,
             http_client: inputs.http_client,
-            discovered_projects: inputs.discovered,
             project_list_items: init.project_list_items,
             flat_entries: init.flat_entries,
             ci_state: HashMap::new(),

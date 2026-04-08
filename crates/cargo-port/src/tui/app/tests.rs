@@ -308,7 +308,7 @@ fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
     cfg.tui.include_non_rust = NonRustInclusion::Include;
     app.apply_config(&cfg);
 
-    assert!(app.discovered_projects.is_empty());
+    assert!(app.project_list_items.is_empty());
     assert!(!app.is_scan_complete());
 }
 
@@ -1529,7 +1529,7 @@ fn handle_project_discovered_deduplicates_by_path() {
         "duplicate path should be rejected"
     );
     assert!(app.handle_project_discovered(pkg3));
-    assert_eq!(app.discovered_projects.len(), 2);
+    assert_eq!(app.project_list_items.len(), 2);
 }
 
 #[test]
@@ -1545,7 +1545,7 @@ fn handle_project_discovered_does_not_allocate_per_comparison() {
         app.handle_project_discovered(item);
     }
     let elapsed = start.elapsed();
-    assert_eq!(app.discovered_projects.len(), 200);
+    assert_eq!(app.project_list_items.len(), 200);
     // With PathBuf comparison this should be well under 100ms.
     // With display_path() allocation it would be much slower.
     assert!(
@@ -1561,7 +1561,6 @@ fn is_deleted_does_not_allocate_display_paths() {
     for i in 0..200 {
         let path = format!("/abs/project_{i}");
         let item = ProjectListItem::Package(make_package_raw(None, &path, None));
-        app.discovered_projects.push(item.clone());
         app.project_list_items.push(item);
     }
     // Mark one as deleted

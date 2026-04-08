@@ -1832,38 +1832,38 @@ pub(crate) fn replace_leaf_by_path(
                 }
             },
             ProjectListItem::WorkspaceWorktrees(g) => {
-                if g.primary().path() == path {
-                    if let ProjectListItem::Workspace(ws) = replacement {
-                        let old = g.primary().clone();
-                        *g.primary_mut() = ws;
-                        return Some(ProjectListItem::Workspace(old));
-                    }
+                if g.primary().path() == path
+                    && let ProjectListItem::Workspace(ws) = replacement
+                {
+                    let old = g.primary().clone();
+                    *g.primary_mut() = ws;
+                    return Some(ProjectListItem::Workspace(old));
                 }
                 for linked in g.linked_mut() {
-                    if linked.path() == path {
-                        if let ProjectListItem::Workspace(ws) = replacement {
-                            let old = linked.clone();
-                            *linked = ws;
-                            return Some(ProjectListItem::Workspace(old));
-                        }
+                    if linked.path() == path
+                        && let ProjectListItem::Workspace(ws) = replacement
+                    {
+                        let old = linked.clone();
+                        *linked = ws;
+                        return Some(ProjectListItem::Workspace(old));
                     }
                 }
             },
             ProjectListItem::PackageWorktrees(g) => {
-                if g.primary().path() == path {
-                    if let ProjectListItem::Package(pkg) = replacement {
-                        let old = g.primary().clone();
-                        *g.primary_mut() = pkg;
-                        return Some(ProjectListItem::Package(old));
-                    }
+                if g.primary().path() == path
+                    && let ProjectListItem::Package(pkg) = replacement
+                {
+                    let old = g.primary().clone();
+                    *g.primary_mut() = pkg;
+                    return Some(ProjectListItem::Package(old));
                 }
                 for linked in g.linked_mut() {
-                    if linked.path() == path {
-                        if let ProjectListItem::Package(pkg) = replacement {
-                            let old = linked.clone();
-                            *linked = pkg;
-                            return Some(ProjectListItem::Package(old));
-                        }
+                    if linked.path() == path
+                        && let ProjectListItem::Package(pkg) = replacement
+                    {
+                        let old = linked.clone();
+                        *linked = pkg;
+                        return Some(ProjectListItem::Package(old));
                     }
                 }
             },

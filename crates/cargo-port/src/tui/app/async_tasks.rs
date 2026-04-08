@@ -48,36 +48,6 @@ use crate::tui::types::PaneId;
 use crate::watcher;
 use crate::watcher::WatchRequest;
 
-/// Extract a flat list of root-level `ProjectListItem` values from the tree
-/// so that `discovered_projects` can be populated from a single-pass scan
-/// result. Each top-level item (workspace, package, non-rust) is included
-/// once; worktree groups contribute their primary and linked entries.
-fn collect_discovered_from_tree(tree: &[ProjectListItem]) -> Vec<ProjectListItem> {
-    let mut result = Vec::with_capacity(tree.len());
-    for item in tree {
-        match item {
-            ProjectListItem::Workspace(_)
-            | ProjectListItem::Package(_)
-            | ProjectListItem::NonRust(_) => {
-                result.push(item.clone());
-            },
-            ProjectListItem::WorkspaceWorktrees(wtg) => {
-                result.push(ProjectListItem::Workspace(wtg.primary().clone()));
-                for linked in wtg.linked() {
-                    result.push(ProjectListItem::Workspace(linked.clone()));
-                }
-            },
-            ProjectListItem::PackageWorktrees(wtg) => {
-                result.push(ProjectListItem::Package(wtg.primary().clone()));
-                for linked in wtg.linked() {
-                    result.push(ProjectListItem::Package(linked.clone()));
-                }
-            },
-        }
-    }
-    result
-}
-
 impl App {
     pub(super) fn apply_tree_build(
         &mut self,
@@ -1204,7 +1174,6 @@ impl App {
     }
 
     pub fn rescan(&mut self) {
-        self.discovered_projects.clear();
         self.project_list_items.clear();
         self.flat_entries.clear();
         // disk_usage lives on project items — cleared when project_list_items is cleared above
@@ -1304,7 +1273,6 @@ impl App {
                 fit_results = stats.fit_results,
                 disk_results = stats.disk_results,
                 needs_rebuild = stats.needs_rebuild,
-                projects = self.discovered_projects.len(),
                 items = self.project_list_items.len(),
                 "poll_background"
             );
@@ -1613,9 +1581,7 @@ impl App {
         self.register_item_background_services(&item);
         // Push directly into project_list_items; the subsequent tree rebuild
         // will place it at the correct nesting level.
-        self.project_list_items.push(item.clone());
-        // Keep discovered_projects in sync (bridge — removed in Phase 4).
-        self.discovered_projects.push(item);
+        self.project_list_items.push(item);
         true
     }
 
@@ -1633,16 +1599,7 @@ impl App {
             item.set_disk_usage_by_path(&disk_path, bytes);
         }
         // Re-replace with the runtime-data-enriched version.
-        crate::project::replace_leaf_by_path(&mut self.project_list_items, &path, item.clone());
-
-        // Keep discovered_projects in sync (bridge — removed in Phase 4).
-        if let Some(existing) = self
-            .discovered_projects
-            .iter_mut()
-            .find(|dp| dp.path() == path)
-        {
-            *existing = item;
-        }
+        crate::project::replace_leaf_by_path(&mut self.project_list_items, &path, item);
 
         // Trigger a tree rebuild so project_list_items picks up the change.
         self.rebuild_tree();
@@ -1844,16 +1801,10 @@ impl App {
             "rescan"
         };
 
-        // Populate discovered_projects from the pre-tree items. Extract all
-        // leaf-level projects from the tree so dedup, service registration,
-        // and startup tracking work against the same set.
-        self.discovered_projects = collect_discovered_from_tree(&project_list_items);
-
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(self.scan.started_at.elapsed().as_millis()),
             kind,
             run = self.scan.run_count,
-            discovered = self.discovered_projects.len(),
             tree_items = project_list_items.len(),
             flat_entries = flat_entries.len(),
             disk_entries = disk_entries.len(),

@@ -493,7 +493,6 @@ pub struct App {
     pub current_config:           CargoPortConfig,
     pub scan_root:                PathBuf,
     pub http_client:              HttpClient,
-    pub discovered_projects:      Vec<ProjectListItem>,
     pub project_list_items:       Vec<ProjectListItem>,
     pub flat_entries:             Vec<FlatEntry>,
     pub ci_state:                 HashMap<PathBuf, CiState>,

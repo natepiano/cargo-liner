@@ -25,7 +25,7 @@ fn fade_to_style(progress: f64) -> Style {
     let p = progress.clamp(0.0, 1.0);
     let curve = p * p * p;
     // Fade from 255 (white) to 128 (grey).
-    let v = (255.0 - 127.0 * curve) as u8;
+    let v = 127.0f64.mul_add(-curve, 255.0) as u8;
     Style::default().fg(Color::Rgb(v, v, v))
 }
 
