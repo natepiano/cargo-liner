@@ -970,11 +970,13 @@ struct FindingsSink {
     pub_use_fix_facts: Vec<StoredPubUseFixFact>,
 }
 
-/// Pre-loaded source file contents, built once before the analysis loops to avoid
-/// re-reading the same `.rs` files hundreds of times during visibility analysis.
+/// Pre-loaded source file contents and parsed ASTs, built once before the analysis
+/// loops to avoid re-reading and re-parsing the same `.rs` files hundreds of times
+/// during visibility analysis.
 struct SourceCache {
     contents:     HashMap<PathBuf, String>,
     files_by_dir: HashMap<PathBuf, Vec<PathBuf>>,
+    parsed:       HashMap<PathBuf, syn::File>,
 }
 
 impl SourceCache {
@@ -998,9 +1000,16 @@ impl SourceCache {
                     .push(path.clone());
             }
         }
+        let mut parsed = HashMap::new();
+        for (path, source) in &contents {
+            if let Ok(ast) = syn::parse_file(source) {
+                parsed.insert(path.clone(), ast);
+            }
+        }
         Ok(Self {
             contents,
             files_by_dir,
+            parsed,
         })
     }
 
@@ -1018,6 +1027,8 @@ impl SourceCache {
             .map(String::as_str)
             .with_context(|| format!("source file not in cache: {}", path.display()))
     }
+
+    fn parsed_file(&self, path: &Path) -> Option<&syn::File> { self.parsed.get(path) }
 }
 
 struct VisibilityContext<'a, 'tcx> {
@@ -1723,8 +1734,10 @@ fn root_module_exports_item(
     else {
         return Ok(false);
     };
-    let source = source_cache.read_source(root_module)?;
-    let exports = exported_names_from_parent_boundary(&source, child_module_name, item_name)?;
+    let Some(file) = source_cache.parsed_file(root_module) else {
+        return Ok(false);
+    };
+    let exports = exported_names_from_parent_boundary(file, child_module_name, item_name);
     Ok(!exports.explicit.is_empty())
 }
 
@@ -1744,18 +1757,20 @@ fn parent_facade_export_status(
     let mut current_child: PathBuf = child_file.to_path_buf();
     let mut parent_boundary = initial_boundary;
 
-    let (exported_names, parent_source) = loop {
+    let exported_names = loop {
         let Some(child_module_name) =
             module_paths::module_name_for_child_boundary_file(&current_child)
         else {
             return Ok(None);
         };
 
-        let source = source_cache.read_source(&parent_boundary.boundary_file)?;
-        let exports = exported_names_from_parent_boundary(source, child_module_name, item_name)?;
+        let Some(file) = source_cache.parsed_file(&parent_boundary.boundary_file) else {
+            return Ok(None);
+        };
+        let exports = exported_names_from_parent_boundary(file, child_module_name, item_name);
 
         if !exports.explicit.is_empty() {
-            break (exports, source);
+            break exports;
         }
 
         // Not found at this level — walk up to the next ancestor.
@@ -1772,7 +1787,8 @@ fn parent_facade_export_status(
         .unwrap_or(&parent_boundary.boundary_file)
         .to_string_lossy()
         .replace('\\', "/");
-    let parent_line = first_line_matching(&parent_source, item_name).unwrap_or(1);
+    let parent_source = source_cache.read_source(&parent_boundary.boundary_file)?;
+    let parent_line = first_line_matching(parent_source, item_name).unwrap_or(1);
 
     let usage = scan_facade_usage(
         source_cache,
@@ -1802,16 +1818,18 @@ fn scan_facade_usage(
     exported_names: &ParentFacadeExports,
 ) -> Result<ParentFacadeUsage> {
     let mut usage = ParentFacadeUsage::Unused;
-    for file in source_cache.source_files_under(src_root) {
-        if file == parent_boundary.boundary_file {
+    for source_path in source_cache.source_files_under(src_root) {
+        if source_path == parent_boundary.boundary_file {
             continue;
         }
-        let Some(current_module_path) = module_path_from_source_file(src_root, file) else {
+        let Some(current_module_path) = module_path_from_source_file(src_root, source_path) else {
             continue;
         };
-        let source = source_cache.read_source(file)?;
+        let Some(parsed) = source_cache.parsed_file(source_path) else {
+            continue;
+        };
         match source_references_parent_export(
-            source,
+            parsed,
             &current_module_path,
             &parent_boundary.module_path,
             &exported_names.explicit,
@@ -1819,26 +1837,26 @@ fn scan_facade_usage(
             ParentFacadeReferenceUsage::None => {},
             ParentFacadeReferenceUsage::Import(PathOrigin::Relative) => {
                 if matches!(usage, ParentFacadeUsage::Unused)
-                    && file.starts_with(&parent_boundary.subtree_root)
+                    && source_path.starts_with(&parent_boundary.subtree_root)
                 {
                     usage = ParentFacadeUsage::UsedInsideParentSubtreeByRelativeImport;
-                } else if !file.starts_with(&parent_boundary.subtree_root) {
+                } else if !source_path.starts_with(&parent_boundary.subtree_root) {
                     usage = ParentFacadeUsage::UsedOutsideParentSubtree;
                     break;
                 }
             },
             ParentFacadeReferenceUsage::Import(PathOrigin::Crate) => {
                 if matches!(usage, ParentFacadeUsage::Unused)
-                    && file.starts_with(&parent_boundary.subtree_root)
+                    && source_path.starts_with(&parent_boundary.subtree_root)
                 {
                     usage = ParentFacadeUsage::UsedInsideParentSubtreeByCrateImport;
-                } else if !file.starts_with(&parent_boundary.subtree_root) {
+                } else if !source_path.starts_with(&parent_boundary.subtree_root) {
                     usage = ParentFacadeUsage::UsedOutsideParentSubtree;
                     break;
                 }
             },
             ParentFacadeReferenceUsage::DirectPath(PathOrigin::Relative) => {
-                if file.starts_with(&parent_boundary.subtree_root) {
+                if source_path.starts_with(&parent_boundary.subtree_root) {
                     usage = ParentFacadeUsage::UsedInsideParentSubtreeByRelativePath;
                 } else {
                     usage = ParentFacadeUsage::UsedOutsideParentSubtree;
@@ -1846,7 +1864,7 @@ fn scan_facade_usage(
                 }
             },
             ParentFacadeReferenceUsage::DirectPath(PathOrigin::Crate) => {
-                if file.starts_with(&parent_boundary.subtree_root) {
+                if source_path.starts_with(&parent_boundary.subtree_root) {
                     usage = ParentFacadeUsage::UsedInsideParentSubtreeByCratePath;
                 } else {
                     usage = ParentFacadeUsage::UsedOutsideParentSubtree;
@@ -2002,11 +2020,10 @@ fn module_path_from_source_file(src_root: &Path, source_file: &Path) -> Option<V
 }
 
 fn exported_names_from_parent_boundary(
-    parent_source: &str,
+    file: &syn::File,
     child_module_name: &str,
     item_name: &str,
-) -> Result<ParentFacadeExports> {
-    let file = syn::parse_file(parent_source).context("failed to parse parent boundary file")?;
+) -> ParentFacadeExports {
     let mut exported = ParentFacadeExports::default();
     for item in &file.items {
         let syn::Item::Use(item_use) = item else {
@@ -2020,7 +2037,7 @@ fn exported_names_from_parent_boundary(
     }
     exported.explicit.sort();
     exported.explicit.dedup();
-    Ok(exported)
+    exported
 }
 
 fn collect_matching_pub_use_exports(
@@ -2183,18 +2200,14 @@ enum ParentFacadeReferenceUsage {
 }
 
 fn source_references_parent_export(
-    source: &str,
+    file: &syn::File,
     current_module_path: &[String],
     module_path: &[String],
     exported_names: &[String],
 ) -> ParentFacadeReferenceUsage {
-    let Ok(file) = syn::parse_file(source) else {
-        return ParentFacadeReferenceUsage::None;
-    };
-
     let mut visitor =
         ParentExportPathVisitor::new(current_module_path, module_path, exported_names);
-    visitor.visit_file(&file);
+    visitor.visit_file(file);
     match (visitor.found_direct_origin, visitor.found_import_usage) {
         (Some(origin), _) => ParentFacadeReferenceUsage::DirectPath(origin),
         (None, usage) => usage,
@@ -2251,9 +2264,9 @@ fn child_item_is_exposed_by_other_crate_visible_signature(
     child_file: &Path,
     item_name: &str,
 ) -> Result<bool> {
-    let child_source = source_cache.read_source(child_file)?;
-    let file = syn::parse_file(child_source)
-        .with_context(|| format!("failed to parse child file {}", child_file.display()))?;
+    let Some(file) = source_cache.parsed_file(child_file) else {
+        return Ok(false);
+    };
 
     for item in &file.items {
         let Some(exposing_item_name) = public_item_name(item) else {
@@ -2319,13 +2332,9 @@ fn child_item_is_exposed_by_sibling_boundary_signature(
             continue;
         }
 
-        let candidate_source = source_cache.read_source(candidate_file)?;
-        let file = syn::parse_file(candidate_source).with_context(|| {
-            format!(
-                "failed to parse candidate file {}",
-                candidate_file.display()
-            )
-        })?;
+        let Some(file) = source_cache.parsed_file(candidate_file) else {
+            continue;
+        };
 
         for item in &file.items {
             let Some(exposing_item_name) = public_item_name(item) else {
@@ -2383,9 +2392,9 @@ fn impl_item_is_exposed_by_exported_self_type(
     child_file: &Path,
     item_name: &str,
 ) -> Result<bool> {
-    let child_source = source_cache.read_source(child_file)?;
-    let file = syn::parse_file(child_source)
-        .with_context(|| format!("failed to parse child file {}", child_file.display()))?;
+    let Some(file) = source_cache.parsed_file(child_file) else {
+        return Ok(false);
+    };
 
     for item in &file.items {
         let syn::Item::Impl(item_impl) = item else {
@@ -2451,8 +2460,7 @@ fn find_type_definition_file(
     child_file: &Path,
     type_name: &str,
 ) -> Result<Option<PathBuf>> {
-    let source = source_cache.read_source(child_file)?;
-    if file_defines_type(source, type_name)? {
+    if file_defines_type(source_cache, child_file, type_name) {
         return Ok(None);
     }
 
@@ -2463,8 +2471,7 @@ fn find_type_definition_file(
         if path == child_file {
             continue;
         }
-        let sibling_source = source_cache.read_source(path)?;
-        if file_defines_type(sibling_source, type_name)? {
+        if file_defines_type(source_cache, path, type_name) {
             return Ok(Some(path.to_path_buf()));
         }
     }
@@ -2472,8 +2479,10 @@ fn find_type_definition_file(
     Ok(None)
 }
 
-fn file_defines_type(source: &str, type_name: &str) -> Result<bool> {
-    let file = syn::parse_file(source).context("failed to parse source")?;
+fn file_defines_type(source_cache: &SourceCache, path: &Path, type_name: &str) -> bool {
+    let Some(file) = source_cache.parsed_file(path) else {
+        return false;
+    };
     for item in &file.items {
         let name = match item {
             syn::Item::Struct(item) => &item.ident,
@@ -2483,10 +2492,10 @@ fn file_defines_type(source: &str, type_name: &str) -> Result<bool> {
             _ => continue,
         };
         if name == type_name {
-            return Ok(true);
+            return true;
         }
     }
-    Ok(false)
+    false
 }
 
 fn parent_boundary_public_signature_exposes_child_used_outside_parent(
@@ -2500,13 +2509,9 @@ fn parent_boundary_public_signature_exposes_child_used_outside_parent(
         return Ok(false);
     };
 
-    let parent_source = source_cache.read_source(&parent_boundary.boundary_file)?;
-    let file = syn::parse_file(parent_source).with_context(|| {
-        format!(
-            "failed to parse parent boundary file {}",
-            parent_boundary.boundary_file.display()
-        )
-    })?;
+    let Some(file) = source_cache.parsed_file(&parent_boundary.boundary_file) else {
+        return Ok(false);
+    };
 
     let mut exposing_names = Vec::new();
     for item in &file.items {
@@ -2528,13 +2533,15 @@ fn parent_boundary_public_signature_exposes_child_used_outside_parent(
         {
             continue;
         }
-        let source = source_cache.read_source(source_file)?;
         let Some(current_module_path) = module_path_from_source_file(src_root, source_file) else {
+            continue;
+        };
+        let Some(parsed) = source_cache.parsed_file(source_file) else {
             continue;
         };
         if !matches!(
             source_references_parent_export(
-                source,
+                parsed,
                 &current_module_path,
                 &parent_boundary.module_path,
                 &exposing_names,
@@ -2901,9 +2908,9 @@ fn public_reexport_exists_outside_parent(
         if source_file.starts_with(&parent_boundary.subtree_root) {
             continue;
         }
-        let source = source_cache.read_source(source_file)?;
-        let file = syn::parse_file(source)
-            .with_context(|| format!("failed to parse source file {}", source_file.display()))?;
+        let Some(file) = source_cache.parsed_file(source_file) else {
+            continue;
+        };
         let Some(current_module_path) = module_path_from_source_file(src_root, source_file) else {
             continue;
         };
@@ -3797,27 +3804,22 @@ mod tests {
     }
 
     #[test]
-    fn grouped_parent_pub_use_is_fix_supported() -> anyhow::Result<()> {
-        let exports = exported_names_from_parent_boundary(
-            "pub use report_writer::{ReportDefinition, ReportWriter};\n",
-            "report_writer",
-            "ReportDefinition",
-        )?;
+    fn grouped_parent_pub_use_is_fix_supported() {
+        let source = "pub use report_writer::{ReportDefinition, ReportWriter};\n";
+        let file = syn::parse_file(source).unwrap();
+        let exports =
+            exported_names_from_parent_boundary(&file, "report_writer", "ReportDefinition");
         assert_eq!(exports.explicit, vec!["ReportDefinition".to_string()]);
         assert!(exports.fix_supported);
-        Ok(())
     }
 
     #[test]
-    fn multiline_grouped_parent_pub_use_is_fix_supported() -> anyhow::Result<()> {
-        let exports = exported_names_from_parent_boundary(
-            "pub use child::{\n    Thing,\n    Other,\n};\n",
-            "child",
-            "Thing",
-        )?;
+    fn multiline_grouped_parent_pub_use_is_fix_supported() {
+        let source = "pub use child::{\n    Thing,\n    Other,\n};\n";
+        let file = syn::parse_file(source).unwrap();
+        let exports = exported_names_from_parent_boundary(&file, "child", "Thing");
         assert_eq!(exports.explicit, vec!["Thing".to_string()]);
         assert!(exports.fix_supported);
-        Ok(())
     }
 
     #[test]
@@ -3839,12 +3841,10 @@ mod tests {
     }
 
     #[test]
-    fn grouped_parent_pub_use_with_rename_is_manual_only() -> anyhow::Result<()> {
-        let exports = exported_names_from_parent_boundary(
-            "pub use child::{Thing as RenamedThing, Other};\n",
-            "child",
-            "Thing",
-        )?;
+    fn grouped_parent_pub_use_with_rename_is_manual_only() {
+        let source = "pub use child::{Thing as RenamedThing, Other};\n";
+        let file = syn::parse_file(source).unwrap();
+        let exports = exported_names_from_parent_boundary(&file, "child", "Thing");
         assert_eq!(
             exports,
             ParentFacadeExports {
@@ -3854,14 +3854,9 @@ mod tests {
             }
         );
 
-        let exports = exported_names_from_parent_boundary(
-            "pub use child::{Thing as RenamedThing, Other};\n",
-            "child",
-            "Other",
-        )?;
+        let exports = exported_names_from_parent_boundary(&file, "child", "Other");
         assert_eq!(exports.explicit, vec!["Other".to_string()]);
         assert!(exports.fix_supported);
-        Ok(())
     }
 
     #[test]
