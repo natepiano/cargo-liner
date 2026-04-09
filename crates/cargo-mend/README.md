@@ -100,7 +100,11 @@ Install the `rustc-dev` component, then install `cargo-mend`:
 
 ```bash
 rustup component add rustc-dev
-cargo install cargo-mend
+RUSTC_BOOTSTRAP=1 cargo install cargo-mend
+
+# Alternative:
+# rustup component add rustc-dev --toolchain nightly
+# cargo +nightly install cargo-mend
 ```
 
 ### CI installation
@@ -117,6 +121,8 @@ For GitHub Actions or similar CI, install the `rustc-dev` component and then ins
 
 - name: Install cargo-mend
   run: cargo install cargo-mend
+  env:
+    RUSTC_BOOTSTRAP: 1
 
 - name: Run cargo-mend
   run: cargo mend --fail-on-warn
