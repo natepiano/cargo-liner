@@ -14,6 +14,11 @@ use ratatui::widgets::Wrap;
 use super::manager::ToastStyle;
 use super::manager::ToastView;
 use super::manager::TrackedItemView;
+use crate::tui::app::ClickAction;
+use crate::tui::app::DismissTarget;
+use crate::tui::constants::TOAST_GAP;
+use crate::tui::constants::TOAST_WIDTH;
+use crate::tui::types::ToastCardHitbox;
 
 /// Fade text from white to grey based on progress (0.0 = white, 1.0 = grey).
 #[expect(
@@ -32,11 +37,6 @@ fn fade_to_style(progress: f64) -> Style {
 fn fade_to_color<'a>(text: &str, progress: f64) -> Line<'a> {
     Line::from(Span::styled(text.to_owned(), fade_to_style(progress)))
 }
-use crate::tui::app::ClickAction;
-use crate::tui::app::DismissTarget;
-use crate::tui::constants::TOAST_GAP;
-use crate::tui::constants::TOAST_WIDTH;
-use crate::tui::types::ToastCardHitbox;
 
 fn truncate(text: &str, width: usize) -> String {
     let mut out = String::new();

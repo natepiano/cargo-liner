@@ -47,10 +47,10 @@ use crate::watcher::WatchRequest;
 
 #[derive(Clone)]
 struct LegacyRootExpansion {
-    root_path: PathBuf,
+    root_path:      PathBuf,
     old_node_index: usize,
-    had_children: bool,
-    named_groups: Vec<usize>,
+    had_children:   bool,
+    named_groups:   Vec<usize>,
 }
 
 impl App {
@@ -451,7 +451,7 @@ impl App {
         let has_repo_root = repo_root.is_some();
         let _ = self.watch_tx.send(WatchRequest {
             project_label: abs_path.to_string_lossy().to_string(),
-            abs_path:      abs_path.clone(),
+            abs_path: abs_path.clone(),
             repo_root,
         });
         tracing::info!(
@@ -1164,8 +1164,12 @@ impl App {
                             .iter()
                             .enumerate()
                             .filter_map(|(gi, group)| {
-                                group.is_named()
-                                    .then(|| self.expanded.contains(&super::types::ExpandKey::Group(ni, gi)))
+                                group
+                                    .is_named()
+                                    .then(|| {
+                                        self.expanded
+                                            .contains(&super::types::ExpandKey::Group(ni, gi))
+                                    })
                                     .filter(|expanded| *expanded)
                                     .map(|_| gi)
                             })
@@ -1210,11 +1214,10 @@ impl App {
                                 group_index,
                             ));
                         }
-                        self.expanded
-                            .remove(&super::types::ExpandKey::Group(
-                                legacy_root.old_node_index,
-                                group_index,
-                            ));
+                        self.expanded.remove(&super::types::ExpandKey::Group(
+                            legacy_root.old_node_index,
+                            group_index,
+                        ));
                     }
                 },
                 RootItem::PackageWorktrees(group) if group.renders_as_group() => {

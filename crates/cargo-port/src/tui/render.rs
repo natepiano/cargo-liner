@@ -1042,7 +1042,15 @@ fn render_wt_member<'a>(
                 },
                 _ => false,
             };
-            render_child_item(app, m, &member_name, sorted, indent, inherited_deleted, widths)
+            render_child_item(
+                app,
+                m,
+                &member_name,
+                sorted,
+                indent,
+                inherited_deleted,
+                widths,
+            )
         },
     )
 }

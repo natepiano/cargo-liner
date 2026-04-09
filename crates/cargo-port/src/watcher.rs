@@ -45,9 +45,9 @@ pub(crate) struct WatchRequest {
     /// Display path (e.g. `~/foo/bar`).
     pub project_label: String,
     /// Absolute filesystem path to the project root.
-    pub abs_path:     PathBuf,
+    pub abs_path:      PathBuf,
     /// Absolute path of the containing git repo root when known.
-    pub repo_root:    Option<PathBuf>,
+    pub repo_root:     Option<PathBuf>,
 }
 
 /// Spawn a unified background watcher thread. Watches the include
@@ -95,7 +95,7 @@ struct ProjectEntry {
     /// The resolved on-disk git directory. For normal repos this is
     /// `repo_root/.git`; for worktrees it follows the `.git` file to the
     /// real directory (e.g. `<main-repo>/.git/worktrees/<name>`).
-    git_dir:      Option<PathBuf>,
+    git_dir:       Option<PathBuf>,
 }
 
 enum DiskState {
@@ -254,8 +254,8 @@ fn drain_watch_requests(
                     req.abs_path.clone(),
                     ProjectEntry {
                         project_label: req.project_label,
-                        abs_path:      req.abs_path.clone(),
-                        repo_root:     req.repo_root,
+                        abs_path: req.abs_path.clone(),
+                        repo_root: req.repo_root,
                         git_dir,
                     },
                 );
@@ -1101,166 +1101,154 @@ mod tests {
     // ── project_level_dir ────────────────────────────────────────────
 
     #[test]
-    fn sibling_of_known_project() {
-        // scan_root = /home/user, known project at /home/user/rust/bevy
-        // → event inside /home/user/rust/bevy_style_fix/ should yield that dir
-        let scan_root = Path::new("/home/user");
-        let parents = HashSet::from([PathBuf::from("/home/user/rust")]);
+    fn project_level_dir_handles_synthetic_path_shapes() {
+        struct Case {
+            name:      &'static str,
+            scan_root: &'static str,
+            parents:   &'static [&'static str],
+            event:     &'static str,
+            expected:  Option<&'static str>,
+        }
 
-        let event = Path::new("/home/user/rust/bevy_style_fix/src/main.rs");
-        let result = project_level_dir(event, scan_root, &parents);
-        assert_eq!(
-            result.as_deref(),
-            Some(Path::new("/home/user/rust/bevy_style_fix"))
-        );
-    }
+        let cases = [
+            Case {
+                name:      "sibling of known project",
+                scan_root: "/home/user",
+                parents:   &["/home/user/rust"],
+                event:     "/home/user/rust/bevy_style_fix/src/main.rs",
+                expected:  Some("/home/user/rust/bevy_style_fix"),
+            },
+            Case {
+                name:      "direct child of scan root",
+                scan_root: "/home/user/rust",
+                parents:   &[],
+                event:     "/home/user/rust/new_project/Cargo.toml",
+                expected:  Some("/home/user/rust/new_project"),
+            },
+            Case {
+                name:      "event is new directory itself",
+                scan_root: "/home/user",
+                parents:   &["/home/user/rust"],
+                event:     "/home/user/rust/new_wt",
+                expected:  Some("/home/user/rust/new_wt"),
+            },
+            Case {
+                name:      "deeply nested event resolves to project dir",
+                scan_root: "/home/user",
+                parents:   &["/home/user/rust"],
+                event:     "/home/user/rust/cargo-port_wt/src/tui/render.rs",
+                expected:  Some("/home/user/rust/cargo-port_wt"),
+            },
+            Case {
+                name:      "event at scan root returns none",
+                scan_root: "/home/user",
+                parents:   &["/home/user/rust"],
+                event:     "/home/user",
+                expected:  None,
+            },
+            Case {
+                name:      "event outside scan root returns none",
+                scan_root: "/home/user/rust",
+                parents:   &[],
+                event:     "/tmp/other/file.rs",
+                expected:  None,
+            },
+            Case {
+                name:      "multiple parent levels rust",
+                scan_root: "/home/user",
+                parents:   &["/home/user/code/rust", "/home/user/code/python"],
+                event:     "/home/user/code/rust/new_crate/src/lib.rs",
+                expected:  Some("/home/user/code/rust/new_crate"),
+            },
+            Case {
+                name:      "multiple parent levels python",
+                scan_root: "/home/user",
+                parents:   &["/home/user/code/rust", "/home/user/code/python"],
+                event:     "/home/user/code/python/new_pkg/setup.py",
+                expected:  Some("/home/user/code/python/new_pkg"),
+            },
+            Case {
+                name:      "synthetic path resolves to scan root child",
+                scan_root: "/home/user",
+                parents:   &[],
+                event:     "/home/user/rust/bevy/src/lib.rs",
+                expected:  Some("/home/user/rust"),
+            },
+        ];
 
-    #[test]
-    fn direct_child_of_scan_root() {
-        // scan_root = /home/user/rust, no project_parents needed
-        // → event inside /home/user/rust/new_project/ falls back to scan_root
-        let scan_root = Path::new("/home/user/rust");
-        let parents = HashSet::new();
-
-        let event = Path::new("/home/user/rust/new_project/Cargo.toml");
-        let result = project_level_dir(event, scan_root, &parents);
-        assert_eq!(
-            result.as_deref(),
-            Some(Path::new("/home/user/rust/new_project"))
-        );
-    }
-
-    #[test]
-    fn event_is_the_new_directory_itself() {
-        let scan_root = Path::new("/home/user");
-        let parents = HashSet::from([PathBuf::from("/home/user/rust")]);
-
-        let event = Path::new("/home/user/rust/new_wt");
-        let result = project_level_dir(event, scan_root, &parents);
-        assert_eq!(result.as_deref(), Some(Path::new("/home/user/rust/new_wt")));
-    }
-
-    #[test]
-    fn deeply_nested_event_resolves_to_project_dir() {
-        let scan_root = Path::new("/home/user");
-        let parents = HashSet::from([PathBuf::from("/home/user/rust")]);
-
-        let event = Path::new("/home/user/rust/cargo-port_wt/src/tui/render.rs");
-        let result = project_level_dir(event, scan_root, &parents);
-        assert_eq!(
-            result.as_deref(),
-            Some(Path::new("/home/user/rust/cargo-port_wt"))
-        );
-    }
-
-    #[test]
-    fn event_at_scan_root_returns_none() {
-        let scan_root = Path::new("/home/user");
-        let parents = HashSet::from([PathBuf::from("/home/user/rust")]);
-
-        let result = project_level_dir(scan_root, scan_root, &parents);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn event_outside_scan_root_returns_none() {
-        let scan_root = Path::new("/home/user/rust");
-        let parents = HashSet::new();
-
-        let event = Path::new("/tmp/other/file.rs");
-        let result = project_level_dir(event, scan_root, &parents);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn multiple_parent_levels() {
-        // Projects at different depths: ~/code/rust/foo and ~/code/python/bar
-        let scan_root = Path::new("/home/user");
-        let parents = HashSet::from([
-            PathBuf::from("/home/user/code/rust"),
-            PathBuf::from("/home/user/code/python"),
-        ]);
-
-        let rust_event = Path::new("/home/user/code/rust/new_crate/src/lib.rs");
-        assert_eq!(
-            project_level_dir(rust_event, scan_root, &parents).as_deref(),
-            Some(Path::new("/home/user/code/rust/new_crate"))
-        );
-
-        let py_event = Path::new("/home/user/code/python/new_pkg/setup.py");
-        assert_eq!(
-            project_level_dir(py_event, scan_root, &parents).as_deref(),
-            Some(Path::new("/home/user/code/python/new_pkg"))
-        );
-    }
-
-    /// Synthetic paths with no filesystem markers fall back to the
-    /// nearest `scan_root` or `project_parents` boundary.
-    #[test]
-    fn synthetic_paths_resolve_to_scan_root_child() {
-        let scan_root = Path::new("/home/user");
-        let parents = HashSet::new();
-
-        let event = Path::new("/home/user/rust/bevy/src/lib.rs");
-        let result = project_level_dir(event, scan_root, &parents);
-        assert_eq!(result.as_deref(), Some(Path::new("/home/user/rust")));
+        for case in cases {
+            let scan_root = Path::new(case.scan_root);
+            let parents = case.parents.iter().map(PathBuf::from).collect();
+            let result = project_level_dir(Path::new(case.event), scan_root, &parents);
+            assert_eq!(
+                result.as_deref(),
+                case.expected.map(Path::new),
+                "{}",
+                case.name
+            );
+        }
     }
 
     /// Filesystem markers (`Cargo.toml`) are detected regardless of
     /// whether `project_parents` is empty or populated.
     #[test]
-    fn filesystem_fallback_finds_cargo_toml() {
+    fn project_level_dir_finds_filesystem_markers() {
         let tmp = tempfile::tempdir().expect("failed to create tempdir");
         let scan_root = tmp.path();
         let project_dir = scan_root.join("rust").join("new_project");
-        std::fs::create_dir_all(&project_dir).expect("create dirs");
-        std::fs::write(project_dir.join("Cargo.toml"), b"[package]").expect("write Cargo.toml");
-
-        let parents = HashSet::new();
-        let event = project_dir.join("src/main.rs");
-        let result = project_level_dir(&event, scan_root, &parents);
-        assert_eq!(result, Some(project_dir));
-    }
-
-    /// A new project under a parent directory that isn't in
-    /// `project_parents` is still found via `Cargo.toml` on disk.
-    /// This covers: scan already passed `~/python/`, `project_parents`
-    /// only has `~/rust/`, new project appears at `~/python/new_thing/`.
-    #[test]
-    fn new_project_in_unknown_parent_found_via_filesystem() {
-        let tmp = tempfile::tempdir().expect("failed to create tempdir");
-        let scan_root = tmp.path();
-
-        // Existing project parent — only ~/rust/ is known
-        let parents = HashSet::from([scan_root.join("rust")]);
-
-        // New project under ~/python/ — not in project_parents
-        let new_project = scan_root.join("python").join("new_thing");
-        std::fs::create_dir_all(&new_project).expect("create dirs");
-        std::fs::write(new_project.join("Cargo.toml"), b"[package]").expect("write Cargo.toml");
-
-        let event = new_project.join("src/lib.rs");
-        let result = project_level_dir(&event, scan_root, &parents);
-        assert_eq!(result, Some(new_project));
-    }
-
-    #[test]
-    fn nested_workspace_member_event_resolves_to_workspace_root() {
-        let tmp = tempfile::tempdir().expect("failed to create tempdir");
-        let scan_root = tmp.path();
-        let parents = HashSet::from([scan_root.join("rust")]);
-
+        let unknown_parent_project = scan_root.join("python").join("new_thing");
         let workspace_root = scan_root.join("rust").join("bevy_brp_test");
         let member_dir = workspace_root.join("extras");
-        std::fs::create_dir_all(member_dir.join("src")).expect("create member dirs");
-        std::fs::write(workspace_root.join("Cargo.toml"), b"[workspace]\nmembers=[\"extras\"]")
-            .expect("write workspace Cargo.toml");
-        std::fs::write(member_dir.join("Cargo.toml"), b"[package]\nname=\"extras\"\nversion=\"0.1.0\"")
-            .expect("write member Cargo.toml");
 
-        let event = member_dir.join("src/lib.rs");
-        let result = project_level_dir(&event, scan_root, &parents);
-        assert_eq!(result, Some(workspace_root));
+        std::fs::create_dir_all(&project_dir).expect("create dirs");
+        std::fs::write(project_dir.join("Cargo.toml"), b"[package]").expect("write Cargo.toml");
+        std::fs::create_dir_all(&unknown_parent_project).expect("create dirs");
+        std::fs::write(unknown_parent_project.join("Cargo.toml"), b"[package]")
+            .expect("write Cargo.toml");
+        std::fs::create_dir_all(member_dir.join("src")).expect("create member dirs");
+        std::fs::write(
+            workspace_root.join("Cargo.toml"),
+            b"[workspace]\nmembers=[\"extras\"]",
+        )
+        .expect("write workspace Cargo.toml");
+        std::fs::write(
+            member_dir.join("Cargo.toml"),
+            b"[package]\nname=\"extras\"\nversion=\"0.1.0\"",
+        )
+        .expect("write member Cargo.toml");
+
+        struct Case {
+            name:     &'static str,
+            parents:  HashSet<PathBuf>,
+            event:    PathBuf,
+            expected: PathBuf,
+        }
+
+        let cases = [
+            Case {
+                name:     "finds cargo toml under empty parents",
+                parents:  HashSet::new(),
+                event:    project_dir.join("src/main.rs"),
+                expected: project_dir.clone(),
+            },
+            Case {
+                name:     "finds project in unknown parent via filesystem",
+                parents:  HashSet::from([scan_root.join("rust")]),
+                event:    unknown_parent_project.join("src/lib.rs"),
+                expected: unknown_parent_project.clone(),
+            },
+            Case {
+                name:     "nested workspace member resolves to workspace root",
+                parents:  HashSet::from([scan_root.join("rust")]),
+                event:    member_dir.join("src/lib.rs"),
+                expected: workspace_root.clone(),
+            },
+        ];
+
+        for case in cases {
+            let result = project_level_dir(&case.event, scan_root, &case.parents);
+            assert_eq!(result, Some(case.expected), "{}", case.name);
+        }
     }
 
     // ── handle_event ─────────────────────────────────────────────────
@@ -1282,6 +1270,166 @@ mod tests {
             states.get(project_path),
             Some(DiskState::Pending { .. })
         ));
+    }
+
+    fn repo_with_member_event_context(
+        tmp: &tempfile::TempDir,
+    ) -> (
+        PathBuf,
+        PathBuf,
+        HashMap<PathBuf, ProjectEntry>,
+        PathBuf,
+        HashSet<PathBuf>,
+        HashSet<PathBuf>,
+    ) {
+        let project_dir = tmp.path().join("my_project");
+        std::fs::create_dir_all(&project_dir).expect("create project dir");
+        init_git_repo(&project_dir);
+        let member_dir = project_dir.join("crates").join("member");
+        std::fs::create_dir_all(&member_dir).expect("create member dir");
+
+        let mut projects = HashMap::new();
+        projects.insert(
+            project_dir.clone(),
+            ProjectEntry {
+                project_label: "~/my_project".to_string(),
+                abs_path:      project_dir.clone(),
+                repo_root:     Some(project_dir.clone()),
+                git_dir:       Some(project_dir.join(".git")),
+            },
+        );
+        projects.insert(
+            member_dir.clone(),
+            ProjectEntry {
+                project_label: "~/my_project/crates/member".to_string(),
+                abs_path:      member_dir.clone(),
+                repo_root:     Some(project_dir.clone()),
+                git_dir:       Some(project_dir.join(".git")),
+            },
+        );
+
+        let scan_root = tmp.path().to_path_buf();
+        let project_parents = HashSet::from([scan_root.clone()]);
+        let discovered = HashSet::new();
+        (
+            project_dir,
+            member_dir,
+            projects,
+            scan_root,
+            project_parents,
+            discovered,
+        )
+    }
+
+    fn assert_repo_git_fast_path(event_rel_path: &str, context: &str) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (project_dir, member_dir, projects, scan_root, project_parents, discovered) =
+            repo_with_member_event_context(&tmp);
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+        let (git_done_tx, _git_done_rx) = mpsc::channel();
+
+        handle_event(
+            &project_dir.join(event_rel_path),
+            &ctx,
+            &bg_tx,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        let git_limit = Arc::new(tokio::sync::Semaphore::new(1));
+        fire_git_updates(
+            test_runtime().handle(),
+            &git_limit,
+            &git_done_tx,
+            &bg_tx,
+            &projects,
+            &mut pending_git,
+        );
+        let messages = collect_messages_until(
+            &bg_rx,
+            |msg| matches!(msg, BackgroundMsg::GitPathState { path, .. } if path.as_path() == project_dir),
+        );
+
+        let mut got_git_info = false;
+        let mut got_root_git_state = false;
+        let mut got_member_git_state = false;
+        for msg in messages {
+            match msg {
+                BackgroundMsg::GitInfo { .. } => got_git_info = true,
+                BackgroundMsg::GitPathState { path, .. } if path.as_path() == project_dir => {
+                    got_root_git_state = true;
+                },
+                BackgroundMsg::GitPathState { path, .. } if path.as_path() == member_dir => {
+                    got_member_git_state = true;
+                },
+                _ => {},
+            }
+        }
+
+        assert!(!got_git_info, "{context}");
+        assert!(got_root_git_state, "{context}");
+        assert!(!got_member_git_state, "{context}");
+        assert!(pending_disk.is_empty(), "{context}");
+        assert!(pending_git.contains_key(&project_dir), "{context}");
+        assert!(pending_new.is_empty(), "{context}");
+    }
+
+    fn worktree_git_event_context(
+        tmp: &tempfile::TempDir,
+    ) -> (
+        PathBuf,
+        PathBuf,
+        HashMap<PathBuf, ProjectEntry>,
+        PathBuf,
+        HashSet<PathBuf>,
+        HashSet<PathBuf>,
+    ) {
+        let wt_git_dir = tmp
+            .path()
+            .join("main_repo_git")
+            .join("worktrees")
+            .join("wt");
+        std::fs::create_dir_all(&wt_git_dir).expect("create worktree git dir");
+
+        let wt_root = tmp.path().join("main_repo_style_fix");
+        std::fs::create_dir_all(&wt_root).expect("create worktree root");
+        std::fs::write(
+            wt_root.join(".git"),
+            format!("gitdir: {}\n", wt_git_dir.display()),
+        )
+        .expect("write .git file");
+
+        let mut projects = HashMap::new();
+        projects.insert(
+            wt_root.clone(),
+            ProjectEntry {
+                project_label: "~/main_repo_style_fix".to_string(),
+                abs_path:      wt_root.clone(),
+                repo_root:     Some(wt_root.clone()),
+                git_dir:       Some(wt_git_dir.clone()),
+            },
+        );
+        let scan_root = tmp.path().to_path_buf();
+        let project_parents = HashSet::from([scan_root.clone()]);
+        let discovered = HashSet::new();
+        (
+            wt_root,
+            wt_git_dir,
+            projects,
+            scan_root,
+            project_parents,
+            discovered,
+        )
     }
 
     #[test]
@@ -1392,108 +1540,10 @@ edition = "2024"
 
     #[test]
     fn git_exclude_event_refreshes_git_immediately() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let project_dir = tmp.path().join("my_project");
-        std::fs::create_dir_all(&project_dir).expect("create project dir");
-        init_git_repo(&project_dir);
-        let member_dir = project_dir.join("crates").join("member");
-        std::fs::create_dir_all(&member_dir).expect("create member dir");
-
-        let mut projects = HashMap::new();
-        projects.insert(
-            project_dir.clone(),
-            ProjectEntry {
-                project_label: "~/my_project".to_string(),
-                abs_path:      project_dir.clone(),
-                repo_root:     Some(project_dir.clone()),
-                git_dir:       Some(project_dir.join(".git")),
-            },
+        assert_repo_git_fast_path(
+            ".git/info/exclude",
+            "exclude edits should bypass disk queue and keep the repo refresh queued for children",
         );
-        let member_key = member_dir.clone();
-        projects.insert(
-            member_key,
-            ProjectEntry {
-                project_label: "~/my_project/crates/member".to_string(),
-                abs_path:      member_dir.clone(),
-                repo_root:     Some(project_dir.clone()),
-                git_dir:       Some(project_dir.join(".git")),
-            },
-        );
-        let scan_root = tmp.path().to_path_buf();
-        let project_parents = HashSet::from([scan_root.clone()]);
-        let discovered = HashSet::new();
-        let ctx = EventContext {
-            scan_root:       &scan_root,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
-        };
-        let (bg_tx, bg_rx) = mpsc::channel();
-        let mut pending_disk = HashMap::new();
-        let mut pending_git = HashMap::new();
-        let mut pending_new = HashMap::new();
-        let (git_done_tx, _git_done_rx) = mpsc::channel();
-
-        handle_event(
-            &project_dir.join(".git").join("info").join("exclude"),
-            &ctx,
-            &bg_tx,
-            &mut pending_disk,
-            &mut pending_git,
-            &mut pending_new,
-        );
-
-        let git_limit = Arc::new(tokio::sync::Semaphore::new(1));
-        fire_git_updates(
-            test_runtime().handle(),
-            &git_limit,
-            &git_done_tx,
-            &bg_tx,
-            &projects,
-            &mut pending_git,
-        );
-        let messages = collect_messages_until(
-            &bg_rx,
-            |msg| matches!(msg, BackgroundMsg::GitPathState { path, .. } if path.as_path() == project_dir),
-        );
-
-        let mut got_git_info = false;
-        let mut got_root_git_state = false;
-        let mut got_member_git_state = false;
-        for msg in messages {
-            match msg {
-                BackgroundMsg::GitInfo { .. } => got_git_info = true,
-                BackgroundMsg::GitPathState { path, .. } if path.as_path() == project_dir => {
-                    got_root_git_state = true;
-                },
-                BackgroundMsg::GitPathState { path, .. } if path.as_path() == member_dir => {
-                    got_member_git_state = true;
-                },
-                _ => {},
-            }
-        }
-
-        assert!(
-            !got_git_info,
-            "repo-wide GitInfo should not block the fast path"
-        );
-        assert!(
-            got_root_git_state,
-            "expected immediate root GitPathState refresh"
-        );
-        assert!(
-            !got_member_git_state,
-            "member rows should wait for the background repo refresh"
-        );
-        assert!(
-            pending_disk.is_empty(),
-            "exclude edits should bypass disk queue"
-        );
-        assert!(
-            pending_git.contains_key(&project_dir),
-            "full repo refresh should stay queued for children"
-        );
-        assert!(pending_new.is_empty());
     }
 
     #[test]
@@ -1542,105 +1592,10 @@ edition = "2024"
 
     #[test]
     fn git_index_event_refreshes_git_path_immediately() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let project_dir = tmp.path().join("my_project");
-        std::fs::create_dir_all(&project_dir).expect("create project dir");
-        init_git_repo(&project_dir);
-        let member_dir = project_dir.join("crates").join("member");
-        std::fs::create_dir_all(&member_dir).expect("create member dir");
-
-        let mut projects = HashMap::new();
-        projects.insert(
-            project_dir.clone(),
-            ProjectEntry {
-                project_label: "~/my_project".to_string(),
-                abs_path:      project_dir.clone(),
-                repo_root:     Some(project_dir.clone()),
-                git_dir:       Some(project_dir.join(".git")),
-            },
+        assert_repo_git_fast_path(
+            ".git/index",
+            "index writes should refresh path state without a full GitInfo refresh",
         );
-        let member_key = member_dir.clone();
-        projects.insert(
-            member_key,
-            ProjectEntry {
-                project_label: "~/my_project/crates/member".to_string(),
-                abs_path:      member_dir.clone(),
-                repo_root:     Some(project_dir.clone()),
-                git_dir:       Some(project_dir.join(".git")),
-            },
-        );
-        let scan_root = tmp.path().to_path_buf();
-        let project_parents = HashSet::from([scan_root.clone()]);
-        let discovered = HashSet::new();
-        let ctx = EventContext {
-            scan_root:       &scan_root,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
-        };
-        let (bg_tx, bg_rx) = mpsc::channel();
-        let mut pending_disk = HashMap::new();
-        let mut pending_git = HashMap::new();
-        let mut pending_new = HashMap::new();
-        let (git_done_tx, _git_done_rx) = mpsc::channel();
-
-        handle_event(
-            &project_dir.join(".git").join("index"),
-            &ctx,
-            &bg_tx,
-            &mut pending_disk,
-            &mut pending_git,
-            &mut pending_new,
-        );
-
-        let git_limit = Arc::new(tokio::sync::Semaphore::new(1));
-        fire_git_updates(
-            test_runtime().handle(),
-            &git_limit,
-            &git_done_tx,
-            &bg_tx,
-            &projects,
-            &mut pending_git,
-        );
-        let messages = collect_messages_until(
-            &bg_rx,
-            |msg| matches!(msg, BackgroundMsg::GitPathState { path, .. } if path.as_path() == project_dir),
-        );
-
-        let mut got_git_info = false;
-        let mut got_root_git_state = false;
-        let mut got_member_git_state = false;
-        for msg in messages {
-            match msg {
-                BackgroundMsg::GitInfo { .. } => got_git_info = true,
-                BackgroundMsg::GitPathState { path, .. } if path.as_path() == project_dir => {
-                    got_root_git_state = true;
-                },
-                BackgroundMsg::GitPathState { path, .. } if path.as_path() == member_dir => {
-                    got_member_git_state = true;
-                },
-                _ => {},
-            }
-        }
-
-        assert!(
-            !got_git_info,
-            "index writes should refresh path state without a full GitInfo refresh"
-        );
-        assert!(
-            got_root_git_state,
-            "expected immediate root GitPathState refresh"
-        );
-        assert!(
-            !got_member_git_state,
-            "member rows should wait for the background repo refresh"
-        );
-        assert!(pending_disk.is_empty());
-        assert!(
-            pending_git.contains_key(&project_dir),
-            "repo refresh should stay queued for child rows"
-        );
-        assert!(pending_new.is_empty());
     }
 
     /// Worktree projects have `.git` as a file (not a directory) that
@@ -1650,39 +1605,10 @@ edition = "2024"
     #[test]
     fn worktree_index_event_enqueues_git_refresh() {
         let tmp = tempfile::tempdir().expect("tempdir");
-
-        // Worktree git dir (simulates <main-repo>/.git/worktrees/<name>).
-        let wt_git_dir = tmp
-            .path()
-            .join("main_repo_git")
-            .join("worktrees")
-            .join("wt");
-        std::fs::create_dir_all(&wt_git_dir).expect("create worktree git dir");
+        let (wt_root, wt_git_dir, projects, scan_root, project_parents, discovered) =
+            worktree_git_event_context(&tmp);
         std::fs::write(wt_git_dir.join("HEAD"), "ref: refs/heads/wt-branch\n").expect("write HEAD");
         std::fs::write(wt_git_dir.join("index"), "fake-index").expect("write index");
-
-        // Worktree project root — `.git` is a file pointing to wt_git_dir.
-        let wt_root = tmp.path().join("main_repo_style_fix");
-        std::fs::create_dir_all(&wt_root).expect("create worktree root");
-        std::fs::write(
-            wt_root.join(".git"),
-            format!("gitdir: {}\n", wt_git_dir.display()),
-        )
-        .expect("write .git file");
-
-        let mut projects = HashMap::new();
-        projects.insert(
-            wt_root.clone(),
-            ProjectEntry {
-                project_label: "~/main_repo_style_fix".to_string(),
-                abs_path:      wt_root.clone(),
-                repo_root:     Some(wt_root.clone()),
-                git_dir:       Some(wt_git_dir.clone()),
-            },
-        );
-        let scan_root = tmp.path().to_path_buf();
-        let project_parents = HashSet::from([scan_root.clone()]);
-        let discovered = HashSet::new();
         let ctx = EventContext {
             scan_root:       &scan_root,
             projects:        &projects,
@@ -1714,37 +1640,8 @@ edition = "2024"
     #[test]
     fn worktree_noise_under_real_git_dir_is_ignored() {
         let tmp = tempfile::tempdir().expect("tempdir");
-
-        let wt_git_dir = tmp
-            .path()
-            .join("main_repo_git")
-            .join("worktrees")
-            .join("wt");
-        std::fs::create_dir_all(&wt_git_dir).expect("create worktree git dir");
-
-        let wt_root = tmp.path().join("main_repo_style_fix");
-        std::fs::create_dir_all(&wt_root).expect("create worktree root");
-        std::fs::write(
-            wt_root.join(".git"),
-            format!("gitdir: {}\n", wt_git_dir.display()),
-        )
-        .expect("write .git file");
-
-        let mut projects = HashMap::new();
-        let wt_key = wt_root.clone();
-        let wt_abs = wt_root.clone();
-        projects.insert(
-            wt_key,
-            ProjectEntry {
-                project_label: "~/main_repo_style_fix".to_string(),
-                abs_path:      wt_abs,
-                repo_root:     Some(wt_root),
-                git_dir:       Some(wt_git_dir.clone()),
-            },
-        );
-        let scan_root = tmp.path().to_path_buf();
-        let project_parents = HashSet::from([scan_root.clone()]);
-        let discovered = HashSet::new();
+        let (_wt_root, wt_git_dir, projects, scan_root, project_parents, discovered) =
+            worktree_git_event_context(&tmp);
         let ctx = EventContext {
             scan_root:       &scan_root,
             projects:        &projects,

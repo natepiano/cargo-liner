@@ -186,88 +186,87 @@ fn ci_table_keeps_durations_when_fixed_columns_fit() {
 }
 
 #[test]
-fn lint_commands_summary_for_passed_run() {
-    let run = run_with_commands(
-        LintRunStatus::Passed,
-        vec![
-            LintCommand {
-                name:        "mend".to_string(),
-                command:     "cargo mend".to_string(),
-                status:      LintCommandStatus::Passed,
-                duration_ms: Some(1_000),
-                exit_code:   Some(0),
-                log_file:    "mend-latest.log".to_string(),
-            },
-            LintCommand {
-                name:        "clippy".to_string(),
-                command:     "cargo clippy".to_string(),
-                status:      LintCommandStatus::Passed,
-                duration_ms: Some(2_000),
-                exit_code:   Some(0),
-                log_file:    "clippy-latest.log".to_string(),
-            },
-        ],
-    );
+fn lint_commands_summary_cases() {
+    struct Case {
+        name:               &'static str,
+        status:             LintRunStatus,
+        clippy_status:      LintCommandStatus,
+        clippy_duration_ms: Option<u64>,
+        clippy_exit_code:   Option<i32>,
+        expected_pending:   &'static str,
+        expected_slowest:   &'static str,
+    }
 
-    assert_eq!(lints_panel::format_lints_commands(&run), "mend, clippy");
-    assert_eq!(lints_panel::format_lints_pending(&run), "0");
-    assert_eq!(lints_panel::format_lints_slowest(&run), "clippy 0:02");
-}
+    let cases = [
+        Case {
+            name:               "passed",
+            status:             LintRunStatus::Passed,
+            clippy_status:      LintCommandStatus::Passed,
+            clippy_duration_ms: Some(2_000),
+            clippy_exit_code:   Some(0),
+            expected_pending:   "0",
+            expected_slowest:   "clippy 0:02",
+        },
+        Case {
+            name:               "failed",
+            status:             LintRunStatus::Failed,
+            clippy_status:      LintCommandStatus::Failed,
+            clippy_duration_ms: Some(2_000),
+            clippy_exit_code:   Some(101),
+            expected_pending:   "0",
+            expected_slowest:   "clippy 0:02",
+        },
+        Case {
+            name:               "running",
+            status:             LintRunStatus::Running,
+            clippy_status:      LintCommandStatus::Pending,
+            clippy_duration_ms: None,
+            clippy_exit_code:   None,
+            expected_pending:   "1",
+            expected_slowest:   "mend 0:01",
+        },
+    ];
 
-#[test]
-fn lint_commands_summary_for_failed_run() {
-    let run = run_with_commands(
-        LintRunStatus::Failed,
-        vec![
-            LintCommand {
-                name:        "mend".to_string(),
-                command:     "cargo mend".to_string(),
-                status:      LintCommandStatus::Passed,
-                duration_ms: Some(1_000),
-                exit_code:   Some(0),
-                log_file:    "mend-latest.log".to_string(),
-            },
-            LintCommand {
-                name:        "clippy".to_string(),
-                command:     "cargo clippy".to_string(),
-                status:      LintCommandStatus::Failed,
-                duration_ms: Some(2_000),
-                exit_code:   Some(101),
-                log_file:    "clippy-latest.log".to_string(),
-            },
-        ],
-    );
+    for case in cases {
+        let run = run_with_commands(
+            case.status,
+            vec![
+                LintCommand {
+                    name:        "mend".to_string(),
+                    command:     "cargo mend".to_string(),
+                    status:      LintCommandStatus::Passed,
+                    duration_ms: Some(1_000),
+                    exit_code:   Some(0),
+                    log_file:    "mend-latest.log".to_string(),
+                },
+                LintCommand {
+                    name:        "clippy".to_string(),
+                    command:     "cargo clippy".to_string(),
+                    status:      case.clippy_status,
+                    duration_ms: case.clippy_duration_ms,
+                    exit_code:   case.clippy_exit_code,
+                    log_file:    "clippy-latest.log".to_string(),
+                },
+            ],
+        );
 
-    assert_eq!(lints_panel::format_lints_commands(&run), "mend, clippy");
-    assert_eq!(lints_panel::format_lints_pending(&run), "0");
-    assert_eq!(lints_panel::format_lints_slowest(&run), "clippy 0:02");
-}
-
-#[test]
-fn lint_commands_summary_for_running_run() {
-    let run = run_with_commands(
-        LintRunStatus::Running,
-        vec![
-            LintCommand {
-                name:        "mend".to_string(),
-                command:     "cargo mend".to_string(),
-                status:      LintCommandStatus::Passed,
-                duration_ms: Some(1_000),
-                exit_code:   Some(0),
-                log_file:    "mend-latest.log".to_string(),
-            },
-            LintCommand {
-                name:        "clippy".to_string(),
-                command:     "cargo clippy".to_string(),
-                status:      LintCommandStatus::Pending,
-                duration_ms: None,
-                exit_code:   None,
-                log_file:    "clippy-latest.log".to_string(),
-            },
-        ],
-    );
-
-    assert_eq!(lints_panel::format_lints_commands(&run), "mend, clippy");
-    assert_eq!(lints_panel::format_lints_pending(&run), "1");
-    assert_eq!(lints_panel::format_lints_slowest(&run), "mend 0:01");
+        assert_eq!(
+            lints_panel::format_lints_commands(&run),
+            "mend, clippy",
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            lints_panel::format_lints_pending(&run),
+            case.expected_pending,
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            lints_panel::format_lints_slowest(&run),
+            case.expected_slowest,
+            "{}",
+            case.name
+        );
+    }
 }

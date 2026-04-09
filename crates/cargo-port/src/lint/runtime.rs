@@ -54,7 +54,7 @@ pub fn project_is_eligible(
         lint,
         &RegisterProjectRequest {
             project_label: project_label.to_string(),
-            abs_path:      abs_path.to_path_buf(),
+            abs_path: abs_path.to_path_buf(),
             is_rust,
         },
     )
@@ -711,7 +711,7 @@ mod tests {
     fn request(path: &str, abs_path: &Path, is_rust: bool) -> RegisterProjectRequest {
         RegisterProjectRequest {
             project_label: path.to_string(),
-            abs_path:      abs_path.to_path_buf(),
+            abs_path: abs_path.to_path_buf(),
             is_rust,
         }
     }

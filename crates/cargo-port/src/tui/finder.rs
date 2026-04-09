@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crossterm::event::KeyCode;
 use nucleo_matcher::Matcher;
 use nucleo_matcher::Utf32Str;
@@ -17,7 +19,6 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
-use std::path::Path;
 
 use super::app::App;
 use super::constants::FINDER_POPUP_HEIGHT;
@@ -819,7 +820,10 @@ mod tests {
         let list_items = vec![RootItem::Workspace(ws)];
         let (items, _widths) = build_finder_index(&list_items);
         assert!(items.iter().any(|item| {
-            item.project_path == test_path("~/rust/hana/crates/clay-layout").display().to_string()
+            item.project_path
+                == test_path("~/rust/hana/crates/clay-layout")
+                    .display()
+                    .to_string()
                 && item.display_name == "clay-layout (vendored)"
                 && item.branch.is_empty()
         }));

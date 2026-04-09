@@ -570,8 +570,7 @@ pub(super) fn load_last_selected() -> Option<AbsolutePath> {
     let path = last_selected_path_file();
     let raw = std::fs::read_to_string(path).ok()?;
     let trimmed = raw.trim();
-    (!trimmed.is_empty() && Path::new(trimmed).is_absolute())
-        .then(|| PathBuf::from(trimmed).into())
+    (!trimmed.is_empty() && Path::new(trimmed).is_absolute()).then(|| PathBuf::from(trimmed).into())
 }
 
 fn save_last_selected(project_path: &AbsolutePath) {

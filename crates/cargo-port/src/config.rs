@@ -610,23 +610,28 @@ pub(crate) fn save(config: &CargoPortConfig) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// `Config::default()` returns correct values for every field.
-    #[test]
-    fn defaults_are_correct() {
-        let cfg = CargoPortConfig::default();
+    fn assert_default_config_subset(cfg: &CargoPortConfig, expected_ci_run_count: u32) {
         assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.tui.inline_dirs, vec!["crates".to_string()]);
-        assert_eq!(cfg.tui.ci_run_count, 5);
+        assert_eq!(cfg.tui.ci_run_count, expected_ci_run_count);
         assert!(cfg.tui.include_dirs.is_empty());
         assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Exclude);
         assert_eq!(cfg.tui.editor, "zed");
         assert!((cfg.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
+        assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
         assert!(!cfg.lint.enabled);
         assert!(cfg.lint.include.is_empty());
         assert!(cfg.lint.exclude.is_empty());
         assert!(cfg.lint.commands.is_empty());
         assert_eq!(cfg.lint.cache_size, "512 MiB");
+    }
+
+    /// `Config::default()` returns correct values for every field.
+    #[test]
+    fn defaults_are_correct() {
+        let cfg = CargoPortConfig::default();
+        assert_default_config_subset(&cfg, 5);
     }
 
     /// Generated template parses back into a valid `CargoPortConfig` via confique.
@@ -645,11 +650,7 @@ mod tests {
             .file(&path)
             .load()
             .expect("template should parse");
-        assert!(cfg.cache.root.is_empty());
-        assert_eq!(cfg.tui.ci_run_count, 5);
-        assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
-        assert!(cfg.lint.commands.is_empty());
-        assert_eq!(cfg.lint.cache_size, "512 MiB");
+        assert_default_config_subset(&cfg, 5);
     }
 
     /// A partial config file gets defaults for missing fields.
@@ -663,13 +664,7 @@ mod tests {
             .file(&path)
             .load()
             .expect("partial config should load");
-        assert!(cfg.cache.root.is_empty());
-        assert_eq!(cfg.tui.ci_run_count, 10);
-        assert_eq!(cfg.tui.editor, "zed");
-        assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
-        assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
-        assert!(cfg.lint.commands.is_empty());
-        assert_eq!(cfg.lint.cache_size, "512 MiB");
+        assert_default_config_subset(&cfg, 10);
     }
 
     /// An empty config file gets all defaults.
@@ -683,12 +678,7 @@ mod tests {
             .file(&path)
             .load()
             .expect("empty config should load");
-        assert!(cfg.cache.root.is_empty());
-        assert_eq!(cfg.tui.ci_run_count, 5);
-        assert_eq!(cfg.tui.editor, "zed");
-        assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
-        assert!(cfg.lint.commands.is_empty());
-        assert_eq!(cfg.lint.cache_size, "512 MiB");
+        assert_default_config_subset(&cfg, 5);
     }
 
     /// Saving and reloading preserves all values.
@@ -718,7 +708,12 @@ mod tests {
         assert_eq!(reloaded.tui.navigation_keys, NavigationKeys::ArrowsAndVim);
         assert!((reloaded.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
         assert_eq!(reloaded.mouse.invert_scroll, ScrollDirection::Normal);
+        assert!(reloaded.tui.include_dirs.is_empty());
+        assert_eq!(reloaded.tui.include_non_rust, NonRustInclusion::Exclude);
         assert!(reloaded.lint.commands.is_empty());
+        assert!(reloaded.lint.include.is_empty());
+        assert!(reloaded.lint.exclude.is_empty());
+        assert!(!reloaded.lint.enabled);
         assert_eq!(reloaded.lint.cache_size, "512 MiB");
     }
 

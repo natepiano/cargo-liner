@@ -373,12 +373,16 @@ impl App {
                     RootItem::Package(pkg) => {
                         pkg.vendored().get(vendored_index).map(RustProject::path)
                     },
-                    RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => {
-                        wtg.single_live()?.vendored().get(vendored_index).map(RustProject::path)
-                    },
-                    RootItem::PackageWorktrees(wtg) if !wtg.renders_as_group() => {
-                        wtg.single_live()?.vendored().get(vendored_index).map(RustProject::path)
-                    },
+                    RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => wtg
+                        .single_live()?
+                        .vendored()
+                        .get(vendored_index)
+                        .map(RustProject::path),
+                    RootItem::PackageWorktrees(wtg) if !wtg.renders_as_group() => wtg
+                        .single_live()?
+                        .vendored()
+                        .get(vendored_index)
+                        .map(RustProject::path),
                     _ => None,
                 }
             },
@@ -666,7 +670,11 @@ impl App {
         }
     }
 
-    fn worktree_vendored_display_path(item: &RootItem, wi: usize, vi: usize) -> Option<DisplayPath> {
+    fn worktree_vendored_display_path(
+        item: &RootItem,
+        wi: usize,
+        vi: usize,
+    ) -> Option<DisplayPath> {
         match item {
             RootItem::WorkspaceWorktrees(wtg) => {
                 let ws = if wi == 0 {
@@ -1260,7 +1268,8 @@ impl App {
     }
 
     pub(super) fn row_matches_project_path(&self, row: VisibleRow, target_path: &Path) -> bool {
-        self.path_for_row(row).is_some_and(|path| path == target_path)
+        self.path_for_row(row)
+            .is_some_and(|path| path == target_path)
     }
 
     pub(super) fn select_matching_visible_row(&mut self, target_path: &Path) {

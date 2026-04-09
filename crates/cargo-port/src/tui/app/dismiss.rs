@@ -28,14 +28,16 @@ pub struct ClickAction {
 // ── Resolution + dispatch ───────────────────────────────────────
 
 impl App {
-    fn dismiss_path_for_row(&self, row: VisibleRow) -> Option<PathBuf> {
-        match row {
-            VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                self.projects.get(node_index).map(|item| item.path().to_path_buf())
-            },
-            VisibleRow::Member { node_index, .. } | VisibleRow::Vendored { node_index, .. } => {
-                self.projects.get(node_index).map(|item| item.path().to_path_buf())
-            },
+    pub(crate) fn dismiss_target_for_row(&self, row: VisibleRow) -> Option<DismissTarget> {
+        let dismiss_path = match row {
+            VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => self
+                .projects
+                .get(node_index)
+                .map(|item| item.path().to_path_buf()),
+            VisibleRow::Member { node_index, .. } | VisibleRow::Vendored { node_index, .. } => self
+                .projects
+                .get(node_index)
+                .map(|item| item.path().to_path_buf()),
             VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
@@ -75,6 +77,12 @@ impl App {
                 },
                 _ => None,
             },
+        }?;
+
+        if self.is_deleted(&dismiss_path) {
+            Some(DismissTarget::DeletedProject(dismiss_path))
+        } else {
+            None
         }
     }
 
@@ -82,15 +90,9 @@ impl App {
     pub fn focused_dismiss_target(&self) -> Option<DismissTarget> {
         match self.focused_pane {
             PaneId::Toasts => self.focused_toast_id().map(DismissTarget::Toast),
-            PaneId::ProjectList => {
-                let row = self.selected_row()?;
-                let dismiss_path = self.dismiss_path_for_row(row)?;
-                if self.is_deleted(&dismiss_path) {
-                    Some(DismissTarget::DeletedProject(dismiss_path))
-                } else {
-                    None
-                }
-            },
+            PaneId::ProjectList => self
+                .selected_row()
+                .and_then(|row| self.dismiss_target_for_row(row)),
             _ => None,
         }
     }

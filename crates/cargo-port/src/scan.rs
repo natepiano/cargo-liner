@@ -1214,12 +1214,12 @@ struct StreamingScanContext {
 }
 
 struct RepoFetchRequest {
-    key:          String,
+    key:           String,
     project_label: String,
-    repo_url:     String,
-    owner:        String,
-    repo:         String,
-    branch:       Option<String>,
+    repo_url:      String,
+    owner:         String,
+    repo:          String,
+    branch:        Option<String>,
 }
 
 /// Spawn a streaming scan using a hybrid approach:

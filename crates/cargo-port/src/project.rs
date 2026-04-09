@@ -45,14 +45,20 @@ impl fmt::Display for AbsolutePath {
 
 impl From<PathBuf> for AbsolutePath {
     fn from(path: PathBuf) -> Self {
-        debug_assert!(path.is_absolute(), "AbsolutePath requires an absolute path: {path:?}");
+        debug_assert!(
+            path.is_absolute(),
+            "AbsolutePath requires an absolute path: {path:?}"
+        );
         Self(path)
     }
 }
 
 impl From<&Path> for AbsolutePath {
     fn from(path: &Path) -> Self {
-        debug_assert!(path.is_absolute(), "AbsolutePath requires an absolute path: {path:?}");
+        debug_assert!(
+            path.is_absolute(),
+            "AbsolutePath requires an absolute path: {path:?}"
+        );
         Self(path.to_path_buf())
     }
 }
@@ -1369,7 +1375,9 @@ impl<Kind: CargoKind> RustProject<Kind> {
     pub(crate) fn worktree_name(&self) -> Option<&str> { self.worktree_name.as_deref() }
 
     pub(crate) fn worktree_primary_abs_path(&self) -> Option<&Path> {
-        self.worktree_primary_abs_path.as_ref().map(AbsolutePath::as_path)
+        self.worktree_primary_abs_path
+            .as_ref()
+            .map(AbsolutePath::as_path)
     }
 
     /// Display name: project name or last path component.
