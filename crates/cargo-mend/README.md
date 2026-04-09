@@ -51,7 +51,7 @@ In practice, that usually means:
 
 Hard errors:
 
-- `pub(crate)` is forbidden in binaries and in nested modules
+- `pub(crate)` is forbidden in nested modules
 - library crates may use `pub(crate)` at the crate root when the intent is to keep an item
   crate-internal rather than part of the external library API
 - top-level private modules in library crates may also use `pub(crate)` when the intent is to keep
@@ -96,38 +96,17 @@ analysis after macro expansion. This is a permanently unstable feature — it is
 clippy and miri access the compiler, but it means the compiler's internal crates have no
 stability guarantee and `cargo-mend` is sensitive to the exact rustc version used to build it.
 
-| rustc  | cargo-mend |
-|--------|------------|
-| 1.94.0 | 0.1.0+     |
-| 1.93.1 | 0.1.0      |
-
-Plain `cargo install cargo-mend` on a stable toolchain will fail because the compiler rejects
-`#![feature(rustc_private)]` on stable. You need one of the following:
-
-### Option A: nightly toolchain
-
-```bash
-rustup component add rustc-dev --toolchain nightly
-cargo +nightly install cargo-mend
-```
-
-### Option B: stable toolchain with bootstrap override
-
-```bash
-RUSTC_BOOTSTRAP=1 cargo install cargo-mend
-```
-
-`RUSTC_BOOTSTRAP=1` tells the compiler to accept unstable features on a stable toolchain. This
-is the same mechanism the Rust project uses internally to build its own tools. You also need the
-`rustc-dev` component:
+Install the `rustc-dev` component, then install `cargo-mend`:
 
 ```bash
 rustup component add rustc-dev
+cargo install cargo-mend
 ```
 
 ### CI installation
 
-For GitHub Actions or similar CI, install the `rustc-dev` component and use `RUSTC_BOOTSTRAP`:
+For GitHub Actions or similar CI, install the `rustc-dev` component and then install
+`cargo-mend`:
 
 ```yaml
 - name: Install Rust
@@ -138,8 +117,6 @@ For GitHub Actions or similar CI, install the `rustc-dev` component and use `RUS
 
 - name: Install cargo-mend
   run: cargo install cargo-mend
-  env:
-    RUSTC_BOOTSTRAP: 1
 
 - name: Run cargo-mend
   run: cargo mend --fail-on-warn
@@ -149,9 +126,6 @@ For GitHub Actions or similar CI, install the `rustc-dev` component and use `RUS
 
 Once installed, `cargo mend` runs on any project regardless of that project's toolchain. The
 toolchain requirement is only for compiling `cargo-mend` itself.
-
-After a Rust toolchain update, rerun `cargo mend` on a known repo and check the table above
-if results regress.
 
 ## Usage
 
