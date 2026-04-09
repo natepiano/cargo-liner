@@ -969,13 +969,6 @@ fn apply_lint_settings_edit(
     Ok(true)
 }
 
-fn parse_non_negative_secs(value: &str) -> Result<f64, String> {
-    value
-        .parse::<f64>()
-        .map(|secs| secs.max(0.0))
-        .map_err(|_| format!("Invalid number: {value}"))
-}
-
 pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Enter => {
