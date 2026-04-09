@@ -86,7 +86,7 @@ allow_pub_items = [
 ]
 ```
 
-Use the allowlists sparingly. The default assumption should be that the code shape is wrong before
+Use the allowlists sparingly. The default assumption should be that the code structure is wrong before
 the policy is wrong.
 
 ## Installation
@@ -101,31 +101,13 @@ Install the `rustc-dev` component, then install `cargo-mend`:
 ```bash
 rustup component add rustc-dev
 RUSTC_BOOTSTRAP=1 cargo install cargo-mend
-
-# Alternative:
-# rustup component add rustc-dev --toolchain nightly
-# cargo +nightly install cargo-mend
 ```
 
-### CI installation
+Alternative:
 
-For GitHub Actions or similar CI, install the `rustc-dev` component and then install
-`cargo-mend`:
-
-```yaml
-- name: Install Rust
-  uses: dtolnay/rust-toolchain@master
-  with:
-    toolchain: stable
-    components: rust-src, rustc-dev, llvm-tools-preview
-
-- name: Install cargo-mend
-  run: cargo install cargo-mend
-  env:
-    RUSTC_BOOTSTRAP: 1
-
-- name: Run cargo-mend
-  run: cargo mend --fail-on-warn
+```bash
+rustup component add rustc-dev --toolchain nightly
+cargo +nightly install cargo-mend
 ```
 
 ### After installation
@@ -214,7 +196,7 @@ At first glance, `helper` looks reasonable: the whole crate can use it.
 
 But that is exactly the problem. The helper now ignores the `feature` module boundary.
 
-A better shape is:
+A better version is:
 
 ```rust
 // src/feature/helpers.rs
@@ -258,7 +240,7 @@ That can be acceptable when the intent is:
 This tool treats it as a design-review signal, not a normal visibility tool.
 
 Prefer:
-- `pub(super)` when the current module shape is already correct
+- `pub(super)` when the current module layout is already correct
 - moving the item to the nearest common parent as its own file
 
 In this example, a helper lives under `src/feature/deep/`, but the desired sharing boundary is
@@ -281,7 +263,7 @@ That usually means one of two things:
 - the item should just be `pub(super)`
 - the item should move upward so the right boundary is local and obvious
 
-A better shape is usually either:
+A better version is usually either:
 
 ```rust
 // src/feature/deep/helper.rs
@@ -483,7 +465,7 @@ fn use_helper() {
 }
 ```
 
-In this shape, `super::Helper` is using the parent boundary itself as an internal facade.
+In this example, `super::Helper` is using the parent boundary itself as an internal facade.
 
 That can be intentional, but it is worth review because it usually means one of two things:
 
@@ -497,7 +479,7 @@ That can be intentional, but it is worth review because it usually means one of 
 
 This warning is about parent facade modules that re-export everything from a child with `*`.
 
-That shape makes the boundary harder to read because the parent module no longer says what it is
+That makes the boundary harder to read because the parent module no longer says what it is
 actually exporting.
 
 Prefer:
