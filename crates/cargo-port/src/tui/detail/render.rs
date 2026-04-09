@@ -206,8 +206,8 @@ pub(super) fn git_label_width(info: &DetailInfo, fields: &[DetailField]) -> usiz
     fields
         .iter()
         .map(|field| match *field {
-            DetailField::VsOrigin => "vs origin".width(),
-            DetailField::VsLocal => format!("vs {}", info.main_branch_label).width(),
+            DetailField::VsOrigin => "Remote branch".width(),
+            DetailField::VsLocal => format!("vs local {}", info.main_branch_label).width(),
             _ => field.label().width(),
         })
         .max()
@@ -235,12 +235,12 @@ fn render_git_column_inner(
         let dynamic_label;
         let label = match *field {
             DetailField::VsOrigin => {
-                dynamic_label = "vs origin".to_string();
+                dynamic_label = "Remote branch".to_string();
                 &dynamic_label
             },
             DetailField::VsLocal => {
                 let branch = info.main_branch_label.as_str();
-                dynamic_label = format!("vs {branch}");
+                dynamic_label = format!("vs local {branch}");
                 &dynamic_label
             },
             _ => field.label(),
@@ -254,11 +254,10 @@ fn render_git_column_inner(
         } else if matches!(
             *field,
             DetailField::Sync | DetailField::VsOrigin | DetailField::VsLocal
-        ) && (value == IN_SYNC
-            || (*field == DetailField::Sync && value.starts_with(IN_SYNC)))
+        ) && value == IN_SYNC
         {
             Style::default().fg(Color::Green)
-        } else if *field == DetailField::Sync && value == "not published" {
+        } else if *field == DetailField::Sync && value == crate::constants::NO_REMOTE_SYNC {
             Style::default().fg(Color::DarkGray)
         } else {
             Style::default()
@@ -267,7 +266,7 @@ fn render_git_column_inner(
         let vs = selection.patch(base_value_style);
         if matches!(
             *field,
-            DetailField::Repo | DetailField::Branch | DetailField::RepoDesc
+            DetailField::Repo | DetailField::Branch | DetailField::RepoDesc | DetailField::VsOrigin
         ) && !value.is_empty()
         {
             let prefix = format!("  {label:<label_width$} ");

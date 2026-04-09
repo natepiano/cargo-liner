@@ -361,6 +361,7 @@ mod tests {
             first_commit:        Some("2024-01-01T00:00:00Z".to_string()),
             last_commit:         Some("2024-01-02T00:00:00Z".to_string()),
             ahead_behind:        Some((0, 0)),
+            upstream_branch:     Some("origin/main".to_string()),
             default_branch:      Some("main".to_string()),
             ahead_behind_origin: Some((0, 0)),
             local_main_branch:   Some("main".to_string()),

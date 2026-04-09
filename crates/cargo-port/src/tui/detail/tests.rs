@@ -160,23 +160,42 @@ fn git_path_value_appends_status_icon() {
 
 #[test]
 fn sync_value_uses_synced_label_when_in_sync() {
-    assert_eq!(
-        model::format_sync_status(Some((0, 0)), crate::project::GitOrigin::Clone),
-        "☑️ synced"
-    );
+    assert_eq!(model::format_remote_status(Some((0, 0))), "☑️");
 }
 
 #[test]
 fn git_label_width_uses_origin_and_configured_main_labels() {
     let info = DetailInfo {
-        git_vs_origin: Some("↑11 ↓3".to_string()),
+        git_vs_origin: Some("origin/main (local cached ref)".to_string()),
         git_vs_local: Some("↑11 ↓3".to_string()),
         main_branch_label: "primary".to_string(),
         ..detail_info(true, "🟢")
     };
     let fields = vec![DetailField::VsOrigin, DetailField::VsLocal];
 
-    assert_eq!(render::git_label_width(&info, &fields), "vs primary".len());
+    assert_eq!(
+        render::git_label_width(&info, &fields),
+        "vs local primary".len()
+    );
+}
+
+#[test]
+fn git_fields_show_explicit_remote_and_local_rows_for_unpublished_branch() {
+    let info = DetailInfo {
+        git_sync: Some(crate::constants::NO_REMOTE_SYNC.to_string()),
+        git_vs_origin: Some("none".to_string()),
+        git_vs_local: Some("↑11 ↓3".to_string()),
+        ..detail_info(true, "🟢")
+    };
+
+    assert_eq!(
+        model::git_fields(&info),
+        vec![
+            DetailField::VsOrigin,
+            DetailField::Sync,
+            DetailField::VsLocal
+        ]
+    );
 }
 
 #[test]

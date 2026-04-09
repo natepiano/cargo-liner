@@ -149,6 +149,8 @@ pub(crate) struct GitInfo {
     pub last_commit:         Option<String>,
     /// Commits ahead and behind the upstream tracking branch (ahead, behind).
     pub ahead_behind:        Option<(usize, usize)>,
+    /// The upstream tracking ref for the current branch (e.g. `origin/main`).
+    pub upstream_branch:     Option<String>,
     /// The repo's default branch name resolved from `origin/HEAD`.
     pub default_branch:      Option<String>,
     /// Commits ahead and behind `origin/{default_branch}`.
@@ -211,6 +213,7 @@ impl GitInfo {
         });
 
         let ahead_behind = parse_ahead_behind(&repo_root, "HEAD...@{upstream}", "upstream");
+        let upstream_branch = detect_upstream_branch(&repo_root);
 
         // Resolve the repo's default branch from origin/HEAD (e.g. "origin/main").
         let default_branch = git_output_logged(
@@ -262,6 +265,7 @@ impl GitInfo {
             first_commit: None,
             last_commit,
             ahead_behind,
+            upstream_branch,
             default_branch,
             ahead_behind_origin,
             local_main_branch,
@@ -269,6 +273,24 @@ impl GitInfo {
             workflows: detect_workflow_presence(&repo_root),
         })
     }
+}
+
+fn detect_upstream_branch(project_dir: &Path) -> Option<String> {
+    git_output_logged(
+        project_dir,
+        "rev_parse_upstream_name",
+        [
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    )
+    .ok()
+    .and_then(|o| {
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if s.is_empty() { None } else { Some(s) }
+    })
 }
 
 fn resolve_local_main_branch(project_dir: &Path) -> Option<String> {

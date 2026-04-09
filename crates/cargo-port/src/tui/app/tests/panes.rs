@@ -93,6 +93,7 @@ fn tabbable_panes_follow_canonical_order() {
             first_commit:        None,
             last_commit:         None,
             ahead_behind:        None,
+            upstream_branch:     None,
             default_branch:      None,
             ahead_behind_origin: None,
             local_main_branch:   None,

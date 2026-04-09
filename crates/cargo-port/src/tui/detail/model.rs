@@ -3,11 +3,11 @@ use std::path::Path;
 use super::timestamp;
 use crate::ci::Conclusion;
 use crate::constants::IN_SYNC;
+use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project::Cargo;
 use crate::project::ExampleGroup;
-use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::NonRustProject;
 use crate::project::Package;
@@ -198,7 +198,7 @@ pub struct PendingCiFetch {
     pub kind:          CiFetchKind,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DetailField {
     Name,
     Path,
@@ -235,12 +235,11 @@ impl DetailField {
             Self::Ci => "CI",
             Self::Branch => "Branch",
             Self::GitPath => "Git Path",
-            Self::Sync => "Sync",
-            Self::VsOrigin => "vs origin",
-            Self::VsLocal => "vs main",
-            Self::Origin => "Origin",
+            Self::Sync => "Remote status",
+            Self::VsOrigin => "Remote branch",
+            Self::VsLocal => "vs local main",
+            Self::Origin | Self::Repo => "Origin",
             Self::Owner => "Owner",
-            Self::Repo => "Repo",
             Self::Stars => "Stars",
             Self::RepoDesc => "About",
             Self::Inception => "Incept",
@@ -353,20 +352,17 @@ pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     if info.git_path != GitPathState::OutsideRepo {
         fields.push(DetailField::GitPath);
     }
-    if info.git_sync.is_some() {
-        fields.push(DetailField::Sync);
-    }
     if info.git_vs_origin.is_some() {
         fields.push(DetailField::VsOrigin);
+    }
+    if info.git_sync.is_some() {
+        fields.push(DetailField::Sync);
     }
     if info.git_vs_local.is_some() {
         fields.push(DetailField::VsLocal);
     }
     if info.worktree_label.is_some() {
         fields.push(DetailField::Worktree);
-    }
-    if info.git_origin.is_some() {
-        fields.push(DetailField::Origin);
     }
     if info.git_stars.is_some() {
         fields.push(DetailField::Stars);
@@ -466,17 +462,13 @@ fn format_ahead_behind((ahead, behind): (usize, usize)) -> String {
     }
 }
 
-pub(super) fn format_sync_status(
-    ahead_behind: Option<(usize, usize)>,
-    origin: GitOrigin,
-) -> String {
+pub(super) fn format_remote_status(ahead_behind: Option<(usize, usize)>) -> String {
     match ahead_behind {
-        Some((0, 0)) => format!("{IN_SYNC} synced"),
+        Some((0, 0)) => IN_SYNC.to_string(),
         Some((ahead, 0)) => format!("{SYNC_UP}{ahead} ahead"),
         Some((0, behind)) => format!("{SYNC_DOWN}{behind} behind"),
         Some((ahead, behind)) => format!("{SYNC_UP}{ahead} {SYNC_DOWN}{behind}"),
-        None if origin != GitOrigin::Local => "not published".to_string(),
-        None => String::new(),
+        None => NO_REMOTE_SYNC.to_string(),
     }
 }
 
@@ -518,12 +510,13 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         .git_info_for(abs_path)
         .or_else(|| app.git_info_for(owner_path.as_path()));
     let branch = git.and_then(|info| info.branch.clone());
-    let sync = git
-        .map(|info| format_sync_status(info.ahead_behind, info.origin))
-        .filter(|value| !value.is_empty());
-    let vs_origin = git
-        .and_then(|info| info.ahead_behind_origin)
-        .map(format_ahead_behind);
+    let sync = git.map(|info| format_remote_status(info.ahead_behind));
+    let vs_origin = git.map(|info| {
+        info.upstream_branch.as_deref().map_or_else(
+            || "none".to_string(),
+            |branch| format!("{branch} (local cached ref)"),
+        )
+    });
     let vs_local = git
         .and_then(|info| info.ahead_behind_local)
         .map(format_ahead_behind);

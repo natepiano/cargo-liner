@@ -506,6 +506,7 @@ fn make_git_info(url: Option<&str>) -> GitInfo {
         first_commit:        None,
         last_commit:         None,
         ahead_behind:        None,
+        upstream_branch:     Some("origin/main".to_string()),
         default_branch:      Some("main".to_string()),
         ahead_behind_origin: None,
         local_main_branch:   Some("main".to_string()),
