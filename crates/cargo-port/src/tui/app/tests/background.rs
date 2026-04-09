@@ -146,11 +146,10 @@ fn external_config_reload_keeps_last_good_config_on_parse_error() {
 
     assert_eq!(app.editor(), "zed");
     assert_eq!(app.current_config.tui.editor, "zed");
-    assert!(
-        app.status_flash
-            .as_ref()
-            .is_some_and(|(msg, _)| msg.contains("Config reload failed"))
-    );
+    assert!(matches!(
+        app.status_flash.as_ref(),
+        Some((msg, _)) if msg.contains("Config reload failed")
+    ));
 }
 
 #[test]
@@ -179,7 +178,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
             VisibleRow::Root { node_index } => Some(app.projects[*node_index].display_path()),
             _ => None,
         })
-        .collect();
+        .collect::<Vec<_>>();
     assert_eq!(visible.len(), 1);
     assert_eq!(visible[0].as_str(), "~/rust");
 
@@ -191,7 +190,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     assert!(
         app.projects
             .iter()
-            .any(|item| item.display_path().as_str() == "~/js")
+            .any(|item: &RootItem| item.display_path().as_str() == "~/js")
     );
 }
 

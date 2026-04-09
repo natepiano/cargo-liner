@@ -16,6 +16,7 @@ use ratatui::style::Style;
 use ratatui::widgets::List;
 use ratatui::widgets::Widget;
 
+pub(super) use super::App;
 use super::DismissTarget;
 use super::snapshots;
 use super::types::*;

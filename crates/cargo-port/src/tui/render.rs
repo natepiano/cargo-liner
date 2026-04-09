@@ -20,7 +20,6 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
-use super::app::CiState;
 use super::app::ConfirmAction;
 use super::app::DiscoveryRowKind;
 use super::app::ExpandKey;
@@ -289,9 +288,7 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         .and_then(|path| app.lint_runs.get(path))
         .cloned()
         .unwrap_or_default();
-    let detail_ci_runs: Vec<CiRun> = selected_ci_state
-        .map(|state: &CiState| state.runs().to_vec())
-        .unwrap_or_default();
+    let detail_ci_runs: Vec<CiRun> = app.selected_ci_runs();
     let has_example_output = !app.example_output.is_empty();
 
     let right_layout = Layout::default()

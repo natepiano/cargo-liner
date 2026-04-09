@@ -5,6 +5,31 @@ use super::constants::CANCELLED;
 use super::constants::FAILING;
 use super::constants::PASSING;
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) struct OwnerRepo {
+    owner: String,
+    repo:  String,
+}
+
+impl OwnerRepo {
+    pub(crate) fn new(owner: impl Into<String>, repo: impl Into<String>) -> Self {
+        Self {
+            owner: owner.into(),
+            repo:  repo.into(),
+        }
+    }
+
+    pub(crate) fn owner(&self) -> &str { &self.owner }
+
+    pub(crate) fn repo(&self) -> &str { &self.repo }
+}
+
+impl std::fmt::Display for OwnerRepo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.owner, self.repo)
+    }
+}
+
 /// Workflow run from the GitHub REST API (`/actions/runs`).
 #[derive(Deserialize)]
 pub(crate) struct GhRun {
@@ -135,8 +160,8 @@ pub(crate) fn build_ci_run(gh_run: &GhRun, check_runs: Vec<GqlCheckRun>, repo_ur
     }
 }
 
-/// Extract `(owner, repo)` from a GitHub URL like `https://github.com/owner/repo`.
-pub(crate) fn parse_owner_repo(url: &str) -> Option<(String, String)> {
+/// Extract `owner/repo` from a GitHub URL like `https://github.com/owner/repo`.
+pub(crate) fn parse_owner_repo(url: &str) -> Option<OwnerRepo> {
     let stripped = url.strip_prefix("https://github.com/")?;
     let mut parts = stripped.split('/');
     let owner = parts.next()?.to_string();
@@ -144,7 +169,7 @@ pub(crate) fn parse_owner_repo(url: &str) -> Option<(String, String)> {
     if owner.is_empty() || repo.is_empty() {
         return None;
     }
-    Some((owner, repo))
+    Some(OwnerRepo::new(owner, repo))
 }
 
 fn run_conclusion(jobs: &[CiJob]) -> Conclusion {

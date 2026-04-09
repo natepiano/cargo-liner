@@ -11,7 +11,6 @@ use super::PendingExampleRun;
 use super::build_target_list;
 use super::git_fields;
 use super::package_fields;
-use crate::ci;
 use crate::keymap::CiRunsAction;
 use crate::keymap::GitAction;
 use crate::keymap::KeyBind;
@@ -186,8 +185,13 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     };
     match action {
         CiRunsAction::Activate => handle_ci_enter(app),
+        CiRunsAction::ToggleView => {
+            if let Some(path) = app.selected_project_path().map(Path::to_path_buf) {
+                app.toggle_ci_display_mode_for(&path);
+            }
+        },
         CiRunsAction::ClearCache => {
-            if let Some(path) = app.selected_ci_path().map(Path::to_path_buf) {
+            if let Some(path) = app.selected_ci_path() {
                 clear_ci_cache(app, &path);
             }
         },
@@ -196,20 +200,21 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
 
 fn handle_ci_enter(app: &mut App) {
     let ci_state = app.selected_ci_state();
-    let run_count = ci_state.map_or(0, |state| state.runs().len());
+    let visible_runs = app
+        .selected_project_path()
+        .map_or_else(Vec::new, |path| app.ci_runs_for_display(path));
+    let run_count = visible_runs.len();
     let is_fetching = ci_state.is_some_and(CiState::is_fetching);
     let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
 
     let cursor_pos = app.ci_pane.pos();
     if cursor_pos < run_count {
-        if let Some(runs) = ci_state.map(CiState::runs)
-            && let Some(run) = runs.get(cursor_pos)
-        {
+        if let Some(run) = visible_runs.get(cursor_pos) {
             open_url(&run.url);
         }
     } else if cursor_pos == run_count
         && !is_fetching
-        && let Some(ci_path) = app.selected_ci_path().map(Path::to_path_buf)
+        && let Some(ci_path) = app.selected_ci_path()
     {
         let current_count = u32::try_from(run_count).unwrap_or(u32::MAX);
         let kind = if is_exhausted {
@@ -248,21 +253,28 @@ pub fn handle_lints_key(app: &mut App, event: &KeyEvent) {
 
 /// Clear CI cache for a project and remove its runs from the app.
 fn clear_ci_cache(app: &mut App, abs: &Path) {
-    if let Some(git) = app.git_info_for(abs)
-        && let Some(url) = git.url.as_deref()
-        && let Some((owner, repo)) = ci::parse_owner_repo(url)
-    {
-        let _ =
-            std::fs::remove_dir_all(scan::ci_cache_dir_pub(&owner, &repo, git.branch.as_deref()));
-    }
+    let owner_paths = app
+        .owner_repo_for_path(abs)
+        .map(|repo| {
+            let _ = std::fs::remove_dir_all(scan::ci_cache_dir_pub(repo.owner(), repo.repo()));
+            scan::clear_exhausted(repo.owner(), repo.repo());
+            if let Ok(mut cache) = app.repo_fetch_cache.lock() {
+                cache.remove(&repo);
+            }
+            app.owner_paths_for_repo(&repo)
+        })
+        .filter(|paths| !paths.is_empty())
+        .unwrap_or_else(|| vec![abs.to_path_buf()]);
 
-    app.ci_state.insert(
-        abs.to_path_buf(),
-        CiState::Loaded {
-            runs:      Vec::new(),
-            exhausted: false,
-        },
-    );
+    for owner_path in owner_paths {
+        app.ci_state.insert(
+            owner_path,
+            CiState::Loaded {
+                runs:      Vec::new(),
+                exhausted: false,
+            },
+        );
+    }
     app.ci_pane.home();
     app.data_generation += 1;
 }

@@ -894,8 +894,8 @@ mod tests {
 
         let normalized = normalize_config(cfg).expect("normalize config");
 
-        assert_eq!(normalized.tui.status_flash_secs, 0.0);
-        assert_eq!(normalized.tui.task_linger_secs, 0.0);
-        assert_eq!(normalized.tui.discovery_shimmer_secs, 0.0);
+        assert!(normalized.tui.status_flash_secs.abs() < f64::EPSILON);
+        assert!(normalized.tui.task_linger_secs.abs() < f64::EPSILON);
+        assert!(normalized.tui.discovery_shimmer_secs.abs() < f64::EPSILON);
     }
 }

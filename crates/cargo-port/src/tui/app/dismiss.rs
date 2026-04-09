@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use super::types::App;
+use super::App;
 use super::types::VisibleRow;
 use crate::project::Visibility::Dismissed;
 use crate::tui::types::PaneId;

@@ -509,7 +509,12 @@ struct GitDetailFields {
 }
 
 fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
-    let git = app.git_info_for(abs_path);
+    let owner_path = app
+        .ci_owner_path_for(abs_path)
+        .unwrap_or_else(|| abs_path.to_path_buf());
+    let git = app
+        .git_info_for(abs_path)
+        .or_else(|| app.git_info_for(owner_path.as_path()));
     let branch = git.and_then(|info| info.branch.clone());
     let sync = git
         .map(|info| format_sync_status(info.ahead_behind, info.origin))
@@ -524,8 +529,16 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let origin = git.map(|info| format!("{} {}", info.origin.icon(), info.origin.label()));
     let owner = git.and_then(|info| info.owner.clone());
     let url = git.and_then(|info| info.url.clone());
-    let stars = app.stars.get(abs_path).copied();
-    let description = app.repo_descriptions.get(abs_path).cloned();
+    let stars = app
+        .stars
+        .get(abs_path)
+        .copied()
+        .or_else(|| app.stars.get(owner_path.as_path()).copied());
+    let description = app
+        .repo_descriptions
+        .get(abs_path)
+        .cloned()
+        .or_else(|| app.repo_descriptions.get(owner_path.as_path()).cloned());
     let inception = git
         .and_then(|info| info.first_commit.as_deref())
         .map(timestamp::format_timestamp);

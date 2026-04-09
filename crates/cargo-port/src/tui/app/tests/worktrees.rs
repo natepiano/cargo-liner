@@ -164,7 +164,7 @@ fn handle_project_discovered_inserts_new_root_in_sorted_position() {
         "~/rust/cache-apt-pkgs-action",
     )));
 
-    let actual: Vec<_> = app.projects.iter().map(|item| item.path()).collect();
+    let actual: Vec<_> = app.projects.iter().map(RootItem::path).collect();
     assert_eq!(
         actual,
         vec![

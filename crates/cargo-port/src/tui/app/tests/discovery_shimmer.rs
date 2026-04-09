@@ -442,7 +442,9 @@ fn prune_discovery_shimmers_removes_expired_entries() {
     app.discovery_shimmers.insert(
         path.clone(),
         DiscoveryShimmer::new(
-            Instant::now() - Duration::from_secs(5),
+            Instant::now()
+                .checked_sub(Duration::from_secs(5))
+                .unwrap_or_else(|| std::process::abort()),
             Duration::from_secs(1),
         ),
     );

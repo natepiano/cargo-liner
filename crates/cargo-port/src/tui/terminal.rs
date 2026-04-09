@@ -39,8 +39,6 @@ use crate::ci;
 use crate::config;
 use crate::http::HttpClient;
 use crate::project::AbsolutePath;
-use crate::project::GitInfo;
-use crate::project::GitRepoPresence;
 use crate::project::RootItem;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -523,7 +521,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     let Some(repo_url) = &git.url else {
         return;
     };
-    let Some((owner, repo)) = ci::parse_owner_repo(repo_url) else {
+    let Some(owner_repo) = ci::parse_owner_repo(repo_url) else {
         return;
     };
 
@@ -533,7 +531,6 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     let project_path = fetch.project_path.clone();
     let current_count = fetch.current_count;
     let kind = fetch.kind;
-    let branch = git.branch.clone();
     let url = repo_url.clone();
 
     thread::spawn(move || {
@@ -541,17 +538,15 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
             CiFetchKind::FetchOlder => scan::fetch_older_runs(
                 &client,
                 &url,
-                &owner,
-                &repo,
-                branch.as_deref(),
+                owner_repo.owner(),
+                owner_repo.repo(),
                 current_count,
             ),
             CiFetchKind::Refresh => scan::fetch_newer_runs(
                 &client,
                 &url,
-                &owner,
-                &repo,
-                branch.as_deref(),
+                owner_repo.owner(),
+                owner_repo.repo(),
                 current_count,
             ),
         };
@@ -582,12 +577,6 @@ pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name:
     let tx = app.bg_tx.clone();
     let client = app.http_client.clone();
     let abs = PathBuf::from(abs_path);
-    let repo_presence = if crate::project::git_repo_root(&abs).is_some() {
-        GitRepoPresence::InRepo
-    } else {
-        GitRepoPresence::OutsideRepo
-    };
-    let ci_run_count = app.ci_run_count();
     let project_name = name.cloned();
 
     thread::spawn(move || {
@@ -596,35 +585,6 @@ pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name:
             path:  path.clone(),
             state: crate::project::detect_git_path_state(&abs),
         });
-        // Git detection can be expensive on some repos; keep it off the UI thread.
-        let git_info = if repo_presence.is_in_repo() {
-            GitInfo::detect(&abs)
-        } else {
-            None
-        };
-        if let Some(ref info) = git_info {
-            let _ = tx.send(BackgroundMsg::GitInfo {
-                path: path.clone(),
-                info: info.clone(),
-            });
-        }
-
-        // CI runs from cache — uses local repo URL, never network.
-        if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
-            && let Some((owner, repo)) = ci::parse_owner_repo(repo_url)
-        {
-            let branch = git_info.as_ref().and_then(|git| git.branch.as_deref());
-            let (result, _meta, signal) =
-                scan::fetch_ci_runs_cached(&client, repo_url, &owner, &repo, branch, ci_run_count);
-            scan::emit_service_signal(&tx, signal);
-            let runs = match result {
-                CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
-            };
-            let _ = tx.send(BackgroundMsg::CiRuns {
-                path: path.clone(),
-                runs,
-            });
-        }
 
         let bytes = scan::dir_size(&abs);
         let _ = tx.send(BackgroundMsg::DiskUsage {

@@ -4,9 +4,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
-use super::types::App;
+use super::App;
 use super::types::CiState;
 use super::types::DiscoveryRowKind;
+use super::types::DiscoveryShimmer;
+use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::config::NavigationKeys;
 use crate::config::NonRustInclusion;
@@ -141,13 +143,16 @@ impl App {
     }
 
     pub fn bottom_panel_available(&self, path: &Path) -> bool {
-        let has_ci = self.is_ci_owner_path(path)
-            && (self
-                .ci_state_for(path)
-                .is_some_and(|state| !state.runs().is_empty())
-                || self
-                    .git_info_for(path)
-                    .is_some_and(|info| info.url.is_some()));
+        let has_ci = self
+            .ci_owner_path_for(path)
+            .as_deref()
+            .is_some_and(|owner_path| {
+                self.ci_state_for(path)
+                    .is_some_and(|state| !state.runs().is_empty())
+                    || self
+                        .git_info_for(owner_path)
+                        .is_some_and(|info| info.url.is_some())
+            });
         let has_lint_runs = self
             .lint_runs
             .get(path)
@@ -214,14 +219,19 @@ impl App {
         crate::tui::render::format_bytes(bytes)
     }
 
-    pub fn selected_ci_path(&self) -> Option<&Path> {
+    pub fn selected_ci_path(&self) -> Option<PathBuf> {
         self.selected_project_path()
-            .filter(|path| self.is_ci_owner_path(path))
+            .and_then(|path| self.ci_owner_path_for(path))
     }
 
     pub fn selected_ci_state(&self) -> Option<&CiState> {
         let path = self.selected_ci_path()?;
-        self.ci_state_for(path)
+        self.ci_state_for(path.as_path())
+    }
+
+    pub fn selected_ci_runs(&self) -> Vec<CiRun> {
+        self.selected_project_path()
+            .map_or_else(Vec::new, |path| self.ci_runs_for_display(path))
     }
 
     pub fn ci_for(&self, path: &Path) -> Option<Conclusion> {
@@ -231,9 +241,8 @@ impl App {
     }
 
     pub fn ci_state_for(&self, path: &Path) -> Option<&CiState> {
-        self.is_ci_owner_path(path)
-            .then(|| self.ci_state.get(path))
-            .flatten()
+        let owner_path = self.ci_owner_path_for(path)?;
+        self.ci_state.get(owner_path.as_path())
     }
 
     pub fn git_info_for(&self, path: &Path) -> Option<&GitInfo> {
@@ -325,7 +334,7 @@ impl App {
         }
         self.discovery_shimmers.insert(
             path.to_path_buf(),
-            super::types::DiscoveryShimmer::new(Instant::now(), self.discovery_shimmer_duration()),
+            DiscoveryShimmer::new(Instant::now(), self.discovery_shimmer_duration()),
         );
     }
 
@@ -381,7 +390,7 @@ impl App {
         row_path: &Path,
         now: Instant,
         row_kind: DiscoveryRowKind,
-    ) -> Option<(PathBuf, super::types::DiscoveryShimmer)> {
+    ) -> Option<(PathBuf, DiscoveryShimmer)> {
         self.discovery_shimmers
             .iter()
             .filter(|(session_path, shimmer)| {
@@ -598,7 +607,7 @@ impl App {
     }
 }
 
-fn discovery_shimmer_window_len(char_count: usize) -> usize {
+const fn discovery_shimmer_window_len(char_count: usize) -> usize {
     match char_count {
         0 => 0,
         1..=2 => 1,
@@ -619,7 +628,7 @@ fn discovery_shimmer_phase_offset(
     if char_count == 0 {
         return 0;
     }
-    let mut hash = 0xcbf29ce484222325_u64;
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     let key = format!(
         "{}|{}|{}",
         session_path.to_string_lossy(),
@@ -628,7 +637,7 @@ fn discovery_shimmer_phase_offset(
     );
     for byte in key.as_bytes() {
         hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     usize::try_from(hash % u64::try_from(char_count).unwrap_or(1)).unwrap_or(0)
 }
@@ -640,14 +649,14 @@ struct DiscoveryParentRow {
 }
 
 impl DiscoveryRowKind {
-    const fn allows_parent_kind(self, kind: DiscoveryRowKind) -> bool {
-        match (self, kind) {
+    const fn allows_parent_kind(self, kind: Self) -> bool {
+        matches!(
+            (self, kind),
             (Self::Root, Self::Root)
-            | (Self::WorktreeEntry, Self::WorktreeEntry)
-            | (Self::PathOnly, Self::PathOnly)
-            | (Self::Search, _) => true,
-            _ => false,
-        }
+                | (Self::WorktreeEntry, Self::WorktreeEntry)
+                | (Self::PathOnly, Self::PathOnly)
+                | (Self::Search, _)
+        )
     }
 
     const fn discriminant(self) -> u8 {

@@ -8,17 +8,18 @@ use std::time::Instant;
 
 use ratatui::widgets::ListState;
 
+use super::App;
 use super::ExpandKey::Group;
 use super::ExpandKey::Node;
 use super::ExpandKey::Worktree;
 use super::ExpandKey::WorktreeGroup;
-use super::types::App;
 use super::types::ConfigFileStamp;
 use super::types::DiskCacheBuildResult;
 use super::types::FitWidthsBuildResult;
 use super::types::PollBackgroundStats;
 use super::types::ScanPhase;
 use super::types::StartupPhaseTracker;
+use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
 use crate::constants::SERVICE_RETRY_SECS;
 use crate::http::ServiceKind;
@@ -375,7 +376,7 @@ impl App {
             self.bg_tx.clone(),
             self.ci_run_count(),
             self.include_non_rust(),
-            self.current_config.tui.include_dirs.clone(),
+            &self.current_config.tui.include_dirs,
             self.http_client.clone(),
         );
     }
@@ -483,10 +484,8 @@ impl App {
     fn schedule_startup_project_details(&self) {
         let tx = self.bg_tx.clone();
         let task_ctx = std::sync::Arc::new(crate::scan::FetchContext {
-            client:     self.http_client.clone(),
-            repo_cache: crate::scan::new_repo_cache(),
+            client: self.http_client.clone(),
         });
-        let ci_run_count = self.ci_run_count();
         self.projects.for_each_leaf(|item| {
             let abs_path = item.path().to_path_buf();
             let display_path = item.display_path().into_string();
@@ -509,7 +508,6 @@ impl App {
                     abs_path: &abs_path,
                     project_name: project_name.as_deref(),
                     repo_presence,
-                    ci_run_count,
                 };
                 crate::scan::fetch_project_details(&request);
             });
@@ -744,7 +742,7 @@ impl App {
             self.set_task_tracked_items(task_id, &git_items);
             self.scan.startup_phases.git_toast = Some(task_id);
         }
-        let repo_items = Self::tracked_items_for_startup(
+        let repo_items = Self::tracked_repo_items_for_startup(
             &self.scan.startup_phases.repo_expected,
             &self.scan.startup_phases.repo_seen,
         );
@@ -916,14 +914,14 @@ impl App {
     }
 
     pub(super) fn startup_repo_toast_body(&self) -> String {
-        Self::startup_remaining_toast_body(
+        Self::startup_remaining_repo_toast_body(
             &self.scan.startup_phases.repo_expected,
             &self.scan.startup_phases.repo_seen,
         )
     }
 
     fn sync_startup_repo_toast(&mut self) {
-        let items = Self::tracked_items_for_startup(
+        let items = Self::tracked_repo_items_for_startup(
             &self.scan.startup_phases.repo_expected,
             &self.scan.startup_phases.repo_seen,
         );
@@ -943,6 +941,21 @@ impl App {
         }
     }
 
+    pub(super) fn tracked_repo_items_for_startup(
+        expected: &HashSet<OwnerRepo>,
+        seen: &HashSet<OwnerRepo>,
+    ) -> Vec<TrackedItem> {
+        expected
+            .iter()
+            .map(|repo| TrackedItem {
+                label:        repo.to_string(),
+                key:          repo.into(),
+                started_at:   None,
+                completed_at: seen.contains(repo).then(Instant::now),
+            })
+            .collect()
+    }
+
     /// Build tracked items from expected/seen path sets. Already-seen paths
     /// are pre-marked as completed so the renderer shows them with strikethrough.
     pub(super) fn tracked_items_for_startup(
@@ -960,7 +973,7 @@ impl App {
                 };
                 TrackedItem {
                     label,
-                    key: AbsolutePath::from(path.as_path()),
+                    key: AbsolutePath::from(path.as_path()).into(),
                     started_at: None,
                     completed_at,
                 }
@@ -976,6 +989,22 @@ impl App {
             .iter()
             .filter(|path| !seen.contains(*path))
             .map(|p| crate::project::home_relative_path(p))
+            .collect();
+        let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+        if refs.is_empty() {
+            return "Complete".to_string();
+        }
+        toasts::format_toast_items(&refs, toasts::toast_body_width())
+    }
+
+    pub(super) fn startup_remaining_repo_toast_body(
+        expected: &HashSet<OwnerRepo>,
+        seen: &HashSet<OwnerRepo>,
+    ) -> String {
+        let items: Vec<String> = expected
+            .iter()
+            .filter(|repo| !seen.contains(*repo))
+            .map(ToString::to_string)
             .collect();
         let refs: Vec<&str> = items.iter().map(String::as_str).collect();
         if refs.is_empty() {
@@ -1025,7 +1054,7 @@ impl App {
             .iter()
             .map(|p| TrackedItem {
                 label:        crate::project::home_relative_path(p),
-                key:          AbsolutePath::from(p.as_path()),
+                key:          AbsolutePath::from(p.as_path()).into(),
                 started_at:   None,
                 completed_at: None,
             })
@@ -1071,7 +1100,7 @@ impl App {
             .iter()
             .map(|(p, &started)| TrackedItem {
                 label:        crate::project::home_relative_path(p),
-                key:          AbsolutePath::from(p.as_path()),
+                key:          AbsolutePath::from(p.as_path()).into(),
                 started_at:   Some(started),
                 completed_at: None,
             })
@@ -1328,6 +1357,7 @@ impl App {
         self.projects.clear();
         // disk_usage lives on project items — cleared with projects above
         self.ci_state.clear();
+        self.ci_display_modes.clear();
         self.lint_status.clear();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
         self.lint_runs.clear();
@@ -1337,6 +1367,7 @@ impl App {
         self.crates_downloads.clear();
         self.stars.clear();
         self.repo_descriptions.clear();
+        self.repo_fetch_cache = crate::scan::new_repo_cache();
         self.discovery_shimmers.clear();
         self.scan.phase = ScanPhase::Running;
         self.scan.started_at = Instant::now();
@@ -1628,6 +1659,60 @@ impl App {
         (member_paths, fallback_worktree_paths)
     }
 
+    fn spawn_repo_fetch_for_git_info(&self, path: &Path, info: &GitInfo) {
+        let Some(repo_url) = info.url.as_deref() else {
+            return;
+        };
+        let Some(owner_repo) = crate::ci::parse_owner_repo(repo_url) else {
+            return;
+        };
+
+        let tx = self.bg_tx.clone();
+        let client = self.http_client.clone();
+        let repo_cache = self.repo_fetch_cache.clone();
+        let path: AbsolutePath = path.to_path_buf().into();
+        let repo_url = repo_url.to_string();
+        let ci_run_count = self.ci_run_count();
+        thread::spawn(move || {
+            let data =
+                crate::scan::load_cached_repo_data(&repo_cache, &owner_repo).unwrap_or_else(|| {
+                    let _ = tx.send(BackgroundMsg::RepoFetchQueued {
+                        repo: owner_repo.clone(),
+                    });
+                    let (result, meta, signal) = crate::scan::fetch_ci_runs_cached(
+                        &client,
+                        &repo_url,
+                        owner_repo.owner(),
+                        owner_repo.repo(),
+                        ci_run_count,
+                    );
+                    crate::scan::emit_service_signal(&tx, signal);
+                    let runs = match result {
+                        crate::scan::CiFetchResult::Loaded(runs)
+                        | crate::scan::CiFetchResult::CacheOnly(runs) => runs,
+                    };
+                    let data = crate::scan::CachedRepoData { runs, meta };
+                    crate::scan::store_cached_repo_data(&repo_cache, &owner_repo, data.clone());
+                    let _ = tx.send(BackgroundMsg::RepoFetchComplete {
+                        repo: owner_repo.clone(),
+                    });
+                    data
+                });
+
+            let _ = tx.send(BackgroundMsg::CiRuns {
+                path: path.clone(),
+                runs: data.runs,
+            });
+            if let Some(meta) = data.meta {
+                let _ = tx.send(BackgroundMsg::RepoMeta {
+                    path,
+                    stars: meta.stars,
+                    description: meta.description,
+                });
+            }
+        });
+    }
+
     pub(super) fn handle_git_info(&mut self, path: &Path, info: GitInfo) {
         self.dirty.fit_widths.mark_dirty();
         let abs = path.to_path_buf();
@@ -1664,6 +1749,7 @@ impl App {
             }
             self.maybe_log_startup_phase_completions();
         }
+        self.spawn_repo_fetch_for_git_info(&abs, &info);
         self.dirty.finder.mark_dirty();
     }
 
@@ -1708,13 +1794,12 @@ impl App {
         }
     }
 
-    pub(super) fn handle_repo_fetch_complete(&mut self, key: &str) {
-        let path = PathBuf::from(key);
+    pub(super) fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
         if let Some(repo_toast) = self.scan.startup_phases.repo_toast {
-            let label = crate::project::home_relative_path(&path);
+            let label = repo.to_string();
             self.mark_tracked_item_completed(repo_toast, &label);
         }
-        self.scan.startup_phases.repo_seen.insert(path);
+        self.scan.startup_phases.repo_seen.insert(repo);
         self.maybe_log_startup_phase_completions();
     }
 
@@ -2109,16 +2194,13 @@ impl App {
             BackgroundMsg::CiRuns { path, runs } => {
                 self.insert_ci_runs(path.as_path(), runs);
             },
-            BackgroundMsg::RepoFetchQueued { key } => {
-                self.scan
-                    .startup_phases
-                    .repo_expected
-                    .insert(PathBuf::from(key));
+            BackgroundMsg::RepoFetchQueued { repo } => {
+                self.scan.startup_phases.repo_expected.insert(repo);
                 if self.is_scan_complete() {
                     self.sync_startup_repo_toast();
                 }
             },
-            BackgroundMsg::RepoFetchComplete { key } => self.handle_repo_fetch_complete(&key),
+            BackgroundMsg::RepoFetchComplete { repo } => self.handle_repo_fetch_complete(repo),
             BackgroundMsg::GitInfo { path, info } => {
                 self.handle_git_info(path.as_path(), info);
             },

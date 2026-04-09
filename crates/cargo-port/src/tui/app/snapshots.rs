@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
-use super::types::App;
+use super::App;
 use super::types::ExpandKey;
 use super::types::VisibleRow;
 use crate::constants::IN_SYNC;

@@ -8,8 +8,8 @@ use nucleo_matcher::pattern::AtomKind;
 use nucleo_matcher::pattern::CaseMatching;
 use nucleo_matcher::pattern::Normalization;
 
+use super::App;
 use super::snapshots;
-use super::types::App;
 use super::types::DetailCache;
 use super::types::ExpandKey;
 use super::types::SearchHit;

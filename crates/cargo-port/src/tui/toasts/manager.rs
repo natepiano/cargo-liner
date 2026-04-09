@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 use crate::tui::constants::TOAST_LINE_REVEAL_MS;
 use crate::tui::constants::TOAST_WIDTH;
@@ -51,9 +52,36 @@ struct Toast {
 }
 
 #[derive(Clone, Debug)]
+pub struct TrackedItemKey(String);
+
+impl TrackedItemKey {
+    pub fn as_str(&self) -> &str { &self.0 }
+}
+
+impl std::fmt::Display for TrackedItemKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.0.fmt(f) }
+}
+
+impl From<AbsolutePath> for TrackedItemKey {
+    fn from(value: AbsolutePath) -> Self { Self(value.to_string()) }
+}
+
+impl From<&AbsolutePath> for TrackedItemKey {
+    fn from(value: &AbsolutePath) -> Self { Self(value.to_string()) }
+}
+
+impl From<OwnerRepo> for TrackedItemKey {
+    fn from(value: OwnerRepo) -> Self { Self(value.to_string()) }
+}
+
+impl From<&OwnerRepo> for TrackedItemKey {
+    fn from(value: &OwnerRepo) -> Self { Self(value.to_string()) }
+}
+
+#[derive(Clone, Debug)]
 pub struct TrackedItem {
     pub label:        String,
-    pub key:          AbsolutePath,
+    pub key:          TrackedItemKey,
     pub started_at:   Option<Instant>,
     pub completed_at: Option<Instant>,
 }
@@ -401,7 +429,7 @@ impl ToastManager {
         for toast in &mut self.toasts {
             if toast.task_id == Some(task_id) {
                 for item in &mut toast.tracked_items {
-                    if item.completed_at.is_none() && !active_keys.contains(&item.key.to_string()) {
+                    if item.completed_at.is_none() && !active_keys.contains(item.key.as_str()) {
                         item.completed_at = Some(now);
                     }
                 }
@@ -424,7 +452,7 @@ impl ToastManager {
                     .map(|i| i.key.to_string())
                     .collect();
                 for item in new_items {
-                    if !existing.contains(&item.key.to_string()) {
+                    if !existing.contains(item.key.as_str()) {
                         toast.tracked_items.push(item.clone());
                     }
                 }

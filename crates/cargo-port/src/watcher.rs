@@ -63,11 +63,11 @@ pub(crate) fn spawn_watcher(
     bg_tx: mpsc::Sender<BackgroundMsg>,
     ci_run_count: u32,
     non_rust: NonRustInclusion,
-    include_dirs: Vec<String>,
+    include_dirs: &[String],
     client: HttpClient,
 ) -> mpsc::Sender<WatcherMsg> {
     let (watch_tx, watch_rx) = mpsc::channel();
-    let watch_dirs = scan::resolve_include_dirs(&scan_root, &include_dirs);
+    let watch_dirs = scan::resolve_include_dirs(&scan_root, include_dirs);
     let (notify_tx, notify_rx) = mpsc::channel();
     let handler = move |res| {
         let _ = notify_tx.send(res);
@@ -91,7 +91,7 @@ pub(crate) fn spawn_watcher(
     };
 
     thread::spawn(move || {
-        watcher_loop(ctx, watch_rx, notify_rx, watcher);
+        watcher_loop(&ctx, &watch_rx, &notify_rx, watcher);
     });
 
     watch_tx
@@ -152,9 +152,9 @@ impl GitRefreshKind {
 }
 
 fn watcher_loop(
-    ctx: WatcherLoopContext,
-    watch_rx: mpsc::Receiver<WatcherMsg>,
-    notify_rx: mpsc::Receiver<notify::Result<notify::Event>>,
+    ctx: &WatcherLoopContext,
+    watch_rx: &mpsc::Receiver<WatcherMsg>,
+    notify_rx: &mpsc::Receiver<notify::Result<notify::Event>>,
     mut watcher: notify::RecommendedWatcher,
 ) {
     // `abs_path` → project tracking state
@@ -180,7 +180,7 @@ fn watcher_loop(
     loop {
         let watch_drain = drain_watch_messages(
             &mut watcher,
-            &watch_rx,
+            watch_rx,
             &mut projects,
             &mut project_parents,
             &mut watched_git_metadata,
@@ -199,7 +199,7 @@ fn watcher_loop(
             },
             bg_tx: &ctx.bg_tx,
         };
-        let notify_events = drain_notify_events(&notify_rx);
+        let notify_events = drain_notify_events(notify_rx);
         if watch_drain.registration_completed {
             replay_buffered_events(
                 &buffered_events,
@@ -1050,7 +1050,7 @@ fn probe_new_projects(
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     pending_new: &mut HashMap<PathBuf, Instant>,
     discovered: &mut HashSet<PathBuf>,
-    ci_run_count: u32,
+    _ci_run_count: u32,
     non_rust: NonRustInclusion,
     client: &HttpClient,
 ) {
@@ -1103,8 +1103,7 @@ fn probe_new_projects(
             }
             let tx = bg_tx.clone();
             let task_ctx = scan::FetchContext {
-                client:     client.clone(),
-                repo_cache: scan::new_repo_cache(),
+                client: client.clone(),
             };
             rayon::spawn(move || {
                 let request = scan::ProjectDetailRequest {
@@ -1114,7 +1113,6 @@ fn probe_new_projects(
                     abs_path: &abs_path,
                     project_name: project_name.as_deref(),
                     repo_presence,
-                    ci_run_count,
                 };
                 scan::fetch_project_details(&request);
             });

@@ -16,7 +16,7 @@ fn lint_runtime_waits_for_scan_completion() {
 }
 
 #[test]
-fn ci_runs_stay_on_owner_rows_not_workspace_members() {
+fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
     let workspace = make_workspace_project(Some("ws"), "~/ws");
     let member = make_project(Some("core"), "~/ws/core");
     let root = make_workspace_with_members(
@@ -38,13 +38,16 @@ fn ci_runs_stay_on_owner_rows_not_workspace_members() {
         Some(Conclusion::Success)
     );
     assert!(app.ci_state.contains_key(test_path("~/ws").as_path()));
-    assert_eq!(app.ci_for(test_path("~/ws/core").as_path()), None);
-    assert!(app.ci_state_for(test_path("~/ws/core").as_path()).is_none());
+    assert_eq!(
+        app.ci_for(test_path("~/ws/core").as_path()),
+        Some(Conclusion::Success)
+    );
+    assert!(app.ci_state_for(test_path("~/ws/core").as_path()).is_some());
     assert!(!app.ci_state.contains_key(test_path("~/ws/core").as_path()));
 }
 
 #[test]
-fn non_owner_member_ignores_stale_ci_state_and_cannot_fetch() {
+fn non_owner_member_ignores_stale_member_state_and_fetches_via_owner() {
     let workspace = make_workspace_project(Some("ws"), "~/ws");
     let member = make_project(Some("core"), "~/ws/core");
     let root = make_workspace_with_members(
@@ -68,19 +71,24 @@ fn non_owner_member_ignores_stale_ci_state_and_cannot_fetch() {
         },
     );
     app.handle_git_info(
-        member.path(),
+        test_path("~/ws").as_path(),
         make_git_info(Some("https://github.com/natepiano/demo")),
     );
 
     assert!(app.ci_state_for(member.path()).is_none());
     assert_eq!(app.ci_for(member.path()), None);
-    assert!(!app.bottom_panel_available(member.path()));
+    assert!(app.bottom_panel_available(member.path()));
 
     crate::tui::detail::handle_ci_runs_key(
         &mut app,
         &crossterm::event::KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE),
     );
-    assert!(app.pending_ci_fetch.is_none());
+    assert_eq!(
+        app.pending_ci_fetch
+            .as_ref()
+            .map(|fetch| fetch.project_path.clone()),
+        Some(test_path("~/ws").display().to_string())
+    );
 }
 
 #[test]
@@ -132,7 +140,7 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
     );
 
     assert_eq!(app.ci_for_item(&app.projects[0]), Some(Conclusion::Failure));
-    assert!(app.ci_state_for(member.path()).is_none());
+    assert!(app.ci_state_for(member.path()).is_some());
 }
 
 #[test]
@@ -173,6 +181,104 @@ fn ci_for_prefers_runs_matching_local_branch() {
     );
 
     assert_eq!(app.ci_for(project.path()), Some(Conclusion::Failure));
+}
+
+#[test]
+fn ci_for_default_branch_uses_full_repo_run_list() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    app.handle_git_info(
+        project.path(),
+        GitInfo {
+            origin:              GitOrigin::Clone,
+            branch:              Some("main".to_string()),
+            owner:               Some("acme".to_string()),
+            url:                 Some("https://github.com/acme/demo".to_string()),
+            first_commit:        None,
+            last_commit:         None,
+            ahead_behind:        None,
+            default_branch:      Some("main".to_string()),
+            ahead_behind_origin: None,
+            ahead_behind_local:  None,
+            workflows:           WorkflowPresence::Present,
+        },
+    );
+    app.ci_state.insert(
+        project.path().to_path_buf(),
+        CiState::Loaded {
+            runs:      vec![
+                CiRun {
+                    branch: "release".to_string(),
+                    ..make_ci_run(9, Conclusion::Failure)
+                },
+                CiRun {
+                    branch: "main".to_string(),
+                    ..make_ci_run(8, Conclusion::Success)
+                },
+            ],
+            exhausted: false,
+        },
+    );
+
+    assert_eq!(app.ci_for(project.path()), Some(Conclusion::Failure));
+}
+
+#[test]
+fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    app.handle_git_info(
+        project.path(),
+        GitInfo {
+            origin:              GitOrigin::Clone,
+            branch:              Some("feat/demo".to_string()),
+            owner:               Some("acme".to_string()),
+            url:                 Some("https://github.com/acme/demo".to_string()),
+            first_commit:        None,
+            last_commit:         None,
+            ahead_behind:        None,
+            default_branch:      Some("main".to_string()),
+            ahead_behind_origin: None,
+            ahead_behind_local:  None,
+            workflows:           WorkflowPresence::Present,
+        },
+    );
+    app.ci_state.insert(
+        project.path().to_path_buf(),
+        CiState::Loaded {
+            runs:      vec![
+                CiRun {
+                    branch: "main".to_string(),
+                    ..make_ci_run(9, Conclusion::Success)
+                },
+                CiRun {
+                    branch: "feat/demo".to_string(),
+                    ..make_ci_run(8, Conclusion::Failure)
+                },
+            ],
+            exhausted: false,
+        },
+    );
+
+    assert_eq!(app.ci_for(project.path()), Some(Conclusion::Failure));
+    assert_eq!(
+        app.ci_runs_for_display(project.path())
+            .iter()
+            .map(|run| run.branch.as_str())
+            .collect::<Vec<_>>(),
+        vec!["feat/demo"]
+    );
+
+    app.toggle_ci_display_mode_for(project.path());
+
+    assert_eq!(app.ci_for(project.path()), Some(Conclusion::Success));
+    assert_eq!(
+        app.ci_runs_for_display(project.path())
+            .iter()
+            .map(|run| run.branch.as_str())
+            .collect::<Vec<_>>(),
+        vec!["main", "feat/demo"]
+    );
 }
 
 #[test]
@@ -237,10 +343,10 @@ fn startup_lint_toast_body_shows_paths_then_others() {
     let seen = HashSet::from([test_path("~/e")]);
 
     let body = App::startup_lint_toast_body_for(&expected, &seen);
-    let lines = body.lines().collect::<Vec<_>>();
+    let lines: Vec<&str> = body.lines().collect();
 
     assert_eq!(lines.len(), 4);
-    for line in &lines {
+    for line in lines {
         assert!(line.starts_with("~/"));
     }
 }
@@ -269,7 +375,7 @@ fn startup_git_expected_uses_top_level_git_directories() {
         Some("bevy".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
         vec![inline_group(vec![RustProject::<Package>::new(
-            member_dir.clone(),
+            member_dir,
             Some("core".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
             Vec::new(),
@@ -450,11 +556,10 @@ fn vendored_path_dependency_becomes_cargo_active() {
 #[test]
 fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
     let project = make_project(Some("demo"), "~/demo");
-    let path = project.display_path();
     let mut app = make_app(std::slice::from_ref(&project));
 
     app.handle_git_info(
-        Path::new(path.as_str()),
+        project.path(),
         GitInfo {
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),

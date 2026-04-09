@@ -1,45 +1,21 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
-use ratatui::widgets::ListState;
-
 use crate::ci::CiRun;
-use crate::config::CargoPortConfig;
-use crate::http::HttpClient;
-use crate::http::ServiceKind;
-use crate::keymap::ResolvedKeymap;
-use crate::lint::CacheUsage;
-use crate::lint::LintRun;
-use crate::lint::LintStatus;
-use crate::lint::RuntimeHandle;
+use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
-use crate::project::GitPathState;
-use crate::project_list::ProjectList;
-use crate::scan::BackgroundMsg;
 use crate::tui::columns::ResolvedWidths;
 use crate::tui::detail::DetailInfo;
-use crate::tui::detail::PendingCiFetch;
-use crate::tui::detail::PendingExampleRun;
 use crate::tui::finder::FINDER_COLUMN_COUNT;
 use crate::tui::finder::FinderItem;
-use crate::tui::terminal::CiFetchMsg;
-use crate::tui::terminal::CleanMsg;
-use crate::tui::terminal::ExampleMsg;
-use crate::tui::toasts::ToastManager;
 use crate::tui::toasts::ToastTaskId;
-use crate::tui::types::LayoutCache;
 use crate::tui::types::Pane;
-use crate::tui::types::PaneId;
-use crate::watcher::WatcherMsg;
 
 /// An expand key: a node, group, worktree entry, or group within a worktree.
 #[derive(Hash, Eq, PartialEq, Clone)]
@@ -124,8 +100,8 @@ pub struct StartupPhaseTracker {
     pub git_expected:        HashSet<PathBuf>,
     pub git_seen:            HashSet<PathBuf>,
     pub git_complete_at:     Option<Instant>,
-    pub repo_expected:       HashSet<PathBuf>,
-    pub repo_seen:           HashSet<PathBuf>,
+    pub repo_expected:       HashSet<OwnerRepo>,
+    pub repo_seen:           HashSet<OwnerRepo>,
     pub repo_complete_at:    Option<Instant>,
     pub git_toast:           Option<ToastTaskId>,
     pub repo_toast:          Option<ToastTaskId>,
@@ -504,108 +480,17 @@ impl CiState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CiRunDisplayMode {
+    #[default]
+    BranchOnly,
+    All,
+}
+
 /// Generation-stamped detail cache. Automatically stale when `detail_generation`
 /// on `App` has advanced past the generation stored here.
 pub struct DetailCache {
     pub generation: u64,
     pub selection:  String,
     pub info:       DetailInfo,
-}
-
-pub struct App {
-    pub current_config:           CargoPortConfig,
-    pub scan_root:                PathBuf,
-    pub http_client:              HttpClient,
-    pub projects:                 ProjectList,
-    pub ci_state:                 HashMap<PathBuf, CiState>,
-    pub lint_status:              HashMap<PathBuf, LintStatus>,
-    pub lint_cache_usage:         CacheUsage,
-    pub lint_runs:                HashMap<PathBuf, Vec<LintRun>>,
-    pub lint_rollup_status:       HashMap<LintRollupKey, LintStatus>,
-    pub lint_rollup_paths:        HashMap<LintRollupKey, Vec<PathBuf>>,
-    pub lint_rollup_keys_by_path: HashMap<PathBuf, Vec<LintRollupKey>>,
-    pub git_path_states:          HashMap<PathBuf, GitPathState>,
-    pub cargo_active_paths:       HashSet<PathBuf>,
-    pub crates_versions:          HashMap<PathBuf, String>,
-    pub crates_downloads:         HashMap<PathBuf, u64>,
-    pub stars:                    HashMap<PathBuf, u64>,
-    pub repo_descriptions:        HashMap<PathBuf, String>,
-    pub discovery_shimmers:       HashMap<PathBuf, DiscoveryShimmer>,
-    pub pending_git_first_commit: HashMap<PathBuf, String>,
-    pub bg_tx:                    mpsc::Sender<BackgroundMsg>,
-    pub bg_rx:                    Receiver<BackgroundMsg>,
-    pub fully_loaded:             HashSet<PathBuf>,
-    pub priority_fetch_path:      Option<AbsolutePath>,
-    pub expanded:                 HashSet<ExpandKey>,
-    pub list_state:               ListState,
-    pub search_query:             String,
-    pub filtered:                 Vec<SearchHit>,
-    pub settings_pane:            Pane,
-    pub settings_edit_buf:        String,
-    pub settings_edit_cursor:     usize,
-    pub focused_pane:             PaneId,
-    pub return_focus:             Option<PaneId>,
-    pub visited_panes:            HashSet<PaneId>,
-    pub package_pane:             Pane,
-    pub git_pane:                 Pane,
-    pub targets_pane:             Pane,
-    pub ci_pane:                  Pane,
-    pub toast_pane:               Pane,
-    pub lint_pane:                Pane,
-    pub pending_example_run:      Option<PendingExampleRun>,
-    pub pending_ci_fetch:         Option<PendingCiFetch>,
-    pub pending_cleans:           VecDeque<PendingClean>,
-    pub confirm:                  Option<ConfirmAction>,
-    pub animation_started:        Instant,
-    pub ci_fetch_tx:              mpsc::Sender<CiFetchMsg>,
-    pub ci_fetch_rx:              mpsc::Receiver<CiFetchMsg>,
-    pub clean_tx:                 mpsc::Sender<CleanMsg>,
-    pub clean_rx:                 mpsc::Receiver<CleanMsg>,
-    pub example_running:          Option<String>,
-    pub example_child:            Arc<Mutex<Option<u32>>>,
-    pub example_output:           Vec<String>,
-    pub example_tx:               mpsc::Sender<ExampleMsg>,
-    pub example_rx:               mpsc::Receiver<ExampleMsg>,
-    pub running_clean_paths:      HashSet<PathBuf>,
-    pub clean_toast:              Option<ToastTaskId>,
-    pub running_lint_paths:       HashMap<PathBuf, Instant>,
-    pub lint_toast:               Option<ToastTaskId>,
-
-    // Disk watcher
-    pub watch_tx:             mpsc::Sender<WatcherMsg>,
-    pub lint_runtime:         Option<RuntimeHandle>,
-    pub unreachable_services: HashSet<ServiceKind>,
-    pub service_retry_active: HashSet<ServiceKind>,
-
-    // Universal finder
-    pub selection_paths: SelectionPaths,
-    pub finder:          FinderState,
-
-    // Caches for per-frame hot paths
-    pub cached_visible_rows: Vec<VisibleRow>,
-    pub cached_root_sorted:  Vec<u64>,
-    pub cached_child_sorted: HashMap<usize, Vec<u64>>,
-    pub cached_fit_widths:   ResolvedWidths,
-    pub builds:              AsyncBuildState,
-    pub data_generation:     u64,
-    pub detail_generation:   u64,
-    pub cached_detail:       Option<DetailCache>,
-    pub layout_cache:        LayoutCache,
-
-    pub status_flash:          Option<(String, std::time::Instant)>,
-    pub toasts:                ToastManager,
-    pub config_path:           Option<PathBuf>,
-    pub config_last_seen:      Option<ConfigFileStamp>,
-    pub current_keymap:        ResolvedKeymap,
-    pub keymap_path:           Option<PathBuf>,
-    pub keymap_last_seen:      Option<ConfigFileStamp>,
-    pub keymap_diagnostics_id: Option<u64>,
-    pub keymap_pane:           Pane,
-    pub inline_error:          Option<String>,
-    pub ui_modes:              UiModes,
-    pub dirty:                 DirtyState,
-    pub scan:                  ScanState,
-    pub selection:             SelectionSync,
-    #[cfg(test)]
-    pub retry_spawn_mode:      RetrySpawnMode,
 }

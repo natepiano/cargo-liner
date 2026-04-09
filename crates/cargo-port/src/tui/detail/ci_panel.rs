@@ -241,17 +241,19 @@ fn ci_panel_title(
     fetch_count: u32,
     elapsed: std::time::Duration,
     focused_pos: Option<usize>,
+    mode_label: Option<&str>,
 ) -> String {
+    let suffix = mode_label.map_or(String::new(), |label| format!(" [{label}]"));
     if is_fetching {
         let spinner = BRAILLE_SPINNER.frame_at(elapsed);
-        format!(" CI Runs {spinner} fetching {fetch_count} more… ")
+        format!(" CI Runs{suffix} {spinner} fetching {fetch_count} more… ")
     } else if let Some(pos) = focused_pos
         && pos < total
     {
         let indicator = crate::tui::types::scroll_indicator(pos, total);
-        format!(" CI Runs ({indicator}) ")
+        format!(" CI Runs{suffix} ({indicator}) ")
     } else {
-        format!(" CI Runs (cached {cached}, total {total}) ")
+        format!(" CI Runs{suffix} (cached {cached}, total {total}) ")
     }
 }
 
@@ -280,11 +282,12 @@ fn build_fetch_row(
 
 fn cached_run_count(app: &App) -> usize {
     app.selected_ci_path()
+        .as_deref()
         .and_then(|path| app.git_info_for(path))
         .and_then(|git| {
             git.url.as_ref().and_then(|url| {
-                ci::parse_owner_repo(url).map(|(owner, repo)| {
-                    scan::count_cached_runs(&owner, &repo, git.branch.as_deref())
+                ci::parse_owner_repo(url).map(|owner_repo| {
+                    scan::count_cached_runs(owner_repo.owner(), owner_repo.repo())
                 })
             })
         })
@@ -312,6 +315,10 @@ pub fn render_ci_panel(
     } else {
         None
     };
+    let mode_label = app.selected_project_path().and_then(|path| {
+        app.ci_toggle_available_for(path)
+            .then(|| app.ci_display_mode_label_for(path))
+    });
     let title = ci_panel_title(
         total,
         cached,
@@ -319,6 +326,7 @@ pub fn render_ci_panel(
         fetch_count,
         elapsed,
         focused_pos,
+        mode_label,
     );
 
     let ci_block = Block::default()

@@ -117,7 +117,7 @@ pub(super) fn for_status_bar(
         InputContext::DetailFields | InputContext::DetailTargets => {
             detail_groups(context, enter_action, is_rust, km)
         },
-        InputContext::CiRuns => ci_groups(enter_action, km),
+        InputContext::CiRuns => ci_groups(enter_action, Some("toggle view"), km),
         InputContext::Toasts => toast_groups(km),
         InputContext::Lints => lints_groups(enter_action),
         InputContext::ProjectList => project_list_groups(enter_action, is_rust, km),
@@ -181,6 +181,7 @@ fn detail_groups(
 
 fn ci_groups(
     enter_action: Option<&'static str>,
+    toggle_action: Option<&'static str>,
     km: &ResolvedKeymap,
 ) -> (Vec<Shortcut>, Vec<Shortcut>) {
     let navigation = vec![NAV, TAB_PANE];
@@ -188,6 +189,12 @@ fn ci_groups(
     let mut actions = Vec::new();
     if let Some(action) = enter_action {
         actions.push(enter(action));
+    }
+    if let Some(action) = toggle_action {
+        actions.push(Shortcut::from_keymap(
+            km.ci_runs.display_key_for(CiRunsAction::ToggleView),
+            action,
+        ));
     }
     actions.push(Shortcut::from_keymap(
         km.ci_runs.display_key_for(CiRunsAction::ClearCache),

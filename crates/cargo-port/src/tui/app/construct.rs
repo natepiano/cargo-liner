@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use ratatui::widgets::ListState;
 
-use super::types::App;
+use super::App;
 use super::types::AsyncBuildState;
 use super::types::BuildChannels;
 use super::types::ConfigFileStamp;
@@ -103,7 +103,7 @@ impl AppInit {
             bg_tx.clone(),
             cfg.tui.ci_run_count,
             cfg.tui.include_non_rust,
-            cfg.tui.include_dirs.clone(),
+            &cfg.tui.include_dirs,
             http_client.clone(),
         );
         let built = scan::build_tree(projects, &cfg.tui.inline_dirs);
@@ -183,8 +183,10 @@ impl App {
             current_config: inputs.cfg,
             scan_root: inputs.scan_root,
             http_client: inputs.http_client,
+            repo_fetch_cache: crate::scan::new_repo_cache(),
             projects: init.projects,
             ci_state: HashMap::new(),
+            ci_display_modes: HashMap::new(),
             lint_status: HashMap::new(),
             lint_cache_usage: crate::lint::CacheUsage::default(),
             lint_runs: HashMap::new(),

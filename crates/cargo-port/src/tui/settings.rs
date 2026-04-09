@@ -73,6 +73,56 @@ fn normalize_sorted_list(value: &str) -> Vec<String> {
     entries
 }
 
+fn save_number_setting(
+    app: &mut App,
+    value: &str,
+    apply: impl FnOnce(&mut config::CargoPortConfig, f64),
+) -> bool {
+    let Ok(number) = value.parse::<f64>() else {
+        finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+        return false;
+    };
+    let mut cfg = app.current_config.clone();
+    apply(&mut cfg, number.max(0.0));
+    let _ = save_updated_config(app, &cfg);
+    true
+}
+
+fn save_sorted_list_setting(
+    app: &mut App,
+    value: &str,
+    apply: impl FnOnce(&mut config::CargoPortConfig, Vec<String>),
+) {
+    let mut cfg = app.current_config.clone();
+    apply(&mut cfg, normalize_sorted_list(value));
+    let _ = save_updated_config(app, &cfg);
+}
+
+fn save_u32_setting(
+    app: &mut App,
+    value: &str,
+    apply: impl FnOnce(&mut config::CargoPortConfig, u32),
+) -> bool {
+    let Ok(number) = value.parse::<u32>() else {
+        finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+        return false;
+    };
+    let mut cfg = app.current_config.clone();
+    apply(&mut cfg, number.max(1));
+    let _ = save_updated_config(app, &cfg);
+    true
+}
+
+fn save_string_setting(
+    app: &mut App,
+    value: &str,
+    apply: impl FnOnce(&mut config::CargoPortConfig, String),
+) {
+    let mut cfg = app.current_config.clone();
+    apply(&mut cfg, value.trim().to_string());
+    let _ = save_updated_config(app, &cfg);
+}
+
 fn format_lint_commands(cfg: &config::CargoPortConfig) -> String {
     let commands = if cfg.lint.commands.is_empty() {
         cfg.lint.resolved_commands()
@@ -754,39 +804,31 @@ fn apply_settings_edit(app: &mut App) {
     let value = app.settings_edit_buf.clone();
     match setting {
         Some(SettingOption::CiRunCount) => {
-            if let Ok(n) = value.parse::<u32>() {
-                let mut cfg = app.current_config.clone();
-                cfg.tui.ci_run_count = n.max(1);
-                let _ = save_updated_config(app, &cfg);
-            } else {
-                finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+            if !save_u32_setting(app, &value, |cfg, count| cfg.tui.ci_run_count = count) {
                 return;
             }
         },
-        Some(SettingOption::InlineDirs) => {
-            let dirs = normalize_sorted_list(&value);
-            let mut cfg = app.current_config.clone();
+        Some(SettingOption::InlineDirs) => save_sorted_list_setting(app, &value, |cfg, dirs| {
             cfg.tui.inline_dirs = dirs;
-            let _ = save_updated_config(app, &cfg);
-        },
-        Some(SettingOption::IncludeDirs) => {
-            let dirs = normalize_sorted_list(&value);
-            let mut cfg = app.current_config.clone();
+        }),
+        Some(SettingOption::IncludeDirs) => save_sorted_list_setting(app, &value, |cfg, dirs| {
             cfg.tui.include_dirs = dirs;
-            let _ = save_updated_config(app, &cfg);
+        }),
+        Some(SettingOption::Editor) if !value.trim().is_empty() => {
+            save_string_setting(app, &value, |cfg, editor| cfg.tui.editor = editor);
         },
-        Some(SettingOption::Editor) => {
-            let editor = value.trim().to_string();
-            if !editor.is_empty() {
-                let mut cfg = app.current_config.clone();
-                cfg.tui.editor = editor;
-                let _ = save_updated_config(app, &cfg);
-            }
-        },
+        Some(
+            SettingOption::Editor
+            | SettingOption::InvertScroll
+            | SettingOption::IncludeNonRust
+            | SettingOption::NavigationKeys
+            | SettingOption::LintsEnabled
+            | SettingOption::LintOnDiscovery,
+        )
+        | None => {},
         Some(SettingOption::LintProjects) => {
-            let mut cfg = app.current_config.clone();
-            cfg.lint.include = normalize_sorted_list(&value);
-            if save_updated_config(app, &cfg) {
+            save_sorted_list_setting(app, &value, |cfg, dirs| cfg.lint.include = dirs);
+            if app.inline_error.is_none() {
                 app.show_timed_toast("Settings", "Lint projects updated");
             }
         },
@@ -810,43 +852,22 @@ fn apply_settings_edit(app: &mut App) {
             }
         },
         Some(SettingOption::StatusFlashSecs) => {
-            if let Ok(secs) = value.parse::<f64>() {
-                let mut cfg = app.current_config.clone();
-                cfg.tui.status_flash_secs = secs.max(0.0);
-                let _ = save_updated_config(app, &cfg);
-            } else {
-                finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+            if !save_number_setting(app, &value, |cfg, secs| cfg.tui.status_flash_secs = secs) {
                 return;
             }
         },
         Some(SettingOption::TaskLingerSecs) => {
-            if let Ok(secs) = value.parse::<f64>() {
-                let mut cfg = app.current_config.clone();
-                cfg.tui.task_linger_secs = secs.max(0.0);
-                let _ = save_updated_config(app, &cfg);
-            } else {
-                finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+            if !save_number_setting(app, &value, |cfg, secs| cfg.tui.task_linger_secs = secs) {
                 return;
             }
         },
         Some(SettingOption::DiscoveryShimmerSecs) => {
-            if let Ok(secs) = value.parse::<f64>() {
-                let mut cfg = app.current_config.clone();
-                cfg.tui.discovery_shimmer_secs = secs.max(0.0);
-                let _ = save_updated_config(app, &cfg);
-            } else {
-                finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+            if !save_number_setting(app, &value, |cfg, secs| {
+                cfg.tui.discovery_shimmer_secs = secs;
+            }) {
                 return;
             }
         },
-        Some(
-            SettingOption::InvertScroll
-            | SettingOption::IncludeNonRust
-            | SettingOption::NavigationKeys
-            | SettingOption::LintsEnabled
-            | SettingOption::LintOnDiscovery,
-        )
-        | None => {},
     }
     app.end_settings_editing();
     app.settings_edit_buf.clear();
