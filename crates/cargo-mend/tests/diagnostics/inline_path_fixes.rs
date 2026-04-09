@@ -194,6 +194,75 @@ fn third(_x: crate::parent::types::MyType) {}
 }
 
 #[test]
+fn nested_module_inserts_use_in_containing_scope() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_nested_scope_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/tui")).expect("create src/tui");
+    fs::write(temp.path().join("src/lib.rs"), "mod tui;\n").expect("write fixture lib");
+    fs::write(
+        temp.path().join("src/tui/mod.rs"),
+        "mod app;\nmod interaction;\n",
+    )
+    .expect("write fixture tui mod");
+    fs::write(
+        temp.path().join("src/tui/app.rs"),
+        "pub enum SearchMode {\n    Active,\n}\n",
+    )
+    .expect("write fixture app");
+    fs::write(
+        temp.path().join("src/tui/interaction.rs"),
+        r#"pub fn keep() {}
+
+#[cfg(test)]
+mod tests {
+    use std::mem;
+
+    #[test]
+    fn nested_variant_path_gets_local_use() {
+        let _ = mem::size_of_val(&super::super::app::SearchMode::Active);
+    }
+}
+"#,
+    )
+    .expect("write fixture interaction");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let interaction = fs::read_to_string(temp.path().join("src/tui/interaction.rs"))
+        .expect("read fixed interaction");
+    assert!(
+        interaction.contains(
+            "mod tests {\n    use std::mem;\n    use crate::tui::app::SearchMode::Active;\n"
+        ),
+        "expected nested-module import placement, got:\n{interaction}"
+    );
+    assert!(
+        interaction.contains("mem::size_of_val(&Active);"),
+        "expected bare variant reference inside nested module, got:\n{interaction}"
+    );
+}
+
+#[test]
 fn two_types_same_module() {
     let temp = tempdir().expect("create temp fixture dir");
 

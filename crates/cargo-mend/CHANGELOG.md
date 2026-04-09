@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cargo mend` now follows a single-pass `cargo check` flow with cleaner target selection and reporting
 - Compiler warning summaries and human-readable output were refined to better separate compiler warnings from mend findings
 
+### Fixed
+- `cargo mend --fix` no longer inserts invalid file-scope imports for nested-module `inline_path_qualified_type` rewrites, preventing rollback-on-compile-error failures during autofix
+
 ### Performance
 - Analysis now caches source file contents instead of re-reading files repeatedly during compiler-driven checks
 - Source files are parsed to ASTs once and reused, avoiding repeated `syn::parse_file` work

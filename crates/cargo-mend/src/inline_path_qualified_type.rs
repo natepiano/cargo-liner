@@ -6,6 +6,7 @@ use std::path::Path;
 use anyhow::Context;
 use anyhow::Result;
 use proc_macro2::LineColumn;
+use syn::Item;
 use syn::ItemUse;
 use syn::TypePath;
 use syn::UseTree;
@@ -20,6 +21,7 @@ use super::diagnostics::Severity;
 use super::fix_support::FixSupport;
 use super::imports::UseFix;
 use super::imports::ValidatedFixSet;
+use super::module_paths;
 use super::selection::Selection;
 
 pub(crate) struct InlinePathScan {
@@ -42,7 +44,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<InlinePathScan> {
             {
                 continue;
             }
-            let (findings, fixes) = scan_file(selection.analysis_root.as_path(), path)?;
+            let (findings, fixes) = scan_file(selection.analysis_root.as_path(), &src_root, path)?;
             all_findings.extend(findings);
             all_fixes.extend(fixes);
         }
@@ -62,31 +64,37 @@ struct InlinePathOccurrence {
     span_end:   LineColumn,
 }
 
-fn scan_file(analysis_root: &Path, path: &Path) -> Result<(Vec<Finding>, Vec<UseFix>)> {
+struct ScopeInfo {
+    span_start:       usize,
+    span_end:         usize,
+    insertion_offset: usize,
+    indent:           String,
+    module_path:      Vec<String>,
+    existing_imports: BTreeSet<String>,
+}
+
+fn scan_file(
+    analysis_root: &Path,
+    src_root: &Path,
+    path: &Path,
+) -> Result<(Vec<Finding>, Vec<UseFix>)> {
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
         parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
     let offsets = line_offsets(&text);
-
-    // Collect existing use imports to avoid duplicates
-    let mut existing_imports: BTreeSet<String> = BTreeSet::new();
-    let mut last_use_byte_end: Option<usize> = None;
-    for item in &syntax.items {
-        if let syn::Item::Use(item_use) = item {
-            if let Some(import_path) = flatten_use_path(&item_use.tree) {
-                existing_imports.insert(import_path);
-            }
-            let end = offset(&offsets, item_use.span().end());
-            // Move past the trailing newline if present
-            let end_with_newline = if text.as_bytes().get(end) == Some(&b'\n') {
-                end + 1
-            } else {
-                end
-            };
-            last_use_byte_end = Some(end_with_newline);
-        }
-    }
+    let base_module_path = module_paths::file_module_path(src_root, path)
+        .with_context(|| format!("failed to determine module path for {}", path.display()))?;
+    let mut scopes = Vec::new();
+    collect_scopes(
+        &syntax.items,
+        &text,
+        &offsets,
+        0,
+        text.len(),
+        &base_module_path,
+        &mut scopes,
+    );
 
     // Visit the AST to find inline path-qualified types
     let mut visitor = InlinePathVisitor {
@@ -102,7 +110,10 @@ fn scan_file(analysis_root: &Path, path: &Path) -> Result<(Vec<Finding>, Vec<Use
     let collision_names = find_collision_names(
         &visitor.occurrences,
         &visitor.bare_type_names,
-        &existing_imports,
+        &scopes
+            .iter()
+            .flat_map(|scope| scope.existing_imports.iter().cloned())
+            .collect(),
     );
 
     let display_path = path
@@ -113,10 +124,7 @@ fn scan_file(analysis_root: &Path, path: &Path) -> Result<(Vec<Finding>, Vec<Use
 
     let mut findings = Vec::new();
     let mut fixes = Vec::new();
-    let mut inserted_use_paths: BTreeSet<String> = BTreeSet::new();
-
-    // Compute insertion point for new use statements
-    let insertion_offset = last_use_byte_end.unwrap_or(0);
+    let mut inserted_use_paths: BTreeSet<(usize, String)> = BTreeSet::new();
 
     for occ in &visitor.occurrences {
         // Skip collisions
@@ -159,21 +167,134 @@ fn scan_file(analysis_root: &Path, path: &Path) -> Result<(Vec<Finding>, Vec<Use
             replacement: occ.type_name.clone(),
         });
 
-        // Insert use statement (only once per unique full path, and only if not already imported)
-        if !existing_imports.contains(&occ.full_path)
-            && inserted_use_paths.insert(occ.full_path.clone())
+        let Some(scope_id) = find_innermost_scope(&scopes, byte_start) else {
+            continue;
+        };
+        let scope = &scopes[scope_id];
+
+        // Insert a `use` statement in the containing scope, not always at file scope.
+        if !scope.existing_imports.contains(&occ.full_path)
+            && inserted_use_paths.insert((scope_id, occ.full_path.clone()))
         {
-            let use_text = format!("use {};\n", occ.full_path);
+            let use_path = canonicalize_inserted_use_path(scope, &occ.full_path);
+            let use_text = format!("{}use {};\n", scope.indent, use_path);
             fixes.push(UseFix {
                 path:        path.to_path_buf(),
-                start:       insertion_offset,
-                end:         insertion_offset,
+                start:       scope.insertion_offset,
+                end:         scope.insertion_offset,
                 replacement: use_text,
             });
         }
     }
 
     Ok((findings, fixes))
+}
+
+fn collect_scopes(
+    items: &[Item],
+    text: &str,
+    offsets: &[usize],
+    span_start: usize,
+    span_end: usize,
+    module_path: &[String],
+    scopes: &mut Vec<ScopeInfo>,
+) {
+    let mut existing_imports = BTreeSet::new();
+    let mut last_use_start = None;
+    let mut last_use_end = None;
+    let mut first_item_start = None;
+
+    for item in items {
+        let item_start = offset(offsets, item.span().start());
+        first_item_start.get_or_insert(item_start);
+
+        if let Item::Use(item_use) = item {
+            if let Some(import_path) = flatten_use_path(&item_use.tree) {
+                existing_imports.insert(import_path);
+            }
+            last_use_start = Some(item_start);
+            let item_end = offset(offsets, item_use.span().end());
+            last_use_end = Some(if text.as_bytes().get(item_end) == Some(&b'\n') {
+                item_end + 1
+            } else {
+                item_end
+            });
+        }
+    }
+
+    let anchor_offset = last_use_start.or(first_item_start).unwrap_or(span_start);
+    let insertion_offset = last_use_end.or(first_item_start).unwrap_or(span_end);
+    let indent = indentation_at(text, anchor_offset);
+    scopes.push(ScopeInfo {
+        span_start,
+        span_end,
+        insertion_offset,
+        indent,
+        module_path: module_path.to_vec(),
+        existing_imports,
+    });
+
+    for item in items {
+        if let Item::Mod(item_mod) = item
+            && let Some((_, child_items)) = &item_mod.content
+        {
+            let mut child_module_path = module_path.to_vec();
+            child_module_path.push(item_mod.ident.to_string());
+            collect_scopes(
+                child_items,
+                text,
+                offsets,
+                offset(offsets, item_mod.span().start()),
+                offset(offsets, item_mod.span().end()),
+                &child_module_path,
+                scopes,
+            );
+        }
+    }
+}
+
+fn find_innermost_scope(scopes: &[ScopeInfo], byte_offset: usize) -> Option<usize> {
+    scopes
+        .iter()
+        .enumerate()
+        .filter(|(_, scope)| scope.span_start <= byte_offset && byte_offset < scope.span_end)
+        .max_by_key(|(_, scope)| (scope.span_start, std::cmp::Reverse(scope.span_end)))
+        .map(|(scope_id, _)| scope_id)
+}
+
+fn indentation_at(text: &str, byte_offset: usize) -> String {
+    let line_start = text[..byte_offset]
+        .rfind('\n')
+        .map_or(0, |offset| offset + 1);
+    text[line_start..byte_offset]
+        .chars()
+        .take_while(char::is_ascii_whitespace)
+        .collect()
+}
+
+fn canonicalize_inserted_use_path(scope: &ScopeInfo, full_path: &str) -> String {
+    let segments: Vec<&str> = full_path.split("::").collect();
+    let super_count = segments
+        .iter()
+        .take_while(|segment| **segment == "super")
+        .count();
+    if super_count < 2 || super_count > scope.module_path.len() {
+        return full_path.to_string();
+    }
+
+    let mut absolute_segments = Vec::with_capacity(1 + scope.module_path.len() + segments.len());
+    absolute_segments.push("crate".to_string());
+    absolute_segments.extend(
+        scope.module_path[..scope.module_path.len() - super_count]
+            .iter()
+            .cloned(),
+    );
+    absolute_segments.extend(
+        segments[super_count..]
+            .iter()
+            .map(|segment| (*segment).to_string()),
+    );
+    absolute_segments.join("::")
 }
 
 /// Finds type names that cannot be safely imported because they either:
