@@ -32,10 +32,12 @@ use super::render;
 use super::run_mode::FixKind;
 use super::run_mode::OperationIntent;
 use super::run_mode::OperationMode;
+use super::selection::CargoCheckPlan;
 use super::selection::Selection;
 
 pub(crate) struct MendRunner<'a> {
     selection: &'a Selection,
+    cargo_plan: &'a CargoCheckPlan,
     config:    &'a LoadedConfig,
     color:     render::ColorMode,
 }
@@ -49,7 +51,6 @@ struct RunPlan {
     narrow_pub_crate_scan:     Option<NarrowPubCrateScan>,
     pub_use_scan:              Option<PubUseFixScan>,
     check_duration:            Duration,
-    driver_duration:           Duration,
     compiler_warning_count:    usize,
     compiler_fixable_count:    usize,
 }
@@ -57,11 +58,13 @@ struct RunPlan {
 impl<'a> MendRunner<'a> {
     pub(crate) const fn new(
         selection: &'a Selection,
+        cargo_plan: &'a CargoCheckPlan,
         config: &'a LoadedConfig,
         color: render::ColorMode,
     ) -> Self {
         Self {
             selection,
+            cargo_plan,
             config,
             color,
         }
@@ -81,7 +84,6 @@ impl<'a> MendRunner<'a> {
         let selection_result = self.build_selection(output_mode)?;
         let report = selection_result.report;
         let check_duration = selection_result.check_duration;
-        let driver_duration = selection_result.driver_duration;
         let compiler_warning_count = selection_result.compiler_warning_count;
         let compiler_fixable_count = selection_result.compiler_fixable_count;
         let diagnostics = &self.config.diagnostics;
@@ -122,7 +124,6 @@ impl<'a> MendRunner<'a> {
             narrow_pub_crate_scan,
             pub_use_scan,
             check_duration,
-            driver_duration,
             compiler_warning_count,
             compiler_fixable_count,
         })
@@ -130,7 +131,6 @@ impl<'a> MendRunner<'a> {
 
     fn execute(&self, planned: RunPlan) -> Result<ExecutionOutcome, MendFailure> {
         let check_duration = planned.check_duration;
-        let driver_duration = planned.driver_duration;
         let compiler_warning_count = planned.compiler_warning_count;
         let compiler_fixable_count = planned.compiler_fixable_count;
         match planned.mode.intent {
@@ -138,7 +138,6 @@ impl<'a> MendRunner<'a> {
                 report: planned.report,
                 notice: None,
                 check_duration,
-                driver_duration,
                 compiler_warning_count,
                 compiler_fixable_count,
             }),
@@ -156,7 +155,6 @@ impl<'a> MendRunner<'a> {
                     report: planned.report,
                     notice,
                     check_duration,
-                    driver_duration,
                     compiler_warning_count,
                     compiler_fixable_count,
                 })
@@ -167,7 +165,6 @@ impl<'a> MendRunner<'a> {
 
     fn apply(&self, planned: RunPlan) -> Result<ExecutionOutcome, MendFailure> {
         let plan_check_duration = planned.check_duration;
-        let plan_driver_duration = planned.driver_duration;
         let compiler_warning_count = planned.compiler_warning_count;
         let compiler_fixable_count = planned.compiler_fixable_count;
         let fixes = Self::combined_fixes(
@@ -191,7 +188,6 @@ impl<'a> MendRunner<'a> {
                 report: planned.report,
                 notice,
                 check_duration: plan_check_duration,
-                driver_duration: plan_driver_duration,
                 compiler_warning_count,
                 compiler_fixable_count,
             });
@@ -202,7 +198,6 @@ impl<'a> MendRunner<'a> {
         match self.build_selection(BuildOutputMode::Quiet) {
             Ok(validation) => {
                 let check_duration = plan_check_duration + validation.check_duration;
-                let driver_duration = plan_driver_duration + validation.driver_duration;
                 let notice = Self::build_fix_notice(
                     planned.mode.intent,
                     Some(&validation.report),
@@ -216,7 +211,6 @@ impl<'a> MendRunner<'a> {
                     report: validation.report,
                     notice,
                     check_duration,
-                    driver_duration,
                     compiler_warning_count,
                     compiler_fixable_count,
                 })
@@ -334,7 +328,13 @@ impl<'a> MendRunner<'a> {
         output_mode: BuildOutputMode,
     ) -> Result<SelectionResult, MendFailure> {
         let mut result =
-            compiler::run_selection(self.selection, self.config, output_mode, self.color)?;
+            compiler::run_selection(
+                self.selection,
+                self.cargo_plan,
+                self.config,
+                output_mode,
+                self.color,
+            )?;
         let report = &mut result.report;
         let diagnostics = &self.config.diagnostics;
         if diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport)

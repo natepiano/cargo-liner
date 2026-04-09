@@ -16,6 +16,7 @@ pub(crate) const CONFIG_JSON_ENV: &str = "MEND_CONFIG_JSON";
 pub(crate) const CONFIG_ROOT_ENV: &str = "MEND_CONFIG_ROOT";
 pub(crate) const DRIVER_ENV: &str = "MEND_DRIVER";
 pub(crate) const FINDINGS_DIR_ENV: &str = "MEND_FINDINGS_DIR";
+pub(crate) const SCOPE_FINGERPRINT_ENV: &str = "MEND_SCOPE_FINGERPRINT";
 pub(crate) const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
 
 // Exit codes

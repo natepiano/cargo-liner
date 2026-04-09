@@ -265,6 +265,28 @@ fn fixture_renders_every_current_diagnostic() {
 }
 
 #[test]
+fn successive_json_runs_reuse_cached_findings_for_same_scope() {
+    let temp = create_all_diagnostics_fixture();
+
+    let first = run_mend_json(&temp.path().join("Cargo.toml"));
+    let second = run_mend_json(&temp.path().join("Cargo.toml"));
+
+    let first_codes: BTreeSet<_> = first.findings.iter().map(|finding| finding.code).collect();
+    let second_codes: BTreeSet<_> = second.findings.iter().map(|finding| finding.code).collect();
+
+    assert_eq!(first.findings.len(), 13);
+    assert_eq!(second.findings.len(), first.findings.len());
+    assert_eq!(second_codes, first_codes);
+    assert_eq!(second.summary.errors, first.summary.errors);
+    assert_eq!(second.summary.warnings, first.summary.warnings);
+    assert_eq!(second.summary.fixable_with_fix, first.summary.fixable_with_fix);
+    assert_eq!(
+        second.summary.fixable_with_fix_pub_use,
+        first.summary.fixable_with_fix_pub_use
+    );
+}
+
+#[test]
 fn project_root_allow_pub_mod_suppresses_local_review_pub_mod() {
     let temp = tempdir().expect("create temp project dir");
     fs::create_dir_all(temp.path().join("src/private_tools")).expect("create project dirs");

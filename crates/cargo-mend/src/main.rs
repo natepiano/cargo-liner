@@ -69,32 +69,30 @@ fn run() -> Result<ExitCode, MendFailure> {
     let global_diagnostics = config::load_global_diagnostics();
     let after_help = build_diagnostics_help(&global_diagnostics);
     let cli = cli::parse(&after_help);
-    let selection = selection::resolve_cargo_selection(cli.manifest_path.as_deref())
+    let selection = selection::resolve_cargo_selection(cli.cargo.manifest_path.as_deref())
         .map_err(MendFailure::Unexpected)?;
+    let cargo_plan = selection::build_cargo_check_plan(&selection, &cli.cargo);
     let config = config::load_config(
         selection.manifest_dir.as_path(),
         selection.workspace_root.as_path(),
-        cli.config.as_deref(),
+        cli.manifest.config.as_deref(),
         &global_diagnostics,
     )
     .map_err(MendFailure::Unexpected)?;
     let operation_mode = OperationMode::from_cli(&cli.fix);
     let color = color_mode();
     let start = Instant::now();
-    let outcome = MendRunner::new(&selection, &config, color).run(operation_mode)?;
+    let outcome = MendRunner::new(&selection, &cargo_plan, &config, color).run(operation_mode)?;
 
     let fix_compiler_duration = if cli.fix.fix_compiler || cli.fix.fix_all {
-        Some(compiler::run_cargo_fix(&selection, color).map_err(MendFailure::Unexpected)?)
+        Some(compiler::run_cargo_fix(&cargo_plan, color).map_err(MendFailure::Unexpected)?)
     } else {
         None
     };
 
     let total_duration = start.elapsed();
     let check_duration = outcome.check_duration + fix_compiler_duration.unwrap_or_default();
-    let driver_duration = outcome.driver_duration;
-    let mend_duration = total_duration
-        .saturating_sub(check_duration)
-        .saturating_sub(driver_duration);
+    let mend_duration = total_duration.saturating_sub(check_duration);
 
     let compiler_stats = render::CompilerStats {
         warning_count: outcome.compiler_warning_count,
@@ -116,13 +114,7 @@ fn run() -> Result<ExitCode, MendFailure> {
 
     eprintln!(
         "{}",
-        render::render_timing(
-            total_duration,
-            check_duration,
-            driver_duration,
-            mend_duration,
-            color
-        )
+        render::render_timing(total_duration, check_duration, mend_duration, color)
     );
 
     if let Some(notice) = outcome.notice {

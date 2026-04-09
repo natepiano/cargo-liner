@@ -73,28 +73,16 @@ pub(crate) fn render_human_report(
 pub(crate) fn render_timing(
     total: Duration,
     check: Duration,
-    driver: Duration,
     mend: Duration,
     color: ColorMode,
 ) -> String {
-    if driver > Duration::ZERO {
-        format!(
-            "    {} in {:.2}s (check: {:.2}s, driver: {:.2}s, mend: {:.2}s)",
-            paint("Finished", ANSI_BOLD_GREEN, color),
-            total.as_secs_f64(),
-            check.as_secs_f64(),
-            driver.as_secs_f64(),
-            mend.as_secs_f64(),
-        )
-    } else {
-        format!(
-            "    {} in {:.2}s (check: {:.2}s, mend: {:.2}s)",
-            paint("Finished", ANSI_BOLD_GREEN, color),
-            total.as_secs_f64(),
-            check.as_secs_f64(),
-            mend.as_secs_f64(),
-        )
-    }
+    format!(
+        "    {} in {:.2}s (check: {:.2}s, mend: {:.2}s)",
+        paint("Finished", ANSI_BOLD_GREEN, color),
+        total.as_secs_f64(),
+        check.as_secs_f64(),
+        mend.as_secs_f64(),
+    )
 }
 
 fn render_finding(output: &mut String, finding: &Finding, color: ColorMode) {

@@ -48,6 +48,7 @@ use super::constants::EXIT_CODE_ERROR;
 use super::constants::FINDINGS_DIR_ENV;
 use super::constants::FINDINGS_SCHEMA_VERSION;
 use super::constants::PACKAGE_ROOT_ENV;
+use super::constants::SCOPE_FINGERPRINT_ENV;
 use super::diagnostics::CompilerWarningFacts;
 use super::diagnostics::Finding;
 use super::diagnostics::PubUseFixFact;
@@ -62,9 +63,8 @@ use super::outcome::AnalysisFailure;
 use super::outcome::CompilerFailureCause;
 use super::outcome::MendFailure;
 use super::render::ColorMode;
-use super::selection::SelectedPackage;
+use super::selection::CargoCheckPlan;
 use super::selection::Selection;
-use super::selection::SelectionScope;
 fn current_analysis_fingerprint() -> String {
     let version = env!("CARGO_PKG_VERSION");
     let git_hash = option_env!("MEND_GIT_HASH").unwrap_or("nogit");
@@ -103,7 +103,11 @@ struct StoredReport {
     version:              u32,
     #[serde(default)]
     analysis_fingerprint: String,
+    #[serde(default)]
+    scope_fingerprint:    String,
     package_root:         String,
+    #[serde(default)]
+    crate_root_file:      String,
     config_fingerprint:   String,
     findings:             Vec<StoredFinding>,
     #[serde(default)]
@@ -159,6 +163,7 @@ struct DriverSettings {
     config:               VisibilityConfig,
     config_fingerprint:   String,
     analysis_fingerprint: String,
+    scope_fingerprint:    String,
     findings_dir:         PathBuf,
     package_root:         PathBuf,
 }
@@ -178,6 +183,8 @@ impl DriverSettings {
             env::var_os(FINDINGS_DIR_ENV)
                 .context("missing MEND_FINDINGS_DIR for compiler driver")?,
         );
+        let scope_fingerprint =
+            env::var(SCOPE_FINGERPRINT_ENV).context("missing MEND_SCOPE_FINGERPRINT")?;
         let package_root = PathBuf::from(
             env::var_os(PACKAGE_ROOT_ENV)
                 .context("missing CARGO_MANIFEST_DIR for compiler driver")?,
@@ -188,6 +195,7 @@ impl DriverSettings {
             config,
             config_fingerprint,
             analysis_fingerprint: current_analysis_fingerprint(),
+            scope_fingerprint,
             findings_dir,
             package_root,
         })
@@ -228,27 +236,47 @@ impl Callbacks for AnalysisCallbacks {
 pub(crate) struct SelectionResult {
     pub report:                 Report,
     pub check_duration:         Duration,
-    pub driver_duration:        Duration,
     pub compiler_warning_count: usize,
     pub compiler_fixable_count: usize,
 }
 
+fn prepare_findings_dir(target_directory: &Path) -> Result<PathBuf> {
+    let findings_dir = target_directory.join("mend-findings");
+    fs::create_dir_all(&findings_dir).with_context(|| {
+        format!(
+            "failed to create findings directory {}",
+            findings_dir.display()
+        )
+    })?;
+    Ok(findings_dir)
+}
+
 pub(crate) fn run_selection(
     selection: &Selection,
+    cargo_plan: &CargoCheckPlan,
     loaded_config: &LoadedConfig,
     output_mode: BuildOutputMode,
     color: ColorMode,
 ) -> Result<SelectionResult, MendFailure> {
-    let findings_dir = selection.target_directory.join("mend-findings");
-    fs::create_dir_all(&findings_dir).with_context(|| {
-        format!(
-            "failed to create persistent findings directory {}",
-            findings_dir.display()
-        )
-    })?;
+    let findings_dir = prepare_findings_dir(cargo_plan.target_directory.as_path()).map_err(
+        |err| {
+            MendFailure::Analysis(AnalysisFailure {
+                cause: CompilerFailureCause::DriverSetup(err),
+            })
+        },
+    )?;
+    let scope_fingerprint = scope_fingerprint_for(cargo_plan);
 
-    let mut command_outcome =
-        run_cargo_check(selection, loaded_config, &findings_dir, output_mode, color).map_err(
+    let command_outcome =
+        run_cargo_check(
+            cargo_plan,
+            loaded_config,
+            &findings_dir,
+            &scope_fingerprint,
+            output_mode,
+            color,
+        )
+        .map_err(
             |err| {
                 MendFailure::Analysis(AnalysisFailure {
                     cause: CompilerFailureCause::DriverSetup(err),
@@ -262,54 +290,13 @@ pub(crate) fn run_selection(
         }));
     }
 
-    let missing_packages = selection
-        .packages
-        .iter()
-        .filter(|package| {
-            !cache_is_current_for(
-                &findings_dir,
-                &package.root,
-                &package.source_root,
-                loaded_config,
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let mut driver_duration = Duration::ZERO;
-    if !missing_packages.is_empty() {
-        for package in missing_packages {
-            if color.is_enabled() {
-                eprint!("    \x1b[1;32mAnalyzing\x1b[0m {} ...\r", package.name);
-            } else {
-                eprint!("    Analyzing {} ...\r", package.name);
-            }
-            let status = run_cargo_rustc_for_package(
-                package,
-                loaded_config,
-                &findings_dir,
-                BuildOutputMode::Quiet,
-                color,
-            )
-            .map_err(|err| {
-                MendFailure::Analysis(AnalysisFailure {
-                    cause: CompilerFailureCause::DriverSetup(err),
-                })
-            })?;
-            if status.compiler_warnings.saw_unused_import_warnings() {
-                command_outcome.compiler_warnings = CompilerWarningFacts::UnusedImportWarnings;
-            }
-            driver_duration += status.duration;
-            if !status.status.success() {
-                return Err(MendFailure::Analysis(AnalysisFailure {
-                    cause: CompilerFailureCause::CargoRustcRefresh {
-                        package: package.name.clone(),
-                    },
-                }));
-            }
-        }
-    }
-
-    let report = load_report(&findings_dir, selection).map_err(|err| {
+    let report = load_report(
+        &findings_dir,
+        selection,
+        &loaded_config.fingerprint,
+        &scope_fingerprint,
+    )
+    .map_err(|err| {
         MendFailure::Analysis(AnalysisFailure {
             cause: CompilerFailureCause::DriverExecution(err),
         })
@@ -320,7 +307,6 @@ pub(crate) fn run_selection(
     Ok(SelectionResult {
         report,
         check_duration: command_outcome.duration,
-        driver_duration,
         compiler_warning_count: command_outcome.compiler_warning_count,
         compiler_fixable_count: command_outcome.compiler_fixable_count,
     })
@@ -395,26 +381,17 @@ fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
 /// artifacts in a separate target directory (via `CARGO_TARGET_DIR`) to avoid corrupting
 /// the project's build cache. See git history for the prior `ToolchainOverride` approach.
 fn run_cargo_check(
-    selection: &Selection,
+    cargo_plan: &CargoCheckPlan,
     loaded_config: &LoadedConfig,
     findings_dir: &Path,
+    scope_fingerprint: &str,
     output_mode: BuildOutputMode,
     color: ColorMode,
 ) -> Result<CommandOutcome> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
     let mut command = Command::new("cargo");
     command.arg("check");
-
-    match selection.scope {
-        SelectionScope::Workspace => {
-            command.arg("--workspace");
-        },
-        SelectionScope::SinglePackage => {
-            command
-                .arg("--manifest-path")
-                .arg(selection.manifest_path.as_os_str());
-        },
-    }
+    command.args(&cargo_plan.cargo_args);
 
     command
         .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
@@ -427,72 +404,30 @@ fn run_cargo_check(
         )
         .env(CONFIG_FINGERPRINT_ENV, &loaded_config.fingerprint)
         .env(FINDINGS_DIR_ENV, findings_dir)
+        .env(SCOPE_FINGERPRINT_ENV, scope_fingerprint)
         .stdin(Stdio::inherit());
 
     run_cargo_command(&mut command, output_mode, color)
         .context("failed to run cargo check for mend")
 }
 
-fn run_cargo_rustc_for_package(
-    package: &SelectedPackage,
-    loaded_config: &LoadedConfig,
-    findings_dir: &Path,
-    output_mode: BuildOutputMode,
-    color: ColorMode,
-) -> Result<CommandOutcome> {
-    let current_exe = env::current_exe().context("failed to determine current executable path")?;
-    let mut command = Command::new("cargo");
-    command.arg("rustc");
-    command
-        .arg("--manifest-path")
-        .arg(package.manifest_path.as_os_str());
-
-    for arg in package.target.cargo_args() {
-        command.arg(arg);
+fn scope_fingerprint_for(cargo_plan: &CargoCheckPlan) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    cargo_plan.manifest_path.hash(&mut hasher);
+    for arg in &cargo_plan.cargo_args {
+        arg.hash(&mut hasher);
     }
-    for arg in refresh_rustc_args() {
-        command.arg(arg);
-    }
-
-    command
-        .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
-        .env(DRIVER_ENV, "1")
-        .env(CONFIG_ROOT_ENV, &loaded_config.root)
-        .env(
-            CONFIG_JSON_ENV,
-            serde_json::to_string(&loaded_config.config)
-                .context("failed to serialize mend config for compiler driver")?,
-        )
-        .env(CONFIG_FINGERPRINT_ENV, &loaded_config.fingerprint)
-        .env(FINDINGS_DIR_ENV, findings_dir)
-        .stdin(Stdio::inherit());
-
-    run_cargo_command(&mut command, output_mode, color).with_context(|| {
-        format!(
-            "failed to run cargo rustc refresh for package {}",
-            package.name
-        )
-    })
+    format!("{:016x}", hasher.finish())
 }
 
-pub(crate) fn run_cargo_fix(selection: &Selection, color: ColorMode) -> Result<Duration> {
+pub(crate) fn run_cargo_fix(cargo_plan: &CargoCheckPlan, color: ColorMode) -> Result<Duration> {
     let start = Instant::now();
     let mut command = Command::new("cargo");
     command
         .arg("fix")
         .arg("--allow-dirty")
-        .arg("--allow-staged");
-
-    match selection.scope {
-        SelectionScope::Workspace => {
-            command.arg("--workspace");
-        },
-        SelectionScope::SinglePackage => {
-            command
-                .arg("--manifest-path")
-                .arg(selection.manifest_path.as_os_str());
-        },
-    }
+        .arg("--allow-staged")
+        .args(&cargo_plan.cargo_args);
 
     if color.is_enabled() {
         command.env("CARGO_TERM_COLOR", "always");
@@ -764,81 +699,22 @@ fn flush_diagnostic_block(
     block.clear();
 }
 
-fn refresh_rustc_args() -> Vec<String> { vec!["--".to_string(), "--cfg=mend_refresh".to_string()] }
-
-fn cache_is_current_for(
+fn load_report(
     findings_dir: &Path,
-    package_root: &Path,
-    source_root: &Path,
-    loaded_config: &LoadedConfig,
-) -> bool {
-    let cache_path = findings_dir.join(cache_filename_for(package_root));
-    let Ok(text) = fs::read_to_string(&cache_path) else {
-        return false;
-    };
-    let Ok(cache_metadata) = fs::metadata(&cache_path) else {
-        return false;
-    };
-    let Ok(cache_modified) = cache_metadata.modified() else {
-        return false;
-    };
-    let Ok(stored) = serde_json::from_str::<StoredReport>(&text) else {
-        return false;
-    };
-    stored.version == FINDINGS_SCHEMA_VERSION
-        && stored.analysis_fingerprint == current_analysis_fingerprint()
-        && stored.package_root == package_root.to_string_lossy()
-        && stored.config_fingerprint == loaded_config.fingerprint
-        && !package_sources_newer_than(package_root, source_root, cache_modified)
-}
-
-fn package_sources_newer_than(
-    package_root: &Path,
-    source_root: &Path,
-    reference: std::time::SystemTime,
-) -> bool {
-    let manifest = package_root.join("Cargo.toml");
-    if file_is_newer_than(&manifest, reference) {
-        return true;
-    }
-
-    rust_sources_newer_than(source_root, reference)
-}
-
-fn file_is_newer_than(path: &Path, reference: std::time::SystemTime) -> bool {
-    fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .is_ok_and(|modified| modified > reference)
-}
-
-fn rust_sources_newer_than(dir: &Path, reference: std::time::SystemTime) -> bool {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return false;
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if rust_sources_newer_than(&path, reference) {
-                return true;
-            }
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs")
-            && file_is_newer_than(&path, reference)
-        {
-            return true;
-        }
-    }
-
-    false
-}
-
-fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
+    selection: &Selection,
+    config_fingerprint: &str,
+    scope_fingerprint: &str,
+) -> Result<Report> {
     let mut findings = Vec::new();
     let mut pub_use_fix_facts = Vec::new();
-    let selected_roots: Vec<String> = selection
-        .package_roots
+    let selected_roots: Vec<PathBuf> = selection.package_roots.clone();
+    let selected_root_strings: Vec<String> = selected_roots
         .iter()
         .map(|root| root.to_string_lossy().into_owned())
+        .collect();
+    let selected_canonical_roots: Vec<PathBuf> = selected_roots
+        .iter()
+        .filter_map(|root| fs::canonicalize(root).ok())
         .collect();
     for entry in fs::read_dir(findings_dir).with_context(|| {
         format!(
@@ -862,9 +738,32 @@ fn load_report(findings_dir: &Path, selection: &Selection) -> Result<Report> {
         if stored.analysis_fingerprint != current_analysis_fingerprint() {
             continue;
         }
-        let matches_selected_root = selected_roots
+        if stored.config_fingerprint != config_fingerprint {
+            continue;
+        }
+        if stored.scope_fingerprint != scope_fingerprint {
+            continue;
+        }
+        let crate_root_exists = stored.crate_root_file.is_empty()
+            || {
+                let crate_root = Path::new(&stored.crate_root_file);
+                if crate_root.is_absolute() {
+                    crate_root.exists()
+                } else {
+                    Path::new(&stored.package_root).join(crate_root).exists()
+                }
+            };
+        if !crate_root_exists {
+            continue;
+        }
+        let matches_selected_root = selected_root_strings
             .iter()
             .any(|root| root == &stored.package_root)
+            || fs::canonicalize(Path::new(&stored.package_root)).ok().is_some_and(|stored_root| {
+                selected_canonical_roots
+                    .iter()
+                    .any(|selected_root| selected_root == &stored_root)
+            })
             || (stored.package_root.is_empty() && selected_roots.len() == 1);
         if !matches_selected_root {
             continue;
@@ -1039,7 +938,12 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
 
     let output_path = settings
         .findings_dir
-        .join(cache_filename_for(&settings.package_root));
+        .join(cache_filename_for(&settings.package_root, &crate_root_file));
+    let stored_crate_root = if crate_root_file.is_absolute() {
+        crate_root_file.clone()
+    } else {
+        settings.config_root.join(&crate_root_file)
+    };
     if !sink.findings.is_empty() {
         sink.findings.sort_by(|a, b| {
             (&a.path, a.line, a.column, &a.code, &a.item, &a.message)
@@ -1058,7 +962,9 @@ fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) -> Res
     let report = StoredReport {
         version:              FINDINGS_SCHEMA_VERSION,
         analysis_fingerprint: settings.analysis_fingerprint.clone(),
+        scope_fingerprint:    settings.scope_fingerprint.clone(),
         package_root:         settings.package_root.to_string_lossy().into_owned(),
+        crate_root_file:      stored_crate_root.to_string_lossy().into_owned(),
         config_fingerprint:   settings.config_fingerprint.clone(),
         findings:             sink.findings,
         pub_use_fix_facts:    sink.pub_use_fix_facts,
@@ -1198,9 +1104,10 @@ struct SuspiciousPubInput<'a> {
     highlight_span:   Span,
 }
 
-fn cache_filename_for(package_root: &Path) -> String {
+fn cache_filename_for(package_root: &Path, crate_root_file: &Path) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     package_root.hash(&mut hasher);
+    crate_root_file.hash(&mut hasher);
     format!("{:016x}.json", hasher.finish())
 }
 
@@ -3413,18 +3320,12 @@ mod tests {
 
     use super::CrateKind;
     use super::DiagnosticBlockKind;
-    use super::DiagnosticCode;
     use super::DriverSettings;
     use super::ModuleLocation;
     use super::ParentFacadeExports;
     use super::ParentFacadeVisibility;
-    use super::Severity;
-    use super::StoredFinding;
-    use super::StoredReport;
     use super::allow_pub_crate_by_policy;
     use super::analysis_source_root_for;
-    use super::cache_filename_for;
-    use super::cache_is_current_for;
     use super::classify_diagnostic_block;
     use super::config_relative_path;
     use super::config_relative_path_for_settings;
@@ -3434,14 +3335,10 @@ mod tests {
     use super::flush_diagnostic_block;
     use super::is_progress_line;
     use super::module_path_from_source_file;
-    use super::refresh_rustc_args;
     use super::suspicious_pub_note;
     use crate::compiler::BuildOutputMode;
-    use crate::config::LoadedConfig;
     use crate::config::VisibilityConfig;
-    use crate::constants::FINDINGS_SCHEMA_VERSION;
     use crate::diagnostics::CompilerWarningFacts;
-    use crate::fix_support::FixSupport;
 
     #[test]
     fn allow_pub_crate_allows_library_crate_root_items() {
@@ -3538,12 +3435,6 @@ mod tests {
     }
 
     #[test]
-    fn refresh_rustc_args_adds_mend_cfg() {
-        let args = refresh_rustc_args();
-        assert_eq!(args.as_slice(), ["--", "--cfg=mend_refresh"]);
-    }
-
-    #[test]
     fn config_relative_path_handles_nested_workspace_paths() -> anyhow::Result<()> {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let workspace_root = std::env::temp_dir().join(format!("mend-config-root-test-{unique}"));
@@ -3568,6 +3459,7 @@ mod tests {
             config_root:          PathBuf::from("/workspace/root"),
             config:               VisibilityConfig::default(),
             config_fingerprint:   "test".to_string(),
+            scope_fingerprint:    "scope".to_string(),
             findings_dir:         PathBuf::from("/workspace/root/target/mend-findings"),
             package_root:         PathBuf::from("/workspace/root/mcp"),
             analysis_fingerprint: current_analysis_fingerprint(),
@@ -3594,6 +3486,7 @@ mod tests {
             config_root,
             config: VisibilityConfig::default(),
             config_fingerprint: "test".to_string(),
+            scope_fingerprint: "scope".to_string(),
             findings_dir: temp.path().join("workspace/target/mend-findings"),
             package_root,
             analysis_fingerprint: current_analysis_fingerprint(),
@@ -3605,270 +3498,6 @@ mod tests {
             Some("mcp/src/brp_tools/tools/mod.rs")
         );
 
-        Ok(())
-    }
-
-    #[test]
-    fn cache_is_current_requires_matching_schema_version() -> anyhow::Result<()> {
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("mend-cache-test-{unique}"));
-        fs::create_dir_all(&temp_dir)?;
-
-        let package_root = Path::new("/tmp/example-crate");
-        let source_root = package_root.join("src");
-        let cache_path = temp_dir.join(cache_filename_for(package_root));
-        let stale = StoredReport {
-            version:              FINDINGS_SCHEMA_VERSION - 1,
-            analysis_fingerprint: current_analysis_fingerprint(),
-            package_root:         package_root.to_string_lossy().into_owned(),
-            config_fingerprint:   "expected".to_string(),
-            findings:             vec![StoredFinding {
-                severity:      Severity::Warning,
-                code:          DiagnosticCode::SuspiciousPub,
-                path:          "src/lib.rs".to_string(),
-                line:          1,
-                column:        1,
-                highlight_len: 3,
-                source_line:   "pub fn x() {}".to_string(),
-                item:          None,
-                message:       String::new(),
-                suggestion:    None,
-                fix_support:   FixSupport::None,
-                related:       None,
-            }],
-            pub_use_fix_facts:    Vec::new(),
-            compiler_warnings:    CompilerWarningFacts::None,
-        };
-        fs::write(&cache_path, serde_json::to_vec(&stale)?)?;
-
-        let loaded_config = LoadedConfig {
-            config:      VisibilityConfig::default(),
-            diagnostics: crate::config::DiagnosticsConfig::default(),
-            root:        PathBuf::from("/tmp"),
-            fingerprint: "expected".to_string(),
-        };
-
-        assert!(!cache_is_current_for(
-            &temp_dir,
-            package_root,
-            &source_root,
-            &loaded_config
-        ));
-
-        fs::remove_dir_all(&temp_dir)?;
-        Ok(())
-    }
-
-    #[test]
-    fn cache_is_current_rejects_stale_cache_when_sources_changed() -> anyhow::Result<()> {
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("mend-cache-source-test-{unique}"));
-        let package_root = temp_dir.join("crate");
-        let src_dir = package_root.join("src");
-        fs::create_dir_all(&src_dir)?;
-        fs::write(
-            package_root.join("Cargo.toml"),
-            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )?;
-        fs::write(src_dir.join("lib.rs"), "pub fn demo() {}\n")?;
-
-        let findings_dir = temp_dir.join("findings");
-        fs::create_dir_all(&findings_dir)?;
-        let cache_path = findings_dir.join(cache_filename_for(&package_root));
-        let report = StoredReport {
-            version:              FINDINGS_SCHEMA_VERSION,
-            analysis_fingerprint: current_analysis_fingerprint(),
-            package_root:         package_root.to_string_lossy().into_owned(),
-            config_fingerprint:   "expected".to_string(),
-            findings:             Vec::new(),
-            pub_use_fix_facts:    Vec::new(),
-            compiler_warnings:    CompilerWarningFacts::None,
-        };
-        fs::write(&cache_path, serde_json::to_vec(&report)?)?;
-
-        let loaded_config = LoadedConfig {
-            config:      VisibilityConfig::default(),
-            diagnostics: crate::config::DiagnosticsConfig::default(),
-            root:        temp_dir.clone(),
-            fingerprint: "expected".to_string(),
-        };
-
-        assert!(cache_is_current_for(
-            &findings_dir,
-            &package_root,
-            &src_dir,
-            &loaded_config
-        ));
-
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        fs::write(
-            src_dir.join("lib.rs"),
-            "pub fn demo() {}\npub fn newer() {}\n",
-        )?;
-
-        assert!(!cache_is_current_for(
-            &findings_dir,
-            &package_root,
-            &src_dir,
-            &loaded_config
-        ));
-
-        fs::remove_dir_all(&temp_dir)?;
-        Ok(())
-    }
-
-    #[test]
-    fn cache_is_current_rejects_stale_cache_when_config_changes() -> anyhow::Result<()> {
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("mend-cache-config-test-{unique}"));
-        let package_root = temp_dir.join("crate");
-        let src_dir = package_root.join("src");
-        fs::create_dir_all(&src_dir)?;
-        fs::write(
-            package_root.join("Cargo.toml"),
-            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )?;
-        fs::write(src_dir.join("lib.rs"), "pub fn demo() {}\n")?;
-
-        let findings_dir = temp_dir.join("findings");
-        fs::create_dir_all(&findings_dir)?;
-        let cache_path = findings_dir.join(cache_filename_for(&package_root));
-        let report = StoredReport {
-            version:              FINDINGS_SCHEMA_VERSION,
-            analysis_fingerprint: current_analysis_fingerprint(),
-            package_root:         package_root.to_string_lossy().into_owned(),
-            config_fingerprint:   "old-config".to_string(),
-            findings:             Vec::new(),
-            pub_use_fix_facts:    Vec::new(),
-            compiler_warnings:    CompilerWarningFacts::None,
-        };
-        fs::write(&cache_path, serde_json::to_vec(&report)?)?;
-
-        let loaded_config = LoadedConfig {
-            config:      VisibilityConfig::default(),
-            diagnostics: crate::config::DiagnosticsConfig::default(),
-            root:        temp_dir.clone(),
-            fingerprint: "new-config".to_string(),
-        };
-
-        assert!(!cache_is_current_for(
-            &findings_dir,
-            &package_root,
-            &src_dir,
-            &loaded_config
-        ));
-
-        fs::remove_dir_all(&temp_dir)?;
-        Ok(())
-    }
-
-    #[test]
-    fn cache_is_current_rejects_stale_cache_when_analysis_fingerprint_changes() -> anyhow::Result<()>
-    {
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("mend-cache-analysis-test-{unique}"));
-        let package_root = temp_dir.join("crate");
-        let src_dir = package_root.join("src");
-        fs::create_dir_all(&src_dir)?;
-        fs::write(
-            package_root.join("Cargo.toml"),
-            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )?;
-        fs::write(src_dir.join("lib.rs"), "pub fn demo() {}\n")?;
-
-        let findings_dir = temp_dir.join("findings");
-        fs::create_dir_all(&findings_dir)?;
-        let cache_path = findings_dir.join(cache_filename_for(&package_root));
-        let report = StoredReport {
-            version:              FINDINGS_SCHEMA_VERSION,
-            analysis_fingerprint: "old-analysis".to_string(),
-            package_root:         package_root.to_string_lossy().into_owned(),
-            config_fingerprint:   "expected".to_string(),
-            findings:             Vec::new(),
-            pub_use_fix_facts:    Vec::new(),
-            compiler_warnings:    CompilerWarningFacts::None,
-        };
-        fs::write(&cache_path, serde_json::to_vec(&report)?)?;
-
-        let loaded_config = LoadedConfig {
-            config:      VisibilityConfig::default(),
-            diagnostics: crate::config::DiagnosticsConfig::default(),
-            root:        temp_dir.clone(),
-            fingerprint: "expected".to_string(),
-        };
-
-        assert!(!cache_is_current_for(
-            &findings_dir,
-            &package_root,
-            &src_dir,
-            &loaded_config
-        ));
-
-        fs::remove_dir_all(&temp_dir)?;
-        Ok(())
-    }
-
-    #[test]
-    fn cache_is_current_tracks_selected_example_source_root() -> anyhow::Result<()> {
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("mend-cache-example-test-{unique}"));
-        let package_root = temp_dir.join("crate");
-        let examples_dir = package_root.join("examples");
-        let src_dir = package_root.join("src");
-        fs::create_dir_all(&examples_dir)?;
-        fs::create_dir_all(&src_dir)?;
-        fs::write(
-            package_root.join("Cargo.toml"),
-            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )?;
-        fs::write(examples_dir.join("demo.rs"), "fn main() {}\n")?;
-        fs::write(src_dir.join("lib.rs"), "pub fn shared() {}\n")?;
-
-        let findings_dir = temp_dir.join("findings");
-        fs::create_dir_all(&findings_dir)?;
-        let cache_path = findings_dir.join(cache_filename_for(&package_root));
-        let report = StoredReport {
-            version:              FINDINGS_SCHEMA_VERSION,
-            analysis_fingerprint: current_analysis_fingerprint(),
-            package_root:         package_root.to_string_lossy().into_owned(),
-            config_fingerprint:   "expected".to_string(),
-            findings:             Vec::new(),
-            pub_use_fix_facts:    Vec::new(),
-            compiler_warnings:    CompilerWarningFacts::None,
-        };
-        fs::write(&cache_path, serde_json::to_vec(&report)?)?;
-
-        let loaded_config = LoadedConfig {
-            config:      VisibilityConfig::default(),
-            diagnostics: crate::config::DiagnosticsConfig::default(),
-            root:        temp_dir.clone(),
-            fingerprint: "expected".to_string(),
-        };
-
-        assert!(cache_is_current_for(
-            &findings_dir,
-            &package_root,
-            &examples_dir,
-            &loaded_config
-        ));
-
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        fs::write(examples_dir.join("demo.rs"), "fn main() { shared(); }\n")?;
-
-        assert!(!cache_is_current_for(
-            &findings_dir,
-            &package_root,
-            &examples_dir,
-            &loaded_config
-        ));
-        assert!(cache_is_current_for(
-            &findings_dir,
-            &package_root,
-            &src_dir,
-            &loaded_config
-        ));
-
-        fs::remove_dir_all(&temp_dir)?;
         Ok(())
     }
 

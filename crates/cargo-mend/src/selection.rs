@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -7,8 +8,8 @@ use anyhow::bail;
 use cargo_metadata::Metadata;
 use cargo_metadata::MetadataCommand;
 use cargo_metadata::Package;
-use cargo_metadata::Target;
-use cargo_metadata::TargetKind;
+
+use crate::cli::CargoCheckCli;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectionScope {
@@ -25,39 +26,15 @@ pub(crate) struct Selection {
     pub analysis_root:    PathBuf,
     pub scope:            SelectionScope,
     pub package_roots:    Vec<PathBuf>,
-    pub packages:         Vec<SelectedPackage>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct SelectedPackage {
-    pub name:          String,
-    pub manifest_path: PathBuf,
-    pub root:          PathBuf,
-    pub source_root:   PathBuf,
-    pub target:        TargetSelector,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TargetSelector {
-    Implicit,
-    Lib,
-    Bin(String),
-    Example(String),
-    Test(String),
-    Bench(String),
-}
-
-impl TargetSelector {
-    pub(crate) fn cargo_args(&self) -> Vec<String> {
-        match self {
-            Self::Implicit => Vec::new(),
-            Self::Lib => vec!["--lib".to_string()],
-            Self::Bin(name) => vec!["--bin".to_string(), name.clone()],
-            Self::Example(name) => vec!["--example".to_string(), name.clone()],
-            Self::Test(name) => vec!["--test".to_string(), name.clone()],
-            Self::Bench(name) => vec!["--bench".to_string(), name.clone()],
-        }
-    }
+pub(crate) struct CargoCheckPlan {
+    pub manifest_path:    PathBuf,
+    pub workspace_root:   PathBuf,
+    pub target_directory: PathBuf,
+    pub analysis_root:    PathBuf,
+    pub cargo_args:       Vec<OsString>,
 }
 
 pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<Selection> {
@@ -89,12 +66,12 @@ pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
         SelectionScope::SinglePackage
     };
 
-    let packages: Vec<SelectedPackage> = match scope {
+    let package_roots = match scope {
         SelectionScope::Workspace => metadata
             .workspace_members
             .iter()
             .filter_map(|id| metadata.packages.iter().find(|pkg| &pkg.id == id))
-            .map(selected_package_from_metadata)
+            .map(package_root_from_metadata)
             .collect::<Result<Vec<_>>>()?,
         SelectionScope::SinglePackage => {
             let package = metadata
@@ -107,13 +84,9 @@ pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
                         manifest_path.display()
                     )
                 })?;
-            vec![selected_package_from_metadata(package)?]
+            vec![package_root_from_metadata(package)?]
         },
     };
-    let package_roots = packages
-        .iter()
-        .map(|package| package.root.clone())
-        .collect();
 
     let analysis_root = match scope {
         SelectionScope::Workspace => workspace_root.clone(),
@@ -128,83 +101,70 @@ pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
         analysis_root,
         scope,
         package_roots,
-        packages,
     })
 }
 
-fn selected_package_from_metadata(package: &Package) -> Result<SelectedPackage> {
-    let manifest_path = package.manifest_path.as_std_path().to_path_buf();
-    let root = manifest_path
-        .parent()
-        .context("package manifest path had no parent directory")?
-        .to_path_buf();
-    let target = select_primary_target_metadata(package.targets.as_slice())
-        .context("package metadata did not contain a selectable target")?;
-    let source_root = target
-        .src_path
+pub(crate) fn build_cargo_check_plan(
+    selection: &Selection,
+    cargo_cli: &CargoCheckCli,
+) -> CargoCheckPlan {
+    let mut cargo_args = vec![
+        OsString::from("--manifest-path"),
+        selection.manifest_path.as_os_str().to_owned(),
+    ];
+
+    let default_workspace = selection.scope == SelectionScope::Workspace
+        && cargo_cli.package.is_empty()
+        && cargo_cli.exclude.is_empty();
+    let use_workspace = cargo_cli.workspace || !cargo_cli.exclude.is_empty() || default_workspace;
+    if use_workspace {
+        cargo_args.push(OsString::from("--workspace"));
+    }
+
+    append_repeated_flag(&mut cargo_args, "--package", &cargo_cli.package);
+    append_repeated_flag(&mut cargo_args, "--exclude", &cargo_cli.exclude);
+    append_bool_flag(&mut cargo_args, "--all-targets", cargo_cli.all_targets);
+    append_bool_flag(&mut cargo_args, "--lib", cargo_cli.lib);
+    append_bool_flag(&mut cargo_args, "--bins", cargo_cli.bins);
+    append_bool_flag(&mut cargo_args, "--examples", cargo_cli.examples);
+    append_bool_flag(&mut cargo_args, "--tests", cargo_cli.tests);
+    append_bool_flag(&mut cargo_args, "--benches", cargo_cli.benches);
+    append_repeated_flag(&mut cargo_args, "--bin", &cargo_cli.bin);
+    append_repeated_flag(&mut cargo_args, "--example", &cargo_cli.example);
+    append_repeated_flag(&mut cargo_args, "--test", &cargo_cli.test);
+    append_repeated_flag(&mut cargo_args, "--bench", &cargo_cli.bench);
+
+    CargoCheckPlan {
+        manifest_path: selection.manifest_path.clone(),
+        workspace_root: selection.workspace_root.clone(),
+        target_directory: selection.target_directory.clone(),
+        analysis_root: selection.analysis_root.clone(),
+        cargo_args,
+    }
+}
+
+fn append_bool_flag(args: &mut Vec<OsString>, flag: &'static str, enabled: bool) {
+    if enabled {
+        args.push(OsString::from(flag));
+    }
+}
+
+fn append_repeated_flag(args: &mut Vec<OsString>, flag: &'static str, values: &[String]) {
+    for value in values {
+        args.push(OsString::from(flag));
+        args.push(OsString::from(value));
+    }
+}
+
+fn package_root_from_metadata(package: &Package) -> Result<PathBuf> {
+    let package_root = package
+        .manifest_path
         .as_std_path()
         .parent()
-        .context("target source path had no parent directory")?
-        .to_path_buf();
-    Ok(SelectedPackage {
-        name: package.name.to_string(),
-        manifest_path,
-        root,
-        source_root,
-        target: target_selector(target),
-    })
-}
-
-fn target_selector(target: &Target) -> TargetSelector {
-    if target
-        .kind
-        .iter()
-        .any(|kind| *kind == TargetKind::Lib || *kind == TargetKind::ProcMacro)
-    {
-        return TargetSelector::Lib;
-    }
-    if target.kind.contains(&TargetKind::Bin) {
-        return TargetSelector::Bin(target.name.clone());
-    }
-    if target.kind.contains(&TargetKind::Example) {
-        return TargetSelector::Example(target.name.clone());
-    }
-    if target.kind.contains(&TargetKind::Test) {
-        return TargetSelector::Test(target.name.clone());
-    }
-    if target.kind.contains(&TargetKind::Bench) {
-        return TargetSelector::Bench(target.name.clone());
-    }
-
-    TargetSelector::Implicit
-}
-
-fn select_primary_target_metadata(targets: &[Target]) -> Option<&Target> {
-    if targets.len() == 1 {
-        return targets.first();
-    }
-
-    let select_named = |kind: TargetKind| targets.iter().find(|target| target.kind.contains(&kind));
-
-    if targets.iter().any(|target| {
-        target
-            .kind
-            .iter()
-            .any(|kind| *kind == TargetKind::Lib || *kind == TargetKind::ProcMacro)
-    }) {
-        return targets.iter().find(|target| {
-            target
-                .kind
-                .iter()
-                .any(|kind| *kind == TargetKind::Lib || *kind == TargetKind::ProcMacro)
-        });
-    }
-
-    select_named(TargetKind::Bin)
-        .or_else(|| select_named(TargetKind::Example))
-        .or_else(|| select_named(TargetKind::Test))
-        .or_else(|| select_named(TargetKind::Bench))
-        .or_else(|| targets.first())
+        .context("package manifest path had no parent directory")?;
+    package_root
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize {}", package_root.display()))
 }
 
 fn cargo_metadata_for(manifest_path: &Path) -> Result<Metadata> {
@@ -230,107 +190,153 @@ fn find_nearest_manifest(start: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
-    use std::fs;
+    use std::path::PathBuf;
 
+    use super::CargoCheckPlan;
+    use super::Selection;
     use super::SelectionScope;
-    use super::TargetSelector;
+    use super::build_cargo_check_plan;
     use super::resolve_cargo_selection;
+    use crate::cli::CargoCheckCli;
 
-    fn write_fixture_manifest(dir: &std::path::Path, body: &str) {
-        fs::write(dir.join("Cargo.toml"), body)
-            .unwrap_or_else(|error| panic!("write fixture manifest: {error}"));
+    fn fixture_selection(scope: SelectionScope) -> Selection {
+        let manifest_path = PathBuf::from("/workspace/Cargo.toml");
+        Selection {
+            manifest_path: manifest_path.clone(),
+            manifest_dir: PathBuf::from("/workspace"),
+            workspace_root: PathBuf::from("/workspace"),
+            target_directory: PathBuf::from("/workspace/target"),
+            analysis_root: PathBuf::from("/workspace"),
+            scope,
+            package_roots: vec![PathBuf::from("/workspace/member")],
+        }
+    }
+
+    fn cargo_args_strings(plan: CargoCheckPlan) -> Vec<String> {
+        plan.cargo_args
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
     }
 
     #[test]
-    fn target_selector_cargo_args_for_lib() {
-        assert_eq!(TargetSelector::Lib.cargo_args(), vec!["--lib"]);
+    fn default_workspace_plan_checks_workspace() {
+        let selection = fixture_selection(SelectionScope::Workspace);
+
+        let args = cargo_args_strings(build_cargo_check_plan(
+            &selection,
+            &CargoCheckCli::default(),
+        ));
+
+        assert_eq!(args, vec!["--manifest-path", "/workspace/Cargo.toml", "--workspace"]);
     }
 
     #[test]
-    fn target_selector_cargo_args_for_bin() {
-        assert_eq!(
-            TargetSelector::Bin("demo".to_string()).cargo_args(),
-            vec!["--bin", "demo"]
-        );
+    fn default_single_package_plan_checks_manifest_only() {
+        let selection = fixture_selection(SelectionScope::SinglePackage);
+
+        let args = cargo_args_strings(build_cargo_check_plan(
+            &selection,
+            &CargoCheckCli::default(),
+        ));
+
+        assert_eq!(args, vec!["--manifest-path", "/workspace/Cargo.toml"]);
     }
 
     #[test]
-    fn target_selector_cargo_args_for_implicit_target() {
-        assert!(TargetSelector::Implicit.cargo_args().is_empty());
-    }
+    fn plan_includes_workspace_all_targets() {
+        let selection = fixture_selection(SelectionScope::Workspace);
+        let cargo_cli = CargoCheckCli {
+            workspace: true,
+            all_targets: true,
+            ..CargoCheckCli::default()
+        };
 
-    #[test]
-    fn select_primary_target_uses_named_target_for_single_example() {
-        let temp =
-            tempfile::tempdir().unwrap_or_else(|error| panic!("create temp fixture dir: {error}"));
-        fs::create_dir_all(temp.path().join("examples"))
-            .unwrap_or_else(|error| panic!("create examples dir: {error}"));
-        write_fixture_manifest(
-            temp.path(),
-            r#"[package]
-name = "single_example_fixture"
-version = "0.1.0"
-edition = "2024"
-autobins = false
-autoexamples = false
-
-[[example]]
-name = "demo"
-path = "examples/demo.rs"
-"#,
-        );
-        fs::write(temp.path().join("examples/demo.rs"), "fn main() {}\n")
-            .unwrap_or_else(|error| panic!("write example: {error}"));
-        let selection = resolve_cargo_selection(Some(&temp.path().join("Cargo.toml")))
-            .unwrap_or_else(|error| panic!("resolve fixture selection: {error}"));
+        let args = cargo_args_strings(build_cargo_check_plan(&selection, &cargo_cli));
 
         assert_eq!(
-            selection.packages[0].target,
-            TargetSelector::Example("demo".to_string())
-        );
-        assert_eq!(
-            fs::canonicalize(&selection.packages[0].source_root).unwrap_or_else(|error| panic!(
-                "canonicalize selected example source root: {error}"
-            )),
-            fs::canonicalize(temp.path().join("examples")).unwrap_or_else(|error| panic!(
-                "canonicalize expected example source root: {error}"
-            ))
+            args,
+            vec![
+                "--manifest-path",
+                "/workspace/Cargo.toml",
+                "--workspace",
+                "--all-targets",
+            ]
         );
     }
 
     #[test]
-    fn select_primary_target_uses_named_target_for_single_bin() {
-        let temp =
-            tempfile::tempdir().unwrap_or_else(|error| panic!("create temp fixture dir: {error}"));
-        fs::create_dir_all(temp.path().join("src/bin"))
-            .unwrap_or_else(|error| panic!("create bin dir: {error}"));
-        write_fixture_manifest(
-            temp.path(),
-            r#"[package]
-name = "single_bin_fixture"
-version = "0.1.0"
-edition = "2024"
-autobins = false
+    fn plan_includes_named_package_and_tests() {
+        let selection = fixture_selection(SelectionScope::Workspace);
+        let cargo_cli = CargoCheckCli {
+            package: vec!["demo".to_string()],
+            tests: true,
+            ..CargoCheckCli::default()
+        };
 
-[[bin]]
-name = "demo"
-path = "src/bin/demo.rs"
-"#,
-        );
-        fs::write(temp.path().join("src/bin/demo.rs"), "fn main() {}\n")
-            .unwrap_or_else(|error| panic!("write bin: {error}"));
-        let selection = resolve_cargo_selection(Some(&temp.path().join("Cargo.toml")))
-            .unwrap_or_else(|error| panic!("resolve fixture selection: {error}"));
+        let args = cargo_args_strings(build_cargo_check_plan(&selection, &cargo_cli));
 
         assert_eq!(
-            selection.packages[0].target,
-            TargetSelector::Bin("demo".to_string())
+            args,
+            vec![
+                "--manifest-path",
+                "/workspace/Cargo.toml",
+                "--package",
+                "demo",
+                "--tests",
+            ]
         );
+    }
+
+    #[test]
+    fn plan_includes_workspace_excludes() {
+        let selection = fixture_selection(SelectionScope::Workspace);
+        let cargo_cli = CargoCheckCli {
+            exclude: vec!["demo".to_string()],
+            ..CargoCheckCli::default()
+        };
+
+        let args = cargo_args_strings(build_cargo_check_plan(&selection, &cargo_cli));
+
         assert_eq!(
-            fs::canonicalize(&selection.packages[0].source_root)
-                .unwrap_or_else(|error| panic!("canonicalize selected bin source root: {error}")),
-            fs::canonicalize(temp.path().join("src/bin"))
-                .unwrap_or_else(|error| panic!("canonicalize expected bin source root: {error}"))
+            args,
+            vec![
+                "--manifest-path",
+                "/workspace/Cargo.toml",
+                "--workspace",
+                "--exclude",
+                "demo",
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_includes_specific_named_targets() {
+        let selection = fixture_selection(SelectionScope::SinglePackage);
+        let cargo_cli = CargoCheckCli {
+            bin: vec!["cli".to_string()],
+            example: vec!["demo".to_string()],
+            test: vec!["integration".to_string()],
+            bench: vec!["perf".to_string()],
+            ..CargoCheckCli::default()
+        };
+
+        let args = cargo_args_strings(build_cargo_check_plan(&selection, &cargo_cli));
+
+        assert_eq!(
+            args,
+            vec![
+                "--manifest-path",
+                "/workspace/Cargo.toml",
+                "--bin",
+                "cli",
+                "--example",
+                "demo",
+                "--test",
+                "integration",
+                "--bench",
+                "perf",
+            ]
         );
     }
 
@@ -338,31 +344,31 @@ path = "src/bin/demo.rs"
     fn resolve_virtual_workspace_root_with_single_member_selects_workspace() {
         let temp =
             tempfile::tempdir().unwrap_or_else(|error| panic!("create temp fixture dir: {error}"));
-        fs::create_dir_all(temp.path().join("member/src"))
+        std::fs::create_dir_all(temp.path().join("member/src"))
             .unwrap_or_else(|error| panic!("create member src dir: {error}"));
-        write_fixture_manifest(
-            temp.path(),
-            r#"[workspace]
-members = ["member"]
-resolver = "3"
-"#,
-        );
-        write_fixture_manifest(
-            &temp.path().join("member"),
-            r#"[package]
-name = "member_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-        );
-        fs::write(temp.path().join("member/src/main.rs"), "fn main() {}\n")
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"member\"]\nresolver = \"3\"\n",
+        )
+        .unwrap_or_else(|error| panic!("write workspace manifest: {error}"));
+        std::fs::write(
+            temp.path().join("member/Cargo.toml"),
+            "[package]\nname = \"member_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap_or_else(|error| panic!("write member manifest: {error}"));
+        std::fs::write(temp.path().join("member/src/main.rs"), "fn main() {}\n")
             .unwrap_or_else(|error| panic!("write member main: {error}"));
 
         let selection = resolve_cargo_selection(Some(&temp.path().join("Cargo.toml")))
             .unwrap_or_else(|error| panic!("resolve workspace selection: {error}"));
 
         assert_eq!(selection.scope, SelectionScope::Workspace);
-        assert_eq!(selection.packages.len(), 1);
-        assert_eq!(selection.packages[0].name, "member_fixture");
+        assert_eq!(selection.package_roots.len(), 1);
+        assert_eq!(
+            std::fs::canonicalize(&selection.package_roots[0])
+                .unwrap_or_else(|error| panic!("canonicalize selected package root: {error}")),
+            std::fs::canonicalize(temp.path().join("member"))
+                .unwrap_or_else(|error| panic!("canonicalize expected package root: {error}"))
+        );
     }
 }

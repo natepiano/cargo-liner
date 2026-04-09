@@ -13,7 +13,6 @@ pub(crate) struct ExecutionOutcome {
     pub report:                 Report,
     pub notice:                 Option<ExecutionNotice>,
     pub check_duration:         Duration,
-    pub driver_duration:        Duration,
     pub compiler_warning_count: usize,
     pub compiler_fixable_count: usize,
 }
@@ -62,7 +61,6 @@ pub(crate) enum MendFailure {
 #[derive(Debug)]
 pub(crate) enum CompilerFailureCause {
     CargoCheck,
-    CargoRustcRefresh { package: String },
     DriverSetup(Error),
     DriverExecution(Error),
     Unexpected(Error),
@@ -108,12 +106,6 @@ impl fmt::Display for AnalysisFailure {
                     "compiler failed while validating this crate\n\nmend: did not run due to compiler errors"
                 )
             },
-            CompilerFailureCause::CargoRustcRefresh { package } => {
-                write!(
-                    f,
-                    "compiler refresh failed while validating package `{package}`\n\nmend: did not complete due to compiler errors"
-                )
-            },
             CompilerFailureCause::DriverSetup(error)
             | CompilerFailureCause::DriverExecution(error)
             | CompilerFailureCause::Unexpected(error) => write!(f, "{error:#}"),
@@ -126,9 +118,6 @@ impl fmt::Display for FixValidationFailure {
         let source = match &self.cause {
             CompilerFailureCause::CargoCheck => {
                 "compiler failed after applying mend fixes".to_string()
-            },
-            CompilerFailureCause::CargoRustcRefresh { package } => {
-                format!("compiler refresh failed after applying mend fixes for package `{package}`")
             },
             CompilerFailureCause::DriverSetup(error)
             | CompilerFailureCause::DriverExecution(error)
@@ -302,19 +291,6 @@ mod tests {
         assert_eq!(
             failure.to_string(),
             "compiler failed while validating this crate\n\nmend: did not run due to compiler errors"
-        );
-    }
-
-    #[test]
-    fn analysis_failure_message_distinguishes_incomplete_driver_refresh() {
-        let failure = AnalysisFailure {
-            cause: CompilerFailureCause::CargoRustcRefresh {
-                package: "fixture".to_string(),
-            },
-        };
-        assert_eq!(
-            failure.to_string(),
-            "compiler refresh failed while validating package `fixture`\n\nmend: did not complete due to compiler errors"
         );
     }
 
