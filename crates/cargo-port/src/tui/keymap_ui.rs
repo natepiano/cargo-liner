@@ -180,7 +180,7 @@ pub(super) const fn selectable_row_count() -> usize {
 // ── Key handling ─────────────────────────────────────────────────────
 
 pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyEvent) {
-    if app.ui_modes.keymap.is_awaiting_key() {
+    if app.ui_modes().keymap.is_awaiting_key() {
         // Awaiting mode uses the raw event so vim-normalized keys
         // don't interfere with the user's intended binding.
         handle_awaiting_key(app, raw);
@@ -193,11 +193,11 @@ pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyE
             app.close_keymap();
             app.close_overlay();
         },
-        KeyCode::Up => app.keymap_pane.up(),
-        KeyCode::Down => app.keymap_pane.down(),
-        KeyCode::Home => app.keymap_pane.home(),
+        KeyCode::Up => app.keymap_pane_mut().up(),
+        KeyCode::Down => app.keymap_pane_mut().down(),
+        KeyCode::Home => app.keymap_pane_mut().home(),
         KeyCode::End => app
-            .keymap_pane
+            .keymap_pane_mut()
             .set_pos(selectable_row_count().saturating_sub(1)),
         KeyCode::Enter => app.keymap_begin_awaiting(),
         _ => {},
@@ -211,15 +211,15 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     }
 
     // Enter clears a conflict message so the user can try another key.
-    if event.code == KeyCode::Enter && app.inline_error.is_some() {
-        app.inline_error = None;
+    if event.code == KeyCode::Enter && app.inline_error().is_some() {
+        app.clear_inline_error();
         return;
     }
 
     let bind = KeyBind::new(event.code, event.modifiers);
-    let rows = build_rows(&app.current_keymap);
+    let rows = build_rows(app.current_keymap());
     let selectable: Vec<&KeymapRow> = rows.iter().filter(|r| !r.is_header).collect();
-    let Some(row) = selectable.get(app.keymap_pane.pos()) else {
+    let Some(row) = selectable.get(app.keymap_pane().pos()) else {
         return;
     };
 
@@ -235,7 +235,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
                 | KeyCode::End
         )
     {
-        app.inline_error = Some(format!("\"{}\" reserved for navigation", bind.display()));
+        app.set_inline_error(format!("\"{}\" reserved for navigation", bind.display()));
         return;
     }
 
@@ -244,7 +244,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
         && bind.modifiers == KeyModifiers::NONE
         && matches!(bind.code, KeyCode::Char('h' | 'j' | 'k' | 'l'))
     {
-        app.inline_error = Some(format!(
+        app.set_inline_error(format!(
             "\"{}\" reserved for vim navigation",
             bind.display()
         ));
@@ -253,9 +253,9 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
 
     // Check global conflict (if pane scope).
     if row.scope != "global"
-        && let Some(global_action) = app.current_keymap.global.action_for(&bind)
+        && let Some(global_action) = app.current_keymap().global.action_for(&bind)
     {
-        app.inline_error = Some(format!(
+        app.set_inline_error(format!(
             "\"{}\" used by Global → {}",
             bind.display(),
             global_action.toml_key()
@@ -266,16 +266,16 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     // Check pane conflicts (if global scope) — a global key that
     // shadows a pane binding would silently steal the key.
     if row.scope == "global"
-        && let Some(msg) = check_pane_conflict(&app.current_keymap, &bind)
+        && let Some(msg) = check_pane_conflict(app.current_keymap(), &bind)
     {
-        app.inline_error = Some(msg);
+        app.set_inline_error(msg);
         return;
     }
 
     // Check intra-scope conflict.
-    let conflict = check_scope_conflict(&app.current_keymap, row.scope, row.action, &bind);
+    let conflict = check_scope_conflict(app.current_keymap(), row.scope, row.action, &bind);
     if let Some(msg) = conflict {
-        app.inline_error = Some(msg);
+        app.set_inline_error(msg);
         return;
     }
 
@@ -409,43 +409,43 @@ fn apply_rebind(app: &mut App, scope: &str, action: &str, bind: KeyBind) {
 
     match scope {
         "global" => rebind(
-            &mut app.current_keymap.global,
+            &mut app.current_keymap_mut().global,
             action,
             bind,
             GlobalAction::from_toml_key,
         ),
         "project_list" => rebind(
-            &mut app.current_keymap.project_list,
+            &mut app.current_keymap_mut().project_list,
             action,
             bind,
             ProjectListAction::from_toml_key,
         ),
         "package" => rebind(
-            &mut app.current_keymap.package,
+            &mut app.current_keymap_mut().package,
             action,
             bind,
             PackageAction::from_toml_key,
         ),
         "git" => rebind(
-            &mut app.current_keymap.git,
+            &mut app.current_keymap_mut().git,
             action,
             bind,
             GitAction::from_toml_key,
         ),
         "targets" => rebind(
-            &mut app.current_keymap.targets,
+            &mut app.current_keymap_mut().targets,
             action,
             bind,
             TargetsAction::from_toml_key,
         ),
         "ci_runs" => rebind(
-            &mut app.current_keymap.ci_runs,
+            &mut app.current_keymap_mut().ci_runs,
             action,
             bind,
             CiRunsAction::from_toml_key,
         ),
         "lints" => rebind(
-            &mut app.current_keymap.lints,
+            &mut app.current_keymap_mut().lints,
             action,
             bind,
             LintsAction::from_toml_key,
@@ -458,12 +458,12 @@ fn apply_rebind(app: &mut App, scope: &str, action: &str, bind: KeyBind) {
 }
 
 fn save_keymap_to_disk(app: &mut App) {
-    let Some(path) = &app.keymap_path else {
+    let Some(path) = app.keymap_path() else {
         return;
     };
     // Write full TOML with current bindings.
     // TODO(toml_edit): use toml_edit for targeted updates preserving comments.
-    let content = ResolvedKeymap::default_toml_from(&app.current_keymap);
+    let content = ResolvedKeymap::default_toml_from(app.current_keymap());
     let _ = std::fs::write(path, &content);
     // Update stamp so hot-reload skips this write.
     app.sync_keymap_stamp();
@@ -492,12 +492,12 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
         }
 
         let selection = app
-            .keymap_pane
+            .keymap_pane()
             .selection_state(selectable_index, app.pane_focus_state(PaneId::Keymap));
         let key_text = if selection != PaneSelectionState::Unselected && is_awaiting {
-            app.inline_error
-                .as_ref()
-                .map_or_else(|| "Press key...".to_string(), Clone::clone)
+            app.inline_error()
+                .cloned()
+                .unwrap_or_else(|| "Press key...".to_string())
         } else {
             row.key_display.clone()
         };
@@ -507,7 +507,7 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
 
         let line = if selection != PaneSelectionState::Unselected
             && is_awaiting
-            && app.inline_error.is_some()
+            && app.inline_error().is_some()
         {
             Line::from(vec![
                 Span::styled(
@@ -553,10 +553,10 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
 
 pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let rows = build_rows(&app.current_keymap);
+    let rows = build_rows(app.current_keymap());
 
     // Dynamic width: base fits all normal keys, expands for conflict messages.
-    let content_width = app.inline_error.as_ref().map_or(BASE_POPUP_WIDTH, |msg| {
+    let content_width = app.inline_error().map_or(BASE_POPUP_WIDTH, |msg| {
         // 2 indent + 25 desc + msg len + 2 pad
         let needed = u16::try_from(2 + 25 + msg.len() + 2).unwrap_or(u16::MAX);
         BASE_POPUP_WIDTH.max(needed)
@@ -576,8 +576,8 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     }
     .render(frame);
 
-    let selected_pos = app.keymap_pane.pos();
-    let is_awaiting = app.ui_modes.keymap.is_awaiting_key();
+    let selected_pos = app.keymap_pane().pos();
+    let is_awaiting = app.ui_modes().keymap.is_awaiting_key();
     let lines = build_lines(&rows, app, is_awaiting);
 
     // Scroll to keep selection visible.

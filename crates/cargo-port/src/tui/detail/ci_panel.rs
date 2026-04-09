@@ -311,7 +311,7 @@ pub fn render_ci_panel(
     let fetch_count = ci_state.map_or(0, CiState::fetch_count);
     let elapsed = app.animation_elapsed();
     let focused_pos = if ci_focused {
-        Some(app.ci_pane.pos())
+        Some(app.ci_pane().pos())
     } else {
         None
     };
@@ -344,8 +344,8 @@ pub fn render_ci_panel(
         });
 
     let inner = ci_block.inner(area);
-    app.ci_pane.set_len(ci_runs.len() + CI_EXTRA_ROWS);
-    app.ci_pane.set_content_area(inner);
+    app.ci_pane_mut().set_len(ci_runs.len() + CI_EXTRA_ROWS);
+    app.ci_pane_mut().set_content_area(inner);
 
     let all_columns = [
         CiColumn::Fmt,
@@ -376,7 +376,7 @@ pub fn render_ci_panel(
                 ci_run,
                 &cols,
                 !ci_focused
-                    && index == app.ci_pane.pos()
+                    && index == app.ci_pane().pos()
                     && app.remembers_selection(PaneId::CiRuns),
                 show_durations,
             )
@@ -400,9 +400,9 @@ pub fn render_ci_panel(
         .column_spacing(1)
         .row_highlight_style(highlight_style);
 
-    let mut table_state = TableState::default().with_selected(Some(app.ci_pane.pos()));
+    let mut table_state = TableState::default().with_selected(Some(app.ci_pane().pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.ci_pane.set_scroll_offset(table_state.offset());
+    app.ci_pane_mut().set_scroll_offset(table_state.offset());
     register_ci_row_hitboxes(app, ci_runs.len(), inner, table_state.offset());
 }
 

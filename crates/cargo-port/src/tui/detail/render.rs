@@ -361,8 +361,8 @@ pub fn render_detail_panel(
             .constraints(spec.constraints)
             .split(area);
 
-        app.layout_cache.detail_columns = columns.to_vec();
-        app.layout_cache.detail_targets_col = spec.targets_col;
+        app.layout_cache_mut().detail_columns = columns.to_vec();
+        app.layout_cache_mut().detail_targets_col = spec.targets_col;
 
         let styles = RenderStyles {
             readonly_label:  Style::default().fg(Color::DarkGray),
@@ -382,7 +382,7 @@ pub fn render_detail_panel(
                     .border_style(Style::default().fg(Color::DarkGray));
                 frame.render_widget(empty_git, columns[col]);
             } else {
-                app.git_pane.set_len(git.len());
+                app.git_pane_mut().set_len(git.len());
                 let focus = app.pane_focus_state(PaneId::Git);
                 let git_block = Block::default()
                     .borders(Borders::ALL)
@@ -394,13 +394,13 @@ pub fn render_detail_panel(
                         styles.inactive_border
                     });
                 let git_inner = git_block.inner(columns[col]);
-                app.git_pane.set_content_area(git_inner);
+                app.git_pane_mut().set_content_area(git_inner);
                 frame.render_widget(git_block, columns[col]);
                 render_git_column_inner(
                     frame,
                     info,
                     &git,
-                    &app.git_pane,
+                    app.git_pane(),
                     focus,
                     &styles,
                     git_inner,
@@ -439,7 +439,7 @@ fn render_project_panel(
     area: Rect,
 ) {
     let fields = model::package_fields(info);
-    app.package_pane.set_len(fields.len());
+    app.package_pane_mut().set_len(fields.len());
     let focus = app.pane_focus_state(PaneId::Package);
     let project_block = Block::default()
         .borders(Borders::ALL)
@@ -451,7 +451,7 @@ fn render_project_panel(
             styles.inactive_border
         });
     let project_inner = project_block.inner(area);
-    app.package_pane.set_content_area(project_inner);
+    app.package_pane_mut().set_content_area(project_inner);
     frame.render_widget(project_block, area);
 
     if info.stats_rows.is_empty() {
@@ -459,7 +459,7 @@ fn render_project_panel(
             frame,
             info,
             &fields,
-            &app.package_pane,
+            app.package_pane(),
             focus,
             styles,
             project_inner,
@@ -476,7 +476,7 @@ fn render_project_panel(
             frame,
             info,
             &fields,
-            &app.package_pane,
+            app.package_pane(),
             focus,
             styles,
             sub_cols[0],
@@ -512,7 +512,7 @@ fn render_targets_panel(
     let bench_count = info.benches.len();
 
     let focus = app.pane_focus_state(PaneId::Targets);
-    let cursor = app.targets_pane.pos();
+    let cursor = app.targets_pane().pos();
 
     let targets_title = {
         let mut parts = Vec::new();
@@ -555,9 +555,9 @@ fn render_targets_panel(
         });
 
     let entries = model::build_target_list(info);
-    app.targets_pane.set_len(entries.len());
+    app.targets_pane_mut().set_len(entries.len());
     let content_inner = targets_block.inner(area);
-    app.targets_pane.set_content_area(content_inner);
+    app.targets_pane_mut().set_content_area(content_inner);
 
     let kind_col_width: usize = 7;
     let col_spacing: usize = 1;
@@ -594,7 +594,8 @@ fn render_targets_panel(
     };
     let mut table_state = TableState::default().with_selected(selected);
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.targets_pane.set_scroll_offset(table_state.offset());
+    app.targets_pane_mut()
+        .set_scroll_offset(table_state.offset());
 }
 
 /// Returns (`max_column_index`, `targets_column_index` or `None`).
@@ -604,7 +605,7 @@ pub fn detail_layout_pub(app: &App) -> (usize, Option<usize>) {
 }
 
 fn detail_layout(app: &App) -> DetailLayoutSpec {
-    let Some(info) = app.cached_detail.as_ref().map(|c| &c.info) else {
+    let Some(info) = app.cached_detail().map(|c| &c.info) else {
         return detail_layout_spec(GitPresence::Missing, TargetPresence::Missing);
     };
     let git = if model::git_fields(info).is_empty() {

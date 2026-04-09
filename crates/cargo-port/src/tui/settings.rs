@@ -84,7 +84,7 @@ fn save_number_setting(
         finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
         return false;
     };
-    let mut cfg = app.current_config.clone();
+    let mut cfg = app.current_config().clone();
     apply(&mut cfg, number.max(0.0));
     let _ = save_updated_config(app, &cfg);
     true
@@ -95,7 +95,7 @@ fn save_sorted_list_setting(
     value: &str,
     apply: impl FnOnce(&mut config::CargoPortConfig, Vec<String>),
 ) {
-    let mut cfg = app.current_config.clone();
+    let mut cfg = app.current_config().clone();
     apply(&mut cfg, normalize_sorted_list(value));
     let _ = save_updated_config(app, &cfg);
 }
@@ -109,7 +109,7 @@ fn save_u32_setting(
         finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
         return false;
     };
-    let mut cfg = app.current_config.clone();
+    let mut cfg = app.current_config().clone();
     apply(&mut cfg, number.max(1));
     let _ = save_updated_config(app, &cfg);
     true
@@ -120,7 +120,7 @@ fn save_string_setting(
     value: &str,
     apply: impl FnOnce(&mut config::CargoPortConfig, String),
 ) {
-    let mut cfg = app.current_config.clone();
+    let mut cfg = app.current_config().clone();
     apply(&mut cfg, value.trim().to_string());
     let _ = save_updated_config(app, &cfg);
 }
@@ -442,17 +442,17 @@ fn parse_lint_cache_size(value: &str) -> Result<String, String> {
 fn toggle_vim_mode(app: &mut App) {
     if !app.navigation_keys().uses_vim() {
         // Enabling vim mode — check for hjkl conflicts.
-        let conflicts = crate::keymap::vim_mode_conflicts(&app.current_keymap);
+        let conflicts = crate::keymap::vim_mode_conflicts(app.current_keymap());
         if !conflicts.is_empty() {
             let msg = format!(
                 "Cannot enable vim mode — these bindings use h/j/k/l:\n{}",
                 conflicts.join(", ")
             );
-            app.inline_error = Some(msg);
+            app.set_inline_error(msg);
             return;
         }
     }
-    let mut cfg = app.current_config.clone();
+    let mut cfg = app.current_config().clone();
     cfg.tui.navigation_keys.toggle();
     let _ = save_updated_config(app, &cfg);
 }
@@ -464,14 +464,14 @@ fn save_updated_config(app: &mut App, cfg: &config::CargoPortConfig) -> bool {
             true
         },
         Err(err) => {
-            app.inline_error = Some(err);
+            app.set_inline_error(err);
             false
         },
     }
 }
 
 pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
-    let rows = settings_rows(app, &app.current_config);
+    let rows = settings_rows(app, app.current_config());
     let label_style = Style::default().fg(Color::DarkGray);
     let content_width = usize::from(SETTINGS_POPUP_WIDTH.saturating_sub(2));
 
@@ -488,7 +488,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     lines.push(Line::from(""));
     line_targets.push(None);
     let nav_keys_index = SettingOption::iter().position(|s| s == SettingOption::NavigationKeys);
-    if !app.is_settings_editing() && Some(app.settings_pane.pos()) == nav_keys_index {
+    if !app.is_settings_editing() && Some(app.settings_pane().pos()) == nav_keys_index {
         lines.push(Line::from(vec![
             Span::styled("  Note: ", label_style),
             Span::styled("maps h/j/k/l to arrow navigation", label_style),
@@ -501,7 +501,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
         .saturating_add(2)
         .saturating_add(1);
 
-    app.settings_pane.set_len(SettingOption::COUNT);
+    app.settings_pane_mut().set_len(SettingOption::COUNT);
 
     let inner = super::popup::PopupFrame {
         title:        Some(" Settings ".to_string()),
@@ -511,7 +511,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     }
     .render(frame);
 
-    app.settings_pane.set_content_area(inner);
+    app.settings_pane_mut().set_content_area(inner);
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
@@ -594,13 +594,13 @@ pub(super) fn build_settings_lines(
             continue;
         }
 
-        let cursor = if app.settings_pane.pos() == selection_index {
+        let cursor = if app.settings_pane().pos() == selection_index {
             "▶ "
         } else {
             "  "
         };
         let selection = app
-            .settings_pane
+            .settings_pane()
             .selection_state(selection_index, app.pane_focus_state(PaneId::Settings));
         let setting = *setting;
         let label = format!("{SECTION_ITEM_INDENT}{cursor}{name:<max_label$}  ");
@@ -615,7 +615,8 @@ pub(super) fn build_settings_lines(
             };
             push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
         } else if app.is_settings_editing() && selection != PaneSelectionState::Unselected {
-            let edit_buffer = render_edit_buffer(&app.settings_edit_buf, app.settings_edit_cursor);
+            let edit_buffer =
+                render_edit_buffer(app.settings_edit_buf(), app.settings_edit_cursor());
             let row = WrappedValueRow {
                 prefix: &label,
                 value: &edit_buffer,
@@ -682,7 +683,7 @@ fn push_settings_header(
 
 fn selected_inline_error(app: &App, selection: PaneSelectionState) -> Option<String> {
     (selection != PaneSelectionState::Unselected && !app.is_settings_editing())
-        .then(|| app.inline_error.clone())
+        .then(|| app.inline_error().cloned())
         .flatten()
 }
 
@@ -692,7 +693,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         return;
     }
 
-    let setting = SettingOption::from_index(app.settings_pane.pos());
+    let setting = SettingOption::from_index(app.settings_pane().pos());
 
     match key {
         KeyCode::Esc | KeyCode::Char('s') => {
@@ -700,19 +701,19 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
             app.close_overlay();
         },
         KeyCode::Up => {
-            app.inline_error = None;
-            app.settings_pane.up();
+            app.clear_inline_error();
+            app.settings_pane_mut().up();
         },
         KeyCode::Down => {
-            app.inline_error = None;
-            app.settings_pane.down();
+            app.clear_inline_error();
+            app.settings_pane_mut().down();
         },
         KeyCode::Left | KeyCode::Right => {
-            app.inline_error = None;
+            app.clear_inline_error();
             handle_settings_adjust_key(app, key, setting);
         },
         KeyCode::Enter | KeyCode::Char(' ') => {
-            app.inline_error = None;
+            app.clear_inline_error();
             handle_settings_activate_key(app, setting);
         },
         _ => {},
@@ -722,7 +723,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
 fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<SettingOption>) {
     match setting {
         Some(SettingOption::InvertScroll) => {
-            let mut cfg = app.current_config.clone();
+            let mut cfg = app.current_config().clone();
             cfg.mouse.invert_scroll.toggle();
             let _ = save_updated_config(app, &cfg);
         },
@@ -730,7 +731,7 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
             toggle_vim_mode(app);
         },
         Some(SettingOption::CiRunCount) => {
-            let mut cfg = app.current_config.clone();
+            let mut cfg = app.current_config().clone();
             if key == KeyCode::Right {
                 cfg.tui.ci_run_count = cfg.tui.ci_run_count.saturating_add(1);
             } else {
@@ -739,7 +740,7 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
             let _ = save_updated_config(app, &cfg);
         },
         Some(SettingOption::IncludeNonRust) => {
-            let mut cfg = app.current_config.clone();
+            let mut cfg = app.current_config().clone();
             cfg.tui.include_non_rust.toggle();
             let _ = save_updated_config(app, &cfg);
         },
@@ -747,7 +748,7 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
             toggle_lints(app);
         },
         Some(SettingOption::LintOnDiscovery) => {
-            let mut cfg = app.current_config.clone();
+            let mut cfg = app.current_config().clone();
             cfg.lint.on_discovery.toggle();
             let _ = save_updated_config(app, &cfg);
         },
@@ -770,21 +771,20 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
 
 fn finish_settings_edit_with_error(app: &mut App, error: impl Into<String>) {
     app.end_settings_editing();
-    app.settings_edit_buf.clear();
-    app.settings_edit_cursor = 0;
-    app.inline_error = Some(error.into());
+    app.set_settings_edit_state(String::new(), 0);
+    app.set_inline_error(error.into());
 }
 
 fn begin_settings_edit(app: &mut App, value: String) {
-    app.settings_edit_buf = value;
     app.begin_settings_editing();
-    app.settings_edit_cursor = app.settings_edit_buf.len();
+    let cursor = value.len();
+    app.set_settings_edit_state(value, cursor);
 }
 
 fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
     match setting {
         Some(SettingOption::InvertScroll) => {
-            let mut cfg = app.current_config.clone();
+            let mut cfg = app.current_config().clone();
             cfg.mouse.invert_scroll.toggle();
             let _ = save_updated_config(app, &cfg);
         },
@@ -792,34 +792,34 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
             toggle_vim_mode(app);
         },
         Some(SettingOption::CiRunCount) => {
-            begin_settings_edit(app, app.current_config.tui.ci_run_count.to_string());
+            begin_settings_edit(app, app.current_config().tui.ci_run_count.to_string());
         },
         Some(SettingOption::InlineDirs) => {
-            begin_settings_edit(app, app.current_config.tui.inline_dirs.join(", "));
+            begin_settings_edit(app, app.current_config().tui.inline_dirs.join(", "));
         },
         Some(SettingOption::IncludeDirs) => {
-            begin_settings_edit(app, app.current_config.tui.include_dirs.join(", "));
+            begin_settings_edit(app, app.current_config().tui.include_dirs.join(", "));
         },
         Some(SettingOption::LintProjects) => {
-            begin_settings_edit(app, app.current_config.lint.include.join(", "));
+            begin_settings_edit(app, app.current_config().lint.include.join(", "));
         },
         Some(SettingOption::LintCommands) => {
-            begin_settings_edit(app, format_lint_commands(&app.current_config));
+            begin_settings_edit(app, format_lint_commands(app.current_config()));
         },
         Some(SettingOption::LintCacheSize) => {
-            begin_settings_edit(app, format_lint_cache_size(&app.current_config));
+            begin_settings_edit(app, format_lint_cache_size(app.current_config()));
         },
         Some(SettingOption::StatusFlashSecs) => {
-            begin_settings_edit(app, format_flash_secs(&app.current_config));
+            begin_settings_edit(app, format_flash_secs(app.current_config()));
         },
         Some(SettingOption::TaskLingerSecs) => {
-            begin_settings_edit(app, format_linger_secs(&app.current_config));
+            begin_settings_edit(app, format_linger_secs(app.current_config()));
         },
         Some(SettingOption::DiscoveryShimmerSecs) => {
-            begin_settings_edit(app, format_discovery_shimmer_secs(&app.current_config));
+            begin_settings_edit(app, format_discovery_shimmer_secs(app.current_config()));
         },
         Some(SettingOption::IncludeNonRust) => {
-            let mut cfg = app.current_config.clone();
+            let mut cfg = app.current_config().clone();
             cfg.tui.include_non_rust.toggle();
             let _ = save_updated_config(app, &cfg);
         },
@@ -827,7 +827,7 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
             toggle_lints(app);
         },
         Some(SettingOption::LintOnDiscovery) => {
-            let mut cfg = app.current_config.clone();
+            let mut cfg = app.current_config().clone();
             cfg.lint.on_discovery.toggle();
             let _ = save_updated_config(app, &cfg);
         },
@@ -835,12 +835,12 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
             begin_settings_edit(app, app.editor().to_string());
         },
         Some(SettingOption::MainBranch) => {
-            begin_settings_edit(app, app.current_config.tui.main_branch.clone());
+            begin_settings_edit(app, app.current_config().tui.main_branch.clone());
         },
         Some(SettingOption::OtherPrimaryBranches) => {
             begin_settings_edit(
                 app,
-                app.current_config.tui.other_primary_branches.join(", "),
+                app.current_config().tui.other_primary_branches.join(", "),
             );
         },
         None => {},
@@ -848,8 +848,8 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
 }
 
 fn apply_settings_edit(app: &mut App) {
-    let setting = SettingOption::from_index(app.settings_pane.pos());
-    let value = app.settings_edit_buf.clone();
+    let setting = SettingOption::from_index(app.settings_pane().pos());
+    let value = app.settings_edit_buf().to_string();
     let result = setting.map_or(Ok(()), |setting| {
         apply_settings_edit_for(app, setting, &value)
     });
@@ -858,8 +858,7 @@ fn apply_settings_edit(app: &mut App) {
         return;
     }
     app.end_settings_editing();
-    app.settings_edit_buf.clear();
-    app.settings_edit_cursor = 0;
+    app.set_settings_edit_state(String::new(), 0);
 }
 
 fn apply_settings_edit_for(
@@ -906,12 +905,12 @@ fn apply_general_settings_edit(
         | SettingOption::LintCommands
         | SettingOption::LintCacheSize => return Ok(false),
         SettingOption::MainBranch => {
-            let mut cfg = app.current_config.clone();
+            let mut cfg = app.current_config().clone();
             cfg.tui.main_branch = config::normalize_branch_name(value, "Main branch")?;
             let _ = save_updated_config(app, &cfg);
         },
         SettingOption::OtherPrimaryBranches => {
-            let mut cfg = app.current_config.clone();
+            let mut cfg = app.current_config().clone();
             cfg.tui.other_primary_branches =
                 config::normalize_branch_list(&parse_dir_list(value), "Other primary branches")?;
             let _ = save_updated_config(app, &cfg);
@@ -945,19 +944,19 @@ fn apply_lint_settings_edit(
     match setting {
         SettingOption::LintProjects => {
             save_sorted_list_setting(app, value, |cfg, dirs| cfg.lint.include = dirs);
-            if app.inline_error.is_none() {
+            if app.inline_error().is_none() {
                 app.show_timed_toast("Settings", "Lint projects updated");
             }
         },
         SettingOption::LintCommands => {
-            let mut cfg = app.current_config.clone();
+            let mut cfg = app.current_config().clone();
             cfg.lint.commands = parse_lint_commands(value);
             if save_updated_config(app, &cfg) {
                 app.show_timed_toast("Settings", "Lint commands updated");
             }
         },
         SettingOption::LintCacheSize => {
-            let mut cfg = app.current_config.clone();
+            let mut cfg = app.current_config().clone();
             cfg.lint.cache_size =
                 parse_lint_cache_size(value).map_err(|_| format!("Invalid cache size: {value}"))?;
             if save_updated_config(app, &cfg) {
@@ -976,38 +975,45 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
         },
         KeyCode::Esc => {
             app.end_settings_editing();
-            app.settings_edit_buf.clear();
-            app.settings_edit_cursor = 0;
+            app.set_settings_edit_state(String::new(), 0);
         },
         KeyCode::Left => {
-            app.settings_edit_cursor =
-                prev_char_boundary(&app.settings_edit_buf, app.settings_edit_cursor);
+            let cursor = prev_char_boundary(app.settings_edit_buf(), app.settings_edit_cursor());
+            let value = app.settings_edit_buf().to_string();
+            app.set_settings_edit_state(value, cursor);
         },
         KeyCode::Right => {
-            app.settings_edit_cursor =
-                next_char_boundary(&app.settings_edit_buf, app.settings_edit_cursor);
+            let cursor = next_char_boundary(app.settings_edit_buf(), app.settings_edit_cursor());
+            let value = app.settings_edit_buf().to_string();
+            app.set_settings_edit_state(value, cursor);
         },
         KeyCode::Home => {
-            app.settings_edit_cursor = 0;
+            let value = app.settings_edit_buf().to_string();
+            app.set_settings_edit_state(value, 0);
         },
         KeyCode::End => {
-            app.settings_edit_cursor = app.settings_edit_buf.len();
+            let value = app.settings_edit_buf().to_string();
+            app.set_settings_edit_state(value.clone(), value.len());
         },
         KeyCode::Backspace => {
-            backspace_at_cursor(&mut app.settings_edit_buf, &mut app.settings_edit_cursor);
+            let (buf, cursor) = app.settings_edit_parts_mut();
+            backspace_at_cursor(buf, cursor);
         },
         KeyCode::Delete => {
-            delete_at_cursor(&mut app.settings_edit_buf, app.settings_edit_cursor);
+            let cursor = app.settings_edit_cursor();
+            let (buf, _) = app.settings_edit_parts_mut();
+            delete_at_cursor(buf, cursor);
         },
         KeyCode::Char(c) => {
-            insert_char_at_cursor(&mut app.settings_edit_buf, &mut app.settings_edit_cursor, c);
+            let (buf, cursor) = app.settings_edit_parts_mut();
+            insert_char_at_cursor(buf, cursor, c);
         },
         _ => {},
     }
 }
 
 fn toggle_lints(app: &mut App) {
-    let mut cfg = app.current_config.clone();
+    let mut cfg = app.current_config().clone();
     cfg.lint.enabled = !cfg.lint.enabled;
     if !save_updated_config(app, &cfg) {
         return;

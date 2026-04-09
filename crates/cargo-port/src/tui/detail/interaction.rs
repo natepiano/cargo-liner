@@ -32,11 +32,11 @@ enum BuildMode {
 }
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
-    let Some(info) = app.cached_detail.as_ref().map(|c| c.info.clone()) else {
+    let Some(info) = app.cached_detail().map(|c| c.info.clone()) else {
         return;
     };
     let entries = build_target_list(&info);
-    if let Some(entry) = entries.get(app.targets_pane.pos())
+    if let Some(entry) = entries.get(app.targets_pane().pos())
         && let Some(abs_path) = app.selected_project_path()
     {
         let package_name = if info.name == "-" {
@@ -44,7 +44,7 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
         } else {
             Some(info.name)
         };
-        app.pending_example_run = Some(PendingExampleRun {
+        app.set_pending_example_run(PendingExampleRun {
             abs_path: abs_path.display().to_string(),
             target_name: entry.name.clone(),
             package_name,
@@ -71,7 +71,7 @@ pub fn handle_detail_key(app: &mut App, event: &KeyEvent) {
     let bind = KeyBind::new(event.code, event.modifiers);
     match app.base_focus() {
         PaneId::Targets => {
-            if let Some(action) = app.current_keymap.targets.action_for(&bind) {
+            if let Some(action) = app.current_keymap().targets.action_for(&bind) {
                 match action {
                     TargetsAction::Activate => handle_detail_enter(app),
                     TargetsAction::ReleaseBuild => handle_target_action(app, BuildMode::Release),
@@ -80,7 +80,7 @@ pub fn handle_detail_key(app: &mut App, event: &KeyEvent) {
             }
         },
         PaneId::Git => {
-            if let Some(action) = app.current_keymap.git.action_for(&bind) {
+            if let Some(action) = app.current_keymap().git.action_for(&bind) {
                 match action {
                     GitAction::Activate => handle_detail_enter(app),
                     GitAction::Clean => request_clean(app),
@@ -89,7 +89,7 @@ pub fn handle_detail_key(app: &mut App, event: &KeyEvent) {
         },
         _ => {
             // Package pane (default detail pane).
-            if let Some(action) = app.current_keymap.package.action_for(&bind) {
+            if let Some(action) = app.current_keymap().package.action_for(&bind) {
                 match action {
                     PackageAction::Activate => handle_detail_enter(app),
                     PackageAction::Clean => request_clean(app),
@@ -105,7 +105,7 @@ fn request_clean(app: &mut App) {
             .selected_item()
             .is_some_and(crate::project::RootItem::is_rust)
     {
-        app.confirm = Some(ConfirmAction::Clean(path.display().to_string()));
+        app.set_confirm(ConfirmAction::Clean(path.display().to_string()));
     }
 }
 
@@ -113,8 +113,8 @@ fn request_clean(app: &mut App) {
 /// currently active detail column.
 fn active_detail_pane(app: &mut App) -> &mut Pane {
     match app.base_focus() {
-        PaneId::Targets => &mut app.targets_pane,
-        PaneId::Git => &mut app.git_pane,
+        PaneId::Targets => app.targets_pane_mut(),
+        PaneId::Git => app.git_pane_mut(),
         PaneId::Package
         | PaneId::ProjectList
         | PaneId::Lints
@@ -123,7 +123,7 @@ fn active_detail_pane(app: &mut App) -> &mut Pane {
         | PaneId::Search
         | PaneId::Settings
         | PaneId::Finder
-        | PaneId::Keymap => &mut app.package_pane,
+        | PaneId::Keymap => app.package_pane_mut(),
     }
 }
 
@@ -132,9 +132,9 @@ fn handle_detail_enter(app: &mut App) {
     if app.is_focused(PaneId::Targets) {
         handle_target_action(app, BuildMode::Debug);
     } else if app.base_focus() == PaneId::Package {
-        let info = app.cached_detail.as_ref().map(|c| c.info.clone());
+        let info = app.cached_detail().map(|c| c.info.clone());
         let fields = info.as_ref().map(package_fields).unwrap_or_default();
-        match fields.get(app.package_pane.pos()) {
+        match fields.get(app.package_pane().pos()) {
             Some(DetailField::CratesIo) => {
                 if let Some(info) = info.as_ref() {
                     open_url(&format!("https://crates.io/crates/{}", info.name));
@@ -143,9 +143,9 @@ fn handle_detail_enter(app: &mut App) {
             Some(field) if field.is_from_cargo_toml() => open_cargo_toml(app),
             _ => {},
         }
-    } else if let Some(info) = app.cached_detail.as_ref().map(|c| &c.info)
+    } else if let Some(info) = app.cached_detail().map(|c| &c.info)
         && matches!(
-            git_fields(info).get(app.git_pane.pos()),
+            git_fields(info).get(app.git_pane().pos()),
             Some(DetailField::Repo)
         )
         && let Some(url) = info.git_url.as_deref()
@@ -171,16 +171,16 @@ fn open_url(url: &str) {
 pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.ci_pane.up(),
-        KeyCode::Down => return app.ci_pane.down(),
-        KeyCode::Home => return app.ci_pane.home(),
-        KeyCode::End => return app.ci_pane.end(),
+        KeyCode::Up => return app.ci_pane_mut().up(),
+        KeyCode::Down => return app.ci_pane_mut().down(),
+        KeyCode::Home => return app.ci_pane_mut().home(),
+        KeyCode::End => return app.ci_pane_mut().end(),
         _ => {},
     }
 
     // Action keys through keymap.
     let bind = KeyBind::new(event.code, event.modifiers);
-    let Some(action) = app.current_keymap.ci_runs.action_for(&bind) else {
+    let Some(action) = app.current_keymap().ci_runs.action_for(&bind) else {
         return;
     };
     match action {
@@ -207,7 +207,7 @@ fn handle_ci_enter(app: &mut App) {
     let is_fetching = ci_state.is_some_and(CiState::is_fetching);
     let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
 
-    let cursor_pos = app.ci_pane.pos();
+    let cursor_pos = app.ci_pane().pos();
     if cursor_pos < run_count {
         if let Some(run) = visible_runs.get(cursor_pos) {
             open_url(&run.url);
@@ -222,7 +222,7 @@ fn handle_ci_enter(app: &mut App) {
         } else {
             CiFetchKind::FetchOlder
         };
-        app.pending_ci_fetch = Some(PendingCiFetch {
+        app.set_pending_ci_fetch(PendingCiFetch {
             project_path: ci_path.display().to_string(),
             current_count,
             kind,
@@ -233,16 +233,16 @@ fn handle_ci_enter(app: &mut App) {
 pub fn handle_lints_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.lint_pane.up(),
-        KeyCode::Down => return app.lint_pane.down(),
-        KeyCode::Home => return app.lint_pane.home(),
-        KeyCode::End => return app.lint_pane.end(),
+        KeyCode::Up => return app.lint_pane_mut().up(),
+        KeyCode::Down => return app.lint_pane_mut().down(),
+        KeyCode::Home => return app.lint_pane_mut().home(),
+        KeyCode::End => return app.lint_pane_mut().end(),
         _ => {},
     }
 
     // Action keys through keymap.
     let bind = KeyBind::new(event.code, event.modifiers);
-    let Some(action) = app.current_keymap.lints.action_for(&bind) else {
+    let Some(action) = app.current_keymap().lints.action_for(&bind) else {
         return;
     };
     match action {
@@ -258,7 +258,7 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
         .map(|repo| {
             let _ = std::fs::remove_dir_all(scan::ci_cache_dir_pub(repo.owner(), repo.repo()));
             scan::clear_exhausted(repo.owner(), repo.repo());
-            if let Ok(mut cache) = app.repo_fetch_cache.lock() {
+            if let Ok(mut cache) = app.repo_fetch_cache().lock() {
                 cache.remove(&repo);
             }
             app.owner_paths_for_repo(&repo)
@@ -267,7 +267,7 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
         .unwrap_or_else(|| vec![abs.to_path_buf()]);
 
     for owner_path in owner_paths {
-        app.ci_state.insert(
+        app.ci_state_mut().insert(
             owner_path,
             CiState::Loaded {
                 runs:      Vec::new(),
@@ -275,8 +275,8 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
             },
         );
     }
-    app.ci_pane.home();
-    app.data_generation += 1;
+    app.ci_pane_mut().home();
+    app.increment_data_generation();
 }
 
 fn clear_lint_history(app: &mut App) {
@@ -286,21 +286,21 @@ fn clear_lint_history(app: &mut App) {
     let project_cache_dir = crate::lint::project_dir(&abs_path);
     let _ = std::fs::remove_dir_all(project_cache_dir);
 
-    app.lint_runs.remove(abs_path.as_path());
-    app.lint_pane.home();
+    app.lint_runs_mut().remove(abs_path.as_path());
+    app.lint_pane_mut().home();
     app.refresh_lint_cache_usage_from_disk();
-    app.data_generation += 1;
+    app.increment_data_generation();
 }
 
 fn open_lint_run_output(app: &App) {
     let Some(abs_path) = app.selected_project_path() else {
         return;
     };
-    let runs = match app.lint_runs.get(abs_path) {
+    let runs = match app.lint_runs().get(abs_path) {
         Some(runs) if !runs.is_empty() => runs,
         _ => return,
     };
-    let Some(run) = runs.get(app.lint_pane.pos()) else {
+    let Some(run) = runs.get(app.lint_pane().pos()) else {
         return;
     };
 
@@ -332,7 +332,7 @@ fn open_cargo_toml(app: &App) {
         return;
     };
     let project_dir = app
-        .projects
+        .projects()
         .iter()
         .find_map(|item| match item {
             crate::project::RootItem::Workspace(ws)

@@ -112,15 +112,15 @@ pub(super) fn format_lints_slowest(run: &LintRun) -> String {
 
 fn lints_panel_title(app: &App, runs: &[LintRun], focused: bool) -> String {
     if focused && !runs.is_empty() {
-        let indicator = crate::tui::types::scroll_indicator(app.lint_pane.pos(), runs.len());
+        let indicator = crate::tui::types::scroll_indicator(app.lint_pane().pos(), runs.len());
         return format!(" Lints ({indicator}) ");
     }
     let (watching, worker_count) = app.selected_project_path().map_or((false, 0usize), |path| {
-        let watching = app.lint_is_watchable(path) && app.lint_runtime.is_some();
+        let watching = app.lint_is_watchable(path) && app.lint_runtime().is_some();
         (watching, usize::from(watching))
     });
     let cache_size = app
-        .lint_cache_usage
+        .lint_cache_usage()
         .cache_size_bytes
         .map_or_else(|| "unlimited".to_string(), format_bytes);
     format!(
@@ -128,7 +128,7 @@ fn lints_panel_title(app: &App, runs: &[LintRun], focused: bool) -> String {
         if watching { "yes" } else { "no" },
         worker_count,
         runs.len(),
-        format_bytes(app.lint_cache_usage.bytes),
+        format_bytes(app.lint_cache_usage().bytes),
         cache_size,
     )
 }
@@ -157,8 +157,8 @@ pub fn render_lints_panel(
         });
 
     let inner = block.inner(area);
-    app.lint_pane.set_len(runs.len());
-    app.lint_pane.set_content_area(inner);
+    app.lint_pane_mut().set_len(runs.len());
+    app.lint_pane_mut().set_content_area(inner);
 
     if runs.is_empty() {
         frame.render_widget(block, area);
@@ -220,9 +220,9 @@ pub fn render_lints_panel(
     .column_spacing(1)
     .row_highlight_style(Pane::selection_style(app.pane_focus_state(PaneId::Lints)));
 
-    let mut table_state = TableState::default().with_selected(Some(app.lint_pane.pos()));
+    let mut table_state = TableState::default().with_selected(Some(app.lint_pane().pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.lint_pane.set_scroll_offset(table_state.offset());
+    app.lint_pane_mut().set_scroll_offset(table_state.offset());
 
     let visible_height = usize::from(inner.height.saturating_sub(1));
     let visible_start = table_state.offset();

@@ -75,99 +75,312 @@ use super::types::Pane;
 use super::types::PaneId;
 
 pub(super) struct App {
-    pub current_config:           CargoPortConfig,
-    pub scan_root:                PathBuf,
-    pub http_client:              HttpClient,
-    pub repo_fetch_cache:         RepoCache,
-    pub projects:                 ProjectList,
-    pub ci_state:                 HashMap<PathBuf, CiState>,
-    pub ci_display_modes:         HashMap<PathBuf, types::CiRunDisplayMode>,
-    pub lint_status:              HashMap<PathBuf, LintStatus>,
-    pub lint_cache_usage:         CacheUsage,
-    pub lint_runs:                HashMap<PathBuf, Vec<LintRun>>,
-    pub lint_rollup_status:       HashMap<types::LintRollupKey, LintStatus>,
-    pub lint_rollup_paths:        HashMap<types::LintRollupKey, Vec<PathBuf>>,
-    pub lint_rollup_keys_by_path: HashMap<PathBuf, Vec<types::LintRollupKey>>,
-    pub git_path_states:          HashMap<PathBuf, GitPathState>,
-    pub cargo_active_paths:       HashSet<PathBuf>,
-    pub crates_versions:          HashMap<PathBuf, String>,
-    pub crates_downloads:         HashMap<PathBuf, u64>,
-    pub stars:                    HashMap<PathBuf, u64>,
-    pub repo_descriptions:        HashMap<PathBuf, String>,
-    pub discovery_shimmers:       HashMap<PathBuf, types::DiscoveryShimmer>,
-    pub pending_git_first_commit: HashMap<PathBuf, String>,
-    pub bg_tx:                    mpsc::Sender<BackgroundMsg>,
-    pub bg_rx:                    mpsc::Receiver<BackgroundMsg>,
-    pub fully_loaded:             HashSet<PathBuf>,
-    pub priority_fetch_path:      Option<AbsolutePath>,
-    pub expanded:                 HashSet<ExpandKey>,
-    pub list_state:               ListState,
-    pub search_query:             String,
-    pub filtered:                 Vec<types::SearchHit>,
-    pub settings_pane:            Pane,
-    pub settings_edit_buf:        String,
-    pub settings_edit_cursor:     usize,
-    pub focused_pane:             PaneId,
-    pub return_focus:             Option<PaneId>,
-    pub visited_panes:            HashSet<PaneId>,
-    pub package_pane:             Pane,
-    pub git_pane:                 Pane,
-    pub targets_pane:             Pane,
-    pub ci_pane:                  Pane,
-    pub toast_pane:               Pane,
-    pub lint_pane:                Pane,
-    pub pending_example_run:      Option<PendingExampleRun>,
-    pub pending_ci_fetch:         Option<PendingCiFetch>,
-    pub pending_cleans:           VecDeque<PendingClean>,
-    pub confirm:                  Option<ConfirmAction>,
-    pub animation_started:        Instant,
-    pub ci_fetch_tx:              mpsc::Sender<CiFetchMsg>,
-    pub ci_fetch_rx:              mpsc::Receiver<CiFetchMsg>,
-    pub clean_tx:                 mpsc::Sender<CleanMsg>,
-    pub clean_rx:                 mpsc::Receiver<CleanMsg>,
-    pub example_running:          Option<String>,
-    pub example_child:            Arc<Mutex<Option<u32>>>,
-    pub example_output:           Vec<String>,
-    pub example_tx:               mpsc::Sender<ExampleMsg>,
-    pub example_rx:               mpsc::Receiver<ExampleMsg>,
-    pub running_clean_paths:      HashSet<PathBuf>,
-    pub clean_toast:              Option<ToastTaskId>,
-    pub running_lint_paths:       HashMap<PathBuf, Instant>,
-    pub lint_toast:               Option<ToastTaskId>,
-    pub watch_tx:                 mpsc::Sender<WatcherMsg>,
-    pub lint_runtime:             Option<RuntimeHandle>,
-    pub unreachable_services:     HashSet<ServiceKind>,
-    pub service_retry_active:     HashSet<ServiceKind>,
-    pub selection_paths:          types::SelectionPaths,
-    pub finder:                   types::FinderState,
-    pub cached_visible_rows:      Vec<VisibleRow>,
-    pub cached_root_sorted:       Vec<u64>,
-    pub cached_child_sorted:      HashMap<usize, Vec<u64>>,
-    pub cached_fit_widths:        ResolvedWidths,
-    pub builds:                   types::AsyncBuildState,
-    pub data_generation:          u64,
-    pub detail_generation:        u64,
-    pub cached_detail:            Option<types::DetailCache>,
-    pub layout_cache:             LayoutCache,
-    pub status_flash:             Option<(String, std::time::Instant)>,
-    pub toasts:                   ToastManager,
-    pub config_path:              Option<PathBuf>,
-    pub config_last_seen:         Option<types::ConfigFileStamp>,
-    pub current_keymap:           ResolvedKeymap,
-    pub keymap_path:              Option<PathBuf>,
-    pub keymap_last_seen:         Option<types::ConfigFileStamp>,
-    pub keymap_diagnostics_id:    Option<u64>,
-    pub keymap_pane:              Pane,
-    pub inline_error:             Option<String>,
-    pub ui_modes:                 types::UiModes,
-    pub dirty:                    types::DirtyState,
-    pub scan:                     types::ScanState,
-    pub selection:                types::SelectionSync,
+    current_config:           CargoPortConfig,
+    scan_root:                PathBuf,
+    http_client:              HttpClient,
+    repo_fetch_cache:         RepoCache,
+    projects:                 ProjectList,
+    ci_state:                 HashMap<PathBuf, CiState>,
+    ci_display_modes:         HashMap<PathBuf, types::CiRunDisplayMode>,
+    lint_status:              HashMap<PathBuf, LintStatus>,
+    lint_cache_usage:         CacheUsage,
+    lint_runs:                HashMap<PathBuf, Vec<LintRun>>,
+    lint_rollup_status:       HashMap<types::LintRollupKey, LintStatus>,
+    lint_rollup_paths:        HashMap<types::LintRollupKey, Vec<PathBuf>>,
+    lint_rollup_keys_by_path: HashMap<PathBuf, Vec<types::LintRollupKey>>,
+    git_path_states:          HashMap<PathBuf, GitPathState>,
+    cargo_active_paths:       HashSet<PathBuf>,
+    crates_versions:          HashMap<PathBuf, String>,
+    crates_downloads:         HashMap<PathBuf, u64>,
+    stars:                    HashMap<PathBuf, u64>,
+    repo_descriptions:        HashMap<PathBuf, String>,
+    discovery_shimmers:       HashMap<PathBuf, types::DiscoveryShimmer>,
+    pending_git_first_commit: HashMap<PathBuf, String>,
+    bg_tx:                    mpsc::Sender<BackgroundMsg>,
+    bg_rx:                    mpsc::Receiver<BackgroundMsg>,
+    fully_loaded:             HashSet<PathBuf>,
+    priority_fetch_path:      Option<AbsolutePath>,
+    expanded:                 HashSet<ExpandKey>,
+    list_state:               ListState,
+    search_query:             String,
+    filtered:                 Vec<types::SearchHit>,
+    settings_pane:            Pane,
+    settings_edit_buf:        String,
+    settings_edit_cursor:     usize,
+    focused_pane:             PaneId,
+    return_focus:             Option<PaneId>,
+    visited_panes:            HashSet<PaneId>,
+    package_pane:             Pane,
+    git_pane:                 Pane,
+    targets_pane:             Pane,
+    ci_pane:                  Pane,
+    toast_pane:               Pane,
+    lint_pane:                Pane,
+    pending_example_run:      Option<PendingExampleRun>,
+    pending_ci_fetch:         Option<PendingCiFetch>,
+    pending_cleans:           VecDeque<PendingClean>,
+    confirm:                  Option<ConfirmAction>,
+    animation_started:        Instant,
+    ci_fetch_tx:              mpsc::Sender<CiFetchMsg>,
+    ci_fetch_rx:              mpsc::Receiver<CiFetchMsg>,
+    clean_tx:                 mpsc::Sender<CleanMsg>,
+    clean_rx:                 mpsc::Receiver<CleanMsg>,
+    example_running:          Option<String>,
+    example_child:            Arc<Mutex<Option<u32>>>,
+    example_output:           Vec<String>,
+    example_tx:               mpsc::Sender<ExampleMsg>,
+    example_rx:               mpsc::Receiver<ExampleMsg>,
+    running_clean_paths:      HashSet<PathBuf>,
+    clean_toast:              Option<ToastTaskId>,
+    running_lint_paths:       HashMap<PathBuf, Instant>,
+    lint_toast:               Option<ToastTaskId>,
+    watch_tx:                 mpsc::Sender<WatcherMsg>,
+    lint_runtime:             Option<RuntimeHandle>,
+    unreachable_services:     HashSet<ServiceKind>,
+    service_retry_active:     HashSet<ServiceKind>,
+    selection_paths:          types::SelectionPaths,
+    finder:                   types::FinderState,
+    cached_visible_rows:      Vec<VisibleRow>,
+    cached_root_sorted:       Vec<u64>,
+    cached_child_sorted:      HashMap<usize, Vec<u64>>,
+    cached_fit_widths:        ResolvedWidths,
+    builds:                   types::AsyncBuildState,
+    data_generation:          u64,
+    detail_generation:        u64,
+    cached_detail:            Option<types::DetailCache>,
+    layout_cache:             LayoutCache,
+    status_flash:             Option<(String, std::time::Instant)>,
+    toasts:                   ToastManager,
+    config_path:              Option<PathBuf>,
+    config_last_seen:         Option<types::ConfigFileStamp>,
+    current_keymap:           ResolvedKeymap,
+    keymap_path:              Option<PathBuf>,
+    keymap_last_seen:         Option<types::ConfigFileStamp>,
+    keymap_diagnostics_id:    Option<u64>,
+    keymap_pane:              Pane,
+    inline_error:             Option<String>,
+    ui_modes:                 types::UiModes,
+    dirty:                    types::DirtyState,
+    scan:                     types::ScanState,
+    selection:                types::SelectionSync,
     #[cfg(test)]
-    pub retry_spawn_mode:         types::RetrySpawnMode,
+    retry_spawn_mode:         types::RetrySpawnMode,
 }
 
 impl App {
+    pub(super) const fn current_config(&self) -> &CargoPortConfig { &self.current_config }
+
+    pub(super) const fn current_keymap(&self) -> &ResolvedKeymap { &self.current_keymap }
+
+    pub(super) fn current_keymap_mut(&mut self) -> &mut ResolvedKeymap { &mut self.current_keymap }
+
+    pub(super) const fn scan_root(&self) -> &PathBuf { &self.scan_root }
+
+    pub(super) const fn projects(&self) -> &ProjectList { &self.projects }
+
+    #[cfg(test)]
+    pub(super) fn projects_mut(&mut self) -> &mut ProjectList { &mut self.projects }
+
+    pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { &self.repo_fetch_cache }
+
+    pub(super) fn ci_state_mut(&mut self) -> &mut HashMap<PathBuf, CiState> { &mut self.ci_state }
+
+    pub(super) const fn lint_cache_usage(&self) -> &CacheUsage { &self.lint_cache_usage }
+
+    pub(super) fn lint_runs(&self) -> &HashMap<PathBuf, Vec<LintRun>> { &self.lint_runs }
+
+    pub(super) fn lint_runs_mut(&mut self) -> &mut HashMap<PathBuf, Vec<LintRun>> {
+        &mut self.lint_runs
+    }
+
+    pub(super) const fn lint_runtime(&self) -> Option<&RuntimeHandle> { self.lint_runtime.as_ref() }
+
+    pub(super) const fn crates_versions(&self) -> &HashMap<PathBuf, String> {
+        &self.crates_versions
+    }
+
+    pub(super) const fn crates_downloads(&self) -> &HashMap<PathBuf, u64> { &self.crates_downloads }
+
+    pub(super) const fn stars(&self) -> &HashMap<PathBuf, u64> { &self.stars }
+
+    pub(super) const fn repo_descriptions(&self) -> &HashMap<PathBuf, String> {
+        &self.repo_descriptions
+    }
+
+    pub(super) const fn cached_detail(&self) -> Option<&types::DetailCache> {
+        self.cached_detail.as_ref()
+    }
+
+    pub(super) fn layout_cache(&self) -> &LayoutCache { &self.layout_cache }
+
+    pub(super) fn layout_cache_mut(&mut self) -> &mut LayoutCache { &mut self.layout_cache }
+
+    pub(super) const fn cached_fit_widths(&self) -> &ResolvedWidths { &self.cached_fit_widths }
+
+    pub(super) fn cached_root_sorted(&self) -> &[u64] { &self.cached_root_sorted }
+
+    pub(super) fn cached_child_sorted(&self) -> &HashMap<usize, Vec<u64>> {
+        &self.cached_child_sorted
+    }
+
+    pub(super) const fn list_state(&self) -> &ListState { &self.list_state }
+
+    pub(super) fn list_state_mut(&mut self) -> &mut ListState { &mut self.list_state }
+
+    pub(super) const fn focused_pane(&self) -> PaneId { self.focused_pane }
+
+    #[cfg(test)]
+    pub(super) fn set_focused_pane(&mut self, pane: PaneId) { self.focused_pane = pane; }
+
+    pub(super) fn expanded(&self) -> &HashSet<ExpandKey> { &self.expanded }
+
+    #[cfg(test)]
+    pub(super) fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> { &mut self.expanded }
+
+    pub(super) fn dirty(&self) -> &types::DirtyState { &self.dirty }
+
+    pub(super) fn dirty_mut(&mut self) -> &mut types::DirtyState { &mut self.dirty }
+
+    #[cfg(test)]
+    pub(super) fn ui_modes_mut(&mut self) -> &mut types::UiModes { &mut self.ui_modes }
+
+    pub(super) const fn settings_pane(&self) -> &Pane { &self.settings_pane }
+
+    pub(super) fn settings_pane_mut(&mut self) -> &mut Pane { &mut self.settings_pane }
+
+    pub(super) const fn package_pane(&self) -> &Pane { &self.package_pane }
+
+    pub(super) fn package_pane_mut(&mut self) -> &mut Pane { &mut self.package_pane }
+
+    pub(super) const fn git_pane(&self) -> &Pane { &self.git_pane }
+
+    pub(super) fn git_pane_mut(&mut self) -> &mut Pane { &mut self.git_pane }
+
+    pub(super) const fn targets_pane(&self) -> &Pane { &self.targets_pane }
+
+    pub(super) fn targets_pane_mut(&mut self) -> &mut Pane { &mut self.targets_pane }
+
+    pub(super) const fn ci_pane(&self) -> &Pane { &self.ci_pane }
+
+    pub(super) fn ci_pane_mut(&mut self) -> &mut Pane { &mut self.ci_pane }
+
+    pub(super) const fn toast_pane(&self) -> &Pane { &self.toast_pane }
+
+    pub(super) fn toast_pane_mut(&mut self) -> &mut Pane { &mut self.toast_pane }
+
+    pub(super) const fn lint_pane(&self) -> &Pane { &self.lint_pane }
+
+    pub(super) fn lint_pane_mut(&mut self) -> &mut Pane { &mut self.lint_pane }
+
+    pub(super) const fn keymap_pane(&self) -> &Pane { &self.keymap_pane }
+
+    pub(super) fn keymap_pane_mut(&mut self) -> &mut Pane { &mut self.keymap_pane }
+
+    pub(super) const fn finder(&self) -> &types::FinderState { &self.finder }
+
+    pub(super) fn finder_mut(&mut self) -> &mut types::FinderState { &mut self.finder }
+
+    pub(super) fn last_selected_path(&self) -> Option<&AbsolutePath> {
+        self.selection_paths.last_selected.as_ref()
+    }
+
+    pub(super) fn set_pending_example_run(&mut self, run: PendingExampleRun) {
+        self.pending_example_run = Some(run);
+    }
+
+    pub(super) fn take_pending_example_run(&mut self) -> Option<PendingExampleRun> {
+        self.pending_example_run.take()
+    }
+
+    pub(super) fn set_pending_ci_fetch(&mut self, fetch: PendingCiFetch) {
+        self.pending_ci_fetch = Some(fetch);
+    }
+
+    pub(super) fn take_pending_ci_fetch(&mut self) -> Option<PendingCiFetch> {
+        self.pending_ci_fetch.take()
+    }
+
+    pub(super) fn pending_cleans_mut(&mut self) -> &mut VecDeque<PendingClean> {
+        &mut self.pending_cleans
+    }
+
+    pub(super) fn set_confirm(&mut self, action: ConfirmAction) { self.confirm = Some(action); }
+
+    pub(super) fn confirm(&self) -> Option<&ConfirmAction> { self.confirm.as_ref() }
+
+    pub(super) fn settings_edit_buf(&self) -> &str { &self.settings_edit_buf }
+
+    pub(super) const fn settings_edit_cursor(&self) -> usize { self.settings_edit_cursor }
+
+    pub(super) fn settings_edit_parts_mut(&mut self) -> (&mut String, &mut usize) {
+        (&mut self.settings_edit_buf, &mut self.settings_edit_cursor)
+    }
+
+    pub(super) fn set_settings_edit_state(&mut self, value: String, cursor: usize) {
+        self.settings_edit_buf = value;
+        self.settings_edit_cursor = cursor;
+    }
+
+    pub(super) fn inline_error(&self) -> Option<&String> { self.inline_error.as_ref() }
+
+    pub(super) fn set_inline_error(&mut self, error: impl Into<String>) {
+        self.inline_error = Some(error.into());
+    }
+
+    pub(super) fn clear_inline_error(&mut self) { self.inline_error = None; }
+
+    pub(super) fn bg_tx(&self) -> mpsc::Sender<BackgroundMsg> { self.bg_tx.clone() }
+
+    pub(super) fn http_client(&self) -> HttpClient { self.http_client.clone() }
+
+    pub(super) fn ci_fetch_tx(&self) -> mpsc::Sender<CiFetchMsg> { self.ci_fetch_tx.clone() }
+
+    pub(super) fn clean_tx(&self) -> mpsc::Sender<CleanMsg> { self.clean_tx.clone() }
+
+    pub(super) fn example_tx(&self) -> mpsc::Sender<ExampleMsg> { self.example_tx.clone() }
+
+    pub(super) fn example_child(&self) -> Arc<Mutex<Option<u32>>> {
+        Arc::clone(&self.example_child)
+    }
+
+    pub(super) fn example_output(&self) -> &[String] { &self.example_output }
+
+    pub(super) fn set_example_output(&mut self, output: Vec<String>) {
+        self.example_output = output;
+    }
+
+    pub(super) fn example_output_mut(&mut self) -> &mut Vec<String> { &mut self.example_output }
+
+    pub(super) fn example_running(&self) -> Option<&str> { self.example_running.as_deref() }
+
+    pub(super) fn set_example_running(&mut self, running: Option<String>) {
+        self.example_running = running;
+    }
+
+    pub(super) fn increment_data_generation(&mut self) { self.data_generation += 1; }
+
+    pub(super) fn search_query(&self) -> &str { &self.search_query }
+
+    #[cfg(test)]
+    pub(super) fn search_query_mut(&mut self) -> &mut String { &mut self.search_query }
+
+    pub(super) fn filtered(&self) -> &[types::SearchHit] { &self.filtered }
+
+    #[cfg(test)]
+    pub(super) fn filtered_mut(&mut self) -> &mut Vec<types::SearchHit> { &mut self.filtered }
+
+    pub(super) fn keymap_path(&self) -> Option<&PathBuf> { self.keymap_path.as_ref() }
+
+    pub(super) fn ui_modes(&self) -> &types::UiModes { &self.ui_modes }
+
+    pub(super) fn take_confirm(&mut self) -> Option<ConfirmAction> { self.confirm.take() }
+
+    #[cfg(test)]
+    pub(super) fn set_projects(&mut self, projects: ProjectList) { self.projects = projects; }
+
+    #[cfg(test)]
+    pub(super) fn toasts_mut(&mut self) -> &mut ToastManager { &mut self.toasts }
+
     pub(super) fn dismiss_target_for_row(&self, row: VisibleRow) -> Option<DismissTarget> {
         self.dismiss_target_for_row_inner(row)
     }

@@ -67,9 +67,9 @@ pub(super) struct ToastHitbox {
 
 pub(super) fn register_project_list_hitboxes(app: &mut App, list_area: Rect, row_width: u16) {
     let visible_height = usize::from(list_area.height);
-    let visible_start = app.list_state.offset();
-    let project_row_count = if app.is_searching() && !app.search_query.is_empty() {
-        app.filtered.len()
+    let visible_start = app.list_state().offset();
+    let project_row_count = if app.is_searching() && !app.search_query().is_empty() {
+        app.filtered().len()
     } else {
         app.visible_rows().len()
     };
@@ -81,7 +81,7 @@ pub(super) fn register_project_list_hitboxes(app: &mut App, list_area: Rect, row
             .y
             .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
         let body_rect = Rect::new(list_area.x, y, row_width, 1);
-        let body_target = if app.is_searching() && !app.search_query.is_empty() {
+        let body_target = if app.is_searching() && !app.search_query().is_empty() {
             Some(UiTarget::SearchRow(row_index))
         } else {
             app.visible_rows()
@@ -92,8 +92,8 @@ pub(super) fn register_project_list_hitboxes(app: &mut App, list_area: Rect, row
         let Some(body_target) = body_target else {
             continue;
         };
-        let order_index = app.layout_cache.ui_hitboxes.len();
-        app.layout_cache.ui_hitboxes.push(UiHitbox::new(
+        let order_index = app.layout_cache().ui_hitboxes.len();
+        app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
             body_rect,
             body_target,
             UiSurface::Content,
@@ -101,8 +101,8 @@ pub(super) fn register_project_list_hitboxes(app: &mut App, list_area: Rect, row
             order_index,
         ));
 
-        let dismiss_target = if app.is_searching() && !app.search_query.is_empty() {
-            app.filtered.get(row_index).and_then(|hit| {
+        let dismiss_target = if app.is_searching() && !app.search_query().is_empty() {
+            app.filtered().get(row_index).and_then(|hit| {
                 let path = hit.abs_path.as_path();
                 app.is_deleted(path)
                     .then(|| DismissTarget::DeletedProject(path.to_path_buf()))
@@ -118,8 +118,8 @@ pub(super) fn register_project_list_hitboxes(app: &mut App, list_area: Rect, row
                 .x
                 .saturating_add(row_width.saturating_sub(suffix_width));
             let action_rect = Rect::new(x, y, suffix_width, 1);
-            let order_index = app.layout_cache.ui_hitboxes.len();
-            app.layout_cache.ui_hitboxes.push(UiHitbox::new(
+            let order_index = app.layout_cache().ui_hitboxes.len();
+            app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
                 action_rect,
                 UiTarget::Dismiss(target),
                 UiSurface::Content,
@@ -132,16 +132,16 @@ pub(super) fn register_project_list_hitboxes(app: &mut App, list_area: Rect, row
 
 pub(super) fn register_toast_hitboxes(app: &mut App, toasts: &[ToastHitbox]) {
     for toast in toasts {
-        let body_order = app.layout_cache.ui_hitboxes.len();
-        app.layout_cache.ui_hitboxes.push(UiHitbox::new(
+        let body_order = app.layout_cache().ui_hitboxes.len();
+        app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
             toast.card_rect,
             UiTarget::ToastCard(toast.id),
             UiSurface::Overlay,
             UiRegion::Body,
             body_order,
         ));
-        let action_order = app.layout_cache.ui_hitboxes.len();
-        app.layout_cache.ui_hitboxes.push(UiHitbox::new(
+        let action_order = app.layout_cache().ui_hitboxes.len();
+        app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
             toast.close_rect,
             UiTarget::Dismiss(DismissTarget::Toast(toast.id)),
             UiSurface::Overlay,
@@ -158,8 +158,8 @@ pub(super) fn register_pane_row_hitbox(
     row: usize,
     surface: UiSurface,
 ) {
-    let order_index = app.layout_cache.ui_hitboxes.len();
-    app.layout_cache.ui_hitboxes.push(UiHitbox::new(
+    let order_index = app.layout_cache().ui_hitboxes.len();
+    app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
         rect,
         UiTarget::PaneRow { pane, row },
         surface,
@@ -194,7 +194,7 @@ pub(super) fn register_pane_row_hitboxes(
 
 pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
     let hit = app
-        .layout_cache
+        .layout_cache()
         .ui_hitboxes
         .iter()
         .filter(|hitbox| hitbox.rect.contains(pos))
@@ -216,27 +216,27 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
             app.focus_pane(PaneId::ProjectList);
             let rows = app.visible_rows();
             if let Some(index) = rows.iter().position(|candidate| *candidate == row) {
-                app.list_state.select(Some(index));
+                app.list_state_mut().select(Some(index));
             }
             true
         },
         UiTarget::SearchRow(index) => {
             app.focus_pane(PaneId::ProjectList);
-            if index < app.filtered.len() {
-                app.list_state.select(Some(index));
+            if index < app.filtered().len() {
+                app.list_state_mut().select(Some(index));
             }
             true
         },
         UiTarget::PaneRow { pane, row } => {
             app.focus_pane(pane);
             match pane {
-                PaneId::Finder => app.finder.pane.set_pos(row),
-                PaneId::Settings => app.settings_pane.set_pos(row),
-                PaneId::Package => app.package_pane.set_pos(row),
-                PaneId::Git => app.git_pane.set_pos(row),
-                PaneId::Targets => app.targets_pane.set_pos(row),
-                PaneId::Lints => app.lint_pane.set_pos(row),
-                PaneId::CiRuns => app.ci_pane.set_pos(row),
+                PaneId::Finder => app.finder_mut().pane.set_pos(row),
+                PaneId::Settings => app.settings_pane_mut().set_pos(row),
+                PaneId::Package => app.package_pane_mut().set_pos(row),
+                PaneId::Git => app.git_pane_mut().set_pos(row),
+                PaneId::Targets => app.targets_pane_mut().set_pos(row),
+                PaneId::Lints => app.lint_pane_mut().set_pos(row),
+                PaneId::CiRuns => app.ci_pane_mut().set_pos(row),
                 _ => return false,
             }
             true
@@ -248,7 +248,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
         UiTarget::ToastCard(id) => {
             let active = app.active_toasts();
             if let Some(index) = active.iter().position(|toast| toast.id() == id) {
-                app.toast_pane.set_pos(index);
+                app.toast_pane_mut().set_pos(index);
                 app.focus_pane(PaneId::Toasts);
             }
             true
@@ -466,7 +466,7 @@ mod tests {
     }
 
     fn row_body_point(app: &App, row_index: usize) -> (u16, u16) {
-        let area = app.layout_cache.project_list;
+        let area = app.layout_cache().project_list;
         (
             area.x.saturating_add(1),
             area.y
@@ -475,7 +475,7 @@ mod tests {
     }
 
     fn row_dismiss_point(app: &App, row_index: usize) -> (u16, u16) {
-        let area = app.layout_cache.project_list;
+        let area = app.layout_cache().project_list;
         (
             area.x.saturating_add(area.width.saturating_sub(2)),
             area.y
@@ -493,7 +493,7 @@ mod tests {
     }
 
     fn finder_result_point(app: &App, result_index: usize) -> (u16, u16) {
-        let area = app.finder.pane.content_area();
+        let area = app.finder().pane.content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -503,7 +503,7 @@ mod tests {
     }
 
     fn lint_run_point(app: &App, run_index: usize) -> (u16, u16) {
-        let area = app.lint_pane.content_area();
+        let area = app.lint_pane().content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -513,7 +513,7 @@ mod tests {
     }
 
     fn ci_run_point(app: &App, run_index: usize) -> (u16, u16) {
-        let area = app.ci_pane.content_area();
+        let area = app.ci_pane().content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -524,7 +524,7 @@ mod tests {
 
     fn toast_close_point(app: &App, toast_id: u64) -> (u16, u16) {
         let rect = app
-            .layout_cache
+            .layout_cache()
             .ui_hitboxes
             .iter()
             .find_map(|hitbox| match hitbox.target {
@@ -540,7 +540,7 @@ mod tests {
 
     fn toast_body_point(app: &App, toast_id: u64) -> (u16, u16) {
         let rect = app
-            .layout_cache
+            .layout_cache()
             .ui_hitboxes
             .iter()
             .find_map(|hitbox| match hitbox.target {
@@ -556,14 +556,14 @@ mod tests {
 
     fn mark_deleted(app: &mut App, path: &Path) {
         let project = app
-            .projects
+            .projects_mut()
             .at_path_mut(path)
             .unwrap_or_else(|| std::process::abort());
         project.disk_usage_bytes = Some(0);
         project.visibility = Visibility::Deleted;
-        app.dirty.rows.mark_dirty();
-        app.dirty.fit_widths.mark_dirty();
-        app.dirty.disk_cache.mark_dirty();
+        app.dirty_mut().rows.mark_dirty();
+        app.dirty_mut().fit_widths.mark_dirty();
+        app.dirty_mut().disk_cache.mark_dirty();
     }
 
     #[test]
@@ -594,14 +594,14 @@ mod tests {
 
         let mut app = make_app(&[make_package("deleted", &deleted_dir)]);
         mark_deleted(&mut app, &deleted_dir);
-        app.list_state.select(Some(0));
+        app.list_state_mut().select(Some(0));
         render_ui(&mut app);
 
         let keyboard_target = app
             .focused_dismiss_target()
             .unwrap_or_else(|| std::process::abort());
         let mouse_target = app
-            .layout_cache
+            .layout_cache()
             .ui_hitboxes
             .iter()
             .find_map(|hitbox| match &hitbox.target {
@@ -638,8 +638,8 @@ mod tests {
         let (x, y) = row_body_point(&app, 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.focused_pane, PaneId::ProjectList);
-        assert_eq!(app.list_state.selected(), Some(1));
+        assert_eq!(app.focused_pane(), PaneId::ProjectList);
+        assert_eq!(app.list_state().selected(), Some(1));
         assert_eq!(
             app.selected_project_path().map(Path::to_path_buf),
             Some(second),
@@ -655,10 +655,10 @@ mod tests {
         std::fs::create_dir_all(&beta).unwrap_or_else(|_| std::process::abort());
 
         let mut app = make_app(&[make_package("alpha", &alpha), make_package("beta", &beta)]);
-        app.ui_modes.search = SearchMode::Active;
-        app.focused_pane = PaneId::Search;
-        app.search_query = "beta".to_string();
-        app.filtered = vec![SearchHit {
+        app.ui_modes_mut().search = SearchMode::Active;
+        app.set_focused_pane(PaneId::Search);
+        *app.search_query_mut() = "beta".to_string();
+        *app.filtered_mut() = vec![SearchHit {
             abs_path:     beta.clone().into(),
             display_path: beta.display().to_string(),
             name:         "beta".to_string(),
@@ -670,8 +670,8 @@ mod tests {
         let (x, y) = row_body_point(&app, 0);
         click(&mut app, x, y);
 
-        assert_eq!(app.focused_pane, PaneId::ProjectList);
-        assert_eq!(app.list_state.selected(), Some(0));
+        assert_eq!(app.focused_pane(), PaneId::ProjectList);
+        assert_eq!(app.list_state().selected(), Some(0));
         assert_eq!(
             app.selected_project_path().map(Path::to_path_buf),
             Some(beta),
@@ -687,11 +687,12 @@ mod tests {
         std::fs::create_dir_all(&beta).unwrap_or_else(|_| std::process::abort());
 
         let mut app = make_app(&[make_package("alpha", &alpha), make_package("beta", &beta)]);
-        let (index, col_widths) = finder::build_finder_index(&app.projects);
-        app.finder.index = index;
-        app.finder.col_widths = col_widths;
-        app.finder.results = vec![0, 1];
-        app.finder.total = 2;
+        let (index, col_widths) = finder::build_finder_index(app.projects());
+        let finder = app.finder_mut();
+        finder.index = index;
+        finder.col_widths = col_widths;
+        finder.results = vec![0, 1];
+        finder.total = 2;
         app.open_overlay(PaneId::Finder);
         app.open_finder();
         render_ui(&mut app);
@@ -700,7 +701,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.finder.pane.pos(),
+            app.finder().pane.pos(),
             1,
             "clicking the second rendered finder result should select result index 1, not the header-offset visual row"
         );
@@ -713,11 +714,11 @@ mod tests {
         app.open_settings();
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(&app.settings_pane, 5);
+        let (x, y) = pane_row_point(app.settings_pane(), 5);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.settings_pane.pos(),
+            app.settings_pane().pos(),
             SettingOption::CiRunCount as usize,
             "clicking a rendered settings option should select the logical setting, not the visual line index including spacer/header rows"
         );
@@ -740,7 +741,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.lint_pane.pos(),
+            app.lint_pane().pos(),
             1,
             "clicking the second rendered lint run should select run index 1, not the header-offset visual row"
         );
@@ -777,7 +778,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.ci_pane.pos(),
+            app.ci_pane().pos(),
             1,
             "clicking the second rendered CI run should select run index 1, not the header-offset visual row"
         );
@@ -793,10 +794,10 @@ mod tests {
             None,
             Some(primary.as_path()),
         ))]);
-        app.expanded.insert(ExpandKey::Node(0));
+        app.expanded_mut().insert(ExpandKey::Node(0));
         render_ui(&mut app);
 
-        app.projects = ProjectList::new(vec![RootItem::PackageWorktrees(
+        app.set_projects(ProjectList::new(vec![RootItem::PackageWorktrees(
             crate::project::WorktreeGroup::new(
                 make_package_worktree("app", &primary, None, Some(primary.as_path())),
                 vec![make_package_worktree(
@@ -806,10 +807,10 @@ mod tests {
                     Some(primary.as_path()),
                 )],
             ),
-        )]);
-        app.dirty.rows.mark_dirty();
-        app.dirty.fit_widths.mark_dirty();
-        app.dirty.disk_cache.mark_dirty();
+        )]));
+        app.dirty_mut().rows.mark_dirty();
+        app.dirty_mut().fit_widths.mark_dirty();
+        app.dirty_mut().disk_cache.mark_dirty();
         render_ui(&mut app);
 
         let (x, y) = row_body_point(&app, 2);
@@ -838,7 +839,7 @@ mod tests {
         render_ui(&mut app);
         let stale_click = row_dismiss_point(&app, 0);
 
-        app.list_state.select(Some(0));
+        app.list_state_mut().select(Some(0));
         let target = app
             .focused_dismiss_target()
             .unwrap_or_else(|| std::process::abort());
@@ -849,7 +850,7 @@ mod tests {
         render_ui(&mut app);
 
         assert!(
-            app.projects
+            app.projects()
                 .at_path(&live_dir)
                 .is_some_and(|info| info.visibility == Visibility::Visible),
             "clicking the old dismiss location after rerender must not dismiss the surviving row"
@@ -865,18 +866,19 @@ mod tests {
     fn toast_close_click_dismisses_toast() {
         let mut app = make_app(&[]);
         let toast_id =
-            app.toasts
+            app.toasts_mut()
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
-        app.toast_pane.set_len(app.active_toasts().len());
+        let toast_len = app.active_toasts().len();
+        app.toast_pane_mut().set_len(toast_len);
         render_ui(&mut app);
 
         let (x, y) = toast_close_point(&app, toast_id);
         click(&mut app, x, y);
         let after_exit = Instant::now() + Duration::from_secs(1);
-        app.toasts.prune(after_exit);
+        app.toasts_mut().prune(after_exit);
 
         assert!(
-            app.toasts
+            app.toasts_mut()
                 .active(after_exit)
                 .into_iter()
                 .all(|toast| toast.id() != toast_id),
@@ -892,16 +894,17 @@ mod tests {
 
         let mut app = make_app(&[make_package("demo", &project_dir)]);
         let toast_id =
-            app.toasts
+            app.toasts_mut()
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
-        app.toast_pane.set_len(app.active_toasts().len());
+        let toast_len = app.active_toasts().len();
+        app.toast_pane_mut().set_len(toast_len);
         render_ui(&mut app);
 
         let (x, y) = toast_body_point(&app, toast_id);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.focused_pane,
+            app.focused_pane(),
             PaneId::Toasts,
             "toast body click should focus the toast surface over underlying content"
         );
@@ -916,12 +919,13 @@ mod tests {
         std::fs::create_dir_all(&beta).unwrap_or_else(|_| std::process::abort());
 
         let mut app = make_app(&[make_package("alpha", &alpha), make_package("beta", &beta)]);
-        let (index, col_widths) = finder::build_finder_index(&app.projects);
-        app.finder.index = index;
-        app.finder.col_widths = col_widths;
-        app.finder.query = "a".to_string();
-        app.finder.results = vec![0, 1];
-        app.finder.total = 2;
+        let (index, col_widths) = finder::build_finder_index(app.projects());
+        let finder = app.finder_mut();
+        finder.index = index;
+        finder.col_widths = col_widths;
+        finder.query = "a".to_string();
+        finder.results = vec![0, 1];
+        finder.total = 2;
         app.open_overlay(PaneId::Finder);
         app.open_finder();
         render_ui(&mut app);
@@ -929,7 +933,7 @@ mod tests {
         let (x, y) = finder_result_point(&app, 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.finder.pane.pos(), 1);
+        assert_eq!(app.finder().pane.pos(), 1);
     }
 
     #[test]
@@ -939,11 +943,11 @@ mod tests {
         app.open_settings();
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(&app.settings_pane, 2);
+        let (x, y) = pane_row_point(app.settings_pane(), 2);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.settings_pane.pos(),
+            app.settings_pane().pos(),
             SettingOption::InvertScroll as usize
         );
     }
@@ -957,11 +961,11 @@ mod tests {
         let mut app = make_app(&[make_package("demo", &project_dir)]);
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(&app.package_pane, 1);
+        let (x, y) = pane_row_point(app.package_pane(), 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.focused_pane, PaneId::Package);
-        assert_eq!(app.package_pane.pos(), 1);
+        assert_eq!(app.focused_pane(), PaneId::Package);
+        assert_eq!(app.package_pane().pos(), 1);
     }
 
     #[test]
@@ -984,11 +988,11 @@ mod tests {
         let mut app = make_app(&[make_package_with_cargo("demo", &project_dir, cargo)]);
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(&app.targets_pane, 1);
+        let (x, y) = pane_row_point(app.targets_pane(), 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.focused_pane, PaneId::Targets);
-        assert_eq!(app.targets_pane.pos(), 1);
+        assert_eq!(app.focused_pane(), PaneId::Targets);
+        assert_eq!(app.targets_pane().pos(), 1);
     }
 
     #[test]
@@ -998,16 +1002,16 @@ mod tests {
         std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
 
         let mut app = make_app(&[make_package("demo", &project_dir)]);
-        app.projects
+        app.projects_mut()
             .at_path_mut(&project_dir)
             .unwrap_or_else(|| std::process::abort())
             .git_info = Some(make_git_info(Some("https://github.com/natepiano/demo")));
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(&app.git_pane, 1);
+        let (x, y) = pane_row_point(app.git_pane(), 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.focused_pane, PaneId::Git);
-        assert_eq!(app.git_pane.pos(), 1);
+        assert_eq!(app.focused_pane(), PaneId::Git);
+        assert_eq!(app.git_pane().pos(), 1);
     }
 }
