@@ -286,7 +286,11 @@ impl ProjectList {
             }
         }
         // No parent workspace found — add as top-level peer.
-        self.root_items.push(item);
+        let insert_index = self
+            .root_items
+            .binary_search_by(|existing| existing.path().cmp(item_path.as_path()))
+            .unwrap_or_else(|index| index);
+        self.root_items.insert(insert_index, item);
         false
     }
 

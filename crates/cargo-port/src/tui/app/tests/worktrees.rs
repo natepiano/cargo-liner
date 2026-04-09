@@ -152,6 +152,31 @@ fn handle_project_discovered_deduplicates_by_path() {
 }
 
 #[test]
+fn handle_project_discovered_inserts_new_root_in_sorted_position() {
+    let mut app = make_app(&[
+        make_project(Some("cargo-mend"), "~/rust/cargo-mend"),
+        make_project(Some("cargo-port"), "~/rust/cargo-port"),
+        make_project(Some("rust-template"), "~/rust/rust-template"),
+    ]);
+
+    assert!(app.handle_project_discovered(make_project(
+        Some("cache-apt-pkgs-action"),
+        "~/rust/cache-apt-pkgs-action",
+    )));
+
+    let actual: Vec<_> = app.projects.iter().map(|item| item.path()).collect();
+    assert_eq!(
+        actual,
+        vec![
+            test_path("~/rust/cache-apt-pkgs-action").as_path(),
+            test_path("~/rust/cargo-mend").as_path(),
+            test_path("~/rust/cargo-port").as_path(),
+            test_path("~/rust/rust-template").as_path(),
+        ]
+    );
+}
+
+#[test]
 fn handle_project_discovered_creates_worktree_group_from_single_primary() {
     expect_synthetic_discovery_creates_group(WorktreeProjectKind::Package);
 }
