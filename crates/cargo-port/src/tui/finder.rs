@@ -24,6 +24,7 @@ use super::app::App;
 use super::constants::FINDER_POPUP_HEIGHT;
 use super::constants::MAX_FINDER_RESULTS;
 use super::detail::RunTargetKind;
+use super::interaction::UiSurface::Overlay;
 use super::types::Pane;
 use super::types::PaneId;
 use crate::project::ExampleGroup;
@@ -111,16 +112,13 @@ pub(super) fn build_finder_index(
                 let dp = nr.display_path().into_string();
                 let abs = nr.path().display().to_string();
                 let branch = branch_for(nr.git_info());
-                add_project_items_from_typed(
-                    &mut items,
-                    &nr.display_name(),
-                    &abs,
-                    &dp,
-                    &[],
-                    &[],
-                    &[],
-                    &branch,
-                );
+                let context = TypedProjectContext {
+                    project_name: &nr.display_name(),
+                    abs_path:     &abs,
+                    display_path: &dp,
+                    branch:       &branch,
+                };
+                add_project_items_from_typed(&mut items, &context, &[], &[], &[]);
             },
             RootItem::WorkspaceWorktrees(wtg) => {
                 add_workspace_items(&mut items, wtg.primary());
@@ -172,30 +170,38 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &RustProject<Workspace>)
     let root_abs_path = ws.path().display().to_string();
     let root_branch = branch_for(ws.git_info());
     let cargo = ws.cargo();
+    let root_context = TypedProjectContext {
+        project_name: &ws.display_name(),
+        abs_path:     &root_abs_path,
+        display_path: &root_path,
+        branch:       &root_branch,
+    };
 
     add_project_items_from_typed(
         items,
-        &ws.display_name(),
-        &root_abs_path,
-        &root_path,
+        &root_context,
         cargo.types(),
         cargo.examples(),
         cargo.benches(),
-        &root_branch,
     );
 
     for group in ws.groups() {
         for member in group.members() {
             let member_cargo = member.cargo();
+            let member_display_path = member.display_path();
+            let member_abs_path = member.path().display().to_string();
+            let member_context = TypedProjectContext {
+                project_name: &member.display_name(),
+                abs_path:     &member_abs_path,
+                display_path: member_display_path.as_str(),
+                branch:       &root_branch,
+            };
             add_project_items_from_typed(
                 items,
-                &member.display_name(),
-                &member.path().display().to_string(),
-                member.display_path().as_str(),
+                &member_context,
                 member_cargo.types(),
                 member_cargo.examples(),
                 member_cargo.benches(),
-                &root_branch,
             );
         }
     }
@@ -210,16 +216,19 @@ fn add_package_items(items: &mut Vec<FinderItem>, pkg: &RustProject<Package>) {
     let root_abs_path = pkg.path().display().to_string();
     let root_branch = branch_for(pkg.git_info());
     let cargo = pkg.cargo();
+    let root_context = TypedProjectContext {
+        project_name: &pkg.display_name(),
+        abs_path:     &root_abs_path,
+        display_path: &root_path,
+        branch:       &root_branch,
+    };
 
     add_project_items_from_typed(
         items,
-        &pkg.display_name(),
-        &root_abs_path,
-        &root_path,
+        &root_context,
         cargo.types(),
         cargo.examples(),
         cargo.benches(),
-        &root_branch,
     );
 
     for vendored in pkg.vendored() {
@@ -331,17 +340,14 @@ fn add_vendored_items_typed(
 
 fn add_project_items_from_typed(
     items: &mut Vec<FinderItem>,
-    project_name: &str,
-    abs_path: &str,
-    display_path: &str,
+    context: &TypedProjectContext<'_>,
     types: &[ProjectType],
     examples: &[ExampleGroup],
     benches: &[String],
-    branch: &str,
 ) {
-    let project_name = project_name.to_string();
-    let branch = branch.to_string();
-    let dir = display_path.to_string();
+    let project_name = context.project_name.to_string();
+    let branch = context.branch.to_string();
+    let dir = context.display_path.to_string();
 
     // The project itself
     let kind = FinderKind::Project;
@@ -349,7 +355,7 @@ fn add_project_items_from_typed(
         search_tokens: build_search_tokens(&[&project_name, &dir, &branch, kind.label()]),
         display_name: project_name.clone(),
         kind,
-        project_path: abs_path.to_string(),
+        project_path: context.abs_path.to_string(),
         target_name: None,
         parent_label: String::new(),
         branch: branch.clone(),
@@ -369,7 +375,7 @@ fn add_project_items_from_typed(
             ]),
             display_name: project_name.clone(),
             kind,
-            project_path: abs_path.to_string(),
+            project_path: context.abs_path.to_string(),
             target_name: Some(project_name.clone()),
             parent_label: project_name.clone(),
             branch: branch.clone(),
@@ -396,7 +402,7 @@ fn add_project_items_from_typed(
                 ]),
                 display_name: display,
                 kind,
-                project_path: abs_path.to_string(),
+                project_path: context.abs_path.to_string(),
                 target_name: Some(name.clone()),
                 parent_label: project_name.clone(),
                 branch: branch.clone(),
@@ -412,13 +418,20 @@ fn add_project_items_from_typed(
             search_tokens: build_search_tokens(&[name, &project_name, &dir, &branch, kind.label()]),
             display_name: name.clone(),
             kind,
-            project_path: abs_path.to_string(),
+            project_path: context.abs_path.to_string(),
             target_name: Some(name.clone()),
             parent_label: project_name.clone(),
             branch: branch.clone(),
             dir: dir.clone(),
         });
     }
+}
+
+struct TypedProjectContext<'a> {
+    project_name: &'a str,
+    abs_path:     &'a str,
+    display_path: &'a str,
+    branch:       &'a str,
 }
 
 fn build_search_tokens(fields: &[&str]) -> Vec<String> {
@@ -772,6 +785,28 @@ fn render_finder_results(
     let mut table_state = TableState::default().with_selected(Some(app.finder.pane.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
     app.finder.pane.set_scroll_offset(table_state.offset());
+
+    let visible_height = usize::from(area.height.saturating_sub(1));
+    let visible_start = table_state.offset();
+    let visible_end = app
+        .finder
+        .results
+        .len()
+        .min(visible_start.saturating_add(visible_height));
+
+    for (screen_row, row_index) in (visible_start..visible_end).enumerate() {
+        let row_y = area
+            .y
+            .saturating_add(1)
+            .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
+        super::interaction::register_pane_row_hitbox(
+            app,
+            Rect::new(area.x, row_y, area.width, 1),
+            PaneId::Finder,
+            row_index,
+            Overlay,
+        );
+    }
 }
 
 #[cfg(test)]

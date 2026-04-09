@@ -32,12 +32,15 @@ use super::constants::BYTES_PER_MIB;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::constants::DETAIL_PANEL_HEIGHT;
 use super::constants::SEARCH_BAR_HEIGHT;
+use super::detail::DetailInfo;
+use super::interaction::UiSurface::Content;
 use super::shortcuts::Shortcut;
 use super::types::LayoutCache;
 use super::types::Pane;
 use super::types::PaneId;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
+use crate::lint::LintRun;
 use crate::project;
 use crate::project::GitOrigin;
 use crate::project::RootItem;
@@ -206,10 +209,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         app.is_focused(PaneId::Toasts),
         app.focused_toast_id(),
     );
-    app.layout_cache
-        .dismiss_hitboxes
-        .extend(toast_result.dismiss_actions);
-    app.layout_cache.toast_cards = toast_result.card_hitboxes;
+    super::interaction::register_toast_hitboxes(app, &toast_result.hitboxes);
 
     if app.is_settings_open() {
         super::settings::render_settings_popup(frame, app);
@@ -302,34 +302,103 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         .split(area);
 
     super::detail::render_detail_panel(frame, app, detail_info.as_ref(), right_layout[0]);
+    sync_detail_pane_hitboxes(app, detail_info.as_ref());
 
     // Running output replaces the bottom panels; Esc restores them.
     if has_example_output {
         render_example_output(frame, app, right_layout[1]);
     } else {
-        // Split bottom area: Lints (top half) + CI Runs (bottom half)
-        let bottom_split = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(right_layout[1]);
-
-        super::detail::render_lints_panel(frame, app, &detail_lint_runs, bottom_split[0]);
-
-        if has_ci {
-            super::detail::render_ci_panel(frame, app, &detail_ci_runs, bottom_split[1]);
-        } else {
-            render_empty_ci_panel(
-                frame,
-                app,
-                app.selected_project_path(),
-                selected_has_ci_owner,
-                bottom_split[1],
-            );
-        }
-        if let Some(message) = app.unreachable_service_message() {
-            render_unreachable_overlay(frame, bottom_split[1], &message);
-        }
+        render_bottom_right_panel(
+            frame,
+            app,
+            &detail_lint_runs,
+            &detail_ci_runs,
+            right_layout[1],
+            has_ci,
+            selected_has_ci_owner,
+        );
     }
+}
+
+fn sync_detail_pane_hitboxes(app: &mut App, detail_info: Option<&DetailInfo>) {
+    if detail_info.is_some() {
+        register_detail_pane_hitboxes(app);
+        return;
+    }
+
+    reset_pane(&mut app.package_pane);
+    reset_pane(&mut app.git_pane);
+    reset_pane(&mut app.targets_pane);
+}
+
+fn register_detail_pane_hitboxes(app: &mut App) {
+    let package_pane = app.package_pane.clone();
+    super::interaction::register_pane_row_hitboxes(app, PaneId::Package, &package_pane, Content);
+
+    if app
+        .selected_project_path()
+        .and_then(|path| app.git_info_for(path))
+        .is_some()
+    {
+        let git_pane = app.git_pane.clone();
+        super::interaction::register_pane_row_hitboxes(app, PaneId::Git, &git_pane, Content);
+    } else {
+        reset_pane(&mut app.git_pane);
+    }
+
+    if app.cached_detail.as_ref().is_some_and(|cached| {
+        cached.info.is_binary || !cached.info.examples.is_empty() || !cached.info.benches.is_empty()
+    }) {
+        let targets_pane = app.targets_pane.clone();
+        super::interaction::register_pane_row_hitboxes(
+            app,
+            PaneId::Targets,
+            &targets_pane,
+            Content,
+        );
+    } else {
+        reset_pane(&mut app.targets_pane);
+    }
+}
+
+fn render_bottom_right_panel(
+    frame: &mut Frame,
+    app: &mut App,
+    detail_lint_runs: &[LintRun],
+    detail_ci_runs: &[CiRun],
+    area: Rect,
+    has_ci: bool,
+    selected_has_ci_owner: bool,
+) {
+    let bottom_split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    super::detail::render_lints_panel(frame, app, detail_lint_runs, bottom_split[0]);
+
+    if has_ci {
+        super::detail::render_ci_panel(frame, app, detail_ci_runs, bottom_split[1]);
+    } else {
+        render_empty_ci_panel(
+            frame,
+            app,
+            app.selected_project_path(),
+            selected_has_ci_owner,
+            bottom_split[1],
+        );
+        reset_pane(&mut app.ci_pane);
+    }
+
+    if let Some(message) = app.unreachable_service_message() {
+        render_unreachable_overlay(frame, bottom_split[1], &message);
+    }
+}
+
+const fn reset_pane(pane: &mut Pane) {
+    pane.set_len(0);
+    pane.set_content_area(Rect::ZERO);
+    pane.set_scroll_offset(0);
 }
 
 fn render_unreachable_overlay(frame: &mut Frame, area: Rect, msg: &str) {
@@ -517,6 +586,11 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     frame.render_stateful_widget(project_list, list_area, &mut app.list_state);
     app.layout_cache.project_list = list_area;
     app.layout_cache.project_list_offset = app.list_state.offset();
+    super::interaction::register_project_list_hitboxes(
+        app,
+        list_area,
+        u16::try_from(widths.total_width()).unwrap_or(u16::MAX),
+    );
 
     if pin_summary && let Some(line) = summary_line {
         let footer_area = Rect::new(

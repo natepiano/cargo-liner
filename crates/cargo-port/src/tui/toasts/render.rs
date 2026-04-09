@@ -14,11 +14,9 @@ use ratatui::widgets::Wrap;
 use super::manager::ToastStyle;
 use super::manager::ToastView;
 use super::manager::TrackedItemView;
-use crate::tui::app::ClickAction;
-use crate::tui::app::DismissTarget;
 use crate::tui::constants::TOAST_GAP;
 use crate::tui::constants::TOAST_WIDTH;
-use crate::tui::types::ToastCardHitbox;
+use crate::tui::interaction::ToastHitbox;
 
 /// Fade text from white to grey based on progress (0.0 = white, 1.0 = grey).
 #[expect(
@@ -53,8 +51,7 @@ fn truncate(text: &str, width: usize) -> String {
 }
 
 pub struct ToastRenderResult {
-    pub dismiss_actions: Vec<ClickAction>,
-    pub card_hitboxes:   Vec<ToastCardHitbox>,
+    pub hitboxes: Vec<ToastHitbox>,
 }
 
 pub fn render_toasts(
@@ -66,8 +63,7 @@ pub fn render_toasts(
 ) -> ToastRenderResult {
     if toasts.is_empty() {
         return ToastRenderResult {
-            dismiss_actions: Vec::new(),
-            card_hitboxes:   Vec::new(),
+            hitboxes: Vec::new(),
         };
     }
 
@@ -76,8 +72,7 @@ pub fn render_toasts(
     let width = TOAST_WIDTH.min(area.width);
 
     // Stack toasts from the bottom of the area upward.
-    let mut dismiss_actions = Vec::with_capacity(toasts.len());
-    let mut card_hitboxes = Vec::with_capacity(toasts.len());
+    let mut hitboxes = Vec::with_capacity(toasts.len());
     let mut cursor_y = area.y.saturating_add(area.height);
     for (toast, &alloc_height) in toasts.iter().zip(&allocated).rev() {
         if alloc_height == 0 {
@@ -109,22 +104,15 @@ pub fn render_toasts(
             pane_focused,
             focused_toast_id,
         );
-        dismiss_actions.push(ClickAction {
-            rect:   close_rect,
-            target: DismissTarget::Toast(toast.id()),
-        });
-        card_hitboxes.push(ToastCardHitbox {
-            id:        toast.id(),
+        hitboxes.push(ToastHitbox {
+            id: toast.id(),
             card_rect: card,
+            close_rect,
         });
     }
 
-    dismiss_actions.reverse();
-    card_hitboxes.reverse();
-    ToastRenderResult {
-        dismiss_actions,
-        card_hitboxes,
-    }
+    hitboxes.reverse();
+    ToastRenderResult { hitboxes }
 }
 
 /// Allocate heights for each toast given total available space.

@@ -16,6 +16,7 @@ use ratatui::style::Style;
 use ratatui::widgets::List;
 use ratatui::widgets::Widget;
 
+use super::DismissTarget;
 use super::snapshots;
 use super::types::*;
 use crate::ci::CiRun;
@@ -43,7 +44,7 @@ use crate::project::WorkflowPresence;
 use crate::project::Workspace;
 use crate::project_list::ProjectList;
 use crate::scan::BackgroundMsg;
-use crate::tui::app::DismissTarget;
+use crate::tui::columns::ResolvedWidths;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastManager;
 use crate::tui::types::PaneId;
@@ -134,9 +135,7 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
         .collect()
 }
 
-fn render_tree_buffer(
-    app: &mut App,
-) -> (ratatui::buffer::Buffer, crate::tui::columns::ResolvedWidths) {
+fn render_tree_buffer(app: &mut App) -> (ratatui::buffer::Buffer, ResolvedWidths) {
     app.ensure_visible_rows_cached();
     let widths = snapshots::build_fit_widths_snapshot(
         &app.projects,
@@ -162,7 +161,7 @@ fn render_tree_buffer(
 
 fn row_has_crossed_out_content(
     buffer: &ratatui::buffer::Buffer,
-    widths: &crate::tui::columns::ResolvedWidths,
+    widths: &ResolvedWidths,
     row: usize,
 ) -> bool {
     (0..widths.total_width()).any(|x| {
@@ -505,7 +504,7 @@ impl WorktreeProjectKind {
         init_git_project(dir, self.primary_name(), matches!(self, Self::Workspace));
     }
 
-    fn root_item(self, dir: &Path) -> RootItem { item_from_project_dir(dir) }
+    fn root_item(dir: &Path) -> RootItem { item_from_project_dir(dir) }
 
     fn assert_group_shape(self, app: &App, linked_len: usize, context: &str) {
         assert_eq!(app.projects.len(), 1, "{context}");
@@ -528,7 +527,7 @@ fn expect_real_discovery_creates_group(kind: WorktreeProjectKind) {
     let linked_dir = tmp.path().join(kind.linked_name());
     kind.init_primary_repo(&primary_dir);
 
-    let primary_item = kind.root_item(&primary_dir);
+    let primary_item = WorktreeProjectKind::root_item(&primary_dir);
     let mut app = make_app(&[primary_item]);
 
     add_git_worktree(
@@ -536,7 +535,7 @@ fn expect_real_discovery_creates_group(kind: WorktreeProjectKind) {
         &linked_dir,
         &format!("test/{}", kind.branch_prefix()),
     );
-    let linked_item = kind.root_item(&linked_dir);
+    let linked_item = WorktreeProjectKind::root_item(&linked_dir);
     apply_bg_msg(
         &mut app,
         BackgroundMsg::ProjectDiscovered { item: linked_item },
@@ -566,8 +565,8 @@ fn expect_real_discovery_appends_existing_group(kind: WorktreeProjectKind) {
         &format!("feat/{}", kind.branch_prefix()),
     );
 
-    let primary_item = kind.root_item(&primary_dir);
-    let linked_one_item = kind.root_item(&linked_one_dir);
+    let primary_item = WorktreeProjectKind::root_item(&primary_dir);
+    let linked_one_item = WorktreeProjectKind::root_item(&linked_one_dir);
     let mut app = make_app(&[primary_item, linked_one_item]);
 
     add_git_worktree(
@@ -575,7 +574,7 @@ fn expect_real_discovery_appends_existing_group(kind: WorktreeProjectKind) {
         &linked_two_dir,
         &format!("test/{}", kind.branch_prefix()),
     );
-    let linked_two_item = kind.root_item(&linked_two_dir);
+    let linked_two_item = WorktreeProjectKind::root_item(&linked_two_dir);
     apply_bg_msg(
         &mut app,
         BackgroundMsg::ProjectDiscovered {
@@ -757,7 +756,7 @@ fn expect_refresh_regroups_stale_top_level_discovery(kind: WorktreeProjectKind) 
     let linked_dir = tmp.path().join(kind.linked_name());
     kind.init_primary_repo(&primary_dir);
 
-    let primary_item = kind.root_item(&primary_dir);
+    let primary_item = WorktreeProjectKind::root_item(&primary_dir);
     let mut app = make_app(&[primary_item]);
     add_git_worktree(
         &primary_dir,
@@ -786,7 +785,7 @@ fn expect_refresh_regroups_stale_top_level_discovery(kind: WorktreeProjectKind) 
     );
     assert_eq!(app.projects.len(), 2);
 
-    let refreshed = kind.root_item(&linked_dir);
+    let refreshed = WorktreeProjectKind::root_item(&linked_dir);
     apply_bg_msg(
         &mut app,
         BackgroundMsg::ProjectRefreshed { item: refreshed },
@@ -820,8 +819,8 @@ fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProj
         &format!("feat/{}", kind.branch_prefix()),
     );
 
-    let primary_item = kind.root_item(&primary_dir);
-    let linked_one_item = kind.root_item(&linked_one_dir);
+    let primary_item = WorktreeProjectKind::root_item(&primary_dir);
+    let linked_one_item = WorktreeProjectKind::root_item(&linked_one_dir);
     let mut app = make_app(&[primary_item, linked_one_item]);
 
     add_git_worktree(
@@ -850,7 +849,7 @@ fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProj
     );
     assert_eq!(app.projects.len(), 2);
 
-    let refreshed = kind.root_item(&linked_two_dir);
+    let refreshed = WorktreeProjectKind::root_item(&linked_two_dir);
     apply_bg_msg(
         &mut app,
         BackgroundMsg::ProjectRefreshed { item: refreshed },
@@ -966,8 +965,7 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
         },
     );
 
-    let requests: Vec<_> = watch_rx.try_iter().collect();
-    let watched_paths: HashSet<PathBuf> = requests.into_iter().map(|req| req.abs_path).collect();
+    let watched_paths: HashSet<PathBuf> = watch_rx.try_iter().map(|req| req.abs_path).collect();
 
     assert!(
         watched_paths.contains(primary.path()),
@@ -2193,14 +2191,14 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
     apply_items(&mut app, &[root]);
 
     app.ci_state.insert(
-        root_path.clone(),
+        root_path,
         CiState::Loaded {
             runs:      vec![make_ci_run(3, Conclusion::Success)],
             exhausted: false,
         },
     );
     app.ci_state.insert(
-        feature_path.clone(),
+        feature_path,
         CiState::Loaded {
             runs:      vec![make_ci_run(4, Conclusion::Failure)],
             exhausted: false,
@@ -2407,7 +2405,9 @@ fn expand_all_preserves_selected_project_path() {
     app.expand_all();
 
     assert_eq!(
-        app.selected_display_path().as_ref().map(|p| p.as_str()),
+        app.selected_display_path()
+            .as_ref()
+            .map(crate::project::DisplayPath::as_str),
         Some(member.display_path().as_str())
     );
 }
@@ -2745,7 +2745,7 @@ fn project_change_resets_project_dependent_panes() {
         app.selection_paths
             .selected_project
             .as_ref()
-            .map(|p| p.as_path()),
+            .map(crate::project::AbsolutePath::as_path),
         app.selected_project_path()
     );
 }
@@ -3023,7 +3023,9 @@ fn search_finds_linked_worktree_children_and_confirms_selection() {
     app.confirm_search();
 
     assert_eq!(
-        app.selected_display_path().as_ref().map(|p| p.as_str()),
+        app.selected_display_path()
+            .as_ref()
+            .map(crate::project::DisplayPath::as_str),
         Some(member_path)
     );
     assert_eq!(
@@ -3217,7 +3219,7 @@ fn linked_worktree_entry_builds_detail_for_selected_row() {
         Some("cargo-port_speedup"),
         Some("~/rust/cargo-port"),
     );
-    let root = make_workspace_worktrees_item(primary_ws.clone(), vec![linked_ws.clone()]);
+    let root = make_workspace_worktrees_item(primary_ws, vec![linked_ws.clone()]);
 
     let mut app = make_app(&[]);
     apply_items(&mut app, &[root]);

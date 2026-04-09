@@ -15,6 +15,7 @@ use super::app::App;
 use super::constants::SECTION_HEADER_INDENT;
 use super::constants::SECTION_ITEM_INDENT;
 use super::constants::SETTINGS_POPUP_WIDTH;
+use super::interaction::UiSurface::Overlay;
 use super::types::PaneId;
 use super::types::PaneSelectionState;
 use crate::config;
@@ -253,28 +254,35 @@ fn wrap_text_to_width(value: &str, width: usize) -> Vec<String> {
 
 fn push_wrapped_value_row(
     lines: &mut Vec<Line<'static>>,
-    prefix: &str,
-    value: &str,
-    prefix_style: Style,
-    value_style: Style,
-    content_width: usize,
+    line_targets: &mut Vec<Option<usize>>,
+    target: Option<usize>,
+    row: &WrappedValueRow<'_>,
 ) {
-    let prefix_width = prefix.width();
-    let value_width = content_width.saturating_sub(prefix_width).max(1);
-    let wrapped = wrap_text_to_width(value, value_width);
+    let prefix_width = row.prefix.width();
+    let value_width = row.content_width.saturating_sub(prefix_width).max(1);
+    let wrapped = wrap_text_to_width(row.value, value_width);
     let continuation_prefix = " ".repeat(prefix_width);
 
     for (index, chunk) in wrapped.into_iter().enumerate() {
         let visible_prefix = if index == 0 {
-            prefix.to_string()
+            row.prefix.to_string()
         } else {
             continuation_prefix.clone()
         };
         lines.push(Line::from(vec![
-            Span::styled(visible_prefix, prefix_style),
-            Span::styled(chunk, value_style),
+            Span::styled(visible_prefix, row.prefix_style),
+            Span::styled(chunk, row.value_style),
         ]));
+        line_targets.push(target);
     }
+}
+
+struct WrappedValueRow<'a> {
+    prefix:        &'a str,
+    value:         &'a str,
+    prefix_style:  Style,
+    value_style:   Style,
+    content_width: usize,
 }
 
 fn prev_char_boundary(s: &str, cursor: usize) -> usize {
@@ -371,14 +379,24 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     let content_width = usize::from(SETTINGS_POPUP_WIDTH.saturating_sub(2));
 
     let mut lines: Vec<Line<'static>> = vec![Line::from("")];
-    build_settings_lines(app, &rows, &mut lines, label_style, content_width);
+    let mut line_targets = vec![None];
+    build_settings_lines(
+        app,
+        &rows,
+        &mut lines,
+        &mut line_targets,
+        label_style,
+        content_width,
+    );
     lines.push(Line::from(""));
+    line_targets.push(None);
     let nav_keys_index = SettingOption::iter().position(|s| s == SettingOption::NavigationKeys);
     if !app.is_settings_editing() && Some(app.settings_pane.pos()) == nav_keys_index {
         lines.push(Line::from(vec![
             Span::styled("  Note: ", label_style),
             Span::styled("maps h/j/k/l to arrow navigation", label_style),
         ]));
+        line_targets.push(None);
     }
 
     let popup_height = u16::try_from(lines.len())
@@ -400,6 +418,22 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
+
+    for (line_index, target) in line_targets.into_iter().enumerate() {
+        let Some(row) = target else {
+            continue;
+        };
+        let y = inner
+            .y
+            .saturating_add(u16::try_from(line_index).unwrap_or(u16::MAX));
+        super::interaction::register_pane_row_hitbox(
+            app,
+            ratatui::layout::Rect::new(inner.x, y, inner.width, 1),
+            PaneId::Settings,
+            row,
+            Overlay,
+        );
+    }
 }
 
 const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {
@@ -417,6 +451,8 @@ const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {
 
 fn push_toggle_row(
     lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
+    target: Option<usize>,
     label: &str,
     value: &str,
     selection: PaneSelectionState,
@@ -437,12 +473,14 @@ fn push_toggle_row(
         Span::styled(value.to_owned(), selection.patch(toggle_style)),
         Span::styled(" >", selection.patch(Style::default().fg(Color::DarkGray))),
     ]));
+    line_targets.push(target);
 }
 
 pub(super) fn build_settings_lines(
     app: &App,
     settings: &[SettingsRow],
     lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
     label_style: Style,
     content_width: usize,
 ) {
@@ -455,15 +493,7 @@ pub(super) fn build_settings_lines(
     let mut selection_index = 0;
     for (setting, name, value) in settings {
         if setting.is_none() {
-            lines.push(Line::from(vec![
-                Span::raw(SECTION_HEADER_INDENT),
-                Span::styled(
-                    format!("{name}:"),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
+            push_settings_header(lines, line_targets, name);
             continue;
         }
 
@@ -478,30 +508,35 @@ pub(super) fn build_settings_lines(
         let setting = *setting;
         let label = format!("{SECTION_ITEM_INDENT}{cursor}{name:<max_label$}  ");
 
-        if selection != PaneSelectionState::Unselected
-            && app.inline_error.is_some()
-            && !app.is_settings_editing()
-        {
-            let error = app.inline_error.clone().unwrap_or_default();
-            push_wrapped_value_row(
-                lines,
-                &label,
-                &error,
-                selection.patch(label_style),
-                selection.patch(Style::default().fg(Color::Red)),
+        if let Some(error) = selected_inline_error(app, selection) {
+            let row = WrappedValueRow {
+                prefix: &label,
+                value: &error,
+                prefix_style: selection.patch(label_style),
+                value_style: selection.patch(Style::default().fg(Color::Red)),
                 content_width,
-            );
+            };
+            push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
         } else if app.is_settings_editing() && selection != PaneSelectionState::Unselected {
-            push_wrapped_value_row(
-                lines,
-                &label,
-                &render_edit_buffer(&app.settings_edit_buf, app.settings_edit_cursor),
-                selection.patch(Style::default().fg(Color::Yellow)),
-                selection.patch(Style::default().fg(Color::Yellow)),
+            let edit_buffer = render_edit_buffer(&app.settings_edit_buf, app.settings_edit_cursor);
+            let row = WrappedValueRow {
+                prefix: &label,
+                value: &edit_buffer,
+                prefix_style: selection.patch(Style::default().fg(Color::Yellow)),
+                value_style: selection.patch(Style::default().fg(Color::Yellow)),
                 content_width,
-            );
+            };
+            push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
         } else if is_toggle_setting(setting) {
-            push_toggle_row(lines, &label, value, selection, label_style);
+            push_toggle_row(
+                lines,
+                line_targets,
+                Some(selection_index),
+                &label,
+                value,
+                selection,
+                label_style,
+            );
         } else if setting == Some(SettingOption::CiRunCount)
             && selection != PaneSelectionState::Unselected
             && !app.is_settings_editing()
@@ -515,12 +550,43 @@ pub(super) fn build_settings_lines(
                 ),
                 Span::styled(" >", selection.patch(Style::default().fg(Color::DarkGray))),
             ]));
+            line_targets.push(Some(selection_index));
         } else {
             let style = selection.patch(label_style);
-            push_wrapped_value_row(lines, &label, value, style, style, content_width);
+            let row = WrappedValueRow {
+                prefix: &label,
+                value,
+                prefix_style: style,
+                value_style: style,
+                content_width,
+            };
+            push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
         }
         selection_index += 1;
     }
+}
+
+fn push_settings_header(
+    lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
+    name: &str,
+) {
+    lines.push(Line::from(vec![
+        Span::raw(SECTION_HEADER_INDENT),
+        Span::styled(
+            format!("{name}:"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    line_targets.push(None);
+}
+
+fn selected_inline_error(app: &App, selection: PaneSelectionState) -> Option<String> {
+    (selection != PaneSelectionState::Unselected && !app.is_settings_editing())
+        .then(|| app.inline_error.clone())
+        .flatten()
 }
 
 pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
@@ -895,16 +961,22 @@ mod tests {
     #[test]
     fn wrapped_rows_continue_at_value_column() {
         let mut lines = Vec::new();
+        let mut line_targets = Vec::new();
         push_wrapped_value_row(
             &mut lines,
-            "  Projects      ",
-            "alpha beta gamma delta epsilon",
-            Style::default(),
-            Style::default(),
-            24,
+            &mut line_targets,
+            Some(0),
+            &WrappedValueRow {
+                prefix:        "  Projects      ",
+                value:         "alpha beta gamma delta epsilon",
+                prefix_style:  Style::default(),
+                value_style:   Style::default(),
+                content_width: 24,
+            },
         );
 
         assert!(lines.len() > 1);
+        assert_eq!(line_targets.len(), lines.len());
         assert_eq!(lines[0].spans[0].content.as_ref(), "  Projects      ");
         for line in &lines[1..] {
             assert_eq!(line.spans[0].content.as_ref(), "                ");

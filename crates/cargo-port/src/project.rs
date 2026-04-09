@@ -47,7 +47,8 @@ impl From<PathBuf> for AbsolutePath {
     fn from(path: PathBuf) -> Self {
         debug_assert!(
             path.is_absolute(),
-            "AbsolutePath requires an absolute path: {path:?}"
+            "AbsolutePath requires an absolute path: {}",
+            path.display()
         );
         Self(path)
     }
@@ -57,7 +58,8 @@ impl From<&Path> for AbsolutePath {
     fn from(path: &Path) -> Self {
         debug_assert!(
             path.is_absolute(),
-            "AbsolutePath requires an absolute path: {path:?}"
+            "AbsolutePath requires an absolute path: {}",
+            path.display()
         );
         Self(path.to_path_buf())
     }

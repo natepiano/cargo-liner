@@ -1,9 +1,8 @@
-use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Style;
 
-use super::app::ClickAction;
+use super::interaction::UiHitbox;
 
 /// A bounded cursor for scrollable lists. Replaces raw `usize` index + manual
 /// bounds checking with a single type that enforces invariants.
@@ -108,19 +107,11 @@ impl Pane {
 
     pub const fn set_scroll_offset(&mut self, offset: usize) { self.scroll_offset = offset; }
 
-    // -- mouse --
+    pub const fn content_area(&self) -> Rect { self.content_area }
 
-    /// Map a screen position to a row index within this pane, accounting for
-    /// the viewport scroll offset. Returns `None` if the position is outside
-    /// the content area or beyond the last row.
-    pub const fn clicked_row(&self, pos: Position) -> Option<usize> {
-        if !self.content_area.contains(pos) {
-            return None;
-        }
-        let inner_y = (pos.y - self.content_area.y) as usize;
-        let row = self.scroll_offset + inner_y;
-        if row < self.len { Some(row) } else { None }
-    }
+    pub const fn scroll_offset(&self) -> usize { self.scroll_offset }
+
+    pub const fn len(&self) -> usize { self.len }
 
     pub const fn selection_state(&self, row: usize, focus: PaneFocusState) -> PaneSelectionState {
         if row == self.pos() {
@@ -180,13 +171,6 @@ impl PaneId {
     }
 }
 
-/// Toast card focus hitbox (separate from dismiss — card click changes focus).
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct ToastCardHitbox {
-    pub id:        u64,
-    pub card_rect: Rect,
-}
-
 /// Cached layout rectangles from the last render frame, used for mouse
 /// hit-testing in the event handler.
 #[derive(Default)]
@@ -195,8 +179,7 @@ pub(super) struct LayoutCache {
     pub project_list_offset: usize,
     pub detail_columns:      Vec<Rect>,
     pub detail_targets_col:  Option<usize>,
-    pub dismiss_hitboxes:    Vec<ClickAction>,
-    pub toast_cards:         Vec<ToastCardHitbox>,
+    pub ui_hitboxes:         Vec<UiHitbox>,
 }
 
 #[cfg(test)]

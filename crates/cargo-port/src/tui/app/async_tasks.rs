@@ -8,6 +8,10 @@ use std::time::Instant;
 
 use ratatui::widgets::ListState;
 
+use super::ExpandKey::Group;
+use super::ExpandKey::Node;
+use super::ExpandKey::Worktree;
+use super::ExpandKey::WorktreeGroup;
 use super::types::App;
 use super::types::ConfigFileStamp;
 use super::types::DiskCacheBuildResult;
@@ -1150,7 +1154,7 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(ni, item)| {
-                if !self.expanded.contains(&super::types::ExpandKey::Node(ni)) {
+                if !self.expanded.contains(&Node(ni)) {
                     return None;
                 }
 
@@ -1166,10 +1170,7 @@ impl App {
                             .filter_map(|(gi, group)| {
                                 group
                                     .is_named()
-                                    .then(|| {
-                                        self.expanded
-                                            .contains(&super::types::ExpandKey::Group(ni, gi))
-                                    })
+                                    .then(|| self.expanded.contains(&Group(ni, gi)))
                                     .filter(|expanded| *expanded)
                                     .map(|_| gi)
                             })
@@ -1200,32 +1201,23 @@ impl App {
 
             match current_item {
                 RootItem::WorkspaceWorktrees(group) if group.renders_as_group() => {
-                    self.expanded
-                        .insert(super::types::ExpandKey::Node(current_index));
+                    self.expanded.insert(Node(current_index));
                     if legacy_root.had_children {
-                        self.expanded
-                            .insert(super::types::ExpandKey::Worktree(current_index, 0));
+                        self.expanded.insert(Worktree(current_index, 0));
                     }
                     for &group_index in &legacy_root.named_groups {
                         if group.primary().groups().get(group_index).is_some() {
-                            self.expanded.insert(super::types::ExpandKey::WorktreeGroup(
-                                current_index,
-                                0,
-                                group_index,
-                            ));
+                            self.expanded
+                                .insert(WorktreeGroup(current_index, 0, group_index));
                         }
-                        self.expanded.remove(&super::types::ExpandKey::Group(
-                            legacy_root.old_node_index,
-                            group_index,
-                        ));
+                        self.expanded
+                            .remove(&Group(legacy_root.old_node_index, group_index));
                     }
                 },
                 RootItem::PackageWorktrees(group) if group.renders_as_group() => {
-                    self.expanded
-                        .insert(super::types::ExpandKey::Node(current_index));
+                    self.expanded.insert(Node(current_index));
                     if legacy_root.had_children {
-                        self.expanded
-                            .insert(super::types::ExpandKey::Worktree(current_index, 0));
+                        self.expanded.insert(Worktree(current_index, 0));
                     }
                 },
                 _ => {},

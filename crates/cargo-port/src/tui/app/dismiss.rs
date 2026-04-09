@@ -1,8 +1,6 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use ratatui::layout::Rect;
-
 use super::types::App;
 use super::types::VisibleRow;
 use crate::project::Visibility::Dismissed;
@@ -17,18 +15,10 @@ pub enum DismissTarget {
     DeletedProject(PathBuf),
 }
 
-/// A clickable dismiss affordance registered during rendering.
-/// Stored in `LayoutCache` so the input handler can hit-test mouse clicks.
-#[derive(Clone, Debug)]
-pub struct ClickAction {
-    pub rect:   Rect,
-    pub target: DismissTarget,
-}
-
 // ── Resolution + dispatch ───────────────────────────────────────
 
 impl App {
-    pub(crate) fn dismiss_target_for_row(&self, row: VisibleRow) -> Option<DismissTarget> {
+    pub(super) fn dismiss_target_for_row_inner(&self, row: VisibleRow) -> Option<DismissTarget> {
         let dismiss_path = match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => self
                 .projects
@@ -92,7 +82,7 @@ impl App {
             PaneId::Toasts => self.focused_toast_id().map(DismissTarget::Toast),
             PaneId::ProjectList => self
                 .selected_row()
-                .and_then(|row| self.dismiss_target_for_row(row)),
+                .and_then(|row| self.dismiss_target_for_row_inner(row)),
             _ => None,
         }
     }

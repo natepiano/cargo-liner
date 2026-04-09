@@ -113,7 +113,7 @@ fn read_status_cases() {
         if let Some(run) = latest.as_ref() {
             write_latest(dir.path(), run);
         }
-        let status = read_status(dir.path());
+        let status = status::read_status(dir.path());
         match name {
             "passed" => assert!(matches!(status, LintStatus::Passed(_))),
             "failed" => assert!(matches!(status, LintStatus::Failed(_))),
@@ -132,7 +132,7 @@ fn read_status_uses_latest_over_history() {
         .expect("append history");
     write_latest(dir.path(), &run(LintRunStatus::Passed));
     assert!(
-        matches!(read_status(dir.path()), LintStatus::Passed(_)),
+        matches!(status::read_status(dir.path()), LintStatus::Passed(_)),
         "should read latest.json, not older history"
     );
 }

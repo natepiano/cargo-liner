@@ -1193,6 +1193,13 @@ mod tests {
     /// whether `project_parents` is empty or populated.
     #[test]
     fn project_level_dir_finds_filesystem_markers() {
+        struct Case {
+            name:     &'static str,
+            parents:  HashSet<PathBuf>,
+            event:    PathBuf,
+            expected: PathBuf,
+        }
+
         let tmp = tempfile::tempdir().expect("failed to create tempdir");
         let scan_root = tmp.path();
         let project_dir = scan_root.join("rust").join("new_project");
@@ -1217,13 +1224,6 @@ mod tests {
         )
         .expect("write member Cargo.toml");
 
-        struct Case {
-            name:     &'static str,
-            parents:  HashSet<PathBuf>,
-            event:    PathBuf,
-            expected: PathBuf,
-        }
-
         let cases = [
             Case {
                 name:     "finds cargo toml under empty parents",
@@ -1241,7 +1241,7 @@ mod tests {
                 name:     "nested workspace member resolves to workspace root",
                 parents:  HashSet::from([scan_root.join("rust")]),
                 event:    member_dir.join("src/lib.rs"),
-                expected: workspace_root.clone(),
+                expected: workspace_root,
             },
         ];
 
@@ -2256,7 +2256,7 @@ edition = "2024"
             .expect("write member lib");
 
         let (bg_tx, bg_rx) = mpsc::channel();
-        spawn_project_refresh_after(bg_tx, project_dir.clone(), Duration::ZERO);
+        spawn_project_refresh_after(bg_tx, project_dir, Duration::ZERO);
 
         let BackgroundMsg::ProjectRefreshed { item } = bg_rx
             .recv_timeout(Duration::from_secs(1))
@@ -2295,7 +2295,7 @@ edition = "2024"
             .expect("write member lib");
 
         let (bg_tx, bg_rx) = mpsc::channel();
-        spawn_project_refresh_after(bg_tx, project_dir.clone(), Duration::ZERO);
+        spawn_project_refresh_after(bg_tx, project_dir, Duration::ZERO);
 
         let _ = bg_rx
             .recv_timeout(Duration::from_secs(1))
