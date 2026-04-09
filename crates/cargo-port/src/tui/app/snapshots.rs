@@ -7,6 +7,7 @@ use super::App;
 use super::types::ExpandKey;
 use super::types::VisibleRow;
 use crate::constants::IN_SYNC;
+use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project::GitInfo;
@@ -21,6 +22,7 @@ use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::tui::columns;
 use crate::tui::columns::COL_DISK;
+use crate::tui::columns::COL_MAIN;
 use crate::tui::columns::COL_SYNC;
 use crate::tui::columns::ResolvedWidths;
 use crate::tui::render;
@@ -272,6 +274,32 @@ pub(super) fn git_sync_snapshot(
         Some((0, b)) => format!("{SYNC_DOWN}{b}"),
         Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
         None if info.origin != GitOrigin::Local => "-".to_string(),
+        None => NO_REMOTE_SYNC.to_string(),
+    }
+}
+
+pub(super) fn git_main_snapshot(
+    git_info: Option<&GitInfo>,
+    git_path_states: &HashMap<PathBuf, GitPathState>,
+    path: &Path,
+) -> String {
+    if matches!(
+        git_path_states
+            .get(path)
+            .copied()
+            .unwrap_or(GitPathState::OutsideRepo),
+        GitPathState::Untracked | GitPathState::Ignored
+    ) {
+        return String::new();
+    }
+    let Some(info) = git_info else {
+        return String::new();
+    };
+    match info.ahead_behind_local {
+        Some((0, 0)) => IN_SYNC.to_string(),
+        Some((a, 0)) => format!("{SYNC_UP}{a}"),
+        Some((0, b)) => format!("{SYNC_DOWN}{b}"),
+        Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
         None => String::new(),
     }
 }
@@ -317,10 +345,18 @@ fn observe_item_fit_widths(
             root_path,
         )),
     );
+    widths.observe(
+        COL_MAIN,
+        dw(&git_main_snapshot(
+            item.git_info(),
+            state.git_path_states,
+            root_path,
+        )),
+    );
 
     match item {
         RootItem::Workspace(ws) => {
-            observe_new_member_group_fit_widths(widths, ws.groups(), state, false);
+            observe_new_member_group_fit_widths(widths, ws.groups(), false);
             observe_typed_vendored_fit_widths(widths, ws.vendored(), PREFIX_VENDORED);
         },
         RootItem::Package(pkg) => {
@@ -339,7 +375,6 @@ fn observe_item_fit_widths(
 fn observe_new_member_group_fit_widths(
     widths: &mut ResolvedWidths,
     groups: &[MemberGroup],
-    state: &FitWidthsState<'_>,
     is_worktree: bool,
 ) {
     let dw = columns::display_width;
@@ -365,14 +400,6 @@ fn observe_new_member_group_fit_widths(
             };
             App::observe_name_width(widths, dw(prefix) + dw(&member.display_name()));
             widths.observe(COL_DISK, dw(&formatted_disk(member.disk_usage_bytes())));
-            widths.observe(
-                COL_SYNC,
-                dw(&git_sync_snapshot(
-                    member.git_info(),
-                    state.git_path_states,
-                    member.path(),
-                )),
-            );
         }
         if group.is_named() {
             let label = format!("{} ({})", group.group_name(), group.members().len());
@@ -418,7 +445,15 @@ fn observe_workspace_worktree_entry_fit_widths(
             ws.path(),
         )),
     );
-    observe_new_member_group_fit_widths(widths, ws.groups(), state, true);
+    widths.observe(
+        COL_MAIN,
+        dw(&git_main_snapshot(
+            ws.git_info(),
+            state.git_path_states,
+            ws.path(),
+        )),
+    );
+    observe_new_member_group_fit_widths(widths, ws.groups(), true);
     observe_typed_vendored_fit_widths(widths, ws.vendored(), PREFIX_WT_VENDORED);
 }
 
@@ -436,6 +471,14 @@ fn observe_package_worktree_entry_fit_widths(
     widths.observe(
         COL_SYNC,
         dw(&git_sync_snapshot(
+            pkg.git_info(),
+            state.git_path_states,
+            pkg.path(),
+        )),
+    );
+    widths.observe(
+        COL_MAIN,
+        dw(&git_main_snapshot(
             pkg.git_info(),
             state.git_path_states,
             pkg.path(),

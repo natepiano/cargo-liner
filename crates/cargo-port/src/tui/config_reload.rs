@@ -6,6 +6,8 @@ pub(super) enum ConfigKey {
     IncludeNonRust,
     CiRunCount,
     Editor,
+    MainBranch,
+    OtherPrimaryBranches,
     IncludeDirs,
     InlineDirs,
     StatusFlashSecs,
@@ -50,6 +52,14 @@ const CONFIG_HANDLERS: &[ConfigHandler] = &[
     },
     ConfigHandler {
         key:  ConfigKey::CiRunCount,
+        mark: mark_rescan,
+    },
+    ConfigHandler {
+        key:  ConfigKey::MainBranch,
+        mark: mark_rescan,
+    },
+    ConfigHandler {
+        key:  ConfigKey::OtherPrimaryBranches,
         mark: mark_rescan,
     },
     ConfigHandler {
@@ -151,6 +161,12 @@ pub(super) fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<
     }
     if old.tui.editor != new.tui.editor {
         keys.push(ConfigKey::Editor);
+    }
+    if old.tui.main_branch != new.tui.main_branch {
+        keys.push(ConfigKey::MainBranch);
+    }
+    if old.tui.other_primary_branches != new.tui.other_primary_branches {
+        keys.push(ConfigKey::OtherPrimaryBranches);
     }
     if old.tui.include_dirs != new.tui.include_dirs {
         keys.push(ConfigKey::IncludeDirs);

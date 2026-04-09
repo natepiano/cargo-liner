@@ -270,7 +270,7 @@ impl DetailField {
             Self::Branch => {
                 let branch = info.git_branch.as_deref().unwrap_or("");
                 let is_default = info
-                    .default_branch
+                    .local_main_branch
                     .as_deref()
                     .is_some_and(|db| db == branch);
                 if is_default {
@@ -385,43 +385,47 @@ pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
 
 #[derive(Clone)]
 pub struct DetailInfo {
-    pub package_title:    String,
-    pub name:             String,
-    pub path:             String,
-    pub version:          String,
-    pub description:      Option<String>,
-    pub crates_version:   Option<String>,
-    pub crates_downloads: Option<u64>,
-    pub types:            String,
-    pub disk:             String,
-    pub lint_label:       String,
-    pub ci:               Option<Conclusion>,
-    pub stats_rows:       Vec<(&'static str, usize)>,
-    pub git_branch:       Option<String>,
-    pub git_path:         GitPathState,
-    pub git_sync:         Option<String>,
+    pub package_title:     String,
+    pub name:              String,
+    pub path:              String,
+    pub version:           String,
+    pub description:       Option<String>,
+    pub crates_version:    Option<String>,
+    pub crates_downloads:  Option<u64>,
+    pub types:             String,
+    pub disk:              String,
+    pub lint_label:        String,
+    pub ci:                Option<Conclusion>,
+    pub stats_rows:        Vec<(&'static str, usize)>,
+    pub git_branch:        Option<String>,
+    pub git_path:          GitPathState,
+    pub git_sync:          Option<String>,
     /// Ahead/behind vs `origin/{default_branch}`.
-    pub git_vs_origin:    Option<String>,
-    /// Ahead/behind vs local `{default_branch}`.
-    pub git_vs_local:     Option<String>,
-    /// The repo's default branch name (e.g. "main", "master").
-    pub default_branch:   Option<String>,
-    pub git_origin:       Option<String>,
-    pub git_owner:        Option<String>,
-    pub git_url:          Option<String>,
-    pub git_stars:        Option<u64>,
-    pub repo_description: Option<String>,
-    pub git_inception:    Option<String>,
-    pub git_last_commit:  Option<String>,
-    pub worktree_label:   Option<String>,
-    pub worktree_names:   Vec<String>,
-    pub is_binary:        bool,
-    pub binary_name:      Option<String>,
-    pub examples:         Vec<ExampleGroup>,
-    pub benches:          Vec<String>,
+    pub git_vs_origin:     Option<String>,
+    /// Ahead/behind vs local `{local_main_branch}`.
+    pub git_vs_local:      Option<String>,
+    /// The repo's default branch name resolved from `origin/HEAD`.
+    pub default_branch:    Option<String>,
+    /// The actual local branch used for `M` comparisons.
+    pub local_main_branch: Option<String>,
+    /// The configured user-facing label for the local main branch.
+    pub main_branch_label: String,
+    pub git_origin:        Option<String>,
+    pub git_owner:         Option<String>,
+    pub git_url:           Option<String>,
+    pub git_stars:         Option<u64>,
+    pub repo_description:  Option<String>,
+    pub git_inception:     Option<String>,
+    pub git_last_commit:   Option<String>,
+    pub worktree_label:    Option<String>,
+    pub worktree_names:    Vec<String>,
+    pub is_binary:         bool,
+    pub binary_name:       Option<String>,
+    pub examples:          Vec<ExampleGroup>,
+    pub benches:           Vec<String>,
     /// Whether this project declares `[package]` (has version/description fields).
-    pub has_package:      bool,
-    pub cargo_active:     bool,
+    pub has_package:       bool,
+    pub cargo_active:      bool,
 }
 
 /// Resolve the title shown in the `Package` column header.
@@ -493,19 +497,21 @@ fn format_downloads(count: u64) -> String {
 }
 
 struct GitDetailFields {
-    branch:         Option<String>,
-    path:           GitPathState,
-    sync:           Option<String>,
-    vs_origin:      Option<String>,
-    vs_local:       Option<String>,
-    default_branch: Option<String>,
-    origin:         Option<String>,
-    owner:          Option<String>,
-    url:            Option<String>,
-    stars:          Option<u64>,
-    description:    Option<String>,
-    inception:      Option<String>,
-    last_commit:    Option<String>,
+    branch:            Option<String>,
+    path:              GitPathState,
+    sync:              Option<String>,
+    vs_origin:         Option<String>,
+    vs_local:          Option<String>,
+    default_branch:    Option<String>,
+    local_main_branch: Option<String>,
+    main_branch_label: String,
+    origin:            Option<String>,
+    owner:             Option<String>,
+    url:               Option<String>,
+    stars:             Option<u64>,
+    description:       Option<String>,
+    inception:         Option<String>,
+    last_commit:       Option<String>,
 }
 
 fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
@@ -526,6 +532,8 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         .and_then(|info| info.ahead_behind_local)
         .map(format_ahead_behind);
     let default_branch = git.and_then(|info| info.default_branch.clone());
+    let local_main_branch = git.and_then(|info| info.local_main_branch.clone());
+    let main_branch_label = app.current_config.tui.main_branch.clone();
     let origin = git.map(|info| format!("{} {}", info.origin.icon(), info.origin.label()));
     let owner = git.and_then(|info| info.owner.clone());
     let url = git.and_then(|info| info.url.clone());
@@ -552,6 +560,8 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         vs_origin,
         vs_local,
         default_branch,
+        local_main_branch,
+        main_branch_label,
         origin,
         owner,
         url,
@@ -802,6 +812,8 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
         git_vs_origin: git_detail.vs_origin,
         git_vs_local: git_detail.vs_local,
         default_branch: git_detail.default_branch,
+        local_main_branch: git_detail.local_main_branch,
+        main_branch_label: git_detail.main_branch_label,
         git_origin: git_detail.origin,
         git_owner: git_detail.owner,
         git_url: git_detail.url,

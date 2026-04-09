@@ -95,6 +95,7 @@ fn tabbable_panes_follow_canonical_order() {
             ahead_behind:        None,
             default_branch:      None,
             ahead_behind_origin: None,
+            local_main_branch:   None,
             ahead_behind_local:  None,
             workflows:           WorkflowPresence::Present,
         },
@@ -393,7 +394,8 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         disk_suffix:       Some(" [x]"),
         disk_suffix_style: Some(Style::default().fg(Color::DarkGray)),
         lang_icon:         item.lang_icon(),
-        git_sync:          &app.git_sync(item.path()),
+        git_origin_sync:   &app.git_sync(item.path()),
+        git_main:          &app.git_main(item.path()),
         ci:                app.ci_for_item(item),
         deleted:           true,
     });

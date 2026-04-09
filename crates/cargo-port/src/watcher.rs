@@ -157,6 +157,15 @@ fn watcher_loop(
     notify_rx: &mpsc::Receiver<notify::Result<notify::Event>>,
     mut watcher: notify::RecommendedWatcher,
 ) {
+    let WatcherLoopContext {
+        scan_root,
+        bg_tx,
+        ci_run_count,
+        non_rust,
+        client,
+    } = ctx;
+    let watch_rx = watch_rx;
+    let notify_rx = notify_rx;
     // `abs_path` → project tracking state
     let mut projects: HashMap<PathBuf, ProjectEntry> = HashMap::new();
     // Directories that contain at least one known project (e.g. `~/rust/`).
@@ -192,12 +201,12 @@ fn watcher_loop(
 
         let dispatch = WatcherDispatchContext {
             event: EventContext {
-                scan_root:       &ctx.scan_root,
+                scan_root:       &scan_root,
                 projects:        &projects,
                 project_parents: &project_parents,
                 discovered:      &discovered,
             },
-            bg_tx: &ctx.bg_tx,
+            bg_tx: &bg_tx,
         };
         let notify_events = drain_notify_events(notify_rx);
         if watch_drain.registration_completed {
@@ -230,32 +239,32 @@ fn watcher_loop(
 
         // Fire git refreshes whose debounce has expired.
         fire_git_updates(
-            &ctx.client.handle,
+            &client.handle,
             &git_limit,
             &git_done_tx,
-            &ctx.bg_tx,
+            &bg_tx,
             &projects,
             &mut pending_git,
         );
 
         // Fire disk recalculations whose debounce has expired.
         fire_disk_updates(
-            &ctx.client.handle,
+            &client.handle,
             &disk_limit,
             &disk_done_tx,
-            &ctx.bg_tx,
+            &bg_tx,
             &projects,
             &mut pending_disk,
         );
 
         // Probe new-project candidates whose debounce has expired.
         probe_new_projects(
-            &ctx.bg_tx,
+            &bg_tx,
             &mut pending_new,
             &mut discovered,
-            ctx.ci_run_count,
-            ctx.non_rust,
-            &ctx.client,
+            ci_run_count,
+            non_rust,
+            &client,
         );
 
         thread::sleep(POLL_INTERVAL);

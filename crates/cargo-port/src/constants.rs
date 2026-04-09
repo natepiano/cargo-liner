@@ -8,6 +8,7 @@ pub(crate) const PASSING: &str = "🟢";
 pub(crate) const FAILING: &str = "🔴";
 pub(crate) const CANCELLED: &str = "🌑";
 pub(crate) const IN_SYNC: &str = "☑️";
+pub(crate) const NO_REMOTE_SYNC: &str = "--";
 pub(crate) const SYNC_UP: &str = "↑";
 pub(crate) const SYNC_DOWN: &str = "↓";
 

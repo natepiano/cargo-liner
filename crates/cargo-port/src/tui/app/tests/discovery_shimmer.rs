@@ -444,7 +444,7 @@ fn prune_discovery_shimmers_removes_expired_entries() {
         DiscoveryShimmer::new(
             Instant::now()
                 .checked_sub(Duration::from_secs(5))
-                .unwrap_or_else(|| std::process::abort()),
+                .unwrap_or_else(Instant::now),
             Duration::from_secs(1),
         ),
     );

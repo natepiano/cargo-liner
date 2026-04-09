@@ -17,10 +17,11 @@ pub(super) const COL_NAME: usize = 0;
 pub(super) const COL_LINT: usize = 1;
 pub(super) const COL_CI: usize = 2;
 pub(super) const COL_LANG: usize = 3;
-pub(super) const COL_SYNC: usize = 4;
-pub(super) const COL_GIT_PATH: usize = 5;
-pub(super) const COL_DISK: usize = 6;
-pub(super) const NUM_COLS: usize = 7;
+pub(super) const COL_GIT_PATH: usize = 4;
+pub(super) const COL_SYNC: usize = 5;
+pub(super) const COL_MAIN: usize = 6;
+pub(super) const COL_DISK: usize = 7;
+pub(super) const NUM_COLS: usize = 8;
 
 // ── Column definition types ─────────────────────────────────────────
 
@@ -92,23 +93,31 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
             gap:         1,
             header_mode: HeaderMode::Hidden,
         },
-        // 4: Sync status, labeled as Git in the header.
+        // 4: Git path status glyph, labeled as Git in the header.
         ColumnDef {
             header:      "Git",
-            width:       ColumnWidth::Fit { min: 0 },
-            align:       Align::Right,
+            width:       ColumnWidth::Fixed(2),
+            align:       Align::Left,
             gap:         1,
             header_mode: HeaderMode::BorrowLeft,
         },
-        // 5: Git path status glyph
+        // 5: Origin/upstream sync status
         ColumnDef {
-            header:      "",
-            width:       ColumnWidth::Fixed(2),
-            align:       Align::Center,
+            header:      "O",
+            width:       ColumnWidth::Fit { min: 0 },
+            align:       Align::Right,
             gap:         1,
-            header_mode: HeaderMode::Hidden,
+            header_mode: HeaderMode::Standard,
         },
-        // 6: Disk
+        // 6: Local main delta
+        ColumnDef {
+            header:      "M",
+            width:       ColumnWidth::Fit { min: 0 },
+            align:       Align::Right,
+            gap:         1,
+            header_mode: HeaderMode::Standard,
+        },
+        // 7: Disk
         ColumnDef {
             header:      "Disk",
             width:       ColumnWidth::Fit { min: 4 },
@@ -149,7 +158,8 @@ pub(super) struct ProjectRow<'a> {
     pub disk_suffix:       Option<&'a str>,
     pub disk_suffix_style: Option<Style>,
     pub lang_icon:         &'a str,
-    pub git_sync:          &'a str,
+    pub git_origin_sync:   &'a str,
+    pub git_main:          &'a str,
     pub ci:                Option<Conclusion>,
     pub deleted:           bool,
 }
@@ -304,7 +314,7 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'stat
             let prefix_w = display_width(&row.prefix);
             let available = col_width.saturating_sub(prefix_w);
             format!("{}{}", row.prefix, pad_right(&cell.text, available))
-        } else if i == COL_SYNC && cell.text == IN_SYNC {
+        } else if (i == COL_SYNC || i == COL_MAIN) && cell.text == IN_SYNC {
             let padded = pad_left(&cell.text, col_width);
             format!("{}{padded}", " ".repeat(defs[i].gap))
         } else {
@@ -404,19 +414,30 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         .map_or(String::new(), |conclusion| String::from(conclusion.icon()));
     let git_path_icon = row.git_path_state.icon();
 
-    let name_style = project_name_style(row.git_path_state);
-    let ci_style = super::render::conclusion_style(row.ci);
-    let sync_style = if row.git_sync == IN_SYNC {
-        Style::default().fg(GIT_UNTRACKED_COLOR)
-    } else {
-        Style::default().fg(Color::White)
+    let compact_status_style = |value: &str| {
+        if value == IN_SYNC {
+            Style::default().fg(GIT_UNTRACKED_COLOR)
+        } else {
+            Style::default().fg(Color::White)
+        }
     };
 
-    let sync_align = if row.git_sync == IN_SYNC {
-        Some(Align::Center)
-    } else {
-        None
+    let compact_status_align = |value: &str| {
+        if value == IN_SYNC {
+            Some(Align::Center)
+        } else {
+            None
+        }
     };
+
+    let origin_sync_style = compact_status_style(row.git_origin_sync);
+    let main_style = compact_status_style(row.git_main);
+    let origin_sync_align = compact_status_align(row.git_origin_sync);
+    let main_align = compact_status_align(row.git_main);
+
+    let name_style = project_name_style(row.git_path_state);
+    let ci_style = super::render::conclusion_style(row.ci);
+    let git_path_style = Style::default();
 
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
     cells[COL_NAME] = CellContent {
@@ -444,16 +465,22 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         align_override: None,
         ..CellContent::default()
     };
-    cells[COL_SYNC] = CellContent {
-        text: String::from(row.git_sync),
-        style: sync_style,
-        align_override: sync_align,
-        ..CellContent::default()
-    };
     cells[COL_GIT_PATH] = CellContent {
         text: String::from(git_path_icon),
-        style: Style::default(),
+        style: git_path_style,
         align_override: Some(Align::Center),
+        ..CellContent::default()
+    };
+    cells[COL_SYNC] = CellContent {
+        text: String::from(row.git_origin_sync),
+        style: origin_sync_style,
+        align_override: origin_sync_align,
+        ..CellContent::default()
+    };
+    cells[COL_MAIN] = CellContent {
+        text: String::from(row.git_main),
+        style: main_style,
+        align_override: main_align,
         ..CellContent::default()
     };
     cells[COL_DISK] = CellContent {
@@ -623,7 +650,8 @@ mod tests {
         // Fit columns get their min
         assert_eq!(widths.get(COL_NAME), 10);
         assert_eq!(widths.get(COL_DISK), 4);
-        assert_eq!(widths.get(COL_SYNC), 0);
+        assert_eq!(widths.get(COL_SYNC), 1);
+        assert_eq!(widths.get(COL_MAIN), 1);
     }
 
     #[test]
@@ -655,14 +683,16 @@ mod tests {
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
+        widths.observe(COL_MAIN, 2);
 
         let line = header_line(&widths, "Projects");
 
         assert_eq!(display_width(line.spans[COL_NAME].content.as_ref()), 28);
         assert_eq!(display_width(line.spans[COL_LINT].content.as_ref()), 4);
         assert_eq!(line.spans[COL_CI].content.as_ref(), " CI");
-        assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Git");
-        assert_eq!(display_width(line.spans[COL_GIT_PATH].content.as_ref()), 3);
+        assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), "Git ");
+        assert_eq!(line.spans[COL_SYNC].content.as_ref(), "  O");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  M");
         assert_eq!(line.spans[COL_DISK].content.as_ref(), "    Disk");
         assert_eq!(line.width(), widths.total_width());
     }
@@ -673,13 +703,15 @@ mod tests {
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
+        widths.observe(COL_MAIN, 2);
 
         let line = header_line(&widths, "Projects");
 
         assert_eq!(line.spans[COL_CI].content.as_ref(), " CI");
         assert_eq!(display_width(line.spans[COL_LANG].content.as_ref()), 2);
-        assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Git");
-        assert_eq!(display_width(line.spans[COL_GIT_PATH].content.as_ref()), 3);
+        assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), "Git ");
+        assert_eq!(line.spans[COL_SYNC].content.as_ref(), "  O");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  M");
         assert_eq!(line.width(), widths.total_width());
     }
 
@@ -707,6 +739,7 @@ mod tests {
         widths.observe(COL_NAME, 32);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
+        widths.observe(COL_MAIN, 2);
 
         let row_emoji = build_row_cells(ProjectRow {
             prefix:            "▶ ",
@@ -719,7 +752,8 @@ mod tests {
             disk_suffix:       None,
             disk_suffix_style: None,
             lang_icon:         "🦀",
-            git_sync:          "↑2",
+            git_origin_sync:   "↑2",
+            git_main:          "",
             ci:                Some(Conclusion::Success),
             deleted:           false,
         });
@@ -734,7 +768,8 @@ mod tests {
             disk_suffix:       None,
             disk_suffix_style: None,
             lang_icon:         "🦀",
-            git_sync:          "↑2",
+            git_origin_sync:   "↑2",
+            git_main:          "",
             ci:                Some(Conclusion::Success),
             deleted:           false,
         });
@@ -764,6 +799,7 @@ mod tests {
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
+        widths.observe(COL_MAIN, 2);
 
         let row = build_summary_cells(&widths, "36.3 GiB");
         let line = row_to_line(&row, &widths);
@@ -772,7 +808,7 @@ mod tests {
             line.spans[COL_NAME].content.as_ref(),
             " ".repeat(widths.get(COL_NAME))
         );
-        assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), "  Σ");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  Σ");
         assert_eq!(line.spans[COL_CI].content.as_ref(), "   ");
         assert_eq!(line.spans[COL_DISK].content.as_ref(), "36.3 GiB");
     }
@@ -784,6 +820,7 @@ mod tests {
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
+        widths.observe(COL_MAIN, 2);
 
         let header = header_line(&widths, "Projects");
         let row = build_summary_cells(&widths, "36.3 GiB");
@@ -795,7 +832,7 @@ mod tests {
         assert_eq!(defs[COL_CI].header, "CI");
         assert_eq!(widths.get(COL_CI), 2);
         assert!(header.spans[COL_CI].content.as_ref().ends_with("CI"));
-        assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), "  Σ");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  Σ");
     }
 
     #[test]
@@ -804,6 +841,7 @@ mod tests {
         widths.observe(COL_NAME, 24);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
+        widths.observe(COL_MAIN, 2);
 
         let row = build_row_cells(ProjectRow {
             prefix:            "▶ ",
@@ -816,7 +854,8 @@ mod tests {
             disk_suffix:       None,
             disk_suffix_style: None,
             lang_icon:         "🦀",
-            git_sync:          "↑2",
+            git_origin_sync:   "↑2",
+            git_main:          "",
             ci:                Some(Conclusion::Success),
             deleted:           false,
         });
@@ -843,7 +882,8 @@ mod tests {
             disk_suffix:       None,
             disk_suffix_style: None,
             lang_icon:         "🦀",
-            git_sync:          "",
+            git_origin_sync:   "",
+            git_main:          "",
             ci:                None,
             deleted:           false,
         });
@@ -864,7 +904,8 @@ mod tests {
             disk_suffix:       None,
             disk_suffix_style: None,
             lang_icon:         "🦀",
-            git_sync:          "",
+            git_origin_sync:   "",
+            git_main:          "",
             ci:                None,
             deleted:           false,
         });
@@ -888,7 +929,8 @@ mod tests {
             disk_suffix:       None,
             disk_suffix_style: None,
             lang_icon:         "🦀",
-            git_sync:          "",
+            git_origin_sync:   "",
+            git_main:          "",
             ci:                None,
             deleted:           false,
         });
@@ -908,7 +950,8 @@ mod tests {
             disk_suffix:       None,
             disk_suffix_style: None,
             lang_icon:         "🦀",
-            git_sync:          "",
+            git_origin_sync:   "",
+            git_main:          "",
             ci:                None,
             deleted:           false,
         });

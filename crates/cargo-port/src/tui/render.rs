@@ -844,7 +844,8 @@ fn render_root_item(
     let ci = app.ci_for_item(item);
     let lang = item.lang_icon();
     let lint = app.lint_icon_for_root(node_index);
-    let sync = app.git_sync(item.path());
+    let origin_sync = app.git_sync(item.path());
+    let main_sync = app.git_main(item.path());
     let git_path_state = app.git_path_state_for(item.path());
     let prefix = if item.has_children() {
         if app.expanded.contains(&ExpandKey::Node(node_index)) {
@@ -881,7 +882,8 @@ fn render_root_item(
         disk_suffix,
         disk_suffix_style,
         lang_icon: lang,
-        git_sync: &sync,
+        git_origin_sync: &origin_sync,
+        git_main: &main_sync,
         ci,
         deleted,
     });
@@ -910,13 +912,24 @@ fn render_child_item(
         " "
     };
     let ci = if cargo_active { app.ci_for(path) } else { None };
-    let sync = if matches!(
-        app.git_path_state_for(path),
-        crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
-    ) {
+    let hide_git_status = app.is_workspace_member_path(path);
+    let origin_sync = if hide_git_status
+        || matches!(
+            app.git_path_state_for(path),
+            crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
+        ) {
         String::new()
     } else {
         app.git_sync(path)
+    };
+    let main_sync = if hide_git_status
+        || matches!(
+            app.git_path_state_for(path),
+            crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
+        ) {
+        String::new()
+    } else {
+        app.git_main(path)
     };
     let deleted = inherited_deleted || app.is_deleted(project.path());
     let git_path_state = app.git_path_state_for(path);
@@ -945,7 +958,8 @@ fn render_child_item(
         disk_suffix,
         disk_suffix_style,
         lang_icon: lang,
-        git_sync: &sync,
+        git_origin_sync: &origin_sync,
+        git_main: &main_sync,
         ci,
         deleted,
     });
@@ -1022,7 +1036,8 @@ fn render_worktree_entry<'a>(
     let lang = item.lang_icon();
     let lint = app.lint_icon_for_worktree(ni, wi);
     let ci = app.ci_for(wt_abs);
-    let sync = app.git_sync(wt_abs);
+    let origin_sync = app.git_sync(wt_abs);
+    let main_sync = app.git_main(wt_abs);
     let deleted = app.is_deleted(wt_abs);
     let git_path_state = app.git_path_state_for(wt_abs);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
@@ -1050,7 +1065,8 @@ fn render_worktree_entry<'a>(
         disk_suffix,
         disk_suffix_style,
         lang_icon: lang,
-        git_sync: &sync,
+        git_origin_sync: &origin_sync,
+        git_main: &main_sync,
         ci,
         deleted,
     });
@@ -1443,13 +1459,24 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
                 " "
             };
             let ci = if cargo_active { app.ci_for(abs) } else { None };
-            let sync = if matches!(
-                app.git_path_state_for(abs),
-                crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
-            ) {
+            let hide_git_status = app.is_workspace_member_path(abs);
+            let origin_sync = if hide_git_status
+                || matches!(
+                    app.git_path_state_for(abs),
+                    crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
+                ) {
                 String::new()
             } else {
                 app.git_sync(abs)
+            };
+            let main_sync = if hide_git_status
+                || matches!(
+                    app.git_path_state_for(abs),
+                    crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
+                ) {
+                String::new()
+            } else {
+                app.git_main(abs)
             };
             let deleted = metadata
                 .as_ref()
@@ -1480,7 +1507,8 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
                 disk_suffix,
                 disk_suffix_style,
                 lang_icon: lang,
-                git_sync: &sync,
+                git_origin_sync: &origin_sync,
+                git_main: &main_sync,
                 ci,
                 deleted,
             });

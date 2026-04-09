@@ -363,6 +363,7 @@ mod tests {
             ahead_behind:        Some((0, 0)),
             default_branch:      Some("main".to_string()),
             ahead_behind_origin: Some((0, 0)),
+            local_main_branch:   Some("main".to_string()),
             ahead_behind_local:  Some((0, 0)),
             workflows:           WorkflowPresence::Present,
         }

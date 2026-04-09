@@ -508,6 +508,7 @@ fn make_git_info(url: Option<&str>) -> GitInfo {
         ahead_behind:        None,
         default_branch:      Some("main".to_string()),
         ahead_behind_origin: None,
+        local_main_branch:   Some("main".to_string()),
         ahead_behind_local:  None,
         workflows:           WorkflowPresence::Present,
     }

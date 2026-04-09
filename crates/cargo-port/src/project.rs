@@ -12,6 +12,7 @@ use serde::Serialize;
 use toml::Table;
 use toml::Value;
 
+use crate::config;
 use crate::constants::GIT_CLONE;
 use crate::constants::GIT_FORK;
 use crate::constants::GIT_LOCAL;
@@ -152,7 +153,9 @@ pub(crate) struct GitInfo {
     pub default_branch:      Option<String>,
     /// Commits ahead and behind `origin/{default_branch}`.
     pub ahead_behind_origin: Option<(usize, usize)>,
-    /// Commits ahead and behind the local `{default_branch}`.
+    /// The local branch name used for `M` comparisons.
+    pub local_main_branch:   Option<String>,
+    /// Commits ahead and behind the local `{local_main_branch}`.
     pub ahead_behind_local:  Option<(usize, usize)>,
     /// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
     pub workflows:           WorkflowPresence,
@@ -183,17 +186,18 @@ impl GitInfo {
             GitOrigin::Clone
         };
 
-        let url_output = git_output_logged(
+        let (owner, url) = git_output_logged(
             &repo_root,
             "remote_get_url_origin",
             ["remote", "get-url", "origin"],
         )
-        .ok()?;
-        let raw_url = String::from_utf8_lossy(&url_output.stdout)
-            .trim()
-            .to_string();
-
-        let (owner, url) = parse_remote_url(&raw_url);
+        .ok()
+        .map_or((None, None), |url_output| {
+            let raw_url = String::from_utf8_lossy(&url_output.stdout)
+                .trim()
+                .to_string();
+            parse_remote_url(&raw_url)
+        });
 
         let branch = git_output_logged(
             &repo_root,
@@ -223,16 +227,24 @@ impl GitInfo {
                 .map(str::to_string)
         });
 
-        // Compare HEAD against the default branch when it differs from the current branch.
+        // Compare HEAD against the remote default branch when it differs from the current branch.
         let not_on_default = default_branch
             .as_deref()
             .filter(|db| branch.as_deref() != Some(*db));
         let ahead_behind_origin = not_on_default.and_then(|db| {
             parse_ahead_behind(&repo_root, &format!("HEAD...origin/{db}"), "default_origin")
         });
-        let ahead_behind_local = not_on_default.and_then(|db| {
-            parse_ahead_behind(&repo_root, &format!("HEAD...{db}"), "default_local")
-        });
+        let local_main_branch = resolve_local_main_branch(&repo_root);
+        let ahead_behind_local = local_main_branch
+            .as_deref()
+            .filter(|branch_name| branch.as_deref() != Some(*branch_name))
+            .and_then(|branch_name| {
+                parse_ahead_behind(
+                    &repo_root,
+                    &format!("HEAD...{branch_name}"),
+                    "configured_local_main",
+                )
+            });
 
         let last_commit =
             git_output_logged(&repo_root, "log_last_commit", ["log", "-1", "--format=%aI"])
@@ -252,10 +264,33 @@ impl GitInfo {
             ahead_behind,
             default_branch,
             ahead_behind_origin,
+            local_main_branch,
             ahead_behind_local,
             workflows: detect_workflow_presence(&repo_root),
         })
     }
+}
+
+fn resolve_local_main_branch(project_dir: &Path) -> Option<String> {
+    let cfg = config::active_config();
+    std::iter::once(cfg.tui.main_branch.as_str())
+        .chain(cfg.tui.other_primary_branches.iter().map(String::as_str))
+        .find(|branch| local_branch_exists(project_dir, branch))
+        .map(str::to_string)
+}
+
+fn local_branch_exists(project_dir: &Path, branch: &str) -> bool {
+    git_output_logged(
+        project_dir,
+        "show_ref_local_main",
+        [
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok()
 }
 
 fn detect_workflow_presence(repo_root: &Path) -> WorkflowPresence {

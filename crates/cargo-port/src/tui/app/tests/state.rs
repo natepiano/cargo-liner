@@ -1,4 +1,6 @@
 use super::*;
+use crate::constants::IN_SYNC;
+use crate::constants::NO_REMOTE_SYNC;
 use crate::project::WorktreeGroup;
 
 #[test]
@@ -159,6 +161,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
             ahead_behind:        None,
             default_branch:      Some("main".to_string()),
             ahead_behind_origin: None,
+            local_main_branch:   Some("main".to_string()),
             ahead_behind_local:  None,
             workflows:           WorkflowPresence::Present,
         },
@@ -570,6 +573,7 @@ fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
             ahead_behind:        Some((2, 0)),
             default_branch:      Some("main".to_string()),
             ahead_behind_origin: None,
+            local_main_branch:   Some("main".to_string()),
             ahead_behind_local:  None,
             workflows:           WorkflowPresence::Present,
         },
@@ -582,6 +586,58 @@ fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
     app.git_path_states
         .insert(project.path().to_path_buf(), GitPathState::Ignored);
     assert!(app.git_sync(project.path()).is_empty());
+}
+
+#[test]
+fn git_sync_shows_ascii_fill_for_local_only_branch() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+
+    app.handle_git_info(
+        project.path(),
+        GitInfo {
+            origin:              GitOrigin::Local,
+            branch:              Some("feat/demo".to_string()),
+            owner:               None,
+            url:                 None,
+            first_commit:        None,
+            last_commit:         None,
+            ahead_behind:        None,
+            default_branch:      None,
+            ahead_behind_origin: None,
+            local_main_branch:   Some("main".to_string()),
+            ahead_behind_local:  Some((3, 0)),
+            workflows:           WorkflowPresence::Present,
+        },
+    );
+
+    assert_eq!(app.git_sync(project.path()), NO_REMOTE_SYNC);
+}
+
+#[test]
+fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+
+    app.handle_git_info(
+        project.path(),
+        GitInfo {
+            origin:              GitOrigin::Clone,
+            branch:              Some("feat/demo".to_string()),
+            owner:               None,
+            url:                 Some("https://github.com/acme/demo".to_string()),
+            first_commit:        None,
+            last_commit:         None,
+            ahead_behind:        Some((0, 0)),
+            default_branch:      Some("main".to_string()),
+            ahead_behind_origin: Some((0, 0)),
+            local_main_branch:   Some("main".to_string()),
+            ahead_behind_local:  Some((0, 0)),
+            workflows:           WorkflowPresence::Present,
+        },
+    );
+
+    assert_eq!(app.git_main(project.path()), IN_SYNC);
 }
 
 #[test]

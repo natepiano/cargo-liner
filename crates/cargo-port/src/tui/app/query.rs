@@ -14,6 +14,7 @@ use crate::config::NavigationKeys;
 use crate::config::NonRustInclusion;
 use crate::config::ScrollDirection;
 use crate::constants::IN_SYNC;
+use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project::AbsolutePath;
@@ -558,6 +559,25 @@ impl App {
             Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
             // No upstream but has a remote — branch not published.
             None if info.origin != GitOrigin::Local => "-".to_string(),
+            None => NO_REMOTE_SYNC.to_string(),
+        }
+    }
+
+    pub fn git_main(&self, path: &Path) -> String {
+        if matches!(
+            self.git_path_state_for(path),
+            GitPathState::Untracked | GitPathState::Ignored
+        ) {
+            return String::new();
+        }
+        let Some(info) = self.git_info_for(path) else {
+            return String::new();
+        };
+        match info.ahead_behind_local {
+            Some((0, 0)) => IN_SYNC.to_string(),
+            Some((a, 0)) => format!("{SYNC_UP}{a}"),
+            Some((0, b)) => format!("{SYNC_DOWN}{b}"),
+            Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
             None => String::new(),
         }
     }

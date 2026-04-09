@@ -202,6 +202,22 @@ pub(super) fn package_label_width(fields: &[DetailField]) -> usize {
         .max(8)
 }
 
+fn git_label_width(info: &DetailInfo, fields: &[DetailField]) -> usize {
+    fields
+        .iter()
+        .map(|field| match *field {
+            DetailField::VsOrigin => {
+                let branch = info.default_branch.as_deref().unwrap_or("main");
+                format!("vs o/{branch}").width()
+            },
+            DetailField::VsLocal => format!("vs {}", info.main_branch_label).width(),
+            _ => field.label().width(),
+        })
+        .max()
+        .unwrap_or(0)
+        .max(8)
+}
+
 fn render_git_column_inner(
     frame: &mut Frame,
     info: &DetailInfo,
@@ -213,6 +229,7 @@ fn render_git_column_inner(
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut focused_output_line: usize = 0;
+    let label_width = git_label_width(info, fields);
 
     for (i, field) in fields.iter().enumerate() {
         if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
@@ -226,7 +243,7 @@ fn render_git_column_inner(
                 &dynamic_label
             },
             DetailField::VsLocal => {
-                let branch = info.default_branch.as_deref().unwrap_or("main");
+                let branch = info.main_branch_label.as_str();
                 dynamic_label = format!("vs {branch}");
                 &dynamic_label
             },
@@ -257,11 +274,11 @@ fn render_git_column_inner(
             DetailField::Repo | DetailField::Branch | DetailField::RepoDesc
         ) && !value.is_empty()
         {
-            let prefix = format!("  {label:<8} ");
-            let prefix_len = prefix.len();
+            let prefix = format!("  {label:<label_width$} ");
+            let prefix_len = prefix.width();
             let col_width = area.width as usize;
             let avail = col_width.saturating_sub(prefix_len + 1);
-            if avail > 0 && value.len() > avail {
+            if avail > 0 && value.width() > avail {
                 let wrapped = if *field == DetailField::RepoDesc {
                     word_wrap(&value, avail)
                 } else {
@@ -288,7 +305,7 @@ fn render_git_column_inner(
             }
         } else {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {label:<8} "), ls),
+                Span::styled(format!("  {label:<label_width$} "), ls),
                 Span::styled(value, vs),
             ]));
         }
