@@ -1,4 +1,5 @@
 use super::*;
+use crate::watcher::WatcherMsg;
 
 #[test]
 fn scan_result_registers_linked_worktrees_with_watcher() {
@@ -45,7 +46,18 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
         },
     );
 
-    let watched_paths: HashSet<PathBuf> = watch_rx.try_iter().map(|req| req.abs_path).collect();
+    let messages: Vec<_> = watch_rx.try_iter().collect();
+    let watched_paths: HashSet<PathBuf> = messages
+        .iter()
+        .filter_map(|msg| match msg {
+            WatcherMsg::Register(req) => Some(req.abs_path.clone()),
+            WatcherMsg::InitialRegistrationComplete => None,
+        })
+        .collect();
+    let completion_count = messages
+        .iter()
+        .filter(|msg| matches!(msg, WatcherMsg::InitialRegistrationComplete))
+        .count();
 
     assert!(
         watched_paths.contains(primary.path()),
@@ -55,6 +67,32 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
         watched_paths.contains(linked.path()),
         "linked worktree root should be registered with watcher"
     );
+    assert_eq!(
+        completion_count, 1,
+        "scan result should finish the watcher registration batch"
+    );
+}
+
+#[test]
+fn empty_scan_result_finishes_watcher_registration_batch() {
+    let mut app = make_app(&[]);
+    let (watch_tx, watch_rx) = mpsc::channel();
+    app.watch_tx = watch_tx;
+
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ScanResult {
+            projects:     Vec::new(),
+            disk_entries: Vec::new(),
+        },
+    );
+
+    let messages: Vec<_> = watch_rx.try_iter().collect();
+    assert_eq!(messages.len(), 1);
+    assert!(matches!(
+        messages[0],
+        WatcherMsg::InitialRegistrationComplete
+    ));
 }
 
 #[test]

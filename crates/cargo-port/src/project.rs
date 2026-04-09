@@ -1639,6 +1639,17 @@ impl RootItem {
         }
     }
 
+    pub(crate) fn git_directory(&self) -> Option<AbsolutePath> {
+        let project_path = match self {
+            Self::Workspace(project) => project.path(),
+            Self::Package(project) => project.path(),
+            Self::NonRust(project) => project.path(),
+            Self::WorkspaceWorktrees(group) => group.primary().path(),
+            Self::PackageWorktrees(group) => group.primary().path(),
+        };
+        resolve_git_dir(project_path).map(AbsolutePath::from)
+    }
+
     pub(crate) fn root_name_base(&self) -> String { self.display_name() }
 
     pub(crate) fn worktree_badge_suffix(&self) -> Option<String> {

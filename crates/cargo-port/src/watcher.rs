@@ -50,6 +50,11 @@ pub(crate) struct WatchRequest {
     pub repo_root:     Option<PathBuf>,
 }
 
+pub(crate) enum WatcherMsg {
+    Register(WatchRequest),
+    InitialRegistrationComplete,
+}
+
 /// Spawn a unified background watcher thread. Watches the include
 /// directories recursively and handles disk-usage updates,
 /// new-project detection, and deleted-project detection.
@@ -60,19 +65,33 @@ pub(crate) fn spawn_watcher(
     non_rust: NonRustInclusion,
     include_dirs: Vec<String>,
     client: HttpClient,
-) -> mpsc::Sender<WatchRequest> {
+) -> mpsc::Sender<WatcherMsg> {
     let (watch_tx, watch_rx) = mpsc::channel();
+    let watch_dirs = scan::resolve_include_dirs(&scan_root, &include_dirs);
+    let (notify_tx, notify_rx) = mpsc::channel();
+    let handler = move |res| {
+        let _ = notify_tx.send(res);
+    };
+    let Ok(mut watcher) = notify::recommended_watcher(handler) else {
+        return watch_tx;
+    };
+    let started = Instant::now();
+    register_watch_roots(&mut watcher, &watch_dirs);
+    tracing::info!(
+        roots = watch_dirs.len(),
+        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+        "watcher_root_registration_complete"
+    );
     let ctx = WatcherLoopContext {
         scan_root,
         bg_tx,
         ci_run_count,
         non_rust,
-        include_dirs,
         client,
     };
 
     thread::spawn(move || {
-        watcher_loop(&ctx, &watch_rx);
+        watcher_loop(ctx, watch_rx, notify_rx, watcher);
     });
 
     watch_tx
@@ -83,7 +102,6 @@ struct WatcherLoopContext {
     bg_tx:        mpsc::Sender<BackgroundMsg>,
     ci_run_count: u32,
     non_rust:     NonRustInclusion,
-    include_dirs: Vec<String>,
     client:       HttpClient,
 }
 
@@ -133,17 +151,12 @@ impl GitRefreshKind {
     const fn refresh_info(self) -> bool { matches!(self, Self::FullMetadata) }
 }
 
-fn watcher_loop(ctx: &WatcherLoopContext, watch_rx: &mpsc::Receiver<WatchRequest>) {
-    let watch_dirs = scan::resolve_include_dirs(&ctx.scan_root, &ctx.include_dirs);
-    let (notify_tx, notify_rx) = mpsc::channel();
-    let handler = move |res| {
-        let _ = notify_tx.send(res);
-    };
-    let Ok(mut watcher) = notify::recommended_watcher(handler) else {
-        return;
-    };
-    register_watch_roots(&mut watcher, &watch_dirs);
-
+fn watcher_loop(
+    ctx: WatcherLoopContext,
+    watch_rx: mpsc::Receiver<WatcherMsg>,
+    notify_rx: mpsc::Receiver<notify::Result<notify::Event>>,
+    mut watcher: notify::RecommendedWatcher,
+) {
     // `abs_path` → project tracking state
     let mut projects: HashMap<PathBuf, ProjectEntry> = HashMap::new();
     // Directories that contain at least one known project (e.g. `~/rust/`).
@@ -157,19 +170,23 @@ fn watcher_loop(ctx: &WatcherLoopContext, watch_rx: &mpsc::Receiver<WatchRequest
     // Directories already discovered as new projects by this watcher.
     let mut discovered: HashSet<PathBuf> = HashSet::new();
     let mut watched_git_metadata: HashSet<PathBuf> = HashSet::new();
+    let mut initializing = true;
+    let mut buffered_events = Vec::new();
     let (disk_done_tx, disk_done_rx) = mpsc::channel::<String>();
     let (git_done_tx, git_done_rx) = mpsc::channel::<PathBuf>();
     let disk_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_DISK_CONCURRENCY));
     let git_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_GIT_CONCURRENCY));
 
     loop {
-        if drain_watch_requests(
+        let watch_drain = drain_watch_messages(
             &mut watcher,
-            watch_rx,
+            &watch_rx,
             &mut projects,
             &mut project_parents,
             &mut watched_git_metadata,
-        ) {
+            &mut initializing,
+        );
+        if watch_drain.disconnected {
             return;
         }
 
@@ -182,13 +199,28 @@ fn watcher_loop(ctx: &WatcherLoopContext, watch_rx: &mpsc::Receiver<WatchRequest
             },
             bg_tx: &ctx.bg_tx,
         };
-        drain_notify_events(
-            &notify_rx,
-            &dispatch,
-            &mut pending_disk,
-            &mut pending_git,
-            &mut pending_new,
-        );
+        let notify_events = drain_notify_events(&notify_rx);
+        if watch_drain.registration_completed {
+            replay_buffered_events(
+                &buffered_events,
+                &dispatch,
+                &mut pending_disk,
+                &mut pending_git,
+                &mut pending_new,
+            );
+            buffered_events.clear();
+        }
+        if initializing {
+            buffered_events.extend(notify_events);
+        } else {
+            replay_buffered_events(
+                &notify_events,
+                &dispatch,
+                &mut pending_disk,
+                &mut pending_git,
+                &mut pending_new,
+            );
+        }
         drain_completed_refreshes(
             &disk_done_rx,
             &git_done_rx,
@@ -238,59 +270,102 @@ fn register_watch_roots(watcher: &mut impl Watcher, watch_dirs: &[PathBuf]) {
     }
 }
 
-fn drain_watch_requests(
+struct WatchDrainResult {
+    disconnected:           bool,
+    registration_completed: bool,
+}
+
+fn drain_watch_messages(
     watcher: &mut impl Watcher,
-    watch_rx: &mpsc::Receiver<WatchRequest>,
+    watch_rx: &mpsc::Receiver<WatcherMsg>,
     projects: &mut HashMap<PathBuf, ProjectEntry>,
     project_parents: &mut HashSet<PathBuf>,
     watched_git_metadata: &mut HashSet<PathBuf>,
-) -> bool {
+    initializing: &mut bool,
+) -> WatchDrainResult {
+    let mut result = WatchDrainResult {
+        disconnected:           false,
+        registration_completed: false,
+    };
     loop {
         match watch_rx.try_recv() {
-            Ok(req) => {
-                if let Some(parent) = req.abs_path.parent() {
-                    project_parents.insert(parent.to_path_buf());
-                }
-                let git_dir = req.repo_root.as_deref().and_then(project::resolve_git_dir);
-                let common_git_dir = req
-                    .repo_root
-                    .as_deref()
-                    .and_then(project::resolve_common_git_dir);
-                watch_git_metadata_paths(
+            Ok(WatcherMsg::Register(req)) => {
+                apply_watch_request(
                     watcher,
-                    &req,
-                    git_dir.as_deref(),
-                    common_git_dir.as_deref(),
+                    req,
+                    projects,
+                    project_parents,
                     watched_git_metadata,
                 );
-                projects.insert(
-                    req.abs_path.clone(),
-                    ProjectEntry {
-                        project_label: req.project_label,
-                        abs_path: req.abs_path.clone(),
-                        repo_root: req.repo_root,
-                        git_dir,
-                        common_git_dir,
-                    },
-                );
             },
-            Err(mpsc::TryRecvError::Empty) => return false,
-            Err(mpsc::TryRecvError::Disconnected) => return true,
+            Ok(WatcherMsg::InitialRegistrationComplete) => {
+                *initializing = false;
+                result.registration_completed = true;
+            },
+            Err(mpsc::TryRecvError::Empty) => return result,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                result.disconnected = true;
+                return result;
+            },
         }
     }
 }
 
+fn apply_watch_request(
+    watcher: &mut impl Watcher,
+    req: WatchRequest,
+    projects: &mut HashMap<PathBuf, ProjectEntry>,
+    project_parents: &mut HashSet<PathBuf>,
+    watched_git_metadata: &mut HashSet<PathBuf>,
+) {
+    if let Some(parent) = req.abs_path.parent() {
+        project_parents.insert(parent.to_path_buf());
+    }
+    let git_dir = req.repo_root.as_deref().and_then(project::resolve_git_dir);
+    let common_git_dir = req
+        .repo_root
+        .as_deref()
+        .and_then(project::resolve_common_git_dir);
+    watch_git_metadata_paths(
+        watcher,
+        &req,
+        git_dir.as_deref(),
+        common_git_dir.as_deref(),
+        watched_git_metadata,
+    );
+    projects.insert(
+        req.abs_path.clone(),
+        ProjectEntry {
+            project_label: req.project_label,
+            abs_path: req.abs_path.clone(),
+            repo_root: req.repo_root,
+            git_dir,
+            common_git_dir,
+        },
+    );
+}
+
 fn drain_notify_events(
     notify_rx: &mpsc::Receiver<notify::Result<notify::Event>>,
+) -> Vec<notify::Event> {
+    let mut events = Vec::new();
+    while let Ok(result) = notify_rx.try_recv() {
+        let Ok(event) = result else {
+            continue;
+        };
+        events.push(event);
+    }
+    events
+}
+
+fn replay_buffered_events(
+    events: &[notify::Event],
     ctx: &WatcherDispatchContext<'_>,
     pending_disk: &mut HashMap<String, DiskState>,
     pending_git: &mut HashMap<PathBuf, GitState>,
     pending_new: &mut HashMap<PathBuf, Instant>,
 ) {
-    while let Ok(result) = notify_rx.try_recv() {
-        let Ok(event) = result else {
-            continue;
-        };
+    for event in events {
         for event_path in &event.paths {
             handle_event(
                 event_path,
@@ -1317,6 +1392,14 @@ mod tests {
         ));
     }
 
+    fn event_with_path(path: PathBuf) -> notify::Event {
+        notify::Event {
+            kind:  notify::event::EventKind::Any,
+            paths: vec![path],
+            attrs: notify::event::EventAttributes::default(),
+        }
+    }
+
     fn repo_with_member_event_context(
         tmp: &tempfile::TempDir,
     ) -> (
@@ -1768,6 +1851,87 @@ edition = "2024"
     }
 
     #[test]
+    fn buffered_worktree_git_dir_event_replays_after_registration_complete() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (wt_root, wt_git_dir, projects, scan_root, project_parents, discovered) =
+            worktree_git_event_context(&tmp);
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, _bg_rx) = mpsc::channel();
+        let dispatch = WatcherDispatchContext {
+            event: ctx,
+            bg_tx: &bg_tx,
+        };
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+        let buffered = vec![event_with_path(wt_git_dir.join("index"))];
+
+        replay_buffered_events(
+            &buffered,
+            &dispatch,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        assert!(
+            pending_git.contains_key(&wt_root),
+            "buffered worktree git-dir events should replay through the normal classifier"
+        );
+        assert!(pending_new.is_empty());
+    }
+
+    #[test]
+    fn buffered_worktree_common_git_event_replays_after_registration_complete() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (wt_root, _wt_git_dir, projects, scan_root, project_parents, discovered) =
+            worktree_git_event_context(&tmp);
+        let common_git_dir = tmp.path().join("main_repo_git");
+        let branch_ref = common_git_dir.join("refs").join("heads").join("wt-branch");
+        std::fs::write(&branch_ref, "deadbeef\n").expect("write branch ref");
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, _bg_rx) = mpsc::channel();
+        let dispatch = WatcherDispatchContext {
+            event: ctx,
+            bg_tx: &bg_tx,
+        };
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+        let buffered = vec![event_with_path(branch_ref)];
+
+        replay_buffered_events(
+            &buffered,
+            &dispatch,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        assert!(
+            matches!(
+                pending_git.get(&wt_root),
+                Some(GitState::Pending {
+                    refresh_info: true,
+                    ..
+                })
+            ),
+            "buffered common-git-dir events should still trigger the full metadata path"
+        );
+        assert!(pending_new.is_empty());
+    }
+
+    #[test]
     fn cache_lint_event_is_ignored_by_project_watcher() {
         let project_root = tempfile::tempdir().expect("tempdir");
         let project_path = "~/rust/demo";
@@ -1905,6 +2069,46 @@ edition = "2024"
     }
 
     #[test]
+    fn replayed_event_for_already_registered_project_uses_known_project_path() {
+        let tmp = tempfile::tempdir().expect("failed to create tempdir");
+        let scan_root = tmp.path().to_path_buf();
+        let project_dir = scan_root.join("existing_project");
+        std::fs::create_dir_all(project_dir.join("src")).expect("create project dir");
+
+        let mut projects = HashMap::new();
+        let (key, entry) = make_project_entry("~/existing_project", &project_dir);
+        projects.insert(key, entry);
+        let project_parents = HashSet::from([scan_root.clone()]);
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, _bg_rx) = mpsc::channel();
+        let dispatch = WatcherDispatchContext {
+            event: ctx,
+            bg_tx: &bg_tx,
+        };
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+        let buffered = vec![event_with_path(project_dir.join("src").join("lib.rs"))];
+
+        replay_buffered_events(
+            &buffered,
+            &dispatch,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        assert_pending_disk(&pending_disk, "~/existing_project");
+        assert!(pending_new.is_empty());
+    }
+
+    #[test]
     fn already_discovered_directory_not_re_enqueued() {
         let tmp = tempfile::tempdir().expect("failed to create tempdir");
         let scan_root = tmp.path().to_path_buf();
@@ -2024,6 +2228,29 @@ edition = "2024"
             let dirs = scan::resolve_include_dirs(&scan_root, &include_dirs);
             assert_eq!(dirs, expected, "{name}");
         }
+    }
+
+    #[test]
+    fn register_watch_roots_reports_elapsed_for_representative_roots() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let rust_root = tmp.path().join("rust");
+        let claude_root = tmp.path().join(".claude");
+        std::fs::create_dir_all(&rust_root).expect("create rust root");
+        std::fs::create_dir_all(&claude_root).expect("create claude root");
+        let watch_dirs = vec![rust_root, claude_root];
+        let (notify_tx, _notify_rx) = mpsc::channel();
+        let handler = move |res| {
+            let _ = notify_tx.send(res);
+        };
+        let mut watcher = notify::recommended_watcher(handler).expect("recommended watcher");
+        let started = Instant::now();
+
+        register_watch_roots(&mut watcher, &watch_dirs);
+
+        eprintln!(
+            "register_watch_roots_elapsed_ms={}",
+            crate::perf_log::ms(started.elapsed().as_millis())
+        );
     }
 
     // ── fire_disk_updates ───────────────────────────────────────────

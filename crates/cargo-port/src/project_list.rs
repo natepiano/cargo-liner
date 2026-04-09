@@ -4,6 +4,7 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::path::Path;
 
+use crate::project::AbsolutePath;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
 use crate::project::Package;
@@ -79,6 +80,13 @@ impl ProjectList {
         }
 
         labels
+    }
+
+    pub(crate) fn git_directories(&self) -> Vec<AbsolutePath> {
+        self.root_items
+            .iter()
+            .filter_map(RootItem::git_directory)
+            .collect()
     }
 
     // -- Leaf iteration ---------------------------------------------------

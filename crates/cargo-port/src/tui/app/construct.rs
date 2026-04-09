@@ -41,7 +41,7 @@ use crate::tui::types::LayoutCache;
 use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
 use crate::watcher;
-use crate::watcher::WatchRequest;
+use crate::watcher::WatcherMsg;
 
 fn initial_list_state(items: &[RootItem]) -> ListState {
     let mut state = ListState::default();
@@ -81,7 +81,7 @@ struct AppInit {
     config_last_seen: Option<ConfigFileStamp>,
     lint_warning:     Option<String>,
     lint_runtime:     Option<RuntimeHandle>,
-    watch_tx:         mpsc::Sender<WatchRequest>,
+    watch_tx:         mpsc::Sender<WatcherMsg>,
     projects:         ProjectList,
     list_state:       ListState,
 }
@@ -292,6 +292,9 @@ impl App {
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
         self.register_existing_projects();
+        if !self.projects.is_empty() {
+            self.finish_watcher_registration_batch();
+        }
         self.refresh_lint_runs_from_disk();
         self.rebuild_lint_rollups();
     }

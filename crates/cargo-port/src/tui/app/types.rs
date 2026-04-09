@@ -39,7 +39,7 @@ use crate::tui::toasts::ToastTaskId;
 use crate::tui::types::LayoutCache;
 use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
-use crate::watcher::WatchRequest;
+use crate::watcher::WatcherMsg;
 
 /// An expand key: a node, group, worktree entry, or group within a worktree.
 #[derive(Hash, Eq, PartialEq, Clone)]
@@ -572,7 +572,7 @@ pub struct App {
     pub lint_toast:               Option<ToastTaskId>,
 
     // Disk watcher
-    pub watch_tx:             mpsc::Sender<WatchRequest>,
+    pub watch_tx:             mpsc::Sender<WatcherMsg>,
     pub lint_runtime:         Option<RuntimeHandle>,
     pub unreachable_services: HashSet<ServiceKind>,
     pub service_retry_active: HashSet<ServiceKind>,

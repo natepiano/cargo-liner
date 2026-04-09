@@ -57,9 +57,10 @@ fn expanded_workspace_members_use_the_parent_shimmer_owner() {
         )),
         "expanded workspace should render its member row during an active shimmer"
     );
-    assert_eq!(
-        app.discovery_shimmer_owner_path(member.path()),
-        Some(test_path("~/rust/ws"))
+    assert!(
+        app.discovery_shimmers
+            .contains_key(test_path("~/rust/ws").as_path()),
+        "expanded member shimmer should be owned by the parent workspace session"
     );
     assert!(
         app.discovery_name_segments_for_path(
@@ -104,9 +105,9 @@ fn newly_discovered_member_keeps_its_own_shimmer_owner() {
         app.handle_project_discovered(make_project(Some("crate_a"), "~/rust/ws/crates/crate_a",))
     );
 
-    assert_eq!(
-        app.discovery_shimmer_owner_path(member_path.as_path()),
-        Some(member_path)
+    assert!(
+        app.discovery_shimmers.contains_key(member_path.as_path()),
+        "newly discovered member should keep its own shimmer session"
     );
 }
 

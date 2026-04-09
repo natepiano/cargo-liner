@@ -376,11 +376,6 @@ impl App {
         ))
     }
 
-    pub fn discovery_shimmer_owner_path(&self, row_path: &Path) -> Option<PathBuf> {
-        self.discovery_shimmer_session_for_path(row_path, Instant::now(), DiscoveryRowKind::Search)
-            .map(|(session_path, _)| session_path)
-    }
-
     fn discovery_shimmer_session_for_path(
         &self,
         row_path: &Path,

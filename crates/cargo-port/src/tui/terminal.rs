@@ -127,7 +127,6 @@ pub fn run(path: &Path) -> ExitCode {
     tracing::info!(kind = "initial", run = 1, "scan_start");
     let (bg_tx, bg_rx) = scan::spawn_streaming_scan(
         &scan_root,
-        cfg.tui.ci_run_count,
         &cfg.tui.include_dirs,
         &cfg.tui.inline_dirs,
         cfg.tui.include_non_rust,

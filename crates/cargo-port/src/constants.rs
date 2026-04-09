@@ -45,8 +45,6 @@ pub(crate) const LINTS_CACHE_DIR: &str = "lint-runs";
 pub(crate) const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";
 pub(crate) const OLDER_RUNS_FETCH_INCREMENT: u32 = 5;
 pub(crate) const SCAN_DISK_CONCURRENCY: usize = 2;
-pub(crate) const SCAN_HTTP_CONCURRENCY: usize = 8;
-pub(crate) const SCAN_LOCAL_CONCURRENCY: usize = 8;
 // ── HTTP constants ───────────────────────────────────────────────────
 
 pub(crate) const GITHUB_API_BASE: &str = "https://api.github.com";

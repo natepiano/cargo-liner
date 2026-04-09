@@ -1,4 +1,5 @@
 use super::*;
+use crate::project::WorktreeGroup;
 
 #[test]
 fn lint_runtime_waits_for_scan_completion() {
@@ -242,6 +243,115 @@ fn startup_lint_toast_body_shows_paths_then_others() {
     for line in &lines {
         assert!(line.starts_with("~/"));
     }
+}
+
+#[test]
+fn startup_git_expected_uses_top_level_git_directories() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let non_rust_dir = tmp.path().join(".claude");
+    let workspace_dir = tmp.path().join("bevy");
+    let primary_dir = tmp.path().join("cargo-port");
+    let linked_dir = tmp.path().join("cargo-port_feat");
+    let member_dir = workspace_dir.join("crates").join("core");
+
+    std::fs::create_dir_all(non_rust_dir.join(".git")).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(workspace_dir.join(".git")).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(primary_dir.join(".git")).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
+
+    let non_rust = RootItem::NonRust(NonRustProject::new(
+        non_rust_dir.clone(),
+        Some(".claude".to_string()),
+    ));
+    let workspace = RootItem::Workspace(RustProject::<Workspace>::new(
+        workspace_dir.clone(),
+        Some("bevy".to_string()),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        vec![inline_group(vec![RustProject::<Package>::new(
+            member_dir.clone(),
+            Some("core".to_string()),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Vec::new(),
+            None,
+            None,
+        )])],
+        Vec::new(),
+        None,
+        None,
+    ));
+    let primary = RustProject::<Package>::new(
+        primary_dir.clone(),
+        Some("cargo-port".to_string()),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Vec::new(),
+        None,
+        None,
+    );
+    let linked = RustProject::<Package>::new(
+        linked_dir,
+        Some("cargo-port_feat".to_string()),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Vec::new(),
+        Some("cargo-port_feat".to_string()),
+        Some(primary_dir.clone()),
+    );
+    let worktrees = RootItem::PackageWorktrees(WorktreeGroup::new(primary, vec![linked]));
+
+    let mut app = make_app(&[]);
+    apply_items(&mut app, &[non_rust, workspace, worktrees]);
+    app.scan.phase = ScanPhase::Complete;
+
+    app.initialize_startup_phase_tracker();
+
+    assert_eq!(
+        app.scan.startup_phases.git_expected,
+        HashSet::from([
+            non_rust_dir.join(".git"),
+            workspace_dir.join(".git"),
+            primary_dir.join(".git"),
+        ])
+    );
+}
+
+#[test]
+fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let workspace_dir = tmp.path().join("bevy");
+    let member_dir = workspace_dir.join("crates").join("core");
+    std::fs::create_dir_all(workspace_dir.join(".git")).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
+
+    let workspace = RootItem::Workspace(RustProject::<Workspace>::new(
+        workspace_dir.clone(),
+        Some("bevy".to_string()),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        vec![inline_group(vec![RustProject::<Package>::new(
+            member_dir.clone(),
+            Some("core".to_string()),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Vec::new(),
+            None,
+            None,
+        )])],
+        Vec::new(),
+        None,
+        None,
+    ));
+
+    let mut app = make_app(&[]);
+    apply_items(&mut app, &[workspace]);
+    app.scan.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    app.handle_git_info(member_dir.as_path(), make_git_info(None));
+
+    assert!(
+        app.scan
+            .startup_phases
+            .git_seen
+            .contains(&workspace_dir.join(".git"))
+    );
 }
 
 #[test]
