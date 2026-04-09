@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 use std::time::Instant;
 
 use notify::RecursiveMode;
@@ -587,12 +588,34 @@ fn is_target_metadata_event(event_path: &Path, project_root: &Path) -> bool {
 
 fn spawn_project_refresh(bg_tx: mpsc::Sender<BackgroundMsg>, project_root: PathBuf) {
     rayon::spawn(move || {
-        let cargo_toml = project_root.join("Cargo.toml");
-        let Ok(cargo_project) = crate::project::from_cargo_toml(&cargo_toml) else {
+        let Some(item) = scan::discover_project_item(&project_root).or_else(|| {
+            let cargo_toml = project_root.join("Cargo.toml");
+            crate::project::from_cargo_toml(&cargo_toml)
+                .ok()
+                .map(scan::cargo_project_to_item)
+        }) else {
             return;
         };
-        let item = scan::cargo_project_to_item(cargo_project);
+        let disk_entries = scan::disk_usage_batch_for_item(&item);
+        let root_path = item.path().to_path_buf();
         let _ = bg_tx.send(BackgroundMsg::ProjectRefreshed { item });
+        let _ = bg_tx.send(BackgroundMsg::DiskUsageBatch {
+            root_path: root_path.into(),
+            entries:   disk_entries,
+        });
+    });
+}
+
+fn spawn_project_refresh_after(
+    bg_tx: mpsc::Sender<BackgroundMsg>,
+    project_root: PathBuf,
+    delay: Duration,
+) {
+    rayon::spawn(move || {
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
+        spawn_project_refresh(bg_tx, project_root);
     });
 }
 
@@ -946,7 +969,19 @@ fn probe_new_projects(
             } else {
                 GitRepoPresence::OutsideRepo
             };
+            let disk_entries = scan::disk_usage_batch_for_item(&item);
             let _ = bg_tx.send(BackgroundMsg::ProjectDiscovered { item });
+            let _ = bg_tx.send(BackgroundMsg::DiskUsageBatch {
+                root_path: abs_path.clone().into(),
+                entries:   disk_entries,
+            });
+            if abs_path.join("Cargo.toml").exists() {
+                // Newly created Rust worktrees can be discovered before all
+                // nested workspace members are visible. A delayed normalized
+                // refresh repairs that initial partial shape once the checkout
+                // settles.
+                spawn_project_refresh_after(bg_tx.clone(), abs_path.clone(), NEW_PROJECT_DEBOUNCE);
+            }
             let tx = bg_tx.clone();
             let task_ctx = scan::FetchContext {
                 client:     client.clone(),
@@ -982,16 +1017,18 @@ fn project_level_dir(
     project_parents: &HashSet<PathBuf>,
 ) -> Option<PathBuf> {
     let mut path = event_path.to_path_buf();
+    let mut marker_candidate: Option<PathBuf> = None;
     loop {
         let parent = path.parent()?;
-        if parent == scan_root || project_parents.contains(parent) {
-            // `path` is at the same level as known projects.
-            return Some(path);
-        }
-        // Check for project markers on disk so we resolve to the actual
-        // project root even when its parent isn't in `project_parents`.
         if path.join("Cargo.toml").exists() || path.join(".git").exists() {
-            return Some(path);
+            marker_candidate = Some(path.clone());
+        }
+        if parent == scan_root || project_parents.contains(parent) {
+            // Prefer the outermost directory under the known project-parent
+            // boundary that carries project markers. This avoids discovering
+            // workspace members as standalone projects when a new workspace
+            // worktree is still emitting nested file events.
+            return Some(marker_candidate.unwrap_or(path));
         }
         if !path.starts_with(scan_root) {
             return None;
@@ -1005,9 +1042,7 @@ fn project_level_dir(
 fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<RootItem> {
     let cargo_toml = dir.join("Cargo.toml");
     if cargo_toml.exists() {
-        return crate::project::from_cargo_toml(&cargo_toml)
-            .ok()
-            .map(scan::cargo_project_to_item);
+        return scan::discover_project_item(dir);
     }
     if non_rust.includes_non_rust() && dir.join(".git").is_dir() {
         return Some(NonRust(crate::project::from_git_dir(dir)));
@@ -1207,6 +1242,25 @@ mod tests {
         let event = new_project.join("src/lib.rs");
         let result = project_level_dir(&event, scan_root, &parents);
         assert_eq!(result, Some(new_project));
+    }
+
+    #[test]
+    fn nested_workspace_member_event_resolves_to_workspace_root() {
+        let tmp = tempfile::tempdir().expect("failed to create tempdir");
+        let scan_root = tmp.path();
+        let parents = HashSet::from([scan_root.join("rust")]);
+
+        let workspace_root = scan_root.join("rust").join("bevy_brp_test");
+        let member_dir = workspace_root.join("extras");
+        std::fs::create_dir_all(member_dir.join("src")).expect("create member dirs");
+        std::fs::write(workspace_root.join("Cargo.toml"), b"[workspace]\nmembers=[\"extras\"]")
+            .expect("write workspace Cargo.toml");
+        std::fs::write(member_dir.join("Cargo.toml"), b"[package]\nname=\"extras\"\nversion=\"0.1.0\"")
+            .expect("write member Cargo.toml");
+
+        let event = member_dir.join("src/lib.rs");
+        let result = project_level_dir(&event, scan_root, &parents);
+        assert_eq!(result, Some(workspace_root));
     }
 
     // ── handle_event ─────────────────────────────────────────────────
@@ -2281,6 +2335,89 @@ edition = "2024"
                     .expect("canonical primary")
                     .as_path()
             )
+        );
+    }
+
+    #[test]
+    fn project_refresh_normalizes_workspace_members() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("bevy_brp");
+        let member_dir = project_dir.join("extras");
+
+        std::fs::create_dir_all(member_dir.join("src")).expect("create member src");
+        std::fs::write(
+            project_dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"extras\"]\n",
+        )
+        .expect("write workspace manifest");
+        std::fs::write(
+            member_dir.join("Cargo.toml"),
+            "[package]\nname = \"extras\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write member manifest");
+        std::fs::write(member_dir.join("src").join("lib.rs"), "pub fn demo() {}\n")
+            .expect("write member lib");
+
+        let (bg_tx, bg_rx) = mpsc::channel();
+        spawn_project_refresh_after(bg_tx, project_dir.clone(), Duration::ZERO);
+
+        let BackgroundMsg::ProjectRefreshed { item } = bg_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("project refreshed message")
+        else {
+            panic!("unexpected message");
+        };
+        let RootItem::Workspace(ws) = item else {
+            panic!("expected normalized workspace refresh");
+        };
+        assert!(
+            ws.has_members(),
+            "workspace refresh should rebuild member groups, not emit a flat workspace"
+        );
+        assert_eq!(ws.groups()[0].members()[0].path(), member_dir.as_path());
+    }
+
+    #[test]
+    fn project_refresh_emits_disk_usage_for_workspace_members() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("bevy_brp");
+        let member_dir = project_dir.join("extras");
+
+        std::fs::create_dir_all(member_dir.join("src")).expect("create member src");
+        std::fs::write(
+            project_dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"extras\"]\n",
+        )
+        .expect("write workspace manifest");
+        std::fs::write(
+            member_dir.join("Cargo.toml"),
+            "[package]\nname = \"extras\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write member manifest");
+        std::fs::write(member_dir.join("src").join("lib.rs"), "pub fn demo() {}\n")
+            .expect("write member lib");
+
+        let (bg_tx, bg_rx) = mpsc::channel();
+        spawn_project_refresh_after(bg_tx, project_dir.clone(), Duration::ZERO);
+
+        let _ = bg_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("project refreshed message");
+        let BackgroundMsg::DiskUsageBatch { entries, .. } = bg_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("disk usage batch message")
+        else {
+            panic!("expected disk usage batch");
+        };
+
+        let member_bytes = entries
+            .iter()
+            .find(|(path, _)| path.as_path() == member_dir.as_path())
+            .map(|(_, bytes)| *bytes)
+            .expect("member disk usage entry");
+        assert!(
+            member_bytes > 0,
+            "workspace member should receive a non-zero disk usage entry"
         );
     }
 

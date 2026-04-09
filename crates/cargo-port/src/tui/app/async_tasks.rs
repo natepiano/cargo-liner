@@ -45,6 +45,14 @@ use crate::tui::types::PaneId;
 use crate::watcher;
 use crate::watcher::WatchRequest;
 
+#[derive(Clone)]
+struct LegacyRootExpansion {
+    root_path: PathBuf,
+    old_node_index: usize,
+    had_children: bool,
+    named_groups: Vec<usize>,
+}
+
 impl App {
     #[cfg(test)]
     pub(super) fn apply_tree_build(&mut self, projects: ProjectList) {
@@ -1137,6 +1145,100 @@ impl App {
         }
     }
 
+    fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
+        self.projects
+            .iter()
+            .enumerate()
+            .filter_map(|(ni, item)| {
+                if !self.expanded.contains(&super::types::ExpandKey::Node(ni)) {
+                    return None;
+                }
+
+                match item {
+                    RootItem::Workspace(ws) => Some(LegacyRootExpansion {
+                        root_path:      ws.path().to_path_buf(),
+                        old_node_index: ni,
+                        had_children:   ws.has_members() || !ws.vendored().is_empty(),
+                        named_groups:   ws
+                            .groups()
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(gi, group)| {
+                                group.is_named()
+                                    .then(|| self.expanded.contains(&super::types::ExpandKey::Group(ni, gi)))
+                                    .filter(|expanded| *expanded)
+                                    .map(|_| gi)
+                            })
+                            .collect(),
+                    }),
+                    RootItem::Package(pkg) => Some(LegacyRootExpansion {
+                        root_path:      pkg.path().to_path_buf(),
+                        old_node_index: ni,
+                        had_children:   !pkg.vendored().is_empty(),
+                        named_groups:   Vec::new(),
+                    }),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    fn migrate_legacy_root_expansions(&mut self, legacy: &[LegacyRootExpansion]) {
+        for legacy_root in legacy {
+            let Some((current_index, current_item)) = self
+                .projects
+                .iter()
+                .enumerate()
+                .find(|(_, item)| item.path() == legacy_root.root_path.as_path())
+            else {
+                continue;
+            };
+
+            match current_item {
+                RootItem::WorkspaceWorktrees(group) if group.renders_as_group() => {
+                    self.expanded
+                        .insert(super::types::ExpandKey::Node(current_index));
+                    if legacy_root.had_children {
+                        self.expanded
+                            .insert(super::types::ExpandKey::Worktree(current_index, 0));
+                    }
+                    for &group_index in &legacy_root.named_groups {
+                        if group.primary().groups().get(group_index).is_some() {
+                            self.expanded.insert(super::types::ExpandKey::WorktreeGroup(
+                                current_index,
+                                0,
+                                group_index,
+                            ));
+                        }
+                        self.expanded
+                            .remove(&super::types::ExpandKey::Group(
+                                legacy_root.old_node_index,
+                                group_index,
+                            ));
+                    }
+                },
+                RootItem::PackageWorktrees(group) if group.renders_as_group() => {
+                    self.expanded
+                        .insert(super::types::ExpandKey::Node(current_index));
+                    if legacy_root.had_children {
+                        self.expanded
+                            .insert(super::types::ExpandKey::Worktree(current_index, 0));
+                    }
+                },
+                _ => {},
+            }
+        }
+    }
+
+    fn rebuild_visible_rows_now(&mut self) {
+        self.cached_visible_rows = super::snapshots::build_visible_rows(
+            &self.projects,
+            &self.expanded,
+            self.include_non_rust().includes_non_rust(),
+        );
+        self.dirty.rows.mark_clean();
+    }
+
     pub(super) fn refresh_async_caches(&mut self) {
         self.request_disk_cache_build();
         self.request_fit_widths_build();
@@ -1560,6 +1662,7 @@ impl App {
     }
 
     pub(super) fn handle_project_discovered(&mut self, item: RootItem) -> bool {
+        let legacy_expansions = self.capture_legacy_root_expansions();
         let discovered_path = item.path().to_path_buf();
         let mut already_exists = false;
         self.projects.for_each_leaf_path(|path, _| {
@@ -1575,12 +1678,15 @@ impl App {
         // Insert into the hierarchy directly — under a parent workspace if
         // one exists, otherwise as a top-level peer.
         self.projects.insert_into_hierarchy(item);
+        self.migrate_legacy_root_expansions(&legacy_expansions);
+        self.rebuild_visible_rows_now();
         // Signal that derived state and caches need refresh.
         // The caller batches multiple discoveries before refreshing once.
         true
     }
 
     pub(super) fn handle_project_refreshed(&mut self, mut item: RootItem) -> bool {
+        let legacy_expansions = self.capture_legacy_root_expansions();
         let path = item.path().to_path_buf();
 
         // Replace the leaf in project_list_items, transferring runtime data
@@ -1596,6 +1702,8 @@ impl App {
         // Re-replace with the runtime-data-enriched version.
         self.projects.replace_leaf_by_path(&path, item);
         self.projects.regroup_top_level_worktrees();
+        self.migrate_legacy_root_expansions(&legacy_expansions);
+        self.rebuild_visible_rows_now();
         self.cached_detail = None;
         // Signal that derived state needs refresh (batched by caller).
         true

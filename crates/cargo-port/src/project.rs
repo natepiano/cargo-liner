@@ -1476,7 +1476,7 @@ impl<Kind: CargoKind> WorktreeGroup<Kind> {
     pub(crate) fn live_entry_count(&self) -> usize {
         std::iter::once(self.primary.visibility())
             .chain(self.linked.iter().map(RustProject::visibility))
-            .filter(|visibility| !matches!(visibility, Visibility::Deleted | Visibility::Dismissed))
+            .filter(|visibility| !matches!(visibility, Visibility::Dismissed))
             .count()
     }
 
@@ -1489,12 +1489,7 @@ impl<Kind: CargoKind> WorktreeGroup<Kind> {
 
         std::iter::once(&self.primary)
             .chain(self.linked.iter())
-            .find(|project| {
-                !matches!(
-                    project.visibility(),
-                    Visibility::Deleted | Visibility::Dismissed
-                )
-            })
+            .find(|project| !matches!(project.visibility(), Visibility::Dismissed))
     }
 }
 
@@ -1701,8 +1696,8 @@ impl RootItem {
             Self::Package(p) => info_in_package_mut(p, path),
             Self::NonRust(p) => (p.path() == path).then(|| p.info_mut()),
             Self::WorkspaceWorktrees(g) => {
-                if g.primary().path() == path {
-                    return Some(g.primary_mut().info_mut());
+                if info_in_workspace(g.primary(), path).is_some() {
+                    return info_in_workspace_mut(g.primary_mut(), path);
                 }
                 let linked_index = g
                     .linked()
@@ -1711,8 +1706,8 @@ impl RootItem {
                 info_in_workspace_mut(&mut g.linked_mut()[linked_index], path)
             },
             Self::PackageWorktrees(g) => {
-                if g.primary().path() == path {
-                    return Some(g.primary_mut().info_mut());
+                if info_in_package(g.primary(), path).is_some() {
+                    return info_in_package_mut(g.primary_mut(), path);
                 }
                 let linked_index = g
                     .linked()

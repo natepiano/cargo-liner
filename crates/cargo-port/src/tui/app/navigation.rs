@@ -150,6 +150,12 @@ impl App {
     ) -> Option<&RustProject<Package>> {
         match item {
             RootItem::Workspace(ws) => ws.groups().get(group_index)?.members().get(member_index),
+            RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => wtg
+                .single_live()?
+                .groups()
+                .get(group_index)?
+                .members()
+                .get(member_index),
             _ => None,
         }
     }
@@ -159,6 +165,12 @@ impl App {
         match item {
             RootItem::Workspace(ws) => ws.vendored().get(vendored_index),
             RootItem::Package(pkg) => pkg.vendored().get(vendored_index),
+            RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => {
+                wtg.single_live()?.vendored().get(vendored_index)
+            },
+            RootItem::PackageWorktrees(wtg) if !wtg.renders_as_group() => {
+                wtg.single_live()?.vendored().get(vendored_index)
+            },
             _ => None,
         }
     }
@@ -341,6 +353,11 @@ impl App {
                         let member = group.members().get(member_index)?;
                         Some(member.path())
                     },
+                    RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => {
+                        let group = wtg.single_live()?.groups().get(group_index)?;
+                        let member = group.members().get(member_index)?;
+                        Some(member.path())
+                    },
                     _ => None,
                 }
             },
@@ -355,6 +372,12 @@ impl App {
                     },
                     RootItem::Package(pkg) => {
                         pkg.vendored().get(vendored_index).map(RustProject::path)
+                    },
+                    RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => {
+                        wtg.single_live()?.vendored().get(vendored_index).map(RustProject::path)
+                    },
+                    RootItem::PackageWorktrees(wtg) if !wtg.renders_as_group() => {
+                        wtg.single_live()?.vendored().get(vendored_index).map(RustProject::path)
                     },
                     _ => None,
                 }
@@ -418,6 +441,11 @@ impl App {
                         let member = group.members().get(member_index)?;
                         Some(member.display_path())
                     },
+                    RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => {
+                        let group = wtg.single_live()?.groups().get(group_index)?;
+                        let member = group.members().get(member_index)?;
+                        Some(member.display_path())
+                    },
                     _ => None,
                 }
             },
@@ -432,6 +460,16 @@ impl App {
                         .get(vendored_index)
                         .map(RustProject::display_path),
                     RootItem::Package(pkg) => pkg
+                        .vendored()
+                        .get(vendored_index)
+                        .map(RustProject::display_path),
+                    RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => wtg
+                        .single_live()?
+                        .vendored()
+                        .get(vendored_index)
+                        .map(RustProject::display_path),
+                    RootItem::PackageWorktrees(wtg) if !wtg.renders_as_group() => wtg
+                        .single_live()?
                         .vendored()
                         .get(vendored_index)
                         .map(RustProject::display_path),
@@ -489,6 +527,11 @@ impl App {
                         let member = group.members().get(member_index)?;
                         Some(member.path().to_path_buf())
                     },
+                    RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => {
+                        let group = wtg.single_live()?.groups().get(group_index)?;
+                        let member = group.members().get(member_index)?;
+                        Some(member.path().to_path_buf())
+                    },
                     _ => None,
                 }
             },
@@ -503,6 +546,16 @@ impl App {
                         .get(vendored_index)
                         .map(|p| p.path().to_path_buf()),
                     RootItem::Package(pkg) => pkg
+                        .vendored()
+                        .get(vendored_index)
+                        .map(|p| p.path().to_path_buf()),
+                    RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => wtg
+                        .single_live()?
+                        .vendored()
+                        .get(vendored_index)
+                        .map(|p| p.path().to_path_buf()),
+                    RootItem::PackageWorktrees(wtg) if !wtg.renders_as_group() => wtg
+                        .single_live()?
                         .vendored()
                         .get(vendored_index)
                         .map(|p| p.path().to_path_buf()),

@@ -816,6 +816,7 @@ fn render_child_item(
     name: &str,
     child_sorted: &[u64],
     prefix: &'static str,
+    inherited_deleted: bool,
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
     let path = project.path();
@@ -838,7 +839,7 @@ fn render_child_item(
     } else {
         app.git_sync(path)
     };
-    let deleted = app.is_deleted(project.path());
+    let deleted = inherited_deleted || app.is_deleted(project.path());
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         (
             "0.0",
@@ -1029,7 +1030,20 @@ fn render_wt_member<'a>(
             let row = super::columns::build_group_header_cells(indent, &member_name);
             ListItem::new(super::columns::row_to_line(&row, widths))
         },
-        |m| render_child_item(app, m, &member_name, sorted, indent, widths),
+        |m| {
+            let inherited_deleted = match item {
+                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
+                    let ws = if wi == 0 {
+                        wtg.primary()
+                    } else {
+                        wtg.linked().get(wi - 1).unwrap_or_else(|| wtg.primary())
+                    };
+                    app.is_deleted(ws.path())
+                },
+                _ => false,
+            };
+            render_child_item(app, m, &member_name, sorted, indent, inherited_deleted, widths)
+        },
     )
 }
 
@@ -1050,6 +1064,12 @@ fn render_member_item(
             let m = &group.members()[member_index];
             (Some(m), m.display_name(), group.is_named())
         },
+        crate::project::RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => {
+            let ws = wtg.single_live().unwrap_or_else(|| wtg.primary());
+            let group = &ws.groups()[group_index];
+            let m = &group.members()[member_index];
+            (Some(m), m.display_name(), group.is_named())
+        },
         _ => (None, String::new(), false),
     };
     let indent = if is_named {
@@ -1062,7 +1082,18 @@ fn render_member_item(
             let row = super::columns::build_group_header_cells(indent, &member_name);
             ListItem::new(super::columns::row_to_line(&row, widths))
         },
-        |m| render_child_item(app, m, &member_name, sorted, indent, widths),
+        |m| {
+            let inherited_deleted = app.is_deleted(item.path());
+            render_child_item(
+                app,
+                m,
+                &member_name,
+                sorted,
+                indent,
+                inherited_deleted,
+                widths,
+            )
+        },
     )
 }
 
@@ -1081,7 +1112,17 @@ fn render_vendored_item(
             let v = &ws.vendored()[vendored_index];
             (Some(v), v.display_name())
         },
+        crate::project::RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => {
+            let ws = wtg.single_live().unwrap_or_else(|| wtg.primary());
+            let v = &ws.vendored()[vendored_index];
+            (Some(v), v.display_name())
+        },
         crate::project::RootItem::Package(pkg) => {
+            let v = &pkg.vendored()[vendored_index];
+            (Some(v), v.display_name())
+        },
+        crate::project::RootItem::PackageWorktrees(wtg) if !wtg.renders_as_group() => {
+            let pkg = wtg.single_live().unwrap_or_else(|| wtg.primary());
             let v = &pkg.vendored()[vendored_index];
             (Some(v), v.display_name())
         },
@@ -1093,7 +1134,18 @@ fn render_vendored_item(
             let row = super::columns::build_group_header_cells(PREFIX_VENDORED, &name);
             ListItem::new(super::columns::row_to_line(&row, widths))
         },
-        |v| render_child_item(app, v, &name, sorted, PREFIX_VENDORED, widths),
+        |v| {
+            let inherited_deleted = app.is_deleted(item.path());
+            render_child_item(
+                app,
+                v,
+                &name,
+                sorted,
+                PREFIX_VENDORED,
+                inherited_deleted,
+                widths,
+            )
+        },
     )
 }
 
@@ -1139,7 +1191,40 @@ fn render_wt_vendored_item(
             let row = super::columns::build_group_header_cells(PREFIX_WT_VENDORED, &name);
             ListItem::new(super::columns::row_to_line(&row, widths))
         },
-        |v| render_child_item(app, v, &name, sorted, PREFIX_WT_VENDORED, widths),
+        |v| {
+            let inherited_deleted = match item {
+                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
+                    let ws = if worktree_index == 0 {
+                        wtg.primary()
+                    } else {
+                        wtg.linked()
+                            .get(worktree_index - 1)
+                            .unwrap_or_else(|| wtg.primary())
+                    };
+                    app.is_deleted(ws.path())
+                },
+                crate::project::RootItem::PackageWorktrees(wtg) => {
+                    let pkg = if worktree_index == 0 {
+                        wtg.primary()
+                    } else {
+                        wtg.linked()
+                            .get(worktree_index - 1)
+                            .unwrap_or_else(|| wtg.primary())
+                    };
+                    app.is_deleted(pkg.path())
+                },
+                _ => false,
+            };
+            render_child_item(
+                app,
+                v,
+                &name,
+                sorted,
+                PREFIX_WT_VENDORED,
+                inherited_deleted,
+                widths,
+            )
+        },
     )
 }
 

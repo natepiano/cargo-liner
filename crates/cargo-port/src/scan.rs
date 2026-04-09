@@ -991,6 +991,37 @@ pub(crate) fn cargo_project_to_item(cp: CargoParseResult) -> RootItem {
     }
 }
 
+/// Build a normalized project item for a discovered root directory.
+///
+/// Unlike `cargo_project_to_item(from_cargo_toml(...))`, this walks nested
+/// manifests under the root and runs them through `build_tree()`, so a newly
+/// discovered workspace arrives with its member groups already populated.
+pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
+    let mut items = Vec::new();
+    let mut iter = WalkDir::new(root_dir).into_iter();
+    while let Some(Ok(entry)) = iter.next() {
+        if entry.file_type().is_dir() {
+            let name = entry.file_name();
+            if name == "target" || name == ".git" {
+                iter.skip_current_dir();
+                continue;
+            }
+        }
+        if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
+            let parsed = super::project::from_cargo_toml(entry.path()).ok()?;
+            items.push(cargo_project_to_item(parsed));
+        }
+    }
+
+    if items.is_empty() {
+        return None;
+    }
+
+    build_tree(&items, &[])
+        .into_iter()
+        .find(|item| item.path() == root_dir)
+}
+
 /// Shared network context passed to `fetch_project_details`.
 pub(crate) struct FetchContext {
     pub client:     HttpClient,
@@ -1610,6 +1641,19 @@ fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, u64)> {
             (abs_path.clone().into(), bytes)
         })
         .collect()
+}
+
+pub(crate) fn disk_usage_batch_for_item(item: &RootItem) -> Vec<(AbsolutePath, u64)> {
+    let entries = item
+        .collect_project_info()
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
+    let tree = DiskUsageTree {
+        root_abs_path: item.path().to_path_buf(),
+        entries,
+    };
+    dir_sizes_for_tree(&tree)
 }
 
 fn register_repo_path(

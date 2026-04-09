@@ -28,14 +28,65 @@ pub struct ClickAction {
 // ── Resolution + dispatch ───────────────────────────────────────
 
 impl App {
+    fn dismiss_path_for_row(&self, row: VisibleRow) -> Option<PathBuf> {
+        match row {
+            VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
+                self.projects.get(node_index).map(|item| item.path().to_path_buf())
+            },
+            VisibleRow::Member { node_index, .. } | VisibleRow::Vendored { node_index, .. } => {
+                self.projects.get(node_index).map(|item| item.path().to_path_buf())
+            },
+            VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
+            }
+            | VisibleRow::WorktreeGroupHeader {
+                node_index,
+                worktree_index,
+                ..
+            }
+            | VisibleRow::WorktreeMember {
+                node_index,
+                worktree_index,
+                ..
+            }
+            | VisibleRow::WorktreeVendored {
+                node_index,
+                worktree_index,
+                ..
+            } => match self.projects.get(node_index)? {
+                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
+                    if worktree_index == 0 {
+                        Some(wtg.primary().path().to_path_buf())
+                    } else {
+                        wtg.linked()
+                            .get(worktree_index - 1)
+                            .map(|ws| ws.path().to_path_buf())
+                    }
+                },
+                crate::project::RootItem::PackageWorktrees(wtg) => {
+                    if worktree_index == 0 {
+                        Some(wtg.primary().path().to_path_buf())
+                    } else {
+                        wtg.linked()
+                            .get(worktree_index - 1)
+                            .map(|pkg| pkg.path().to_path_buf())
+                    }
+                },
+                _ => None,
+            },
+        }
+    }
+
     /// Resolve the currently focused pane into a dismiss target, if one exists.
     pub fn focused_dismiss_target(&self) -> Option<DismissTarget> {
         match self.focused_pane {
             PaneId::Toasts => self.focused_toast_id().map(DismissTarget::Toast),
             PaneId::ProjectList => {
-                let selected_path = self.selected_project_path()?;
-                if self.is_deleted(selected_path) {
-                    Some(DismissTarget::DeletedProject(selected_path.to_path_buf()))
+                let row = self.selected_row()?;
+                let dismiss_path = self.dismiss_path_for_row(row)?;
+                if self.is_deleted(&dismiss_path) {
+                    Some(DismissTarget::DeletedProject(dismiss_path))
                 } else {
                     None
                 }
@@ -54,6 +105,8 @@ impl App {
                     project.visibility = Dismissed;
                 }
                 self.dirty.rows.mark_dirty();
+                self.dirty.disk_cache.mark_dirty();
+                self.dirty.fit_widths.mark_dirty();
                 self.ensure_visible_rows_cached();
                 if let Some(ni) = parent_node_index {
                     self.select_root_row(ni);

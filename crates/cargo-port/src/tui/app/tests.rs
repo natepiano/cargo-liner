@@ -18,6 +18,7 @@ use ratatui::widgets::Widget;
 
 use super::snapshots;
 use super::types::*;
+use crate::tui::app::DismissTarget;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::ci::FetchStatus;
@@ -131,6 +132,47 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
             row.trim_end().to_string()
         })
         .collect()
+}
+
+fn render_tree_buffer(
+    app: &mut App,
+) -> (ratatui::buffer::Buffer, crate::tui::columns::ResolvedWidths) {
+    app.ensure_visible_rows_cached();
+    let widths = snapshots::build_fit_widths_snapshot(
+        &app.projects,
+        &app.projects
+            .resolved_root_labels(app.include_non_rust().includes_non_rust()),
+        &snapshots::FitWidthsState {
+            git_path_states: &app.git_path_states,
+        },
+        app.lint_enabled(),
+        0,
+    );
+    let items = crate::tui::render::render_tree_items(app, &widths);
+    let area = Rect::new(
+        0,
+        0,
+        u16::try_from(widths.total_width()).unwrap_or(u16::MAX),
+        u16::try_from(items.len()).unwrap_or(u16::MAX),
+    );
+    let mut buffer = Buffer::empty(area);
+    List::new(items).render(area, &mut buffer);
+    (buffer, widths)
+}
+
+fn row_has_crossed_out_content(
+    buffer: &ratatui::buffer::Buffer,
+    widths: &crate::tui::columns::ResolvedWidths,
+    row: usize,
+) -> bool {
+    (0..widths.total_width()).any(|x| {
+        let cell = &buffer[(u16::try_from(x).unwrap_or(u16::MAX), u16::try_from(row).unwrap_or(u16::MAX))];
+        !cell.symbol().trim().is_empty()
+            && cell
+                .style()
+                .add_modifier
+                .contains(Modifier::CROSSED_OUT)
+    })
 }
 
 fn resolved_root_label(item: &RootItem) -> String {
@@ -322,6 +364,53 @@ fn init_git_project(dir: &Path, name: &str, workspace: bool) {
     std::fs::write(dir.join("Cargo.toml"), manifest_contents(name, workspace))
         .unwrap_or_else(|_| std::process::abort());
     std::fs::write(dir.join("src").join("main.rs"), "fn main() {}\n")
+        .unwrap_or_else(|_| std::process::abort());
+
+    Command::new(git_binary())
+        .args(["init"])
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|_| std::process::abort());
+    Command::new(git_binary())
+        .args(["config", "user.name", "cargo-port-tests"])
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|_| std::process::abort());
+    Command::new(git_binary())
+        .args(["config", "user.email", "cargo-port-tests@example.com"])
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|_| std::process::abort());
+    Command::new(git_binary())
+        .args(["add", "."])
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|_| std::process::abort());
+    Command::new(git_binary())
+        .args(["commit", "-m", "init"])
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|_| std::process::abort());
+}
+
+fn init_workspace_git_project_with_member(dir: &Path, name: &str, member_name: &str) {
+    let member_dir = dir.join(member_name);
+    std::fs::create_dir_all(member_dir.join("src")).unwrap_or_else(|_| std::process::abort());
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            "[workspace]\nmembers = [\"{member_name}\"]\n\n[workspace.package]\nrepository = \"https://example.com/{name}\"\n"
+        ),
+    )
+    .unwrap_or_else(|_| std::process::abort());
+    std::fs::write(
+        member_dir.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"{member_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
+        ),
+    )
+    .unwrap_or_else(|_| std::process::abort());
+    std::fs::write(member_dir.join("src").join("lib.rs"), "pub fn demo() {}\n")
         .unwrap_or_else(|_| std::process::abort());
 
     Command::new(git_binary())
@@ -1027,6 +1116,281 @@ fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() 
         },
         0,
         "the remaining primary should no longer render as a worktree group"
+    );
+}
+
+#[test]
+fn dismissing_deleted_linked_workspace_worktree_keeps_primary_member_rows_rendered() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("bevy_brp");
+    let linked_dir = tmp.path().join("bevy_brp_style_fix");
+    std::fs::create_dir_all(&primary_dir).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+
+    let primary_path = primary_dir.to_string_lossy().to_string();
+    let linked_path = linked_dir.to_string_lossy().to_string();
+    let primary = make_workspace_raw(
+        Some("bevy_brp"),
+        &primary_path,
+        vec![inline_group(vec![make_member(
+            Some("bevy_brp"),
+            &format!("{primary_path}/crates/bevy_brp"),
+        )])],
+        None,
+    );
+    let linked = make_workspace_raw(
+        Some("bevy_brp"),
+        &linked_path,
+        Vec::new(),
+        Some("bevy_brp_style_fix"),
+    );
+    let root = make_workspace_worktrees_item(primary, vec![linked]);
+    let mut app = make_app(&[root]);
+
+    app.list_state.select(Some(0));
+    assert!(app.expand(), "root worktree group should expand");
+    app.ensure_visible_rows_cached();
+
+    std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::DiskUsage {
+            path:  PathBuf::from(&linked_path).into(),
+            bytes: 0,
+        },
+    );
+
+    app.list_state.select(Some(2));
+    let target = app
+        .focused_dismiss_target()
+        .expect("deleted linked workspace should be dismissable");
+    app.dismiss(target);
+
+    app.ensure_visible_rows_cached();
+    assert_eq!(
+        app.visible_rows(),
+        &[
+            VisibleRow::Root { node_index: 0 },
+            VisibleRow::Member {
+                node_index: 0,
+                group_index: 0,
+                member_index: 0,
+            },
+        ],
+        "expanded root should keep rendering the surviving primary workspace members"
+    );
+
+    let rendered = rendered_root_name_cells(&mut app);
+    assert!(
+        rendered.iter().any(|line| line.contains("bevy_brp")),
+        "member row should render its name instead of blank output: {rendered:?}"
+    );
+}
+
+#[test]
+fn dismissing_deleted_linked_workspace_worktree_preserves_primary_member_disk_sizes() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("bevy_brp");
+    let linked_dir = tmp.path().join("bevy_brp_style_fix");
+    let member_dir = primary_dir.join("crates").join("bevy_brp");
+    std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+
+    let primary_path = primary_dir.to_string_lossy().to_string();
+    let linked_path = linked_dir.to_string_lossy().to_string();
+    let member_path = member_dir.to_string_lossy().to_string();
+    let primary = make_workspace_raw(
+        Some("bevy_brp"),
+        &primary_path,
+        vec![inline_group(vec![make_member(Some("bevy_brp"), &member_path)])],
+        None,
+    );
+    let linked = make_workspace_raw(
+        Some("bevy_brp"),
+        &linked_path,
+        Vec::new(),
+        Some("bevy_brp_style_fix"),
+    );
+    let root = make_workspace_worktrees_item(primary, vec![linked]);
+    let mut app = make_app(&[root]);
+
+    app.list_state.select(Some(0));
+    assert!(app.expand(), "root worktree group should expand");
+    app.handle_disk_usage(Path::new(&primary_path), 2_000_000);
+    app.handle_disk_usage(Path::new(&member_path), 1_234_567);
+    assert_eq!(
+        app.projects.at_path(Path::new(&member_path)).and_then(|info| info.disk_usage_bytes),
+        Some(1_234_567)
+    );
+    app.ensure_visible_rows_cached();
+
+    std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::DiskUsage {
+            path:  PathBuf::from(&linked_path).into(),
+            bytes: 0,
+        },
+    );
+
+    app.list_state.select(Some(2));
+    let target = app
+        .focused_dismiss_target()
+        .expect("deleted linked workspace should be dismissable");
+    app.dismiss(target);
+    app.ensure_visible_rows_cached();
+
+    assert_eq!(
+        app.projects.at_path(Path::new(&member_path)).and_then(|info| info.disk_usage_bytes),
+        Some(1_234_567),
+        "member disk usage should remain stored after dismiss"
+    );
+
+    let rendered = rendered_root_name_cells(&mut app);
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line.contains("1.2 MiB") || line.contains("1.2 Mi")),
+        "surviving member row should keep its disk usage after dismiss: {rendered:?}"
+    );
+}
+
+#[test]
+fn deleted_linked_workspace_children_render_crossed_out_before_dismiss() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("bevy_brp");
+    let linked_dir = tmp.path().join("bevy_brp_test");
+    std::fs::create_dir_all(&primary_dir).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+
+    let primary_path = primary_dir.to_string_lossy().to_string();
+    let linked_path = linked_dir.to_string_lossy().to_string();
+    let primary = make_workspace_raw(
+        Some("bevy_brp"),
+        &primary_path,
+        vec![inline_group(vec![make_member(
+            Some("bevy_brp_extras"),
+            &format!("{primary_path}/bevy_brp_extras"),
+        )])],
+        None,
+    );
+    let linked = make_workspace_raw(
+        Some("bevy_brp"),
+        &linked_path,
+        vec![inline_group(vec![make_member(
+            Some("bevy_brp_extras"),
+            &format!("{linked_path}/bevy_brp_extras"),
+        )])],
+        Some("bevy_brp_test"),
+    );
+    let root = make_workspace_worktrees_item(primary, vec![linked]);
+    let mut app = make_app(&[root]);
+
+    app.list_state.select(Some(0));
+    assert!(app.expand(), "root worktree group should expand");
+    app.ensure_visible_rows_cached();
+    app.list_state.select(Some(2));
+    assert!(app.expand(), "linked worktree row should expand");
+    app.ensure_visible_rows_cached();
+
+    std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::DiskUsage {
+            path:  PathBuf::from(&linked_path).into(),
+            bytes: 0,
+        },
+    );
+
+    assert!(
+        app.is_deleted(Path::new(&linked_path)),
+        "linked workspace should be marked deleted"
+    );
+    assert!(
+        matches!(app.visible_rows()[3], VisibleRow::WorktreeMember { .. }),
+        "expanded linked workspace member row should still be visible before dismiss"
+    );
+
+    let (buffer, widths) = render_tree_buffer(&mut app);
+    assert!(
+        row_has_crossed_out_content(&buffer, &widths, 2),
+        "deleted linked workspace row should be crossed out"
+    );
+    assert!(
+        row_has_crossed_out_content(&buffer, &widths, 3),
+        "deleted linked workspace member row should inherit crossed-out styling"
+    );
+}
+
+#[test]
+fn dismissing_deleted_linked_workspace_member_dismisses_whole_worktree() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("bevy_brp");
+    let linked_dir = tmp.path().join("bevy_brp_test");
+    std::fs::create_dir_all(&primary_dir).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+
+    let primary_path = primary_dir.to_string_lossy().to_string();
+    let linked_path = linked_dir.to_string_lossy().to_string();
+    let primary = make_workspace_raw(
+        Some("bevy_brp"),
+        &primary_path,
+        vec![inline_group(vec![make_member(
+            Some("bevy_brp_extras"),
+            &format!("{primary_path}/bevy_brp_extras"),
+        )])],
+        None,
+    );
+    let linked = make_workspace_raw(
+        Some("bevy_brp"),
+        &linked_path,
+        vec![inline_group(vec![make_member(
+            Some("bevy_brp_extras"),
+            &format!("{linked_path}/bevy_brp_extras"),
+        )])],
+        Some("bevy_brp_test"),
+    );
+    let root = make_workspace_worktrees_item(primary, vec![linked]);
+    let mut app = make_app(&[root]);
+
+    app.list_state.select(Some(0));
+    assert!(app.expand(), "root worktree group should expand");
+    app.ensure_visible_rows_cached();
+    app.list_state.select(Some(2));
+    assert!(app.expand(), "linked worktree row should expand");
+    app.ensure_visible_rows_cached();
+
+    std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::DiskUsage {
+            path:  PathBuf::from(&linked_path).into(),
+            bytes: 0,
+        },
+    );
+
+    app.list_state.select(Some(3));
+    let target = app
+        .focused_dismiss_target()
+        .expect("deleted linked workspace member should dismiss its worktree");
+    match &target {
+        DismissTarget::DeletedProject(path) => assert_eq!(path, Path::new(&linked_path)),
+        DismissTarget::Toast(_) => panic!("expected deleted project target"),
+    }
+    app.dismiss(target);
+    app.ensure_visible_rows_cached();
+
+    assert_eq!(
+        app.visible_rows(),
+        &[
+            VisibleRow::Root { node_index: 0 },
+            VisibleRow::Member {
+                node_index: 0,
+                group_index: 0,
+                member_index: 0,
+            },
+        ],
+        "dismissing a deleted linked workspace member should dismiss the whole linked worktree"
     );
 }
 
@@ -2697,6 +3061,290 @@ fn background_discovery_from_real_workspace_worktree_creates_group() {
     );
     app.ensure_visible_rows_cached();
     assert_eq!(app.visible_rows().len(), 3);
+}
+
+#[test]
+fn discovered_workspace_worktree_with_members_expands_as_worktree_then_workspace() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("bevy_brp");
+    let linked_dir = tmp.path().join("bevy_brp_test");
+    init_workspace_git_project_with_member(&primary_dir, "bevy_brp", "extras");
+
+    let primary_item = item_from_project_dir(&primary_dir);
+    let mut app = make_app(&[primary_item]);
+
+    add_git_worktree(&primary_dir, &linked_dir, "test/brp");
+    let linked_item = crate::scan::discover_project_item(&linked_dir)
+        .unwrap_or_else(|| std::process::abort());
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectDiscovered { item: linked_item },
+    );
+
+    let RootItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+        panic!("expected discovered workspace worktree to form a worktree group");
+    };
+    assert_eq!(group.linked().len(), 1);
+    assert!(
+        group.linked()[0].has_members(),
+        "linked workspace worktree should arrive with member groups populated"
+    );
+
+    app.list_state.select(Some(0));
+    assert!(app.expand(), "root should expand into worktree entries");
+    app.ensure_visible_rows_cached();
+    assert_eq!(
+        app.visible_rows(),
+        &[
+            VisibleRow::Root { node_index: 0 },
+            VisibleRow::WorktreeEntry {
+                node_index: 0,
+                worktree_index: 0,
+            },
+            VisibleRow::WorktreeEntry {
+                node_index: 0,
+                worktree_index: 1,
+            },
+        ]
+    );
+
+    app.list_state.select(Some(2));
+    assert!(
+        app.expand(),
+        "linked workspace worktree should expand into its workspace members"
+    );
+    app.ensure_visible_rows_cached();
+    assert!(
+        app.visible_rows().iter().any(|row| matches!(
+            row,
+            VisibleRow::WorktreeMember {
+                node_index: 0,
+                worktree_index: 1,
+                ..
+            }
+        )),
+        "expanded linked workspace worktree should show member rows"
+    );
+}
+
+#[test]
+fn expanded_workspace_root_discovery_immediately_renders_primary_workspace_and_linked_row() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("bevy_brp");
+    let linked_dir = tmp.path().join("bevy_brp_test");
+    init_workspace_git_project_with_member(&primary_dir, "bevy_brp", "extras");
+
+    let mut primary_item = item_from_project_dir(&primary_dir);
+    let RootItem::Workspace(primary_ws) = &mut primary_item else {
+        panic!("expected primary workspace root item");
+    };
+    *primary_ws.groups_mut() = vec![inline_group(vec![make_member(
+        Some("extras"),
+        &primary_dir.join("extras").to_string_lossy(),
+    )])];
+    let mut app = make_app(&[]);
+    apply_items(&mut app, &[primary_item]);
+
+    app.expanded.insert(ExpandKey::Node(0));
+    app.dirty.rows.mark_dirty();
+    app.ensure_visible_rows_cached();
+    assert_eq!(
+        app.visible_rows(),
+        &[
+            VisibleRow::Root { node_index: 0 },
+            VisibleRow::Member {
+                node_index: 0,
+                group_index: 0,
+                member_index: 0,
+            },
+        ]
+    );
+
+    add_git_worktree(&primary_dir, &linked_dir, "test/brp");
+    let linked_item = crate::scan::discover_project_item(&linked_dir)
+        .unwrap_or_else(|| std::process::abort());
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectDiscovered { item: linked_item },
+    );
+
+    assert_eq!(
+        app.visible_rows(),
+        &[
+            VisibleRow::Root { node_index: 0 },
+            VisibleRow::WorktreeEntry {
+                node_index: 0,
+                worktree_index: 0,
+            },
+            VisibleRow::WorktreeMember {
+                node_index: 0,
+                worktree_index: 0,
+                group_index: 0,
+                member_index: 0,
+            },
+            VisibleRow::WorktreeEntry {
+                node_index: 0,
+                worktree_index: 1,
+            },
+        ],
+        "discovering a linked workspace worktree while the primary root is expanded should preserve the primary workspace subtree immediately"
+    );
+
+    let rendered = rendered_root_name_cells(&mut app);
+    assert!(
+        rendered
+            .iter()
+            .any(|row| row.contains("bevy_brp") && row.contains(":2")),
+        "root row should still render the worktree badge after discovery: {rendered:?}"
+    );
+    assert!(
+        rendered.iter().any(|row| row.contains("bevy_brp_test")),
+        "linked worktree row should render immediately without a collapse/expand cycle: {rendered:?}"
+    );
+    assert!(
+        rendered.iter().any(|row| row.contains("extras")),
+        "primary workspace member rows should remain visible after the root becomes a worktree group: {rendered:?}"
+    );
+}
+
+#[test]
+fn project_discovery_updates_cached_rows_for_expanded_workspace_immediately() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("bevy_brp");
+    let linked_dir = tmp.path().join("bevy_brp_test");
+    init_workspace_git_project_with_member(&primary_dir, "bevy_brp", "extras");
+
+    let mut primary_item = item_from_project_dir(&primary_dir);
+    let RootItem::Workspace(primary_ws) = &mut primary_item else {
+        panic!("expected primary workspace root item");
+    };
+    *primary_ws.groups_mut() = vec![inline_group(vec![make_member(
+        Some("extras"),
+        &primary_dir.join("extras").to_string_lossy(),
+    )])];
+
+    let mut app = make_app(&[]);
+    apply_items(&mut app, &[primary_item]);
+    app.expanded.insert(ExpandKey::Node(0));
+    app.dirty.rows.mark_dirty();
+    app.ensure_visible_rows_cached();
+
+    add_git_worktree(&primary_dir, &linked_dir, "test/brp");
+    let linked_item = crate::scan::discover_project_item(&linked_dir)
+        .unwrap_or_else(|| std::process::abort());
+
+    assert!(
+        app.handle_bg_msg(BackgroundMsg::ProjectDiscovered { item: linked_item }),
+        "discovery should request a derived-state rebuild"
+    );
+
+    assert_eq!(
+        app.visible_rows(),
+        &[
+            VisibleRow::Root { node_index: 0 },
+            VisibleRow::WorktreeEntry {
+                node_index: 0,
+                worktree_index: 0,
+            },
+            VisibleRow::WorktreeMember {
+                node_index: 0,
+                worktree_index: 0,
+                group_index: 0,
+                member_index: 0,
+            },
+            VisibleRow::WorktreeEntry {
+                node_index: 0,
+                worktree_index: 1,
+            },
+        ],
+        "cached visible rows should switch to worktree rows immediately after discovery"
+    );
+}
+
+#[test]
+fn stale_workspace_regroup_immediately_renders_primary_workspace_and_linked_row() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("bevy_brp");
+    let linked_dir = tmp.path().join("bevy_brp_test");
+    init_workspace_git_project_with_member(&primary_dir, "bevy_brp", "extras");
+
+    let mut primary_item = item_from_project_dir(&primary_dir);
+    let RootItem::Workspace(primary_ws) = &mut primary_item else {
+        panic!("expected primary workspace root item");
+    };
+    *primary_ws.groups_mut() = vec![inline_group(vec![make_member(
+        Some("extras"),
+        &primary_dir.join("extras").to_string_lossy(),
+    )])];
+    let mut app = make_app(&[]);
+    apply_items(&mut app, &[primary_item]);
+
+    app.expanded.insert(ExpandKey::Node(0));
+    app.dirty.rows.mark_dirty();
+    app.ensure_visible_rows_cached();
+    assert_eq!(
+        app.visible_rows(),
+        &[
+            VisibleRow::Root { node_index: 0 },
+            VisibleRow::Member {
+                node_index: 0,
+                group_index: 0,
+                member_index: 0,
+            },
+        ]
+    );
+
+    add_git_worktree(&primary_dir, &linked_dir, "test/brp");
+    let stale_discovery = RootItem::Workspace(make_workspace_raw(
+        Some("bevy_brp"),
+        &linked_dir.to_string_lossy(),
+        Vec::new(),
+        None,
+    ));
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectDiscovered {
+            item: stale_discovery,
+        },
+    );
+
+    let refreshed = item_from_project_dir(&linked_dir);
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::ProjectRefreshed { item: refreshed },
+    );
+
+    assert_eq!(
+        app.visible_rows(),
+        &[
+            VisibleRow::Root { node_index: 0 },
+            VisibleRow::WorktreeEntry {
+                node_index: 0,
+                worktree_index: 0,
+            },
+            VisibleRow::WorktreeMember {
+                node_index: 0,
+                worktree_index: 0,
+                group_index: 0,
+                member_index: 0,
+            },
+            VisibleRow::WorktreeEntry {
+                node_index: 0,
+                worktree_index: 1,
+            },
+        ],
+        "refresh regroup should preserve the expanded primary workspace subtree immediately"
+    );
+
+    let rendered = rendered_root_name_cells(&mut app);
+    assert!(
+        rendered.iter().any(|row| row.contains("bevy_brp_test")),
+        "regrouped linked worktree row should render immediately without a collapse/expand cycle: {rendered:?}"
+    );
+    assert!(
+        rendered.iter().any(|row| row.contains("extras")),
+        "regrouped primary workspace member rows should remain visible: {rendered:?}"
+    );
 }
 
 #[test]
