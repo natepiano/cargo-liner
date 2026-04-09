@@ -69,7 +69,7 @@ jobs:
         uses: rui314/setup-mold@v1
 
       - name: Install and cache Linux dependencies
-        uses: awalsh128/cache-apt-pkgs-action@latest
+        uses: natepiano/cache-apt-pkgs-action@node24-cache-v5
         with:
           packages: libudev-dev libasound2-dev pkg-config clang libwayland-dev libxkbcommon-dev
           version: 1.0
@@ -97,7 +97,7 @@ jobs:
         uses: rui314/setup-mold@v1
 
       - name: Install and cache Linux dependencies
-        uses: awalsh128/cache-apt-pkgs-action@latest
+        uses: natepiano/cache-apt-pkgs-action@node24-cache-v5
         with:
           packages: libudev-dev libasound2-dev pkg-config clang libwayland-dev libxkbcommon-dev
           version: 1.0
@@ -128,7 +128,7 @@ jobs:
         uses: rui314/setup-mold@v1
 
       - name: Install and cache Linux dependencies
-        uses: awalsh128/cache-apt-pkgs-action@latest
+        uses: natepiano/cache-apt-pkgs-action@node24-cache-v5
         with:
           packages: libudev-dev libasound2-dev pkg-config clang libwayland-dev libxkbcommon-dev
           version: 1.0
@@ -171,7 +171,7 @@ jobs:
         uses: rui314/setup-mold@v1
 
       - name: Install and cache Linux dependencies
-        uses: awalsh128/cache-apt-pkgs-action@latest
+        uses: natepiano/cache-apt-pkgs-action@node24-cache-v5
         with:
           packages: libudev-dev libasound2-dev pkg-config clang libwayland-dev libxkbcommon-dev
           version: 1.0
