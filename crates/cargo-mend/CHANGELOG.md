@@ -7,9 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- New `--fix-compiler` mode runs `cargo fix` for compiler-fixable warnings; `--fix-all` now applies mend fixes, `pub use` fixes, and compiler fixes together
+- `cargo mend` now prints a timing footer with total, check, and mend-analysis durations
+- Added CLI smoke tests covering default package runs, workspace selection, `--all-targets`, `--lib`, and named `--example` selection
+
 ### Changed
 - Removed the toolchain override that forced nightly compilation into an isolated `target/mend/` directory — the wrapper now shares the project's normal `target/` directory, eliminating the multi-gigabyte duplicate build artifacts and 17-20s rebuild penalty on every file change
 - The `--cfg=mend_refresh_{pid}` cache-buster now uses a stable `--cfg=mend_refresh` flag, producing one reusable set of artifacts instead of unique unreusable ones per invocation that caused unbounded target directory growth
+- `cargo mend` now follows a single-pass `cargo check` flow with cleaner target selection and reporting
+- Compiler warning summaries and human-readable output were refined to better separate compiler warnings from mend findings
+
+### Performance
+- Analysis now caches source file contents instead of re-reading files repeatedly during compiler-driven checks
+- Source files are parsed to ASTs once and reused, avoiding repeated `syn::parse_file` work
+- AST paths are pre-extracted up front, removing repeated visitor walks during per-query analysis
 
 ## [0.4.0] - 2026-04-06
 
