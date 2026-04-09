@@ -3,11 +3,11 @@ use std::path::Path;
 use super::timestamp;
 use crate::ci::Conclusion;
 use crate::constants::IN_SYNC;
+use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project::Cargo;
 use crate::project::ExampleGroup;
-use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::NonRustProject;
 use crate::project::Package;
@@ -198,7 +198,7 @@ pub struct PendingCiFetch {
     pub kind:          CiFetchKind,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DetailField {
     Name,
     Path,
@@ -235,12 +235,11 @@ impl DetailField {
             Self::Ci => "CI",
             Self::Branch => "Branch",
             Self::GitPath => "Git Path",
-            Self::Sync => "Sync",
-            Self::VsOrigin => "vs o/dflt",
-            Self::VsLocal => "vs dflt",
-            Self::Origin => "Origin",
+            Self::Sync => "Remote status",
+            Self::VsOrigin => "Remote branch",
+            Self::VsLocal => "vs local main",
+            Self::Origin | Self::Repo => "Origin",
             Self::Owner => "Owner",
-            Self::Repo => "Repo",
             Self::Stars => "Stars",
             Self::RepoDesc => "About",
             Self::Inception => "Incept",
@@ -270,7 +269,7 @@ impl DetailField {
             Self::Branch => {
                 let branch = info.git_branch.as_deref().unwrap_or("");
                 let is_default = info
-                    .default_branch
+                    .local_main_branch
                     .as_deref()
                     .is_some_and(|db| db == branch);
                 if is_default {
@@ -279,7 +278,7 @@ impl DetailField {
                     branch.to_string()
                 }
             },
-            Self::GitPath => info.git_path.label().to_string(),
+            Self::GitPath => info.git_path.label_with_icon(),
             Self::Sync => info.git_sync.as_deref().unwrap_or("").to_string(),
             Self::VsOrigin => info.git_vs_origin.as_deref().unwrap_or("").to_string(),
             Self::VsLocal => info.git_vs_local.as_deref().unwrap_or("").to_string(),
@@ -353,20 +352,17 @@ pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     if info.git_path != GitPathState::OutsideRepo {
         fields.push(DetailField::GitPath);
     }
-    if info.git_sync.is_some() {
-        fields.push(DetailField::Sync);
-    }
     if info.git_vs_origin.is_some() {
         fields.push(DetailField::VsOrigin);
+    }
+    if info.git_sync.is_some() {
+        fields.push(DetailField::Sync);
     }
     if info.git_vs_local.is_some() {
         fields.push(DetailField::VsLocal);
     }
     if info.worktree_label.is_some() {
         fields.push(DetailField::Worktree);
-    }
-    if info.git_origin.is_some() {
-        fields.push(DetailField::Origin);
     }
     if info.git_stars.is_some() {
         fields.push(DetailField::Stars);
@@ -385,43 +381,44 @@ pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
 
 #[derive(Clone)]
 pub struct DetailInfo {
-    pub package_title:    String,
-    pub name:             String,
-    pub path:             String,
-    pub version:          String,
-    pub description:      Option<String>,
-    pub crates_version:   Option<String>,
-    pub crates_downloads: Option<u64>,
-    pub types:            String,
-    pub disk:             String,
-    pub lint_label:       String,
-    pub ci:               Option<Conclusion>,
-    pub stats_rows:       Vec<(&'static str, usize)>,
-    pub git_branch:       Option<String>,
-    pub git_path:         GitPathState,
-    pub git_sync:         Option<String>,
-    /// Ahead/behind vs `origin/{default_branch}`.
-    pub git_vs_origin:    Option<String>,
-    /// Ahead/behind vs local `{default_branch}`.
-    pub git_vs_local:     Option<String>,
-    /// The repo's default branch name (e.g. "main", "master").
-    pub default_branch:   Option<String>,
-    pub git_origin:       Option<String>,
-    pub git_owner:        Option<String>,
-    pub git_url:          Option<String>,
-    pub git_stars:        Option<u64>,
-    pub repo_description: Option<String>,
-    pub git_inception:    Option<String>,
-    pub git_last_commit:  Option<String>,
-    pub worktree_label:   Option<String>,
-    pub worktree_names:   Vec<String>,
-    pub is_binary:        bool,
-    pub binary_name:      Option<String>,
-    pub examples:         Vec<ExampleGroup>,
-    pub benches:          Vec<String>,
+    pub package_title:     String,
+    pub name:              String,
+    pub path:              String,
+    pub version:           String,
+    pub description:       Option<String>,
+    pub crates_version:    Option<String>,
+    pub crates_downloads:  Option<u64>,
+    pub types:             String,
+    pub disk:              String,
+    pub lint_label:        String,
+    pub ci:                Option<Conclusion>,
+    pub stats_rows:        Vec<(&'static str, usize)>,
+    pub git_branch:        Option<String>,
+    pub git_path:          GitPathState,
+    pub git_sync:          Option<String>,
+    pub git_vs_origin:     Option<String>,
+    /// Ahead/behind vs local `{local_main_branch}`.
+    pub git_vs_local:      Option<String>,
+    /// The actual local branch used for `M` comparisons.
+    pub local_main_branch: Option<String>,
+    /// The configured user-facing label for the local main branch.
+    pub main_branch_label: String,
+    pub git_origin:        Option<String>,
+    pub git_owner:         Option<String>,
+    pub git_url:           Option<String>,
+    pub git_stars:         Option<u64>,
+    pub repo_description:  Option<String>,
+    pub git_inception:     Option<String>,
+    pub git_last_commit:   Option<String>,
+    pub worktree_label:    Option<String>,
+    pub worktree_names:    Vec<String>,
+    pub is_binary:         bool,
+    pub binary_name:       Option<String>,
+    pub examples:          Vec<ExampleGroup>,
+    pub benches:           Vec<String>,
     /// Whether this project declares `[package]` (has version/description fields).
-    pub has_package:      bool,
-    pub cargo_active:     bool,
+    pub has_package:       bool,
+    pub cargo_active:      bool,
 }
 
 /// Resolve the title shown in the `Package` column header.
@@ -429,8 +426,7 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
     if !item.is_rust() {
         return "Project".to_string();
     }
-    let display = item.display_path();
-    if app.is_vendored_path(&display) {
+    if app.is_vendored_path(item.path()) {
         return "Vendored Crate".to_string();
     }
     if matches!(
@@ -439,7 +435,7 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
     ) {
         return "Workspace".to_string();
     }
-    if app.is_workspace_member_path(&display) {
+    if app.is_workspace_member_path(item.path()) {
         "Workspace Member".to_string()
     } else {
         "Package".to_string()
@@ -448,10 +444,9 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
 
 /// Resolve the package title for a non-root package (member or vendored).
 fn resolve_package_title_for_package(app: &App, pkg: &RustProject<Package>) -> String {
-    let display = pkg.display_path();
-    if app.is_vendored_path(&display) {
+    if app.is_vendored_path(pkg.path()) {
         "Vendored Crate".to_string()
-    } else if app.is_workspace_member_path(&display) {
+    } else if app.is_workspace_member_path(pkg.path()) {
         "Workspace Member".to_string()
     } else {
         "Package".to_string()
@@ -464,6 +459,16 @@ fn format_ahead_behind((ahead, behind): (usize, usize)) -> String {
         (ahead, 0) => format!("{SYNC_UP}{ahead} ahead"),
         (0, behind) => format!("{SYNC_DOWN}{behind} behind"),
         (ahead, behind) => format!("{SYNC_UP}{ahead} {SYNC_DOWN}{behind}"),
+    }
+}
+
+pub(super) fn format_remote_status(ahead_behind: Option<(usize, usize)>) -> String {
+    match ahead_behind {
+        Some((0, 0)) => IN_SYNC.to_string(),
+        Some((ahead, 0)) => format!("{SYNC_UP}{ahead} ahead"),
+        Some((0, behind)) => format!("{SYNC_DOWN}{behind} behind"),
+        Some((ahead, behind)) => format!("{SYNC_UP}{ahead} {SYNC_DOWN}{behind}"),
+        None => NO_REMOTE_SYNC.to_string(),
     }
 }
 
@@ -481,46 +486,55 @@ fn format_downloads(count: u64) -> String {
 }
 
 struct GitDetailFields {
-    branch:         Option<String>,
-    path:           GitPathState,
-    sync:           Option<String>,
-    vs_origin:      Option<String>,
-    vs_local:       Option<String>,
-    default_branch: Option<String>,
-    origin:         Option<String>,
-    owner:          Option<String>,
-    url:            Option<String>,
-    stars:          Option<u64>,
-    description:    Option<String>,
-    inception:      Option<String>,
-    last_commit:    Option<String>,
+    branch:            Option<String>,
+    path:              GitPathState,
+    sync:              Option<String>,
+    vs_origin:         Option<String>,
+    vs_local:          Option<String>,
+    local_main_branch: Option<String>,
+    main_branch_label: String,
+    origin:            Option<String>,
+    owner:             Option<String>,
+    url:               Option<String>,
+    stars:             Option<u64>,
+    description:       Option<String>,
+    inception:         Option<String>,
+    last_commit:       Option<String>,
 }
 
 fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
-    let git = app.git_info_for(abs_path);
+    let owner_path = app
+        .ci_owner_path_for(abs_path)
+        .unwrap_or_else(|| abs_path.to_path_buf());
+    let git = app
+        .git_info_for(abs_path)
+        .or_else(|| app.git_info_for(owner_path.as_path()));
     let branch = git.and_then(|info| info.branch.clone());
-    let sync = git
-        .map(|info| match info.ahead_behind {
-            Some((0, 0)) => IN_SYNC.to_string(),
-            Some((ahead, 0)) => format!("{SYNC_UP}{ahead} ahead"),
-            Some((0, behind)) => format!("{SYNC_DOWN}{behind} behind"),
-            Some((ahead, behind)) => format!("{SYNC_UP}{ahead} {SYNC_DOWN}{behind}"),
-            None if info.origin != GitOrigin::Local => "not published".to_string(),
-            None => String::new(),
-        })
-        .filter(|value| !value.is_empty());
-    let vs_origin = git
-        .and_then(|info| info.ahead_behind_origin)
-        .map(format_ahead_behind);
+    let sync = git.map(|info| format_remote_status(info.ahead_behind));
+    let vs_origin = git.map(|info| {
+        info.upstream_branch.as_deref().map_or_else(
+            || "none".to_string(),
+            |branch| format!("{branch} (local cached ref)"),
+        )
+    });
     let vs_local = git
         .and_then(|info| info.ahead_behind_local)
         .map(format_ahead_behind);
-    let default_branch = git.and_then(|info| info.default_branch.clone());
+    let local_main_branch = git.and_then(|info| info.local_main_branch.clone());
+    let main_branch_label = app.current_config.tui.main_branch.clone();
     let origin = git.map(|info| format!("{} {}", info.origin.icon(), info.origin.label()));
     let owner = git.and_then(|info| info.owner.clone());
     let url = git.and_then(|info| info.url.clone());
-    let stars = app.stars.get(abs_path).copied();
-    let description = app.repo_descriptions.get(abs_path).cloned();
+    let stars = app
+        .stars
+        .get(abs_path)
+        .copied()
+        .or_else(|| app.stars.get(owner_path.as_path()).copied());
+    let description = app
+        .repo_descriptions
+        .get(abs_path)
+        .cloned()
+        .or_else(|| app.repo_descriptions.get(owner_path.as_path()).cloned());
     let inception = git
         .and_then(|info| info.first_commit.as_deref())
         .map(timestamp::format_timestamp);
@@ -533,7 +547,8 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         sync,
         vs_origin,
         vs_local,
-        default_branch,
+        local_main_branch,
+        main_branch_label,
         origin,
         owner,
         url,
@@ -577,7 +592,7 @@ fn worktree_names_from_item(item: &RootItem) -> Vec<String> {
 
 /// Build `DetailInfo` for a root `RootItem`.
 pub fn build_detail_info(app: &App, item: &RootItem) -> DetailInfo {
-    let display_path = item.display_path();
+    let display_path = item.display_path().into_string();
     let is_wt_group = is_worktree_group(item);
 
     match item {
@@ -603,7 +618,7 @@ pub fn build_detail_info(app: &App, item: &RootItem) -> DetailInfo {
 
 /// Build `DetailInfo` for a `Project<Package>` (member or vendored row).
 pub fn build_detail_info_for_member(app: &App, pkg: &RustProject<Package>) -> DetailInfo {
-    let display_path = pkg.display_path();
+    let display_path = pkg.display_path().into_string();
     build_detail_info_for_package(app, pkg, &display_path, false, None)
 }
 
@@ -783,7 +798,8 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
         git_sync: git_detail.sync,
         git_vs_origin: git_detail.vs_origin,
         git_vs_local: git_detail.vs_local,
-        default_branch: git_detail.default_branch,
+        local_main_branch: git_detail.local_main_branch,
+        main_branch_label: git_detail.main_branch_label,
         git_origin: git_detail.origin,
         git_owner: git_detail.owner,
         git_url: git_detail.url,

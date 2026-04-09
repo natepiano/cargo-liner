@@ -176,8 +176,7 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
 }
 
 fn handle_mouse_event(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
-    // Block mouse interaction with background panes while an overlay is open.
-    if app.input_context().is_overlay() || app.confirm.is_some() {
+    if app.confirm.is_some() {
         return;
     }
     match kind {
@@ -230,20 +229,12 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     if app.confirm.is_some() {
         return;
     }
-    if app.is_finder_open() {
-        handle_finder_click(app, pos);
-        return;
-    }
-    if app.is_settings_open() {
-        handle_settings_click(app, pos);
+
+    if super::interaction::handle_click(app, pos) {
         return;
     }
 
-    if handle_dismiss_click(app, pos) {
-        return;
-    }
-
-    if handle_toast_card_click(app, pos) {
+    if app.input_context().is_overlay() {
         return;
     }
 
@@ -253,11 +244,6 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
 
     if project_list.contains(pos) {
         app.focus_pane(PaneId::ProjectList);
-        let inner_y = (row - project_list.y) as usize;
-        let clicked_index = app.layout_cache.project_list_offset + inner_y;
-        if clicked_index < app.row_count() {
-            app.list_state.select(Some(clicked_index));
-        }
         return;
     }
 
@@ -273,67 +259,13 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
             PaneId::Git
         };
         app.focus_pane(pane_id);
-        let pane = match pane_id {
-            PaneId::Targets => &mut app.targets_pane,
-            PaneId::Package => &mut app.package_pane,
-            PaneId::Git => &mut app.git_pane,
-            _ => unreachable!(),
-        };
-        if let Some(clicked_row) = pane.clicked_row(pos) {
-            pane.set_pos(clicked_row);
-        }
         return;
     }
 
-    if let Some(clicked_row) = app.lint_pane.clicked_row(pos) {
+    if app.lint_pane.content_area().contains(pos) {
         app.focus_pane(PaneId::Lints);
-        app.lint_pane.set_pos(clicked_row);
-    } else if let Some(clicked_row) = app.ci_pane.clicked_row(pos) {
+    } else if app.ci_pane.content_area().contains(pos) {
         app.focus_pane(PaneId::CiRuns);
-        app.ci_pane.set_pos(clicked_row);
-    }
-}
-
-/// Shared dismiss click handler — checks all [x] hitboxes (toasts + deleted projects).
-fn handle_dismiss_click(app: &mut App, pos: Position) -> bool {
-    let hit = app
-        .layout_cache
-        .dismiss_hitboxes
-        .iter()
-        .find(|action| action.rect.contains(pos))
-        .cloned();
-    if let Some(action) = hit {
-        app.dismiss(action.target);
-        return true;
-    }
-    false
-}
-
-/// Toast card click — focuses the toast pane and selects the clicked card.
-fn handle_toast_card_click(app: &mut App, pos: Position) -> bool {
-    for hitbox in &app.layout_cache.toast_cards {
-        if !hitbox.card_rect.contains(pos) {
-            continue;
-        }
-        let active = app.active_toasts();
-        if let Some(index) = active.iter().position(|toast| toast.id() == hitbox.id) {
-            app.toast_pane.set_pos(index);
-            app.focus_pane(PaneId::Toasts);
-        }
-        return true;
-    }
-    false
-}
-
-const fn handle_finder_click(app: &mut App, pos: Position) {
-    if let Some(clicked_row) = app.finder.pane.clicked_row(pos) {
-        app.finder.pane.set_pos(clicked_row);
-    }
-}
-
-const fn handle_settings_click(app: &mut App, pos: Position) {
-    if let Some(clicked_row) = app.settings_pane.clicked_row(pos) {
-        app.settings_pane.set_pos(clicked_row);
     }
 }
 

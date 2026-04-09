@@ -113,7 +113,7 @@ fn read_status_cases() {
         if let Some(run) = latest.as_ref() {
             write_latest(dir.path(), run);
         }
-        let status = read_status(dir.path());
+        let status = status::read_status(dir.path());
         match name {
             "passed" => assert!(matches!(status, LintStatus::Passed(_))),
             "failed" => assert!(matches!(status, LintStatus::Failed(_))),
@@ -132,7 +132,7 @@ fn read_status_uses_latest_over_history() {
         .expect("append history");
     write_latest(dir.path(), &run(LintRunStatus::Passed));
     assert!(
-        matches!(read_status(dir.path()), LintStatus::Passed(_)),
+        matches!(status::read_status(dir.path()), LintStatus::Passed(_)),
         "should read latest.json, not older history"
     );
 }
@@ -259,32 +259,33 @@ fn append_history_prunes_oldest_runs_under_cache_size() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
 
-    let mut older = run_with_commands("older", "2026-04-01T18:00:00-04:00");
-    let mut newer = run_with_commands("newer", "2026-04-01T19:00:00-04:00");
+    let older = archive_run_with_logs(
+        cache_dir.path(),
+        project_dir.path(),
+        "older",
+        "2026-04-01T18:00:00-04:00",
+        "older logs",
+    );
+    append_archived_run(cache_dir.path(), project_dir.path(), &older, None);
 
-    // Archive and append the older run without a size limit
-    write_fake_logs(cache_dir.path(), project_dir.path(), "older logs");
-    older = history::archive_run_output(cache_dir.path(), project_dir.path(), &older)
-        .expect("archive older");
-    history::append_history_under(cache_dir.path(), project_dir.path(), &older, None)
-        .expect("append older");
-
-    // Archive the newer run, then set a cache size that forces older out
-    write_fake_logs(cache_dir.path(), project_dir.path(), "newer logs");
-    newer = history::archive_run_output(cache_dir.path(), project_dir.path(), &newer)
-        .expect("archive newer");
+    let newer = archive_run_with_logs(
+        cache_dir.path(),
+        project_dir.path(),
+        "newer",
+        "2026-04-01T19:00:00-04:00",
+        "newer logs",
+    );
 
     let total_before = history::total_bytes_under(cache_dir.path());
     let newer_line = serde_json::to_string(&newer).expect("serialize").len() as u64 + 1;
     let cache_size = total_before + newer_line - 1;
 
-    history::append_history_under(
+    append_archived_run(
         cache_dir.path(),
         project_dir.path(),
         &newer,
         Some(cache_size),
-    )
-    .expect("append newer");
+    );
 
     let runs = history::read_history_under(cache_dir.path(), project_dir.path());
     assert_eq!(runs.len(), 1);
@@ -352,6 +353,27 @@ fn write_fake_logs(cache_root: &Path, project_root: &Path, content: &str) {
     .expect("write mend log");
 }
 
+fn archive_run_with_logs(
+    cache_root: &Path,
+    project_root: &Path,
+    run_id: &str,
+    started_at: &str,
+    content: &str,
+) -> LintRun {
+    let run = run_with_commands(run_id, started_at);
+    write_fake_logs(cache_root, project_root, content);
+    history::archive_run_output(cache_root, project_root, &run).expect("archive run")
+}
+
+fn append_archived_run(
+    cache_root: &Path,
+    project_root: &Path,
+    run: &LintRun,
+    cache_size: Option<u64>,
+) -> history::PruneStats {
+    history::append_history_under(cache_root, project_root, run, cache_size).expect("append run")
+}
+
 #[test]
 fn archive_run_copies_logs_to_run_id_directory() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
@@ -409,20 +431,22 @@ fn prune_removes_oldest_run_directory_and_history_line() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
 
-    let mut older = run_with_commands("run-older", "2026-04-01T18:00:00-04:00");
-    let mut newer = run_with_commands("run-newer", "2026-04-01T19:00:00-04:00");
+    let older = archive_run_with_logs(
+        cache_dir.path(),
+        project_dir.path(),
+        "run-older",
+        "2026-04-01T18:00:00-04:00",
+        "older output",
+    );
+    append_archived_run(cache_dir.path(), project_dir.path(), &older, None);
 
-    // Archive and append the older run (no size limit — always succeeds)
-    write_fake_logs(cache_dir.path(), project_dir.path(), "older output");
-    older = history::archive_run_output(cache_dir.path(), project_dir.path(), &older)
-        .expect("archive older");
-    history::append_history_under(cache_dir.path(), project_dir.path(), &older, None)
-        .expect("append older");
-
-    // Archive the newer run (not yet appended to history)
-    write_fake_logs(cache_dir.path(), project_dir.path(), "newer output");
-    newer = history::archive_run_output(cache_dir.path(), project_dir.path(), &newer)
-        .expect("archive newer");
+    let newer = archive_run_with_logs(
+        cache_dir.path(),
+        project_dir.path(),
+        "run-newer",
+        "2026-04-01T19:00:00-04:00",
+        "newer output",
+    );
 
     // Measure total bytes with both runs fully on disk. The cache size must be
     // small enough that keeping both exceeds it, but large enough that the
@@ -432,13 +456,12 @@ fn prune_removes_oldest_run_directory_and_history_line() {
     let newer_line_bytes = serde_json::to_string(&newer).expect("serialize").len() as u64 + 1;
     let cache_size = total_before_append + newer_line_bytes - 1;
 
-    history::append_history_under(
+    append_archived_run(
         cache_dir.path(),
         project_dir.path(),
         &newer,
         Some(cache_size),
-    )
-    .expect("append newer");
+    );
 
     // Only newer run should remain in history
     let runs = history::read_history_under(cache_dir.path(), project_dir.path());
@@ -465,20 +488,22 @@ fn prune_across_projects_removes_globally_oldest() {
     let project_a = tempfile::tempdir().expect("tempdir");
     let project_b = tempfile::tempdir().expect("tempdir");
 
-    let mut old_a = run_with_commands("run-old-a", "2026-04-01T17:00:00-04:00");
-    let mut new_b = run_with_commands("run-new-b", "2026-04-01T20:00:00-04:00");
+    let old_a = archive_run_with_logs(
+        cache_dir.path(),
+        project_a.path(),
+        "run-old-a",
+        "2026-04-01T17:00:00-04:00",
+        "project-a output",
+    );
+    append_archived_run(cache_dir.path(), project_a.path(), &old_a, None);
 
-    // Archive and append run for project A (no size limit)
-    write_fake_logs(cache_dir.path(), project_a.path(), "project-a output");
-    old_a =
-        history::archive_run_output(cache_dir.path(), project_a.path(), &old_a).expect("archive a");
-    history::append_history_under(cache_dir.path(), project_a.path(), &old_a, None)
-        .expect("append a");
-
-    // Archive run for project B (not yet appended)
-    write_fake_logs(cache_dir.path(), project_b.path(), "project-b output");
-    new_b =
-        history::archive_run_output(cache_dir.path(), project_b.path(), &new_b).expect("archive b");
+    let new_b = archive_run_with_logs(
+        cache_dir.path(),
+        project_b.path(),
+        "run-new-b",
+        "2026-04-01T20:00:00-04:00",
+        "project-b output",
+    );
 
     // Budget: total with both archived + room for B's history line, minus 1
     // byte so the pruner must delete A's run to fit.
@@ -486,8 +511,7 @@ fn prune_across_projects_removes_globally_oldest() {
     let new_b_line_bytes = serde_json::to_string(&new_b).expect("serialize").len() as u64 + 1;
     let cache_size = total_before_append + new_b_line_bytes - 1;
 
-    history::append_history_under(cache_dir.path(), project_b.path(), &new_b, Some(cache_size))
-        .expect("append b");
+    append_archived_run(cache_dir.path(), project_b.path(), &new_b, Some(cache_size));
 
     // Project A's older run should be pruned
     let runs_a = history::read_history_under(cache_dir.path(), project_a.path());
@@ -511,19 +535,21 @@ fn prune_no_op_when_under_cache_size() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
 
-    let mut completed = run_with_commands("run-keep", "2026-04-01T18:00:00-04:00");
-    write_fake_logs(cache_dir.path(), project_dir.path(), "keep this output");
-    completed = history::archive_run_output(cache_dir.path(), project_dir.path(), &completed)
-        .expect("archive");
+    let completed = archive_run_with_logs(
+        cache_dir.path(),
+        project_dir.path(),
+        "run-keep",
+        "2026-04-01T18:00:00-04:00",
+        "keep this output",
+    );
 
     // Generous cache size — nothing should be pruned
-    history::append_history_under(
+    append_archived_run(
         cache_dir.path(),
         project_dir.path(),
         &completed,
         Some(10 * 1024 * 1024),
-    )
-    .expect("append");
+    );
 
     let runs = history::read_history_under(cache_dir.path(), project_dir.path());
     assert_eq!(runs.len(), 1);
@@ -538,32 +564,33 @@ fn prune_returns_stats_about_evicted_runs() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
 
-    let mut older = run_with_commands("run-older", "2026-04-01T18:00:00-04:00");
-    let mut newer = run_with_commands("run-newer", "2026-04-01T19:00:00-04:00");
+    let older = archive_run_with_logs(
+        cache_dir.path(),
+        project_dir.path(),
+        "run-older",
+        "2026-04-01T18:00:00-04:00",
+        "older output",
+    );
+    append_archived_run(cache_dir.path(), project_dir.path(), &older, None);
 
-    // Archive and append older run (no limit)
-    write_fake_logs(cache_dir.path(), project_dir.path(), "older output");
-    older = history::archive_run_output(cache_dir.path(), project_dir.path(), &older)
-        .expect("archive older");
-    history::append_history_under(cache_dir.path(), project_dir.path(), &older, None)
-        .expect("append older");
-
-    // Archive newer run, set tight cache size
-    write_fake_logs(cache_dir.path(), project_dir.path(), "newer output");
-    newer = history::archive_run_output(cache_dir.path(), project_dir.path(), &newer)
-        .expect("archive newer");
+    let newer = archive_run_with_logs(
+        cache_dir.path(),
+        project_dir.path(),
+        "run-newer",
+        "2026-04-01T19:00:00-04:00",
+        "newer output",
+    );
 
     let total_before = history::total_bytes_under(cache_dir.path());
     let newer_line = serde_json::to_string(&newer).expect("serialize").len() as u64 + 1;
     let cache_size = total_before + newer_line - 1;
 
-    let stats = history::append_history_under(
+    let stats = append_archived_run(
         cache_dir.path(),
         project_dir.path(),
         &newer,
         Some(cache_size),
-    )
-    .expect("append newer");
+    );
 
     assert_eq!(stats.runs_evicted, 1);
     assert!(stats.bytes_reclaimed > 0);
@@ -574,18 +601,20 @@ fn no_prune_returns_zero_stats() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
 
-    let mut completed = run_with_commands("run-keep", "2026-04-01T18:00:00-04:00");
-    write_fake_logs(cache_dir.path(), project_dir.path(), "keep this");
-    completed = history::archive_run_output(cache_dir.path(), project_dir.path(), &completed)
-        .expect("archive");
+    let completed = archive_run_with_logs(
+        cache_dir.path(),
+        project_dir.path(),
+        "run-keep",
+        "2026-04-01T18:00:00-04:00",
+        "keep this",
+    );
 
-    let stats = history::append_history_under(
+    let stats = append_archived_run(
         cache_dir.path(),
         project_dir.path(),
         &completed,
         Some(10 * 1024 * 1024),
-    )
-    .expect("append");
+    );
 
     assert_eq!(stats.runs_evicted, 0);
     assert_eq!(stats.bytes_reclaimed, 0);

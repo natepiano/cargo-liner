@@ -21,6 +21,8 @@ use crate::tui::app::App;
 use crate::tui::app::CiState;
 use crate::tui::constants::CI_EXTRA_ROWS;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
+use crate::tui::interaction;
+use crate::tui::interaction::UiSurface;
 use crate::tui::render::CiColumn;
 use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
@@ -239,17 +241,19 @@ fn ci_panel_title(
     fetch_count: u32,
     elapsed: std::time::Duration,
     focused_pos: Option<usize>,
+    mode_label: Option<&str>,
 ) -> String {
+    let suffix = mode_label.map_or(String::new(), |label| format!(" [{label}]"));
     if is_fetching {
         let spinner = BRAILLE_SPINNER.frame_at(elapsed);
-        format!(" CI Runs {spinner} fetching {fetch_count} more… ")
+        format!(" CI Runs{suffix} {spinner} fetching {fetch_count} more… ")
     } else if let Some(pos) = focused_pos
         && pos < total
     {
         let indicator = crate::tui::types::scroll_indicator(pos, total);
-        format!(" CI Runs ({indicator}) ")
+        format!(" CI Runs{suffix} ({indicator}) ")
     } else {
-        format!(" CI Runs (cached {cached}, total {total}) ")
+        format!(" CI Runs{suffix} (cached {cached}, total {total}) ")
     }
 }
 
@@ -278,11 +282,12 @@ fn build_fetch_row(
 
 fn cached_run_count(app: &App) -> usize {
     app.selected_ci_path()
+        .as_deref()
         .and_then(|path| app.git_info_for(path))
         .and_then(|git| {
             git.url.as_ref().and_then(|url| {
-                ci::parse_owner_repo(url).map(|(owner, repo)| {
-                    scan::count_cached_runs(&owner, &repo, git.branch.as_deref())
+                ci::parse_owner_repo(url).map(|owner_repo| {
+                    scan::count_cached_runs(owner_repo.owner(), owner_repo.repo())
                 })
             })
         })
@@ -310,6 +315,10 @@ pub fn render_ci_panel(
     } else {
         None
     };
+    let mode_label = app.selected_project_path().and_then(|path| {
+        app.ci_toggle_available_for(path)
+            .then(|| app.ci_display_mode_label_for(path))
+    });
     let title = ci_panel_title(
         total,
         cached,
@@ -317,6 +326,7 @@ pub fn render_ci_panel(
         fetch_count,
         elapsed,
         focused_pos,
+        mode_label,
     );
 
     let ci_block = Block::default()
@@ -393,4 +403,29 @@ pub fn render_ci_panel(
     let mut table_state = TableState::default().with_selected(Some(app.ci_pane.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
     app.ci_pane.set_scroll_offset(table_state.offset());
+    register_ci_row_hitboxes(app, ci_runs.len(), inner, table_state.offset());
+}
+
+fn register_ci_row_hitboxes(
+    app: &mut App,
+    run_count: usize,
+    inner: ratatui::layout::Rect,
+    visible_start: usize,
+) {
+    let visible_height = usize::from(inner.height.saturating_sub(1));
+    let visible_end = run_count.min(visible_start.saturating_add(visible_height));
+
+    for (screen_row, row_index) in (visible_start..visible_end).enumerate() {
+        let row_y = inner
+            .y
+            .saturating_add(1)
+            .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
+        interaction::register_pane_row_hitbox(
+            app,
+            ratatui::layout::Rect::new(inner.x, row_y, inner.width, 1),
+            PaneId::CiRuns,
+            row_index,
+            UiSurface::Content,
+        );
+    }
 }

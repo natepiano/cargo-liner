@@ -4,6 +4,7 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::path::Path;
 
+use crate::project::AbsolutePath;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
 use crate::project::Package;
@@ -64,7 +65,7 @@ impl ProjectList {
             let suffixes = shortest_unique_suffixes(
                 &indices
                     .iter()
-                    .map(|&index| self.root_items[index].display_path())
+                    .map(|&index| self.root_items[index].display_path().into_string())
                     .collect::<Vec<_>>(),
             );
             for (index, suffix) in indices.into_iter().zip(suffixes) {
@@ -79,6 +80,13 @@ impl ProjectList {
         }
 
         labels
+    }
+
+    pub(crate) fn git_directories(&self) -> Vec<AbsolutePath> {
+        self.root_items
+            .iter()
+            .filter_map(RootItem::git_directory)
+            .collect()
     }
 
     // -- Leaf iteration ---------------------------------------------------
@@ -286,7 +294,11 @@ impl ProjectList {
             }
         }
         // No parent workspace found — add as top-level peer.
-        self.root_items.push(item);
+        let insert_index = self
+            .root_items
+            .binary_search_by(|existing| existing.path().cmp(item_path.as_path()))
+            .unwrap_or_else(|index| index);
+        self.root_items.insert(insert_index, item);
         false
     }
 
@@ -568,7 +580,7 @@ fn regroup_workspace(ws: &mut RustProject<Workspace>, inline_dirs: &[String]) {
 fn non_rust_searchable(project: &NonRustProject) -> SearchableItem<'_> {
     SearchableItem {
         abs_path:         project.path(),
-        display_path:     Cow::Owned(project.display_path()),
+        display_path:     Cow::Owned(project.display_path().into_string()),
         name:             Cow::Owned(project.display_name()),
         is_rust:          false,
         visibility:       project.visibility(),
@@ -582,7 +594,7 @@ fn package_searchable<'a>(
 ) -> SearchableItem<'a> {
     SearchableItem {
         abs_path: project.path(),
-        display_path: Cow::Owned(project.display_path()),
+        display_path: Cow::Owned(project.display_path().into_string()),
         name,
         is_rust: true,
         visibility: project.visibility(),
@@ -596,7 +608,7 @@ fn workspace_searchable<'a>(
 ) -> SearchableItem<'a> {
     SearchableItem {
         abs_path: project.path(),
-        display_path: Cow::Owned(project.display_path()),
+        display_path: Cow::Owned(project.display_path().into_string()),
         name,
         is_rust: true,
         visibility: project.visibility(),
@@ -607,7 +619,7 @@ fn workspace_searchable<'a>(
 fn vendored_searchable(project: &RustProject<Package>) -> SearchableItem<'_> {
     SearchableItem {
         abs_path:         project.path(),
-        display_path:     Cow::Owned(project.display_path()),
+        display_path:     Cow::Owned(project.display_path().into_string()),
         name:             Cow::Owned(format!("{} (vendored)", project.display_name())),
         is_rust:          true,
         visibility:       project.visibility(),

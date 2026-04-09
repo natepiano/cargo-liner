@@ -12,9 +12,13 @@ use serde::Serialize;
 use toml::Table;
 use toml::Value;
 
+use crate::config;
 use crate::constants::GIT_CLONE;
 use crate::constants::GIT_FORK;
 use crate::constants::GIT_LOCAL;
+use crate::constants::GIT_STATUS_CLEAN;
+use crate::constants::GIT_STATUS_MODIFIED;
+use crate::constants::GIT_STATUS_UNTRACKED;
 
 /// An absolute filesystem path. Used as `HashMap` keys and for filesystem operations.
 /// Wraps `PathBuf`. Created from absolute paths only.
@@ -44,23 +48,45 @@ impl fmt::Display for AbsolutePath {
 }
 
 impl From<PathBuf> for AbsolutePath {
-    fn from(path: PathBuf) -> Self { Self(path) }
+    fn from(path: PathBuf) -> Self {
+        debug_assert!(
+            path.is_absolute(),
+            "AbsolutePath requires an absolute path: {}",
+            path.display()
+        );
+        Self(path)
+    }
 }
 
 impl From<&Path> for AbsolutePath {
-    fn from(path: &Path) -> Self { Self(path.to_path_buf()) }
+    fn from(path: &Path) -> Self {
+        debug_assert!(
+            path.is_absolute(),
+            "AbsolutePath requires an absolute path: {}",
+            path.display()
+        );
+        Self(path.to_path_buf())
+    }
 }
 
 /// A display path for the UI (e.g. `~/rust/bevy`). Never used as a `HashMap` key.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DisplayPath(String);
 
 impl DisplayPath {
     pub(crate) const fn new(s: String) -> Self { Self(s) }
+
+    pub(crate) fn as_str(&self) -> &str { &self.0 }
+
+    pub(crate) fn into_string(self) -> String { self.0 }
 }
 
 impl fmt::Display for DisplayPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
+}
+
+impl AsRef<str> for DisplayPath {
+    fn as_ref(&self) -> &str { self.as_str() }
 }
 
 /// Whether a project is a plain clone or a fork (has an "upstream" remote).
@@ -123,11 +149,15 @@ pub(crate) struct GitInfo {
     pub last_commit:         Option<String>,
     /// Commits ahead and behind the upstream tracking branch (ahead, behind).
     pub ahead_behind:        Option<(usize, usize)>,
+    /// The upstream tracking ref for the current branch (e.g. `origin/main`).
+    pub upstream_branch:     Option<String>,
     /// The repo's default branch name resolved from `origin/HEAD`.
     pub default_branch:      Option<String>,
     /// Commits ahead and behind `origin/{default_branch}`.
     pub ahead_behind_origin: Option<(usize, usize)>,
-    /// Commits ahead and behind the local `{default_branch}`.
+    /// The local branch name used for `M` comparisons.
+    pub local_main_branch:   Option<String>,
+    /// Commits ahead and behind the local `{local_main_branch}`.
     pub ahead_behind_local:  Option<(usize, usize)>,
     /// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
     pub workflows:           WorkflowPresence,
@@ -158,17 +188,18 @@ impl GitInfo {
             GitOrigin::Clone
         };
 
-        let url_output = git_output_logged(
+        let (owner, url) = git_output_logged(
             &repo_root,
             "remote_get_url_origin",
             ["remote", "get-url", "origin"],
         )
-        .ok()?;
-        let raw_url = String::from_utf8_lossy(&url_output.stdout)
-            .trim()
-            .to_string();
-
-        let (owner, url) = parse_remote_url(&raw_url);
+        .ok()
+        .map_or((None, None), |url_output| {
+            let raw_url = String::from_utf8_lossy(&url_output.stdout)
+                .trim()
+                .to_string();
+            parse_remote_url(&raw_url)
+        });
 
         let branch = git_output_logged(
             &repo_root,
@@ -182,6 +213,7 @@ impl GitInfo {
         });
 
         let ahead_behind = parse_ahead_behind(&repo_root, "HEAD...@{upstream}", "upstream");
+        let upstream_branch = detect_upstream_branch(&repo_root);
 
         // Resolve the repo's default branch from origin/HEAD (e.g. "origin/main").
         let default_branch = git_output_logged(
@@ -198,16 +230,24 @@ impl GitInfo {
                 .map(str::to_string)
         });
 
-        // Compare HEAD against the default branch when it differs from the current branch.
+        // Compare HEAD against the remote default branch when it differs from the current branch.
         let not_on_default = default_branch
             .as_deref()
             .filter(|db| branch.as_deref() != Some(*db));
         let ahead_behind_origin = not_on_default.and_then(|db| {
             parse_ahead_behind(&repo_root, &format!("HEAD...origin/{db}"), "default_origin")
         });
-        let ahead_behind_local = not_on_default.and_then(|db| {
-            parse_ahead_behind(&repo_root, &format!("HEAD...{db}"), "default_local")
-        });
+        let local_main_branch = resolve_local_main_branch(&repo_root);
+        let ahead_behind_local = local_main_branch
+            .as_deref()
+            .filter(|branch_name| branch.as_deref() != Some(*branch_name))
+            .and_then(|branch_name| {
+                parse_ahead_behind(
+                    &repo_root,
+                    &format!("HEAD...{branch_name}"),
+                    "configured_local_main",
+                )
+            });
 
         let last_commit =
             git_output_logged(&repo_root, "log_last_commit", ["log", "-1", "--format=%aI"])
@@ -225,12 +265,54 @@ impl GitInfo {
             first_commit: None,
             last_commit,
             ahead_behind,
+            upstream_branch,
             default_branch,
             ahead_behind_origin,
+            local_main_branch,
             ahead_behind_local,
             workflows: detect_workflow_presence(&repo_root),
         })
     }
+}
+
+fn detect_upstream_branch(project_dir: &Path) -> Option<String> {
+    git_output_logged(
+        project_dir,
+        "rev_parse_upstream_name",
+        [
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    )
+    .ok()
+    .and_then(|o| {
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if s.is_empty() { None } else { Some(s) }
+    })
+}
+
+fn resolve_local_main_branch(project_dir: &Path) -> Option<String> {
+    let cfg = config::active_config();
+    std::iter::once(cfg.tui.main_branch.as_str())
+        .chain(cfg.tui.other_primary_branches.iter().map(String::as_str))
+        .find(|branch| local_branch_exists(project_dir, branch))
+        .map(str::to_string)
+}
+
+fn local_branch_exists(project_dir: &Path, branch: &str) -> bool {
+    git_output_logged(
+        project_dir,
+        "show_ref_local_main",
+        [
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok()
 }
 
 fn detect_workflow_presence(repo_root: &Path) -> WorkflowPresence {
@@ -316,6 +398,24 @@ impl GitPathState {
             Self::Modified => "modified",
             Self::Untracked => "untracked",
             Self::Ignored => "ignored",
+        }
+    }
+
+    pub(crate) const fn icon(self) -> &'static str {
+        match self {
+            Self::Clean => GIT_STATUS_CLEAN,
+            Self::Modified => GIT_STATUS_MODIFIED,
+            Self::Untracked => GIT_STATUS_UNTRACKED,
+            Self::OutsideRepo | Self::Ignored => "",
+        }
+    }
+
+    pub(crate) fn label_with_icon(self) -> String {
+        let icon = self.icon();
+        if icon.is_empty() {
+            self.label().to_string()
+        } else {
+            format!("{icon} {}", self.label())
         }
     }
 }
@@ -424,6 +524,28 @@ pub(crate) fn resolve_git_dir(repo_root: &Path) -> Option<PathBuf> {
         return Some(resolved.canonicalize().ok().unwrap_or(resolved));
     }
     None
+}
+
+/// Resolve the common git directory for a repo root.
+///
+/// For normal repos this is the same path as [`resolve_git_dir`]. For linked
+/// worktrees, the resolved git dir may contain a `commondir` file pointing back
+/// to the shared `<primary>/.git` directory where branch refs are updated.
+pub(crate) fn resolve_common_git_dir(repo_root: &Path) -> Option<PathBuf> {
+    let git_dir = resolve_git_dir(repo_root)?;
+    let commondir_path = git_dir.join("commondir");
+    if !commondir_path.is_file() {
+        return Some(git_dir);
+    }
+
+    let contents = std::fs::read_to_string(&commondir_path).ok()?;
+    let target = contents.trim();
+    let resolved = if Path::new(target).is_absolute() {
+        PathBuf::from(target)
+    } else {
+        git_dir.join(target)
+    };
+    Some(resolved.canonicalize().ok().unwrap_or(resolved))
 }
 
 pub(crate) fn detect_git_path_states_batch(
@@ -1209,20 +1331,33 @@ pub(crate) trait InfoProvider {
 /// The core project type, parameterized by kind.
 /// Private fields with accessors enforce what's available per kind.
 pub(crate) struct RustProject<Kind: CargoKind> {
-    path:                      PathBuf,
+    /// Absolute filesystem path to this project leaf's root directory.
+    path:                      AbsolutePath,
+    /// Package or workspace name from Cargo metadata when available.
     name:                      Option<String>,
+    /// Shared leaf-attached project metadata available across project kinds.
     info:                      ProjectInfo,
+    /// Rust-specific Cargo metadata and derived target information.
     cargo:                     Cargo,
+    /// Vendored Rust dependencies nested under this project leaf.
     vendored:                  Vec<RustProject<Package>>,
+    /// Marker for whether this leaf is a workspace or a package.
     kind:                      Kind,
+    /// Worktree label shown in the UI for linked worktree checkouts.
     worktree_name:             Option<String>,
-    worktree_primary_abs_path: Option<PathBuf>,
+    /// Absolute path to the primary checkout root for this worktree family.
+    ///
+    /// This is leaf metadata used to identify and regroup related worktrees.
+    worktree_primary_abs_path: Option<AbsolutePath>,
 }
 
 /// A non-Rust project. Separate struct, no generic parameter.
 pub(crate) struct NonRustProject {
-    path: PathBuf,
+    /// Absolute filesystem path to this project's root directory.
+    path: AbsolutePath,
+    /// Directory-derived project name used for display and search.
     name: Option<String>,
+    /// Shared leaf-attached project metadata available across project kinds.
     info: ProjectInfo,
 }
 
@@ -1238,20 +1373,19 @@ impl Clone for NonRustProject {
 
 impl InfoProvider for NonRustProject {
     fn info(&self) -> &ProjectInfo { &self.info }
-
     fn info_mut(&mut self) -> &mut ProjectInfo { &mut self.info }
 }
 
 impl NonRustProject {
     pub(crate) fn new(path: PathBuf, name: Option<String>) -> Self {
         Self {
-            path,
+            path: path.into(),
             name,
             info: ProjectInfo::default(),
         }
     }
 
-    pub(crate) fn path(&self) -> &Path { &self.path }
+    pub(crate) fn path(&self) -> &Path { self.path.as_path() }
 
     pub(crate) fn name(&self) -> Option<&str> { self.name.as_deref() }
 
@@ -1262,7 +1396,7 @@ impl NonRustProject {
     pub(crate) const fn git_info(&self) -> Option<&GitInfo> { self.info.git_info.as_ref() }
 
     /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
-    pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }
+    pub(crate) fn display_path(&self) -> DisplayPath { self.path.display_path() }
 
     /// Display name: project name or last path component.
     pub(crate) fn display_name(&self) -> String {
@@ -1270,6 +1404,7 @@ impl NonRustProject {
             .as_deref()
             .unwrap_or_else(|| {
                 self.path
+                    .as_path()
                     .file_name()
                     .map_or("", |n| n.to_str().unwrap_or(""))
             })
@@ -1318,7 +1453,7 @@ impl<Kind: CargoKind> InfoProvider for RustProject<Kind> {
 
 // Shared accessors for all CargoKind projects.
 impl<Kind: CargoKind> RustProject<Kind> {
-    pub(crate) fn path(&self) -> &Path { &self.path }
+    pub(crate) fn path(&self) -> &Path { self.path.as_path() }
 
     pub(crate) fn name(&self) -> Option<&str> { self.name.as_deref() }
 
@@ -1329,7 +1464,7 @@ impl<Kind: CargoKind> RustProject<Kind> {
     pub(crate) const fn git_info(&self) -> Option<&GitInfo> { self.info.git_info.as_ref() }
 
     /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
-    pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }
+    pub(crate) fn display_path(&self) -> DisplayPath { self.path.display_path() }
 
     pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
 
@@ -1342,7 +1477,9 @@ impl<Kind: CargoKind> RustProject<Kind> {
     pub(crate) fn worktree_name(&self) -> Option<&str> { self.worktree_name.as_deref() }
 
     pub(crate) fn worktree_primary_abs_path(&self) -> Option<&Path> {
-        self.worktree_primary_abs_path.as_deref()
+        self.worktree_primary_abs_path
+            .as_ref()
+            .map(AbsolutePath::as_path)
     }
 
     /// Display name: project name or last path component.
@@ -1351,6 +1488,7 @@ impl<Kind: CargoKind> RustProject<Kind> {
             .as_deref()
             .unwrap_or_else(|| {
                 self.path
+                    .as_path()
                     .file_name()
                     .map_or("", |n| n.to_str().unwrap_or(""))
             })
@@ -1374,14 +1512,14 @@ impl RustProject<Workspace> {
         worktree_primary_abs_path: Option<PathBuf>,
     ) -> Self {
         Self {
-            path,
+            path: path.into(),
             name,
             info: ProjectInfo::default(),
             cargo,
             vendored,
             kind: Workspace::new(groups),
             worktree_name,
-            worktree_primary_abs_path,
+            worktree_primary_abs_path: worktree_primary_abs_path.map(AbsolutePath::from),
         }
     }
 
@@ -1404,14 +1542,14 @@ impl RustProject<Package> {
         worktree_primary_abs_path: Option<PathBuf>,
     ) -> Self {
         Self {
-            path,
+            path: path.into(),
             name,
             info: ProjectInfo::default(),
             cargo,
             vendored,
             kind: Package,
             worktree_name,
-            worktree_primary_abs_path,
+            worktree_primary_abs_path: worktree_primary_abs_path.map(AbsolutePath::from),
         }
     }
 
@@ -1448,7 +1586,7 @@ impl<Kind: CargoKind> WorktreeGroup<Kind> {
     pub(crate) fn live_entry_count(&self) -> usize {
         std::iter::once(self.primary.visibility())
             .chain(self.linked.iter().map(RustProject::visibility))
-            .filter(|visibility| !matches!(visibility, Visibility::Deleted | Visibility::Dismissed))
+            .filter(|visibility| !matches!(visibility, Visibility::Dismissed))
             .count()
     }
 
@@ -1461,12 +1599,7 @@ impl<Kind: CargoKind> WorktreeGroup<Kind> {
 
         std::iter::once(&self.primary)
             .chain(self.linked.iter())
-            .find(|project| {
-                !matches!(
-                    project.visibility(),
-                    Visibility::Deleted | Visibility::Dismissed
-                )
-            })
+            .find(|project| !matches!(project.visibility(), Visibility::Dismissed))
     }
 }
 
@@ -1543,7 +1676,7 @@ impl RootItem {
         }
     }
 
-    pub(crate) fn display_path(&self) -> String {
+    pub(crate) fn display_path(&self) -> DisplayPath {
         match self {
             Self::Workspace(p) => p.display_path(),
             Self::Package(p) => p.display_path(),
@@ -1561,6 +1694,17 @@ impl RootItem {
             Self::WorkspaceWorktrees(g) => g.primary().display_name(),
             Self::PackageWorktrees(g) => g.primary().display_name(),
         }
+    }
+
+    pub(crate) fn git_directory(&self) -> Option<AbsolutePath> {
+        let project_path = match self {
+            Self::Workspace(project) => project.path(),
+            Self::Package(project) => project.path(),
+            Self::NonRust(project) => project.path(),
+            Self::WorkspaceWorktrees(group) => group.primary().path(),
+            Self::PackageWorktrees(group) => group.primary().path(),
+        };
+        resolve_git_dir(project_path).map(AbsolutePath::from)
     }
 
     pub(crate) fn root_name_base(&self) -> String { self.display_name() }
@@ -1673,8 +1817,8 @@ impl RootItem {
             Self::Package(p) => info_in_package_mut(p, path),
             Self::NonRust(p) => (p.path() == path).then(|| p.info_mut()),
             Self::WorkspaceWorktrees(g) => {
-                if g.primary().path() == path {
-                    return Some(g.primary_mut().info_mut());
+                if info_in_workspace(g.primary(), path).is_some() {
+                    return info_in_workspace_mut(g.primary_mut(), path);
                 }
                 let linked_index = g
                     .linked()
@@ -1683,8 +1827,8 @@ impl RootItem {
                 info_in_workspace_mut(&mut g.linked_mut()[linked_index], path)
             },
             Self::PackageWorktrees(g) => {
-                if g.primary().path() == path {
-                    return Some(g.primary_mut().info_mut());
+                if info_in_package(g.primary(), path).is_some() {
+                    return info_in_package_mut(g.primary_mut(), path);
                 }
                 let linked_index = g
                     .linked()

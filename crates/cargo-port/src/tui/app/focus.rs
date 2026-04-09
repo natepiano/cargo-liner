@@ -1,4 +1,4 @@
-use super::types::App;
+use super::App;
 use super::types::ExitMode;
 use super::types::FinderMode;
 use super::types::KeymapMode;

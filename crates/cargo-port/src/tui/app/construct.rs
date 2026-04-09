@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use ratatui::widgets::ListState;
 
-use super::types::App;
+use super::App;
 use super::types::AsyncBuildState;
 use super::types::BuildChannels;
 use super::types::ConfigFileStamp;
@@ -41,7 +41,7 @@ use crate::tui::types::LayoutCache;
 use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
 use crate::watcher;
-use crate::watcher::WatchRequest;
+use crate::watcher::WatcherMsg;
 
 fn initial_list_state(items: &[RootItem]) -> ListState {
     let mut state = ListState::default();
@@ -81,7 +81,7 @@ struct AppInit {
     config_last_seen: Option<ConfigFileStamp>,
     lint_warning:     Option<String>,
     lint_runtime:     Option<RuntimeHandle>,
-    watch_tx:         mpsc::Sender<WatchRequest>,
+    watch_tx:         mpsc::Sender<WatcherMsg>,
     projects:         ProjectList,
     list_state:       ListState,
 }
@@ -103,7 +103,7 @@ impl AppInit {
             bg_tx.clone(),
             cfg.tui.ci_run_count,
             cfg.tui.include_non_rust,
-            cfg.tui.include_dirs.clone(),
+            &cfg.tui.include_dirs,
             http_client.clone(),
         );
         let built = scan::build_tree(projects, &cfg.tui.inline_dirs);
@@ -183,8 +183,10 @@ impl App {
             current_config: inputs.cfg,
             scan_root: inputs.scan_root,
             http_client: inputs.http_client,
+            repo_fetch_cache: crate::scan::new_repo_cache(),
             projects: init.projects,
             ci_state: HashMap::new(),
+            ci_display_modes: HashMap::new(),
             lint_status: HashMap::new(),
             lint_cache_usage: crate::lint::CacheUsage::default(),
             lint_runs: HashMap::new(),
@@ -197,6 +199,8 @@ impl App {
             crates_downloads: HashMap::new(),
             stars: HashMap::new(),
             repo_descriptions: HashMap::new(),
+            discovery_shimmers: HashMap::new(),
+            pending_git_first_commit: HashMap::new(),
             bg_tx: inputs.bg_tx,
             bg_rx: inputs.bg_rx,
             fully_loaded: HashSet::new(),
@@ -290,6 +294,9 @@ impl App {
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
         self.register_existing_projects();
+        if !self.projects.is_empty() {
+            self.finish_watcher_registration_batch();
+        }
         self.refresh_lint_runs_from_disk();
         self.rebuild_lint_rollups();
     }

@@ -436,7 +436,86 @@ pub(crate) fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
 pub(crate) fn normalize_config(mut config: CargoPortConfig) -> Result<CargoPortConfig, String> {
     config.lint.commands = normalize_lint_commands(&config.lint.commands);
     config.lint.cache_size = config.lint.normalized_cache_size()?;
+    config.tui.main_branch = normalize_branch_name(&config.tui.main_branch, "tui.main_branch")?;
+    config.tui.other_primary_branches = normalize_branch_list(
+        &config.tui.other_primary_branches,
+        "tui.other_primary_branches",
+    )?;
+    config.tui.status_flash_secs = normalize_non_negative_secs(config.tui.status_flash_secs);
+    config.tui.task_linger_secs = normalize_non_negative_secs(config.tui.task_linger_secs);
+    config.tui.discovery_shimmer_secs =
+        normalize_non_negative_secs(config.tui.discovery_shimmer_secs);
     Ok(config)
+}
+
+pub(crate) fn normalize_branch_name(value: &str, field: &str) -> Result<String, String> {
+    let branch = value.trim();
+    if branch.is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+    validate_branch_name(branch, field)?;
+    Ok(branch.to_string())
+}
+
+pub(crate) fn normalize_branch_list(values: &[String], field: &str) -> Result<Vec<String>, String> {
+    values
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some((index, trimmed))
+            }
+        })
+        .map(|(index, branch)| {
+            validate_branch_name(branch, &format!("{field}[{index}]"))?;
+            Ok(branch.to_string())
+        })
+        .collect()
+}
+
+fn validate_branch_name(branch: &str, field: &str) -> Result<(), String> {
+    if branch == "@"
+        || branch.starts_with('-')
+        || branch.starts_with('/')
+        || branch.ends_with('/')
+        || branch.ends_with('.')
+        || std::path::Path::new(branch)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("lock"))
+        || branch.contains("..")
+        || branch.contains("@{")
+        || branch.contains("//")
+    {
+        return Err(format!("{field} must be a valid branch name"));
+    }
+
+    if branch
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == ".." || part.starts_with('.'))
+    {
+        return Err(format!("{field} must be a valid branch name"));
+    }
+
+    if branch.chars().any(|ch| {
+        ch.is_ascii_control()
+            || ch.is_whitespace()
+            || matches!(ch, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+    }) {
+        return Err(format!("{field} must be a valid branch name"));
+    }
+
+    Ok(())
+}
+
+fn normalize_non_negative_secs(secs: f64) -> f64 {
+    if secs.is_finite() && secs >= 0.0 {
+        secs
+    } else {
+        0.0
+    }
 }
 
 /// Top-level application configuration.
@@ -483,6 +562,16 @@ pub(crate) struct TuiConfig {
     #[config(default = "zed")]
     pub editor: String,
 
+    /// Preferred local branch used for Git-panel `M` comparisons.
+    /// Example: `main`
+    #[config(default = "main")]
+    pub main_branch: String,
+
+    /// Optional fallback local branch names checked after `main_branch`.
+    /// Example: `["primary"]`
+    #[config(default = [])]
+    pub other_primary_branches: Vec<String>,
+
     /// How long (in seconds) the status bar flash is shown (e.g. "no new
     /// runs found").
     #[config(default = 5.0)]
@@ -492,19 +581,27 @@ pub(crate) struct TuiConfig {
     /// starting its exit animation.
     #[config(default = 1.0)]
     pub task_linger_secs: f64,
+
+    /// How long (in seconds) newly discovered project names shimmer in the
+    /// project list. `0.0` disables the effect.
+    #[config(default = 10.0)]
+    pub discovery_shimmer_secs: f64,
 }
 
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            inline_dirs:       vec!["crates".to_string()],
-            ci_run_count:      5,
-            navigation_keys:   NavigationKeys::ArrowsOnly,
-            include_dirs:      Vec::new(),
-            include_non_rust:  NonRustInclusion::Exclude,
-            editor:            "zed".to_string(),
-            status_flash_secs: 5.0,
-            task_linger_secs:  1.0,
+            inline_dirs:            vec!["crates".to_string()],
+            ci_run_count:           5,
+            navigation_keys:        NavigationKeys::ArrowsOnly,
+            include_dirs:           Vec::new(),
+            include_non_rust:       NonRustInclusion::Exclude,
+            editor:                 "zed".to_string(),
+            main_branch:            "main".to_string(),
+            other_primary_branches: Vec::new(),
+            status_flash_secs:      5.0,
+            task_linger_secs:       1.0,
+            discovery_shimmer_secs: 10.0,
         }
     }
 }
@@ -610,23 +707,31 @@ pub(crate) fn save(config: &CargoPortConfig) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// `Config::default()` returns correct values for every field.
-    #[test]
-    fn defaults_are_correct() {
-        let cfg = CargoPortConfig::default();
+    fn assert_default_config_subset(cfg: &CargoPortConfig, expected_ci_run_count: u32) {
         assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.tui.inline_dirs, vec!["crates".to_string()]);
-        assert_eq!(cfg.tui.ci_run_count, 5);
+        assert_eq!(cfg.tui.ci_run_count, expected_ci_run_count);
         assert!(cfg.tui.include_dirs.is_empty());
         assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Exclude);
         assert_eq!(cfg.tui.editor, "zed");
+        assert_eq!(cfg.tui.main_branch, "main");
+        assert!(cfg.tui.other_primary_branches.is_empty());
         assert!((cfg.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
+        assert!((cfg.tui.discovery_shimmer_secs - 10.0).abs() < f64::EPSILON);
+        assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
         assert!(!cfg.lint.enabled);
         assert!(cfg.lint.include.is_empty());
         assert!(cfg.lint.exclude.is_empty());
         assert!(cfg.lint.commands.is_empty());
         assert_eq!(cfg.lint.cache_size, "512 MiB");
+    }
+
+    /// `Config::default()` returns correct values for every field.
+    #[test]
+    fn defaults_are_correct() {
+        let cfg = CargoPortConfig::default();
+        assert_default_config_subset(&cfg, 5);
     }
 
     /// Generated template parses back into a valid `CargoPortConfig` via confique.
@@ -645,11 +750,7 @@ mod tests {
             .file(&path)
             .load()
             .expect("template should parse");
-        assert!(cfg.cache.root.is_empty());
-        assert_eq!(cfg.tui.ci_run_count, 5);
-        assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
-        assert!(cfg.lint.commands.is_empty());
-        assert_eq!(cfg.lint.cache_size, "512 MiB");
+        assert_default_config_subset(&cfg, 5);
     }
 
     /// A partial config file gets defaults for missing fields.
@@ -663,13 +764,7 @@ mod tests {
             .file(&path)
             .load()
             .expect("partial config should load");
-        assert!(cfg.cache.root.is_empty());
-        assert_eq!(cfg.tui.ci_run_count, 10);
-        assert_eq!(cfg.tui.editor, "zed");
-        assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
-        assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
-        assert!(cfg.lint.commands.is_empty());
-        assert_eq!(cfg.lint.cache_size, "512 MiB");
+        assert_default_config_subset(&cfg, 10);
     }
 
     /// An empty config file gets all defaults.
@@ -683,12 +778,7 @@ mod tests {
             .file(&path)
             .load()
             .expect("empty config should load");
-        assert!(cfg.cache.root.is_empty());
-        assert_eq!(cfg.tui.ci_run_count, 5);
-        assert_eq!(cfg.tui.editor, "zed");
-        assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
-        assert!(cfg.lint.commands.is_empty());
-        assert_eq!(cfg.lint.cache_size, "512 MiB");
+        assert_default_config_subset(&cfg, 5);
     }
 
     /// Saving and reloading preserves all values.
@@ -701,8 +791,11 @@ mod tests {
         cfg.cache.root = "/tmp/cargo-port-cache".to_string();
         cfg.tui.ci_run_count = 42;
         cfg.tui.editor = "vim".to_string();
+        cfg.tui.main_branch = "primary".to_string();
+        cfg.tui.other_primary_branches = vec!["main".to_string(), "release".to_string()];
         cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
         cfg.tui.status_flash_secs = 5.0;
+        cfg.tui.discovery_shimmer_secs = 4.5;
         cfg.mouse.invert_scroll = ScrollDirection::Normal;
 
         let contents = toml::to_string_pretty(&cfg).expect("serialize");
@@ -715,10 +808,21 @@ mod tests {
         assert_eq!(reloaded.cache.root, "/tmp/cargo-port-cache");
         assert_eq!(reloaded.tui.ci_run_count, 42);
         assert_eq!(reloaded.tui.editor, "vim");
+        assert_eq!(reloaded.tui.main_branch, "primary");
+        assert_eq!(
+            reloaded.tui.other_primary_branches,
+            vec!["main".to_string(), "release".to_string()]
+        );
         assert_eq!(reloaded.tui.navigation_keys, NavigationKeys::ArrowsAndVim);
         assert!((reloaded.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
+        assert!((reloaded.tui.discovery_shimmer_secs - 4.5).abs() < f64::EPSILON);
         assert_eq!(reloaded.mouse.invert_scroll, ScrollDirection::Normal);
+        assert!(reloaded.tui.include_dirs.is_empty());
+        assert_eq!(reloaded.tui.include_non_rust, NonRustInclusion::Exclude);
         assert!(reloaded.lint.commands.is_empty());
+        assert!(reloaded.lint.include.is_empty());
+        assert!(reloaded.lint.exclude.is_empty());
+        assert!(!reloaded.lint.enabled);
         assert_eq!(reloaded.lint.cache_size, "512 MiB");
     }
 
@@ -867,5 +971,61 @@ mod tests {
         .expect("normalize config");
 
         assert_eq!(cfg.lint.cache_size, "1.5 GiB");
+    }
+
+    #[test]
+    fn normalize_config_clamps_invalid_tui_seconds_to_zero() {
+        let mut cfg = CargoPortConfig::default();
+        cfg.tui.status_flash_secs = -1.0;
+        cfg.tui.task_linger_secs = f64::NAN;
+        cfg.tui.discovery_shimmer_secs = f64::INFINITY;
+
+        let normalized = normalize_config(cfg).expect("normalize config");
+
+        assert!(normalized.tui.status_flash_secs.abs() < f64::EPSILON);
+        assert!(normalized.tui.task_linger_secs.abs() < f64::EPSILON);
+        assert!(normalized.tui.discovery_shimmer_secs.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn normalize_config_trims_main_and_other_primary_branches() {
+        let mut cfg = CargoPortConfig::default();
+        cfg.tui.main_branch = "  primary  ".to_string();
+        cfg.tui.other_primary_branches = vec![
+            "  main  ".to_string(),
+            " ".to_string(),
+            "release".to_string(),
+        ];
+
+        let normalized = normalize_config(cfg).expect("normalize config");
+
+        assert_eq!(normalized.tui.main_branch, "primary");
+        assert_eq!(
+            normalized.tui.other_primary_branches,
+            vec!["main".to_string(), "release".to_string()]
+        );
+    }
+
+    #[test]
+    fn invalid_branch_names_are_rejected() {
+        assert!(normalize_branch_name(" ", "tui.main_branch").is_err());
+        assert!(normalize_branch_name("bad branch", "tui.main_branch").is_err());
+        assert!(
+            normalize_branch_list(
+                &["main".to_string(), "bad branch".to_string()],
+                "tui.other_primary_branches"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn template_mentions_main_branch_settings() {
+        let template =
+            confique::toml::template::<CargoPortConfig>(confique::toml::FormatOptions::default());
+
+        assert!(template.contains("main_branch"));
+        assert!(template.contains("other_primary_branches"));
+        assert!(template.contains("[\"primary\"]"));
     }
 }

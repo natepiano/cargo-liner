@@ -16,12 +16,11 @@ use super::cache_paths;
 use super::ci;
 use super::ci::CiRun;
 use super::ci::GhRun;
+use super::ci::OwnerRepo;
 use super::config::NonRustInclusion;
 use super::constants::NO_MORE_RUNS_MARKER;
 use super::constants::OLDER_RUNS_FETCH_INCREMENT;
 use super::constants::SCAN_DISK_CONCURRENCY;
-use super::constants::SCAN_HTTP_CONCURRENCY;
-use super::constants::SCAN_LOCAL_CONCURRENCY;
 use super::http::HttpClient;
 use super::http::ServiceKind;
 use super::http::ServiceSignal;
@@ -48,18 +47,15 @@ pub(crate) enum BackgroundMsg {
         root_path: AbsolutePath,
         entries:   Vec<(AbsolutePath, u64)>,
     },
-    LocalGitQueued {
-        path: AbsolutePath,
-    },
     CiRuns {
         path: AbsolutePath,
         runs: Vec<CiRun>,
     },
     RepoFetchQueued {
-        key: String,
+        repo: OwnerRepo,
     },
     RepoFetchComplete {
-        key: String,
+        repo: OwnerRepo,
     },
     GitInfo {
         path: AbsolutePath,
@@ -117,7 +113,6 @@ impl BackgroundMsg {
     pub(crate) fn path(&self) -> Option<&Path> {
         match self {
             Self::DiskUsage { path, .. }
-            | Self::LocalGitQueued { path }
             | Self::CiRuns { path, .. }
             | Self::GitInfo { path, .. }
             | Self::GitFirstCommit { path, .. }
@@ -182,60 +177,30 @@ pub(crate) fn cache_dir() -> PathBuf { cache_paths::ci_cache_root() }
 /// Repo-keyed cache directory: `{cache_dir}/{owner}/{repo}`.
 fn repo_cache_dir(owner: &str, repo: &str) -> PathBuf { cache_dir().join(owner).join(repo) }
 
-fn branch_cache_component(branch: &str) -> String {
-    let mut encoded = String::with_capacity(branch.len());
-    for ch in branch.chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
-            encoded.push(ch);
-        } else {
-            let mut buf = [0_u8; 4];
-            for byte in ch.encode_utf8(&mut buf).as_bytes() {
-                use std::fmt::Write;
+fn ci_cache_dir(owner: &str, repo: &str) -> PathBuf { repo_cache_dir(owner, repo) }
 
-                let _ = write!(&mut encoded, "_{byte:02x}");
-            }
-        }
-    }
-    encoded
-}
-
-fn ci_cache_dir(owner: &str, repo: &str, branch: Option<&str>) -> PathBuf {
-    branch.map_or_else(
-        || repo_cache_dir(owner, repo),
-        |branch| {
-            repo_cache_dir(owner, repo)
-                .join("branches")
-                .join(branch_cache_component(branch))
-        },
-    )
-}
-
-pub(crate) fn ci_cache_dir_pub(owner: &str, repo: &str, branch: Option<&str>) -> PathBuf {
-    ci_cache_dir(owner, repo, branch)
-}
+pub(crate) fn ci_cache_dir_pub(owner: &str, repo: &str) -> PathBuf { ci_cache_dir(owner, repo) }
 
 /// Check if the "no more runs" marker exists for a repo.
-pub(crate) fn is_exhausted(owner: &str, repo: &str, branch: Option<&str>) -> bool {
-    ci_cache_dir(owner, repo, branch)
-        .join(NO_MORE_RUNS_MARKER)
-        .exists()
+pub(crate) fn is_exhausted(owner: &str, repo: &str) -> bool {
+    ci_cache_dir(owner, repo).join(NO_MORE_RUNS_MARKER).exists()
 }
 
 /// Save the "no more runs" marker for a repo.
-pub(crate) fn mark_exhausted(owner: &str, repo: &str, branch: Option<&str>) {
-    let dir = ci_cache_dir(owner, repo, branch);
+pub(crate) fn mark_exhausted(owner: &str, repo: &str) {
+    let dir = ci_cache_dir(owner, repo);
     let _ = std::fs::create_dir_all(&dir);
     let _ = std::fs::write(dir.join(NO_MORE_RUNS_MARKER), "");
 }
 
 /// Remove the "no more runs" marker so fresh runs can be discovered.
-pub(crate) fn clear_exhausted(owner: &str, repo: &str, branch: Option<&str>) {
-    let dir = ci_cache_dir(owner, repo, branch);
+pub(crate) fn clear_exhausted(owner: &str, repo: &str) {
+    let dir = ci_cache_dir(owner, repo);
     let _ = std::fs::remove_file(dir.join(NO_MORE_RUNS_MARKER));
 }
 
-fn save_cached_run(owner: &str, repo: &str, branch: Option<&str>, ci_run: &CiRun) {
-    let dir = ci_cache_dir(owner, repo, branch);
+fn save_cached_run(owner: &str, repo: &str, ci_run: &CiRun) {
+    let dir = ci_cache_dir(owner, repo);
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(format!("{}.json", ci_run.run_id));
     if let Ok(json) = serde_json::to_string(ci_run) {
@@ -243,16 +208,16 @@ fn save_cached_run(owner: &str, repo: &str, branch: Option<&str>, ci_run: &CiRun
     }
 }
 
-fn load_cached_run(owner: &str, repo: &str, branch: Option<&str>, run_id: u64) -> Option<CiRun> {
-    let dir = ci_cache_dir(owner, repo, branch);
+fn load_cached_run(owner: &str, repo: &str, run_id: u64) -> Option<CiRun> {
+    let dir = ci_cache_dir(owner, repo);
     let path = dir.join(format!("{run_id}.json"));
     let contents = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&contents).ok()
 }
 
 /// Count the number of cached CI run files on disk for a given repo.
-pub(crate) fn count_cached_runs(owner: &str, repo: &str, branch: Option<&str>) -> usize {
-    let dir = ci_cache_dir(owner, repo, branch);
+pub(crate) fn count_cached_runs(owner: &str, repo: &str) -> usize {
+    let dir = ci_cache_dir(owner, repo);
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
     };
@@ -263,8 +228,8 @@ pub(crate) fn count_cached_runs(owner: &str, repo: &str, branch: Option<&str>) -
 }
 
 /// Load all cached CI runs for a given repo.
-pub(crate) fn load_all_cached_runs(owner: &str, repo: &str, branch: Option<&str>) -> Vec<CiRun> {
-    let dir = ci_cache_dir(owner, repo, branch);
+pub(crate) fn load_all_cached_runs(owner: &str, repo: &str) -> Vec<CiRun> {
+    let dir = ci_cache_dir(owner, repo);
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -286,7 +251,6 @@ fn fetch_recent_runs(
     repo_url: &str,
     owner: &str,
     repo: &str,
-    branch: Option<&str>,
     gh_runs: &[GhRun],
 ) -> (Vec<CiRun>, Option<RepoMetaInfo>, Option<ServiceSignal>) {
     let mut result: Vec<CiRun> = Vec::with_capacity(gh_runs.len());
@@ -294,7 +258,7 @@ fn fetch_recent_runs(
     // Partition into cached hits and misses.
     let mut uncached: Vec<&GhRun> = Vec::new();
     for gh_run in gh_runs {
-        if let Some(cached) = load_cached_run(owner, repo, branch, gh_run.id) {
+        if let Some(cached) = load_cached_run(owner, repo, gh_run.id) {
             result.push(cached);
         } else {
             uncached.push(gh_run);
@@ -307,75 +271,12 @@ fn fetch_recent_runs(
     for gh_run in &uncached {
         if let Some(check_runs) = jobs_map.get(&gh_run.id) {
             let ci_run = ci::build_ci_run(gh_run, check_runs.clone(), repo_url);
-            save_cached_run(owner, repo, branch, &ci_run);
+            save_cached_run(owner, repo, &ci_run);
             result.push(ci_run);
         }
     }
 
     (result, meta, signal)
-}
-
-/// Async version of `fetch_recent_runs` for the concurrent scan phase.
-async fn fetch_recent_runs_async(
-    client: &HttpClient,
-    repo_url: &str,
-    owner: &str,
-    repo: &str,
-    branch: Option<&str>,
-    gh_runs: &[GhRun],
-) -> (Vec<CiRun>, Option<RepoMetaInfo>, Option<ServiceSignal>) {
-    let mut result: Vec<CiRun> = Vec::with_capacity(gh_runs.len());
-
-    let mut uncached: Vec<&GhRun> = Vec::new();
-    for gh_run in gh_runs {
-        if let Some(cached) = load_cached_run(owner, repo, branch, gh_run.id) {
-            result.push(cached);
-        } else {
-            uncached.push(gh_run);
-        }
-    }
-
-    let (batch, signal) = client
-        .batch_fetch_jobs_and_meta_async(owner, repo, &uncached)
-        .await;
-    let (jobs_map, meta) = batch.unwrap_or_default();
-    for gh_run in &uncached {
-        if let Some(check_runs) = jobs_map.get(&gh_run.id) {
-            let ci_run = ci::build_ci_run(gh_run, check_runs.clone(), repo_url);
-            save_cached_run(owner, repo, branch, &ci_run);
-            result.push(ci_run);
-        }
-    }
-
-    (result, meta, signal)
-}
-
-/// Async version of `fetch_ci_runs_cached` for the concurrent scan phase.
-async fn fetch_ci_runs_cached_async(
-    client: &HttpClient,
-    repo_url: &str,
-    owner: &str,
-    repo: &str,
-    branch: Option<&str>,
-    count: u32,
-) -> (CiFetchResult, Option<RepoMetaInfo>, Option<ServiceSignal>) {
-    let (gh_runs, list_signal) = client.list_runs_async(owner, repo, branch, count).await;
-    let gh_runs = gh_runs.unwrap_or_default();
-    let (fetched, meta, detail_signal) =
-        fetch_recent_runs_async(client, repo_url, owner, repo, branch, &gh_runs).await;
-    let cached = load_all_cached_runs(owner, repo, branch);
-    let merged = merge_runs(fetched, cached);
-
-    let result = if gh_runs.is_empty() {
-        CiFetchResult::CacheOnly(merged)
-    } else {
-        CiFetchResult::Loaded(merged)
-    };
-    (
-        result,
-        meta,
-        combine_service_signal(list_signal, detail_signal),
-    )
 }
 
 /// Merge fetched + cached runs, deduplicated by `run_id`, sorted descending.
@@ -409,14 +310,12 @@ pub(crate) fn fetch_ci_runs_cached(
     repo_url: &str,
     owner: &str,
     repo: &str,
-    branch: Option<&str>,
     count: u32,
 ) -> (CiFetchResult, Option<RepoMetaInfo>, Option<ServiceSignal>) {
-    let (gh_runs, list_signal) = client.list_runs(owner, repo, branch, count);
+    let (gh_runs, list_signal) = client.list_runs(owner, repo, None, count);
     let gh_runs = gh_runs.unwrap_or_default();
-    let (fetched, meta, detail_signal) =
-        fetch_recent_runs(client, repo_url, owner, repo, branch, &gh_runs);
-    let cached = load_all_cached_runs(owner, repo, branch);
+    let (fetched, meta, detail_signal) = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
+    let cached = load_all_cached_runs(owner, repo);
     let merged = merge_runs(fetched, cached);
 
     let result = if gh_runs.is_empty() {
@@ -438,14 +337,13 @@ pub(crate) fn fetch_older_runs(
     repo_url: &str,
     owner: &str,
     repo: &str,
-    branch: Option<&str>,
     current_count: u32,
 ) -> (CiFetchResult, Option<ServiceSignal>) {
     let fetch_count = current_count + OLDER_RUNS_FETCH_INCREMENT;
-    let (gh_runs, list_signal) = client.list_runs(owner, repo, branch, fetch_count);
+    let (gh_runs, list_signal) = client.list_runs(owner, repo, None, fetch_count);
     let gh_runs = gh_runs.unwrap_or_default();
     let (fetched, _meta, detail_signal) =
-        fetch_recent_runs(client, repo_url, owner, repo, branch, &gh_runs);
+        fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
 
     let mut result = fetched;
     result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
@@ -465,13 +363,12 @@ pub(crate) fn fetch_newer_runs(
     repo_url: &str,
     owner: &str,
     repo: &str,
-    branch: Option<&str>,
     current_count: u32,
 ) -> (CiFetchResult, Option<ServiceSignal>) {
-    let (gh_runs, list_signal) = client.list_runs(owner, repo, branch, current_count);
+    let (gh_runs, list_signal) = client.list_runs(owner, repo, None, current_count);
     let gh_runs = gh_runs.unwrap_or_default();
     let (mut result, _meta, detail_signal) =
-        fetch_recent_runs(client, repo_url, owner, repo, branch, &gh_runs);
+        fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
     result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
 
     let result = if gh_runs.is_empty() {
@@ -991,10 +888,40 @@ pub(crate) fn cargo_project_to_item(cp: CargoParseResult) -> RootItem {
     }
 }
 
+/// Build a normalized project item for a discovered root directory.
+///
+/// Unlike `cargo_project_to_item(from_cargo_toml(...))`, this walks nested
+/// manifests under the root and runs them through `build_tree()`, so a newly
+/// discovered workspace arrives with its member groups already populated.
+pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
+    let mut items = Vec::new();
+    let mut iter = WalkDir::new(root_dir).into_iter();
+    while let Some(Ok(entry)) = iter.next() {
+        if entry.file_type().is_dir() {
+            let name = entry.file_name();
+            if name == "target" || name == ".git" {
+                iter.skip_current_dir();
+                continue;
+            }
+        }
+        if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
+            let parsed = super::project::from_cargo_toml(entry.path()).ok()?;
+            items.push(cargo_project_to_item(parsed));
+        }
+    }
+
+    if items.is_empty() {
+        return None;
+    }
+
+    build_tree(&items, &[])
+        .into_iter()
+        .find(|item| item.path() == root_dir)
+}
+
 /// Shared network context passed to `fetch_project_details`.
 pub(crate) struct FetchContext {
-    pub client:     HttpClient,
-    pub repo_cache: RepoCache,
+    pub client: HttpClient,
 }
 
 pub(crate) struct ProjectDetailRequest<'a> {
@@ -1004,11 +931,10 @@ pub(crate) struct ProjectDetailRequest<'a> {
     pub abs_path:      &'a Path,
     pub project_name:  Option<&'a str>,
     pub repo_presence: GitRepoPresence,
-    pub ci_run_count:  u32,
 }
 
-/// Fetch all details (disk, git, crates.io, CI) for a single project and send
-/// results through the provided channel. Used by both the main scan and priority fetch.
+/// Fetch local project details for a single project and send results through
+/// the provided channel. Used by both the main scan and project discovery paths.
 pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let tx = req.tx;
     let ctx = req.ctx;
@@ -1016,9 +942,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let abs: AbsolutePath = abs_path.to_path_buf().into();
     let project_name = req.project_name;
     let repo_presence = req.repo_presence;
-    let ci_run_count = req.ci_run_count;
     let client = &ctx.client;
-    let repo_cache = &ctx.repo_cache;
     let _ = tx.send(BackgroundMsg::GitPathState {
         path:  abs.clone(),
         state: super::project::detect_git_path_state(abs_path),
@@ -1034,46 +958,6 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
             path: abs.clone(),
             info: info.clone(),
         });
-    }
-
-    // CI runs + repo metadata — deduplicated across worktrees of the
-    // same repo. First thread to reach a given `owner/repo` does the
-    // HTTP calls; subsequent threads reuse the cached result.
-    if let Some(ref repo_url) = git_info.as_ref().and_then(|g| g.url.clone())
-        && let Some((owner, repo)) = ci::parse_owner_repo(repo_url)
-    {
-        let branch = git_info.as_ref().and_then(|git| git.branch.as_deref());
-        let cache_key = repo_dispatch_key(&owner, &repo, branch);
-        let cached = repo_cache
-            .lock()
-            .ok()
-            .and_then(|c| c.get(&cache_key).cloned());
-
-        let data = cached.unwrap_or_else(|| {
-            let (result, meta, signal) =
-                fetch_ci_runs_cached(client, repo_url, &owner, &repo, branch, ci_run_count);
-            emit_service_signal(tx, signal);
-            let runs = match result {
-                CiFetchResult::Loaded(r) | CiFetchResult::CacheOnly(r) => r,
-            };
-            let data = CachedRepoData { runs, meta };
-            if let Ok(mut c) = repo_cache.lock() {
-                c.insert(cache_key, data.clone());
-            }
-            data
-        });
-
-        let _ = tx.send(BackgroundMsg::CiRuns {
-            path: abs.clone(),
-            runs: data.runs,
-        });
-        if let Some(meta) = data.meta {
-            let _ = tx.send(BackgroundMsg::RepoMeta {
-                path:        abs.clone(),
-                stars:       meta.stars,
-                description: meta.description,
-            });
-        }
     }
 
     // Crates.io version + downloads (network)
@@ -1102,17 +986,37 @@ pub(crate) struct RepoMetaInfo {
 }
 
 /// Cached CI + metadata results keyed by `"owner/repo"`. Shared across
-/// rayon threads so worktrees on the same repo+branch don't make duplicate
+/// background tasks so worktrees on the same repo don't make duplicate
 /// HTTP calls.
 #[derive(Clone)]
 pub(crate) struct CachedRepoData {
-    runs: Vec<CiRun>,
-    meta: Option<RepoMetaInfo>,
+    pub(crate) runs: Vec<CiRun>,
+    pub(crate) meta: Option<RepoMetaInfo>,
 }
 
-pub(crate) type RepoCache = Arc<Mutex<HashMap<String, CachedRepoData>>>;
+pub(crate) type RepoCache = Arc<Mutex<HashMap<OwnerRepo, CachedRepoData>>>;
 
 pub(crate) fn new_repo_cache() -> RepoCache { Arc::new(Mutex::new(HashMap::new())) }
+
+pub(crate) fn load_cached_repo_data(
+    repo_cache: &RepoCache,
+    owner_repo: &OwnerRepo,
+) -> Option<CachedRepoData> {
+    repo_cache
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(owner_repo).cloned())
+}
+
+pub(crate) fn store_cached_repo_data(
+    repo_cache: &RepoCache,
+    owner_repo: &OwnerRepo,
+    data: CachedRepoData,
+) {
+    if let Ok(mut cache) = repo_cache.lock() {
+        cache.insert(owner_repo.clone(), data);
+    }
+}
 
 /// Resolve include-dir entries to absolute paths. Relative entries are
 /// joined to `scan_root`; absolute entries are used as-is. An empty
@@ -1145,50 +1049,11 @@ fn expand_home_path(raw: &str) -> PathBuf {
     PathBuf::from(raw)
 }
 
-/// Information collected in phase 1 (local work) for a single project,
-/// used to drive async HTTP dispatch and disk usage.
-#[derive(Clone)]
-struct DiscoveredProject {
-    abs_path:   AbsolutePath,
-    name:       Option<String>,
-    repo_url:   Option<String>,
-    owner_repo: Option<(String, String)>,
-    branch:     Option<String>,
-}
-
-enum RepoDispatchState {
-    Pending(Vec<String>),
-    Ready(CachedRepoData),
-}
-
-enum RepoDispatchRegistration {
-    Cached(CachedRepoData),
-    SpawnFetch,
-    Pending,
-}
-
-type RepoDispatchMap = Arc<Mutex<HashMap<String, RepoDispatchState>>>;
-type GitInfoCache = Arc<Mutex<HashMap<PathBuf, Option<GitInfo>>>>;
-
 #[derive(Clone)]
 struct StreamingScanContext {
-    client:         HttpClient,
-    tx:             mpsc::Sender<BackgroundMsg>,
-    ci_run_count:   u32,
-    disk_limit:     Arc<tokio::sync::Semaphore>,
-    http_limit:     Arc<tokio::sync::Semaphore>,
-    local_limit:    Arc<tokio::sync::Semaphore>,
-    repo_dispatch:  RepoDispatchMap,
-    git_info_cache: GitInfoCache,
-}
-
-struct RepoFetchRequest {
-    key:          String,
-    project_path: String,
-    repo_url:     String,
-    owner:        String,
-    repo:         String,
-    branch:       Option<String>,
+    client:     HttpClient,
+    tx:         mpsc::Sender<BackgroundMsg>,
+    disk_limit: Arc<tokio::sync::Semaphore>,
 }
 
 /// Spawn a streaming scan using a hybrid approach:
@@ -1206,7 +1071,6 @@ struct RepoFetchRequest {
 /// and flat entries. Disk and HTTP results may continue to stream in afterward.
 pub(crate) fn spawn_streaming_scan(
     scan_root: &Path,
-    ci_run_count: u32,
     include_dirs: &[String],
     inline_dirs: &[String],
     non_rust: NonRustInclusion,
@@ -1222,16 +1086,11 @@ pub(crate) fn spawn_streaming_scan(
         let scan_context = StreamingScanContext {
             client,
             tx: scan_tx.clone(),
-            ci_run_count,
             disk_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_DISK_CONCURRENCY)),
-            http_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_HTTP_CONCURRENCY)),
-            local_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_LOCAL_CONCURRENCY)),
-            repo_dispatch: Arc::new(Mutex::new(HashMap::new())),
-            git_info_cache: Arc::new(Mutex::new(HashMap::new())),
         };
 
         let phase1_started = std::time::Instant::now();
-        let phase1 = phase1_discover(&scan_dirs, non_rust, &scan_context);
+        let phase1 = phase1_discover(&scan_dirs, non_rust);
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(phase1_started.elapsed().as_millis()),
             scan_dirs = scan_dirs.len(),
@@ -1279,7 +1138,6 @@ struct Phase1DiscoverResult {
 }
 
 fn discover_non_rust_project(
-    scan_context: &StreamingScanContext,
     entry_path: &Path,
     items: &mut Vec<RootItem>,
     disk_entries: &mut Vec<(String, PathBuf)>,
@@ -1290,27 +1148,12 @@ fn discover_non_rust_project(
     stats.projects += 1;
     stats.non_rust_projects += 1;
 
-    let item = RootItem::NonRust(project);
-    items.push(item);
-
-    let abs: AbsolutePath = abs_path.clone().into();
-    let discovered = DiscoveredProject {
-        abs_path:   abs,
-        name:       None,
-        repo_url:   None,
-        owner_repo: None,
-        branch:     None,
-    };
+    items.push(RootItem::NonRust(project));
     let disk_path = abs_path.to_string_lossy().into_owned();
-    spawn_project_local_work(scan_context, discovered, GitRepoPresence::InRepo);
     disk_entries.push((disk_path, abs_path));
 }
 
-fn phase1_discover(
-    scan_dirs: &[PathBuf],
-    non_rust: NonRustInclusion,
-    scan_context: &StreamingScanContext,
-) -> Phase1DiscoverResult {
+fn phase1_discover(scan_dirs: &[PathBuf], non_rust: NonRustInclusion) -> Phase1DiscoverResult {
     let mut items = Vec::new();
     let mut disk_entries = Vec::new();
     let mut stats = Phase1DiscoverStats {
@@ -1339,7 +1182,6 @@ fn phase1_discover(
                 {
                     iter.skip_current_dir();
                     discover_non_rust_project(
-                        scan_context,
                         entry.path(),
                         &mut items,
                         &mut disk_entries,
@@ -1363,7 +1205,6 @@ fn phase1_discover(
                 let item = cargo_project_to_item(cargo_project);
                 let abs_path = item.path().to_path_buf();
                 let abs: AbsolutePath = abs_path.clone().into();
-                let project_name = item.name().map(str::to_string);
                 let repo_presence_started = std::time::Instant::now();
                 let repo_presence = if super::project::git_repo_root(&abs_path).is_some() {
                     GitRepoPresence::InRepo
@@ -1378,15 +1219,6 @@ fn phase1_discover(
                 );
 
                 items.push(item);
-
-                let discovered = DiscoveredProject {
-                    abs_path:   abs.clone(),
-                    name:       project_name,
-                    repo_url:   None,
-                    owner_repo: None,
-                    branch:     None,
-                };
-                spawn_project_local_work(scan_context, discovered.clone(), repo_presence);
                 disk_entries.push((abs_path.to_string_lossy().into_owned(), abs_path));
             }
         }
@@ -1405,105 +1237,6 @@ fn spawn_initial_disk_usage(
     for tree in group_disk_usage_trees(disk_entries) {
         spawn_disk_usage_tree(scan_context, tree);
     }
-}
-
-fn spawn_project_http(scan_context: &StreamingScanContext, project: &DiscoveredProject) {
-    if let Some((owner, repo)) = &project.owner_repo {
-        let key = repo_dispatch_key(owner, repo, project.branch.as_deref());
-        let abs = project.abs_path.clone();
-        match register_repo_path(&scan_context.repo_dispatch, &key, &abs) {
-            RepoDispatchRegistration::Cached(data) => {
-                send_repo_data(&scan_context.tx, std::slice::from_ref(&abs), &data);
-            },
-            RepoDispatchRegistration::SpawnFetch => {
-                let _ = scan_context
-                    .tx
-                    .send(BackgroundMsg::RepoFetchQueued { key: key.clone() });
-                spawn_repo_fetch(
-                    scan_context,
-                    RepoFetchRequest {
-                        key,
-                        project_path: project.abs_path.display_path().to_string(),
-                        repo_url: project.repo_url.clone().unwrap_or_default(),
-                        owner: owner.clone(),
-                        repo: repo.clone(),
-                        branch: project.branch.clone(),
-                    },
-                );
-            },
-            RepoDispatchRegistration::Pending => {},
-        }
-    }
-
-    if let Some(name) = &project.name {
-        spawn_crates_fetch(
-            &scan_context.client,
-            &scan_context.tx,
-            &scan_context.http_limit,
-            project.abs_path.as_path(),
-            name,
-        );
-    }
-}
-
-fn repo_dispatch_key(owner: &str, repo: &str, branch: Option<&str>) -> String {
-    branch.map_or_else(
-        || format!("{owner}/{repo}"),
-        |branch| format!("{owner}/{repo}@{branch}"),
-    )
-}
-
-fn spawn_project_local_work(
-    scan_context: &StreamingScanContext,
-    project: DiscoveredProject,
-    repo_presence: GitRepoPresence,
-) {
-    let handle = scan_context.client.handle.clone();
-    let tx = scan_context.tx.clone();
-    let git_info_cache = Arc::clone(&scan_context.git_info_cache);
-    let local_limit = Arc::clone(&scan_context.local_limit);
-    let scan_context = scan_context.clone();
-    if repo_presence.is_in_repo() {
-        let _ = tx.send(BackgroundMsg::LocalGitQueued {
-            path: project.abs_path.clone(),
-        });
-    }
-
-    handle.spawn(async move {
-        let queue_started = std::time::Instant::now();
-        let Ok(_permit) = local_limit.acquire_owned().await else {
-            return;
-        };
-        tracing::info!(
-            elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
-            path = %project.abs_path.display_path(),
-            abs_path = %project.abs_path,
-            "tokio_local_queue_wait"
-        );
-        let run_started = std::time::Instant::now();
-        let tx_for_work = tx.clone();
-        let git_info_cache_for_work = Arc::clone(&git_info_cache);
-        let project_for_work = project.clone();
-        let Ok(discovered) = tokio::task::spawn_blocking(move || {
-            phase1_local_work(
-                &tx_for_work,
-                &git_info_cache_for_work,
-                project_for_work,
-                repo_presence,
-            )
-        })
-        .await
-        else {
-            return;
-        };
-        tracing::info!(
-            elapsed_ms = crate::perf_log::ms(run_started.elapsed().as_millis()),
-            path = %discovered.abs_path.display_path(),
-            abs_path = %discovered.abs_path,
-            "tokio_local_work"
-        );
-        spawn_project_http(&scan_context, &discovered);
-    });
 }
 
 #[derive(Clone)]
@@ -1612,235 +1345,17 @@ fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, u64)> {
         .collect()
 }
 
-fn register_repo_path(
-    repo_dispatch: &RepoDispatchMap,
-    key: &str,
-    path: &AbsolutePath,
-) -> RepoDispatchRegistration {
-    let path_str = path.to_string();
-    let Ok(mut dispatch) = repo_dispatch.lock() else {
-        return RepoDispatchRegistration::SpawnFetch;
+pub(crate) fn disk_usage_batch_for_item(item: &RootItem) -> Vec<(AbsolutePath, u64)> {
+    let entries = item
+        .collect_project_info()
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
+    let tree = DiskUsageTree {
+        root_abs_path: item.path().to_path_buf(),
+        entries,
     };
-    let state = dispatch
-        .entry(key.to_string())
-        .or_insert_with(|| RepoDispatchState::Pending(vec![path_str.clone()]));
-
-    match state {
-        RepoDispatchState::Pending(paths) => {
-            if paths.iter().all(|known_path| *known_path != path_str) {
-                paths.push(path_str);
-            }
-            if paths.len() == 1 {
-                RepoDispatchRegistration::SpawnFetch
-            } else {
-                RepoDispatchRegistration::Pending
-            }
-        },
-        RepoDispatchState::Ready(data) => RepoDispatchRegistration::Cached(data.clone()),
-    }
-}
-
-fn finish_repo_fetch(
-    repo_dispatch: &RepoDispatchMap,
-    key: &str,
-    data: CachedRepoData,
-) -> Vec<AbsolutePath> {
-    let Ok(mut dispatch) = repo_dispatch.lock() else {
-        return Vec::new();
-    };
-    let previous = dispatch.insert(key.to_string(), RepoDispatchState::Ready(data));
-    match previous {
-        Some(RepoDispatchState::Pending(paths)) => {
-            paths.into_iter().map(|s| PathBuf::from(s).into()).collect()
-        },
-        Some(RepoDispatchState::Ready(_)) | None => Vec::new(),
-    }
-}
-
-fn send_repo_data(tx: &mpsc::Sender<BackgroundMsg>, paths: &[AbsolutePath], data: &CachedRepoData) {
-    for path in paths {
-        let _ = tx.send(BackgroundMsg::CiRuns {
-            path: path.clone(),
-            runs: data.runs.clone(),
-        });
-        if let Some(meta) = &data.meta {
-            let _ = tx.send(BackgroundMsg::RepoMeta {
-                path:        path.clone(),
-                stars:       meta.stars,
-                description: meta.description.clone(),
-            });
-        }
-    }
-}
-
-fn spawn_repo_fetch(scan_context: &StreamingScanContext, request: RepoFetchRequest) {
-    let client = scan_context.client.clone();
-    let handle = client.handle.clone();
-    let tx = scan_context.tx.clone();
-    let http_limit = Arc::clone(&scan_context.http_limit);
-    let repo_dispatch = Arc::clone(&scan_context.repo_dispatch);
-    let ci_run_count = scan_context.ci_run_count;
-
-    handle.spawn(async move {
-        let queue_started = std::time::Instant::now();
-        let Ok(_permit) = http_limit.acquire_owned().await else {
-            return;
-        };
-        tracing::info!(
-            elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
-            path = %request.project_path,
-            repo = format!("{}/{}", request.owner, request.repo),
-            branch = request.branch.as_deref().unwrap_or("-"),
-            "tokio_repo_fetch_queue_wait"
-        );
-        let fetch_started = std::time::Instant::now();
-        let (result, meta, signal) = fetch_ci_runs_cached_async(
-            &client,
-            &request.repo_url,
-            &request.owner,
-            &request.repo,
-            request.branch.as_deref(),
-            ci_run_count,
-        )
-        .await;
-        emit_service_signal(&tx, signal);
-        let data = CachedRepoData {
-            runs: match result {
-                CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
-            },
-            meta,
-        };
-        tracing::info!(
-            elapsed_ms = crate::perf_log::ms(fetch_started.elapsed().as_millis()),
-            path = %request.project_path,
-            repo = format!("{}/{}", request.owner, request.repo),
-            branch = request.branch.as_deref().unwrap_or("-"),
-            runs = data.runs.len(),
-            "tokio_repo_fetch"
-        );
-        let paths = finish_repo_fetch(&repo_dispatch, &request.key, data.clone());
-        send_repo_data(&tx, &paths, &data);
-        let _ = tx.send(BackgroundMsg::RepoFetchComplete { key: request.key });
-    });
-}
-
-fn spawn_crates_fetch(
-    client: &HttpClient,
-    tx: &mpsc::Sender<BackgroundMsg>,
-    http_limit: &Arc<tokio::sync::Semaphore>,
-    project_path: &Path,
-    crate_name: &str,
-) {
-    let client = client.clone();
-    let handle = client.handle.clone();
-    let tx = tx.clone();
-    let http_limit = Arc::clone(http_limit);
-    let abs = project_path.to_path_buf().into();
-    let crate_name = crate_name.to_string();
-
-    handle.spawn(async move {
-        let queue_started = std::time::Instant::now();
-        let Ok(_permit) = http_limit.acquire_owned().await else {
-            return;
-        };
-        tracing::info!(
-            elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
-            path = %abs,
-            crate_name = %crate_name,
-            "tokio_crates_fetch_queue_wait"
-        );
-        let fetch_started = std::time::Instant::now();
-        let (info, signal) = client.fetch_crates_io_info_async(&crate_name).await;
-        emit_service_signal(&tx, signal);
-        tracing::info!(
-            elapsed_ms = crate::perf_log::ms(fetch_started.elapsed().as_millis()),
-            path = %abs,
-            crate_name = %crate_name,
-            found = info.is_some(),
-            "tokio_crates_fetch"
-        );
-        if let Some(info) = info {
-            let _ = tx.send(BackgroundMsg::CratesIoVersion {
-                path:      abs,
-                version:   info.version,
-                downloads: info.downloads,
-            });
-        }
-    });
-}
-
-/// Phase 1 local work: git info for a single project.
-/// Returns the discovered repo metadata needed for async HTTP dispatch.
-fn phase1_local_work(
-    tx: &mpsc::Sender<BackgroundMsg>,
-    git_info_cache: &GitInfoCache,
-    mut project: DiscoveredProject,
-    repo_presence: GitRepoPresence,
-) -> DiscoveredProject {
-    let started = std::time::Instant::now();
-    let git_info = if repo_presence.is_in_repo() {
-        cached_git_info(git_info_cache, project.abs_path.as_path())
-    } else {
-        None
-    };
-    if let Some(ref info) = git_info {
-        let _ = tx.send(BackgroundMsg::GitInfo {
-            path: project.abs_path.clone(),
-            info: info.clone(),
-        });
-    }
-
-    project.repo_url = git_info.as_ref().and_then(|g| g.url.clone());
-    project.owner_repo = project
-        .repo_url
-        .as_ref()
-        .and_then(|url| ci::parse_owner_repo(url));
-    project.branch = git_info.as_ref().and_then(|g| g.branch.clone());
-    tracing::info!(
-        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
-        path = %project.abs_path.display_path(),
-        in_repo = repo_presence.is_in_repo(),
-        has_git_info = git_info.is_some(),
-        branch = project.branch.as_deref().unwrap_or("-"),
-        "phase1_local_work"
-    );
-    project
-}
-
-fn cached_git_info(git_info_cache: &GitInfoCache, project_dir: &Path) -> Option<GitInfo> {
-    let started = std::time::Instant::now();
-    let repo_root = super::project::git_repo_root(project_dir)?;
-    let Ok(mut cache) = git_info_cache.lock() else {
-        let info = GitInfo::detect_fast(&repo_root);
-        tracing::info!(
-            elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
-            repo_root = %repo_root.display(),
-            cache = "poisoned",
-            hit = false,
-            "phase1_cached_git_info"
-        );
-        return info;
-    };
-    if let Some(info) = cache.get(&repo_root) {
-        tracing::info!(
-            elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
-            repo_root = %repo_root.display(),
-            cache = "ok",
-            hit = true,
-            "phase1_cached_git_info"
-        );
-        return info.clone();
-    }
-    let info = GitInfo::detect_fast(&repo_root);
-    cache.insert(repo_root.clone(), info.clone());
-    tracing::info!(
-        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
-        repo_root = %repo_root.display(),
-        cache = "ok",
-        hit = false,
-        "phase1_cached_git_info"
-    );
-    info
+    dir_sizes_for_tree(&tree)
 }
 
 #[cfg(test)]
@@ -1915,12 +1430,12 @@ mod tests {
     }
 
     #[test]
-    fn ci_cache_dir_scopes_runs_by_branch() {
-        let main_dir = ci_cache_dir_pub("acme", "demo", Some("main"));
-        let feature_dir = ci_cache_dir_pub("acme", "demo", Some("feat/demo"));
+    fn ci_cache_dir_scopes_runs_by_repo() {
+        let main_dir = ci_cache_dir_pub("acme", "demo");
+        let feature_dir = ci_cache_dir_pub("acme", "demo");
 
-        assert_ne!(main_dir, feature_dir);
-        assert!(feature_dir.ends_with("branches/feat_2fdemo"));
+        assert_eq!(main_dir, feature_dir);
+        assert!(feature_dir.ends_with("acme/demo"));
     }
 
     #[test]

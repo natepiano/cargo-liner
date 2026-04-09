@@ -202,6 +202,19 @@ pub(super) fn package_label_width(fields: &[DetailField]) -> usize {
         .max(8)
 }
 
+pub(super) fn git_label_width(info: &DetailInfo, fields: &[DetailField]) -> usize {
+    fields
+        .iter()
+        .map(|field| match *field {
+            DetailField::VsOrigin => "Remote branch".width(),
+            DetailField::VsLocal => format!("vs local {}", info.main_branch_label).width(),
+            _ => field.label().width(),
+        })
+        .max()
+        .unwrap_or(0)
+        .max(8)
+}
+
 fn render_git_column_inner(
     frame: &mut Frame,
     info: &DetailInfo,
@@ -213,6 +226,7 @@ fn render_git_column_inner(
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut focused_output_line: usize = 0;
+    let label_width = git_label_width(info, fields);
 
     for (i, field) in fields.iter().enumerate() {
         if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
@@ -221,13 +235,12 @@ fn render_git_column_inner(
         let dynamic_label;
         let label = match *field {
             DetailField::VsOrigin => {
-                let branch = info.default_branch.as_deref().unwrap_or("main");
-                dynamic_label = format!("vs o/{branch}");
+                dynamic_label = "Remote branch".to_string();
                 &dynamic_label
             },
             DetailField::VsLocal => {
-                let branch = info.default_branch.as_deref().unwrap_or("main");
-                dynamic_label = format!("vs {branch}");
+                let branch = info.main_branch_label.as_str();
+                dynamic_label = format!("vs local {branch}");
                 &dynamic_label
             },
             _ => field.label(),
@@ -244,7 +257,7 @@ fn render_git_column_inner(
         ) && value == IN_SYNC
         {
             Style::default().fg(Color::Green)
-        } else if *field == DetailField::Sync && value == "not published" {
+        } else if *field == DetailField::Sync && value == crate::constants::NO_REMOTE_SYNC {
             Style::default().fg(Color::DarkGray)
         } else {
             Style::default()
@@ -253,14 +266,14 @@ fn render_git_column_inner(
         let vs = selection.patch(base_value_style);
         if matches!(
             *field,
-            DetailField::Repo | DetailField::Branch | DetailField::RepoDesc
+            DetailField::Repo | DetailField::Branch | DetailField::RepoDesc | DetailField::VsOrigin
         ) && !value.is_empty()
         {
-            let prefix = format!("  {label:<8} ");
-            let prefix_len = prefix.len();
+            let prefix = format!("  {label:<label_width$} ");
+            let prefix_len = prefix.width();
             let col_width = area.width as usize;
             let avail = col_width.saturating_sub(prefix_len + 1);
-            if avail > 0 && value.len() > avail {
+            if avail > 0 && value.width() > avail {
                 let wrapped = if *field == DetailField::RepoDesc {
                     word_wrap(&value, avail)
                 } else {
@@ -287,7 +300,7 @@ fn render_git_column_inner(
             }
         } else {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {label:<8} "), ls),
+                Span::styled(format!("  {label:<label_width$} "), ls),
                 Span::styled(value, vs),
             ]));
         }
@@ -373,7 +386,7 @@ pub fn render_detail_panel(
                 let focus = app.pane_focus_state(PaneId::Git);
                 let git_block = Block::default()
                     .borders(Borders::ALL)
-                    .title(" Git ")
+                    .title("  Git ")
                     .title_style(styles.title)
                     .border_style(if matches!(focus, PaneFocusState::Active) {
                         styles.active_border

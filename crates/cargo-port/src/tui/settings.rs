@@ -15,6 +15,7 @@ use super::app::App;
 use super::constants::SECTION_HEADER_INDENT;
 use super::constants::SECTION_ITEM_INDENT;
 use super::constants::SETTINGS_POPUP_WIDTH;
+use super::interaction::UiSurface::Overlay;
 use super::types::PaneId;
 use super::types::PaneSelectionState;
 use crate::config;
@@ -26,10 +27,13 @@ pub(super) enum SettingOption {
     NavigationKeys,
     CiRunCount,
     Editor,
+    MainBranch,
+    OtherPrimaryBranches,
     IncludeDirs,
     InlineDirs,
     StatusFlashSecs,
     TaskLingerSecs,
+    DiscoveryShimmerSecs,
     LintsEnabled,
     LintOnDiscovery,
     LintProjects,
@@ -71,6 +75,56 @@ fn normalize_sorted_list(value: &str) -> Vec<String> {
     entries
 }
 
+fn save_number_setting(
+    app: &mut App,
+    value: &str,
+    apply: impl FnOnce(&mut config::CargoPortConfig, f64),
+) -> bool {
+    let Ok(number) = value.parse::<f64>() else {
+        finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+        return false;
+    };
+    let mut cfg = app.current_config.clone();
+    apply(&mut cfg, number.max(0.0));
+    let _ = save_updated_config(app, &cfg);
+    true
+}
+
+fn save_sorted_list_setting(
+    app: &mut App,
+    value: &str,
+    apply: impl FnOnce(&mut config::CargoPortConfig, Vec<String>),
+) {
+    let mut cfg = app.current_config.clone();
+    apply(&mut cfg, normalize_sorted_list(value));
+    let _ = save_updated_config(app, &cfg);
+}
+
+fn save_u32_setting(
+    app: &mut App,
+    value: &str,
+    apply: impl FnOnce(&mut config::CargoPortConfig, u32),
+) -> bool {
+    let Ok(number) = value.parse::<u32>() else {
+        finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+        return false;
+    };
+    let mut cfg = app.current_config.clone();
+    apply(&mut cfg, number.max(1));
+    let _ = save_updated_config(app, &cfg);
+    true
+}
+
+fn save_string_setting(
+    app: &mut App,
+    value: &str,
+    apply: impl FnOnce(&mut config::CargoPortConfig, String),
+) {
+    let mut cfg = app.current_config.clone();
+    apply(&mut cfg, value.trim().to_string());
+    let _ = save_updated_config(app, &cfg);
+}
+
 fn format_lint_commands(cfg: &config::CargoPortConfig) -> String {
     let commands = if cfg.lint.commands.is_empty() {
         cfg.lint.resolved_commands()
@@ -85,6 +139,14 @@ fn format_lint_commands(cfg: &config::CargoPortConfig) -> String {
 }
 
 fn format_lint_cache_size(cfg: &config::CargoPortConfig) -> String { cfg.lint.cache_size.clone() }
+
+fn format_other_primary_branches(cfg: &config::CargoPortConfig) -> String {
+    if cfg.tui.other_primary_branches.is_empty() {
+        "—".to_string()
+    } else {
+        cfg.tui.other_primary_branches.join(", ")
+    }
+}
 
 fn format_secs(secs: f64) -> String {
     // Display whole-number seconds without a decimal point.
@@ -103,7 +165,18 @@ fn format_linger_secs(cfg: &config::CargoPortConfig) -> String {
     format_secs(cfg.tui.task_linger_secs)
 }
 
+fn format_discovery_shimmer_secs(cfg: &config::CargoPortConfig) -> String {
+    format_secs(cfg.tui.discovery_shimmer_secs)
+}
+
 fn settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
+    let mut rows = general_settings_rows(app, cfg);
+    rows.extend(toast_settings_rows(cfg));
+    rows.extend(lint_settings_rows(app, cfg));
+    rows
+}
+
+fn general_settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
     vec![
         (None, "General", String::new()),
         (
@@ -147,6 +220,16 @@ fn settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
             app.editor().to_string(),
         ),
         (
+            Some(SettingOption::MainBranch),
+            "Main branch",
+            cfg.tui.main_branch.clone(),
+        ),
+        (
+            Some(SettingOption::OtherPrimaryBranches),
+            "Other primary branches",
+            format_other_primary_branches(cfg),
+        ),
+        (
             Some(SettingOption::IncludeDirs),
             "Include dirs",
             format_sorted_list(&cfg.tui.include_dirs),
@@ -156,6 +239,11 @@ fn settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
             "Inline dirs",
             format_sorted_list(&cfg.tui.inline_dirs),
         ),
+    ]
+}
+
+fn toast_settings_rows(cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
+    vec![
         (None, "Toasts", String::new()),
         (
             Some(SettingOption::StatusFlashSecs),
@@ -167,6 +255,16 @@ fn settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
             "Task linger secs",
             format_linger_secs(cfg),
         ),
+        (
+            Some(SettingOption::DiscoveryShimmerSecs),
+            "Discovery shimmer secs",
+            format_discovery_shimmer_secs(cfg),
+        ),
+    ]
+}
+
+fn lint_settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
+    vec![
         (None, "Lints", String::new()),
         (
             Some(SettingOption::LintsEnabled),
@@ -253,28 +351,35 @@ fn wrap_text_to_width(value: &str, width: usize) -> Vec<String> {
 
 fn push_wrapped_value_row(
     lines: &mut Vec<Line<'static>>,
-    prefix: &str,
-    value: &str,
-    prefix_style: Style,
-    value_style: Style,
-    content_width: usize,
+    line_targets: &mut Vec<Option<usize>>,
+    target: Option<usize>,
+    row: &WrappedValueRow<'_>,
 ) {
-    let prefix_width = prefix.width();
-    let value_width = content_width.saturating_sub(prefix_width).max(1);
-    let wrapped = wrap_text_to_width(value, value_width);
+    let prefix_width = row.prefix.width();
+    let value_width = row.content_width.saturating_sub(prefix_width).max(1);
+    let wrapped = wrap_text_to_width(row.value, value_width);
     let continuation_prefix = " ".repeat(prefix_width);
 
     for (index, chunk) in wrapped.into_iter().enumerate() {
         let visible_prefix = if index == 0 {
-            prefix.to_string()
+            row.prefix.to_string()
         } else {
             continuation_prefix.clone()
         };
         lines.push(Line::from(vec![
-            Span::styled(visible_prefix, prefix_style),
-            Span::styled(chunk, value_style),
+            Span::styled(visible_prefix, row.prefix_style),
+            Span::styled(chunk, row.value_style),
         ]));
+        line_targets.push(target);
     }
+}
+
+struct WrappedValueRow<'a> {
+    prefix:        &'a str,
+    value:         &'a str,
+    prefix_style:  Style,
+    value_style:   Style,
+    content_width: usize,
 }
 
 fn prev_char_boundary(s: &str, cursor: usize) -> usize {
@@ -371,14 +476,24 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     let content_width = usize::from(SETTINGS_POPUP_WIDTH.saturating_sub(2));
 
     let mut lines: Vec<Line<'static>> = vec![Line::from("")];
-    build_settings_lines(app, &rows, &mut lines, label_style, content_width);
+    let mut line_targets = vec![None];
+    build_settings_lines(
+        app,
+        &rows,
+        &mut lines,
+        &mut line_targets,
+        label_style,
+        content_width,
+    );
     lines.push(Line::from(""));
+    line_targets.push(None);
     let nav_keys_index = SettingOption::iter().position(|s| s == SettingOption::NavigationKeys);
     if !app.is_settings_editing() && Some(app.settings_pane.pos()) == nav_keys_index {
         lines.push(Line::from(vec![
             Span::styled("  Note: ", label_style),
             Span::styled("maps h/j/k/l to arrow navigation", label_style),
         ]));
+        line_targets.push(None);
     }
 
     let popup_height = u16::try_from(lines.len())
@@ -400,6 +515,22 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
+
+    for (line_index, target) in line_targets.into_iter().enumerate() {
+        let Some(row) = target else {
+            continue;
+        };
+        let y = inner
+            .y
+            .saturating_add(u16::try_from(line_index).unwrap_or(u16::MAX));
+        super::interaction::register_pane_row_hitbox(
+            app,
+            ratatui::layout::Rect::new(inner.x, y, inner.width, 1),
+            PaneId::Settings,
+            row,
+            Overlay,
+        );
+    }
 }
 
 const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {
@@ -417,6 +548,8 @@ const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {
 
 fn push_toggle_row(
     lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
+    target: Option<usize>,
     label: &str,
     value: &str,
     selection: PaneSelectionState,
@@ -437,12 +570,14 @@ fn push_toggle_row(
         Span::styled(value.to_owned(), selection.patch(toggle_style)),
         Span::styled(" >", selection.patch(Style::default().fg(Color::DarkGray))),
     ]));
+    line_targets.push(target);
 }
 
 pub(super) fn build_settings_lines(
     app: &App,
     settings: &[SettingsRow],
     lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
     label_style: Style,
     content_width: usize,
 ) {
@@ -455,15 +590,7 @@ pub(super) fn build_settings_lines(
     let mut selection_index = 0;
     for (setting, name, value) in settings {
         if setting.is_none() {
-            lines.push(Line::from(vec![
-                Span::raw(SECTION_HEADER_INDENT),
-                Span::styled(
-                    format!("{name}:"),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
+            push_settings_header(lines, line_targets, name);
             continue;
         }
 
@@ -478,30 +605,35 @@ pub(super) fn build_settings_lines(
         let setting = *setting;
         let label = format!("{SECTION_ITEM_INDENT}{cursor}{name:<max_label$}  ");
 
-        if selection != PaneSelectionState::Unselected
-            && app.inline_error.is_some()
-            && !app.is_settings_editing()
-        {
-            let error = app.inline_error.clone().unwrap_or_default();
-            push_wrapped_value_row(
-                lines,
-                &label,
-                &error,
-                selection.patch(label_style),
-                selection.patch(Style::default().fg(Color::Red)),
+        if let Some(error) = selected_inline_error(app, selection) {
+            let row = WrappedValueRow {
+                prefix: &label,
+                value: &error,
+                prefix_style: selection.patch(label_style),
+                value_style: selection.patch(Style::default().fg(Color::Red)),
                 content_width,
-            );
+            };
+            push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
         } else if app.is_settings_editing() && selection != PaneSelectionState::Unselected {
-            push_wrapped_value_row(
-                lines,
-                &label,
-                &render_edit_buffer(&app.settings_edit_buf, app.settings_edit_cursor),
-                selection.patch(Style::default().fg(Color::Yellow)),
-                selection.patch(Style::default().fg(Color::Yellow)),
+            let edit_buffer = render_edit_buffer(&app.settings_edit_buf, app.settings_edit_cursor);
+            let row = WrappedValueRow {
+                prefix: &label,
+                value: &edit_buffer,
+                prefix_style: selection.patch(Style::default().fg(Color::Yellow)),
+                value_style: selection.patch(Style::default().fg(Color::Yellow)),
                 content_width,
-            );
+            };
+            push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
         } else if is_toggle_setting(setting) {
-            push_toggle_row(lines, &label, value, selection, label_style);
+            push_toggle_row(
+                lines,
+                line_targets,
+                Some(selection_index),
+                &label,
+                value,
+                selection,
+                label_style,
+            );
         } else if setting == Some(SettingOption::CiRunCount)
             && selection != PaneSelectionState::Unselected
             && !app.is_settings_editing()
@@ -515,12 +647,43 @@ pub(super) fn build_settings_lines(
                 ),
                 Span::styled(" >", selection.patch(Style::default().fg(Color::DarkGray))),
             ]));
+            line_targets.push(Some(selection_index));
         } else {
             let style = selection.patch(label_style);
-            push_wrapped_value_row(lines, &label, value, style, style, content_width);
+            let row = WrappedValueRow {
+                prefix: &label,
+                value,
+                prefix_style: style,
+                value_style: style,
+                content_width,
+            };
+            push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
         }
         selection_index += 1;
     }
+}
+
+fn push_settings_header(
+    lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
+    name: &str,
+) {
+    lines.push(Line::from(vec![
+        Span::raw(SECTION_HEADER_INDENT),
+        Span::styled(
+            format!("{name}:"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    line_targets.push(None);
+}
+
+fn selected_inline_error(app: &App, selection: PaneSelectionState) -> Option<String> {
+    (selection != PaneSelectionState::Unselected && !app.is_settings_editing())
+        .then(|| app.inline_error.clone())
+        .flatten()
 }
 
 pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
@@ -590,10 +753,13 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
         },
         Some(
             SettingOption::Editor
+            | SettingOption::MainBranch
+            | SettingOption::OtherPrimaryBranches
             | SettingOption::IncludeDirs
             | SettingOption::InlineDirs
             | SettingOption::StatusFlashSecs
             | SettingOption::TaskLingerSecs
+            | SettingOption::DiscoveryShimmerSecs
             | SettingOption::LintProjects
             | SettingOption::LintCommands
             | SettingOption::LintCacheSize,
@@ -649,6 +815,9 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
         Some(SettingOption::TaskLingerSecs) => {
             begin_settings_edit(app, format_linger_secs(&app.current_config));
         },
+        Some(SettingOption::DiscoveryShimmerSecs) => {
+            begin_settings_edit(app, format_discovery_shimmer_secs(&app.current_config));
+        },
         Some(SettingOption::IncludeNonRust) => {
             let mut cfg = app.current_config.clone();
             cfg.tui.include_non_rust.toggle();
@@ -665,6 +834,15 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
         Some(SettingOption::Editor) => {
             begin_settings_edit(app, app.editor().to_string());
         },
+        Some(SettingOption::MainBranch) => {
+            begin_settings_edit(app, app.current_config.tui.main_branch.clone());
+        },
+        Some(SettingOption::OtherPrimaryBranches) => {
+            begin_settings_edit(
+                app,
+                app.current_config.tui.other_primary_branches.join(", "),
+            );
+        },
         None => {},
     }
 }
@@ -672,95 +850,123 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
 fn apply_settings_edit(app: &mut App) {
     let setting = SettingOption::from_index(app.settings_pane.pos());
     let value = app.settings_edit_buf.clone();
-    match setting {
-        Some(SettingOption::CiRunCount) => {
-            if let Ok(n) = value.parse::<u32>() {
-                let mut cfg = app.current_config.clone();
-                cfg.tui.ci_run_count = n.max(1);
-                let _ = save_updated_config(app, &cfg);
-            } else {
-                finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
-                return;
-            }
-        },
-        Some(SettingOption::InlineDirs) => {
-            let dirs = normalize_sorted_list(&value);
-            let mut cfg = app.current_config.clone();
-            cfg.tui.inline_dirs = dirs;
-            let _ = save_updated_config(app, &cfg);
-        },
-        Some(SettingOption::IncludeDirs) => {
-            let dirs = normalize_sorted_list(&value);
-            let mut cfg = app.current_config.clone();
-            cfg.tui.include_dirs = dirs;
-            let _ = save_updated_config(app, &cfg);
-        },
-        Some(SettingOption::Editor) => {
-            let editor = value.trim().to_string();
-            if !editor.is_empty() {
-                let mut cfg = app.current_config.clone();
-                cfg.tui.editor = editor;
-                let _ = save_updated_config(app, &cfg);
-            }
-        },
-        Some(SettingOption::LintProjects) => {
-            let mut cfg = app.current_config.clone();
-            cfg.lint.include = normalize_sorted_list(&value);
-            if save_updated_config(app, &cfg) {
-                app.show_timed_toast("Settings", "Lint projects updated");
-            }
-        },
-        Some(SettingOption::LintCommands) => {
-            let mut cfg = app.current_config.clone();
-            cfg.lint.commands = parse_lint_commands(&value);
-            if save_updated_config(app, &cfg) {
-                app.show_timed_toast("Settings", "Lint commands updated");
-            }
-        },
-        Some(SettingOption::LintCacheSize) => {
-            if let Ok(cache_size) = parse_lint_cache_size(&value) {
-                let mut cfg = app.current_config.clone();
-                cfg.lint.cache_size = cache_size;
-                if save_updated_config(app, &cfg) {
-                    app.show_timed_toast("Settings", "Lint cache size updated");
-                }
-            } else {
-                finish_settings_edit_with_error(app, format!("Invalid cache size: {value}"));
-                return;
-            }
-        },
-        Some(SettingOption::StatusFlashSecs) => {
-            if let Ok(secs) = value.parse::<f64>() {
-                let mut cfg = app.current_config.clone();
-                cfg.tui.status_flash_secs = secs.max(0.0);
-                let _ = save_updated_config(app, &cfg);
-            } else {
-                finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
-                return;
-            }
-        },
-        Some(SettingOption::TaskLingerSecs) => {
-            if let Ok(secs) = value.parse::<f64>() {
-                let mut cfg = app.current_config.clone();
-                cfg.tui.task_linger_secs = secs.max(0.0);
-                let _ = save_updated_config(app, &cfg);
-            } else {
-                finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
-                return;
-            }
-        },
-        Some(
-            SettingOption::InvertScroll
-            | SettingOption::IncludeNonRust
-            | SettingOption::NavigationKeys
-            | SettingOption::LintsEnabled
-            | SettingOption::LintOnDiscovery,
-        )
-        | None => {},
+    let result = setting.map_or(Ok(()), |setting| {
+        apply_settings_edit_for(app, setting, &value)
+    });
+    if let Err(err) = result {
+        finish_settings_edit_with_error(app, err);
+        return;
     }
     app.end_settings_editing();
     app.settings_edit_buf.clear();
     app.settings_edit_cursor = 0;
+}
+
+fn apply_settings_edit_for(
+    app: &mut App,
+    setting: SettingOption,
+    value: &str,
+) -> Result<(), String> {
+    if apply_general_settings_edit(app, setting, value)? {
+        return Ok(());
+    }
+    if apply_lint_settings_edit(app, setting, value)? {
+        return Ok(());
+    }
+    Ok(())
+}
+
+fn apply_general_settings_edit(
+    app: &mut App,
+    setting: SettingOption,
+    value: &str,
+) -> Result<bool, String> {
+    match setting {
+        SettingOption::CiRunCount => {
+            if !save_u32_setting(app, value, |cfg, count| cfg.tui.ci_run_count = count) {
+                return Ok(true);
+            }
+        },
+        SettingOption::InlineDirs => save_sorted_list_setting(app, value, |cfg, dirs| {
+            cfg.tui.inline_dirs = dirs;
+        }),
+        SettingOption::IncludeDirs => save_sorted_list_setting(app, value, |cfg, dirs| {
+            cfg.tui.include_dirs = dirs;
+        }),
+        SettingOption::Editor if !value.trim().is_empty() => {
+            save_string_setting(app, value, |cfg, editor| cfg.tui.editor = editor);
+        },
+        SettingOption::Editor
+        | SettingOption::InvertScroll
+        | SettingOption::IncludeNonRust
+        | SettingOption::NavigationKeys
+        | SettingOption::LintsEnabled
+        | SettingOption::LintOnDiscovery
+        | SettingOption::LintProjects
+        | SettingOption::LintCommands
+        | SettingOption::LintCacheSize => return Ok(false),
+        SettingOption::MainBranch => {
+            let mut cfg = app.current_config.clone();
+            cfg.tui.main_branch = config::normalize_branch_name(value, "Main branch")?;
+            let _ = save_updated_config(app, &cfg);
+        },
+        SettingOption::OtherPrimaryBranches => {
+            let mut cfg = app.current_config.clone();
+            cfg.tui.other_primary_branches =
+                config::normalize_branch_list(&parse_dir_list(value), "Other primary branches")?;
+            let _ = save_updated_config(app, &cfg);
+        },
+        SettingOption::StatusFlashSecs => {
+            if !save_number_setting(app, value, |cfg, secs| cfg.tui.status_flash_secs = secs) {
+                return Ok(true);
+            }
+        },
+        SettingOption::TaskLingerSecs => {
+            if !save_number_setting(app, value, |cfg, secs| cfg.tui.task_linger_secs = secs) {
+                return Ok(true);
+            }
+        },
+        SettingOption::DiscoveryShimmerSecs => {
+            if !save_number_setting(app, value, |cfg, secs| {
+                cfg.tui.discovery_shimmer_secs = secs;
+            }) {
+                return Ok(true);
+            }
+        },
+    }
+    Ok(true)
+}
+
+fn apply_lint_settings_edit(
+    app: &mut App,
+    setting: SettingOption,
+    value: &str,
+) -> Result<bool, String> {
+    match setting {
+        SettingOption::LintProjects => {
+            save_sorted_list_setting(app, value, |cfg, dirs| cfg.lint.include = dirs);
+            if app.inline_error.is_none() {
+                app.show_timed_toast("Settings", "Lint projects updated");
+            }
+        },
+        SettingOption::LintCommands => {
+            let mut cfg = app.current_config.clone();
+            cfg.lint.commands = parse_lint_commands(value);
+            if save_updated_config(app, &cfg) {
+                app.show_timed_toast("Settings", "Lint commands updated");
+            }
+        },
+        SettingOption::LintCacheSize => {
+            let mut cfg = app.current_config.clone();
+            cfg.lint.cache_size =
+                parse_lint_cache_size(value).map_err(|_| format!("Invalid cache size: {value}"))?;
+            if save_updated_config(app, &cfg) {
+                app.show_timed_toast("Settings", "Lint cache size updated");
+            }
+        },
+        _ => return Ok(false),
+    }
+    Ok(true)
 }
 
 pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
@@ -836,26 +1042,45 @@ mod tests {
             Some(SettingOption::NavigationKeys)
         );
         assert_eq!(
-            SettingOption::from_index(9),
+            SettingOption::from_index(12),
             Some(SettingOption::LintsEnabled)
         );
         assert_eq!(
-            SettingOption::from_index(10),
+            SettingOption::from_index(13),
             Some(SettingOption::LintOnDiscovery)
         );
         assert_eq!(
-            SettingOption::from_index(11),
+            SettingOption::from_index(14),
             Some(SettingOption::LintProjects)
         );
         assert_eq!(
-            SettingOption::from_index(12),
+            SettingOption::from_index(15),
             Some(SettingOption::LintCommands)
         );
         assert_eq!(
-            SettingOption::from_index(13),
+            SettingOption::from_index(16),
             Some(SettingOption::LintCacheSize)
         );
-        assert_eq!(SettingOption::COUNT, 14);
+        assert_eq!(
+            SettingOption::from_index(11),
+            Some(SettingOption::DiscoveryShimmerSecs)
+        );
+        assert_eq!(
+            SettingOption::from_index(5),
+            Some(SettingOption::MainBranch)
+        );
+        assert_eq!(
+            SettingOption::from_index(6),
+            Some(SettingOption::OtherPrimaryBranches)
+        );
+        assert_eq!(SettingOption::COUNT, 17);
+    }
+
+    #[test]
+    fn format_discovery_shimmer_secs_renders_whole_numbers_cleanly() {
+        let mut cfg = config::CargoPortConfig::default();
+        cfg.tui.discovery_shimmer_secs = 4.0;
+        assert_eq!(format_discovery_shimmer_secs(&cfg), "4");
     }
 
     #[test]
@@ -893,18 +1118,36 @@ mod tests {
     }
 
     #[test]
+    fn other_primary_branches_preserve_input_order() {
+        assert_eq!(
+            parse_dir_list("release, main, primary"),
+            vec![
+                "release".to_string(),
+                "main".to_string(),
+                "primary".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn wrapped_rows_continue_at_value_column() {
         let mut lines = Vec::new();
+        let mut line_targets = Vec::new();
         push_wrapped_value_row(
             &mut lines,
-            "  Projects      ",
-            "alpha beta gamma delta epsilon",
-            Style::default(),
-            Style::default(),
-            24,
+            &mut line_targets,
+            Some(0),
+            &WrappedValueRow {
+                prefix:        "  Projects      ",
+                value:         "alpha beta gamma delta epsilon",
+                prefix_style:  Style::default(),
+                value_style:   Style::default(),
+                content_width: 24,
+            },
         );
 
         assert!(lines.len() > 1);
+        assert_eq!(line_targets.len(), lines.len());
         assert_eq!(lines[0].spans[0].content.as_ref(), "  Projects      ");
         for line in &lines[1..] {
             assert_eq!(line.spans[0].content.as_ref(), "                ");

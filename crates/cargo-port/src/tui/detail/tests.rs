@@ -19,43 +19,44 @@ use crate::tui::render::CiColumn;
 
 fn detail_info(is_rust_project: bool, lint_label: &str) -> DetailInfo {
     DetailInfo {
-        package_title:    if is_rust_project {
+        package_title:     if is_rust_project {
             "Package".to_string()
         } else {
             "Project".to_string()
         },
-        name:             "demo".to_string(),
-        path:             "~/demo".to_string(),
-        version:          "0.1.0".to_string(),
-        description:      None,
-        crates_version:   None,
-        crates_downloads: None,
-        types:            "lib".to_string(),
-        disk:             "36.3 GiB".to_string(),
-        lint_label:       lint_label.to_string(),
-        ci:               None,
-        stats_rows:       Vec::new(),
-        git_branch:       None,
-        git_path:         GitPathState::OutsideRepo,
-        git_sync:         None,
-        git_vs_origin:    None,
-        git_vs_local:     None,
-        default_branch:   None,
-        git_origin:       None,
-        git_owner:        None,
-        git_url:          None,
-        git_stars:        None,
-        repo_description: None,
-        git_inception:    None,
-        git_last_commit:  None,
-        worktree_label:   None,
-        worktree_names:   Vec::new(),
-        is_binary:        false,
-        binary_name:      None,
-        examples:         Vec::<ExampleGroup>::new(),
-        benches:          Vec::new(),
-        has_package:      true,
-        cargo_active:     true,
+        name:              "demo".to_string(),
+        path:              "~/demo".to_string(),
+        version:           "0.1.0".to_string(),
+        description:       None,
+        crates_version:    None,
+        crates_downloads:  None,
+        types:             "lib".to_string(),
+        disk:              "36.3 GiB".to_string(),
+        lint_label:        lint_label.to_string(),
+        ci:                None,
+        stats_rows:        Vec::new(),
+        git_branch:        None,
+        git_path:          GitPathState::OutsideRepo,
+        git_sync:          None,
+        git_vs_origin:     None,
+        git_vs_local:      None,
+        local_main_branch: None,
+        main_branch_label: "main".to_string(),
+        git_origin:        None,
+        git_owner:         None,
+        git_url:           None,
+        git_stars:         None,
+        repo_description:  None,
+        git_inception:     None,
+        git_last_commit:   None,
+        worktree_label:    None,
+        worktree_names:    Vec::new(),
+        is_binary:         false,
+        binary_name:       None,
+        examples:          Vec::<ExampleGroup>::new(),
+        benches:           Vec::new(),
+        has_package:       true,
+        cargo_active:      true,
     }
 }
 
@@ -148,6 +149,56 @@ fn package_label_width_expands_for_crates_io() {
 }
 
 #[test]
+fn git_path_value_appends_status_icon() {
+    let info = DetailInfo {
+        git_path: GitPathState::Modified,
+        ..detail_info(true, "🟢")
+    };
+
+    assert_eq!(DetailField::GitPath.value(&info), "🟠 modified");
+}
+
+#[test]
+fn sync_value_uses_synced_label_when_in_sync() {
+    assert_eq!(model::format_remote_status(Some((0, 0))), "☑️");
+}
+
+#[test]
+fn git_label_width_uses_origin_and_configured_main_labels() {
+    let info = DetailInfo {
+        git_vs_origin: Some("origin/main (local cached ref)".to_string()),
+        git_vs_local: Some("↑11 ↓3".to_string()),
+        main_branch_label: "primary".to_string(),
+        ..detail_info(true, "🟢")
+    };
+    let fields = vec![DetailField::VsOrigin, DetailField::VsLocal];
+
+    assert_eq!(
+        render::git_label_width(&info, &fields),
+        "vs local primary".len()
+    );
+}
+
+#[test]
+fn git_fields_show_explicit_remote_and_local_rows_for_unpublished_branch() {
+    let info = DetailInfo {
+        git_sync: Some(crate::constants::NO_REMOTE_SYNC.to_string()),
+        git_vs_origin: Some("none".to_string()),
+        git_vs_local: Some("↑11 ↓3".to_string()),
+        ..detail_info(true, "🟢")
+    };
+
+    assert_eq!(
+        model::git_fields(&info),
+        vec![
+            DetailField::VsOrigin,
+            DetailField::Sync,
+            DetailField::VsLocal
+        ]
+    );
+}
+
+#[test]
 fn ci_table_hides_durations_when_fixed_columns_overflow() {
     let runs = vec![ci_run_with_jobs(vec![
         CiJob {
@@ -186,88 +237,87 @@ fn ci_table_keeps_durations_when_fixed_columns_fit() {
 }
 
 #[test]
-fn lint_commands_summary_for_passed_run() {
-    let run = run_with_commands(
-        LintRunStatus::Passed,
-        vec![
-            LintCommand {
-                name:        "mend".to_string(),
-                command:     "cargo mend".to_string(),
-                status:      LintCommandStatus::Passed,
-                duration_ms: Some(1_000),
-                exit_code:   Some(0),
-                log_file:    "mend-latest.log".to_string(),
-            },
-            LintCommand {
-                name:        "clippy".to_string(),
-                command:     "cargo clippy".to_string(),
-                status:      LintCommandStatus::Passed,
-                duration_ms: Some(2_000),
-                exit_code:   Some(0),
-                log_file:    "clippy-latest.log".to_string(),
-            },
-        ],
-    );
+fn lint_commands_summary_cases() {
+    struct Case {
+        name:               &'static str,
+        status:             LintRunStatus,
+        clippy_status:      LintCommandStatus,
+        clippy_duration_ms: Option<u64>,
+        clippy_exit_code:   Option<i32>,
+        expected_pending:   &'static str,
+        expected_slowest:   &'static str,
+    }
 
-    assert_eq!(lints_panel::format_lints_commands(&run), "mend, clippy");
-    assert_eq!(lints_panel::format_lints_pending(&run), "0");
-    assert_eq!(lints_panel::format_lints_slowest(&run), "clippy 0:02");
-}
+    let cases = [
+        Case {
+            name:               "passed",
+            status:             LintRunStatus::Passed,
+            clippy_status:      LintCommandStatus::Passed,
+            clippy_duration_ms: Some(2_000),
+            clippy_exit_code:   Some(0),
+            expected_pending:   "0",
+            expected_slowest:   "clippy 0:02",
+        },
+        Case {
+            name:               "failed",
+            status:             LintRunStatus::Failed,
+            clippy_status:      LintCommandStatus::Failed,
+            clippy_duration_ms: Some(2_000),
+            clippy_exit_code:   Some(101),
+            expected_pending:   "0",
+            expected_slowest:   "clippy 0:02",
+        },
+        Case {
+            name:               "running",
+            status:             LintRunStatus::Running,
+            clippy_status:      LintCommandStatus::Pending,
+            clippy_duration_ms: None,
+            clippy_exit_code:   None,
+            expected_pending:   "1",
+            expected_slowest:   "mend 0:01",
+        },
+    ];
 
-#[test]
-fn lint_commands_summary_for_failed_run() {
-    let run = run_with_commands(
-        LintRunStatus::Failed,
-        vec![
-            LintCommand {
-                name:        "mend".to_string(),
-                command:     "cargo mend".to_string(),
-                status:      LintCommandStatus::Passed,
-                duration_ms: Some(1_000),
-                exit_code:   Some(0),
-                log_file:    "mend-latest.log".to_string(),
-            },
-            LintCommand {
-                name:        "clippy".to_string(),
-                command:     "cargo clippy".to_string(),
-                status:      LintCommandStatus::Failed,
-                duration_ms: Some(2_000),
-                exit_code:   Some(101),
-                log_file:    "clippy-latest.log".to_string(),
-            },
-        ],
-    );
+    for case in cases {
+        let run = run_with_commands(
+            case.status,
+            vec![
+                LintCommand {
+                    name:        "mend".to_string(),
+                    command:     "cargo mend".to_string(),
+                    status:      LintCommandStatus::Passed,
+                    duration_ms: Some(1_000),
+                    exit_code:   Some(0),
+                    log_file:    "mend-latest.log".to_string(),
+                },
+                LintCommand {
+                    name:        "clippy".to_string(),
+                    command:     "cargo clippy".to_string(),
+                    status:      case.clippy_status,
+                    duration_ms: case.clippy_duration_ms,
+                    exit_code:   case.clippy_exit_code,
+                    log_file:    "clippy-latest.log".to_string(),
+                },
+            ],
+        );
 
-    assert_eq!(lints_panel::format_lints_commands(&run), "mend, clippy");
-    assert_eq!(lints_panel::format_lints_pending(&run), "0");
-    assert_eq!(lints_panel::format_lints_slowest(&run), "clippy 0:02");
-}
-
-#[test]
-fn lint_commands_summary_for_running_run() {
-    let run = run_with_commands(
-        LintRunStatus::Running,
-        vec![
-            LintCommand {
-                name:        "mend".to_string(),
-                command:     "cargo mend".to_string(),
-                status:      LintCommandStatus::Passed,
-                duration_ms: Some(1_000),
-                exit_code:   Some(0),
-                log_file:    "mend-latest.log".to_string(),
-            },
-            LintCommand {
-                name:        "clippy".to_string(),
-                command:     "cargo clippy".to_string(),
-                status:      LintCommandStatus::Pending,
-                duration_ms: None,
-                exit_code:   None,
-                log_file:    "clippy-latest.log".to_string(),
-            },
-        ],
-    );
-
-    assert_eq!(lints_panel::format_lints_commands(&run), "mend, clippy");
-    assert_eq!(lints_panel::format_lints_pending(&run), "1");
-    assert_eq!(lints_panel::format_lints_slowest(&run), "mend 0:01");
+        assert_eq!(
+            lints_panel::format_lints_commands(&run),
+            "mend, clippy",
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            lints_panel::format_lints_pending(&run),
+            case.expected_pending,
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            lints_panel::format_lints_slowest(&run),
+            case.expected_slowest,
+            "{}",
+            case.name
+        );
+    }
 }

@@ -20,8 +20,8 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
-use super::app::CiState;
 use super::app::ConfirmAction;
+use super::app::DiscoveryRowKind;
 use super::app::ExpandKey;
 use super::app::ResolvedWidths;
 use super::app::VisibleRow;
@@ -32,12 +32,15 @@ use super::constants::BYTES_PER_MIB;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::constants::DETAIL_PANEL_HEIGHT;
 use super::constants::SEARCH_BAR_HEIGHT;
+use super::detail::DetailInfo;
+use super::interaction::UiSurface::Content;
 use super::shortcuts::Shortcut;
 use super::types::LayoutCache;
 use super::types::Pane;
 use super::types::PaneId;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
+use crate::lint::LintRun;
 use crate::project;
 use crate::project::GitOrigin;
 use crate::project::RootItem;
@@ -206,10 +209,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         app.is_focused(PaneId::Toasts),
         app.focused_toast_id(),
     );
-    app.layout_cache
-        .dismiss_hitboxes
-        .extend(toast_result.dismiss_actions);
-    app.layout_cache.toast_cards = toast_result.card_hitboxes;
+    super::interaction::register_toast_hitboxes(app, &toast_result.hitboxes);
 
     if app.is_settings_open() {
         super::settings::render_settings_popup(frame, app);
@@ -288,9 +288,7 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         .and_then(|path| app.lint_runs.get(path))
         .cloned()
         .unwrap_or_default();
-    let detail_ci_runs: Vec<CiRun> = selected_ci_state
-        .map(|state: &CiState| state.runs().to_vec())
-        .unwrap_or_default();
+    let detail_ci_runs: Vec<CiRun> = app.selected_ci_runs();
     let has_example_output = !app.example_output.is_empty();
 
     let right_layout = Layout::default()
@@ -302,34 +300,103 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         .split(area);
 
     super::detail::render_detail_panel(frame, app, detail_info.as_ref(), right_layout[0]);
+    sync_detail_pane_hitboxes(app, detail_info.as_ref());
 
     // Running output replaces the bottom panels; Esc restores them.
     if has_example_output {
         render_example_output(frame, app, right_layout[1]);
     } else {
-        // Split bottom area: Lints (top half) + CI Runs (bottom half)
-        let bottom_split = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(right_layout[1]);
-
-        super::detail::render_lints_panel(frame, app, &detail_lint_runs, bottom_split[0]);
-
-        if has_ci {
-            super::detail::render_ci_panel(frame, app, &detail_ci_runs, bottom_split[1]);
-        } else {
-            render_empty_ci_panel(
-                frame,
-                app,
-                app.selected_project_path(),
-                selected_has_ci_owner,
-                bottom_split[1],
-            );
-        }
-        if let Some(message) = app.unreachable_service_message() {
-            render_unreachable_overlay(frame, bottom_split[1], &message);
-        }
+        render_bottom_right_panel(
+            frame,
+            app,
+            &detail_lint_runs,
+            &detail_ci_runs,
+            right_layout[1],
+            has_ci,
+            selected_has_ci_owner,
+        );
     }
+}
+
+fn sync_detail_pane_hitboxes(app: &mut App, detail_info: Option<&DetailInfo>) {
+    if detail_info.is_some() {
+        register_detail_pane_hitboxes(app);
+        return;
+    }
+
+    reset_pane(&mut app.package_pane);
+    reset_pane(&mut app.git_pane);
+    reset_pane(&mut app.targets_pane);
+}
+
+fn register_detail_pane_hitboxes(app: &mut App) {
+    let package_pane = app.package_pane.clone();
+    super::interaction::register_pane_row_hitboxes(app, PaneId::Package, &package_pane, Content);
+
+    if app
+        .selected_project_path()
+        .and_then(|path| app.git_info_for(path))
+        .is_some()
+    {
+        let git_pane = app.git_pane.clone();
+        super::interaction::register_pane_row_hitboxes(app, PaneId::Git, &git_pane, Content);
+    } else {
+        reset_pane(&mut app.git_pane);
+    }
+
+    if app.cached_detail.as_ref().is_some_and(|cached| {
+        cached.info.is_binary || !cached.info.examples.is_empty() || !cached.info.benches.is_empty()
+    }) {
+        let targets_pane = app.targets_pane.clone();
+        super::interaction::register_pane_row_hitboxes(
+            app,
+            PaneId::Targets,
+            &targets_pane,
+            Content,
+        );
+    } else {
+        reset_pane(&mut app.targets_pane);
+    }
+}
+
+fn render_bottom_right_panel(
+    frame: &mut Frame,
+    app: &mut App,
+    detail_lint_runs: &[LintRun],
+    detail_ci_runs: &[CiRun],
+    area: Rect,
+    has_ci: bool,
+    selected_has_ci_owner: bool,
+) {
+    let bottom_split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    super::detail::render_lints_panel(frame, app, detail_lint_runs, bottom_split[0]);
+
+    if has_ci {
+        super::detail::render_ci_panel(frame, app, detail_ci_runs, bottom_split[1]);
+    } else {
+        render_empty_ci_panel(
+            frame,
+            app,
+            app.selected_project_path(),
+            selected_has_ci_owner,
+            bottom_split[1],
+        );
+        reset_pane(&mut app.ci_pane);
+    }
+
+    if let Some(message) = app.unreachable_service_message() {
+        render_unreachable_overlay(frame, bottom_split[1], &message);
+    }
+}
+
+const fn reset_pane(pane: &mut Pane) {
+    pane.set_len(0);
+    pane.set_content_area(Rect::ZERO);
+    pane.set_scroll_offset(0);
 }
 
 fn render_unreachable_overlay(frame: &mut Frame, area: Rect, msg: &str) {
@@ -517,6 +584,11 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     frame.render_stateful_widget(project_list, list_area, &mut app.list_state);
     app.layout_cache.project_list = list_area;
     app.layout_cache.project_list_offset = app.list_state.offset();
+    super::interaction::register_project_list_hitboxes(
+        app,
+        list_area,
+        u16::try_from(widths.total_width()).unwrap_or(u16::MAX),
+    );
 
     if pin_summary && let Some(line) = summary_line {
         let footer_area = Rect::new(
@@ -772,7 +844,9 @@ fn render_root_item(
     let ci = app.ci_for_item(item);
     let lang = item.lang_icon();
     let lint = app.lint_icon_for_root(node_index);
-    let sync = app.git_sync(item.path());
+    let origin_sync = app.git_sync(item.path());
+    let main_sync = app.git_main(item.path());
+    let git_path_state = app.git_path_state_for(item.path());
     let prefix = if item.has_children() {
         if app.expanded.contains(&ExpandKey::Node(node_index)) {
             PREFIX_ROOT_EXPANDED
@@ -795,14 +869,21 @@ fn render_root_item(
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name,
-        git_path_state: app.git_path_state_for(item.path()),
+        name_segments: app.discovery_name_segments_for_path(
+            item.path(),
+            name,
+            git_path_state,
+            DiscoveryRowKind::Root,
+        ),
+        git_path_state,
         lint_icon: lint,
         disk: disk_text,
         disk_style: ds,
         disk_suffix,
         disk_suffix_style,
         lang_icon: lang,
-        git_sync: &sync,
+        git_origin_sync: &origin_sync,
+        git_main: &main_sync,
         ci,
         deleted,
     });
@@ -816,6 +897,7 @@ fn render_child_item(
     name: &str,
     child_sorted: &[u64],
     prefix: &'static str,
+    inherited_deleted: bool,
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
     let path = project.path();
@@ -830,15 +912,27 @@ fn render_child_item(
         " "
     };
     let ci = if cargo_active { app.ci_for(path) } else { None };
-    let sync = if matches!(
-        app.git_path_state_for(path),
-        crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
-    ) {
+    let hide_git_status = app.is_workspace_member_path(path);
+    let origin_sync = if hide_git_status
+        || matches!(
+            app.git_path_state_for(path),
+            crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
+        ) {
         String::new()
     } else {
         app.git_sync(path)
     };
-    let deleted = app.is_deleted(project.path());
+    let main_sync = if hide_git_status
+        || matches!(
+            app.git_path_state_for(path),
+            crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
+        ) {
+        String::new()
+    } else {
+        app.git_main(path)
+    };
+    let deleted = inherited_deleted || app.is_deleted(project.path());
+    let git_path_state = app.git_path_state_for(path);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         (
             "0.0",
@@ -851,14 +945,21 @@ fn render_child_item(
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name,
-        git_path_state: app.git_path_state_for(path),
+        name_segments: app.discovery_name_segments_for_path(
+            path,
+            name,
+            git_path_state,
+            DiscoveryRowKind::PathOnly,
+        ),
+        git_path_state,
         lint_icon: lint,
         disk: disk_text,
         disk_style: ds,
         disk_suffix,
         disk_suffix_style,
         lang_icon: lang,
-        git_sync: &sync,
+        git_origin_sync: &origin_sync,
+        git_main: &main_sync,
         ci,
         deleted,
     });
@@ -877,7 +978,7 @@ fn render_worktree_entry<'a>(
         node_index:     ni,
         worktree_index: wi,
     });
-    let dp = display_path.unwrap_or_default();
+    let dp = display_path.unwrap_or_default().to_string();
     let abs_path = app.abs_path_for_row(VisibleRow::WorktreeEntry {
         node_index:     ni,
         worktree_index: wi,
@@ -935,8 +1036,10 @@ fn render_worktree_entry<'a>(
     let lang = item.lang_icon();
     let lint = app.lint_icon_for_worktree(ni, wi);
     let ci = app.ci_for(wt_abs);
-    let sync = app.git_sync(wt_abs);
+    let origin_sync = app.git_sync(wt_abs);
+    let main_sync = app.git_main(wt_abs);
     let deleted = app.is_deleted(wt_abs);
+    let git_path_state = app.git_path_state_for(wt_abs);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         (
             "0.0",
@@ -949,14 +1052,21 @@ fn render_worktree_entry<'a>(
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name: &wt_name,
-        git_path_state: app.git_path_state_for(wt_abs),
+        name_segments: app.discovery_name_segments_for_path(
+            wt_abs,
+            &wt_name,
+            git_path_state,
+            DiscoveryRowKind::WorktreeEntry,
+        ),
+        git_path_state,
         lint_icon: lint,
         disk: disk_text,
         disk_style: ds,
         disk_suffix,
         disk_suffix_style,
         lang_icon: lang,
-        git_sync: &sync,
+        git_origin_sync: &origin_sync,
+        git_main: &main_sync,
         ci,
         deleted,
     });
@@ -1029,7 +1139,28 @@ fn render_wt_member<'a>(
             let row = super::columns::build_group_header_cells(indent, &member_name);
             ListItem::new(super::columns::row_to_line(&row, widths))
         },
-        |m| render_child_item(app, m, &member_name, sorted, indent, widths),
+        |m| {
+            let inherited_deleted = match item {
+                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
+                    let ws = if wi == 0 {
+                        wtg.primary()
+                    } else {
+                        wtg.linked().get(wi - 1).unwrap_or_else(|| wtg.primary())
+                    };
+                    app.is_deleted(ws.path())
+                },
+                _ => false,
+            };
+            render_child_item(
+                app,
+                m,
+                &member_name,
+                sorted,
+                indent,
+                inherited_deleted,
+                widths,
+            )
+        },
     )
 }
 
@@ -1050,6 +1181,12 @@ fn render_member_item(
             let m = &group.members()[member_index];
             (Some(m), m.display_name(), group.is_named())
         },
+        crate::project::RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => {
+            let ws = wtg.single_live().unwrap_or_else(|| wtg.primary());
+            let group = &ws.groups()[group_index];
+            let m = &group.members()[member_index];
+            (Some(m), m.display_name(), group.is_named())
+        },
         _ => (None, String::new(), false),
     };
     let indent = if is_named {
@@ -1062,7 +1199,18 @@ fn render_member_item(
             let row = super::columns::build_group_header_cells(indent, &member_name);
             ListItem::new(super::columns::row_to_line(&row, widths))
         },
-        |m| render_child_item(app, m, &member_name, sorted, indent, widths),
+        |m| {
+            let inherited_deleted = app.is_deleted(item.path());
+            render_child_item(
+                app,
+                m,
+                &member_name,
+                sorted,
+                indent,
+                inherited_deleted,
+                widths,
+            )
+        },
     )
 }
 
@@ -1081,7 +1229,17 @@ fn render_vendored_item(
             let v = &ws.vendored()[vendored_index];
             (Some(v), v.display_name())
         },
+        crate::project::RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => {
+            let ws = wtg.single_live().unwrap_or_else(|| wtg.primary());
+            let v = &ws.vendored()[vendored_index];
+            (Some(v), v.display_name())
+        },
         crate::project::RootItem::Package(pkg) => {
+            let v = &pkg.vendored()[vendored_index];
+            (Some(v), v.display_name())
+        },
+        crate::project::RootItem::PackageWorktrees(wtg) if !wtg.renders_as_group() => {
+            let pkg = wtg.single_live().unwrap_or_else(|| wtg.primary());
             let v = &pkg.vendored()[vendored_index];
             (Some(v), v.display_name())
         },
@@ -1093,7 +1251,18 @@ fn render_vendored_item(
             let row = super::columns::build_group_header_cells(PREFIX_VENDORED, &name);
             ListItem::new(super::columns::row_to_line(&row, widths))
         },
-        |v| render_child_item(app, v, &name, sorted, PREFIX_VENDORED, widths),
+        |v| {
+            let inherited_deleted = app.is_deleted(item.path());
+            render_child_item(
+                app,
+                v,
+                &name,
+                sorted,
+                PREFIX_VENDORED,
+                inherited_deleted,
+                widths,
+            )
+        },
     )
 }
 
@@ -1139,7 +1308,40 @@ fn render_wt_vendored_item(
             let row = super::columns::build_group_header_cells(PREFIX_WT_VENDORED, &name);
             ListItem::new(super::columns::row_to_line(&row, widths))
         },
-        |v| render_child_item(app, v, &name, sorted, PREFIX_WT_VENDORED, widths),
+        |v| {
+            let inherited_deleted = match item {
+                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
+                    let ws = if worktree_index == 0 {
+                        wtg.primary()
+                    } else {
+                        wtg.linked()
+                            .get(worktree_index - 1)
+                            .unwrap_or_else(|| wtg.primary())
+                    };
+                    app.is_deleted(ws.path())
+                },
+                crate::project::RootItem::PackageWorktrees(wtg) => {
+                    let pkg = if worktree_index == 0 {
+                        wtg.primary()
+                    } else {
+                        wtg.linked()
+                            .get(worktree_index - 1)
+                            .unwrap_or_else(|| wtg.primary())
+                    };
+                    app.is_deleted(pkg.path())
+                },
+                _ => false,
+            };
+            render_child_item(
+                app,
+                v,
+                &name,
+                sorted,
+                PREFIX_WT_VENDORED,
+                inherited_deleted,
+                widths,
+            )
+        },
     )
 }
 
@@ -1257,17 +1459,29 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
                 " "
             };
             let ci = if cargo_active { app.ci_for(abs) } else { None };
-            let sync = if matches!(
-                app.git_path_state_for(abs),
-                crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
-            ) {
+            let hide_git_status = app.is_workspace_member_path(abs);
+            let origin_sync = if hide_git_status
+                || matches!(
+                    app.git_path_state_for(abs),
+                    crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
+                ) {
                 String::new()
             } else {
                 app.git_sync(abs)
             };
+            let main_sync = if hide_git_status
+                || matches!(
+                    app.git_path_state_for(abs),
+                    crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
+                ) {
+                String::new()
+            } else {
+                app.git_main(abs)
+            };
             let deleted = metadata
                 .as_ref()
                 .is_some_and(|item| matches!(item.visibility, Visibility::Deleted));
+            let git_path_state = app.git_path_state_for(abs);
             let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
                 (
                     "0.0",
@@ -1280,14 +1494,21 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             let row = super::columns::build_row_cells(super::columns::ProjectRow {
                 prefix: "  ",
                 name: &hit.name,
-                git_path_state: app.git_path_state_for(abs),
+                name_segments: app.discovery_name_segments_for_path(
+                    abs,
+                    &hit.name,
+                    git_path_state,
+                    DiscoveryRowKind::Search,
+                ),
+                git_path_state,
                 lint_icon: lint,
                 disk: disk_text,
                 disk_style: ds,
                 disk_suffix,
                 disk_suffix_style,
                 lang_icon: lang,
-                git_sync: &sync,
+                git_origin_sync: &origin_sync,
+                git_main: &main_sync,
                 ci,
                 deleted,
             });

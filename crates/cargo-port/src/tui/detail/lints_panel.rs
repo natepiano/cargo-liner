@@ -17,6 +17,8 @@ use crate::lint::LintCommandStatus;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::tui::app::App;
+use crate::tui::interaction;
+use crate::tui::interaction::UiSurface::Content;
 use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
 
@@ -221,4 +223,22 @@ pub fn render_lints_panel(
     let mut table_state = TableState::default().with_selected(Some(app.lint_pane.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
     app.lint_pane.set_scroll_offset(table_state.offset());
+
+    let visible_height = usize::from(inner.height.saturating_sub(1));
+    let visible_start = table_state.offset();
+    let visible_end = runs.len().min(visible_start.saturating_add(visible_height));
+
+    for (screen_row, row_index) in (visible_start..visible_end).enumerate() {
+        let row_y = inner
+            .y
+            .saturating_add(1)
+            .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
+        interaction::register_pane_row_hitbox(
+            app,
+            ratatui::layout::Rect::new(inner.x, row_y, inner.width, 1),
+            PaneId::Lints,
+            row_index,
+            Content,
+        );
+    }
 }

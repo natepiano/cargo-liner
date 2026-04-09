@@ -8,6 +8,7 @@ pub(crate) const PASSING: &str = "🟢";
 pub(crate) const FAILING: &str = "🔴";
 pub(crate) const CANCELLED: &str = "🌑";
 pub(crate) const IN_SYNC: &str = "☑️";
+pub(crate) const NO_REMOTE_SYNC: &str = "──";
 pub(crate) const SYNC_UP: &str = "↑";
 pub(crate) const SYNC_DOWN: &str = "↓";
 
@@ -24,6 +25,9 @@ pub(crate) const GIT_LOCAL: &str = "📁";
 pub(crate) const GIT_CLONE: &str = "👯";
 pub(crate) const GIT_FORK: &str = "🔱";
 pub(crate) const WORKTREE: &str = "🌲";
+pub(crate) const GIT_STATUS_CLEAN: &str = "✨";
+pub(crate) const GIT_STATUS_UNTRACKED: &str = "🆕";
+pub(crate) const GIT_STATUS_MODIFIED: &str = "🟠";
 pub(crate) const GIT_MODIFIED_COLOR: Color = Color::Indexed(208);
 pub(crate) const GIT_UNTRACKED_COLOR: Color = Color::Green;
 pub(crate) const GIT_IGNORED_COLOR: Color = Color::DarkGray;
@@ -42,8 +46,6 @@ pub(crate) const LINTS_CACHE_DIR: &str = "lint-runs";
 pub(crate) const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";
 pub(crate) const OLDER_RUNS_FETCH_INCREMENT: u32 = 5;
 pub(crate) const SCAN_DISK_CONCURRENCY: usize = 2;
-pub(crate) const SCAN_HTTP_CONCURRENCY: usize = 8;
-pub(crate) const SCAN_LOCAL_CONCURRENCY: usize = 8;
 // ── HTTP constants ───────────────────────────────────────────────────
 
 pub(crate) const GITHUB_API_BASE: &str = "https://api.github.com";
