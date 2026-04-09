@@ -236,8 +236,8 @@ impl DetailField {
             Self::Branch => "Branch",
             Self::GitPath => "Git Path",
             Self::Sync => "Sync",
-            Self::VsOrigin => "vs o/dflt",
-            Self::VsLocal => "vs dflt",
+            Self::VsOrigin => "vs origin",
+            Self::VsLocal => "vs main",
             Self::Origin => "Origin",
             Self::Owner => "Owner",
             Self::Repo => "Repo",
@@ -400,12 +400,9 @@ pub struct DetailInfo {
     pub git_branch:        Option<String>,
     pub git_path:          GitPathState,
     pub git_sync:          Option<String>,
-    /// Ahead/behind vs `origin/{default_branch}`.
     pub git_vs_origin:     Option<String>,
     /// Ahead/behind vs local `{local_main_branch}`.
     pub git_vs_local:      Option<String>,
-    /// The repo's default branch name resolved from `origin/HEAD`.
-    pub default_branch:    Option<String>,
     /// The actual local branch used for `M` comparisons.
     pub local_main_branch: Option<String>,
     /// The configured user-facing label for the local main branch.
@@ -502,7 +499,6 @@ struct GitDetailFields {
     sync:              Option<String>,
     vs_origin:         Option<String>,
     vs_local:          Option<String>,
-    default_branch:    Option<String>,
     local_main_branch: Option<String>,
     main_branch_label: String,
     origin:            Option<String>,
@@ -531,7 +527,6 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let vs_local = git
         .and_then(|info| info.ahead_behind_local)
         .map(format_ahead_behind);
-    let default_branch = git.and_then(|info| info.default_branch.clone());
     let local_main_branch = git.and_then(|info| info.local_main_branch.clone());
     let main_branch_label = app.current_config.tui.main_branch.clone();
     let origin = git.map(|info| format!("{} {}", info.origin.icon(), info.origin.label()));
@@ -559,7 +554,6 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         sync,
         vs_origin,
         vs_local,
-        default_branch,
         local_main_branch,
         main_branch_label,
         origin,
@@ -811,7 +805,6 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
         git_sync: git_detail.sync,
         git_vs_origin: git_detail.vs_origin,
         git_vs_local: git_detail.vs_local,
-        default_branch: git_detail.default_branch,
         local_main_branch: git_detail.local_main_branch,
         main_branch_label: git_detail.main_branch_label,
         git_origin: git_detail.origin,

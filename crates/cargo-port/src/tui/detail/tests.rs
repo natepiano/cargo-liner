@@ -40,7 +40,6 @@ fn detail_info(is_rust_project: bool, lint_label: &str) -> DetailInfo {
         git_sync:          None,
         git_vs_origin:     None,
         git_vs_local:      None,
-        default_branch:    None,
         local_main_branch: None,
         main_branch_label: "main".to_string(),
         git_origin:        None,
@@ -165,6 +164,19 @@ fn sync_value_uses_synced_label_when_in_sync() {
         model::format_sync_status(Some((0, 0)), crate::project::GitOrigin::Clone),
         "☑️ synced"
     );
+}
+
+#[test]
+fn git_label_width_uses_origin_and_configured_main_labels() {
+    let info = DetailInfo {
+        git_vs_origin: Some("↑11 ↓3".to_string()),
+        git_vs_local: Some("↑11 ↓3".to_string()),
+        main_branch_label: "primary".to_string(),
+        ..detail_info(true, "🟢")
+    };
+    let fields = vec![DetailField::VsOrigin, DetailField::VsLocal];
+
+    assert_eq!(render::git_label_width(&info, &fields), "vs primary".len());
 }
 
 #[test]

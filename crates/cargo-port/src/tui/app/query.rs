@@ -19,7 +19,6 @@ use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project::AbsolutePath;
 use crate::project::GitInfo;
-use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::Package;
 use crate::project::RootItem;
@@ -557,8 +556,7 @@ impl App {
             Some((a, 0)) => format!("{SYNC_UP}{a}"),
             Some((0, b)) => format!("{SYNC_DOWN}{b}"),
             Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
-            // No upstream but has a remote — branch not published.
-            None if info.origin != GitOrigin::Local => "-".to_string(),
+            // No upstream tracking branch: render a flat placeholder in the O column.
             None => NO_REMOTE_SYNC.to_string(),
         }
     }

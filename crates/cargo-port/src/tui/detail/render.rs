@@ -202,14 +202,11 @@ pub(super) fn package_label_width(fields: &[DetailField]) -> usize {
         .max(8)
 }
 
-fn git_label_width(info: &DetailInfo, fields: &[DetailField]) -> usize {
+pub(super) fn git_label_width(info: &DetailInfo, fields: &[DetailField]) -> usize {
     fields
         .iter()
         .map(|field| match *field {
-            DetailField::VsOrigin => {
-                let branch = info.default_branch.as_deref().unwrap_or("main");
-                format!("vs o/{branch}").width()
-            },
+            DetailField::VsOrigin => "vs origin".width(),
             DetailField::VsLocal => format!("vs {}", info.main_branch_label).width(),
             _ => field.label().width(),
         })
@@ -238,8 +235,7 @@ fn render_git_column_inner(
         let dynamic_label;
         let label = match *field {
             DetailField::VsOrigin => {
-                let branch = info.default_branch.as_deref().unwrap_or("main");
-                dynamic_label = format!("vs o/{branch}");
+                dynamic_label = "vs origin".to_string();
                 &dynamic_label
             },
             DetailField::VsLocal => {
@@ -391,7 +387,7 @@ pub fn render_detail_panel(
                 let focus = app.pane_focus_state(PaneId::Git);
                 let git_block = Block::default()
                     .borders(Borders::ALL)
-                    .title(" Git ")
+                    .title("  Git ")
                     .title_style(styles.title)
                     .border_style(if matches!(focus, PaneFocusState::Active) {
                         styles.active_border

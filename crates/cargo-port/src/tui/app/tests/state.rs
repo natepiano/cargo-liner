@@ -615,6 +615,32 @@ fn git_sync_shows_ascii_fill_for_local_only_branch() {
 }
 
 #[test]
+fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+
+    app.handle_git_info(
+        project.path(),
+        GitInfo {
+            origin:              GitOrigin::Clone,
+            branch:              Some("feature/demo".to_string()),
+            owner:               Some("natepiano".to_string()),
+            url:                 Some("https://github.com/natepiano/demo".to_string()),
+            first_commit:        None,
+            last_commit:         None,
+            ahead_behind:        None,
+            default_branch:      Some("main".to_string()),
+            ahead_behind_origin: Some((2, 1)),
+            local_main_branch:   Some("main".to_string()),
+            ahead_behind_local:  Some((2, 1)),
+            workflows:           WorkflowPresence::Present,
+        },
+    );
+
+    assert_eq!(app.git_sync(project.path()), NO_REMOTE_SYNC);
+}
+
+#[test]
 fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
