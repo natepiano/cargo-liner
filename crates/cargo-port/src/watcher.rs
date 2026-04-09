@@ -89,13 +89,13 @@ struct WatcherLoopContext {
 
 /// Per-project tracking state.
 struct ProjectEntry {
-    project_label: String,
-    abs_path:      PathBuf,
-    repo_root:     Option<PathBuf>,
+    project_label:  String,
+    abs_path:       PathBuf,
+    repo_root:      Option<PathBuf>,
     /// The resolved on-disk git directory. For normal repos this is
     /// `repo_root/.git`; for worktrees it follows the `.git` file to the
     /// real directory (e.g. `<main-repo>/.git/worktrees/<name>`).
-    git_dir:       Option<PathBuf>,
+    git_dir:        Option<PathBuf>,
     /// The shared git directory that holds branch refs. For linked worktrees
     /// this points at the primary repo's `.git` directory.
     common_git_dir: Option<PathBuf>,
@@ -362,7 +362,10 @@ fn git_metadata_watch_paths(
         paths.push((info, RecursiveMode::NonRecursive));
     }
     if let Some(common_git_dir) = common_git_dir {
-        paths.push((common_git_dir.join("packed-refs"), RecursiveMode::NonRecursive));
+        paths.push((
+            common_git_dir.join("packed-refs"),
+            RecursiveMode::NonRecursive,
+        ));
         paths.push((
             common_git_dir.join("refs").join("heads"),
             RecursiveMode::Recursive,
@@ -558,9 +561,8 @@ fn classify_fast_git_event(event_path: &Path, entry: &ProjectEntry) -> Option<Gi
         || event_path == git_dir.join("info").join("exclude")
     {
         Some(GitRefreshKind::PathStateOnly)
-    } else if event_path == git_dir.join("HEAD") {
-        Some(GitRefreshKind::FullMetadata)
-    } else if event_path == common_git_dir.join("packed-refs")
+    } else if event_path == git_dir.join("HEAD")
+        || event_path == common_git_dir.join("packed-refs")
         || event_path.starts_with(common_git_dir.join("refs").join("heads"))
         || event_path.starts_with(common_git_dir.join("refs").join("remotes"))
     {
@@ -1299,10 +1301,10 @@ mod tests {
         (
             abs_path.to_path_buf(),
             ProjectEntry {
-                project_label: project_label.to_string(),
-                abs_path:      abs_path.to_path_buf(),
-                repo_root:     None,
-                git_dir:       None,
+                project_label:  project_label.to_string(),
+                abs_path:       abs_path.to_path_buf(),
+                repo_root:      None,
+                git_dir:        None,
                 common_git_dir: None,
             },
         )
@@ -1335,20 +1337,20 @@ mod tests {
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_label: "~/my_project".to_string(),
-                abs_path:      project_dir.clone(),
-                repo_root:     Some(project_dir.clone()),
-                git_dir:       Some(project_dir.join(".git")),
+                project_label:  "~/my_project".to_string(),
+                abs_path:       project_dir.clone(),
+                repo_root:      Some(project_dir.clone()),
+                git_dir:        Some(project_dir.join(".git")),
                 common_git_dir: Some(project_dir.join(".git")),
             },
         );
         projects.insert(
             member_dir.clone(),
             ProjectEntry {
-                project_label: "~/my_project/crates/member".to_string(),
-                abs_path:      member_dir.clone(),
-                repo_root:     Some(project_dir.clone()),
-                git_dir:       Some(project_dir.join(".git")),
+                project_label:  "~/my_project/crates/member".to_string(),
+                abs_path:       member_dir.clone(),
+                repo_root:      Some(project_dir.clone()),
+                git_dir:        Some(project_dir.join(".git")),
                 common_git_dir: Some(project_dir.join(".git")),
             },
         );
@@ -1462,10 +1464,10 @@ mod tests {
         projects.insert(
             wt_root.clone(),
             ProjectEntry {
-                project_label: "~/main_repo_style_fix".to_string(),
-                abs_path:      wt_root.clone(),
-                repo_root:     Some(wt_root.clone()),
-                git_dir:       Some(wt_git_dir.clone()),
+                project_label:  "~/main_repo_style_fix".to_string(),
+                abs_path:       wt_root.clone(),
+                repo_root:      Some(wt_root.clone()),
+                git_dir:        Some(wt_git_dir.clone()),
                 common_git_dir: Some(common_git_dir),
             },
         );
@@ -1606,10 +1608,10 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_label: "~/my_project".to_string(),
-                abs_path:      project_dir.clone(),
-                repo_root:     Some(project_dir.clone()),
-                git_dir:       Some(project_dir.join(".git")),
+                project_label:  "~/my_project".to_string(),
+                abs_path:       project_dir.clone(),
+                repo_root:      Some(project_dir.clone()),
+                git_dir:        Some(project_dir.join(".git")),
                 common_git_dir: Some(project_dir.join(".git")),
             },
         );
@@ -2111,10 +2113,10 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_label: "~/my_project".to_string(),
-                abs_path:      project_dir.clone(),
-                repo_root:     Some(project_dir.clone()),
-                git_dir:       Some(project_dir.join(".git")),
+                project_label:  "~/my_project".to_string(),
+                abs_path:       project_dir.clone(),
+                repo_root:      Some(project_dir.clone()),
+                git_dir:        Some(project_dir.join(".git")),
                 common_git_dir: Some(project_dir.join(".git")),
             },
         );
@@ -2176,10 +2178,10 @@ edition = "2024"
         projects.insert(
             dir_key,
             ProjectEntry {
-                project_label: "~/no_git".to_string(),
-                abs_path:      project_dir.clone(),
-                repo_root:     None,
-                git_dir:       None,
+                project_label:  "~/no_git".to_string(),
+                abs_path:       project_dir.clone(),
+                repo_root:      None,
+                git_dir:        None,
                 common_git_dir: None,
             },
         );
@@ -2423,10 +2425,10 @@ edition = "2024"
         projects.insert(
             linked_dir.clone(),
             ProjectEntry {
-                project_label: "~/app_test".to_string(),
-                abs_path:      linked_dir.clone(),
-                repo_root:     None,
-                git_dir:       None,
+                project_label:  "~/app_test".to_string(),
+                abs_path:       linked_dir.clone(),
+                repo_root:      None,
+                git_dir:        None,
                 common_git_dir: None,
             },
         );
@@ -2503,10 +2505,10 @@ edition = "2024"
         projects.insert(
             linked_dir.clone(),
             ProjectEntry {
-                project_label: "~/obsidian_knife_test".to_string(),
-                abs_path:      linked_dir.clone(),
-                repo_root:     None,
-                git_dir:       None,
+                project_label:  "~/obsidian_knife_test".to_string(),
+                abs_path:       linked_dir.clone(),
+                repo_root:      None,
+                git_dir:        None,
                 common_git_dir: None,
             },
         );

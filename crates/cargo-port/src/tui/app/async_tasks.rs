@@ -1552,7 +1552,8 @@ impl App {
             .and_then(|existing| existing.first_commit.clone());
         let mut info = info;
         if info.first_commit.is_none() {
-            info.first_commit = preserved_first_commit;
+            info.first_commit =
+                preserved_first_commit.or_else(|| self.pending_git_first_commit.remove(&abs));
         }
         let (member_paths, fallback_worktree_paths) = self.inherited_git_info_paths(&abs);
         if let Some(project) = self.projects.at_path_mut(&abs) {
@@ -1582,13 +1583,20 @@ impl App {
     pub(super) fn handle_git_first_commit(&mut self, path: &Path, first_commit: Option<&str>) {
         let (member_paths, fallback_worktree_paths) = self.inherited_git_info_paths(path);
         let first_commit = first_commit.map(String::from);
+        let mut applied = false;
         let Some(project) = self.projects.at_path_mut(path) else {
+            if let Some(first_commit) = first_commit {
+                self.pending_git_first_commit
+                    .insert(path.to_path_buf(), first_commit);
+            } else {
+                self.pending_git_first_commit.remove(path);
+            }
             return;
         };
-        let Some(info) = project.git_info.as_mut() else {
-            return;
-        };
-        info.first_commit.clone_from(&first_commit);
+        if let Some(info) = project.git_info.as_mut() {
+            info.first_commit.clone_from(&first_commit);
+            applied = true;
+        }
         for member_path in member_paths {
             if let Some(project) = self.projects.at_path_mut(&member_path)
                 && let Some(info) = project.git_info.as_mut()
@@ -1602,6 +1610,14 @@ impl App {
             {
                 info.first_commit.clone_from(&first_commit);
             }
+        }
+        if applied {
+            self.pending_git_first_commit.remove(path);
+        } else if let Some(first_commit) = first_commit {
+            self.pending_git_first_commit
+                .insert(path.to_path_buf(), first_commit);
+        } else {
+            self.pending_git_first_commit.remove(path);
         }
     }
 

@@ -403,6 +403,8 @@ impl App {
         });
         self.git_path_states
             .retain(|path, _| all_paths.contains(path));
+        self.pending_git_first_commit
+            .retain(|path, _| all_paths.contains(path));
         for path in &all_paths {
             if self.is_cargo_active_path(path) {
                 continue;

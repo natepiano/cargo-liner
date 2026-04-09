@@ -279,7 +279,7 @@ impl DetailField {
                     branch.to_string()
                 }
             },
-            Self::GitPath => info.git_path.label().to_string(),
+            Self::GitPath => info.git_path.label_with_icon(),
             Self::Sync => info.git_sync.as_deref().unwrap_or("").to_string(),
             Self::VsOrigin => info.git_vs_origin.as_deref().unwrap_or("").to_string(),
             Self::VsLocal => info.git_vs_local.as_deref().unwrap_or("").to_string(),
@@ -465,6 +465,20 @@ fn format_ahead_behind((ahead, behind): (usize, usize)) -> String {
     }
 }
 
+pub(super) fn format_sync_status(
+    ahead_behind: Option<(usize, usize)>,
+    origin: GitOrigin,
+) -> String {
+    match ahead_behind {
+        Some((0, 0)) => format!("{IN_SYNC} synced"),
+        Some((ahead, 0)) => format!("{SYNC_UP}{ahead} ahead"),
+        Some((0, behind)) => format!("{SYNC_DOWN}{behind} behind"),
+        Some((ahead, behind)) => format!("{SYNC_UP}{ahead} {SYNC_DOWN}{behind}"),
+        None if origin != GitOrigin::Local => "not published".to_string(),
+        None => String::new(),
+    }
+}
+
 /// Format a download count with comma-separated thousands (e.g. `1,234,567`).
 fn format_downloads(count: u64) -> String {
     let digits = count.to_string();
@@ -498,14 +512,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let git = app.git_info_for(abs_path);
     let branch = git.and_then(|info| info.branch.clone());
     let sync = git
-        .map(|info| match info.ahead_behind {
-            Some((0, 0)) => IN_SYNC.to_string(),
-            Some((ahead, 0)) => format!("{SYNC_UP}{ahead} ahead"),
-            Some((0, behind)) => format!("{SYNC_DOWN}{behind} behind"),
-            Some((ahead, behind)) => format!("{SYNC_UP}{ahead} {SYNC_DOWN}{behind}"),
-            None if info.origin != GitOrigin::Local => "not published".to_string(),
-            None => String::new(),
-        })
+        .map(|info| format_sync_status(info.ahead_behind, info.origin))
         .filter(|value| !value.is_empty());
     let vs_origin = git
         .and_then(|info| info.ahead_behind_origin)

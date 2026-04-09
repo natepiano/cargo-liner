@@ -241,7 +241,8 @@ fn render_git_column_inner(
         } else if matches!(
             *field,
             DetailField::Sync | DetailField::VsOrigin | DetailField::VsLocal
-        ) && value == IN_SYNC
+        ) && (value == IN_SYNC
+            || (*field == DetailField::Sync && value.starts_with(IN_SYNC)))
         {
             Style::default().fg(Color::Green)
         } else if *field == DetailField::Sync && value == "not published" {

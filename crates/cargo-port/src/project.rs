@@ -15,6 +15,9 @@ use toml::Value;
 use crate::constants::GIT_CLONE;
 use crate::constants::GIT_FORK;
 use crate::constants::GIT_LOCAL;
+use crate::constants::GIT_STATUS_CLEAN;
+use crate::constants::GIT_STATUS_MODIFIED;
+use crate::constants::GIT_STATUS_UNTRACKED;
 
 /// An absolute filesystem path. Used as `HashMap` keys and for filesystem operations.
 /// Wraps `PathBuf`. Created from absolute paths only.
@@ -338,6 +341,24 @@ impl GitPathState {
             Self::Modified => "modified",
             Self::Untracked => "untracked",
             Self::Ignored => "ignored",
+        }
+    }
+
+    pub(crate) const fn icon(self) -> &'static str {
+        match self {
+            Self::Clean => GIT_STATUS_CLEAN,
+            Self::Modified => GIT_STATUS_MODIFIED,
+            Self::Untracked => GIT_STATUS_UNTRACKED,
+            Self::OutsideRepo | Self::Ignored => "",
+        }
+    }
+
+    pub(crate) fn label_with_icon(self) -> String {
+        let icon = self.icon();
+        if icon.is_empty() {
+            self.label().to_string()
+        } else {
+            format!("{icon} {}", self.label())
         }
     }
 }

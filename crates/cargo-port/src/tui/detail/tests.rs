@@ -148,6 +148,24 @@ fn package_label_width_expands_for_crates_io() {
 }
 
 #[test]
+fn git_path_value_appends_status_icon() {
+    let info = DetailInfo {
+        git_path: GitPathState::Modified,
+        ..detail_info(true, "🟢")
+    };
+
+    assert_eq!(DetailField::GitPath.value(&info), "🟠 modified");
+}
+
+#[test]
+fn sync_value_uses_synced_label_when_in_sync() {
+    assert_eq!(
+        model::format_sync_status(Some((0, 0)), crate::project::GitOrigin::Clone),
+        "☑️ synced"
+    );
+}
+
+#[test]
 fn ci_table_hides_durations_when_fixed_columns_overflow() {
     let runs = vec![ci_run_with_jobs(vec![
         CiJob {

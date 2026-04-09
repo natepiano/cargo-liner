@@ -18,8 +18,9 @@ pub(super) const COL_LINT: usize = 1;
 pub(super) const COL_CI: usize = 2;
 pub(super) const COL_LANG: usize = 3;
 pub(super) const COL_SYNC: usize = 4;
-pub(super) const COL_DISK: usize = 5;
-pub(super) const NUM_COLS: usize = 6;
+pub(super) const COL_GIT_PATH: usize = 5;
+pub(super) const COL_DISK: usize = 6;
+pub(super) const NUM_COLS: usize = 7;
 
 // ── Column definition types ─────────────────────────────────────────
 
@@ -99,12 +100,20 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
             gap:         1,
             header_mode: HeaderMode::BorrowLeft,
         },
-        // 5: Disk
+        // 5: Git path status glyph
+        ColumnDef {
+            header:      "",
+            width:       ColumnWidth::Fixed(2),
+            align:       Align::Center,
+            gap:         1,
+            header_mode: HeaderMode::Hidden,
+        },
+        // 6: Disk
         ColumnDef {
             header:      "Disk",
             width:       ColumnWidth::Fit { min: 4 },
             align:       Align::Right,
-            gap:         1,
+            gap:         0,
             header_mode: HeaderMode::Standard,
         },
     ]
@@ -365,6 +374,7 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     let ci_text = row
         .ci
         .map_or(String::new(), |conclusion| String::from(conclusion.icon()));
+    let git_path_icon = row.git_path_state.icon();
 
     let name_style = match row.git_path_state {
         GitPathState::Modified => Style::default().fg(GIT_MODIFIED_COLOR),
@@ -414,6 +424,12 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         text: String::from(row.git_sync),
         style: sync_style,
         align_override: sync_align,
+        ..CellContent::default()
+    };
+    cells[COL_GIT_PATH] = CellContent {
+        text: String::from(git_path_icon),
+        style: Style::default(),
+        align_override: Some(Align::Center),
         ..CellContent::default()
     };
     cells[COL_DISK] = CellContent {
@@ -505,6 +521,7 @@ mod tests {
         assert_eq!(widths.get(COL_LINT), 2);
         assert_eq!(widths.get(COL_LANG), 2);
         assert_eq!(widths.get(COL_CI), 2);
+        assert_eq!(widths.get(COL_GIT_PATH), 2);
         // Fit columns get their min
         assert_eq!(widths.get(COL_NAME), 10);
         assert_eq!(widths.get(COL_DISK), 4);
@@ -547,7 +564,8 @@ mod tests {
         assert_eq!(display_width(line.spans[COL_LINT].content.as_ref()), 4);
         assert_eq!(line.spans[COL_CI].content.as_ref(), " CI");
         assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Git");
-        assert_eq!(line.spans[COL_DISK].content.as_ref(), "     Disk");
+        assert_eq!(display_width(line.spans[COL_GIT_PATH].content.as_ref()), 3);
+        assert_eq!(line.spans[COL_DISK].content.as_ref(), "    Disk");
         assert_eq!(line.width(), widths.total_width());
     }
 
@@ -563,6 +581,7 @@ mod tests {
         assert_eq!(line.spans[COL_CI].content.as_ref(), " CI");
         assert_eq!(display_width(line.spans[COL_LANG].content.as_ref()), 2);
         assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Git");
+        assert_eq!(display_width(line.spans[COL_GIT_PATH].content.as_ref()), 3);
         assert_eq!(line.width(), widths.total_width());
     }
 
@@ -653,9 +672,9 @@ mod tests {
             line.spans[COL_NAME].content.as_ref(),
             " ".repeat(widths.get(COL_NAME))
         );
-        assert_eq!(line.spans[COL_SYNC].content.as_ref(), "  Σ");
+        assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), "  Σ");
         assert_eq!(line.spans[COL_CI].content.as_ref(), "   ");
-        assert_eq!(line.spans[COL_DISK].content.as_ref(), " 36.3 GiB");
+        assert_eq!(line.spans[COL_DISK].content.as_ref(), "36.3 GiB");
     }
 
     #[test]
@@ -676,7 +695,7 @@ mod tests {
         assert_eq!(defs[COL_CI].header, "CI");
         assert_eq!(widths.get(COL_CI), 2);
         assert!(header.spans[COL_CI].content.as_ref().ends_with("CI"));
-        assert_eq!(line.spans[COL_SYNC].content.as_ref(), "  Σ");
+        assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), "  Σ");
     }
 
     #[test]
@@ -727,6 +746,10 @@ mod tests {
             deleted:           false,
         });
         assert_eq!(modified.cells[COL_NAME].style.fg, Some(GIT_MODIFIED_COLOR));
+        assert_eq!(
+            modified.cells[COL_GIT_PATH].text,
+            crate::constants::GIT_STATUS_MODIFIED
+        );
 
         let untracked = build_row_cells(ProjectRow {
             prefix:            "  ",
@@ -746,6 +769,29 @@ mod tests {
             untracked.cells[COL_NAME].style.fg,
             Some(GIT_UNTRACKED_COLOR)
         );
+        assert_eq!(
+            untracked.cells[COL_GIT_PATH].text,
+            crate::constants::GIT_STATUS_UNTRACKED
+        );
+
+        let clean = build_row_cells(ProjectRow {
+            prefix:            "  ",
+            name:              "demo",
+            git_path_state:    GitPathState::Clean,
+            lint_icon:         " ",
+            disk:              "—",
+            disk_style:        Style::default(),
+            disk_suffix:       None,
+            disk_suffix_style: None,
+            lang_icon:         "🦀",
+            git_sync:          "",
+            ci:                None,
+            deleted:           false,
+        });
+        assert_eq!(
+            clean.cells[COL_GIT_PATH].text,
+            crate::constants::GIT_STATUS_CLEAN
+        );
 
         let ignored = build_row_cells(ProjectRow {
             prefix:            "  ",
@@ -762,5 +808,6 @@ mod tests {
             deleted:           false,
         });
         assert_eq!(ignored.cells[COL_NAME].style.fg, Some(GIT_IGNORED_COLOR));
+        assert!(ignored.cells[COL_GIT_PATH].text.is_empty());
     }
 }

@@ -2512,6 +2512,44 @@ fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
 }
 
 #[test]
+fn git_first_commit_arriving_before_git_info_is_preserved() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    app.list_state.select(Some(0));
+    app.sync_selected_project();
+
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::GitFirstCommit {
+            path:         test_path("~/demo").into(),
+            first_commit: Some("2026-03-12T21:18:54-04:00".to_string()),
+        },
+    );
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::GitInfo {
+            path: test_path("~/demo").into(),
+            info: make_git_info(Some("https://github.com/natepiano/demo")),
+        },
+    );
+
+    app.ensure_detail_cached();
+
+    assert_eq!(
+        app.git_info_for(test_path("~/demo").as_path())
+            .and_then(|info| info.first_commit.as_deref()),
+        Some("2026-03-12T21:18:54-04:00")
+    );
+    assert!(
+        app.cached_detail
+            .as_ref()
+            .and_then(|cache| cache.info.git_inception.as_ref())
+            .is_some(),
+        "detail panel should show Incept once git info arrives"
+    );
+}
+
+#[test]
 fn name_width_with_gutter_reserves_space_before_lint() {
     assert_eq!(App::name_width_with_gutter(0), 1);
     assert_eq!(App::name_width_with_gutter(42), 43);

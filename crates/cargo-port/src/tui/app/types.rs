@@ -502,6 +502,7 @@ pub struct App {
     pub crates_downloads:         HashMap<PathBuf, u64>,
     pub stars:                    HashMap<PathBuf, u64>,
     pub repo_descriptions:        HashMap<PathBuf, String>,
+    pub pending_git_first_commit: HashMap<PathBuf, String>,
     pub bg_tx:                    mpsc::Sender<BackgroundMsg>,
     pub bg_rx:                    Receiver<BackgroundMsg>,
     pub fully_loaded:             HashSet<PathBuf>,
