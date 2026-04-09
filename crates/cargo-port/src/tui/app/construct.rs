@@ -197,6 +197,7 @@ impl App {
             crates_downloads: HashMap::new(),
             stars: HashMap::new(),
             repo_descriptions: HashMap::new(),
+            discovery_shimmers: HashMap::new(),
             pending_git_first_commit: HashMap::new(),
             bg_tx: inputs.bg_tx,
             bg_rx: inputs.bg_rx,

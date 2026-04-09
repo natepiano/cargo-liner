@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use super::types::App;
 use super::types::CiState;
+use super::types::DiscoveryRowKind;
 use crate::ci::Conclusion;
 use crate::config::NavigationKeys;
 use crate::config::NonRustInclusion;
@@ -20,6 +21,8 @@ use crate::project::GitPathState;
 use crate::project::Package;
 use crate::project::RootItem;
 use crate::project::RustProject;
+use crate::project::Workspace;
+use crate::tui::columns;
 use crate::tui::detail::DetailField;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastTaskId;
@@ -308,6 +311,122 @@ impl App {
 
     pub fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
 
+    pub fn discovery_shimmer_enabled(&self) -> bool {
+        self.current_config.tui.discovery_shimmer_secs > 0.0
+    }
+
+    pub fn discovery_shimmer_duration(&self) -> Duration {
+        Duration::from_secs_f64(self.current_config.tui.discovery_shimmer_secs)
+    }
+
+    pub fn register_discovery_shimmer(&mut self, path: &Path) {
+        if !self.is_scan_complete() || !self.discovery_shimmer_enabled() {
+            return;
+        }
+        self.discovery_shimmers.insert(
+            path.to_path_buf(),
+            super::types::DiscoveryShimmer::new(Instant::now(), self.discovery_shimmer_duration()),
+        );
+    }
+
+    pub fn prune_discovery_shimmers(&mut self, now: Instant) {
+        self.discovery_shimmers
+            .retain(|_, shimmer| shimmer.is_active_at(now));
+    }
+
+    pub fn discovery_name_segments_for_path(
+        &self,
+        row_path: &Path,
+        name: &str,
+        git_path_state: GitPathState,
+        row_kind: DiscoveryRowKind,
+    ) -> Option<Vec<columns::StyledSegment>> {
+        if !self.discovery_shimmer_enabled() {
+            return None;
+        }
+        let now = Instant::now();
+        let (session_path, shimmer) =
+            self.discovery_shimmer_session_for_path(row_path, now, row_kind)?;
+        let char_count = name.chars().count();
+        if char_count == 0 {
+            return None;
+        }
+
+        let base_style = columns::project_name_style(git_path_state);
+        let accent_style = columns::project_name_shimmer_style(git_path_state);
+        let window = discovery_shimmer_window_len(char_count);
+        let elapsed_ms = usize::try_from(now.duration_since(shimmer.started_at).as_millis())
+            .unwrap_or(usize::MAX);
+        let step = elapsed_ms / discovery_shimmer_step_millis();
+        let head = (step
+            + discovery_shimmer_phase_offset(
+                session_path.as_path(),
+                row_path,
+                row_kind,
+                char_count,
+            ))
+            % char_count;
+
+        Some(columns::build_shimmer_segments(
+            name,
+            base_style,
+            accent_style,
+            head,
+            window,
+        ))
+    }
+
+    pub fn discovery_shimmer_owner_path(&self, row_path: &Path) -> Option<PathBuf> {
+        self.discovery_shimmer_session_for_path(row_path, Instant::now(), DiscoveryRowKind::Search)
+            .map(|(session_path, _)| session_path)
+    }
+
+    fn discovery_shimmer_session_for_path(
+        &self,
+        row_path: &Path,
+        now: Instant,
+        row_kind: DiscoveryRowKind,
+    ) -> Option<(PathBuf, super::types::DiscoveryShimmer)> {
+        self.discovery_shimmers
+            .iter()
+            .filter(|(session_path, shimmer)| {
+                shimmer.is_active_at(now)
+                    && self.discovery_shimmer_session_matches(
+                        session_path.as_path(),
+                        row_path,
+                        row_kind,
+                    )
+            })
+            .max_by_key(|(_, shimmer)| shimmer.started_at)
+            .map(|(session_path, shimmer)| (session_path.clone(), *shimmer))
+    }
+
+    fn discovery_shimmer_session_matches(
+        &self,
+        session_path: &Path,
+        row_path: &Path,
+        row_kind: DiscoveryRowKind,
+    ) -> bool {
+        self.discovery_scope_contains(session_path, row_path)
+            || self
+                .discovery_parent_row(session_path)
+                .is_some_and(|parent| {
+                    parent.path.as_path() == row_path && row_kind.allows_parent_kind(parent.kind)
+                })
+    }
+
+    fn discovery_scope_contains(&self, session_path: &Path, row_path: &Path) -> bool {
+        self.projects
+            .iter()
+            .any(|item| root_item_scope_contains(item, session_path, row_path))
+    }
+
+    fn discovery_parent_row(&self, session_path: &Path) -> Option<DiscoveryParentRow> {
+        self.projects
+            .iter()
+            .find_map(|item| root_item_parent_row(item, session_path))
+    }
+
     pub fn is_vendored_path(&self, path: &Path) -> bool {
         self.projects.iter().any(|item| match item {
             RootItem::Workspace(ws) => ws.vendored().iter().any(|v| v.path() == path),
@@ -482,4 +601,257 @@ impl App {
             _ => None,
         }
     }
+}
+
+fn discovery_shimmer_window_len(char_count: usize) -> usize {
+    match char_count {
+        0 => 0,
+        1..=2 => 1,
+        3..=5 => 2,
+        6..=8 => 3,
+        _ => 4,
+    }
+}
+
+const fn discovery_shimmer_step_millis() -> usize { 85 }
+
+fn discovery_shimmer_phase_offset(
+    session_path: &Path,
+    row_path: &Path,
+    row_kind: DiscoveryRowKind,
+    char_count: usize,
+) -> usize {
+    if char_count == 0 {
+        return 0;
+    }
+    let mut hash = 0xcbf29ce484222325_u64;
+    let key = format!(
+        "{}|{}|{}",
+        session_path.to_string_lossy(),
+        row_path.to_string_lossy(),
+        row_kind.discriminant()
+    );
+    for byte in key.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    usize::try_from(hash % u64::try_from(char_count).unwrap_or(1)).unwrap_or(0)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiscoveryParentRow {
+    path: PathBuf,
+    kind: DiscoveryRowKind,
+}
+
+impl DiscoveryRowKind {
+    const fn allows_parent_kind(self, kind: DiscoveryRowKind) -> bool {
+        match (self, kind) {
+            (Self::Root, Self::Root)
+            | (Self::WorktreeEntry, Self::WorktreeEntry)
+            | (Self::PathOnly, Self::PathOnly)
+            | (Self::Search, _) => true,
+            _ => false,
+        }
+    }
+
+    const fn discriminant(self) -> u8 {
+        match self {
+            Self::Root => 0,
+            Self::WorktreeEntry => 1,
+            Self::PathOnly => 2,
+            Self::Search => 3,
+        }
+    }
+}
+
+fn package_contains_path(pkg: &RustProject<Package>, row_path: &Path) -> bool {
+    pkg.path() == row_path
+        || pkg
+            .vendored()
+            .iter()
+            .any(|vendored| vendored.path() == row_path)
+}
+
+fn workspace_contains_path(ws: &RustProject<Workspace>, row_path: &Path) -> bool {
+    ws.path() == row_path
+        || ws.groups().iter().any(|group| {
+            group
+                .members()
+                .iter()
+                .any(|member| package_contains_path(member, row_path))
+        })
+        || ws
+            .vendored()
+            .iter()
+            .any(|vendored| vendored.path() == row_path)
+}
+
+fn root_item_scope_contains(item: &RootItem, session_path: &Path, row_path: &Path) -> bool {
+    match item {
+        RootItem::Workspace(ws) => workspace_scope_contains(ws, session_path, row_path),
+        RootItem::Package(pkg) => package_scope_contains(pkg, session_path, row_path),
+        RootItem::NonRust(project) => project.path() == session_path && project.path() == row_path,
+        RootItem::WorkspaceWorktrees(group) => {
+            workspace_scope_contains(group.primary(), session_path, row_path)
+                || group
+                    .linked()
+                    .iter()
+                    .any(|linked| workspace_scope_contains(linked, session_path, row_path))
+        },
+        RootItem::PackageWorktrees(group) => {
+            package_scope_contains(group.primary(), session_path, row_path)
+                || group
+                    .linked()
+                    .iter()
+                    .any(|linked| package_scope_contains(linked, session_path, row_path))
+        },
+    }
+}
+
+fn workspace_scope_contains(
+    ws: &RustProject<Workspace>,
+    session_path: &Path,
+    row_path: &Path,
+) -> bool {
+    if ws.path() == session_path {
+        return workspace_contains_path(ws, row_path);
+    }
+    if ws
+        .vendored()
+        .iter()
+        .any(|vendored| vendored.path() == session_path && vendored.path() == row_path)
+    {
+        return true;
+    }
+    ws.groups().iter().any(|group| {
+        group
+            .members()
+            .iter()
+            .any(|member| package_scope_contains(member, session_path, row_path))
+    })
+}
+
+fn package_scope_contains(
+    pkg: &RustProject<Package>,
+    session_path: &Path,
+    row_path: &Path,
+) -> bool {
+    if pkg.path() == session_path {
+        return package_contains_path(pkg, row_path);
+    }
+    pkg.vendored()
+        .iter()
+        .any(|vendored| vendored.path() == session_path && vendored.path() == row_path)
+}
+
+fn root_item_parent_row(item: &RootItem, session_path: &Path) -> Option<DiscoveryParentRow> {
+    match item {
+        RootItem::Workspace(ws) => workspace_parent_row(ws, session_path, DiscoveryRowKind::Root),
+        RootItem::Package(pkg) => package_parent_row(pkg, session_path, DiscoveryRowKind::Root),
+        RootItem::NonRust(_) => None,
+        RootItem::WorkspaceWorktrees(group) => {
+            if group.primary().path() == session_path {
+                return None;
+            }
+            if group
+                .linked()
+                .iter()
+                .any(|linked| linked.path() == session_path)
+            {
+                return Some(DiscoveryParentRow {
+                    path: group.primary().path().to_path_buf(),
+                    kind: DiscoveryRowKind::Root,
+                });
+            }
+            workspace_parent_row(
+                group.primary(),
+                session_path,
+                DiscoveryRowKind::WorktreeEntry,
+            )
+            .or_else(|| {
+                group.linked().iter().find_map(|linked| {
+                    workspace_parent_row(linked, session_path, DiscoveryRowKind::WorktreeEntry)
+                })
+            })
+        },
+        RootItem::PackageWorktrees(group) => {
+            if group.primary().path() == session_path {
+                return None;
+            }
+            if group
+                .linked()
+                .iter()
+                .any(|linked| linked.path() == session_path)
+            {
+                return Some(DiscoveryParentRow {
+                    path: group.primary().path().to_path_buf(),
+                    kind: DiscoveryRowKind::Root,
+                });
+            }
+            package_parent_row(
+                group.primary(),
+                session_path,
+                DiscoveryRowKind::WorktreeEntry,
+            )
+            .or_else(|| {
+                group.linked().iter().find_map(|linked| {
+                    package_parent_row(linked, session_path, DiscoveryRowKind::WorktreeEntry)
+                })
+            })
+        },
+    }
+}
+
+fn workspace_parent_row(
+    ws: &RustProject<Workspace>,
+    session_path: &Path,
+    parent_kind: DiscoveryRowKind,
+) -> Option<DiscoveryParentRow> {
+    if ws.path() == session_path {
+        return None;
+    }
+    if ws
+        .vendored()
+        .iter()
+        .any(|vendored| vendored.path() == session_path)
+    {
+        return Some(DiscoveryParentRow {
+            path: ws.path().to_path_buf(),
+            kind: parent_kind,
+        });
+    }
+    for group in ws.groups() {
+        for member in group.members() {
+            if member.path() == session_path {
+                return Some(DiscoveryParentRow {
+                    path: ws.path().to_path_buf(),
+                    kind: parent_kind,
+                });
+            }
+            if let Some(parent) =
+                package_parent_row(member, session_path, DiscoveryRowKind::PathOnly)
+            {
+                return Some(parent);
+            }
+        }
+    }
+    None
+}
+
+fn package_parent_row(
+    pkg: &RustProject<Package>,
+    session_path: &Path,
+    parent_kind: DiscoveryRowKind,
+) -> Option<DiscoveryParentRow> {
+    if pkg.path() == session_path {
+        return None;
+    }
+    pkg.vendored()
+        .iter()
+        .any(|vendored| vendored.path() == session_path)
+        .then(|| DiscoveryParentRow {
+            path: pkg.path().to_path_buf(),
+            kind: parent_kind,
+        })
 }

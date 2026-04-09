@@ -323,6 +323,9 @@ impl App {
         );
         crate::config::set_active_config(cfg);
         self.current_config = cfg.clone();
+        if !self.discovery_shimmer_enabled() {
+            self.discovery_shimmers.clear();
+        }
 
         if actions.refresh_lint_runtime {
             self.refresh_lint_runtime_from_config(cfg);
@@ -1252,6 +1255,7 @@ impl App {
         self.crates_downloads.clear();
         self.stars.clear();
         self.repo_descriptions.clear();
+        self.discovery_shimmers.clear();
         self.scan.phase = ScanPhase::Running;
         self.scan.started_at = Instant::now();
         self.scan.run_count += 1;
@@ -1688,7 +1692,9 @@ impl App {
         self.register_item_background_services(&item);
         // Insert into the hierarchy directly — under a parent workspace if
         // one exists, otherwise as a top-level peer.
+        let discovered_path = item.path().to_path_buf();
         self.projects.insert_into_hierarchy(item);
+        self.register_discovery_shimmer(discovered_path.as_path());
         self.migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
         // Signal that derived state and caches need refresh.

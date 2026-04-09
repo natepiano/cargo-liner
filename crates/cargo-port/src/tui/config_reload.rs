@@ -10,6 +10,7 @@ pub(super) enum ConfigKey {
     InlineDirs,
     StatusFlashSecs,
     TaskLingerSecs,
+    DiscoveryShimmerSecs,
     CacheRoot,
     LintEnabled,
     LintInclude,
@@ -163,6 +164,9 @@ pub(super) fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<
     if old.tui.task_linger_secs.to_bits() != new.tui.task_linger_secs.to_bits() {
         keys.push(ConfigKey::TaskLingerSecs);
     }
+    if old.tui.discovery_shimmer_secs.to_bits() != new.tui.discovery_shimmer_secs.to_bits() {
+        keys.push(ConfigKey::DiscoveryShimmerSecs);
+    }
     if old.cache.root != new.cache.root {
         keys.push(ConfigKey::CacheRoot);
     }
@@ -220,12 +224,14 @@ mod tests {
         new.mouse.invert_scroll.toggle();
         new.tui.editor = "helix".to_string();
         new.tui.status_flash_secs = 10.0;
+        new.tui.discovery_shimmer_secs = 4.0;
 
         let keys = changed_keys(&CargoPortConfig::default(), &new);
 
         assert!(keys.contains(&ConfigKey::InvertScroll));
         assert!(keys.contains(&ConfigKey::Editor));
         assert!(keys.contains(&ConfigKey::StatusFlashSecs));
+        assert!(keys.contains(&ConfigKey::DiscoveryShimmerSecs));
         assert_eq!(
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions::default()

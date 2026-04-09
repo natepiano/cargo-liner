@@ -436,7 +436,19 @@ pub(crate) fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
 pub(crate) fn normalize_config(mut config: CargoPortConfig) -> Result<CargoPortConfig, String> {
     config.lint.commands = normalize_lint_commands(&config.lint.commands);
     config.lint.cache_size = config.lint.normalized_cache_size()?;
+    config.tui.status_flash_secs = normalize_non_negative_secs(config.tui.status_flash_secs);
+    config.tui.task_linger_secs = normalize_non_negative_secs(config.tui.task_linger_secs);
+    config.tui.discovery_shimmer_secs =
+        normalize_non_negative_secs(config.tui.discovery_shimmer_secs);
     Ok(config)
+}
+
+fn normalize_non_negative_secs(secs: f64) -> f64 {
+    if secs.is_finite() && secs >= 0.0 {
+        secs
+    } else {
+        0.0
+    }
 }
 
 /// Top-level application configuration.
@@ -492,19 +504,25 @@ pub(crate) struct TuiConfig {
     /// starting its exit animation.
     #[config(default = 1.0)]
     pub task_linger_secs: f64,
+
+    /// How long (in seconds) newly discovered project names shimmer in the
+    /// project list. `0.0` disables the effect.
+    #[config(default = 10.0)]
+    pub discovery_shimmer_secs: f64,
 }
 
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            inline_dirs:       vec!["crates".to_string()],
-            ci_run_count:      5,
-            navigation_keys:   NavigationKeys::ArrowsOnly,
-            include_dirs:      Vec::new(),
-            include_non_rust:  NonRustInclusion::Exclude,
-            editor:            "zed".to_string(),
-            status_flash_secs: 5.0,
-            task_linger_secs:  1.0,
+            inline_dirs:            vec!["crates".to_string()],
+            ci_run_count:           5,
+            navigation_keys:        NavigationKeys::ArrowsOnly,
+            include_dirs:           Vec::new(),
+            include_non_rust:       NonRustInclusion::Exclude,
+            editor:                 "zed".to_string(),
+            status_flash_secs:      5.0,
+            task_linger_secs:       1.0,
+            discovery_shimmer_secs: 10.0,
         }
     }
 }
@@ -618,6 +636,7 @@ mod tests {
         assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Exclude);
         assert_eq!(cfg.tui.editor, "zed");
         assert!((cfg.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
+        assert!((cfg.tui.discovery_shimmer_secs - 10.0).abs() < f64::EPSILON);
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
         assert!(!cfg.lint.enabled);
@@ -693,6 +712,7 @@ mod tests {
         cfg.tui.editor = "vim".to_string();
         cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
         cfg.tui.status_flash_secs = 5.0;
+        cfg.tui.discovery_shimmer_secs = 4.5;
         cfg.mouse.invert_scroll = ScrollDirection::Normal;
 
         let contents = toml::to_string_pretty(&cfg).expect("serialize");
@@ -707,6 +727,7 @@ mod tests {
         assert_eq!(reloaded.tui.editor, "vim");
         assert_eq!(reloaded.tui.navigation_keys, NavigationKeys::ArrowsAndVim);
         assert!((reloaded.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
+        assert!((reloaded.tui.discovery_shimmer_secs - 4.5).abs() < f64::EPSILON);
         assert_eq!(reloaded.mouse.invert_scroll, ScrollDirection::Normal);
         assert!(reloaded.tui.include_dirs.is_empty());
         assert_eq!(reloaded.tui.include_non_rust, NonRustInclusion::Exclude);
@@ -862,5 +883,19 @@ mod tests {
         .expect("normalize config");
 
         assert_eq!(cfg.lint.cache_size, "1.5 GiB");
+    }
+
+    #[test]
+    fn normalize_config_clamps_invalid_tui_seconds_to_zero() {
+        let mut cfg = CargoPortConfig::default();
+        cfg.tui.status_flash_secs = -1.0;
+        cfg.tui.task_linger_secs = f64::NAN;
+        cfg.tui.discovery_shimmer_secs = f64::INFINITY;
+
+        let normalized = normalize_config(cfg).expect("normalize config");
+
+        assert_eq!(normalized.tui.status_flash_secs, 0.0);
+        assert_eq!(normalized.tui.task_linger_secs, 0.0);
+        assert_eq!(normalized.tui.discovery_shimmer_secs, 0.0);
     }
 }

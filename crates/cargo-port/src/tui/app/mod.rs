@@ -25,6 +25,7 @@ pub(super) use dismiss::DismissTarget;
 pub(super) use types::App;
 pub(super) use types::CiState;
 pub(super) use types::ConfirmAction;
+pub(super) use types::DiscoveryRowKind;
 pub(super) use types::ExpandKey;
 pub(super) use types::PendingClean;
 pub(super) use types::PollBackgroundStats;

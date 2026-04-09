@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
+use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
@@ -85,6 +86,33 @@ pub struct SearchHit {
     pub name:         String,
     pub score:        u16,
     pub is_rust:      bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiscoveryShimmer {
+    pub started_at: Instant,
+    pub duration:   Duration,
+}
+
+impl DiscoveryShimmer {
+    pub const fn new(started_at: Instant, duration: Duration) -> Self {
+        Self {
+            started_at,
+            duration,
+        }
+    }
+
+    pub fn is_active_at(self, now: Instant) -> bool {
+        now.duration_since(self.started_at) < self.duration
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiscoveryRowKind {
+    Root,
+    WorktreeEntry,
+    PathOnly,
+    Search,
 }
 
 #[derive(Debug, Default)]
@@ -502,6 +530,7 @@ pub struct App {
     pub crates_downloads:         HashMap<PathBuf, u64>,
     pub stars:                    HashMap<PathBuf, u64>,
     pub repo_descriptions:        HashMap<PathBuf, String>,
+    pub discovery_shimmers:       HashMap<PathBuf, DiscoveryShimmer>,
     pub pending_git_first_commit: HashMap<PathBuf, String>,
     pub bg_tx:                    mpsc::Sender<BackgroundMsg>,
     pub bg_rx:                    Receiver<BackgroundMsg>,

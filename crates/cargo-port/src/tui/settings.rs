@@ -31,6 +31,7 @@ pub(super) enum SettingOption {
     InlineDirs,
     StatusFlashSecs,
     TaskLingerSecs,
+    DiscoveryShimmerSecs,
     LintsEnabled,
     LintOnDiscovery,
     LintProjects,
@@ -104,6 +105,10 @@ fn format_linger_secs(cfg: &config::CargoPortConfig) -> String {
     format_secs(cfg.tui.task_linger_secs)
 }
 
+fn format_discovery_shimmer_secs(cfg: &config::CargoPortConfig) -> String {
+    format_secs(cfg.tui.discovery_shimmer_secs)
+}
+
 fn settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
     vec![
         (None, "General", String::new()),
@@ -167,6 +172,11 @@ fn settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
             Some(SettingOption::TaskLingerSecs),
             "Task linger secs",
             format_linger_secs(cfg),
+        ),
+        (
+            Some(SettingOption::DiscoveryShimmerSecs),
+            "Discovery shimmer secs",
+            format_discovery_shimmer_secs(cfg),
         ),
         (None, "Lints", String::new()),
         (
@@ -660,6 +670,7 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
             | SettingOption::InlineDirs
             | SettingOption::StatusFlashSecs
             | SettingOption::TaskLingerSecs
+            | SettingOption::DiscoveryShimmerSecs
             | SettingOption::LintProjects
             | SettingOption::LintCommands
             | SettingOption::LintCacheSize,
@@ -714,6 +725,9 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
         },
         Some(SettingOption::TaskLingerSecs) => {
             begin_settings_edit(app, format_linger_secs(&app.current_config));
+        },
+        Some(SettingOption::DiscoveryShimmerSecs) => {
+            begin_settings_edit(app, format_discovery_shimmer_secs(&app.current_config));
         },
         Some(SettingOption::IncludeNonRust) => {
             let mut cfg = app.current_config.clone();
@@ -815,6 +829,16 @@ fn apply_settings_edit(app: &mut App) {
                 return;
             }
         },
+        Some(SettingOption::DiscoveryShimmerSecs) => {
+            if let Ok(secs) = value.parse::<f64>() {
+                let mut cfg = app.current_config.clone();
+                cfg.tui.discovery_shimmer_secs = secs.max(0.0);
+                let _ = save_updated_config(app, &cfg);
+            } else {
+                finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+                return;
+            }
+        },
         Some(
             SettingOption::InvertScroll
             | SettingOption::IncludeNonRust
@@ -902,26 +926,37 @@ mod tests {
             Some(SettingOption::NavigationKeys)
         );
         assert_eq!(
-            SettingOption::from_index(9),
+            SettingOption::from_index(10),
             Some(SettingOption::LintsEnabled)
         );
         assert_eq!(
-            SettingOption::from_index(10),
+            SettingOption::from_index(11),
             Some(SettingOption::LintOnDiscovery)
         );
         assert_eq!(
-            SettingOption::from_index(11),
+            SettingOption::from_index(12),
             Some(SettingOption::LintProjects)
         );
         assert_eq!(
-            SettingOption::from_index(12),
+            SettingOption::from_index(13),
             Some(SettingOption::LintCommands)
         );
         assert_eq!(
-            SettingOption::from_index(13),
+            SettingOption::from_index(14),
             Some(SettingOption::LintCacheSize)
         );
-        assert_eq!(SettingOption::COUNT, 14);
+        assert_eq!(
+            SettingOption::from_index(9),
+            Some(SettingOption::DiscoveryShimmerSecs)
+        );
+        assert_eq!(SettingOption::COUNT, 15);
+    }
+
+    #[test]
+    fn format_discovery_shimmer_secs_renders_whole_numbers_cleanly() {
+        let mut cfg = config::CargoPortConfig::default();
+        cfg.tui.discovery_shimmer_secs = 4.0;
+        assert_eq!(format_discovery_shimmer_secs(&cfg), "4");
     }
 
     #[test]

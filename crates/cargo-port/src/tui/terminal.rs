@@ -215,6 +215,7 @@ fn event_loop(
         }
 
         let (bg_stats, bg_elapsed) = poll_background_frame(app);
+        app.prune_discovery_shimmers(Instant::now());
         clear_terminal_if_dirty(terminal, app)?;
 
         let rows_elapsed = measure(|| app.ensure_visible_rows_cached());

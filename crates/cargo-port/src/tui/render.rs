@@ -22,6 +22,7 @@ use unicode_width::UnicodeWidthStr;
 use super::app::App;
 use super::app::CiState;
 use super::app::ConfirmAction;
+use super::app::DiscoveryRowKind;
 use super::app::ExpandKey;
 use super::app::ResolvedWidths;
 use super::app::VisibleRow;
@@ -847,6 +848,7 @@ fn render_root_item(
     let lang = item.lang_icon();
     let lint = app.lint_icon_for_root(node_index);
     let sync = app.git_sync(item.path());
+    let git_path_state = app.git_path_state_for(item.path());
     let prefix = if item.has_children() {
         if app.expanded.contains(&ExpandKey::Node(node_index)) {
             PREFIX_ROOT_EXPANDED
@@ -869,7 +871,13 @@ fn render_root_item(
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name,
-        git_path_state: app.git_path_state_for(item.path()),
+        name_segments: app.discovery_name_segments_for_path(
+            item.path(),
+            name,
+            git_path_state,
+            DiscoveryRowKind::Root,
+        ),
+        git_path_state,
         lint_icon: lint,
         disk: disk_text,
         disk_style: ds,
@@ -914,6 +922,7 @@ fn render_child_item(
         app.git_sync(path)
     };
     let deleted = inherited_deleted || app.is_deleted(project.path());
+    let git_path_state = app.git_path_state_for(path);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         (
             "0.0",
@@ -926,7 +935,13 @@ fn render_child_item(
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name,
-        git_path_state: app.git_path_state_for(path),
+        name_segments: app.discovery_name_segments_for_path(
+            path,
+            name,
+            git_path_state,
+            DiscoveryRowKind::PathOnly,
+        ),
+        git_path_state,
         lint_icon: lint,
         disk: disk_text,
         disk_style: ds,
@@ -1012,6 +1027,7 @@ fn render_worktree_entry<'a>(
     let ci = app.ci_for(wt_abs);
     let sync = app.git_sync(wt_abs);
     let deleted = app.is_deleted(wt_abs);
+    let git_path_state = app.git_path_state_for(wt_abs);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         (
             "0.0",
@@ -1024,7 +1040,13 @@ fn render_worktree_entry<'a>(
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name: &wt_name,
-        git_path_state: app.git_path_state_for(wt_abs),
+        name_segments: app.discovery_name_segments_for_path(
+            wt_abs,
+            &wt_name,
+            git_path_state,
+            DiscoveryRowKind::WorktreeEntry,
+        ),
+        git_path_state,
         lint_icon: lint,
         disk: disk_text,
         disk_style: ds,
@@ -1435,6 +1457,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             let deleted = metadata
                 .as_ref()
                 .is_some_and(|item| matches!(item.visibility, Visibility::Deleted));
+            let git_path_state = app.git_path_state_for(abs);
             let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
                 (
                     "0.0",
@@ -1447,7 +1470,13 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             let row = super::columns::build_row_cells(super::columns::ProjectRow {
                 prefix: "  ",
                 name: &hit.name,
-                git_path_state: app.git_path_state_for(abs),
+                name_segments: app.discovery_name_segments_for_path(
+                    abs,
+                    &hit.name,
+                    git_path_state,
+                    DiscoveryRowKind::Search,
+                ),
+                git_path_state,
                 lint_icon: lint,
                 disk: disk_text,
                 disk_style: ds,

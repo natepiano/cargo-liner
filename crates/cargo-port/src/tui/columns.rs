@@ -125,15 +125,23 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
 pub(super) struct CellContent {
     pub text:           String,
     pub style:          Style,
+    pub segments:       Option<Vec<StyledSegment>>,
     pub align_override: Option<Align>,
     pub suffix:         Option<String>,
     pub suffix_style:   Option<Style>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
+pub(super) struct StyledSegment {
+    pub text:  String,
+    pub style: Style,
+}
+
+#[derive(Clone)]
 pub(super) struct ProjectRow<'a> {
     pub prefix:            &'a str,
     pub name:              &'a str,
+    pub name_segments:     Option<Vec<StyledSegment>>,
     pub git_path_state:    GitPathState,
     pub lint_icon:         &'a str,
     pub disk:              &'a str,
@@ -272,6 +280,26 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'stat
             continue;
         }
 
+        if i == COL_NAME
+            && let Some(segments) = &cell.segments
+        {
+            let prefix_w = display_width(&row.prefix);
+            let available = col_width.saturating_sub(prefix_w);
+            let content_w = segments
+                .iter()
+                .map(|segment| display_width(&segment.text))
+                .sum();
+            spans.push(Span::styled(row.prefix.clone(), cell.style));
+            for segment in segments {
+                spans.push(Span::styled(segment.text.clone(), segment.style));
+            }
+            let padding = available.saturating_sub(content_w);
+            if padding > 0 {
+                spans.push(Span::styled(" ".repeat(padding), cell.style));
+            }
+            continue;
+        }
+
         let content = if i == COL_NAME {
             let prefix_w = display_width(&row.prefix);
             let available = col_width.saturating_sub(prefix_w);
@@ -376,12 +404,7 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         .map_or(String::new(), |conclusion| String::from(conclusion.icon()));
     let git_path_icon = row.git_path_state.icon();
 
-    let name_style = match row.git_path_state {
-        GitPathState::Modified => Style::default().fg(GIT_MODIFIED_COLOR),
-        GitPathState::Untracked => Style::default().fg(GIT_UNTRACKED_COLOR),
-        GitPathState::Ignored => Style::default().fg(GIT_IGNORED_COLOR),
-        GitPathState::OutsideRepo | GitPathState::Clean => Style::default(),
-    };
+    let name_style = project_name_style(row.git_path_state);
     let ci_style = super::render::conclusion_style(row.ci);
     let sync_style = if row.git_sync == IN_SYNC {
         Style::default().fg(GIT_UNTRACKED_COLOR)
@@ -399,6 +422,7 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     cells[COL_NAME] = CellContent {
         text: String::from(row.name),
         style: name_style,
+        segments: row.name_segments,
         align_override: None,
         ..CellContent::default()
     };
@@ -433,11 +457,12 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         ..CellContent::default()
     };
     cells[COL_DISK] = CellContent {
-        text:           String::from(row.disk),
-        style:          row.disk_style,
+        text: String::from(row.disk),
+        style: row.disk_style,
         align_override: None,
-        suffix:         row.disk_suffix.map(String::from),
-        suffix_style:   row.disk_suffix_style,
+        suffix: row.disk_suffix.map(String::from),
+        suffix_style: row.disk_suffix_style,
+        ..CellContent::default()
     };
 
     RowCells {
@@ -445,6 +470,79 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         prefix: String::from(row.prefix),
         deleted: row.deleted,
     }
+}
+
+pub(super) fn project_name_style(git_path_state: GitPathState) -> Style {
+    match git_path_state {
+        GitPathState::Modified => Style::default().fg(GIT_MODIFIED_COLOR),
+        GitPathState::Untracked => Style::default().fg(GIT_UNTRACKED_COLOR),
+        GitPathState::Ignored => Style::default().fg(GIT_IGNORED_COLOR),
+        GitPathState::OutsideRepo | GitPathState::Clean => Style::default(),
+    }
+}
+
+pub(super) fn project_name_shimmer_style(git_path_state: GitPathState) -> Style {
+    match git_path_state {
+        GitPathState::Modified => Style::default().fg(Color::Indexed(216)),
+        GitPathState::Untracked => Style::default().fg(Color::Rgb(120, 255, 160)),
+        GitPathState::Ignored => Style::default().fg(Color::Gray),
+        GitPathState::OutsideRepo | GitPathState::Clean => {
+            Style::default().fg(Color::Rgb(150, 210, 255))
+        },
+    }
+}
+
+pub(super) fn build_shimmer_segments(
+    name: &str,
+    base_style: Style,
+    accent_style: Style,
+    head: usize,
+    window_len: usize,
+) -> Vec<StyledSegment> {
+    let chars: Vec<char> = name.chars().collect();
+    if chars.is_empty() || window_len == 0 {
+        return vec![StyledSegment {
+            text:  name.to_string(),
+            style: base_style,
+        }];
+    }
+    let len = chars.len();
+    let head = head % len;
+    let window_len = window_len.min(len);
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut highlighted = false;
+
+    for (index, ch) in chars.iter().enumerate() {
+        let is_highlighted = (index + len - head) % len < window_len;
+        if current.is_empty() {
+            highlighted = is_highlighted;
+        } else if is_highlighted != highlighted {
+            segments.push(StyledSegment {
+                text:  std::mem::take(&mut current),
+                style: if highlighted {
+                    accent_style
+                } else {
+                    base_style
+                },
+            });
+            highlighted = is_highlighted;
+        }
+        current.push(*ch);
+    }
+
+    if !current.is_empty() {
+        segments.push(StyledSegment {
+            text:  current,
+            style: if highlighted {
+                accent_style
+            } else {
+                base_style
+            },
+        });
+    }
+
+    segments
 }
 
 /// Build a `RowCells` for a group header (only Name column has content).
@@ -613,6 +711,7 @@ mod tests {
         let row_emoji = build_row_cells(ProjectRow {
             prefix:            "▶ ",
             name:              "bevy_brp 🌲:2",
+            name_segments:     None,
             git_path_state:    GitPathState::Clean,
             lint_icon:         crate::constants::LINT_PASSED,
             disk:              "36.3 GiB",
@@ -627,6 +726,7 @@ mod tests {
         let row_ascii = build_row_cells(ProjectRow {
             prefix:            "▶ ",
             name:              "bevy_mesh_outline_benchmark",
+            name_segments:     None,
             git_path_state:    GitPathState::Clean,
             lint_icon:         crate::constants::LINT_PASSED,
             disk:              "36.3 GiB",
@@ -708,6 +808,7 @@ mod tests {
         let row = build_row_cells(ProjectRow {
             prefix:            "▶ ",
             name:              "demo",
+            name_segments:     None,
             git_path_state:    GitPathState::Clean,
             lint_icon:         crate::constants::LINT_PASSED,
             disk:              "36.3 GiB",
@@ -734,6 +835,7 @@ mod tests {
         let modified = build_row_cells(ProjectRow {
             prefix:            "  ",
             name:              "demo",
+            name_segments:     None,
             git_path_state:    GitPathState::Modified,
             lint_icon:         " ",
             disk:              "—",
@@ -754,6 +856,7 @@ mod tests {
         let untracked = build_row_cells(ProjectRow {
             prefix:            "  ",
             name:              "demo",
+            name_segments:     None,
             git_path_state:    GitPathState::Untracked,
             lint_icon:         " ",
             disk:              "—",
@@ -777,6 +880,7 @@ mod tests {
         let clean = build_row_cells(ProjectRow {
             prefix:            "  ",
             name:              "demo",
+            name_segments:     None,
             git_path_state:    GitPathState::Clean,
             lint_icon:         " ",
             disk:              "—",
@@ -796,6 +900,7 @@ mod tests {
         let ignored = build_row_cells(ProjectRow {
             prefix:            "  ",
             name:              "demo",
+            name_segments:     None,
             git_path_state:    GitPathState::Ignored,
             lint_icon:         " ",
             disk:              "—",
@@ -809,5 +914,58 @@ mod tests {
         });
         assert_eq!(ignored.cells[COL_NAME].style.fg, Some(GIT_IGNORED_COLOR));
         assert!(ignored.cells[COL_GIT_PATH].text.is_empty());
+    }
+
+    #[test]
+    fn build_shimmer_segments_wraps_around_name_end() {
+        let segments = build_shimmer_segments(
+            "abcd",
+            Style::default(),
+            Style::default().fg(Color::Yellow),
+            3,
+            2,
+        );
+
+        let actual: Vec<_> = segments
+            .iter()
+            .map(|segment| (segment.text.as_str(), segment.style.fg))
+            .collect();
+        assert_eq!(
+            actual,
+            vec![
+                ("a", Some(Color::Yellow)),
+                ("bc", None),
+                ("d", Some(Color::Yellow)),
+            ]
+        );
+    }
+
+    #[test]
+    fn shimmer_style_never_uses_bold() {
+        for state in [
+            GitPathState::Clean,
+            GitPathState::Modified,
+            GitPathState::Untracked,
+            GitPathState::Ignored,
+            GitPathState::OutsideRepo,
+        ] {
+            assert!(
+                !project_name_shimmer_style(state)
+                    .add_modifier
+                    .contains(Modifier::BOLD)
+            );
+        }
+    }
+
+    #[test]
+    fn clean_shimmer_style_uses_explicit_high_contrast_foreground() {
+        assert_eq!(
+            project_name_shimmer_style(GitPathState::Clean).fg,
+            Some(Color::Rgb(150, 210, 255))
+        );
+        assert_eq!(
+            project_name_shimmer_style(GitPathState::OutsideRepo).fg,
+            Some(Color::Rgb(150, 210, 255))
+        );
     }
 }

@@ -50,6 +50,7 @@ use crate::tui::toasts::ToastManager;
 use crate::tui::types::PaneId;
 
 mod background;
+mod discovery_shimmer;
 mod panes;
 mod rows;
 mod search;
