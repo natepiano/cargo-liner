@@ -1118,7 +1118,9 @@ fn root_rows_extend_dir_suffix_until_same_leaf_dirs_become_unique() {
         "root label should prepend parents until the suffix becomes unique: {names:?}"
     );
     assert!(
-        names.iter().any(|name| name.contains(crate::constants::WORKTREE)),
+        names
+            .iter()
+            .any(|name| name.contains(crate::constants::WORKTREE)),
         "worktree root should still render its badge after disambiguation: {names:?}"
     );
     assert_ne!(
