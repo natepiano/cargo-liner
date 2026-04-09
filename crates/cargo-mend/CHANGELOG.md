@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-04-09
+
 ### Fixed
 - Installation instructions now show the working `rustc-dev` + `RUSTC_BOOTSTRAP=1 cargo install cargo-mend` path, with the nightly install flow as an alternative
+
 ## [0.5.0] - 2026-04-09
 
 ### Added
