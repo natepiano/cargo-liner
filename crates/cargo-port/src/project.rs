@@ -44,23 +44,37 @@ impl fmt::Display for AbsolutePath {
 }
 
 impl From<PathBuf> for AbsolutePath {
-    fn from(path: PathBuf) -> Self { Self(path) }
+    fn from(path: PathBuf) -> Self {
+        debug_assert!(path.is_absolute(), "AbsolutePath requires an absolute path: {path:?}");
+        Self(path)
+    }
 }
 
 impl From<&Path> for AbsolutePath {
-    fn from(path: &Path) -> Self { Self(path.to_path_buf()) }
+    fn from(path: &Path) -> Self {
+        debug_assert!(path.is_absolute(), "AbsolutePath requires an absolute path: {path:?}");
+        Self(path.to_path_buf())
+    }
 }
 
 /// A display path for the UI (e.g. `~/rust/bevy`). Never used as a `HashMap` key.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DisplayPath(String);
 
 impl DisplayPath {
     pub(crate) const fn new(s: String) -> Self { Self(s) }
+
+    pub(crate) fn as_str(&self) -> &str { &self.0 }
+
+    pub(crate) fn into_string(self) -> String { self.0 }
 }
 
 impl fmt::Display for DisplayPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
+}
+
+impl AsRef<str> for DisplayPath {
+    fn as_ref(&self) -> &str { self.as_str() }
 }
 
 /// Whether a project is a plain clone or a fork (has an "upstream" remote).
@@ -1209,20 +1223,33 @@ pub(crate) trait InfoProvider {
 /// The core project type, parameterized by kind.
 /// Private fields with accessors enforce what's available per kind.
 pub(crate) struct RustProject<Kind: CargoKind> {
-    path:                      PathBuf,
+    /// Absolute filesystem path to this project leaf's root directory.
+    path:                      AbsolutePath,
+    /// Package or workspace name from Cargo metadata when available.
     name:                      Option<String>,
+    /// Shared leaf-attached project metadata available across project kinds.
     info:                      ProjectInfo,
+    /// Rust-specific Cargo metadata and derived target information.
     cargo:                     Cargo,
+    /// Vendored Rust dependencies nested under this project leaf.
     vendored:                  Vec<RustProject<Package>>,
+    /// Marker for whether this leaf is a workspace or a package.
     kind:                      Kind,
+    /// Worktree label shown in the UI for linked worktree checkouts.
     worktree_name:             Option<String>,
-    worktree_primary_abs_path: Option<PathBuf>,
+    /// Absolute path to the primary checkout root for this worktree family.
+    ///
+    /// This is leaf metadata used to identify and regroup related worktrees.
+    worktree_primary_abs_path: Option<AbsolutePath>,
 }
 
 /// A non-Rust project. Separate struct, no generic parameter.
 pub(crate) struct NonRustProject {
-    path: PathBuf,
+    /// Absolute filesystem path to this project's root directory.
+    path: AbsolutePath,
+    /// Directory-derived project name used for display and search.
     name: Option<String>,
+    /// Shared leaf-attached project metadata available across project kinds.
     info: ProjectInfo,
 }
 
@@ -1238,20 +1265,19 @@ impl Clone for NonRustProject {
 
 impl InfoProvider for NonRustProject {
     fn info(&self) -> &ProjectInfo { &self.info }
-
     fn info_mut(&mut self) -> &mut ProjectInfo { &mut self.info }
 }
 
 impl NonRustProject {
     pub(crate) fn new(path: PathBuf, name: Option<String>) -> Self {
         Self {
-            path,
+            path: path.into(),
             name,
             info: ProjectInfo::default(),
         }
     }
 
-    pub(crate) fn path(&self) -> &Path { &self.path }
+    pub(crate) fn path(&self) -> &Path { self.path.as_path() }
 
     pub(crate) fn name(&self) -> Option<&str> { self.name.as_deref() }
 
@@ -1262,7 +1288,7 @@ impl NonRustProject {
     pub(crate) const fn git_info(&self) -> Option<&GitInfo> { self.info.git_info.as_ref() }
 
     /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
-    pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }
+    pub(crate) fn display_path(&self) -> DisplayPath { self.path.display_path() }
 
     /// Display name: project name or last path component.
     pub(crate) fn display_name(&self) -> String {
@@ -1270,6 +1296,7 @@ impl NonRustProject {
             .as_deref()
             .unwrap_or_else(|| {
                 self.path
+                    .as_path()
                     .file_name()
                     .map_or("", |n| n.to_str().unwrap_or(""))
             })
@@ -1318,7 +1345,7 @@ impl<Kind: CargoKind> InfoProvider for RustProject<Kind> {
 
 // Shared accessors for all CargoKind projects.
 impl<Kind: CargoKind> RustProject<Kind> {
-    pub(crate) fn path(&self) -> &Path { &self.path }
+    pub(crate) fn path(&self) -> &Path { self.path.as_path() }
 
     pub(crate) fn name(&self) -> Option<&str> { self.name.as_deref() }
 
@@ -1329,7 +1356,7 @@ impl<Kind: CargoKind> RustProject<Kind> {
     pub(crate) const fn git_info(&self) -> Option<&GitInfo> { self.info.git_info.as_ref() }
 
     /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
-    pub(crate) fn display_path(&self) -> String { home_relative_path(&self.path) }
+    pub(crate) fn display_path(&self) -> DisplayPath { self.path.display_path() }
 
     pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
 
@@ -1342,7 +1369,7 @@ impl<Kind: CargoKind> RustProject<Kind> {
     pub(crate) fn worktree_name(&self) -> Option<&str> { self.worktree_name.as_deref() }
 
     pub(crate) fn worktree_primary_abs_path(&self) -> Option<&Path> {
-        self.worktree_primary_abs_path.as_deref()
+        self.worktree_primary_abs_path.as_ref().map(AbsolutePath::as_path)
     }
 
     /// Display name: project name or last path component.
@@ -1351,6 +1378,7 @@ impl<Kind: CargoKind> RustProject<Kind> {
             .as_deref()
             .unwrap_or_else(|| {
                 self.path
+                    .as_path()
                     .file_name()
                     .map_or("", |n| n.to_str().unwrap_or(""))
             })
@@ -1374,14 +1402,14 @@ impl RustProject<Workspace> {
         worktree_primary_abs_path: Option<PathBuf>,
     ) -> Self {
         Self {
-            path,
+            path: path.into(),
             name,
             info: ProjectInfo::default(),
             cargo,
             vendored,
             kind: Workspace::new(groups),
             worktree_name,
-            worktree_primary_abs_path,
+            worktree_primary_abs_path: worktree_primary_abs_path.map(AbsolutePath::from),
         }
     }
 
@@ -1404,14 +1432,14 @@ impl RustProject<Package> {
         worktree_primary_abs_path: Option<PathBuf>,
     ) -> Self {
         Self {
-            path,
+            path: path.into(),
             name,
             info: ProjectInfo::default(),
             cargo,
             vendored,
             kind: Package,
             worktree_name,
-            worktree_primary_abs_path,
+            worktree_primary_abs_path: worktree_primary_abs_path.map(AbsolutePath::from),
         }
     }
 
@@ -1543,7 +1571,7 @@ impl RootItem {
         }
     }
 
-    pub(crate) fn display_path(&self) -> String {
+    pub(crate) fn display_path(&self) -> DisplayPath {
         match self {
             Self::Workspace(p) => p.display_path(),
             Self::Package(p) => p.display_path(),

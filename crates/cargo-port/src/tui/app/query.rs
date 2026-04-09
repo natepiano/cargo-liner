@@ -13,6 +13,7 @@ use crate::config::ScrollDirection;
 use crate::constants::IN_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
+use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
@@ -154,7 +155,7 @@ impl App {
 
     pub fn sync_selected_project(&mut self) {
         self.ensure_visible_rows_cached();
-        let current = self.selected_display_path();
+        let current = self.selected_project_path().map(AbsolutePath::from);
         if self
             .selection_paths
             .collapsed_anchor
@@ -180,15 +181,15 @@ impl App {
             self.return_focus = Some(PaneId::ProjectList);
         }
 
-        if let Some(display_path) = current
-            && self.selection_paths.last_selected.as_ref() != Some(&display_path)
+        if let Some(abs_path) = current
+            && self.selection_paths.last_selected.as_ref() != Some(&abs_path)
         {
-            if let Some(abs_path) = self.selected_project_path().map(Path::to_path_buf) {
-                self.reload_lint_history(&abs_path);
+            if let Some(path) = self.selected_project_path().map(Path::to_path_buf) {
+                self.reload_lint_history(&path);
             }
             self.data_generation += 1;
             self.detail_generation += 1;
-            self.selection_paths.last_selected = Some(display_path);
+            self.selection_paths.last_selected = Some(abs_path);
             self.mark_selection_changed();
             self.maybe_priority_fetch();
         }
@@ -307,32 +308,32 @@ impl App {
 
     pub fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
 
-    pub fn is_vendored_path(&self, path: &str) -> bool {
+    pub fn is_vendored_path(&self, path: &Path) -> bool {
         self.projects.iter().any(|item| match item {
-            RootItem::Workspace(ws) => ws.vendored().iter().any(|v| v.display_path() == path),
-            RootItem::Package(pkg) => pkg.vendored().iter().any(|v| v.display_path() == path),
+            RootItem::Workspace(ws) => ws.vendored().iter().any(|v| v.path() == path),
+            RootItem::Package(pkg) => pkg.vendored().iter().any(|v| v.path() == path),
             RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
                 .chain(wtg.linked().iter())
-                .any(|ws| ws.vendored().iter().any(|v| v.display_path() == path)),
+                .any(|ws| ws.vendored().iter().any(|v| v.path() == path)),
             RootItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
                 .chain(wtg.linked().iter())
-                .any(|pkg| pkg.vendored().iter().any(|v| v.display_path() == path)),
+                .any(|pkg| pkg.vendored().iter().any(|v| v.path() == path)),
             RootItem::NonRust(_) => false,
         })
     }
 
-    pub fn is_workspace_member_path(&self, path: &str) -> bool {
+    pub fn is_workspace_member_path(&self, path: &Path) -> bool {
         self.projects.iter().any(|item| match item {
             RootItem::Workspace(ws) => ws
                 .groups()
                 .iter()
-                .any(|g| g.members().iter().any(|m| m.display_path() == path)),
+                .any(|g| g.members().iter().any(|m| m.path() == path)),
             RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
                 .chain(wtg.linked().iter())
                 .any(|ws| {
                     ws.groups()
                         .iter()
-                        .any(|g| g.members().iter().any(|m| m.display_path() == path))
+                        .any(|g| g.members().iter().any(|m| m.path() == path))
                 }),
             _ => false,
         })
@@ -341,7 +342,7 @@ impl App {
     pub fn recompute_cargo_active_paths(&mut self) {
         let mut active_paths: HashSet<PathBuf> = HashSet::new();
         self.projects.for_each_leaf(|item| {
-            if !self.is_vendored_path(&item.display_path()) {
+            if !self.is_vendored_path(item.path()) {
                 active_paths.insert(item.path().to_path_buf());
             }
         });

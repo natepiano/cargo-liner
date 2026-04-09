@@ -566,13 +566,16 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
 
 fn last_selected_path_file() -> PathBuf { scan::cache_dir().join("last_selected.txt") }
 
-pub(super) fn load_last_selected() -> Option<String> {
+pub(super) fn load_last_selected() -> Option<AbsolutePath> {
     let path = last_selected_path_file();
-    std::fs::read_to_string(path).ok().filter(|s| !s.is_empty())
+    let raw = std::fs::read_to_string(path).ok()?;
+    let trimmed = raw.trim();
+    (!trimmed.is_empty() && Path::new(trimmed).is_absolute())
+        .then(|| PathBuf::from(trimmed).into())
 }
 
-fn save_last_selected(project_path: &str) {
-    let _ = std::fs::write(last_selected_path_file(), project_path);
+fn save_last_selected(project_path: &AbsolutePath) {
+    let _ = std::fs::write(last_selected_path_file(), project_path.to_string());
 }
 
 /// Spawn a background thread to fetch details for a single project ahead of the main scan.

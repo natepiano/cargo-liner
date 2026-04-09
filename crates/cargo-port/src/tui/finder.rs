@@ -17,6 +17,7 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use std::path::Path;
 
 use super::app::App;
 use super::constants::FINDER_POPUP_HEIGHT;
@@ -106,11 +107,13 @@ pub(super) fn build_finder_index(
                 add_package_items(&mut items, pkg);
             },
             RootItem::NonRust(nr) => {
-                let dp = nr.display_path();
+                let dp = nr.display_path().into_string();
+                let abs = nr.path().display().to_string();
                 let branch = branch_for(nr.git_info());
                 add_project_items_from_typed(
                     &mut items,
                     &nr.display_name(),
+                    &abs,
                     &dp,
                     &[],
                     &[],
@@ -121,8 +124,7 @@ pub(super) fn build_finder_index(
             RootItem::WorkspaceWorktrees(wtg) => {
                 add_workspace_items(&mut items, wtg.primary());
                 for linked in wtg.linked() {
-                    let dp = linked.display_path();
-                    if dp == wtg.primary().display_path() {
+                    if linked.path() == wtg.primary().path() {
                         continue;
                     }
                     add_workspace_items(&mut items, linked);
@@ -131,8 +133,7 @@ pub(super) fn build_finder_index(
             RootItem::PackageWorktrees(wtg) => {
                 add_package_items(&mut items, wtg.primary());
                 for linked in wtg.linked() {
-                    let dp = linked.display_path();
-                    if dp == wtg.primary().display_path() {
+                    if linked.path() == wtg.primary().path() {
                         continue;
                     }
                     add_package_items(&mut items, linked);
@@ -166,13 +167,15 @@ fn branch_for(git_info: Option<&GitInfo>) -> String {
 }
 
 fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &RustProject<Workspace>) {
-    let root_path = ws.display_path();
+    let root_path = ws.display_path().into_string();
+    let root_abs_path = ws.path().display().to_string();
     let root_branch = branch_for(ws.git_info());
     let cargo = ws.cargo();
 
     add_project_items_from_typed(
         items,
         &ws.display_name(),
+        &root_abs_path,
         &root_path,
         cargo.types(),
         cargo.examples(),
@@ -186,7 +189,8 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &RustProject<Workspace>)
             add_project_items_from_typed(
                 items,
                 &member.display_name(),
-                &member.display_path(),
+                &member.path().display().to_string(),
+                member.display_path().as_str(),
                 member_cargo.types(),
                 member_cargo.examples(),
                 member_cargo.benches(),
@@ -201,13 +205,15 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &RustProject<Workspace>)
 }
 
 fn add_package_items(items: &mut Vec<FinderItem>, pkg: &RustProject<Package>) {
-    let root_path = pkg.display_path();
+    let root_path = pkg.display_path().into_string();
+    let root_abs_path = pkg.path().display().to_string();
     let root_branch = branch_for(pkg.git_info());
     let cargo = pkg.cargo();
 
     add_project_items_from_typed(
         items,
         &pkg.display_name(),
+        &root_abs_path,
         &root_path,
         cargo.types(),
         cargo.examples(),
@@ -226,7 +232,8 @@ fn add_vendored_items_typed(
     parent_name: &str,
 ) {
     let project_name = project.display_name();
-    let dir = project.display_path();
+    let dir = project.display_path().into_string();
+    let project_path = project.path().display().to_string();
     let branch = String::new();
     let display_name = format!("{project_name} (vendored)");
 
@@ -241,7 +248,7 @@ fn add_vendored_items_typed(
         ]),
         display_name,
         kind: FinderKind::Project,
-        project_path: dir.clone(),
+        project_path: project_path.clone(),
         target_name: None,
         parent_label: parent_name.to_string(),
         branch: branch.clone(),
@@ -263,7 +270,7 @@ fn add_vendored_items_typed(
             ]),
             display_name: project_name.clone(),
             kind,
-            project_path: dir.clone(),
+            project_path: project_path.clone(),
             target_name: Some(project_name.clone()),
             parent_label: project_name.clone(),
             branch: branch.clone(),
@@ -290,7 +297,7 @@ fn add_vendored_items_typed(
                 ]),
                 display_name: display,
                 kind,
-                project_path: dir.clone(),
+                project_path: project_path.clone(),
                 target_name: Some(name.clone()),
                 parent_label: project_name.clone(),
                 branch: branch.clone(),
@@ -312,7 +319,7 @@ fn add_vendored_items_typed(
             ]),
             display_name: name.clone(),
             kind,
-            project_path: dir.clone(),
+            project_path: project_path.clone(),
             target_name: Some(name.clone()),
             parent_label: project_name.clone(),
             branch: branch.clone(),
@@ -324,6 +331,7 @@ fn add_vendored_items_typed(
 fn add_project_items_from_typed(
     items: &mut Vec<FinderItem>,
     project_name: &str,
+    abs_path: &str,
     display_path: &str,
     types: &[ProjectType],
     examples: &[ExampleGroup],
@@ -340,7 +348,7 @@ fn add_project_items_from_typed(
         search_tokens: build_search_tokens(&[&project_name, &dir, &branch, kind.label()]),
         display_name: project_name.clone(),
         kind,
-        project_path: dir.clone(),
+        project_path: abs_path.to_string(),
         target_name: None,
         parent_label: String::new(),
         branch: branch.clone(),
@@ -360,7 +368,7 @@ fn add_project_items_from_typed(
             ]),
             display_name: project_name.clone(),
             kind,
-            project_path: dir.clone(),
+            project_path: abs_path.to_string(),
             target_name: Some(project_name.clone()),
             parent_label: project_name.clone(),
             branch: branch.clone(),
@@ -387,7 +395,7 @@ fn add_project_items_from_typed(
                 ]),
                 display_name: display,
                 kind,
-                project_path: dir.clone(),
+                project_path: abs_path.to_string(),
                 target_name: Some(name.clone()),
                 parent_label: project_name.clone(),
                 branch: branch.clone(),
@@ -403,7 +411,7 @@ fn add_project_items_from_typed(
             search_tokens: build_search_tokens(&[name, &project_name, &dir, &branch, kind.label()]),
             display_name: name.clone(),
             kind,
-            project_path: dir.clone(),
+            project_path: abs_path.to_string(),
             target_name: Some(name.clone()),
             parent_label: project_name.clone(),
             branch: branch.clone(),
@@ -568,7 +576,7 @@ fn confirm_finder(app: &mut App) {
     app.close_overlay();
 
     // Navigate to the project
-    app.select_project_in_tree(&item.project_path);
+    app.select_project_in_tree(Path::new(&item.project_path));
 
     match item.kind {
         FinderKind::Project => {
@@ -778,15 +786,27 @@ mod tests {
     use crate::project::RustProject;
     use crate::project::Workspace;
 
+    fn test_path(path: &str) -> PathBuf {
+        if path == "~" {
+            return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
+        }
+        if let Some(rest) = path.strip_prefix("~/") {
+            return dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join(rest);
+        }
+        PathBuf::from(path)
+    }
+
     #[test]
     fn build_finder_index_includes_vendored_projects() {
         let ws = RustProject::<Workspace>::new(
-            PathBuf::from("~/rust/hana"),
+            test_path("~/rust/hana"),
             Some("hana".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
             Vec::new(),
             vec![RustProject::<Package>::new(
-                PathBuf::from("~/rust/hana/crates/clay-layout"),
+                test_path("~/rust/hana/crates/clay-layout"),
                 Some("clay-layout".to_string()),
                 Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
                 Vec::new(),
@@ -799,7 +819,7 @@ mod tests {
         let list_items = vec![RootItem::Workspace(ws)];
         let (items, _widths) = build_finder_index(&list_items);
         assert!(items.iter().any(|item| {
-            item.project_path == "~/rust/hana/crates/clay-layout"
+            item.project_path == test_path("~/rust/hana/crates/clay-layout").display().to_string()
                 && item.display_name == "clay-layout (vendored)"
                 && item.branch.is_empty()
         }));
@@ -881,7 +901,7 @@ mod tests {
     #[test]
     fn build_finder_index_tokenizes_display_name_and_dir_segments() {
         let pkg = RustProject::<Package>::new(
-            PathBuf::from("~/rust/bevy/tools/build-easefunction-graphs"),
+            test_path("~/rust/bevy/tools/build-easefunction-graphs"),
             Some("build-easefunction-graphs".to_string()),
             Cargo::new(
                 None,

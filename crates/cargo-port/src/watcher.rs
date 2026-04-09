@@ -42,7 +42,7 @@ use crate::project::RootItem::NonRust;
 /// Request to register an already-known project with the watcher.
 pub(crate) struct WatchRequest {
     /// Display path (e.g. `~/foo/bar`).
-    pub project_path: String,
+    pub project_label: String,
     /// Absolute filesystem path to the project root.
     pub abs_path:     PathBuf,
     /// Absolute path of the containing git repo root when known.
@@ -88,9 +88,9 @@ struct WatcherLoopContext {
 
 /// Per-project tracking state.
 struct ProjectEntry {
-    project_path: String,
-    abs_path:     PathBuf,
-    repo_root:    Option<PathBuf>,
+    project_label: String,
+    abs_path:      PathBuf,
+    repo_root:     Option<PathBuf>,
     /// The resolved on-disk git directory. For normal repos this is
     /// `repo_root/.git`; for worktrees it follows the `.git` file to the
     /// real directory (e.g. `<main-repo>/.git/worktrees/<name>`).
@@ -252,9 +252,9 @@ fn drain_watch_requests(
                 projects.insert(
                     req.abs_path.clone(),
                     ProjectEntry {
-                        project_path: req.project_path,
-                        abs_path: req.abs_path.clone(),
-                        repo_root: req.repo_root,
+                        project_label: req.project_label,
+                        abs_path:      req.abs_path.clone(),
+                        repo_root:     req.repo_root,
                         git_dir,
                     },
                 );
@@ -326,7 +326,7 @@ fn watch_git_metadata_paths(
     tracing::info!(
         elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
         repo_root = %repo_root.display(),
-        request_path = %req.project_path,
+        request_path = %req.project_label,
         added,
         "watcher_watch_git_metadata"
     );
@@ -423,7 +423,7 @@ fn handle_event(
             return;
         }
         let is_target_event = event_path.starts_with(entry.abs_path.join("target"));
-        schedule_disk_refresh(pending_disk, &entry.project_path, now);
+        schedule_disk_refresh(pending_disk, &entry.project_label, now);
         if !is_target_event && let Some(repo_root) = &entry.repo_root {
             enqueue_git_refresh(
                 pending_git,
@@ -454,10 +454,10 @@ fn handle_event(
 
 fn schedule_disk_refresh(
     pending_disk: &mut HashMap<String, DiskState>,
-    project_path: &str,
+    project_label: &str,
     now: Instant,
 ) {
-    match pending_disk.get_mut(project_path) {
+    match pending_disk.get_mut(project_label) {
         Some(DiskState::Pending {
             debounce_deadline, ..
         }) => {
@@ -468,7 +468,7 @@ fn schedule_disk_refresh(
         },
         None => {
             pending_disk.insert(
-                project_path.to_string(),
+                project_label.to_string(),
                 DiskState::Pending {
                     debounce_deadline: now + DEBOUNCE_DURATION,
                     max_deadline:      now + MAX_WAIT,
@@ -478,16 +478,16 @@ fn schedule_disk_refresh(
     }
 }
 
-fn handle_disk_completion(pending_disk: &mut HashMap<String, DiskState>, project_path: &str) {
+fn handle_disk_completion(pending_disk: &mut HashMap<String, DiskState>, project_label: &str) {
     let now = Instant::now();
-    let Some(state) = pending_disk.remove(project_path) else {
+    let Some(state) = pending_disk.remove(project_label) else {
         return;
     };
     if let DiskState::Running { dirty_since_start } = state
         && dirty_since_start
     {
         pending_disk.insert(
-            project_path.to_string(),
+            project_label.to_string(),
             DiskState::Pending {
                 debounce_deadline: now + DEBOUNCE_DURATION,
                 max_deadline:      now + MAX_WAIT,
@@ -674,7 +674,7 @@ fn emit_root_git_path_refresh(
     tracing::info!(
         elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
         repo_root = %repo_root.display(),
-        path = %root_entry.project_path,
+        path = %root_entry.project_label,
         state = %state.label(),
         "watcher_root_git_path_refresh"
     );
@@ -841,14 +841,14 @@ fn fire_disk_updates(
         })
         .collect();
 
-    for project_path in ready {
-        let Some(state) = pending_disk.get_mut(&project_path) else {
+    for project_label in ready {
+        let Some(state) = pending_disk.get_mut(&project_label) else {
             continue;
         };
         *state = DiskState::Running {
             dirty_since_start: false,
         };
-        let Some(entry) = projects.values().find(|e| e.project_path == project_path) else {
+        let Some(entry) = projects.values().find(|e| e.project_label == project_label) else {
             continue;
         };
         spawn_disk_update(
@@ -856,7 +856,7 @@ fn fire_disk_updates(
             disk_limit,
             disk_done_tx.clone(),
             bg_tx.clone(),
-            project_path.clone(),
+            project_label.clone(),
             entry.abs_path.clone(),
         );
     }
@@ -867,7 +867,7 @@ fn spawn_disk_update(
     disk_limit: &Arc<tokio::sync::Semaphore>,
     disk_done_tx: mpsc::Sender<String>,
     bg_tx: mpsc::Sender<BackgroundMsg>,
-    project_path: String,
+    project_label: String,
     abs_path: PathBuf,
 ) {
     let handle = handle.clone();
@@ -879,7 +879,7 @@ fn spawn_disk_update(
         };
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
-            path = %project_path,
+            path = %project_label,
             abs_path = %abs_path.display(),
             "watcher_disk_queue_wait"
         );
@@ -892,7 +892,7 @@ fn spawn_disk_update(
             .unwrap_or(0);
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
-            path = %project_path,
+            path = %project_label,
             bytes,
             "watcher_disk_usage"
         );
@@ -900,7 +900,7 @@ fn spawn_disk_update(
             path: abs_for_msg,
             bytes,
         });
-        let _ = disk_done_tx.send(project_path);
+        let _ = disk_done_tx.send(project_label);
     });
 }
 
@@ -956,7 +956,7 @@ fn probe_new_projects(
                 let request = scan::ProjectDetailRequest {
                     tx: &tx,
                     ctx: &task_ctx,
-                    _project_path: &display_path,
+                    _project_path: display_path.as_str(),
                     abs_path: &abs_path,
                     project_name: project_name.as_deref(),
                     repo_presence,
@@ -1211,14 +1211,14 @@ mod tests {
 
     // ── handle_event ─────────────────────────────────────────────────
 
-    fn make_project_entry(project_path: &str, abs_path: &Path) -> (PathBuf, ProjectEntry) {
+    fn make_project_entry(project_label: &str, abs_path: &Path) -> (PathBuf, ProjectEntry) {
         (
             abs_path.to_path_buf(),
             ProjectEntry {
-                project_path: project_path.to_string(),
-                abs_path:     abs_path.to_path_buf(),
-                repo_root:    None,
-                git_dir:      None,
+                project_label: project_label.to_string(),
+                abs_path:      abs_path.to_path_buf(),
+                repo_root:     None,
+                git_dir:       None,
             },
         )
     }
@@ -1349,20 +1349,20 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path: "~/my_project".to_string(),
-                abs_path:     project_dir.clone(),
-                repo_root:    Some(project_dir.clone()),
-                git_dir:      Some(project_dir.join(".git")),
+                project_label: "~/my_project".to_string(),
+                abs_path:      project_dir.clone(),
+                repo_root:     Some(project_dir.clone()),
+                git_dir:       Some(project_dir.join(".git")),
             },
         );
         let member_key = member_dir.clone();
         projects.insert(
             member_key,
             ProjectEntry {
-                project_path: "~/my_project/crates/member".to_string(),
-                abs_path:     member_dir.clone(),
-                repo_root:    Some(project_dir.clone()),
-                git_dir:      Some(project_dir.join(".git")),
+                project_label: "~/my_project/crates/member".to_string(),
+                abs_path:      member_dir.clone(),
+                repo_root:     Some(project_dir.clone()),
+                git_dir:       Some(project_dir.join(".git")),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1452,10 +1452,10 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path: "~/my_project".to_string(),
-                abs_path:     project_dir.clone(),
-                repo_root:    Some(project_dir.clone()),
-                git_dir:      Some(project_dir.join(".git")),
+                project_label: "~/my_project".to_string(),
+                abs_path:      project_dir.clone(),
+                repo_root:     Some(project_dir.clone()),
+                git_dir:       Some(project_dir.join(".git")),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1499,20 +1499,20 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path: "~/my_project".to_string(),
-                abs_path:     project_dir.clone(),
-                repo_root:    Some(project_dir.clone()),
-                git_dir:      Some(project_dir.join(".git")),
+                project_label: "~/my_project".to_string(),
+                abs_path:      project_dir.clone(),
+                repo_root:     Some(project_dir.clone()),
+                git_dir:       Some(project_dir.join(".git")),
             },
         );
         let member_key = member_dir.clone();
         projects.insert(
             member_key,
             ProjectEntry {
-                project_path: "~/my_project/crates/member".to_string(),
-                abs_path:     member_dir.clone(),
-                repo_root:    Some(project_dir.clone()),
-                git_dir:      Some(project_dir.join(".git")),
+                project_label: "~/my_project/crates/member".to_string(),
+                abs_path:      member_dir.clone(),
+                repo_root:     Some(project_dir.clone()),
+                git_dir:       Some(project_dir.join(".git")),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1620,10 +1620,10 @@ edition = "2024"
         projects.insert(
             wt_root.clone(),
             ProjectEntry {
-                project_path: "~/main_repo_style_fix".to_string(),
-                abs_path:     wt_root.clone(),
-                repo_root:    Some(wt_root.clone()),
-                git_dir:      Some(wt_git_dir.clone()),
+                project_label: "~/main_repo_style_fix".to_string(),
+                abs_path:      wt_root.clone(),
+                repo_root:     Some(wt_root.clone()),
+                git_dir:       Some(wt_git_dir.clone()),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1682,10 +1682,10 @@ edition = "2024"
         projects.insert(
             wt_key,
             ProjectEntry {
-                project_path: "~/main_repo_style_fix".to_string(),
-                abs_path:     wt_abs,
-                repo_root:    Some(wt_root),
-                git_dir:      Some(wt_git_dir.clone()),
+                project_label: "~/main_repo_style_fix".to_string(),
+                abs_path:      wt_abs,
+                repo_root:     Some(wt_root),
+                git_dir:       Some(wt_git_dir.clone()),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -2069,10 +2069,10 @@ edition = "2024"
         projects.insert(
             project_dir.clone(),
             ProjectEntry {
-                project_path: "~/my_project".to_string(),
-                abs_path:     project_dir.clone(),
-                repo_root:    Some(project_dir.clone()),
-                git_dir:      Some(project_dir.join(".git")),
+                project_label: "~/my_project".to_string(),
+                abs_path:      project_dir.clone(),
+                repo_root:     Some(project_dir.clone()),
+                git_dir:       Some(project_dir.join(".git")),
             },
         );
 
@@ -2133,10 +2133,10 @@ edition = "2024"
         projects.insert(
             dir_key,
             ProjectEntry {
-                project_path: "~/no_git".to_string(),
-                abs_path:     project_dir.clone(),
-                repo_root:    None,
-                git_dir:      None,
+                project_label: "~/no_git".to_string(),
+                abs_path:      project_dir.clone(),
+                repo_root:     None,
+                git_dir:       None,
             },
         );
 
@@ -2296,10 +2296,10 @@ edition = "2024"
         projects.insert(
             linked_dir.clone(),
             ProjectEntry {
-                project_path: "~/app_test".to_string(),
-                abs_path:     linked_dir.clone(),
-                repo_root:    None,
-                git_dir:      None,
+                project_label: "~/app_test".to_string(),
+                abs_path:      linked_dir.clone(),
+                repo_root:     None,
+                git_dir:       None,
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -2375,10 +2375,10 @@ edition = "2024"
         projects.insert(
             linked_dir.clone(),
             ProjectEntry {
-                project_path: "~/obsidian_knife_test".to_string(),
-                abs_path:     linked_dir.clone(),
-                repo_root:    None,
-                git_dir:      None,
+                project_label: "~/obsidian_knife_test".to_string(),
+                abs_path:      linked_dir.clone(),
+                repo_root:     None,
+                git_dir:       None,
             },
         );
         let scan_root = tmp.path().to_path_buf();

@@ -49,7 +49,8 @@ impl App {
     #[cfg(test)]
     pub(super) fn apply_tree_build(&mut self, projects: ProjectList) {
         let selected_path = self
-            .selected_display_path()
+            .selected_project_path()
+            .map(AbsolutePath::from)
             .or_else(|| self.selection_paths.last_selected.clone());
         let should_focus_project_list = false;
         self.projects = projects;
@@ -122,7 +123,7 @@ impl App {
 
         // Try to restore selection
         if let Some(path) = selected_path {
-            self.select_project_in_tree(&path);
+            self.select_project_in_tree(path.as_path());
         } else if !self.projects.is_empty() {
             self.list_state.select(Some(0));
         }
@@ -424,10 +425,10 @@ impl App {
     fn register_background_services_for_tree(&self) {
         let started = Instant::now();
         let mut count = 0usize;
-        for item in &self.projects {
+        self.projects.for_each_leaf(|item| {
             self.register_item_background_services(item);
             count += 1;
-        }
+        });
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
             count,
@@ -441,8 +442,8 @@ impl App {
         let repo_root = crate::project::git_repo_root(&abs_path);
         let has_repo_root = repo_root.is_some();
         let _ = self.watch_tx.send(WatchRequest {
-            project_path: abs_path.to_string_lossy().to_string(),
-            abs_path: abs_path.clone(),
+            project_label: abs_path.to_string_lossy().to_string(),
+            abs_path:      abs_path.clone(),
             repo_root,
         });
         tracing::info!(
@@ -541,7 +542,7 @@ impl App {
             .into_iter()
             .filter(|(path, _)| !self.is_deleted(path) && self.is_cargo_active_path(path))
             .map(|(abs_path, is_rust)| RegisterProjectRequest {
-                project_path: abs_path.display().to_string(),
+                project_label: crate::project::home_relative_path(&abs_path),
                 abs_path,
                 is_rust,
             })
@@ -564,26 +565,26 @@ impl App {
             match item {
                 RootItem::Workspace(ws) => {
                     runtime.register_project(crate::lint::RegisterProjectRequest {
-                        project_path: ws.display_path(),
-                        abs_path:     ws.path().to_path_buf(),
-                        is_rust:      true,
+                        project_label: ws.display_path().into_string(),
+                        abs_path:      ws.path().to_path_buf(),
+                        is_rust:       true,
                     });
                     count += 1;
                 },
                 RootItem::Package(pkg) => {
                     runtime.register_project(crate::lint::RegisterProjectRequest {
-                        project_path: pkg.display_path(),
-                        abs_path:     pkg.path().to_path_buf(),
-                        is_rust:      true,
+                        project_label: pkg.display_path().into_string(),
+                        abs_path:      pkg.path().to_path_buf(),
+                        is_rust:       true,
                     });
                     count += 1;
                 },
                 RootItem::WorkspaceWorktrees(wtg) => {
                     for ws in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
                         runtime.register_project(crate::lint::RegisterProjectRequest {
-                            project_path: ws.display_path(),
-                            abs_path:     ws.path().to_path_buf(),
-                            is_rust:      true,
+                            project_label: ws.display_path().into_string(),
+                            abs_path:      ws.path().to_path_buf(),
+                            is_rust:       true,
                         });
                         count += 1;
                     }
@@ -591,9 +592,9 @@ impl App {
                 RootItem::PackageWorktrees(wtg) => {
                     for pkg in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
                         runtime.register_project(crate::lint::RegisterProjectRequest {
-                            project_path: pkg.display_path(),
-                            abs_path:     pkg.path().to_path_buf(),
-                            is_rust:      true,
+                            project_label: pkg.display_path().into_string(),
+                            abs_path:      pkg.path().to_path_buf(),
+                            is_rust:       true,
                         });
                         count += 1;
                     }
@@ -630,18 +631,14 @@ impl App {
         };
         tracing::info!(path = %item.display_path(), "lint_register");
         runtime.register_project(crate::lint::RegisterProjectRequest {
-            project_path: item.display_path(),
-            abs_path:     path.to_path_buf(),
-            is_rust:      true,
+            project_label: item.display_path().into_string(),
+            abs_path:      path.to_path_buf(),
+            is_rust:       true,
         });
     }
 
-    fn register_lint_for_path(&self, display_path: &str) {
-        if let Some(item) = self
-            .projects
-            .iter()
-            .find(|i| i.display_path() == display_path)
-        {
+    fn register_lint_for_path(&self, path: &Path) {
+        if let Some(item) = self.projects.iter().find(|i| i.path() == path) {
             self.register_lint_project_if_eligible(item);
         }
     }
@@ -1398,8 +1395,7 @@ impl App {
                 runtime.unregister_project(path.to_path_buf());
             }
             if bytes > 0 {
-                let display = crate::project::home_relative_path(path);
-                self.register_lint_for_path(&display);
+                self.register_lint_for_path(path);
             }
         }
     }
@@ -1564,10 +1560,10 @@ impl App {
     }
 
     pub(super) fn handle_project_discovered(&mut self, item: RootItem) -> bool {
-        let display = item.display_path();
+        let discovered_path = item.path().to_path_buf();
         let mut already_exists = false;
         self.projects.for_each_leaf_path(|path, _| {
-            if crate::project::home_relative_path(path) == display {
+            if path == discovered_path {
                 already_exists = true;
             }
         });
@@ -1801,7 +1797,8 @@ impl App {
         // Apply tree (same as apply_tree_build but inlined to avoid redundant
         // rebuild scheduling).
         let selected_path = self
-            .selected_display_path()
+            .selected_project_path()
+            .map(AbsolutePath::from)
             .or_else(|| self.selection_paths.last_selected.clone());
         self.projects = ProjectList::new(projects);
         self.dirty.finder.mark_dirty();
@@ -1873,7 +1870,7 @@ impl App {
 
         // Restore selection.
         if let Some(path) = selected_path {
-            self.select_project_in_tree(&path);
+            self.select_project_in_tree(path.as_path());
         } else if !self.projects.is_empty() {
             self.list_state.select(Some(0));
         }
@@ -2000,22 +1997,23 @@ impl App {
         let Some(abs_path) = self.selected_project_path().map(Path::to_path_buf) else {
             return;
         };
+        let abs_key: AbsolutePath = abs_path.clone().into();
         let display_path = self
             .selected_display_path()
-            .unwrap_or_else(|| abs_path.display().to_string());
+            .unwrap_or_else(|| abs_key.display_path());
         let name = self
             .cached_detail
             .as_ref()
             .map(|c| c.info.name.clone())
             .filter(|n| n != "-");
         if !self.fully_loaded.contains(&abs_path)
-            && self.priority_fetch_path.as_ref() != Some(&display_path)
+            && self.priority_fetch_path.as_ref() != Some(&abs_key)
         {
-            self.priority_fetch_path = Some(display_path.clone());
+            self.priority_fetch_path = Some(abs_key);
             let abs_str = abs_path.display().to_string();
             crate::tui::terminal::spawn_priority_fetch(
                 self,
-                &display_path,
+                display_path.as_str(),
                 &abs_str,
                 name.as_ref(),
             );

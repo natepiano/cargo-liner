@@ -64,7 +64,7 @@ impl ProjectList {
             let suffixes = shortest_unique_suffixes(
                 &indices
                     .iter()
-                    .map(|&index| self.root_items[index].display_path())
+                    .map(|&index| self.root_items[index].display_path().into_string())
                     .collect::<Vec<_>>(),
             );
             for (index, suffix) in indices.into_iter().zip(suffixes) {
@@ -568,7 +568,7 @@ fn regroup_workspace(ws: &mut RustProject<Workspace>, inline_dirs: &[String]) {
 fn non_rust_searchable(project: &NonRustProject) -> SearchableItem<'_> {
     SearchableItem {
         abs_path:         project.path(),
-        display_path:     Cow::Owned(project.display_path()),
+        display_path:     Cow::Owned(project.display_path().into_string()),
         name:             Cow::Owned(project.display_name()),
         is_rust:          false,
         visibility:       project.visibility(),
@@ -582,7 +582,7 @@ fn package_searchable<'a>(
 ) -> SearchableItem<'a> {
     SearchableItem {
         abs_path: project.path(),
-        display_path: Cow::Owned(project.display_path()),
+        display_path: Cow::Owned(project.display_path().into_string()),
         name,
         is_rust: true,
         visibility: project.visibility(),
@@ -596,7 +596,7 @@ fn workspace_searchable<'a>(
 ) -> SearchableItem<'a> {
     SearchableItem {
         abs_path: project.path(),
-        display_path: Cow::Owned(project.display_path()),
+        display_path: Cow::Owned(project.display_path().into_string()),
         name,
         is_rust: true,
         visibility: project.visibility(),
@@ -607,7 +607,7 @@ fn workspace_searchable<'a>(
 fn vendored_searchable(project: &RustProject<Package>) -> SearchableItem<'_> {
     SearchableItem {
         abs_path:         project.path(),
-        display_path:     Cow::Owned(project.display_path()),
+        display_path:     Cow::Owned(project.display_path().into_string()),
         name:             Cow::Owned(format!("{} (vendored)", project.display_name())),
         is_rust:          true,
         visibility:       project.visibility(),

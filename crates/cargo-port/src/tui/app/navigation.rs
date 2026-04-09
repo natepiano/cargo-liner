@@ -15,6 +15,8 @@ use super::types::ExpandKey;
 use super::types::SearchHit;
 use super::types::SearchMode;
 use super::types::VisibleRow;
+use crate::project::AbsolutePath;
+use crate::project::DisplayPath;
 use crate::project::Package;
 use crate::project::RootItem;
 use crate::project::RustProject;
@@ -170,7 +172,11 @@ impl App {
     ) -> Option<&RustProject<Package>> {
         match item {
             RootItem::WorkspaceWorktrees(wtg) => {
-                let ws = wtg.linked().get(worktree_index)?;
+                let ws = if worktree_index == 0 {
+                    wtg.primary()
+                } else {
+                    wtg.linked().get(worktree_index - 1)?
+                };
                 ws.groups().get(group_index)?.members().get(member_index)
             },
             _ => None,
@@ -185,11 +191,19 @@ impl App {
     ) -> Option<&RustProject<Package>> {
         match item {
             RootItem::WorkspaceWorktrees(wtg) => {
-                let ws = wtg.linked().get(worktree_index)?;
+                let ws = if worktree_index == 0 {
+                    wtg.primary()
+                } else {
+                    wtg.linked().get(worktree_index - 1)?
+                };
                 ws.vendored().get(vendored_index)
             },
             RootItem::PackageWorktrees(wtg) => {
-                let pkg = wtg.linked().get(worktree_index)?;
+                let pkg = if worktree_index == 0 {
+                    wtg.primary()
+                } else {
+                    wtg.linked().get(worktree_index - 1)?
+                };
                 pkg.vendored().get(vendored_index)
             },
             _ => None,
@@ -204,16 +218,24 @@ impl App {
     ) -> Option<tui::detail::DetailInfo> {
         match item {
             RootItem::WorkspaceWorktrees(wtg) => {
-                let ws = wtg.linked().get(worktree_index)?;
+                let ws = if worktree_index == 0 {
+                    wtg.primary()
+                } else {
+                    wtg.linked().get(worktree_index - 1)?
+                };
                 let display_path = ws.display_path();
                 Some(tui::detail::build_detail_info_for_workspace_ref(
                     self,
                     ws,
-                    &display_path,
+                    display_path.as_str(),
                 ))
             },
             RootItem::PackageWorktrees(wtg) => {
-                let pkg = wtg.linked().get(worktree_index)?;
+                let pkg = if worktree_index == 0 {
+                    wtg.primary()
+                } else {
+                    wtg.linked().get(worktree_index - 1)?
+                };
                 Some(tui::detail::build_detail_info_for_member(self, pkg))
             },
             _ => None,
@@ -370,7 +392,7 @@ impl App {
     }
 
     /// Resolve the display path of the currently selected row using `project_list_items`.
-    pub(super) fn selected_display_path(&self) -> Option<String> {
+    pub(super) fn selected_display_path(&self) -> Option<DisplayPath> {
         let rows = self.visible_rows();
         let selected = self.list_state.selected()?;
         let row = rows.get(selected)?;
@@ -378,7 +400,7 @@ impl App {
     }
 
     /// Given a `VisibleRow`, resolve the display path from `project_list_items`.
-    pub fn display_path_for_row(&self, row: VisibleRow) -> Option<String> {
+    pub fn display_path_for_row(&self, row: VisibleRow) -> Option<DisplayPath> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
                 let item = self.projects.get(node_index)?;
@@ -551,7 +573,7 @@ impl App {
         }
     }
 
-    fn worktree_display_path(item: &RootItem, wi: usize) -> Option<String> {
+    fn worktree_display_path(item: &RootItem, wi: usize) -> Option<DisplayPath> {
         match item {
             RootItem::WorkspaceWorktrees(wtg) => {
                 if wi == 0 {
@@ -576,7 +598,7 @@ impl App {
         wi: usize,
         gi: usize,
         mi: usize,
-    ) -> Option<String> {
+    ) -> Option<DisplayPath> {
         match item {
             RootItem::WorkspaceWorktrees(wtg) => {
                 let ws = if wi == 0 {
@@ -591,7 +613,7 @@ impl App {
         }
     }
 
-    fn worktree_vendored_display_path(item: &RootItem, wi: usize, vi: usize) -> Option<String> {
+    fn worktree_vendored_display_path(item: &RootItem, wi: usize, vi: usize) -> Option<DisplayPath> {
         match item {
             RootItem::WorkspaceWorktrees(wtg) => {
                 let ws = if wi == 0 {
@@ -1022,7 +1044,7 @@ impl App {
             .selection_paths
             .collapsed_selected
             .take()
-            .or_else(|| self.selected_display_path());
+            .or_else(|| self.selected_project_path().map(AbsolutePath::from));
         self.selection_paths.collapsed_anchor = None;
         for (ni, item) in self.projects.iter().enumerate() {
             if item.has_children() {
@@ -1056,12 +1078,12 @@ impl App {
         }
         self.dirty.rows.mark_dirty();
         if let Some(path) = selected_path {
-            self.select_project_in_tree(&path);
+            self.select_project_in_tree(path.as_path());
         }
     }
 
     pub fn collapse_all(&mut self) {
-        let selected_path = self.selected_display_path();
+        let selected_path = self.selected_project_path().map(AbsolutePath::from);
         let anchor = self.selected_row().map(Self::collapse_anchor_row);
         self.expanded.clear();
         self.dirty.rows.mark_dirty();
@@ -1071,7 +1093,7 @@ impl App {
         {
             self.list_state.select(Some(pos));
         }
-        let anchor_path = self.selected_display_path();
+        let anchor_path = self.selected_project_path().map(AbsolutePath::from);
         if selected_path == anchor_path {
             self.selection_paths.collapsed_selected = None;
             self.selection_paths.collapsed_anchor = None;
@@ -1097,7 +1119,7 @@ impl App {
             .list_state
             .selected()
             .and_then(|sel| self.filtered.get(sel))
-            .map(|hit| hit.display_path.clone());
+            .map(|hit| hit.abs_path.clone());
         self.end_search();
         self.search_query.clear();
         self.filtered.clear();
@@ -1105,17 +1127,17 @@ impl App {
         self.close_overlay();
 
         if let Some(target_path) = project_path {
-            self.select_project_in_tree(&target_path);
+            self.select_project_in_tree(target_path.as_path());
         }
     }
 
-    pub(super) fn expand_path_in_tree(&mut self, target_path: &str) {
+    pub(super) fn expand_path_in_tree(&mut self, target_path: &Path) {
         for (ni, item) in self.projects.iter().enumerate() {
             match item {
                 RootItem::Workspace(ws) => {
                     for (gi, group) in ws.groups().iter().enumerate() {
                         for member in group.members() {
-                            if member.display_path() == target_path {
+                            if member.path() == target_path {
                                 self.expanded.insert(ExpandKey::Node(ni));
                                 if group.is_named() {
                                     self.expanded.insert(ExpandKey::Group(ni, gi));
@@ -1124,14 +1146,14 @@ impl App {
                         }
                     }
                     for vendored in ws.vendored() {
-                        if vendored.display_path() == target_path {
+                        if vendored.path() == target_path {
                             self.expanded.insert(ExpandKey::Node(ni));
                         }
                     }
                 },
                 RootItem::Package(pkg) => {
                     for vendored in pkg.vendored() {
-                        if vendored.display_path() == target_path {
+                        if vendored.path() == target_path {
                             self.expanded.insert(ExpandKey::Node(ni));
                         }
                     }
@@ -1142,12 +1164,12 @@ impl App {
                         .chain(wtg.linked().iter())
                         .collect();
                     for (wi, ws) in all_ws.iter().enumerate() {
-                        if ws.display_path() == target_path {
+                        if ws.path() == target_path {
                             self.expanded.insert(ExpandKey::Node(ni));
                         }
                         for (gi, group) in ws.groups().iter().enumerate() {
                             for member in group.members() {
-                                if member.display_path() == target_path {
+                                if member.path() == target_path {
                                     self.expanded.insert(ExpandKey::Node(ni));
                                     self.expanded.insert(ExpandKey::Worktree(ni, wi));
                                     if group.is_named() {
@@ -1157,7 +1179,7 @@ impl App {
                             }
                         }
                         for vendored in ws.vendored() {
-                            if vendored.display_path() == target_path {
+                            if vendored.path() == target_path {
                                 self.expanded.insert(ExpandKey::Node(ni));
                                 self.expanded.insert(ExpandKey::Worktree(ni, wi));
                             }
@@ -1169,11 +1191,11 @@ impl App {
                         .chain(wtg.linked().iter())
                         .collect();
                     for (wi, pkg) in all_pkg.iter().enumerate() {
-                        if pkg.display_path() == target_path {
+                        if pkg.path() == target_path {
                             self.expanded.insert(ExpandKey::Node(ni));
                         }
                         for vendored in pkg.vendored() {
-                            if vendored.display_path() == target_path {
+                            if vendored.path() == target_path {
                                 self.expanded.insert(ExpandKey::Node(ni));
                                 self.expanded.insert(ExpandKey::Worktree(ni, wi));
                             }
@@ -1184,12 +1206,11 @@ impl App {
         }
     }
 
-    pub(super) fn row_matches_project_path(&self, row: VisibleRow, target_path: &str) -> bool {
-        self.display_path_for_row(row)
-            .is_some_and(|dp| dp == target_path)
+    pub(super) fn row_matches_project_path(&self, row: VisibleRow, target_path: &Path) -> bool {
+        self.path_for_row(row).is_some_and(|path| path == target_path)
     }
 
-    pub(super) fn select_matching_visible_row(&mut self, target_path: &str) {
+    pub(super) fn select_matching_visible_row(&mut self, target_path: &Path) {
         self.ensure_visible_rows_cached();
         let selected_index = self
             .visible_rows()
@@ -1200,7 +1221,7 @@ impl App {
         }
     }
 
-    pub fn select_project_in_tree(&mut self, target_path: &str) {
+    pub fn select_project_in_tree(&mut self, target_path: &Path) {
         self.expand_path_in_tree(target_path);
         self.dirty.rows.mark_dirty();
         self.select_matching_visible_row(target_path);
@@ -1238,7 +1259,7 @@ impl App {
             let haystack = Utf32Str::new(item.name.as_ref(), &mut buf);
             if let Some(score) = atom.score(haystack, &mut matcher) {
                 scored.push(SearchHit {
-                    abs_path: item.abs_path.to_path_buf(),
+                    abs_path: item.abs_path.into(),
                     display_path: item.display_path.into_owned(),
                     name: item.name.into_owned(),
                     score,

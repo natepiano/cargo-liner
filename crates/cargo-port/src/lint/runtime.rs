@@ -39,22 +39,22 @@ const DELETE_LINT_DEBOUNCE: Duration = Duration::from_millis(1500);
 const STOP_POLL: Duration = Duration::from_millis(250);
 
 pub struct RegisterProjectRequest {
-    pub project_path: String,
-    pub abs_path:     PathBuf,
-    pub is_rust:      bool,
+    pub project_label: String,
+    pub abs_path:      PathBuf,
+    pub is_rust:       bool,
 }
 
 pub fn project_is_eligible(
     lint: &LintConfig,
-    project_path: &str,
+    project_label: &str,
     abs_path: &Path,
     is_rust: bool,
 ) -> bool {
     should_watch_project(
         lint,
         &RegisterProjectRequest {
-            project_path: project_path.to_string(),
-            abs_path: abs_path.to_path_buf(),
+            project_label: project_label.to_string(),
+            abs_path:      abs_path.to_path_buf(),
             is_rust,
         },
     )
@@ -158,7 +158,7 @@ fn supervisor_loop(
                     let abs_path = project.abs_path.clone();
                     workers.entry(abs_path.clone()).or_insert_with(|| {
                         spawn_project_worker(
-                            project.project_path.clone(),
+                            project.project_label.clone(),
                             abs_path.clone(),
                             &worker_config,
                             bg_tx.clone(),
@@ -275,7 +275,7 @@ fn reconcile_workers(
     for (path, request) in desired {
         workers.entry(path).or_insert_with(|| {
             spawn_project_worker(
-                request.project_path,
+                request.project_label,
                 request.abs_path,
                 config,
                 bg_tx.clone(),
@@ -290,14 +290,14 @@ fn stop_worker(worker: ProjectWorker) {
 }
 
 fn spawn_project_worker(
-    project_path: String,
+    project_label: String,
     project_root: PathBuf,
     config: &WorkerConfig,
     bg_tx: mpsc::Sender<BackgroundMsg>,
 ) -> ProjectWorker {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::clone(&stop);
-    let worker_project_path = project_path;
+    let worker_project_label = project_label;
     let cache_root = config.cache_root.clone();
     let commands = config.commands.clone();
     let cache_size_bytes = config.cache_size_bytes;
@@ -352,7 +352,7 @@ fn spawn_project_worker(
                             let run_started = Instant::now();
                             let _ = run_commands_for_project(
                                 &project_root,
-                                &worker_project_path,
+                                &worker_project_label,
                                 &cache_root,
                                 &commands,
                                 cache_size_bytes,
@@ -381,7 +381,7 @@ fn should_watch_project(lint: &LintConfig, request: &RegisterProjectRequest) -> 
     }
     if !matches_prefixes(
         &lint.include,
-        &request.project_path,
+        &request.project_label,
         &request.abs_path,
         false,
     ) {
@@ -389,7 +389,7 @@ fn should_watch_project(lint: &LintConfig, request: &RegisterProjectRequest) -> 
     }
     !matches_prefixes(
         &lint.exclude,
-        &request.project_path,
+        &request.project_label,
         &request.abs_path,
         false,
     )
@@ -397,7 +397,7 @@ fn should_watch_project(lint: &LintConfig, request: &RegisterProjectRequest) -> 
 
 fn matches_prefixes(
     prefixes: &[String],
-    project_path: &str,
+    project_label: &str,
     abs_path: &Path,
     empty_means_match: bool,
 ) -> bool {
@@ -406,9 +406,9 @@ fn matches_prefixes(
     }
     let abs = abs_path.to_string_lossy();
     prefixes.iter().any(|prefix| {
-        project_path.starts_with(prefix)
+        project_label.starts_with(prefix)
             || abs.starts_with(prefix)
-            || project_path
+            || project_label
                 .split('/')
                 .any(|part| !part.is_empty() && part.starts_with(prefix))
             || abs_path
@@ -463,7 +463,7 @@ struct CommandExecution {
 
 pub fn run_commands_for_project(
     project_root: &Path,
-    project_path: &str,
+    project_label: &str,
     cache_root: &Path,
     commands: &[LintCommandConfig],
     cache_size_bytes: Option<u64>,
@@ -507,7 +507,7 @@ pub fn run_commands_for_project(
     };
     read_write::write_latest_under(cache_root, project_root, &run)?;
     tracing::info!(
-        path = project_path,
+        path = project_label,
         abs_path = %project_root.display(),
         "startup_lint_started"
     );
@@ -710,8 +710,8 @@ mod tests {
 
     fn request(path: &str, abs_path: &Path, is_rust: bool) -> RegisterProjectRequest {
         RegisterProjectRequest {
-            project_path: path.to_string(),
-            abs_path: abs_path.to_path_buf(),
+            project_label: path.to_string(),
+            abs_path:      abs_path.to_path_buf(),
             is_rust,
         }
     }

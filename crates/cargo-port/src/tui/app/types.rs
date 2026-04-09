@@ -20,6 +20,7 @@ use crate::lint::CacheUsage;
 use crate::lint::LintRun;
 use crate::lint::LintStatus;
 use crate::lint::RuntimeHandle;
+use crate::project::AbsolutePath;
 use crate::project::GitPathState;
 use crate::project_list::ProjectList;
 use crate::scan::BackgroundMsg;
@@ -79,7 +80,7 @@ pub struct DiskCacheBuildResult {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchHit {
-    pub abs_path:     PathBuf,
+    pub abs_path:     AbsolutePath,
     pub display_path: String,
     pub name:         String,
     pub score:        u16,
@@ -271,10 +272,10 @@ impl ScanState {
 
 #[derive(Debug, Default)]
 pub struct SelectionPaths {
-    pub last_selected:      Option<String>,
-    pub selected_project:   Option<String>,
-    pub collapsed_selected: Option<String>,
-    pub collapsed_anchor:   Option<String>,
+    pub last_selected:      Option<AbsolutePath>,
+    pub selected_project:   Option<AbsolutePath>,
+    pub collapsed_selected: Option<AbsolutePath>,
+    pub collapsed_anchor:   Option<AbsolutePath>,
 }
 
 impl SelectionPaths {
@@ -504,7 +505,7 @@ pub struct App {
     pub bg_tx:                    mpsc::Sender<BackgroundMsg>,
     pub bg_rx:                    Receiver<BackgroundMsg>,
     pub fully_loaded:             HashSet<PathBuf>,
-    pub priority_fetch_path:      Option<String>,
+    pub priority_fetch_path:      Option<AbsolutePath>,
     pub expanded:                 HashSet<ExpandKey>,
     pub list_state:               ListState,
     pub search_query:             String,

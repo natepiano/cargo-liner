@@ -877,7 +877,7 @@ fn render_worktree_entry<'a>(
         node_index:     ni,
         worktree_index: wi,
     });
-    let dp = display_path.unwrap_or_default();
+    let dp = display_path.unwrap_or_default().to_string();
     let abs_path = app.abs_path_for_row(VisibleRow::WorktreeEntry {
         node_index:     ni,
         worktree_index: wi,

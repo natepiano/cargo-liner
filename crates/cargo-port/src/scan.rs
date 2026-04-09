@@ -1184,7 +1184,7 @@ struct StreamingScanContext {
 
 struct RepoFetchRequest {
     key:          String,
-    project_path: String,
+    project_label: String,
     repo_url:     String,
     owner:        String,
     repo:         String,
@@ -1423,7 +1423,7 @@ fn spawn_project_http(scan_context: &StreamingScanContext, project: &DiscoveredP
                     scan_context,
                     RepoFetchRequest {
                         key,
-                        project_path: project.abs_path.display_path().to_string(),
+                        project_label: project.abs_path.display_path().to_string(),
                         repo_url: project.repo_url.clone().unwrap_or_default(),
                         owner: owner.clone(),
                         repo: repo.clone(),
@@ -1688,7 +1688,7 @@ fn spawn_repo_fetch(scan_context: &StreamingScanContext, request: RepoFetchReque
         };
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
-            path = %request.project_path,
+            path = %request.project_label,
             repo = format!("{}/{}", request.owner, request.repo),
             branch = request.branch.as_deref().unwrap_or("-"),
             "tokio_repo_fetch_queue_wait"
@@ -1712,7 +1712,7 @@ fn spawn_repo_fetch(scan_context: &StreamingScanContext, request: RepoFetchReque
         };
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(fetch_started.elapsed().as_millis()),
-            path = %request.project_path,
+            path = %request.project_label,
             repo = format!("{}/{}", request.owner, request.repo),
             branch = request.branch.as_deref().unwrap_or("-"),
             runs = data.runs.len(),

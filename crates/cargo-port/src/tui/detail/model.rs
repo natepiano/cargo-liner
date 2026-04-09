@@ -429,8 +429,7 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
     if !item.is_rust() {
         return "Project".to_string();
     }
-    let display = item.display_path();
-    if app.is_vendored_path(&display) {
+    if app.is_vendored_path(item.path()) {
         return "Vendored Crate".to_string();
     }
     if matches!(
@@ -439,7 +438,7 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
     ) {
         return "Workspace".to_string();
     }
-    if app.is_workspace_member_path(&display) {
+    if app.is_workspace_member_path(item.path()) {
         "Workspace Member".to_string()
     } else {
         "Package".to_string()
@@ -448,10 +447,9 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
 
 /// Resolve the package title for a non-root package (member or vendored).
 fn resolve_package_title_for_package(app: &App, pkg: &RustProject<Package>) -> String {
-    let display = pkg.display_path();
-    if app.is_vendored_path(&display) {
+    if app.is_vendored_path(pkg.path()) {
         "Vendored Crate".to_string()
-    } else if app.is_workspace_member_path(&display) {
+    } else if app.is_workspace_member_path(pkg.path()) {
         "Workspace Member".to_string()
     } else {
         "Package".to_string()
@@ -577,7 +575,7 @@ fn worktree_names_from_item(item: &RootItem) -> Vec<String> {
 
 /// Build `DetailInfo` for a root `RootItem`.
 pub fn build_detail_info(app: &App, item: &RootItem) -> DetailInfo {
-    let display_path = item.display_path();
+    let display_path = item.display_path().into_string();
     let is_wt_group = is_worktree_group(item);
 
     match item {
@@ -603,7 +601,7 @@ pub fn build_detail_info(app: &App, item: &RootItem) -> DetailInfo {
 
 /// Build `DetailInfo` for a `Project<Package>` (member or vendored row).
 pub fn build_detail_info_for_member(app: &App, pkg: &RustProject<Package>) -> DetailInfo {
-    let display_path = pkg.display_path();
+    let display_path = pkg.display_path().into_string();
     build_detail_info_for_package(app, pkg, &display_path, false, None)
 }
 
