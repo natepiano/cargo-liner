@@ -36,10 +36,10 @@ use super::selection::CargoCheckPlan;
 use super::selection::Selection;
 
 pub(crate) struct MendRunner<'a> {
-    selection: &'a Selection,
+    selection:  &'a Selection,
     cargo_plan: &'a CargoCheckPlan,
-    config:    &'a LoadedConfig,
-    color:     render::ColorMode,
+    config:     &'a LoadedConfig,
+    color:      render::ColorMode,
 }
 
 struct RunPlan {
@@ -327,14 +327,13 @@ impl<'a> MendRunner<'a> {
         &self,
         output_mode: BuildOutputMode,
     ) -> Result<SelectionResult, MendFailure> {
-        let mut result =
-            compiler::run_selection(
-                self.selection,
-                self.cargo_plan,
-                self.config,
-                output_mode,
-                self.color,
-            )?;
+        let mut result = compiler::run_selection(
+            self.selection,
+            self.cargo_plan,
+            self.config,
+            output_mode,
+            self.color,
+        )?;
         let report = &mut result.report;
         let diagnostics = &self.config.diagnostics;
         if diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport)

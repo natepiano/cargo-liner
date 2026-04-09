@@ -116,19 +116,19 @@ pub(crate) fn build_cargo_check_plan(
     let default_workspace = selection.scope == SelectionScope::Workspace
         && cargo_cli.package.is_empty()
         && cargo_cli.exclude.is_empty();
-    let use_workspace = cargo_cli.workspace || !cargo_cli.exclude.is_empty() || default_workspace;
+    let use_workspace = cargo_cli.workspace() || !cargo_cli.exclude.is_empty() || default_workspace;
     if use_workspace {
         cargo_args.push(OsString::from("--workspace"));
     }
 
     append_repeated_flag(&mut cargo_args, "--package", &cargo_cli.package);
     append_repeated_flag(&mut cargo_args, "--exclude", &cargo_cli.exclude);
-    append_bool_flag(&mut cargo_args, "--all-targets", cargo_cli.all_targets);
-    append_bool_flag(&mut cargo_args, "--lib", cargo_cli.lib);
-    append_bool_flag(&mut cargo_args, "--bins", cargo_cli.bins);
-    append_bool_flag(&mut cargo_args, "--examples", cargo_cli.examples);
-    append_bool_flag(&mut cargo_args, "--tests", cargo_cli.tests);
-    append_bool_flag(&mut cargo_args, "--benches", cargo_cli.benches);
+    append_bool_flag(&mut cargo_args, "--all-targets", cargo_cli.all_targets());
+    append_bool_flag(&mut cargo_args, "--lib", cargo_cli.lib());
+    append_bool_flag(&mut cargo_args, "--bins", cargo_cli.bins());
+    append_bool_flag(&mut cargo_args, "--examples", cargo_cli.examples());
+    append_bool_flag(&mut cargo_args, "--tests", cargo_cli.tests());
+    append_bool_flag(&mut cargo_args, "--benches", cargo_cli.benches());
     append_repeated_flag(&mut cargo_args, "--bin", &cargo_cli.bin);
     append_repeated_flag(&mut cargo_args, "--example", &cargo_cli.example);
     append_repeated_flag(&mut cargo_args, "--test", &cargo_cli.test);
@@ -198,11 +198,13 @@ mod tests {
     use super::build_cargo_check_plan;
     use super::resolve_cargo_selection;
     use crate::cli::CargoCheckCli;
+    use crate::cli::PrimaryTargetCli;
+    use crate::cli::SecondaryTargetCli;
+    use crate::cli::WorkspaceCli;
 
     fn fixture_selection(scope: SelectionScope) -> Selection {
-        let manifest_path = PathBuf::from("/workspace/Cargo.toml");
         Selection {
-            manifest_path: manifest_path.clone(),
+            manifest_path: PathBuf::from("/workspace/Cargo.toml"),
             manifest_dir: PathBuf::from("/workspace"),
             workspace_root: PathBuf::from("/workspace"),
             target_directory: PathBuf::from("/workspace/target"),
@@ -228,7 +230,10 @@ mod tests {
             &CargoCheckCli::default(),
         ));
 
-        assert_eq!(args, vec!["--manifest-path", "/workspace/Cargo.toml", "--workspace"]);
+        assert_eq!(
+            args,
+            vec!["--manifest-path", "/workspace/Cargo.toml", "--workspace"]
+        );
     }
 
     #[test]
@@ -247,8 +252,11 @@ mod tests {
     fn plan_includes_workspace_all_targets() {
         let selection = fixture_selection(SelectionScope::Workspace);
         let cargo_cli = CargoCheckCli {
-            workspace: true,
-            all_targets: true,
+            workspace: WorkspaceCli { workspace: true },
+            primary_targets: PrimaryTargetCli {
+                all_targets: true,
+                ..Default::default()
+            },
             ..CargoCheckCli::default()
         };
 
@@ -270,7 +278,10 @@ mod tests {
         let selection = fixture_selection(SelectionScope::Workspace);
         let cargo_cli = CargoCheckCli {
             package: vec!["demo".to_string()],
-            tests: true,
+            secondary_targets: SecondaryTargetCli {
+                tests: true,
+                ..Default::default()
+            },
             ..CargoCheckCli::default()
         };
 

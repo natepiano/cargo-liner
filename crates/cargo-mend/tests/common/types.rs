@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
-use super::cargo_mend_tests_support::DiagnosticCode;
-use super::cargo_mend_tests_support::FixSupport;
+use super::DiagnosticCode;
+use super::FixSupport;
 
 #[derive(Debug, Deserialize)]
 pub struct Finding {

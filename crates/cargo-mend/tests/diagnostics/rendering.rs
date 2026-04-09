@@ -279,7 +279,10 @@ fn successive_json_runs_reuse_cached_findings_for_same_scope() {
     assert_eq!(second_codes, first_codes);
     assert_eq!(second.summary.errors, first.summary.errors);
     assert_eq!(second.summary.warnings, first.summary.warnings);
-    assert_eq!(second.summary.fixable_with_fix, first.summary.fixable_with_fix);
+    assert_eq!(
+        second.summary.fixable_with_fix,
+        first.summary.fixable_with_fix
+    );
     assert_eq!(
         second.summary.fixable_with_fix_pub_use,
         first.summary.fixable_with_fix_pub_use

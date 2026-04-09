@@ -2,8 +2,14 @@
     clippy::expect_used,
     reason = "tests should panic on unexpected values"
 )]
-#![allow(unused_imports, reason = "shared test support re-exports more helpers than this file uses")]
-#![allow(dead_code, reason = "shared test support defines helpers reused by other integration tests")]
+#![allow(
+    unused_imports,
+    reason = "shared test support re-exports more helpers than this file uses"
+)]
+#![allow(
+    dead_code,
+    reason = "shared test support defines helpers reused by other integration tests"
+)]
 #![allow(
     clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
@@ -51,9 +57,7 @@ fn create_simple_lib_fixture(name: &str) -> tempfile::TempDir {
     let temp = tempdir().expect("create temp fixture dir");
     fs::write(
         temp.path().join("Cargo.toml"),
-        format!(
-            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
-        ),
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
     )
     .expect("write manifest");
     fs::create_dir_all(temp.path().join("src")).expect("create src");
@@ -130,9 +134,7 @@ fn create_lib_and_example_fixture(name: &str) -> tempfile::TempDir {
     let temp = tempdir().expect("create temp fixture dir");
     fs::write(
         temp.path().join("Cargo.toml"),
-        format!(
-            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
-        ),
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
     )
     .expect("write manifest");
     fs::create_dir_all(temp.path().join("src")).expect("create src");
@@ -160,9 +162,7 @@ fn create_clean_lib_with_example_fixture(name: &str) -> tempfile::TempDir {
     let temp = tempdir().expect("create temp fixture dir");
     fs::write(
         temp.path().join("Cargo.toml"),
-        format!(
-            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
-        ),
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
     )
     .expect("write manifest");
     fs::create_dir_all(temp.path().join("src")).expect("create src");

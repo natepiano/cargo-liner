@@ -36,7 +36,7 @@ enum Findings {
 }
 
 impl Findings {
-    fn classify(report: &Report, compiler_stats: &CompilerStats) -> Self {
+    const fn classify(report: &Report, compiler_stats: &CompilerStats) -> Self {
         let has_mend = !report.findings.is_empty();
         let has_compiler = compiler_stats.warning_count > 0;
         match (has_mend, has_compiler) {
@@ -164,7 +164,7 @@ fn render_finding(output: &mut String, finding: &Finding, color: ColorMode) {
     let _ = writeln!(output);
 }
 
-fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
+const fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
     if count == 1 { singular } else { plural }
 }
 
@@ -189,7 +189,8 @@ struct SummaryActionRow {
 
 fn summary_line(report: &Report, compiler_stats: &CompilerStats, color: ColorMode) -> String {
     let mut rows = Vec::new();
-    let mend_fixable_count = report.summary.fixable_with_fix + report.summary.fixable_with_fix_pub_use;
+    let mend_fixable_count =
+        report.summary.fixable_with_fix + report.summary.fixable_with_fix_pub_use;
 
     if report.summary.errors > 0 {
         let n = report.summary.errors;
@@ -238,15 +239,14 @@ fn summary_line(report: &Report, compiler_stats: &CompilerStats, color: ColorMod
 
     let total_warnings = report.summary.warnings + compiler_stats.warning_count;
     let total_fixable = mend_fixable_count + compiler_stats.fixable_count;
-    let action_row = (mend_fixable_count > 0 && compiler_stats.fixable_count > 0).then_some(
-        SummaryActionRow {
+    let action_row =
+        (mend_fixable_count > 0 && compiler_stats.fixable_count > 0).then_some(SummaryActionRow {
             count:         total_warnings,
             description:   "total warnings",
             fixable_count: total_fixable,
             message:       "fix both mend and compiler warnings",
             command:       "cargo mend --fix-all",
-        },
-    );
+        });
 
     render_summary_rows(&rows, action_row.as_ref(), color)
 }
@@ -265,8 +265,9 @@ fn render_summary_rows(
         .max()
         .unwrap_or(0);
     let desc_width = action_row.map_or(desc_width, |row| desc_width.max(row.description.len()));
-    let fixable_count_width =
-        action_row.map_or(fixable_count_width, |row| fixable_count_width.max(digit_count(row.fixable_count)));
+    let fixable_count_width = action_row.map_or(fixable_count_width, |row| {
+        fixable_count_width.max(digit_count(row.fixable_count))
+    });
     let prefix = dim("summary:", color);
     let indent = " ".repeat("summary:".len());
 
@@ -297,7 +298,8 @@ fn render_summary_rows(
         if !result.is_empty() {
             result.push('\n');
         }
-        result.push_str(&format!(
+        let _ = write!(
+            result,
             "{indent} {:>cw$} {:<dw$} - {:>fw$} fixable - {} with `{}`",
             row.count,
             row.description,
@@ -307,17 +309,12 @@ fn render_summary_rows(
             cw = count_width,
             dw = desc_width,
             fw = fixable_count_width,
-        ));
+        );
     }
     result
 }
 
-fn digit_count(n: usize) -> usize {
-    if n == 0 {
-        return 1;
-    }
-    ((n as f64).log10().floor() as usize) + 1
-}
+fn digit_count(n: usize) -> usize { n.to_string().len() }
 
 fn severity_label(severity: Severity, color: ColorMode) -> String {
     match severity {
@@ -383,9 +380,9 @@ mod tests {
 
     fn mend_warning_report() -> Report {
         Report {
-            root:    ".".to_string(),
+            root: ".".to_string(),
             summary: ReportSummary {
-                warnings:         1,
+                warnings: 1,
                 fixable_with_fix: 1,
                 ..ReportSummary::default()
             },
@@ -453,9 +450,7 @@ mod tests {
 
         assert!(output.contains("summary: 3 compiler warnings"));
         assert!(output.contains("1 mend warning"));
-        assert!(output.contains(
-            "4 total warnings"
-        ));
+        assert!(output.contains("4 total warnings"));
         assert!(output.contains(
             "- 2 fixable - fix both mend and compiler warnings with `cargo mend --fix-all`"
         ));

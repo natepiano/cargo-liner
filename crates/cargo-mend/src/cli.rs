@@ -46,9 +46,8 @@ pub(crate) fn parse(after_help: &str) -> Cli {
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 #[command(next_help_heading = "Package Selection")]
 pub(crate) struct CargoCheckCli {
-    /// Check all packages in the workspace
-    #[arg(long)]
-    pub workspace: bool,
+    #[command(flatten)]
+    pub(crate) workspace: WorkspaceCli,
 
     /// Package to check
     #[arg(short = 'p', long = "package", value_name = "SPEC")]
@@ -62,36 +61,22 @@ pub(crate) struct CargoCheckCli {
     #[arg(long, value_name = "PATH", help_heading = "Manifest Options")]
     pub manifest_path: Option<PathBuf>,
 
-    /// Check all targets
-    #[arg(long, help_heading = "Target Selection")]
-    pub all_targets: bool,
+    #[command(flatten)]
+    pub(crate) primary_targets: PrimaryTargetCli,
 
-    /// Check only this package's library
-    #[arg(long, help_heading = "Target Selection")]
-    pub lib: bool,
-
-    /// Check all binary targets
-    #[arg(long, help_heading = "Target Selection")]
-    pub bins: bool,
-
-    /// Check all example targets
-    #[arg(long, help_heading = "Target Selection")]
-    pub examples: bool,
-
-    /// Check all test targets
-    #[arg(long, help_heading = "Target Selection")]
-    pub tests: bool,
-
-    /// Check all benchmark targets
-    #[arg(long, help_heading = "Target Selection")]
-    pub benches: bool,
+    #[command(flatten)]
+    pub(crate) secondary_targets: SecondaryTargetCli,
 
     /// Check the specified binary
     #[arg(long = "bin", value_name = "NAME", help_heading = "Target Selection")]
     pub bin: Vec<String>,
 
     /// Check the specified example
-    #[arg(long = "example", value_name = "NAME", help_heading = "Target Selection")]
+    #[arg(
+        long = "example",
+        value_name = "NAME",
+        help_heading = "Target Selection"
+    )]
     pub example: Vec<String>,
 
     /// Check the specified test target
@@ -101,6 +86,59 @@ pub(crate) struct CargoCheckCli {
     /// Check the specified benchmark target
     #[arg(long = "bench", value_name = "NAME", help_heading = "Target Selection")]
     pub bench: Vec<String>,
+}
+
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct WorkspaceCli {
+    /// Check all packages in the workspace
+    #[arg(long)]
+    pub(crate) workspace: bool,
+}
+
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PrimaryTargetCli {
+    /// Check all targets
+    #[arg(long, help_heading = "Target Selection")]
+    pub(crate) all_targets: bool,
+
+    /// Check only this package's library
+    #[arg(long, help_heading = "Target Selection")]
+    pub(crate) lib: bool,
+
+    /// Check all binary targets
+    #[arg(long, help_heading = "Target Selection")]
+    pub(crate) bins: bool,
+}
+
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SecondaryTargetCli {
+    /// Check all example targets
+    #[arg(long, help_heading = "Target Selection")]
+    pub(crate) examples: bool,
+
+    /// Check all test targets
+    #[arg(long, help_heading = "Target Selection")]
+    pub(crate) tests: bool,
+
+    /// Check all benchmark targets
+    #[arg(long, help_heading = "Target Selection")]
+    pub(crate) benches: bool,
+}
+
+impl CargoCheckCli {
+    pub(crate) const fn workspace(&self) -> bool { self.workspace.workspace }
+
+    pub(crate) const fn all_targets(&self) -> bool { self.primary_targets.all_targets }
+
+    pub(crate) const fn lib(&self) -> bool { self.primary_targets.lib }
+
+    pub(crate) const fn bins(&self) -> bool { self.primary_targets.bins }
+
+    pub(crate) const fn examples(&self) -> bool { self.secondary_targets.examples }
+
+    pub(crate) const fn tests(&self) -> bool { self.secondary_targets.tests }
+
+    pub(crate) const fn benches(&self) -> bool { self.secondary_targets.benches }
 }
 
 #[derive(Args, Debug)]
@@ -114,25 +152,49 @@ pub(crate) struct ManifestCli {
 #[derive(Args, Debug)]
 #[command(next_help_heading = "Mend Actions")]
 pub(crate) struct FixCli {
+    #[command(flatten)]
+    pub(crate) auto_fix: AutoFixCli,
+
+    #[command(flatten)]
+    pub(crate) execution: FixExecutionCli,
+}
+
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AutoFixCli {
     /// Auto-fix mend import and visibility findings
     #[arg(long)]
-    pub fix: bool,
+    pub(crate) fix: bool,
 
     /// Auto-fix stale `pub use` re-exports
     #[arg(long)]
-    pub fix_pub_use: bool,
+    pub(crate) fix_pub_use: bool,
 
     /// Run `cargo fix` for compiler-fixable warnings
     #[arg(long)]
-    pub fix_compiler: bool,
+    pub(crate) fix_compiler: bool,
+}
 
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct FixExecutionCli {
     /// Apply all fixes (--fix + --fix-pub-use + --fix-compiler)
     #[arg(long)]
-    pub fix_all: bool,
+    pub(crate) fix_all: bool,
 
     /// Preview fixes without applying them
     #[arg(long)]
-    pub dry_run: bool,
+    pub(crate) dry_run: bool,
+}
+
+impl FixCli {
+    pub(crate) const fn fix(&self) -> bool { self.auto_fix.fix }
+
+    pub(crate) const fn fix_pub_use(&self) -> bool { self.auto_fix.fix_pub_use }
+
+    pub(crate) const fn fix_compiler(&self) -> bool { self.auto_fix.fix_compiler }
+
+    pub(crate) const fn fix_all(&self) -> bool { self.execution.fix_all }
+
+    pub(crate) const fn dry_run(&self) -> bool { self.execution.dry_run }
 }
 
 fn normalized_args() -> Vec<std::ffi::OsString> {

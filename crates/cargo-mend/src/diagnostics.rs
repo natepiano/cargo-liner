@@ -143,11 +143,11 @@ pub(crate) struct Finding {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Report {
-    pub root:                         String,
-    pub summary:                      ReportSummary,
-    pub findings:                     Vec<Finding>,
+    pub root:     String,
+    pub summary:  ReportSummary,
+    pub findings: Vec<Finding>,
     #[serde(default)]
-    pub facts:                        ReportFacts,
+    pub facts:    ReportFacts,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

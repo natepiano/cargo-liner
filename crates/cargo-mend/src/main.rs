@@ -84,7 +84,7 @@ fn run() -> Result<ExitCode, MendFailure> {
     let start = Instant::now();
     let outcome = MendRunner::new(&selection, &cargo_plan, &config, color).run(operation_mode)?;
 
-    let fix_compiler_duration = if cli.fix.fix_compiler || cli.fix.fix_all {
+    let fix_compiler_duration = if cli.fix.fix_compiler() || cli.fix.fix_all() {
         Some(compiler::run_cargo_fix(&cargo_plan, color).map_err(MendFailure::Unexpected)?)
     } else {
         None

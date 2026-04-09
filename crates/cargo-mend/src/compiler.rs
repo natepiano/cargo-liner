@@ -258,31 +258,27 @@ pub(crate) fn run_selection(
     output_mode: BuildOutputMode,
     color: ColorMode,
 ) -> Result<SelectionResult, MendFailure> {
-    let findings_dir = prepare_findings_dir(cargo_plan.target_directory.as_path()).map_err(
-        |err| {
+    let findings_dir =
+        prepare_findings_dir(cargo_plan.target_directory.as_path()).map_err(|err| {
             MendFailure::Analysis(AnalysisFailure {
                 cause: CompilerFailureCause::DriverSetup(err),
             })
-        },
-    )?;
+        })?;
     let scope_fingerprint = scope_fingerprint_for(cargo_plan);
 
-    let command_outcome =
-        run_cargo_check(
-            cargo_plan,
-            loaded_config,
-            &findings_dir,
-            &scope_fingerprint,
-            output_mode,
-            color,
-        )
-        .map_err(
-            |err| {
-                MendFailure::Analysis(AnalysisFailure {
-                    cause: CompilerFailureCause::DriverSetup(err),
-                })
-            },
-        )?;
+    let command_outcome = run_cargo_check(
+        cargo_plan,
+        loaded_config,
+        &findings_dir,
+        &scope_fingerprint,
+        output_mode,
+        color,
+    )
+    .map_err(|err| {
+        MendFailure::Analysis(AnalysisFailure {
+            cause: CompilerFailureCause::DriverSetup(err),
+        })
+    })?;
 
     if !command_outcome.status.success() {
         return Err(MendFailure::Analysis(AnalysisFailure {
@@ -474,18 +470,18 @@ fn run_cargo_command(
     let duration = start.elapsed();
     Ok(CommandOutcome {
         status,
-        compiler_warnings: stderr_outcome.compiler_warnings,
+        compiler_warnings: stderr_outcome.warnings,
         duration,
-        compiler_warning_count: stderr_outcome.compiler_warning_count,
-        compiler_fixable_count: stderr_outcome.compiler_fixable_count,
+        compiler_warning_count: stderr_outcome.warning_count,
+        compiler_fixable_count: stderr_outcome.fixable_count,
     })
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 struct StderrObservation {
-    compiler_warnings:      CompilerWarningFacts,
-    compiler_warning_count: usize,
-    compiler_fixable_count: usize,
+    warnings:      CompilerWarningFacts,
+    warning_count: usize,
+    fixable_count: usize,
 }
 
 fn stream_cargo_stderr(
@@ -548,9 +544,9 @@ fn stream_cargo_stderr(
     }
 
     Ok(StderrObservation {
-        compiler_warnings,
-        compiler_warning_count,
-        compiler_fixable_count,
+        warnings:      compiler_warnings,
+        warning_count: compiler_warning_count,
+        fixable_count: compiler_fixable_count,
     })
 }
 
@@ -609,15 +605,13 @@ fn parse_compiler_warning_summary(line: &str) -> Option<(usize, usize)> {
     let after_generated = trimmed.split(" generated ").nth(1)?;
     let warning_count: usize = after_generated.split_whitespace().next()?.parse().ok()?;
 
-    let fixable_count = if let Some(after_apply) = trimmed.split("to apply ").nth(1) {
+    let fixable_count = trimmed.split("to apply ").nth(1).map_or(0, |after_apply| {
         after_apply
             .split_whitespace()
             .next()
             .and_then(|n| n.parse().ok())
             .unwrap_or(0)
-    } else {
-        0
-    };
+    });
 
     Some((warning_count, fixable_count))
 }
@@ -705,8 +699,6 @@ fn load_report(
     config_fingerprint: &str,
     scope_fingerprint: &str,
 ) -> Result<Report> {
-    let mut findings = Vec::new();
-    let mut pub_use_fix_facts = Vec::new();
     let selected_roots: Vec<PathBuf> = selection.package_roots.clone();
     let selected_root_strings: Vec<String> = selected_roots
         .iter()
@@ -716,6 +708,9 @@ fn load_report(
         .iter()
         .filter_map(|root| fs::canonicalize(root).ok())
         .collect();
+    let mut findings = Vec::new();
+    let mut pub_use_fix_facts = Vec::new();
+
     for entry in fs::read_dir(findings_dir).with_context(|| {
         format!(
             "failed to read findings directory {}",
@@ -732,74 +727,22 @@ fn load_report(
         let Ok(stored) = serde_json::from_str::<StoredReport>(&text) else {
             continue;
         };
-        if stored.version != FINDINGS_SCHEMA_VERSION {
+        if !stored_report_matches_selection(
+            &stored,
+            &selected_roots,
+            &selected_root_strings,
+            &selected_canonical_roots,
+            config_fingerprint,
+            scope_fingerprint,
+        ) {
             continue;
         }
-        if stored.analysis_fingerprint != current_analysis_fingerprint() {
-            continue;
-        }
-        if stored.config_fingerprint != config_fingerprint {
-            continue;
-        }
-        if stored.scope_fingerprint != scope_fingerprint {
-            continue;
-        }
-        let crate_root_exists = stored.crate_root_file.is_empty()
-            || {
-                let crate_root = Path::new(&stored.crate_root_file);
-                if crate_root.is_absolute() {
-                    crate_root.exists()
-                } else {
-                    Path::new(&stored.package_root).join(crate_root).exists()
-                }
-            };
-        if !crate_root_exists {
-            continue;
-        }
-        let matches_selected_root = selected_root_strings
-            .iter()
-            .any(|root| root == &stored.package_root)
-            || fs::canonicalize(Path::new(&stored.package_root)).ok().is_some_and(|stored_root| {
-                selected_canonical_roots
-                    .iter()
-                    .any(|selected_root| selected_root == &stored_root)
-            })
-            || (stored.package_root.is_empty() && selected_roots.len() == 1);
-        if !matches_selected_root {
-            continue;
-        }
-        for finding in stored.findings {
-            findings.push(Finding {
-                severity:      finding.severity,
-                code:          finding.code,
-                path:          relativize_path(&finding.path, selection.analysis_root.as_path()),
-                line:          finding.line,
-                column:        finding.column,
-                highlight_len: finding.highlight_len,
-                source_line:   finding.source_line,
-                item:          finding.item,
-                message:       finding.message,
-                suggestion:    finding.suggestion,
-                fix_support:   finding.fix_support,
-                related:       finding.related,
-            });
-        }
-        for fact in stored.pub_use_fix_facts {
-            pub_use_fix_facts.push(PubUseFixFact {
-                child_path:      relativize_path(
-                    &fact.child_path,
-                    selection.analysis_root.as_path(),
-                ),
-                child_line:      fact.child_line,
-                child_item_name: fact.child_item_name,
-                parent_path:     relativize_path(
-                    &fact.parent_path,
-                    selection.analysis_root.as_path(),
-                ),
-                parent_line:     fact.parent_line,
-                child_module:    fact.child_module,
-            });
-        }
+        extend_report_from_stored(
+            &mut findings,
+            &mut pub_use_fix_facts,
+            stored,
+            selection.analysis_root.as_path(),
+        );
     }
 
     findings.sort_by(|a, b| {
@@ -829,6 +772,93 @@ fn load_report(
             compiler_warnings: CompilerWarningFacts::None,
         },
     })
+}
+
+fn stored_report_matches_selection(
+    stored: &StoredReport,
+    selected_roots: &[PathBuf],
+    selected_root_strings: &[String],
+    selected_canonical_roots: &[PathBuf],
+    config_fingerprint: &str,
+    scope_fingerprint: &str,
+) -> bool {
+    stored.version == FINDINGS_SCHEMA_VERSION
+        && stored.analysis_fingerprint == current_analysis_fingerprint()
+        && stored.config_fingerprint == config_fingerprint
+        && stored.scope_fingerprint == scope_fingerprint
+        && stored_crate_root_exists(stored)
+        && stored_matches_selected_root(
+            stored,
+            selected_roots,
+            selected_root_strings,
+            selected_canonical_roots,
+        )
+}
+
+fn stored_crate_root_exists(stored: &StoredReport) -> bool {
+    stored.crate_root_file.is_empty() || {
+        let crate_root = Path::new(&stored.crate_root_file);
+        if crate_root.is_absolute() {
+            crate_root.exists()
+        } else {
+            Path::new(&stored.package_root).join(crate_root).exists()
+        }
+    }
+}
+
+fn stored_matches_selected_root(
+    stored: &StoredReport,
+    selected_roots: &[PathBuf],
+    selected_root_strings: &[String],
+    selected_canonical_roots: &[PathBuf],
+) -> bool {
+    selected_root_strings
+        .iter()
+        .any(|root| root == &stored.package_root)
+        || fs::canonicalize(Path::new(&stored.package_root))
+            .ok()
+            .is_some_and(|stored_root| {
+                selected_canonical_roots
+                    .iter()
+                    .any(|selected_root| selected_root == &stored_root)
+            })
+        || (stored.package_root.is_empty() && selected_roots.len() == 1)
+}
+
+fn extend_report_from_stored(
+    findings: &mut Vec<Finding>,
+    pub_use_fix_facts: &mut Vec<PubUseFixFact>,
+    stored: StoredReport,
+    analysis_root: &Path,
+) {
+    for finding in stored.findings {
+        findings.push(Finding {
+            severity:      finding.severity,
+            code:          finding.code,
+            path:          relativize_path(&finding.path, analysis_root),
+            line:          finding.line,
+            column:        finding.column,
+            highlight_len: finding.highlight_len,
+            source_line:   finding.source_line,
+            item:          finding.item,
+            message:       finding.message,
+            suggestion:    finding.suggestion,
+            fix_support:   finding.fix_support,
+            related:       finding
+                .related
+                .map(|related| relativize_path(&related, analysis_root)),
+        });
+    }
+    for fact in stored.pub_use_fix_facts {
+        pub_use_fix_facts.push(PubUseFixFact {
+            child_path:      relativize_path(&fact.child_path, analysis_root),
+            child_line:      fact.child_line,
+            child_item_name: fact.child_item_name,
+            parent_path:     relativize_path(&fact.parent_path, analysis_root),
+            parent_line:     fact.parent_line,
+            child_module:    fact.child_module,
+        });
+    }
 }
 
 fn selection_root_string(root: &Path) -> String { root.display().to_string() }
@@ -3318,6 +3348,7 @@ mod tests {
     use std::time::SystemTime;
     use std::time::UNIX_EPOCH;
 
+    use super::BuildOutputMode;
     use super::CrateKind;
     use super::DiagnosticBlockKind;
     use super::DriverSettings;
@@ -3331,12 +3362,11 @@ mod tests {
     use super::config_relative_path_for_settings;
     use super::current_analysis_fingerprint;
     use super::exported_names_from_parent_boundary;
-    use super::forbidden_pub_crate_help;
     use super::flush_diagnostic_block;
+    use super::forbidden_pub_crate_help;
     use super::is_progress_line;
     use super::module_path_from_source_file;
     use super::suspicious_pub_note;
-    use crate::compiler::BuildOutputMode;
     use crate::config::VisibilityConfig;
     use crate::diagnostics::CompilerWarningFacts;
 

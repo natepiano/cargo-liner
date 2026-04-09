@@ -3,10 +3,10 @@ use std::process::Command;
 
 use regex::Regex;
 
-use super::cargo_mend_tests_support::DiagnosticCode;
-use super::cargo_mend_tests_support::FixSummaryBucket;
-use super::cargo_mend_tests_support::FixSupport;
-use super::cargo_mend_tests_support::diagnostic_spec;
+use super::DiagnosticCode;
+use super::FixSummaryBucket;
+use super::FixSupport;
+use super::diagnostic_spec;
 use super::types::ExpectedFinding;
 use super::types::Report;
 use super::types::Summary;
@@ -87,7 +87,7 @@ pub fn assert_summary_matches_findings(report: &Report) {
     );
 }
 
-pub fn fix_support_for(code: DiagnosticCode, fix_support: FixSupport) -> FixSupport {
+pub const fn fix_support_for(code: DiagnosticCode, fix_support: FixSupport) -> FixSupport {
     if matches!(fix_support, FixSupport::None) {
         diagnostic_spec(code).fix_support
     } else {
