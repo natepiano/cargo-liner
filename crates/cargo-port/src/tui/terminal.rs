@@ -266,7 +266,7 @@ fn process_input_frame(app: &mut App, input_rx: &mpsc::Receiver<Event>) -> (usiz
 
 fn flush_deferred_selection(app: &mut App) {
     if app.selection_changed()
-        && let Some(path) = &app.selection_paths.last_selected
+        && let Some(path) = app.last_selected_path()
     {
         save_last_selected(path);
         app.clear_selection_changed();
@@ -275,7 +275,7 @@ fn flush_deferred_selection(app: &mut App) {
 
 fn flush_pending_selection(app: &App) {
     if app.selection_changed()
-        && let Some(path) = &app.selection_paths.last_selected
+        && let Some(path) = app.last_selected_path()
     {
         save_last_selected(path);
     }
@@ -317,32 +317,32 @@ fn draw_frame(
 }
 
 fn spawn_pending_background_tasks(app: &mut App) {
-    if let Some(run) = app.pending_example_run.take() {
+    if let Some(run) = app.take_pending_example_run() {
         spawn_example_process(app, &run);
     }
 
-    if let Some(pending) = app.pending_cleans.pop_front() {
+    if let Some(pending) = app.pending_cleans_mut().pop_front() {
         spawn_clean_process(app, &pending);
     }
 
-    if let Some(fetch) = app.pending_ci_fetch.take() {
+    if let Some(fetch) = app.take_pending_ci_fetch() {
         let abs = PathBuf::from(&fetch.project_path);
         let existing_runs = app
-            .ci_state
+            .ci_state_mut()
             .remove(&abs)
             .map(|s| match s {
                 super::app::CiState::Fetching { runs, .. }
                 | super::app::CiState::Loaded { runs, .. } => runs,
             })
             .unwrap_or_default();
-        app.ci_state.insert(
+        app.ci_state_mut().insert(
             abs,
             super::app::CiState::Fetching {
                 runs:  existing_runs,
                 count: CI_FETCH_DISPLAY_COUNT,
             },
         );
-        app.data_generation += 1;
+        app.increment_data_generation();
         spawn_ci_fetch(app, &fetch);
     }
 }
@@ -381,7 +381,7 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         fit_results = bg_stats.fit_results,
         disk_results = bg_stats.disk_results,
         needs_rebuild = bg_stats.needs_rebuild,
-        items = app.projects.len(),
+        items = app.projects().len(),
         scan_complete = app.is_scan_complete(),
         "slow_frame"
     );
@@ -415,29 +415,29 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            app.example_output = vec![format!("Failed to start: {e}")];
-            app.example_running = Some(run.target_name.clone());
+            app.set_example_output(vec![format!("Failed to start: {e}")]);
+            app.set_example_running(Some(run.target_name.clone()));
             return;
         },
     };
 
     // Store PID so we can kill from the main thread
     let pid = child.id();
-    *app.example_child
+    *app.example_child()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pid);
 
     let name = run.target_name.clone();
     let mode = if run.release { " (release)" } else { "" };
-    app.example_output = vec![format!("Building {name}{mode}...")];
-    app.example_running = Some(format!("{name}{mode}"));
+    app.set_example_output(vec![format!("Building {name}{mode}...")]);
+    app.set_example_running(Some(format!("{name}{mode}")));
 
     // Take ownership of pipes before moving child to thread
     let stderr = child.stderr.take();
     let stdout = child.stdout.take();
 
-    let pid_holder = app.example_child.clone();
-    let tx = app.example_tx.clone();
+    let pid_holder = app.example_child();
+    let tx = app.example_tx();
     thread::spawn(move || {
         // Read stderr with \r handling for cargo progress lines
         if let Some(stderr) = stderr {
@@ -505,7 +505,7 @@ fn spawn_clean_process(app: &mut App, pending: &PendingClean) {
             return;
         },
     };
-    let tx = app.clean_tx.clone();
+    let tx = app.clean_tx();
     let project_path = pending.project_path.clone();
     thread::spawn(move || {
         let _ = child.wait();
@@ -525,9 +525,9 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
         return;
     };
 
-    let tx = app.ci_fetch_tx.clone();
-    let bg_tx = app.bg_tx.clone();
-    let client = app.http_client.clone();
+    let tx = app.ci_fetch_tx();
+    let bg_tx = app.bg_tx();
+    let client = app.http_client();
     let project_path = fetch.project_path.clone();
     let current_count = fetch.current_count;
     let kind = fetch.kind;
@@ -574,8 +574,8 @@ fn save_last_selected(project_path: &AbsolutePath) {
 
 /// Spawn a background thread to fetch details for a single project ahead of the main scan.
 pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name: Option<&String>) {
-    let tx = app.bg_tx.clone();
-    let client = app.http_client.clone();
+    let tx = app.bg_tx();
+    let client = app.http_client();
     let abs = PathBuf::from(abs_path);
     let project_name = name.cloned();
 

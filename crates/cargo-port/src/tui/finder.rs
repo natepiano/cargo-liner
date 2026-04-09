@@ -530,39 +530,39 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc => {
             app.close_finder();
-            app.finder.query.clear();
-            app.finder.results.clear();
-            app.finder.pane.home();
+            app.finder_mut().query.clear();
+            app.finder_mut().results.clear();
+            app.finder_mut().pane.home();
             app.close_overlay();
         },
         KeyCode::Enter => {
             confirm_finder(app);
         },
         KeyCode::Up => {
-            app.finder.pane.up();
+            app.finder_mut().pane.up();
         },
         KeyCode::Down => {
-            app.finder.pane.down();
+            app.finder_mut().pane.down();
         },
         KeyCode::Home => {
-            app.finder.pane.home();
+            app.finder_mut().pane.home();
         },
         KeyCode::End => {
-            app.finder.pane.end();
+            app.finder_mut().pane.end();
         },
         KeyCode::Backspace => {
-            if app.finder.query.is_empty() {
+            if app.finder().query.is_empty() {
                 app.close_finder();
-                app.finder.results.clear();
-                app.finder.pane.home();
+                app.finder_mut().results.clear();
+                app.finder_mut().pane.home();
                 app.close_overlay();
             } else {
-                app.finder.query.pop();
+                app.finder_mut().query.pop();
                 refresh_finder_results(app);
             }
         },
         KeyCode::Char(c) => {
-            app.finder.query.push(c);
+            app.finder_mut().query.push(c);
             refresh_finder_results(app);
         },
         _ => {},
@@ -570,23 +570,27 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
 }
 
 fn refresh_finder_results(app: &mut App) {
-    let (results, total) = search_finder(&app.finder.index, &app.finder.query, MAX_FINDER_RESULTS);
-    app.finder.results = results;
-    app.finder.total = total;
-    app.finder.pane.home();
+    let (results, total) = {
+        let finder = app.finder();
+        search_finder(&finder.index, &finder.query, MAX_FINDER_RESULTS)
+    };
+    let finder = app.finder_mut();
+    finder.results = results;
+    finder.total = total;
+    finder.pane.home();
 }
 
 fn confirm_finder(app: &mut App) {
-    let Some(&idx) = app.finder.results.get(app.finder.pane.pos()) else {
+    let Some(&idx) = app.finder().results.get(app.finder().pane.pos()) else {
         return;
     };
-    let item = app.finder.index[idx].clone();
+    let item = app.finder().index[idx].clone();
 
     // Close finder
     app.close_finder();
-    app.finder.query.clear();
-    app.finder.results.clear();
-    app.finder.pane.home();
+    app.finder_mut().query.clear();
+    app.finder_mut().results.clear();
+    app.finder_mut().pane.home();
     app.close_overlay();
 
     // Navigate to the project
@@ -611,7 +615,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
         app.focus_pane(PaneId::Targets);
 
         // Build target list and find the matching entry index
-        if let Some(info) = app.cached_detail.as_ref().map(|c| c.info.clone()) {
+        if let Some(info) = app.cached_detail().map(|c| c.info.clone()) {
             let entries = super::detail::build_target_list(&info);
             let target_kind = match item.kind {
                 FinderKind::Binary => RunTargetKind::Binary,
@@ -624,7 +628,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
                 if entry.name == target_name
                     && std::mem::discriminant(&entry.kind) == std::mem::discriminant(&target_kind)
                 {
-                    app.targets_pane.set_pos(i);
+                    app.targets_pane_mut().set_pos(i);
                     return;
                 }
             }
@@ -636,7 +640,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
 
 pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     // Use cached column widths (computed at index build time) for stable popup sizing
-    let col_widths = app.finder.col_widths;
+    let col_widths = app.finder().col_widths;
 
     // Size popup to fit all columns + spacing (4 gaps) + borders (2), capped at terminal width
     let natural_width: usize = col_widths.iter().sum::<usize>() + 4 + 2;
@@ -646,15 +650,15 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
         .unwrap_or(u16::MAX)
         .clamp(min_popup_width, max_popup_width);
 
-    let title = if app.finder.query.is_empty() {
+    let title = if app.finder().query.is_empty() {
         " Find Anything ".to_string()
-    } else if app.finder.total <= app.finder.results.len() {
-        format!(" Find Anything ({}) ", app.finder.total)
+    } else if app.finder().total <= app.finder().results.len() {
+        format!(" Find Anything ({}) ", app.finder().total)
     } else {
         format!(
             " Find Anything ({} of {}) ",
-            app.finder.results.len(),
-            app.finder.total
+            app.finder().results.len(),
+            app.finder().total
         )
     };
 
@@ -683,7 +687,7 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     let input_line = Line::from(vec![
         Span::styled("  / ", prompt_style),
         Span::styled(
-            format!("{}_", app.finder.query),
+            format!("{}_", app.finder().query),
             Style::default().fg(Color::Yellow),
         ),
     ]);
@@ -713,8 +717,9 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
         height: inner.height.saturating_sub(2),
     };
 
-    app.finder.pane.set_len(app.finder.results.len());
-    app.finder.pane.set_content_area(results_area);
+    let result_count = app.finder().results.len();
+    app.finder_mut().pane.set_len(result_count);
+    app.finder_mut().pane.set_content_area(results_area);
     render_finder_results(frame, app, col_widths, results_area);
 }
 
@@ -724,8 +729,8 @@ fn render_finder_results(
     col_widths: [usize; FINDER_COLUMN_COUNT],
     area: Rect,
 ) {
-    if app.finder.results.is_empty() {
-        let msg = if app.finder.query.is_empty() {
+    if app.finder().results.is_empty() {
+        let msg = if app.finder().query.is_empty() {
             "Type to search projects, examples, benches..."
         } else {
             "No matches"
@@ -742,11 +747,11 @@ fn render_finder_results(
     let parent_style = Style::default().fg(Color::DarkGray);
     let dir_style = Style::default().fg(Color::DarkGray);
     let rows: Vec<Row> = app
-        .finder
+        .finder()
         .results
         .iter()
         .map(|&idx| {
-            let item = &app.finder.index[idx];
+            let item = &app.finder().index[idx];
             let kind_style = Style::default()
                 .fg(item.kind.color())
                 .add_modifier(Modifier::BOLD);
@@ -782,14 +787,16 @@ fn render_finder_results(
         .column_spacing(1)
         .row_highlight_style(highlight_style);
 
-    let mut table_state = TableState::default().with_selected(Some(app.finder.pane.pos()));
+    let mut table_state = TableState::default().with_selected(Some(app.finder().pane.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.finder.pane.set_scroll_offset(table_state.offset());
+    app.finder_mut()
+        .pane
+        .set_scroll_offset(table_state.offset());
 
     let visible_height = usize::from(area.height.saturating_sub(1));
     let visible_start = table_state.offset();
     let visible_end = app
-        .finder
+        .finder()
         .results
         .len()
         .min(visible_start.saturating_add(visible_height));

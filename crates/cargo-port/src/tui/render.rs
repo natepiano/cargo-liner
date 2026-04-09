@@ -183,7 +183,7 @@ pub(super) fn disk_color(percentile: Option<f64>) -> Style {
 }
 
 pub(super) fn ui(frame: &mut Frame, app: &mut App) {
-    app.layout_cache = LayoutCache::default();
+    *app.layout_cache_mut() = LayoutCache::default();
     app.prune_toasts();
 
     let outer_layout = Layout::default()
@@ -191,8 +191,8 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
 
-    let left_width =
-        u16::try_from(app.cached_fit_widths.total_width() + BLOCK_BORDER_WIDTH).unwrap_or(u16::MAX);
+    let left_width = u16::try_from(app.cached_fit_widths().total_width() + BLOCK_BORDER_WIDTH)
+        .unwrap_or(u16::MAX);
 
     let main_layout = Layout::default()
         .direction(Direction::Horizontal)
@@ -220,7 +220,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     if app.is_finder_open() {
         super::finder::render_finder_popup(frame, app);
     }
-    if let Some(ref action) = app.confirm {
+    if let Some(action) = app.confirm() {
         render_confirm_popup(frame, action);
     }
 }
@@ -275,7 +275,7 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Clear, area);
 
-    let detail_info = app.cached_detail.as_ref().map(|c| c.info.clone());
+    let detail_info = app.cached_detail().map(|c| c.info.clone());
     let selected_ci_state = app.selected_ci_state();
     let selected_has_ci_owner = app.selected_ci_path().is_some();
     let has_workflows = app
@@ -285,11 +285,11 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let has_ci = selected_ci_state.is_some() && has_workflows;
     let detail_lint_runs = app
         .selected_project_path()
-        .and_then(|path| app.lint_runs.get(path))
+        .and_then(|path| app.lint_runs().get(path))
         .cloned()
         .unwrap_or_default();
     let detail_ci_runs: Vec<CiRun> = app.selected_ci_runs();
-    let has_example_output = !app.example_output.is_empty();
+    let has_example_output = !app.example_output().is_empty();
 
     let right_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -324,13 +324,13 @@ fn sync_detail_pane_hitboxes(app: &mut App, detail_info: Option<&DetailInfo>) {
         return;
     }
 
-    reset_pane(&mut app.package_pane);
-    reset_pane(&mut app.git_pane);
-    reset_pane(&mut app.targets_pane);
+    reset_pane(app.package_pane_mut());
+    reset_pane(app.git_pane_mut());
+    reset_pane(app.targets_pane_mut());
 }
 
 fn register_detail_pane_hitboxes(app: &mut App) {
-    let package_pane = app.package_pane.clone();
+    let package_pane = app.package_pane().clone();
     super::interaction::register_pane_row_hitboxes(app, PaneId::Package, &package_pane, Content);
 
     if app
@@ -338,16 +338,16 @@ fn register_detail_pane_hitboxes(app: &mut App) {
         .and_then(|path| app.git_info_for(path))
         .is_some()
     {
-        let git_pane = app.git_pane.clone();
+        let git_pane = app.git_pane().clone();
         super::interaction::register_pane_row_hitboxes(app, PaneId::Git, &git_pane, Content);
     } else {
-        reset_pane(&mut app.git_pane);
+        reset_pane(app.git_pane_mut());
     }
 
-    if app.cached_detail.as_ref().is_some_and(|cached| {
+    if app.cached_detail().is_some_and(|cached| {
         cached.info.is_binary || !cached.info.examples.is_empty() || !cached.info.benches.is_empty()
     }) {
-        let targets_pane = app.targets_pane.clone();
+        let targets_pane = app.targets_pane().clone();
         super::interaction::register_pane_row_hitboxes(
             app,
             PaneId::Targets,
@@ -355,7 +355,7 @@ fn register_detail_pane_hitboxes(app: &mut App) {
             Content,
         );
     } else {
-        reset_pane(&mut app.targets_pane);
+        reset_pane(app.targets_pane_mut());
     }
 }
 
@@ -385,7 +385,7 @@ fn render_bottom_right_panel(
             selected_has_ci_owner,
             bottom_split[1],
         );
-        reset_pane(&mut app.ci_pane);
+        reset_pane(app.ci_pane_mut());
     }
 
     if let Some(message) = app.unreachable_service_message() {
@@ -475,10 +475,10 @@ pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let search_text = if search_focused {
-        if app.search_query.is_empty() {
+        if app.search_query().is_empty() {
             "…".to_string()
         } else {
-            app.search_query.clone()
+            app.search_query().to_string()
         }
     } else {
         "/ to search".to_string()
@@ -502,20 +502,27 @@ pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
-    let widths = &app.cached_fit_widths;
-
-    let mut items: Vec<ListItem> = if app.is_searching() && !app.search_query.is_empty() {
-        render_filtered_items(app, widths)
-    } else {
-        render_tree_items(app, widths)
+    let (mut items, header, summary_line, row_width) = {
+        let widths = app.cached_fit_widths();
+        let items: Vec<ListItem> = if app.is_searching() && !app.search_query().is_empty() {
+            render_filtered_items(app, widths)
+        } else {
+            render_tree_items(app, widths)
+        };
+        let total_str = format_bytes(
+            app.projects()
+                .iter()
+                .filter_map(RootItem::disk_usage_bytes)
+                .sum(),
+        );
+        let header = super::columns::header_line(widths, "Projects");
+        let summary = super::columns::build_summary_cells(widths, &total_str);
+        let summary_line = Some(super::columns::row_to_line(&summary, widths));
+        let row_width = u16::try_from(widths.total_width()).unwrap_or(u16::MAX);
+        (items, header, summary_line, row_width)
     };
 
     let total_project_rows = items.len();
-    let total_bytes: u64 = app
-        .projects
-        .iter()
-        .filter_map(RootItem::disk_usage_bytes)
-        .sum();
 
     let title = project_panel_title(app, area.width.saturating_sub(2).into());
     let block = Block::default()
@@ -534,11 +541,10 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
-        app.layout_cache.project_list = Rect::ZERO;
+        app.layout_cache_mut().project_list = Rect::ZERO;
         return;
     }
 
-    let header = super::columns::header_line(widths, "Projects");
     let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
     frame.render_widget(
         Paragraph::new(header).style(Style::default().fg(Color::DarkGray)),
@@ -551,13 +557,10 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
         Rect::new(inner.x, inner.y, inner.width, 0)
     };
     if content_area.height == 0 {
-        app.layout_cache.project_list = Rect::ZERO;
+        app.layout_cache_mut().project_list = Rect::ZERO;
         return;
     }
 
-    let total_str = format_bytes(total_bytes);
-    let summary = super::columns::build_summary_cells(widths, &total_str);
-    let summary_line = Some(super::columns::row_to_line(&summary, widths));
     let pin_summary = should_pin_project_summary(
         total_project_rows,
         summary_line.is_some(),
@@ -581,14 +584,10 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     let project_list_focus = app.pane_focus_state(PaneId::ProjectList);
     let project_list = List::new(items).highlight_style(Pane::selection_style(project_list_focus));
 
-    frame.render_stateful_widget(project_list, list_area, &mut app.list_state);
-    app.layout_cache.project_list = list_area;
-    app.layout_cache.project_list_offset = app.list_state.offset();
-    super::interaction::register_project_list_hitboxes(
-        app,
-        list_area,
-        u16::try_from(widths.total_width()).unwrap_or(u16::MAX),
-    );
+    frame.render_stateful_widget(project_list, list_area, app.list_state_mut());
+    app.layout_cache_mut().project_list = list_area;
+    app.layout_cache_mut().project_list_offset = app.list_state().offset();
+    super::interaction::register_project_list_hitboxes(app, list_area, row_width);
 
     if pin_summary && let Some(line) = summary_line {
         let footer_area = Rect::new(
@@ -606,7 +605,7 @@ fn project_panel_title(app: &App, max_width: usize) -> String {
     if max_width <= prefix.width() {
         return truncate_to_width(prefix, max_width);
     }
-    let roots = scan::resolve_include_dirs(&app.scan_root, &app.current_config.tui.include_dirs)
+    let roots = scan::resolve_include_dirs(app.scan_root(), &app.current_config().tui.include_dirs)
         .into_iter()
         .map(|path| project::home_relative_path(path.as_path()))
         .collect::<Vec<_>>();
@@ -682,7 +681,7 @@ fn should_pin_project_summary(project_rows: usize, has_summary: bool, inner_heig
 }
 
 fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
-    let title = app.example_running.as_ref().map_or_else(
+    let title = app.example_running().map_or_else(
         || " Output (Esc to close) ".to_string(),
         |n| format!(" Running: {n} "),
     );
@@ -695,14 +694,14 @@ fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )
-        .border_style(if app.example_running.is_some() {
+        .border_style(if app.example_running().is_some() {
             Style::default().fg(Color::Cyan)
         } else {
             Style::default().fg(Color::DarkGray)
         });
 
     let lines: Vec<Line> = app
-        .example_output
+        .example_output()
         .iter()
         .map(|l| {
             Line::from(Span::styled(
@@ -760,7 +759,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let enter_action = app.enter_action();
     let is_rust = app.selected_item().is_some_and(RootItem::is_rust);
     let groups =
-        super::shortcuts::for_status_bar(context, enter_action, is_rust, &app.current_keymap);
+        super::shortcuts::for_status_bar(context, enter_action, is_rust, app.current_keymap());
 
     let mut left_spans = Vec::new();
     if !app.is_scan_complete() {
@@ -836,7 +835,7 @@ fn render_root_item(
     root_sorted: &[u64],
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
-    let item = &app.projects[node_index];
+    let item = &app.projects()[node_index];
     let name = &root_labels[node_index];
     let disk = App::formatted_disk_for_item(item);
     let disk_bytes = item.disk_usage_bytes();
@@ -848,7 +847,7 @@ fn render_root_item(
     let main_sync = app.git_main(item.path());
     let git_path_state = app.git_path_state_for(item.path());
     let prefix = if item.has_children() {
-        if app.expanded.contains(&ExpandKey::Node(node_index)) {
+        if app.expanded().contains(&ExpandKey::Node(node_index)) {
             PREFIX_ROOT_EXPANDED
         } else {
             PREFIX_ROOT_COLLAPSED
@@ -973,7 +972,7 @@ fn render_worktree_entry<'a>(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ResolvedWidths,
 ) -> ListItem<'a> {
-    let item = &app.projects[ni];
+    let item = &app.projects()[ni];
     let display_path = app.display_path_for_row(VisibleRow::WorktreeEntry {
         node_index:     ni,
         worktree_index: wi,
@@ -1021,7 +1020,7 @@ fn render_worktree_entry<'a>(
     };
 
     let prefix = if has_expandable_children {
-        if app.expanded.contains(&ExpandKey::Worktree(ni, wi)) {
+        if app.expanded().contains(&ExpandKey::Worktree(ni, wi)) {
             PREFIX_WT_EXPANDED
         } else {
             PREFIX_WT_COLLAPSED
@@ -1080,7 +1079,7 @@ fn render_wt_group_header<'a>(
     gi: usize,
     widths: &ResolvedWidths,
 ) -> ListItem<'a> {
-    let item = &app.projects[ni];
+    let item = &app.projects()[ni];
     let (group_name, member_count) = match item {
         crate::project::RootItem::WorkspaceWorktrees(wtg) => {
             let ws = if wi == 0 {
@@ -1093,7 +1092,10 @@ fn render_wt_group_header<'a>(
         },
         _ => (String::new(), 0),
     };
-    let prefix = if app.expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
+    let prefix = if app
+        .expanded()
+        .contains(&ExpandKey::WorktreeGroup(ni, wi, gi))
+    {
         PREFIX_WT_GROUP_EXPANDED
     } else {
         PREFIX_WT_GROUP_COLLAPSED
@@ -1112,7 +1114,7 @@ fn render_wt_member<'a>(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ResolvedWidths,
 ) -> ListItem<'a> {
-    let item = &app.projects[ni];
+    let item = &app.projects()[ni];
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
@@ -1172,7 +1174,7 @@ fn render_member_item(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
-    let item = &app.projects[node_index];
+    let item = &app.projects()[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let (member, member_name, is_named) = match item {
@@ -1221,7 +1223,7 @@ fn render_vendored_item(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
-    let item = &app.projects[node_index];
+    let item = &app.projects()[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let (vendored, vendored_display_name) = match item {
@@ -1274,7 +1276,7 @@ fn render_wt_vendored_item(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
-    let item = &app.projects[node_index];
+    let item = &app.projects()[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let vendored_pkg = match item {
@@ -1346,10 +1348,10 @@ fn render_wt_vendored_item(
 }
 
 pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListItem<'static>> {
-    let root_sorted = &app.cached_root_sorted;
-    let child_sorted = &app.cached_child_sorted;
+    let root_sorted = app.cached_root_sorted();
+    let child_sorted = app.cached_child_sorted();
     let root_labels = app
-        .projects
+        .projects()
         .resolved_root_labels(app.include_non_rust().includes_non_rust());
 
     let rows = app.visible_rows();
@@ -1362,7 +1364,7 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                 node_index,
                 group_index,
             } => {
-                let item = &app.projects[*node_index];
+                let item = &app.projects()[*node_index];
                 let (group_name, member_count) = match item {
                     crate::project::RootItem::Workspace(ws) => {
                         let group = &ws.groups()[*group_index];
@@ -1371,7 +1373,7 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                     _ => (String::new(), 0),
                 };
                 let prefix = if app
-                    .expanded
+                    .expanded()
                     .contains(&ExpandKey::Group(*node_index, *group_index))
                 {
                     PREFIX_GROUP_EXPANDED
@@ -1438,12 +1440,12 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
 }
 
 pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<ListItem<'static>> {
-    let root_sorted = &app.cached_root_sorted;
-    app.filtered
+    let root_sorted = app.cached_root_sorted();
+    app.filtered()
         .iter()
         .map(|hit| {
             let abs = hit.abs_path.as_path();
-            let metadata = app.projects.find_searchable_by_abs_path(abs);
+            let metadata = app.projects().find_searchable_by_abs_path(abs);
             let cargo_active = app.is_cargo_active_path(abs);
             let disk_bytes = metadata.as_ref().and_then(|item| item.disk_usage_bytes);
             let disk = format_bytes(disk_bytes.unwrap_or(0));

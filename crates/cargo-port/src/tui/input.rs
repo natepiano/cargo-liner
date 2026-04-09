@@ -37,7 +37,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
             kind = %event_label(event),
-            focus = pane_label(app.focused_pane),
+            focus = pane_label(app.focused_pane()),
             scan_complete = app.is_scan_complete(),
             selected = %app.selected_project_path()
                 .map_or_else(|| "-".to_string(), |path| path.display().to_string()),
@@ -51,9 +51,9 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     let code = normalized.code;
 
     // Structural keys checked by code only (modifiers irrelevant).
-    if code == KeyCode::Esc && app.example_running.is_some() {
-        let pid = *app
-            .example_child
+    if code == KeyCode::Esc && app.example_running().is_some() {
+        let pid_holder = app.example_child();
+        let pid = *pid_holder
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(pid) = pid {
@@ -61,13 +61,13 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
                 .arg(pid.to_string())
                 .output();
         }
-        app.example_running = None;
-        app.example_output.push("── killed ──".to_string());
+        app.set_example_running(None);
+        app.example_output_mut().push("── killed ──".to_string());
         app.mark_terminal_dirty();
         return;
     }
-    if code == KeyCode::Esc && !app.example_output.is_empty() {
-        app.example_output.clear();
+    if code == KeyCode::Esc && !app.example_output().is_empty() {
+        app.example_output_mut().clear();
         return;
     }
     if handle_confirm_key(app, code) {
@@ -93,7 +93,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         return;
     }
 
-    match app.focused_pane {
+    match app.focused_pane() {
         PaneId::Package | PaneId::Git | PaneId::Targets => {
             detail::handle_detail_key(app, &normalized);
         },
@@ -117,7 +117,7 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
     }
 
     let code = if raw.modifiers == KeyModifiers::NONE && app.navigation_keys().uses_vim() {
-        match app.focused_pane {
+        match app.focused_pane() {
             PaneId::Package | PaneId::Git | PaneId::Targets | PaneId::CiRuns | PaneId::Toasts => {
                 match raw.code {
                     KeyCode::Char('h' | 'k') => KeyCode::Up,
@@ -139,7 +139,7 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
 
     // In list panes, bare left/right map to up/down.
     let code = if raw.modifiers == KeyModifiers::NONE {
-        match app.focused_pane {
+        match app.focused_pane() {
             PaneId::Package | PaneId::Git | PaneId::Targets | PaneId::CiRuns | PaneId::Toasts => {
                 match code {
                     KeyCode::Left => KeyCode::Up,
@@ -157,7 +157,7 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
 }
 
 fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
-    let Some(action) = app.confirm.take() else {
+    let Some(action) = app.take_confirm() else {
         return false;
     };
     if key == KeyCode::Char('y') {
@@ -165,7 +165,7 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
             ConfirmAction::Clean(abs_path) => {
                 let project_path = project::home_relative_path(Path::new(&abs_path));
                 app.start_clean(Path::new(&abs_path));
-                app.pending_cleans.push_back(PendingClean {
+                app.pending_cleans_mut().push_back(PendingClean {
                     abs_path,
                     project_path,
                 });
@@ -176,7 +176,7 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
 }
 
 fn handle_mouse_event(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
-    if app.confirm.is_some() {
+    if app.confirm().is_some() {
         return;
     }
     match kind {
@@ -226,7 +226,7 @@ fn event_label(event: &Event) -> String {
 fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     let pos = Position::new(column, row);
 
-    if app.confirm.is_some() {
+    if app.confirm().is_some() {
         return;
     }
 
@@ -238,9 +238,9 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    let project_list = app.layout_cache.project_list;
-    let detail_columns = app.layout_cache.detail_columns.clone();
-    let detail_targets_col = app.layout_cache.detail_targets_col;
+    let project_list = app.layout_cache().project_list;
+    let detail_columns = app.layout_cache().detail_columns.clone();
+    let detail_targets_col = app.layout_cache().detail_targets_col;
 
     if project_list.contains(pos) {
         app.focus_pane(PaneId::ProjectList);
@@ -262,9 +262,9 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    if app.lint_pane.content_area().contains(pos) {
+    if app.lint_pane().content_area().contains(pos) {
         app.focus_pane(PaneId::Lints);
-    } else if app.ci_pane.content_area().contains(pos) {
+    } else if app.ci_pane().content_area().contains(pos) {
         app.focus_pane(PaneId::CiRuns);
     }
 }
@@ -277,7 +277,7 @@ fn open_in_editor(app: &App) {
         return;
     };
     let abs_path = app
-        .projects
+        .projects()
         .iter()
         .find_map(|item| match item {
             crate::project::RootItem::Workspace(ws)
@@ -301,23 +301,25 @@ fn open_in_editor(app: &App) {
 }
 
 fn open_finder(app: &mut App) {
-    if app.dirty.finder.is_dirty() {
-        let (index, col_widths) = super::finder::build_finder_index(&app.projects);
-        app.finder.index = index;
-        app.finder.col_widths = col_widths;
-        app.dirty.finder.mark_clean();
+    if app.dirty().finder.is_dirty() {
+        let (index, col_widths) = super::finder::build_finder_index(app.projects());
+        let finder = app.finder_mut();
+        finder.index = index;
+        finder.col_widths = col_widths;
+        app.dirty_mut().finder.mark_clean();
     }
     app.open_overlay(PaneId::Finder);
     app.open_finder();
-    app.finder.query.clear();
-    app.finder.results.clear();
-    app.finder.total = 0;
-    app.finder.pane.home();
+    let finder = app.finder_mut();
+    finder.query.clear();
+    finder.results.clear();
+    finder.total = 0;
+    finder.pane.home();
 }
 
 fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
     let bind = bind_from(event);
-    let Some(action) = app.current_keymap.global.action_for(&bind) else {
+    let Some(action) = app.current_keymap().global.action_for(&bind) else {
         return false;
     };
     match action {
@@ -333,7 +335,7 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
         GlobalAction::OpenKeymap => {
             app.open_overlay(PaneId::Keymap);
             app.open_keymap();
-            app.keymap_pane
+            app.keymap_pane_mut()
                 .set_len(super::keymap_ui::selectable_row_count());
         },
         GlobalAction::Dismiss => {
@@ -369,7 +371,7 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
 
     // Action keys through keymap.
     let bind = bind_from(event);
-    let Some(action) = app.current_keymap.project_list.action_for(&bind) else {
+    let Some(action) = app.current_keymap().project_list.action_for(&bind) else {
         return;
     };
     match action {
@@ -383,7 +385,7 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
                     .selected_item()
                     .is_some_and(crate::project::RootItem::is_rust)
             {
-                app.confirm = Some(ConfirmAction::Clean(path.display().to_string()));
+                app.set_confirm(ConfirmAction::Clean(path.display().to_string()));
             }
         },
     }
@@ -391,15 +393,16 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
 
 fn handle_toast_key(app: &mut App, event: &KeyEvent) {
     match event.code {
-        KeyCode::Up => app.toast_pane.up(),
-        KeyCode::Down => app.toast_pane.down(),
-        KeyCode::Home => app.toast_pane.home(),
-        KeyCode::End => app
-            .toast_pane
-            .set_pos(app.active_toasts().len().saturating_sub(1)),
+        KeyCode::Up => app.toast_pane_mut().up(),
+        KeyCode::Down => app.toast_pane_mut().down(),
+        KeyCode::Home => app.toast_pane_mut().home(),
+        KeyCode::End => {
+            let last_index = app.active_toasts().len().saturating_sub(1);
+            app.toast_pane_mut().set_pos(last_index);
+        },
         KeyCode::Enter => {
             // Open action_path if the focused toast has one.
-            if let Some(toast) = app.active_toasts().into_iter().nth(app.toast_pane.pos())
+            if let Some(toast) = app.active_toasts().into_iter().nth(app.toast_pane().pos())
                 && let Some(path) = toast.action_path()
             {
                 let editor = app.editor().to_string();
@@ -420,12 +423,12 @@ fn handle_search_key(app: &mut App, key: KeyCode) {
         KeyCode::Up => app.move_up(),
         KeyCode::Down => app.move_down(),
         KeyCode::Backspace => {
-            let mut query = app.search_query.clone();
+            let mut query = app.search_query().to_string();
             query.pop();
             app.update_search(&query);
         },
         KeyCode::Char(c) => {
-            let query = format!("{}{c}", app.search_query);
+            let query = format!("{}{c}", app.search_query());
             app.update_search(&query);
         },
         _ => {},

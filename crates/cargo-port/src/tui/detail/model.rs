@@ -521,20 +521,20 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         .and_then(|info| info.ahead_behind_local)
         .map(format_ahead_behind);
     let local_main_branch = git.and_then(|info| info.local_main_branch.clone());
-    let main_branch_label = app.current_config.tui.main_branch.clone();
+    let main_branch_label = app.current_config().tui.main_branch.clone();
     let origin = git.map(|info| format!("{} {}", info.origin.icon(), info.origin.label()));
     let owner = git.and_then(|info| info.owner.clone());
     let url = git.and_then(|info| info.url.clone());
     let stars = app
-        .stars
+        .stars()
         .get(abs_path)
         .copied()
-        .or_else(|| app.stars.get(owner_path.as_path()).copied());
+        .or_else(|| app.stars().get(owner_path.as_path()).copied());
     let description = app
-        .repo_descriptions
+        .repo_descriptions()
         .get(abs_path)
         .cloned()
-        .or_else(|| app.repo_descriptions.get(owner_path.as_path()).cloned());
+        .or_else(|| app.repo_descriptions().get(owner_path.as_path()).cloned());
     let inception = git
         .and_then(|info| info.first_commit.as_deref())
         .map(timestamp::format_timestamp);
@@ -745,8 +745,8 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
     let cargo = src.cargo;
     let wt_item = src.wt_item;
     let git_detail = build_git_detail_fields(app, abs_path);
-    let crates_version = app.crates_versions.get(abs_path).cloned();
-    let crates_downloads = app.crates_downloads.get(abs_path).copied();
+    let crates_version = app.crates_versions().get(abs_path).cloned();
+    let crates_downloads = app.crates_downloads().get(abs_path).copied();
     let cargo_active = app.is_cargo_active_path(abs_path);
 
     let (disk, ci) = wt_item.map_or_else(
