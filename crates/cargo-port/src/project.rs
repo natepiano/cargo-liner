@@ -448,6 +448,28 @@ pub(crate) fn resolve_git_dir(repo_root: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Resolve the common git directory for a repo root.
+///
+/// For normal repos this is the same path as [`resolve_git_dir`]. For linked
+/// worktrees, the resolved git dir may contain a `commondir` file pointing back
+/// to the shared `<primary>/.git` directory where branch refs are updated.
+pub(crate) fn resolve_common_git_dir(repo_root: &Path) -> Option<PathBuf> {
+    let git_dir = resolve_git_dir(repo_root)?;
+    let commondir_path = git_dir.join("commondir");
+    if !commondir_path.is_file() {
+        return Some(git_dir);
+    }
+
+    let contents = std::fs::read_to_string(&commondir_path).ok()?;
+    let target = contents.trim();
+    let resolved = if Path::new(target).is_absolute() {
+        PathBuf::from(target)
+    } else {
+        git_dir.join(target)
+    };
+    Some(resolved.canonicalize().ok().unwrap_or(resolved))
+}
+
 pub(crate) fn detect_git_path_states_batch(
     projects: &[ProjectPathEntry],
 ) -> GitPathStatesByProject {

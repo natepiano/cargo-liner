@@ -96,6 +96,9 @@ struct ProjectEntry {
     /// `repo_root/.git`; for worktrees it follows the `.git` file to the
     /// real directory (e.g. `<main-repo>/.git/worktrees/<name>`).
     git_dir:       Option<PathBuf>,
+    /// The shared git directory that holds branch refs. For linked worktrees
+    /// this points at the primary repo's `.git` directory.
+    common_git_dir: Option<PathBuf>,
 }
 
 enum DiskState {
@@ -249,7 +252,17 @@ fn drain_watch_requests(
                     project_parents.insert(parent.to_path_buf());
                 }
                 let git_dir = req.repo_root.as_deref().and_then(project::resolve_git_dir);
-                watch_git_metadata_paths(watcher, &req, git_dir.as_deref(), watched_git_metadata);
+                let common_git_dir = req
+                    .repo_root
+                    .as_deref()
+                    .and_then(project::resolve_common_git_dir);
+                watch_git_metadata_paths(
+                    watcher,
+                    &req,
+                    git_dir.as_deref(),
+                    common_git_dir.as_deref(),
+                    watched_git_metadata,
+                );
                 projects.insert(
                     req.abs_path.clone(),
                     ProjectEntry {
@@ -257,6 +270,7 @@ fn drain_watch_requests(
                         abs_path: req.abs_path.clone(),
                         repo_root: req.repo_root,
                         git_dir,
+                        common_git_dir,
                     },
                 );
             },
@@ -309,6 +323,7 @@ fn watch_git_metadata_paths(
     watcher: &mut impl Watcher,
     req: &WatchRequest,
     git_dir: Option<&Path>,
+    common_git_dir: Option<&Path>,
     watched_git_metadata: &mut HashSet<PathBuf>,
 ) {
     let started = Instant::now();
@@ -316,11 +331,11 @@ fn watch_git_metadata_paths(
         return;
     };
 
-    let metadata_paths = git_metadata_watch_paths(repo_root, git_dir);
+    let metadata_paths = git_metadata_watch_paths(repo_root, git_dir, common_git_dir);
     let mut added = 0;
-    for path in metadata_paths {
+    for (path, mode) in metadata_paths {
         if watched_git_metadata.insert(path.clone()) {
-            let _ = watcher.watch(&path, RecursiveMode::NonRecursive);
+            let _ = watcher.watch(&path, mode);
             added += 1;
         }
     }
@@ -333,14 +348,29 @@ fn watch_git_metadata_paths(
     );
 }
 
-fn git_metadata_watch_paths(repo_root: &Path, git_dir: Option<&Path>) -> Vec<PathBuf> {
-    let mut paths = vec![repo_root.join(".gitignore")];
+fn git_metadata_watch_paths(
+    repo_root: &Path,
+    git_dir: Option<&Path>,
+    common_git_dir: Option<&Path>,
+) -> Vec<(PathBuf, RecursiveMode)> {
+    let mut paths = vec![(repo_root.join(".gitignore"), RecursiveMode::NonRecursive)];
     if let Some(git_dir) = git_dir {
-        paths.push(git_dir.join("HEAD"));
-        paths.push(git_dir.join("index"));
+        paths.push((git_dir.join("HEAD"), RecursiveMode::NonRecursive));
+        paths.push((git_dir.join("index"), RecursiveMode::NonRecursive));
         let info = git_dir.join("info");
-        paths.push(info.join("exclude"));
-        paths.push(info);
+        paths.push((info.join("exclude"), RecursiveMode::NonRecursive));
+        paths.push((info, RecursiveMode::NonRecursive));
+    }
+    if let Some(common_git_dir) = common_git_dir {
+        paths.push((common_git_dir.join("packed-refs"), RecursiveMode::NonRecursive));
+        paths.push((
+            common_git_dir.join("refs").join("heads"),
+            RecursiveMode::Recursive,
+        ));
+        paths.push((
+            common_git_dir.join("refs").join("remotes"),
+            RecursiveMode::Recursive,
+        ));
     }
     paths
 }
@@ -522,12 +552,18 @@ fn handle_git_completion(pending_git: &mut HashMap<PathBuf, GitState>, repo_root
 fn classify_fast_git_event(event_path: &Path, entry: &ProjectEntry) -> Option<GitRefreshKind> {
     let repo_root = entry.repo_root.as_deref()?;
     let git_dir = entry.git_dir.as_deref()?;
+    let common_git_dir = entry.common_git_dir.as_deref()?;
     if event_path == repo_root.join(".gitignore")
         || event_path == git_dir.join("index")
         || event_path == git_dir.join("info").join("exclude")
     {
         Some(GitRefreshKind::PathStateOnly)
     } else if event_path == git_dir.join("HEAD") {
+        Some(GitRefreshKind::FullMetadata)
+    } else if event_path == common_git_dir.join("packed-refs")
+        || event_path.starts_with(common_git_dir.join("refs").join("heads"))
+        || event_path.starts_with(common_git_dir.join("refs").join("remotes"))
+    {
         Some(GitRefreshKind::FullMetadata)
     } else {
         None
@@ -537,16 +573,19 @@ fn classify_fast_git_event(event_path: &Path, entry: &ProjectEntry) -> Option<Gi
 fn is_internal_git_path(event_path: &Path, entry: &ProjectEntry) -> bool {
     let repo_root = entry.repo_root.as_deref();
     let git_dir = entry.git_dir.as_deref();
+    let common_git_dir = entry.common_git_dir.as_deref();
     // Match events under the resolved git dir (handles worktrees) or
     // under repo_root/.git (handles normal repos where git_dir ==
     // repo_root/.git, but also catches events like refs/heads updates
     // that live in the common git dir rather than the worktree git dir).
     git_dir.is_some_and(|d| event_path.starts_with(d))
+        || common_git_dir.is_some_and(|d| event_path.starts_with(d))
         || repo_root.is_some_and(|r| event_path.starts_with(r.join(".git")))
 }
 
 fn classify_internal_git_event(event_path: &Path, entry: &ProjectEntry) -> Option<GitRefreshKind> {
     let git_dir = entry.git_dir.as_deref()?;
+    let common_git_dir = entry.common_git_dir.as_deref()?;
     let repo_root = entry.repo_root.as_deref()?;
     if event_path == repo_root.join(".gitignore")
         || event_path == git_dir.join("index")
@@ -561,6 +600,9 @@ fn classify_internal_git_event(event_path: &Path, entry: &ProjectEntry) -> Optio
         || event_path == git_dir.join("packed-refs")
         || event_path.starts_with(git_dir.join("refs").join("heads"))
         || event_path.starts_with(git_dir.join("refs").join("remotes"))
+        || event_path == common_git_dir.join("packed-refs")
+        || event_path.starts_with(common_git_dir.join("refs").join("heads"))
+        || event_path.starts_with(common_git_dir.join("refs").join("remotes"))
     {
         Some(GitRefreshKind::FullMetadata)
     } else {
@@ -1261,6 +1303,7 @@ mod tests {
                 abs_path:      abs_path.to_path_buf(),
                 repo_root:     None,
                 git_dir:       None,
+                common_git_dir: None,
             },
         )
     }
@@ -1296,6 +1339,7 @@ mod tests {
                 abs_path:      project_dir.clone(),
                 repo_root:     Some(project_dir.clone()),
                 git_dir:       Some(project_dir.join(".git")),
+                common_git_dir: Some(project_dir.join(".git")),
             },
         );
         projects.insert(
@@ -1305,6 +1349,7 @@ mod tests {
                 abs_path:      member_dir.clone(),
                 repo_root:     Some(project_dir.clone()),
                 git_dir:       Some(project_dir.join(".git")),
+                common_git_dir: Some(project_dir.join(".git")),
             },
         );
 
@@ -1400,6 +1445,9 @@ mod tests {
             .join("worktrees")
             .join("wt");
         std::fs::create_dir_all(&wt_git_dir).expect("create worktree git dir");
+        let common_git_dir = tmp.path().join("main_repo_git");
+        std::fs::create_dir_all(common_git_dir.join("refs").join("heads"))
+            .expect("create common refs dir");
 
         let wt_root = tmp.path().join("main_repo_style_fix");
         std::fs::create_dir_all(&wt_root).expect("create worktree root");
@@ -1408,6 +1456,7 @@ mod tests {
             format!("gitdir: {}\n", wt_git_dir.display()),
         )
         .expect("write .git file");
+        std::fs::write(wt_git_dir.join("commondir"), "../..").expect("write commondir");
 
         let mut projects = HashMap::new();
         projects.insert(
@@ -1417,6 +1466,7 @@ mod tests {
                 abs_path:      wt_root.clone(),
                 repo_root:     Some(wt_root.clone()),
                 git_dir:       Some(wt_git_dir.clone()),
+                common_git_dir: Some(common_git_dir),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1560,6 +1610,7 @@ edition = "2024"
                 abs_path:      project_dir.clone(),
                 repo_root:     Some(project_dir.clone()),
                 git_dir:       Some(project_dir.join(".git")),
+                common_git_dir: Some(project_dir.join(".git")),
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -1671,6 +1722,46 @@ edition = "2024"
         assert!(
             pending_disk.is_empty(),
             "objects noise should not enqueue disk refresh"
+        );
+    }
+
+    #[test]
+    fn worktree_common_branch_ref_event_enqueues_full_git_refresh() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (wt_root, _wt_git_dir, projects, scan_root, project_parents, discovered) =
+            worktree_git_event_context(&tmp);
+        let common_git_dir = tmp.path().join("main_repo_git");
+        let branch_ref = common_git_dir.join("refs").join("heads").join("wt-branch");
+        std::fs::write(&branch_ref, "deadbeef\n").expect("write branch ref");
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, _bg_rx) = mpsc::channel();
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        handle_event(
+            &branch_ref,
+            &ctx,
+            &bg_tx,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        assert!(
+            matches!(
+                pending_git.get(&wt_root),
+                Some(GitState::Pending {
+                    refresh_info: true,
+                    ..
+                })
+            ),
+            "shared branch ref writes should enqueue a full git refresh for linked worktrees"
         );
     }
 
@@ -2024,6 +2115,7 @@ edition = "2024"
                 abs_path:      project_dir.clone(),
                 repo_root:     Some(project_dir.clone()),
                 git_dir:       Some(project_dir.join(".git")),
+                common_git_dir: Some(project_dir.join(".git")),
             },
         );
 
@@ -2088,6 +2180,7 @@ edition = "2024"
                 abs_path:      project_dir.clone(),
                 repo_root:     None,
                 git_dir:       None,
+                common_git_dir: None,
             },
         );
 
@@ -2334,6 +2427,7 @@ edition = "2024"
                 abs_path:      linked_dir.clone(),
                 repo_root:     None,
                 git_dir:       None,
+                common_git_dir: None,
             },
         );
         let scan_root = tmp.path().to_path_buf();
@@ -2413,6 +2507,7 @@ edition = "2024"
                 abs_path:      linked_dir.clone(),
                 repo_root:     None,
                 git_dir:       None,
+                common_git_dir: None,
             },
         );
         let scan_root = tmp.path().to_path_buf();
