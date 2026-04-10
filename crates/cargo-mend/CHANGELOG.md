@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `--json` output now emits cargo-compatible newline-delimited JSON with `compiler-message` and `build-finished` messages, including `package_id`, `manifest_path`, `target`, and full rustc diagnostic structure
+- Positional manifest path argument: `cargo mend /path/to/project` as an alias for `--manifest-path`, accepting both `Cargo.toml` paths and directories
+
+### Fixed
+- `--fix-pub-use` no longer breaks compilation when facade-exported items are accessed through module aliases (`use crate::module as alias`)
+
 ## [0.5.1] - 2026-04-09
 
 ### Fixed
