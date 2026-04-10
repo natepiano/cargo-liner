@@ -1034,9 +1034,16 @@ struct FindingsSink {
 /// during visibility analysis.
 struct ExtractedPaths {
     /// Flattened use-tree paths with their origin (`Relative`/`Crate`).
-    use_paths:  Vec<(Vec<String>, PathOrigin)>,
+    use_paths:   Vec<(Vec<String>, PathOrigin)>,
     /// All `syn::Path` nodes found via AST visit, as raw segment strings with origin.
-    expr_paths: Vec<(Vec<String>, PathOrigin)>,
+    expr_paths:  Vec<(Vec<String>, PathOrigin)>,
+    /// Module-level renames (`use path::to::module as alias`): maps alias → original path.
+    use_renames: Vec<UseRename>,
+}
+
+struct UseRename {
+    alias:         String,
+    original_path: Vec<String>,
 }
 
 struct SourceCache {
@@ -2277,6 +2284,18 @@ fn source_references_parent_export(
         {
             return ParentFacadeReferenceUsage::DirectPath(*origin);
         }
+        if let Some(resolved) = resolve_alias_expr_path(raw, &extracted.use_renames)
+            && matching_origin_indexed(
+                &resolved,
+                *origin,
+                current_module_path,
+                module_path,
+                exported_names,
+            )
+            .is_some()
+        {
+            return ParentFacadeReferenceUsage::DirectPath(*origin);
+        }
     }
 
     let mut import_usage = ParentFacadeReferenceUsage::None;
@@ -2296,6 +2315,19 @@ fn source_references_parent_export(
     }
 
     import_usage
+}
+
+/// Resolves the first segment of an expr_path through module aliases.
+///
+/// Given `["test_utils", "assert_test_case"]` and a rename mapping
+/// `test_utils → ["crate", "test_support"]`, returns
+/// `["crate", "test_support", "assert_test_case"]`.
+fn resolve_alias_expr_path(raw: &[String], renames: &[UseRename]) -> Option<Vec<String>> {
+    let first = raw.first()?;
+    let rename = renames.iter().find(|rename| rename.alias == *first)?;
+    let mut resolved = rename.original_path.clone();
+    resolved.extend(raw[1..].iter().cloned());
+    Some(resolved)
 }
 
 fn matching_origin_indexed(
@@ -2676,6 +2708,7 @@ fn path_origin(raw: &[String]) -> PathOrigin {
 struct PathExtractor {
     use_paths:       Vec<(Vec<String>, PathOrigin)>,
     expr_paths:      Vec<(Vec<String>, PathOrigin)>,
+    use_renames:     Vec<UseRename>,
     inside_use_item: bool,
 }
 
@@ -2687,6 +2720,7 @@ impl<'ast> Visit<'ast> for PathExtractor {
             let origin = path_origin(&raw);
             self.use_paths.push((raw, origin));
         }
+        extract_use_renames(Vec::new(), &item_use.tree, &mut self.use_renames);
         self.inside_use_item = true;
         syn::visit::visit_item_use(self, item_use);
         self.inside_use_item = false;
@@ -2706,13 +2740,39 @@ fn extract_paths(file: &syn::File) -> ExtractedPaths {
     let mut extractor = PathExtractor {
         use_paths:       Vec::new(),
         expr_paths:      Vec::new(),
+        use_renames:     Vec::new(),
         inside_use_item: false,
     };
     extractor.visit_file(file);
 
     ExtractedPaths {
-        use_paths:  extractor.use_paths,
-        expr_paths: extractor.expr_paths,
+        use_paths:   extractor.use_paths,
+        expr_paths:  extractor.expr_paths,
+        use_renames: extractor.use_renames,
+    }
+}
+
+fn extract_use_renames(prefix: Vec<String>, tree: &UseTree, out: &mut Vec<UseRename>) {
+    match tree {
+        UseTree::Path(path) => {
+            let mut next = prefix;
+            next.push(path.ident.to_string());
+            extract_use_renames(next, &path.tree, out);
+        },
+        UseTree::Rename(rename) => {
+            let mut original_path = prefix;
+            original_path.push(rename.ident.to_string());
+            out.push(UseRename {
+                alias: rename.rename.to_string(),
+                original_path,
+            });
+        },
+        UseTree::Group(group) => {
+            for item in &group.items {
+                extract_use_renames(prefix.clone(), item, out);
+            }
+        },
+        UseTree::Name(_) | UseTree::Glob(_) => {},
     }
 }
 
