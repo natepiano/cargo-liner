@@ -17,6 +17,7 @@ use super::manager::TrackedItemView;
 use crate::tui::constants::TOAST_GAP;
 use crate::tui::constants::TOAST_WIDTH;
 use crate::tui::interaction::ToastHitbox;
+use crate::tui::types::ACTIVE_FOCUS_COLOR;
 
 /// Fade text from white to grey based on progress (0.0 = white, 1.0 = grey).
 #[expect(
@@ -187,7 +188,7 @@ fn render_toast_card(
     let focused = pane_focused && focused_toast_id == Some(toast.id());
     let is_error = toast.style() == ToastStyle::Error;
     let border_style = if focused {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(ACTIVE_FOCUS_COLOR)
     } else if is_error {
         Style::default().fg(Color::Red)
     } else {

@@ -12,6 +12,7 @@ use ratatui::widgets::Paragraph;
 use super::app::App;
 use super::constants::SECTION_HEADER_INDENT;
 use super::constants::SECTION_ITEM_INDENT;
+use super::types::ACTIVE_FOCUS_COLOR;
 use super::types::PaneId;
 use super::types::PaneSelectionState;
 use crate::keymap::CiRunsAction;
@@ -85,6 +86,7 @@ const GLOBAL_SHORTCUTS: &[GlobalAction] = &[
     GlobalAction::Restart,
     GlobalAction::Find,
     GlobalAction::OpenEditor,
+    GlobalAction::OpenTerminal,
     GlobalAction::Settings,
     GlobalAction::OpenKeymap,
     GlobalAction::Dismiss,
@@ -571,7 +573,7 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
 
     let inner = super::popup::PopupFrame {
         title: Some(" Keymap ".to_string()),
-        border_color: Color::Cyan,
+        border_color: ACTIVE_FOCUS_COLOR,
         width,
         height,
     }

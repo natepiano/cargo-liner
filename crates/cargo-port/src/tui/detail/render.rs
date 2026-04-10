@@ -24,6 +24,7 @@ use super::model::DetailInfo;
 use crate::constants::IN_SYNC;
 use crate::tui::app::App;
 use crate::tui::render;
+use crate::tui::types::ACTIVE_FOCUS_COLOR;
 use crate::tui::types::Pane;
 use crate::tui::types::PaneFocusState;
 use crate::tui::types::PaneId;
@@ -393,7 +394,7 @@ pub fn render_detail_panel(
 
         let styles = RenderStyles {
             readonly_label:  Style::default().fg(Color::DarkGray),
-            active_border:   Style::default().fg(Color::Cyan),
+            active_border:   Style::default().fg(ACTIVE_FOCUS_COLOR),
             inactive_border: Style::default(),
             title:           title_style,
         };

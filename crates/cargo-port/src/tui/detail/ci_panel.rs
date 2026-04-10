@@ -24,6 +24,7 @@ use crate::tui::constants::CI_TIMESTAMP_WIDTH;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface;
 use crate::tui::render::CiColumn;
+use crate::tui::types::ACTIVE_FOCUS_COLOR;
 use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
 
@@ -338,7 +339,7 @@ pub fn render_ci_panel(
                 .add_modifier(Modifier::BOLD),
         )
         .border_style(if ci_focused {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(ACTIVE_FOCUS_COLOR)
         } else {
             Style::default()
         });

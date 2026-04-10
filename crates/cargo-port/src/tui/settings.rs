@@ -16,6 +16,7 @@ use super::constants::SECTION_HEADER_INDENT;
 use super::constants::SECTION_ITEM_INDENT;
 use super::constants::SETTINGS_POPUP_WIDTH;
 use super::interaction::UiSurface::Overlay;
+use super::types::ACTIVE_FOCUS_COLOR;
 use super::types::PaneId;
 use super::types::PaneSelectionState;
 use crate::config;
@@ -27,6 +28,7 @@ pub(super) enum SettingOption {
     NavigationKeys,
     CiRunCount,
     Editor,
+    TerminalCommand,
     MainBranch,
     OtherPrimaryBranches,
     IncludeDirs,
@@ -140,6 +142,14 @@ fn format_lint_commands(cfg: &config::CargoPortConfig) -> String {
 
 fn format_lint_cache_size(cfg: &config::CargoPortConfig) -> String { cfg.lint.cache_size.clone() }
 
+fn format_terminal_command(cfg: &config::CargoPortConfig) -> String {
+    if cfg.tui.terminal_command.trim().is_empty() {
+        "Not configured. Set this command to enable the global terminal shortcut.".to_string()
+    } else {
+        cfg.tui.terminal_command.clone()
+    }
+}
+
 fn format_other_primary_branches(cfg: &config::CargoPortConfig) -> String {
     if cfg.tui.other_primary_branches.is_empty() {
         "—".to_string()
@@ -218,6 +228,11 @@ fn general_settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<Settin
             Some(SettingOption::Editor),
             "Editor",
             app.editor().to_string(),
+        ),
+        (
+            Some(SettingOption::TerminalCommand),
+            "Terminal",
+            format_terminal_command(cfg),
         ),
         (
             Some(SettingOption::MainBranch),
@@ -505,7 +520,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
 
     let inner = super::popup::PopupFrame {
         title:        Some(" Settings ".to_string()),
-        border_color: Color::Cyan,
+        border_color: ACTIVE_FOCUS_COLOR,
         width:        SETTINGS_POPUP_WIDTH,
         height:       popup_height,
     }
@@ -649,6 +664,17 @@ pub(super) fn build_settings_lines(
                 Span::styled(" >", selection.patch(Style::default().fg(Color::DarkGray))),
             ]));
             line_targets.push(Some(selection_index));
+        } else if setting == Some(SettingOption::TerminalCommand)
+            && value.starts_with("Not configured.")
+        {
+            let row = WrappedValueRow {
+                prefix: &label,
+                value,
+                prefix_style: selection.patch(label_style),
+                value_style: selection.patch(Style::default().fg(Color::Yellow)),
+                content_width,
+            };
+            push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
         } else {
             let style = selection.patch(label_style);
             let row = WrappedValueRow {
@@ -754,6 +780,7 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
         },
         Some(
             SettingOption::Editor
+            | SettingOption::TerminalCommand
             | SettingOption::MainBranch
             | SettingOption::OtherPrimaryBranches
             | SettingOption::IncludeDirs
@@ -834,6 +861,9 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
         Some(SettingOption::Editor) => {
             begin_settings_edit(app, app.editor().to_string());
         },
+        Some(SettingOption::TerminalCommand) => {
+            begin_settings_edit(app, app.current_config().tui.terminal_command.clone());
+        },
         Some(SettingOption::MainBranch) => {
             begin_settings_edit(app, app.current_config().tui.main_branch.clone());
         },
@@ -894,6 +924,11 @@ fn apply_general_settings_edit(
         }),
         SettingOption::Editor if !value.trim().is_empty() => {
             save_string_setting(app, value, |cfg, editor| cfg.tui.editor = editor);
+        },
+        SettingOption::TerminalCommand => {
+            save_string_setting(app, value, |cfg, command| {
+                cfg.tui.terminal_command = command;
+            });
         },
         SettingOption::Editor
         | SettingOption::InvertScroll
@@ -1031,6 +1066,14 @@ fn toggle_lints(app: &mut App) {
     );
 }
 
+pub(super) fn focus_terminal_command(app: &mut App) {
+    if let Some(index) =
+        SettingOption::iter().position(|setting| setting == SettingOption::TerminalCommand)
+    {
+        app.settings_pane_mut().set_pos(index);
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -1048,38 +1091,42 @@ mod tests {
             Some(SettingOption::NavigationKeys)
         );
         assert_eq!(
-            SettingOption::from_index(12),
-            Some(SettingOption::LintsEnabled)
+            SettingOption::from_index(5),
+            Some(SettingOption::TerminalCommand)
         );
         assert_eq!(
             SettingOption::from_index(13),
-            Some(SettingOption::LintOnDiscovery)
+            Some(SettingOption::LintsEnabled)
         );
         assert_eq!(
             SettingOption::from_index(14),
-            Some(SettingOption::LintProjects)
+            Some(SettingOption::LintOnDiscovery)
         );
         assert_eq!(
             SettingOption::from_index(15),
-            Some(SettingOption::LintCommands)
+            Some(SettingOption::LintProjects)
         );
         assert_eq!(
             SettingOption::from_index(16),
+            Some(SettingOption::LintCommands)
+        );
+        assert_eq!(
+            SettingOption::from_index(17),
             Some(SettingOption::LintCacheSize)
         );
         assert_eq!(
-            SettingOption::from_index(11),
+            SettingOption::from_index(12),
             Some(SettingOption::DiscoveryShimmerSecs)
         );
         assert_eq!(
-            SettingOption::from_index(5),
+            SettingOption::from_index(6),
             Some(SettingOption::MainBranch)
         );
         assert_eq!(
-            SettingOption::from_index(6),
+            SettingOption::from_index(7),
             Some(SettingOption::OtherPrimaryBranches)
         );
-        assert_eq!(SettingOption::COUNT, 17);
+        assert_eq!(SettingOption::COUNT, 18);
     }
 
     #[test]
@@ -1087,6 +1134,21 @@ mod tests {
         let mut cfg = config::CargoPortConfig::default();
         cfg.tui.discovery_shimmer_secs = 4.0;
         assert_eq!(format_discovery_shimmer_secs(&cfg), "4");
+    }
+
+    #[test]
+    fn format_terminal_command_marks_blank_value_as_unconfigured() {
+        let cfg = config::CargoPortConfig::default();
+
+        assert!(format_terminal_command(&cfg).contains("Not configured"));
+    }
+
+    #[test]
+    fn format_terminal_command_preserves_configured_value() {
+        let mut cfg = config::CargoPortConfig::default();
+        cfg.tui.terminal_command = "open -a Terminal .".to_string();
+
+        assert_eq!(format_terminal_command(&cfg), "open -a Terminal .");
     }
 
     #[test]

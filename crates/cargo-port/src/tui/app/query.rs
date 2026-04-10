@@ -53,6 +53,14 @@ impl App {
 
     pub(in super::super) fn editor(&self) -> &str { &self.current_config.tui.editor }
 
+    pub(in super::super) fn terminal_command(&self) -> &str {
+        &self.current_config.tui.terminal_command
+    }
+
+    pub(in super::super) fn terminal_command_configured(&self) -> bool {
+        !self.terminal_command().trim().is_empty()
+    }
+
     fn toast_timeout(&self) -> Duration {
         Duration::from_secs_f64(self.current_config.tui.status_flash_secs)
     }

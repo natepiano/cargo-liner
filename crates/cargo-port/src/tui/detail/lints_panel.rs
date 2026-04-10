@@ -19,6 +19,7 @@ use crate::lint::LintRunStatus;
 use crate::tui::app::App;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface::Content;
+use crate::tui::types::ACTIVE_FOCUS_COLOR;
 use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
 
@@ -113,7 +114,7 @@ pub(super) fn format_lints_slowest(run: &LintRun) -> String {
 fn lints_panel_title(app: &App, runs: &[LintRun], focused: bool) -> String {
     if focused && !runs.is_empty() {
         let indicator = crate::tui::types::scroll_indicator(app.lint_pane().pos(), runs.len());
-        return format!(" Lints ({indicator}) ");
+        return format!(" Lint Runs ({indicator}) ");
     }
     let (watching, worker_count) = app.selected_project_path().map_or((false, 0usize), |path| {
         let watching = app.lint_is_watchable(path) && app.lint_runtime().is_some();
@@ -151,7 +152,7 @@ pub fn render_lints_panel(
                 .add_modifier(Modifier::BOLD),
         )
         .border_style(if focused {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(ACTIVE_FOCUS_COLOR)
         } else {
             Style::default()
         });

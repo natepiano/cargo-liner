@@ -59,6 +59,13 @@ impl InputContext {
 pub(super) struct Shortcut {
     pub key:         Cow<'static, str>,
     pub description: &'static str,
+    pub state:       ShortcutState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ShortcutState {
+    Enabled,
+    Disabled,
 }
 
 impl Shortcut {
@@ -66,6 +73,7 @@ impl Shortcut {
         Self {
             key: Cow::Borrowed(key),
             description,
+            state: ShortcutState::Enabled,
         }
     }
 
@@ -73,6 +81,15 @@ impl Shortcut {
         Self {
             key: Cow::Owned(key),
             description,
+            state: ShortcutState::Enabled,
+        }
+    }
+
+    const fn disabled_from_keymap(key: String, description: &'static str) -> Self {
+        Self {
+            key: Cow::Owned(key),
+            description,
+            state: ShortcutState::Disabled,
         }
     }
 }
@@ -105,19 +122,40 @@ pub(super) fn for_status_bar(
     enter_action: Option<&'static str>,
     is_rust: bool,
     km: &ResolvedKeymap,
+    terminal_command_configured: bool,
 ) -> StatusBarGroups {
     let (navigation, actions) = match context {
         InputContext::Searching => (vec![NAV], vec![enter("select"), ESC_CANCEL]),
         InputContext::Finder => (vec![NAV], vec![enter("go to"), ESC_CLOSE]),
-        InputContext::Settings => (vec![NAV, ARROWS_TOGGLE], vec![enter("edit"), ESC_CLOSE]),
+        InputContext::Settings => (
+            vec![NAV, ARROWS_TOGGLE],
+            vec![
+                enter("edit"),
+                Shortcut::from_keymap(
+                    km.global.display_key_for(GlobalAction::OpenEditor),
+                    "editor",
+                ),
+                ESC_CLOSE,
+            ],
+        ),
         InputContext::SettingsEditing => (vec![], vec![enter("confirm"), ESC_CANCEL]),
-        InputContext::Keymap => (vec![NAV], vec![enter("edit"), ESC_CLOSE]),
+        InputContext::Keymap => (
+            vec![NAV],
+            vec![
+                enter("edit"),
+                Shortcut::from_keymap(
+                    km.global.display_key_for(GlobalAction::OpenEditor),
+                    "editor",
+                ),
+                ESC_CLOSE,
+            ],
+        ),
         InputContext::KeymapAwaiting => (vec![], vec![ESC_CANCEL]),
         InputContext::KeymapConflict => (vec![], vec![enter("clear"), ESC_CANCEL]),
         InputContext::DetailFields | InputContext::DetailTargets => {
             detail_groups(context, enter_action, is_rust, km)
         },
-        InputContext::CiRuns => ci_groups(enter_action, Some("toggle view"), km),
+        InputContext::CiRuns => ci_groups(enter_action, Some("branch/all"), km),
         InputContext::Toasts => toast_groups(km),
         InputContext::Lints => lints_groups(enter_action),
         InputContext::ProjectList => project_list_groups(enter_action, is_rust, km),
@@ -126,12 +164,24 @@ pub(super) fn for_status_bar(
     let global = if context.is_overlay() || context.is_text_input() {
         vec![]
     } else {
+        let terminal_shortcut = if terminal_command_configured {
+            Shortcut::from_keymap(
+                km.global.display_key_for(GlobalAction::OpenTerminal),
+                "terminal",
+            )
+        } else {
+            Shortcut::disabled_from_keymap(
+                km.global.display_key_for(GlobalAction::OpenTerminal),
+                "terminal",
+            )
+        };
         vec![
             Shortcut::from_keymap(km.global.display_key_for(GlobalAction::Find), "find"),
             Shortcut::from_keymap(
                 km.global.display_key_for(GlobalAction::OpenEditor),
                 "editor",
             ),
+            terminal_shortcut,
             Shortcut::from_keymap(
                 km.global.display_key_for(GlobalAction::Settings),
                 "settings",
@@ -252,4 +302,106 @@ fn project_list_groups(
     ));
 
     (navigation, actions)
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_shortcuts_include_terminal_between_editor_and_settings() {
+        let groups = for_status_bar(
+            InputContext::ProjectList,
+            None,
+            true,
+            &ResolvedKeymap::defaults(),
+            true,
+        );
+        let global_labels = groups
+            .global
+            .iter()
+            .map(|shortcut| shortcut.description)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            &global_labels[..4],
+            &["find", "editor", "terminal", "settings"]
+        );
+    }
+
+    #[test]
+    fn terminal_shortcut_is_disabled_when_command_is_unset() {
+        let groups = for_status_bar(
+            InputContext::ProjectList,
+            None,
+            true,
+            &ResolvedKeymap::defaults(),
+            false,
+        );
+        let terminal = groups
+            .global
+            .iter()
+            .find(|shortcut| shortcut.description == "terminal")
+            .expect("terminal shortcut");
+
+        assert_eq!(terminal.state, ShortcutState::Disabled);
+    }
+
+    #[test]
+    fn ci_runs_shortcut_uses_branch_all_label() {
+        let groups = for_status_bar(
+            InputContext::CiRuns,
+            None,
+            true,
+            &ResolvedKeymap::defaults(),
+            true,
+        );
+
+        assert!(
+            groups
+                .actions
+                .iter()
+                .any(|shortcut| shortcut.description == "branch/all")
+        );
+    }
+
+    #[test]
+    fn settings_actions_include_editor_shortcut() {
+        let groups = for_status_bar(
+            InputContext::Settings,
+            None,
+            true,
+            &ResolvedKeymap::defaults(),
+            true,
+        );
+
+        assert!(
+            groups
+                .actions
+                .iter()
+                .any(|shortcut| shortcut.description == "editor")
+        );
+    }
+
+    #[test]
+    fn keymap_actions_include_editor_shortcut() {
+        let groups = for_status_bar(
+            InputContext::Keymap,
+            None,
+            true,
+            &ResolvedKeymap::defaults(),
+            true,
+        );
+
+        assert!(
+            groups
+                .actions
+                .iter()
+                .any(|shortcut| shortcut.description == "editor")
+        );
+    }
 }

@@ -25,6 +25,7 @@ use super::constants::FINDER_POPUP_HEIGHT;
 use super::constants::MAX_FINDER_RESULTS;
 use super::detail::RunTargetKind;
 use super::interaction::UiSurface::Overlay;
+use super::types::ACTIVE_FOCUS_COLOR;
 use super::types::Pane;
 use super::types::PaneId;
 use crate::project::ExampleGroup;
@@ -664,7 +665,7 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
 
     let inner = super::popup::PopupFrame {
         title:        Some(title),
-        border_color: Color::Cyan,
+        border_color: ACTIVE_FOCUS_COLOR,
         width:        popup_width,
         height:       FINDER_POPUP_HEIGHT,
     }

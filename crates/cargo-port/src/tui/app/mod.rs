@@ -375,6 +375,8 @@ impl App {
     #[cfg(test)]
     pub(super) const fn filtered_mut(&mut self) -> &mut Vec<types::SearchHit> { &mut self.filtered }
 
+    pub(super) const fn config_path(&self) -> Option<&PathBuf> { self.config_path.as_ref() }
+
     pub(super) const fn keymap_path(&self) -> Option<&PathBuf> { self.keymap_path.as_ref() }
 
     pub(super) const fn ui_modes(&self) -> &types::UiModes { &self.ui_modes }

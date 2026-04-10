@@ -35,6 +35,8 @@ use super::constants::SEARCH_BAR_HEIGHT;
 use super::detail::DetailInfo;
 use super::interaction::UiSurface::Content;
 use super::shortcuts::Shortcut;
+use super::shortcuts::ShortcutState;
+use super::types::ACTIVE_FOCUS_COLOR;
 use super::types::LayoutCache;
 use super::types::Pane;
 use super::types::PaneId;
@@ -492,7 +494,7 @@ pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .border_style(if search_focused {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(ACTIVE_FOCUS_COLOR)
             } else {
                 Style::default().fg(Color::DarkGray)
             }),
@@ -529,7 +531,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
         .borders(Borders::ALL)
         .title(title)
         .border_style(if app.is_focused(PaneId::ProjectList) {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(ACTIVE_FOCUS_COLOR)
         } else {
             Style::default()
         })
@@ -695,7 +697,7 @@ fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )
         .border_style(if app.example_running().is_some() {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(ACTIVE_FOCUS_COLOR)
         } else {
             Style::default().fg(Color::DarkGray)
         });
@@ -723,16 +725,30 @@ fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn shortcut_spans(shortcuts: &[Shortcut]) -> Vec<Span<'static>> {
-    let key_style = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
     let mut spans = Vec::new();
     for shortcut in shortcuts {
         if !spans.is_empty() {
             spans.push(Span::raw("  "));
         }
+        let (key_style, description_style) = match shortcut.state {
+            ShortcutState::Enabled => (
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+                Style::default(),
+            ),
+            ShortcutState::Disabled => (
+                Style::default()
+                    .fg(Color::Gray)
+                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Gray),
+            ),
+        };
         spans.push(Span::styled(format!(" {}", shortcut.key), key_style));
-        spans.push(Span::raw(format!(" {}", shortcut.description)));
+        spans.push(Span::styled(
+            format!(" {}", shortcut.description),
+            description_style,
+        ));
     }
     spans
 }
@@ -758,8 +774,13 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let context = app.input_context();
     let enter_action = app.enter_action();
     let is_rust = app.selected_item().is_some_and(RootItem::is_rust);
-    let groups =
-        super::shortcuts::for_status_bar(context, enter_action, is_rust, app.current_keymap());
+    let groups = super::shortcuts::for_status_bar(
+        context,
+        enter_action,
+        is_rust,
+        app.current_keymap(),
+        app.terminal_command_configured(),
+    );
 
     let mut left_spans = Vec::new();
     if !app.is_scan_complete() {

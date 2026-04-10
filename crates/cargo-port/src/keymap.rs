@@ -253,6 +253,7 @@ action_enum! {
         Restart    => "restart",     "Restart application";
         Find       => "find",        "Open finder";
         OpenEditor => "open_editor", "Open in editor";
+        OpenTerminal => "open_terminal", "Open terminal";
         Settings   => "settings",    "Open settings";
         NextPane   => "next_pane",   "Focus next pane";
         PrevPane   => "prev_pane",   "Focus previous pane";
@@ -300,7 +301,7 @@ action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum CiRunsAction {
         Activate   => "activate",    "Open run or fetch more";
-        ToggleView => "toggle_view", "Toggle branch/all CI view";
+        ToggleView => "toggle_view", "Toggle branch/all filter";
         ClearCache => "clear_cache", "Clear CI cache";
     }
 }
@@ -380,6 +381,10 @@ impl ResolvedKeymap {
             .insert(KeyBind::plain(KeyCode::Char('/')), GlobalAction::Find);
         km.global
             .insert(KeyBind::plain(KeyCode::Char('e')), GlobalAction::OpenEditor);
+        km.global.insert(
+            KeyBind::plain(KeyCode::Char('t')),
+            GlobalAction::OpenTerminal,
+        );
         km.global
             .insert(KeyBind::plain(KeyCode::Char('s')), GlobalAction::Settings);
         km.global
@@ -437,7 +442,7 @@ impl ResolvedKeymap {
         km.ci_runs
             .insert(KeyBind::plain(KeyCode::Enter), CiRunsAction::Activate);
         km.ci_runs
-            .insert(KeyBind::plain(KeyCode::Char('t')), CiRunsAction::ToggleView);
+            .insert(KeyBind::plain(KeyCode::Char('v')), CiRunsAction::ToggleView);
         km.ci_runs
             .insert(KeyBind::plain(KeyCode::Char('c')), CiRunsAction::ClearCache);
 
@@ -1058,6 +1063,11 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
 mod tests {
     use super::*;
 
+    fn normalize_snapshot(text: &str) -> String {
+        let normalized = text.replace("\r\n", "\n");
+        normalized.trim_end_matches(['\r', '\n']).to_string()
+    }
+
     #[test]
     fn parse_plain_char() {
         let kb: KeyBind = "q".parse().unwrap();
@@ -1580,7 +1590,49 @@ open_keymap = "Ctrl+k"
         let km = ResolvedKeymap::defaults();
         assert_eq!(km.global.display_key_for(GlobalAction::Quit), "q");
         assert_eq!(km.global.display_key_for(GlobalAction::OpenEditor), "e");
+        assert_eq!(km.global.display_key_for(GlobalAction::OpenTerminal), "t");
+        assert_eq!(km.ci_runs.display_key_for(CiRunsAction::ToggleView), "v");
         assert_eq!(km.global.display_key_for(GlobalAction::OpenKeymap), "⌃k");
+    }
+
+    #[test]
+    fn legacy_ci_runs_t_conflicts_with_global_terminal_and_falls_back_to_v() {
+        let toml = r#"
+[global]
+quit = "q"
+restart = "R"
+find = "/"
+open_editor = "e"
+open_terminal = "t"
+settings = "s"
+next_pane = "Tab"
+prev_pane = "Shift+Tab"
+dismiss = "x"
+open_keymap = "Ctrl+k"
+
+[ci_runs]
+activate = "Enter"
+toggle_view = "t"
+clear_cache = "c"
+"#;
+        let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
+
+        assert!(
+            result.errors.iter().any(|error| {
+                error.scope == "ci_runs"
+                    && error.action == "toggle_view"
+                    && matches!(error.reason, KeymapErrorReason::ConflictWithGlobal(_))
+            }),
+            "expected ci_runs.toggle_view conflict with global terminal"
+        );
+        assert_eq!(
+            result.keymap.global.key_for(GlobalAction::OpenTerminal),
+            Some(&KeyBind::plain(KeyCode::Char('t')))
+        );
+        assert_eq!(
+            result.keymap.ci_runs.key_for(CiRunsAction::ToggleView),
+            Some(&KeyBind::plain(KeyCode::Char('v')))
+        );
     }
 
     #[test]
@@ -1617,6 +1669,14 @@ open_keymap = "Ctrl+k"
             "default toml should have no missing actions: {:?}",
             result.missing_actions
         );
+    }
+
+    #[test]
+    fn default_keymap_template_matches_golden_file() {
+        let generated = ResolvedKeymap::default_toml();
+        let expected = include_str!("../tests/assets/default-keymap.toml");
+
+        assert_eq!(normalize_snapshot(&generated), normalize_snapshot(expected));
     }
 
     #[test]

@@ -21,6 +21,7 @@ use crate::keymap::GlobalAction;
 use crate::keymap::KeyBind;
 use crate::keymap::ProjectListAction;
 use crate::project;
+use crate::tui::shortcuts::InputContext;
 
 pub(super) fn handle_event(app: &mut App, event: &Event) {
     let started = Instant::now();
@@ -71,6 +72,9 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         return;
     }
     if handle_confirm_key(app, code) {
+        return;
+    }
+    if handle_overlay_editor_key(app, &normalized) {
         return;
     }
     if app.is_keymap_open() {
@@ -300,6 +304,57 @@ fn open_in_editor(app: &App) {
         .spawn();
 }
 
+fn overlay_editor_target_path(
+    context: InputContext,
+    config_path: Option<&Path>,
+    keymap_path: Option<&Path>,
+) -> Option<std::path::PathBuf> {
+    match context {
+        InputContext::Settings => config_path.map(Path::to_path_buf),
+        InputContext::Keymap => keymap_path.map(Path::to_path_buf),
+        _ => None,
+    }
+}
+
+fn open_path_in_zed(path: &Path) -> std::io::Result<()> {
+    let mut command = std::process::Command::new("zed");
+    if let Some(parent) = path.parent() {
+        command.current_dir(parent);
+    }
+    command
+        .arg(path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+}
+
+fn handle_overlay_editor_key(app: &mut App, event: &KeyEvent) -> bool {
+    let bind = bind_from(event);
+    let Some(GlobalAction::OpenEditor) = app.current_keymap().global.action_for(&bind) else {
+        return false;
+    };
+
+    let context = app.input_context();
+    let Some(path) = overlay_editor_target_path(
+        context,
+        app.config_path().map(std::path::PathBuf::as_path),
+        app.keymap_path().map(std::path::PathBuf::as_path),
+    ) else {
+        return false;
+    };
+
+    if let Err(err) = open_path_in_zed(&path) {
+        let title = match context {
+            InputContext::Settings => "Settings editor failed",
+            InputContext::Keymap => "Keymap editor failed",
+            _ => "Editor failed",
+        };
+        app.show_timed_toast(title, err.to_string());
+    }
+    true
+}
+
 fn open_finder(app: &mut App) {
     if app.dirty().finder.is_dirty() {
         let (index, col_widths) = super::finder::build_finder_index(app.projects());
@@ -317,6 +372,63 @@ fn open_finder(app: &mut App) {
     finder.pane.home();
 }
 
+fn shell_escape_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if path.is_empty() {
+        return "''".to_string();
+    }
+    format!("'{}'", path.replace('\'', "'\\''"))
+}
+
+fn terminal_shell_command(command: &str, selected_path: &Path) -> String {
+    command.replace("{path}", &shell_escape_path(selected_path))
+}
+
+fn open_settings_to_terminal_command(app: &mut App) {
+    app.open_overlay(PaneId::Settings);
+    app.open_settings();
+    settings::focus_terminal_command(app);
+}
+
+fn spawn_terminal_command(command: &str, cwd: &Path) -> std::io::Result<()> {
+    let mut process = if cfg!(windows) {
+        let mut process = std::process::Command::new("cmd");
+        process.arg("/C").arg(command);
+        process
+    } else {
+        let mut process = std::process::Command::new("sh");
+        process.arg("-c").arg(command);
+        process
+    };
+    process
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+}
+
+fn open_terminal(app: &mut App) {
+    let command = app.terminal_command().trim();
+    if command.is_empty() {
+        open_settings_to_terminal_command(app);
+        return;
+    }
+
+    let Some(selected_path) = app
+        .selected_project_path()
+        .map(std::path::Path::to_path_buf)
+    else {
+        app.show_timed_toast("Terminal", "No selected project path");
+        return;
+    };
+
+    let command = terminal_shell_command(command, &selected_path);
+    if let Err(err) = spawn_terminal_command(&command, &selected_path) {
+        app.show_timed_toast("Terminal failed", err.to_string());
+    }
+}
+
 fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
     let bind = bind_from(event);
     let Some(action) = app.current_keymap().global.action_for(&bind) else {
@@ -327,6 +439,7 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
         GlobalAction::Restart => app.request_restart(),
         GlobalAction::Find => open_finder(app),
         GlobalAction::OpenEditor => open_in_editor(app),
+        GlobalAction::OpenTerminal => open_terminal(app),
         GlobalAction::Settings => {
             app.open_overlay(PaneId::Settings);
             app.open_settings();
@@ -432,5 +545,79 @@ fn handle_search_key(app: &mut App, key: KeyCode) {
             app.update_search(&query);
         },
         _ => {},
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn terminal_shell_command_leaves_command_without_path_placeholder_unchanged() {
+        assert_eq!(
+            terminal_shell_command("open -a Terminal .", Path::new("/tmp/my project")),
+            "open -a Terminal ."
+        );
+    }
+
+    #[test]
+    fn terminal_shell_command_substitutes_shell_escaped_path() {
+        assert_eq!(
+            terminal_shell_command("cd {path} && exec zsh", Path::new("/tmp/my project")),
+            "cd '/tmp/my project' && exec zsh"
+        );
+    }
+
+    #[test]
+    fn terminal_shell_command_escapes_single_quotes() {
+        assert_eq!(
+            terminal_shell_command("cd {path}", Path::new("/tmp/bob's project")),
+            "cd '/tmp/bob'\\''s project'"
+        );
+    }
+
+    #[test]
+    fn overlay_editor_target_path_uses_settings_config_path() {
+        let config_path = Path::new("/tmp/config.toml");
+
+        assert_eq!(
+            overlay_editor_target_path(InputContext::Settings, Some(config_path), None),
+            Some(config_path.to_path_buf())
+        );
+    }
+
+    #[test]
+    fn overlay_editor_target_path_uses_keymap_path() {
+        let keymap_path = Path::new("/tmp/keymap.toml");
+
+        assert_eq!(
+            overlay_editor_target_path(InputContext::Keymap, None, Some(keymap_path)),
+            Some(keymap_path.to_path_buf())
+        );
+    }
+
+    #[test]
+    fn overlay_editor_target_path_ignores_non_browsing_contexts() {
+        let config_path = Path::new("/tmp/config.toml");
+        let keymap_path = Path::new("/tmp/keymap.toml");
+
+        assert_eq!(
+            overlay_editor_target_path(
+                InputContext::SettingsEditing,
+                Some(config_path),
+                Some(keymap_path)
+            ),
+            None
+        );
+        assert_eq!(
+            overlay_editor_target_path(
+                InputContext::KeymapAwaiting,
+                Some(config_path),
+                Some(keymap_path)
+            ),
+            None
+        );
     }
 }

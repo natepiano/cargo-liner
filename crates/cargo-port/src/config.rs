@@ -562,6 +562,17 @@ pub(crate) struct TuiConfig {
     #[config(default = "zed")]
     pub editor: String,
 
+    /// OS/terminal-specific shell command used by the global terminal shortcut.
+    /// Leave blank to disable terminal opening. The command runs with the
+    /// selected project-list path as cwd; use `{path}` if your terminal needs
+    /// that path explicitly. Do not add shell quotes around `{path}`.
+    /// Examples:
+    /// - `open -a Terminal .`
+    /// - `osascript -e "tell application \"iTerm2\" to create window with default profile command
+    ///   \"cd {path} && exec zsh\""`
+    #[config(default = "")]
+    pub terminal_command: String,
+
     /// Preferred local branch used for Git-panel `M` comparisons.
     /// Example: `main`
     #[config(default = "main")]
@@ -597,6 +608,7 @@ impl Default for TuiConfig {
             include_dirs:           Vec::new(),
             include_non_rust:       NonRustInclusion::Exclude,
             editor:                 "zed".to_string(),
+            terminal_command:       String::new(),
             main_branch:            "main".to_string(),
             other_primary_branches: Vec::new(),
             status_flash_secs:      5.0,
@@ -707,6 +719,11 @@ pub(crate) fn save(config: &CargoPortConfig) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn normalize_snapshot(text: &str) -> String {
+        let normalized = text.replace("\r\n", "\n");
+        normalized.trim_end_matches(['\r', '\n']).to_string()
+    }
+
     fn assert_default_config_subset(cfg: &CargoPortConfig, expected_ci_run_count: u32) {
         assert!(cfg.cache.root.is_empty());
         assert_eq!(cfg.tui.inline_dirs, vec!["crates".to_string()]);
@@ -714,6 +731,7 @@ mod tests {
         assert!(cfg.tui.include_dirs.is_empty());
         assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Exclude);
         assert_eq!(cfg.tui.editor, "zed");
+        assert!(cfg.tui.terminal_command.is_empty());
         assert_eq!(cfg.tui.main_branch, "main");
         assert!(cfg.tui.other_primary_branches.is_empty());
         assert!((cfg.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
@@ -791,6 +809,7 @@ mod tests {
         cfg.cache.root = "/tmp/cargo-port-cache".to_string();
         cfg.tui.ci_run_count = 42;
         cfg.tui.editor = "vim".to_string();
+        cfg.tui.terminal_command = "open -a Terminal .".to_string();
         cfg.tui.main_branch = "primary".to_string();
         cfg.tui.other_primary_branches = vec!["main".to_string(), "release".to_string()];
         cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
@@ -808,6 +827,7 @@ mod tests {
         assert_eq!(reloaded.cache.root, "/tmp/cargo-port-cache");
         assert_eq!(reloaded.tui.ci_run_count, 42);
         assert_eq!(reloaded.tui.editor, "vim");
+        assert_eq!(reloaded.tui.terminal_command, "open -a Terminal .");
         assert_eq!(reloaded.tui.main_branch, "primary");
         assert_eq!(
             reloaded.tui.other_primary_branches,
@@ -1027,5 +1047,25 @@ mod tests {
         assert!(template.contains("main_branch"));
         assert!(template.contains("other_primary_branches"));
         assert!(template.contains("[\"primary\"]"));
+    }
+
+    #[test]
+    fn template_mentions_terminal_command_examples() {
+        let template =
+            confique::toml::template::<CargoPortConfig>(confique::toml::FormatOptions::default());
+
+        assert!(template.contains("terminal_command"));
+        assert!(template.contains("Leave blank to disable terminal opening"));
+        assert!(template.contains("open -a Terminal ."));
+        assert!(template.contains("iTerm2"));
+    }
+
+    #[test]
+    fn default_config_template_matches_golden_file() {
+        let template =
+            confique::toml::template::<CargoPortConfig>(confique::toml::FormatOptions::default());
+        let expected = include_str!("../tests/assets/default-config.toml");
+
+        assert_eq!(normalize_snapshot(&template), normalize_snapshot(expected));
     }
 }

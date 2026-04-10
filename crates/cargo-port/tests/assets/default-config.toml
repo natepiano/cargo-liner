@@ -1,0 +1,129 @@
+# Top-level application configuration.
+
+[cache]
+# Override the app cache root. Empty uses the system cache directory.
+#
+# Default value: ""
+#root = ""
+
+[mouse]
+# Whether to invert mouse scroll direction.
+#
+# Default value: true
+#invert_scroll = true
+
+[tui]
+# Directory names whose members are shown inline (pulled up to the
+# workspace level). For example, `["crates"]` means projects under
+# `workspace/crates/` appear directly under the workspace rather than
+# in a "crates" folder.
+#
+# Default value: ["crates"]
+#inline_dirs = ["crates"]
+
+# Number of recent CI runs to fetch per project.
+#
+# Default value: 5
+#ci_run_count = 5
+
+# Whether `hjkl` mirrors arrow navigation in non-text panes.
+#
+# Default value: false
+#navigation_keys = false
+
+# Directories to scan for projects (relative to the scan root, or
+# absolute paths). When empty, the entire scan root is walked.
+#
+# Default value: []
+#include_dirs = []
+
+# Whether to include non-Rust projects (git repos without Cargo.toml).
+#
+# Default value: false
+#include_non_rust = false
+
+# Editor application name, opened via `open -a <editor> <path>`.
+#
+# Default value: "zed"
+#editor = "zed"
+
+# OS/terminal-specific shell command used by the global terminal shortcut.
+# Leave blank to disable terminal opening. The command runs with the
+# selected project-list path as cwd; use `{path}` if your terminal needs
+# that path explicitly. Do not add shell quotes around `{path}`.
+# Examples:
+# - `open -a Terminal .`
+# - `osascript -e "tell application \"iTerm2\" to create window with default profile command
+#   \"cd {path} && exec zsh\""`
+#
+# Default value: ""
+#terminal_command = ""
+
+# Preferred local branch used for Git-panel `M` comparisons.
+# Example: `main`
+#
+# Default value: "main"
+#main_branch = "main"
+
+# Optional fallback local branch names checked after `main_branch`.
+# Example: `["primary"]`
+#
+# Default value: []
+#other_primary_branches = []
+
+# How long (in seconds) the status bar flash is shown (e.g. "no new
+# runs found").
+#
+# Default value: 5
+#status_flash_secs = 5
+
+# How long (in seconds) a completed task toast lingers before
+# starting its exit animation.
+#
+# Default value: 1
+#task_linger_secs = 1
+
+# How long (in seconds) newly discovered project names shimmer in the
+# project list. `0.0` disables the effect.
+#
+# Default value: 10
+#discovery_shimmer_secs = 10
+
+[lint]
+# Show a lint status indicator per project by reading cache-rooted
+# lint JSON artifacts.
+#
+# Default value: false
+#enabled = false
+
+# Allow-list lint execution to projects whose display or absolute path
+# starts with one of these prefixes. Empty means no projects are eligible.
+#
+# Default value: []
+#include = []
+
+# Skip lint execution for projects whose display or absolute path starts
+# with one of these prefixes.
+#
+# Default value: []
+#exclude = []
+
+# Commands to run when a watched project changes. Empty falls back to the
+# built-in clippy command.
+#
+# Default value: []
+#commands = []
+
+# Maximum retained size for lint run artifacts. `0` and `unlimited`
+# disable pruning.
+#
+# Default value: "512 MiB"
+#cache_size = "512 MiB"
+
+# Run lints immediately when a new project appears (`true`), or wait
+# for an actual file change before linting (`false`). When `false`,
+# startup and new-project discovery only set up file watchers — lints
+# run only after you edit code.
+#
+# Default value: false
+#on_discovery = false
