@@ -2317,7 +2317,7 @@ fn source_references_parent_export(
     import_usage
 }
 
-/// Resolves the first segment of an expr_path through module aliases.
+/// Resolves the first segment of an `expr_path` through module aliases.
 ///
 /// Given `["test_utils", "assert_test_case"]` and a rename mapping
 /// `test_utils → ["crate", "test_support"]`, returns
