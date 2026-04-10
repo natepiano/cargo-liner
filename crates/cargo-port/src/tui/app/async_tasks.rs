@@ -62,7 +62,7 @@ struct LegacyRootExpansion {
 
 impl App {
     #[cfg(test)]
-    pub(super) fn apply_tree_build(&mut self, projects: ProjectList) {
+    pub(in super::super) fn apply_tree_build(&mut self, projects: ProjectList) {
         let selected_path = self
             .selected_project_path()
             .map(AbsolutePath::from)
@@ -148,7 +148,7 @@ impl App {
         self.sync_selected_project();
     }
 
-    pub(super) fn config_file_stamp(path: &Path) -> Option<ConfigFileStamp> {
+    pub(in super::super) fn config_file_stamp(path: &Path) -> Option<ConfigFileStamp> {
         let metadata = std::fs::metadata(path).ok()?;
         Some(ConfigFileStamp {
             modified: metadata.modified().ok(),
@@ -156,14 +156,14 @@ impl App {
         })
     }
 
-    pub(super) fn sync_config_watch_state(&mut self) {
+    pub(in super::super) fn sync_config_watch_state(&mut self) {
         self.config_last_seen = self
             .config_path
             .as_deref()
             .and_then(Self::config_file_stamp);
     }
 
-    pub(super) fn record_config_reload_failure(&mut self, err: &str) {
+    pub(in super::super) fn record_config_reload_failure(&mut self, err: &str) {
         self.status_flash = Some((
             "Config reload failed; keeping previous settings".to_string(),
             Instant::now(),
@@ -171,7 +171,7 @@ impl App {
         self.show_timed_toast("Config reload failed", err.to_string());
     }
 
-    pub fn load_initial_keymap(&mut self) {
+    pub(in super::super) fn load_initial_keymap(&mut self) {
         let vim_mode = self.current_config.tui.navigation_keys;
         let result = crate::keymap::load_keymap(vim_mode);
         self.current_keymap = result.keymap;
@@ -190,7 +190,7 @@ impl App {
         }
     }
 
-    pub fn maybe_reload_keymap_from_disk(&mut self) {
+    pub(in super::super) fn maybe_reload_keymap_from_disk(&mut self) {
         let current_stamp = self
             .keymap_path
             .as_deref()
@@ -243,7 +243,7 @@ impl App {
         }
     }
 
-    pub fn sync_keymap_stamp(&mut self) { self.sync_keymap_watch_state(); }
+    pub(in super::super) fn sync_keymap_stamp(&mut self) { self.sync_keymap_watch_state(); }
 
     fn sync_keymap_watch_state(&mut self) {
         self.keymap_last_seen = self
@@ -280,7 +280,7 @@ impl App {
         }
     }
 
-    pub fn maybe_reload_config_from_disk(&mut self) {
+    pub(in super::super) fn maybe_reload_config_from_disk(&mut self) {
         let current_stamp = self
             .config_path
             .as_deref()
@@ -304,14 +304,17 @@ impl App {
         }
     }
 
-    pub fn save_and_apply_config(&mut self, cfg: &CargoPortConfig) -> Result<(), String> {
+    pub(in super::super) fn save_and_apply_config(
+        &mut self,
+        cfg: &CargoPortConfig,
+    ) -> Result<(), String> {
         crate::config::save(cfg)?;
         self.apply_config(cfg);
         self.sync_config_watch_state();
         Ok(())
     }
 
-    pub(super) fn apply_config(&mut self, cfg: &CargoPortConfig) {
+    pub(in super::super) fn apply_config(&mut self, cfg: &CargoPortConfig) {
         if self.current_config == *cfg {
             return;
         }
@@ -350,7 +353,7 @@ impl App {
         }
     }
 
-    pub(super) fn refresh_lint_runtime_from_config(&mut self, cfg: &CargoPortConfig) {
+    pub(in super::super) fn refresh_lint_runtime_from_config(&mut self, cfg: &CargoPortConfig) {
         let lint_spawn = lint::spawn(cfg, self.bg_tx.clone());
         self.lint_runtime = lint_spawn.handle;
         self.lint_status.clear();
@@ -370,7 +373,7 @@ impl App {
         }
     }
 
-    pub(super) fn respawn_watcher(&mut self) {
+    pub(in super::super) fn respawn_watcher(&mut self) {
         self.watch_tx = watcher::spawn_watcher(
             self.scan_root.clone(),
             self.bg_tx.clone(),
@@ -381,13 +384,13 @@ impl App {
         );
     }
 
-    pub(super) fn register_existing_projects(&self) {
+    pub(in super::super) fn register_existing_projects(&self) {
         self.projects.for_each_leaf(|item| {
             self.register_item_background_services(item);
         });
     }
 
-    pub(super) fn finish_watcher_registration_batch(&self) {
+    pub(in super::super) fn finish_watcher_registration_batch(&self) {
         let _ = self.watch_tx.send(WatcherMsg::InitialRegistrationComplete);
     }
 
@@ -397,7 +400,7 @@ impl App {
         self.finish_watcher_registration_batch();
     }
 
-    pub(super) fn refresh_lint_runs_from_disk(&mut self) {
+    pub(in super::super) fn refresh_lint_runs_from_disk(&mut self) {
         self.lint_runs.clear();
         let paths: Vec<PathBuf> = {
             let mut v = Vec::new();
@@ -418,7 +421,7 @@ impl App {
         self.refresh_lint_cache_usage_from_disk();
     }
 
-    pub(super) fn reload_lint_history(&mut self, project_path: &Path) {
+    pub(in super::super) fn reload_lint_history(&mut self, project_path: &Path) {
         let mut found = false;
         self.projects.for_each_leaf_path(|path, _| {
             if path == project_path {
@@ -442,7 +445,7 @@ impl App {
         self.refresh_lint_cache_usage_from_disk();
     }
 
-    pub fn refresh_lint_cache_usage_from_disk(&mut self) {
+    pub(in super::super) fn refresh_lint_cache_usage_from_disk(&mut self) {
         let cache_size_bytes = self.current_config.lint.cache_size_bytes().unwrap_or(None);
         self.lint_cache_usage = crate::lint::retained_cache_usage(cache_size_bytes);
     }
@@ -463,7 +466,7 @@ impl App {
         );
     }
 
-    pub(super) fn register_item_background_services(&self, item: &RootItem) {
+    pub(in super::super) fn register_item_background_services(&self, item: &RootItem) {
         let started = Instant::now();
         let abs_path = item.path().to_path_buf();
         let repo_root = crate::project::git_repo_root(&abs_path);
@@ -514,7 +517,7 @@ impl App {
         });
     }
 
-    pub(super) fn schedule_git_path_state_refreshes(&self) {
+    pub(in super::super) fn schedule_git_path_state_refreshes(&self) {
         let tx = self.bg_tx.clone();
         let mut projects: Vec<(String, String)> = Vec::new();
         self.projects.for_each_leaf_path(|path, _| {
@@ -532,7 +535,7 @@ impl App {
         });
     }
 
-    pub(super) fn schedule_git_first_commit_refreshes(&self) {
+    pub(in super::super) fn schedule_git_first_commit_refreshes(&self) {
         let tx = self.bg_tx.clone();
         let mut projects_by_repo: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         self.projects.for_each_leaf_path(|path, _| {
@@ -594,7 +597,7 @@ impl App {
         entries
     }
 
-    pub(super) fn lint_runtime_projects_snapshot(&self) -> Vec<RegisterProjectRequest> {
+    pub(in super::super) fn lint_runtime_projects_snapshot(&self) -> Vec<RegisterProjectRequest> {
         if !self.is_scan_complete() {
             return Vec::new();
         }
@@ -609,7 +612,7 @@ impl App {
             .collect()
     }
 
-    pub(super) fn sync_lint_runtime_projects(&self) {
+    pub(in super::super) fn sync_lint_runtime_projects(&self) {
         let Some(runtime) = &self.lint_runtime else {
             return;
         };
@@ -703,7 +706,7 @@ impl App {
         }
     }
 
-    pub(super) fn initialize_startup_phase_tracker(&mut self) {
+    pub(in super::super) fn initialize_startup_phase_tracker(&mut self) {
         let disk_expected = super::snapshots::initial_disk_batch_count(&self.projects);
         let git_expected = self
             .projects
@@ -767,7 +770,7 @@ impl App {
         self.maybe_log_startup_phase_completions();
     }
 
-    pub(super) fn maybe_log_startup_phase_completions(&mut self) {
+    pub(in super::super) fn maybe_log_startup_phase_completions(&mut self) {
         let Some(scan_complete_at) = self.scan.startup_phases.scan_complete_at else {
             return;
         };
@@ -779,7 +782,11 @@ impl App {
         self.maybe_complete_startup_ready(now, scan_complete_at);
     }
 
-    pub(super) fn maybe_complete_startup_disk(&mut self, now: Instant, scan_complete_at: Instant) {
+    pub(in super::super) fn maybe_complete_startup_disk(
+        &mut self,
+        now: Instant,
+        scan_complete_at: Instant,
+    ) {
         if self.scan.startup_phases.disk_complete_at.is_none()
             && self
                 .scan
@@ -799,7 +806,11 @@ impl App {
         }
     }
 
-    pub(super) fn maybe_complete_startup_git(&mut self, now: Instant, scan_complete_at: Instant) {
+    pub(in super::super) fn maybe_complete_startup_git(
+        &mut self,
+        now: Instant,
+        scan_complete_at: Instant,
+    ) {
         if self.scan.startup_phases.git_complete_at.is_none()
             && self.scan.startup_phases.git_seen.len()
                 >= self.scan.startup_phases.git_expected.len()
@@ -819,7 +830,11 @@ impl App {
         }
     }
 
-    pub(super) fn maybe_complete_startup_repo(&mut self, now: Instant, scan_complete_at: Instant) {
+    pub(in super::super) fn maybe_complete_startup_repo(
+        &mut self,
+        now: Instant,
+        scan_complete_at: Instant,
+    ) {
         if self.scan.startup_phases.repo_complete_at.is_none()
             && self.scan.startup_phases.repo_seen.len()
                 >= self.scan.startup_phases.repo_expected.len()
@@ -839,7 +854,11 @@ impl App {
         }
     }
 
-    pub(super) fn maybe_complete_startup_lints(&mut self, now: Instant, scan_complete_at: Instant) {
+    pub(in super::super) fn maybe_complete_startup_lints(
+        &mut self,
+        now: Instant,
+        scan_complete_at: Instant,
+    ) {
         if self.scan.startup_phases.lint_complete_at.is_none()
             && self
                 .scan
@@ -868,7 +887,11 @@ impl App {
         }
     }
 
-    pub(super) fn maybe_complete_startup_ready(&mut self, now: Instant, scan_complete_at: Instant) {
+    pub(in super::super) fn maybe_complete_startup_ready(
+        &mut self,
+        now: Instant,
+        scan_complete_at: Instant,
+    ) {
         if self.scan.startup_phases.startup_complete_at.is_none() {
             let disk_ready = self.scan.startup_phases.disk_complete_at.is_some();
             let git_ready = self.scan.startup_phases.git_complete_at.is_some();
@@ -906,14 +929,14 @@ impl App {
         }
     }
 
-    pub(super) fn startup_git_toast_body(&self) -> String {
+    pub(in super::super) fn startup_git_toast_body(&self) -> String {
         Self::startup_remaining_toast_body(
             &self.scan.startup_phases.git_expected,
             &self.scan.startup_phases.git_seen,
         )
     }
 
-    pub(super) fn startup_repo_toast_body(&self) -> String {
+    pub(in super::super) fn startup_repo_toast_body(&self) -> String {
         Self::startup_remaining_repo_toast_body(
             &self.scan.startup_phases.repo_expected,
             &self.scan.startup_phases.repo_seen,
@@ -941,7 +964,7 @@ impl App {
         }
     }
 
-    pub(super) fn tracked_repo_items_for_startup(
+    pub(in super::super) fn tracked_repo_items_for_startup(
         expected: &HashSet<OwnerRepo>,
         seen: &HashSet<OwnerRepo>,
     ) -> Vec<TrackedItem> {
@@ -958,7 +981,7 @@ impl App {
 
     /// Build tracked items from expected/seen path sets. Already-seen paths
     /// are pre-marked as completed so the renderer shows them with strikethrough.
-    pub(super) fn tracked_items_for_startup(
+    pub(in super::super) fn tracked_items_for_startup(
         expected: &HashSet<PathBuf>,
         seen: &HashSet<PathBuf>,
     ) -> Vec<TrackedItem> {
@@ -981,7 +1004,7 @@ impl App {
             .collect()
     }
 
-    pub(super) fn startup_remaining_toast_body(
+    pub(in super::super) fn startup_remaining_toast_body(
         expected: &HashSet<PathBuf>,
         seen: &HashSet<PathBuf>,
     ) -> String {
@@ -997,7 +1020,7 @@ impl App {
         toasts::format_toast_items(&refs, toasts::toast_body_width())
     }
 
-    pub(super) fn startup_remaining_repo_toast_body(
+    pub(in super::super) fn startup_remaining_repo_toast_body(
         expected: &HashSet<OwnerRepo>,
         seen: &HashSet<OwnerRepo>,
     ) -> String {
@@ -1020,7 +1043,7 @@ impl App {
             .and_then(|item| item.git_directory().map(|git_dir| git_dir.to_path_buf()))
     }
 
-    pub(super) fn startup_lint_toast_body_for(
+    pub(in super::super) fn startup_lint_toast_body_for(
         expected: &HashSet<PathBuf>,
         seen: &HashSet<PathBuf>,
     ) -> String {
@@ -1036,12 +1059,12 @@ impl App {
         toasts::format_toast_items(&refs, toasts::toast_body_width())
     }
 
-    pub(super) fn running_lint_toast_body(&self) -> String {
+    pub(in super::super) fn running_lint_toast_body(&self) -> String {
         let paths: HashSet<PathBuf> = self.running_lint_paths.keys().cloned().collect();
         Self::startup_lint_toast_body_for(&paths, &HashSet::new())
     }
 
-    pub(super) fn sync_running_clean_toast(&mut self) {
+    pub(in super::super) fn sync_running_clean_toast(&mut self) {
         if self.running_clean_paths.is_empty() {
             if let Some(task_id) = self.clean_toast.take() {
                 self.finish_task_toast(task_id);
@@ -1079,7 +1102,7 @@ impl App {
         crate::tui::toasts::format_toast_items(&refs, crate::tui::toasts::toast_body_width())
     }
 
-    pub(super) fn sync_running_lint_toast(&mut self) {
+    pub(in super::super) fn sync_running_lint_toast(&mut self) {
         if self.running_lint_paths.is_empty() {
             if let Some(task_id) = self.lint_toast {
                 // Mark all remaining tracked items as completed (starts fade).
@@ -1128,7 +1151,7 @@ impl App {
         }
     }
 
-    pub(super) fn request_fit_widths_build(&mut self) {
+    pub(in super::super) fn request_fit_widths_build(&mut self) {
         if !self.dirty.fit_widths.is_dirty() {
             return;
         }
@@ -1139,7 +1162,7 @@ impl App {
         self.spawn_fit_widths_build(self.builds.fit.latest);
     }
 
-    pub(super) fn spawn_fit_widths_build(&mut self, build_id: u64) {
+    pub(in super::super) fn spawn_fit_widths_build(&mut self, build_id: u64) {
         let tx = self.builds.fit.tx.clone();
         let items = self.projects.clone();
         let root_labels = self
@@ -1173,7 +1196,7 @@ impl App {
         });
     }
 
-    pub(super) fn poll_fit_width_builds(&mut self) -> usize {
+    pub(in super::super) fn poll_fit_width_builds(&mut self) -> usize {
         let mut applied = 0;
         while let Ok(result) = self.builds.fit.rx.try_recv() {
             if self.builds.fit.active != Some(result.build_id) {
@@ -1191,7 +1214,7 @@ impl App {
         applied
     }
 
-    pub(super) fn request_disk_cache_build(&mut self) {
+    pub(in super::super) fn request_disk_cache_build(&mut self) {
         if !self.dirty.disk_cache.is_dirty() {
             return;
         }
@@ -1202,7 +1225,7 @@ impl App {
         self.spawn_disk_cache_build(self.builds.disk.latest);
     }
 
-    pub(super) fn spawn_disk_cache_build(&mut self, build_id: u64) {
+    pub(in super::super) fn spawn_disk_cache_build(&mut self, build_id: u64) {
         let tx = self.builds.disk.tx.clone();
         let items = self.projects.clone();
         self.builds.disk.active = Some(build_id);
@@ -1228,7 +1251,7 @@ impl App {
         });
     }
 
-    pub(super) fn poll_disk_cache_builds(&mut self) -> usize {
+    pub(in super::super) fn poll_disk_cache_builds(&mut self) -> usize {
         let mut applied = 0;
         while let Ok(result) = self.builds.disk.rx.try_recv() {
             if self.builds.disk.active != Some(result.build_id) {
@@ -1249,7 +1272,7 @@ impl App {
 
     /// Lightweight refresh of derived state after in-place hierarchy changes
     /// (discovery, refresh). Marks caches dirty without a full tree rebuild.
-    pub(super) fn refresh_derived_state(&mut self) {
+    pub(in super::super) fn refresh_derived_state(&mut self) {
         self.recompute_cargo_active_paths();
         self.data_generation += 1;
         self.detail_generation += 1;
@@ -1348,12 +1371,12 @@ impl App {
         self.dirty.rows.mark_clean();
     }
 
-    pub(super) fn refresh_async_caches(&mut self) {
+    pub(in super::super) fn refresh_async_caches(&mut self) {
         self.request_disk_cache_build();
         self.request_fit_widths_build();
     }
 
-    pub fn rescan(&mut self) {
+    pub(in super::super) fn rescan(&mut self) {
         self.projects.clear();
         // disk_usage lives on project items — cleared with projects above
         self.ci_state.clear();
@@ -1408,7 +1431,7 @@ impl App {
         self.refresh_lint_runtime_from_config(&current_config);
     }
 
-    pub fn poll_background(&mut self) -> PollBackgroundStats {
+    pub(in super::super) fn poll_background(&mut self) -> PollBackgroundStats {
         const MAX_MSGS_PER_FRAME: usize = 50;
         let mut needs_rebuild = false;
         let mut msg_count = 0;
@@ -1458,7 +1481,7 @@ impl App {
         stats
     }
 
-    pub(super) const fn record_background_msg_kind(
+    pub(in super::super) const fn record_background_msg_kind(
         stats: &mut PollBackgroundStats,
         msg: &BackgroundMsg,
     ) {
@@ -1486,7 +1509,7 @@ impl App {
         }
     }
 
-    pub(super) fn log_saturated_background_batch(stats: &PollBackgroundStats) {
+    pub(in super::super) fn log_saturated_background_batch(stats: &PollBackgroundStats) {
         const MAX_MSGS_PER_FRAME: usize = 50;
         if stats.bg_msgs != MAX_MSGS_PER_FRAME {
             return;
@@ -1502,7 +1525,7 @@ impl App {
         );
     }
 
-    pub(super) fn poll_ci_fetches(&mut self) -> usize {
+    pub(in super::super) fn poll_ci_fetches(&mut self) -> usize {
         let mut count = 0;
         while let Ok(msg) = self.ci_fetch_rx.try_recv() {
             match msg {
@@ -1515,7 +1538,7 @@ impl App {
         count
     }
 
-    pub(super) fn poll_example_msgs(&mut self) -> usize {
+    pub(in super::super) fn poll_example_msgs(&mut self) -> usize {
         let mut count = 0;
         while let Ok(msg) = self.example_rx.try_recv() {
             match msg {
@@ -1528,7 +1551,7 @@ impl App {
         count
     }
 
-    pub(super) fn apply_example_progress(&mut self, line: String) {
+    pub(in super::super) fn apply_example_progress(&mut self, line: String) {
         if let Some(last) = self.example_output.last_mut() {
             *last = line;
         } else {
@@ -1536,13 +1559,13 @@ impl App {
         }
     }
 
-    pub(super) fn finish_example_run(&mut self) {
+    pub(in super::super) fn finish_example_run(&mut self) {
         self.example_running = None;
         self.example_output.push("── done ──".to_string());
         self.mark_terminal_dirty();
     }
 
-    pub(super) fn poll_clean_msgs(&mut self) {
+    pub(in super::super) fn poll_clean_msgs(&mut self) {
         while let Ok(msg) = self.clean_rx.try_recv() {
             match msg {
                 CleanMsg::Finished(path) => {
@@ -1562,20 +1585,20 @@ impl App {
         }
     }
 
-    pub(super) fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
+    pub(in super::super) fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
         if self.running_clean_paths.remove(path) {
             self.sync_running_clean_toast();
         }
         self.apply_disk_usage(path, bytes, self.is_scan_complete());
     }
 
-    pub(super) fn handle_disk_usage_batch(&mut self, entries: Vec<(AbsolutePath, u64)>) {
+    pub(in super::super) fn handle_disk_usage_batch(&mut self, entries: Vec<(AbsolutePath, u64)>) {
         for (path, bytes) in entries {
             self.apply_disk_usage(path.as_path(), bytes, false);
         }
     }
 
-    pub(super) fn apply_disk_usage(
+    pub(in super::super) fn apply_disk_usage(
         &mut self,
         path: &Path,
         bytes: u64,
@@ -1713,7 +1736,7 @@ impl App {
         });
     }
 
-    pub(super) fn handle_git_info(&mut self, path: &Path, info: GitInfo) {
+    pub(in super::super) fn handle_git_info(&mut self, path: &Path, info: GitInfo) {
         self.dirty.fit_widths.mark_dirty();
         let abs = path.to_path_buf();
         let preserved_first_commit = self
@@ -1753,7 +1776,11 @@ impl App {
         self.dirty.finder.mark_dirty();
     }
 
-    pub(super) fn handle_git_first_commit(&mut self, path: &Path, first_commit: Option<&str>) {
+    pub(in super::super) fn handle_git_first_commit(
+        &mut self,
+        path: &Path,
+        first_commit: Option<&str>,
+    ) {
         let (member_paths, fallback_worktree_paths) = self.inherited_git_info_paths(path);
         let first_commit = first_commit.map(String::from);
         let mut applied = false;
@@ -1794,7 +1821,7 @@ impl App {
         }
     }
 
-    pub(super) fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
+    pub(in super::super) fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
         if let Some(repo_toast) = self.scan.startup_phases.repo_toast {
             let label = repo.to_string();
             self.mark_tracked_item_completed(repo_toast, &label);
@@ -1803,7 +1830,7 @@ impl App {
         self.maybe_log_startup_phase_completions();
     }
 
-    pub(super) fn handle_repo_meta(
+    pub(in super::super) fn handle_repo_meta(
         &mut self,
         path: &Path,
         stars: u64,
@@ -1844,7 +1871,7 @@ impl App {
         }
     }
 
-    pub(super) fn handle_project_discovered(&mut self, item: RootItem) -> bool {
+    pub(in super::super) fn handle_project_discovered(&mut self, item: RootItem) -> bool {
         let legacy_expansions = self.capture_legacy_root_expansions();
         let discovered_path = item.path().to_path_buf();
         let mut already_exists = false;
@@ -1870,7 +1897,7 @@ impl App {
         true
     }
 
-    pub(super) fn handle_project_refreshed(&mut self, mut item: RootItem) -> bool {
+    pub(in super::super) fn handle_project_refreshed(&mut self, mut item: RootItem) -> bool {
         let legacy_expansions = self.capture_legacy_root_expansions();
         let path = item.path().to_path_buf();
 
@@ -1894,7 +1921,7 @@ impl App {
         true
     }
 
-    pub(super) fn apply_service_signal(&mut self, signal: ServiceSignal) {
+    pub(in super::super) fn apply_service_signal(&mut self, signal: ServiceSignal) {
         match signal {
             ServiceSignal::Reachable(service) => {
                 self.unreachable_services.remove(&service);
@@ -1908,7 +1935,7 @@ impl App {
         }
     }
 
-    pub(super) fn spawn_service_retry(&self, service: ServiceKind) {
+    pub(in super::super) fn spawn_service_retry(&self, service: ServiceKind) {
         #[cfg(test)]
         if !self.retry_spawn_mode.is_enabled() {
             return;
@@ -1927,12 +1954,12 @@ impl App {
         });
     }
 
-    pub(super) fn mark_service_recovered(&mut self, service: ServiceKind) {
+    pub(in super::super) fn mark_service_recovered(&mut self, service: ServiceKind) {
         self.unreachable_services.remove(&service);
         self.service_retry_active.remove(&service);
     }
 
-    pub fn unreachable_service_message(&self) -> Option<String> {
+    pub(in super::super) fn unreachable_service_message(&self) -> Option<String> {
         let mut services = Vec::new();
         for service in [ServiceKind::GitHub, ServiceKind::CratesIo] {
             if self.unreachable_services.contains(&service) {
@@ -2182,7 +2209,7 @@ impl App {
     }
 
     /// Handle a single `BackgroundMsg`. Returns `true` if the tree needs rebuilding.
-    pub(super) fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
+    pub(in super::super) fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
         self.update_generations_for_msg(&msg);
         match msg {
             BackgroundMsg::DiskUsage { path, bytes } => {
@@ -2266,7 +2293,7 @@ impl App {
         false
     }
 
-    pub(super) fn detail_path_is_affected(&self, path: &Path) -> bool {
+    pub(in super::super) fn detail_path_is_affected(&self, path: &Path) -> bool {
         let Some(selected_path) = self.selected_project_path() else {
             return false;
         };
@@ -2282,7 +2309,7 @@ impl App {
     }
 
     /// Spawn a priority fetch for the selected project if it hasn't been loaded yet.
-    pub(super) fn maybe_priority_fetch(&mut self) {
+    pub(in super::super) fn maybe_priority_fetch(&mut self) {
         let Some(abs_path) = self.selected_project_path().map(Path::to_path_buf) else {
             return;
         };

@@ -136,7 +136,7 @@ struct CoreInputs {
 }
 
 impl App {
-    pub fn has_cached_non_rust_projects(&self) -> bool {
+    pub(in super::super) fn has_cached_non_rust_projects(&self) -> bool {
         let mut found = false;
         self.projects.for_each_leaf(|item| {
             if !item.is_rust() {
@@ -146,7 +146,7 @@ impl App {
         found
     }
 
-    pub fn new(
+    pub(in super::super) fn new(
         scan_root: PathBuf,
         projects: &[RootItem],
         bg_tx: mpsc::Sender<BackgroundMsg>,

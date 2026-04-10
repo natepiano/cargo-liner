@@ -172,24 +172,28 @@ impl App {
 
     pub(super) const fn current_keymap(&self) -> &ResolvedKeymap { &self.current_keymap }
 
-    pub(super) fn current_keymap_mut(&mut self) -> &mut ResolvedKeymap { &mut self.current_keymap }
+    pub(super) const fn current_keymap_mut(&mut self) -> &mut ResolvedKeymap {
+        &mut self.current_keymap
+    }
 
     pub(super) const fn scan_root(&self) -> &PathBuf { &self.scan_root }
 
     pub(super) const fn projects(&self) -> &ProjectList { &self.projects }
 
     #[cfg(test)]
-    pub(super) fn projects_mut(&mut self) -> &mut ProjectList { &mut self.projects }
+    pub(super) const fn projects_mut(&mut self) -> &mut ProjectList { &mut self.projects }
 
     pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { &self.repo_fetch_cache }
 
-    pub(super) fn ci_state_mut(&mut self) -> &mut HashMap<PathBuf, CiState> { &mut self.ci_state }
+    pub(super) const fn ci_state_mut(&mut self) -> &mut HashMap<PathBuf, CiState> {
+        &mut self.ci_state
+    }
 
     pub(super) const fn lint_cache_usage(&self) -> &CacheUsage { &self.lint_cache_usage }
 
-    pub(super) fn lint_runs(&self) -> &HashMap<PathBuf, Vec<LintRun>> { &self.lint_runs }
+    pub(super) const fn lint_runs(&self) -> &HashMap<PathBuf, Vec<LintRun>> { &self.lint_runs }
 
-    pub(super) fn lint_runs_mut(&mut self) -> &mut HashMap<PathBuf, Vec<LintRun>> {
+    pub(super) const fn lint_runs_mut(&mut self) -> &mut HashMap<PathBuf, Vec<LintRun>> {
         &mut self.lint_runs
     }
 
@@ -211,76 +215,76 @@ impl App {
         self.cached_detail.as_ref()
     }
 
-    pub(super) fn layout_cache(&self) -> &LayoutCache { &self.layout_cache }
+    pub(super) const fn layout_cache(&self) -> &LayoutCache { &self.layout_cache }
 
-    pub(super) fn layout_cache_mut(&mut self) -> &mut LayoutCache { &mut self.layout_cache }
+    pub(super) const fn layout_cache_mut(&mut self) -> &mut LayoutCache { &mut self.layout_cache }
 
     pub(super) const fn cached_fit_widths(&self) -> &ResolvedWidths { &self.cached_fit_widths }
 
     pub(super) fn cached_root_sorted(&self) -> &[u64] { &self.cached_root_sorted }
 
-    pub(super) fn cached_child_sorted(&self) -> &HashMap<usize, Vec<u64>> {
+    pub(super) const fn cached_child_sorted(&self) -> &HashMap<usize, Vec<u64>> {
         &self.cached_child_sorted
     }
 
     pub(super) const fn list_state(&self) -> &ListState { &self.list_state }
 
-    pub(super) fn list_state_mut(&mut self) -> &mut ListState { &mut self.list_state }
+    pub(super) const fn list_state_mut(&mut self) -> &mut ListState { &mut self.list_state }
 
     pub(super) const fn focused_pane(&self) -> PaneId { self.focused_pane }
 
     #[cfg(test)]
-    pub(super) fn set_focused_pane(&mut self, pane: PaneId) { self.focused_pane = pane; }
+    pub(super) const fn set_focused_pane(&mut self, pane: PaneId) { self.focused_pane = pane; }
 
-    pub(super) fn expanded(&self) -> &HashSet<ExpandKey> { &self.expanded }
-
-    #[cfg(test)]
-    pub(super) fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> { &mut self.expanded }
-
-    pub(super) fn dirty(&self) -> &types::DirtyState { &self.dirty }
-
-    pub(super) fn dirty_mut(&mut self) -> &mut types::DirtyState { &mut self.dirty }
+    pub(super) const fn expanded(&self) -> &HashSet<ExpandKey> { &self.expanded }
 
     #[cfg(test)]
-    pub(super) fn ui_modes_mut(&mut self) -> &mut types::UiModes { &mut self.ui_modes }
+    pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> { &mut self.expanded }
+
+    pub(super) const fn dirty(&self) -> &types::DirtyState { &self.dirty }
+
+    pub(super) const fn dirty_mut(&mut self) -> &mut types::DirtyState { &mut self.dirty }
+
+    #[cfg(test)]
+    pub(super) const fn ui_modes_mut(&mut self) -> &mut types::UiModes { &mut self.ui_modes }
 
     pub(super) const fn settings_pane(&self) -> &Pane { &self.settings_pane }
 
-    pub(super) fn settings_pane_mut(&mut self) -> &mut Pane { &mut self.settings_pane }
+    pub(super) const fn settings_pane_mut(&mut self) -> &mut Pane { &mut self.settings_pane }
 
     pub(super) const fn package_pane(&self) -> &Pane { &self.package_pane }
 
-    pub(super) fn package_pane_mut(&mut self) -> &mut Pane { &mut self.package_pane }
+    pub(super) const fn package_pane_mut(&mut self) -> &mut Pane { &mut self.package_pane }
 
     pub(super) const fn git_pane(&self) -> &Pane { &self.git_pane }
 
-    pub(super) fn git_pane_mut(&mut self) -> &mut Pane { &mut self.git_pane }
+    pub(super) const fn git_pane_mut(&mut self) -> &mut Pane { &mut self.git_pane }
 
     pub(super) const fn targets_pane(&self) -> &Pane { &self.targets_pane }
 
-    pub(super) fn targets_pane_mut(&mut self) -> &mut Pane { &mut self.targets_pane }
+    pub(super) const fn targets_pane_mut(&mut self) -> &mut Pane { &mut self.targets_pane }
 
     pub(super) const fn ci_pane(&self) -> &Pane { &self.ci_pane }
 
-    pub(super) fn ci_pane_mut(&mut self) -> &mut Pane { &mut self.ci_pane }
+    pub(super) const fn ci_pane_mut(&mut self) -> &mut Pane { &mut self.ci_pane }
 
     pub(super) const fn toast_pane(&self) -> &Pane { &self.toast_pane }
 
-    pub(super) fn toast_pane_mut(&mut self) -> &mut Pane { &mut self.toast_pane }
+    pub(super) const fn toast_pane_mut(&mut self) -> &mut Pane { &mut self.toast_pane }
 
     pub(super) const fn lint_pane(&self) -> &Pane { &self.lint_pane }
 
-    pub(super) fn lint_pane_mut(&mut self) -> &mut Pane { &mut self.lint_pane }
+    pub(super) const fn lint_pane_mut(&mut self) -> &mut Pane { &mut self.lint_pane }
 
     pub(super) const fn keymap_pane(&self) -> &Pane { &self.keymap_pane }
 
-    pub(super) fn keymap_pane_mut(&mut self) -> &mut Pane { &mut self.keymap_pane }
+    pub(super) const fn keymap_pane_mut(&mut self) -> &mut Pane { &mut self.keymap_pane }
 
     pub(super) const fn finder(&self) -> &types::FinderState { &self.finder }
 
-    pub(super) fn finder_mut(&mut self) -> &mut types::FinderState { &mut self.finder }
+    pub(super) const fn finder_mut(&mut self) -> &mut types::FinderState { &mut self.finder }
 
-    pub(super) fn last_selected_path(&self) -> Option<&AbsolutePath> {
+    pub(super) const fn last_selected_path(&self) -> Option<&AbsolutePath> {
         self.selection_paths.last_selected.as_ref()
     }
 
@@ -288,7 +292,7 @@ impl App {
         self.pending_example_run = Some(run);
     }
 
-    pub(super) fn take_pending_example_run(&mut self) -> Option<PendingExampleRun> {
+    pub(super) const fn take_pending_example_run(&mut self) -> Option<PendingExampleRun> {
         self.pending_example_run.take()
     }
 
@@ -296,23 +300,23 @@ impl App {
         self.pending_ci_fetch = Some(fetch);
     }
 
-    pub(super) fn take_pending_ci_fetch(&mut self) -> Option<PendingCiFetch> {
+    pub(super) const fn take_pending_ci_fetch(&mut self) -> Option<PendingCiFetch> {
         self.pending_ci_fetch.take()
     }
 
-    pub(super) fn pending_cleans_mut(&mut self) -> &mut VecDeque<PendingClean> {
+    pub(super) const fn pending_cleans_mut(&mut self) -> &mut VecDeque<PendingClean> {
         &mut self.pending_cleans
     }
 
     pub(super) fn set_confirm(&mut self, action: ConfirmAction) { self.confirm = Some(action); }
 
-    pub(super) fn confirm(&self) -> Option<&ConfirmAction> { self.confirm.as_ref() }
+    pub(super) const fn confirm(&self) -> Option<&ConfirmAction> { self.confirm.as_ref() }
 
     pub(super) fn settings_edit_buf(&self) -> &str { &self.settings_edit_buf }
 
     pub(super) const fn settings_edit_cursor(&self) -> usize { self.settings_edit_cursor }
 
-    pub(super) fn settings_edit_parts_mut(&mut self) -> (&mut String, &mut usize) {
+    pub(super) const fn settings_edit_parts_mut(&mut self) -> (&mut String, &mut usize) {
         (&mut self.settings_edit_buf, &mut self.settings_edit_cursor)
     }
 
@@ -321,7 +325,7 @@ impl App {
         self.settings_edit_cursor = cursor;
     }
 
-    pub(super) fn inline_error(&self) -> Option<&String> { self.inline_error.as_ref() }
+    pub(super) const fn inline_error(&self) -> Option<&String> { self.inline_error.as_ref() }
 
     pub(super) fn set_inline_error(&mut self, error: impl Into<String>) {
         self.inline_error = Some(error.into());
@@ -349,7 +353,9 @@ impl App {
         self.example_output = output;
     }
 
-    pub(super) fn example_output_mut(&mut self) -> &mut Vec<String> { &mut self.example_output }
+    pub(super) const fn example_output_mut(&mut self) -> &mut Vec<String> {
+        &mut self.example_output
+    }
 
     pub(super) fn example_running(&self) -> Option<&str> { self.example_running.as_deref() }
 
@@ -357,29 +363,29 @@ impl App {
         self.example_running = running;
     }
 
-    pub(super) fn increment_data_generation(&mut self) { self.data_generation += 1; }
+    pub(super) const fn increment_data_generation(&mut self) { self.data_generation += 1; }
 
     pub(super) fn search_query(&self) -> &str { &self.search_query }
 
     #[cfg(test)]
-    pub(super) fn search_query_mut(&mut self) -> &mut String { &mut self.search_query }
+    pub(super) const fn search_query_mut(&mut self) -> &mut String { &mut self.search_query }
 
     pub(super) fn filtered(&self) -> &[types::SearchHit] { &self.filtered }
 
     #[cfg(test)]
-    pub(super) fn filtered_mut(&mut self) -> &mut Vec<types::SearchHit> { &mut self.filtered }
+    pub(super) const fn filtered_mut(&mut self) -> &mut Vec<types::SearchHit> { &mut self.filtered }
 
-    pub(super) fn keymap_path(&self) -> Option<&PathBuf> { self.keymap_path.as_ref() }
+    pub(super) const fn keymap_path(&self) -> Option<&PathBuf> { self.keymap_path.as_ref() }
 
-    pub(super) fn ui_modes(&self) -> &types::UiModes { &self.ui_modes }
+    pub(super) const fn ui_modes(&self) -> &types::UiModes { &self.ui_modes }
 
-    pub(super) fn take_confirm(&mut self) -> Option<ConfirmAction> { self.confirm.take() }
+    pub(super) const fn take_confirm(&mut self) -> Option<ConfirmAction> { self.confirm.take() }
 
     #[cfg(test)]
     pub(super) fn set_projects(&mut self, projects: ProjectList) { self.projects = projects; }
 
     #[cfg(test)]
-    pub(super) fn toasts_mut(&mut self) -> &mut ToastManager { &mut self.toasts }
+    pub(super) const fn toasts_mut(&mut self) -> &mut ToastManager { &mut self.toasts }
 
     pub(super) fn dismiss_target_for_row(&self, row: VisibleRow) -> Option<DismissTarget> {
         self.dismiss_target_for_row_inner(row)

@@ -33,34 +33,40 @@ use crate::tui::toasts::TrackedItem;
 use crate::tui::types::PaneId;
 
 impl App {
-    pub const fn lint_enabled(&self) -> bool { self.current_config.lint.enabled }
+    pub(in super::super) const fn lint_enabled(&self) -> bool { self.current_config.lint.enabled }
 
-    pub const fn invert_scroll(&self) -> ScrollDirection { self.current_config.mouse.invert_scroll }
+    pub(in super::super) const fn invert_scroll(&self) -> ScrollDirection {
+        self.current_config.mouse.invert_scroll
+    }
 
-    pub const fn include_non_rust(&self) -> NonRustInclusion {
+    pub(in super::super) const fn include_non_rust(&self) -> NonRustInclusion {
         self.current_config.tui.include_non_rust
     }
 
-    pub const fn ci_run_count(&self) -> u32 { self.current_config.tui.ci_run_count }
+    pub(in super::super) const fn ci_run_count(&self) -> u32 {
+        self.current_config.tui.ci_run_count
+    }
 
-    pub const fn navigation_keys(&self) -> NavigationKeys {
+    pub(in super::super) const fn navigation_keys(&self) -> NavigationKeys {
         self.current_config.tui.navigation_keys
     }
 
-    pub fn editor(&self) -> &str { &self.current_config.tui.editor }
+    pub(in super::super) fn editor(&self) -> &str { &self.current_config.tui.editor }
 
     fn toast_timeout(&self) -> Duration {
         Duration::from_secs_f64(self.current_config.tui.status_flash_secs)
     }
 
-    pub fn active_toasts(&self) -> Vec<ToastView<'_>> { self.toasts.active(Instant::now()) }
+    pub(in super::super) fn active_toasts(&self) -> Vec<ToastView<'_>> {
+        self.toasts.active(Instant::now())
+    }
 
-    pub fn focused_toast_id(&self) -> Option<u64> {
+    pub(in super::super) fn focused_toast_id(&self) -> Option<u64> {
         let active = self.active_toasts();
         active.get(self.toast_pane.pos()).map(ToastView::id)
     }
 
-    pub fn prune_toasts(&mut self) {
+    pub(in super::super) fn prune_toasts(&mut self) {
         let now = Instant::now();
         let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
         self.toasts.prune_tracked_items(now, linger);
@@ -71,12 +77,16 @@ impl App {
         }
     }
 
-    pub fn show_timed_toast(&mut self, title: impl Into<String>, body: impl Into<String>) {
+    pub(in super::super) fn show_timed_toast(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) {
         self.toasts.push_timed(title, body, self.toast_timeout(), 1);
         self.toast_pane.set_len(self.active_toasts().len());
     }
 
-    pub fn start_task_toast(
+    pub(in super::super) fn start_task_toast(
         &mut self,
         title: impl Into<String>,
         body: impl Into<String>,
@@ -86,7 +96,7 @@ impl App {
         task_id
     }
 
-    pub fn finish_task_toast(&mut self, task_id: ToastTaskId) {
+    pub(in super::super) fn finish_task_toast(&mut self, task_id: ToastTaskId) {
         // If tracked items remain, linger so strikethrough animation plays.
         // If no tracked items, exit immediately — nothing to animate.
         let linger = if self.toasts.tracked_item_count(task_id) > 0 {
@@ -98,33 +108,41 @@ impl App {
         self.prune_toasts();
     }
 
-    pub fn set_task_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) {
+    pub(in super::super) fn set_task_tracked_items(
+        &mut self,
+        task_id: ToastTaskId,
+        items: &[TrackedItem],
+    ) {
         let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
         self.toasts.set_tracked_items(task_id, items, linger);
         self.toast_pane.set_len(self.active_toasts().len());
     }
 
-    pub fn mark_tracked_item_completed(&mut self, task_id: ToastTaskId, label: &str) {
+    pub(in super::super) fn mark_tracked_item_completed(
+        &mut self,
+        task_id: ToastTaskId,
+        label: &str,
+    ) {
         self.toasts.mark_item_completed(task_id, label);
         self.toast_pane.set_len(self.active_toasts().len());
     }
 
-    pub fn start_clean(&mut self, project_path: &Path) {
+    pub(in super::super) fn start_clean(&mut self, project_path: &Path) {
         self.running_clean_paths.insert(project_path.to_path_buf());
         self.sync_running_clean_toast();
     }
 
-    pub fn clean_spawn_failed(&mut self, project_path: &Path) {
+    pub(in super::super) fn clean_spawn_failed(&mut self, project_path: &Path) {
         self.running_clean_paths.remove(project_path);
         self.sync_running_clean_toast();
     }
 
-    pub fn dismiss_toast(&mut self, id: u64) {
+    pub(in super::super) fn dismiss_toast(&mut self, id: u64) {
         self.toasts.dismiss(id);
         self.prune_toasts();
     }
 
-    pub fn lint_is_watchable(&self, path: &Path) -> bool {
+    pub(in super::super) fn lint_is_watchable(&self, path: &Path) -> bool {
         if !self.lint_enabled() {
             return false;
         }
@@ -142,7 +160,7 @@ impl App {
         )
     }
 
-    pub fn bottom_panel_available(&self, path: &Path) -> bool {
+    pub(in super::super) fn bottom_panel_available(&self, path: &Path) -> bool {
         let has_ci = self
             .ci_owner_path_for(path)
             .as_deref()
@@ -161,7 +179,7 @@ impl App {
         has_ci || has_lint_runs
     }
 
-    pub fn sync_selected_project(&mut self) {
+    pub(in super::super) fn sync_selected_project(&mut self) {
         self.ensure_visible_rows_cached();
         let current = self.selected_project_path().map(AbsolutePath::from);
         if self
@@ -203,14 +221,14 @@ impl App {
         }
     }
 
-    pub fn is_deleted(&self, path: &Path) -> bool {
+    pub(in super::super) fn is_deleted(&self, path: &Path) -> bool {
         use crate::project::Visibility;
         self.projects
             .at_path(path)
             .is_some_and(|project| project.visibility == Visibility::Deleted)
     }
 
-    pub fn formatted_disk(&self, path: &Path) -> String {
+    pub(in super::super) fn formatted_disk(&self, path: &Path) -> String {
         let bytes = self
             .projects
             .at_path(path)
@@ -219,33 +237,33 @@ impl App {
         crate::tui::render::format_bytes(bytes)
     }
 
-    pub fn selected_ci_path(&self) -> Option<PathBuf> {
+    pub(in super::super) fn selected_ci_path(&self) -> Option<PathBuf> {
         self.selected_project_path()
             .and_then(|path| self.ci_owner_path_for(path))
     }
 
-    pub fn selected_ci_state(&self) -> Option<&CiState> {
+    pub(in super::super) fn selected_ci_state(&self) -> Option<&CiState> {
         let path = self.selected_ci_path()?;
         self.ci_state_for(path.as_path())
     }
 
-    pub fn selected_ci_runs(&self) -> Vec<CiRun> {
+    pub(in super::super) fn selected_ci_runs(&self) -> Vec<CiRun> {
         self.selected_project_path()
             .map_or_else(Vec::new, |path| self.ci_runs_for_display(path))
     }
 
-    pub fn ci_for(&self, path: &Path) -> Option<Conclusion> {
+    pub(in super::super) fn ci_for(&self, path: &Path) -> Option<Conclusion> {
         self.ci_state_for(path)
             .and_then(|_| self.latest_ci_run_for_path(path))
             .map(|run| run.conclusion)
     }
 
-    pub fn ci_state_for(&self, path: &Path) -> Option<&CiState> {
+    pub(in super::super) fn ci_state_for(&self, path: &Path) -> Option<&CiState> {
         let owner_path = self.ci_owner_path_for(path)?;
         self.ci_state.get(owner_path.as_path())
     }
 
-    pub fn git_info_for(&self, path: &Path) -> Option<&GitInfo> {
+    pub(in super::super) fn git_info_for(&self, path: &Path) -> Option<&GitInfo> {
         self.projects
             .at_path(path)
             .and_then(|project| project.git_info.as_ref())
@@ -280,7 +298,7 @@ impl App {
     }
 
     /// Aggregate disk usage for a `RootItem`.
-    pub fn formatted_disk_for_item(item: &RootItem) -> String {
+    pub(in super::super) fn formatted_disk_for_item(item: &RootItem) -> String {
         item.disk_usage_bytes().map_or_else(
             || crate::tui::render::format_bytes(0),
             crate::tui::render::format_bytes,
@@ -288,7 +306,7 @@ impl App {
     }
 
     /// Aggregate CI for a `RootItem`.
-    pub fn ci_for_item(&self, item: &RootItem) -> Option<Conclusion> {
+    pub(in super::super) fn ci_for_item(&self, item: &RootItem) -> Option<Conclusion> {
         let paths = Self::unique_item_paths(item);
         if paths.len() == 1 {
             return self.ci_for(&paths[0]);
@@ -318,17 +336,19 @@ impl App {
         }
     }
 
-    pub fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
+    pub(in super::super) fn animation_elapsed(&self) -> Duration {
+        self.animation_started.elapsed()
+    }
 
-    pub fn discovery_shimmer_enabled(&self) -> bool {
+    pub(in super::super) fn discovery_shimmer_enabled(&self) -> bool {
         self.current_config.tui.discovery_shimmer_secs > 0.0
     }
 
-    pub fn discovery_shimmer_duration(&self) -> Duration {
+    pub(in super::super) fn discovery_shimmer_duration(&self) -> Duration {
         Duration::from_secs_f64(self.current_config.tui.discovery_shimmer_secs)
     }
 
-    pub fn register_discovery_shimmer(&mut self, path: &Path) {
+    pub(in super::super) fn register_discovery_shimmer(&mut self, path: &Path) {
         if !self.is_scan_complete() || !self.discovery_shimmer_enabled() {
             return;
         }
@@ -338,12 +358,12 @@ impl App {
         );
     }
 
-    pub fn prune_discovery_shimmers(&mut self, now: Instant) {
+    pub(in super::super) fn prune_discovery_shimmers(&mut self, now: Instant) {
         self.discovery_shimmers
             .retain(|_, shimmer| shimmer.is_active_at(now));
     }
 
-    pub fn discovery_name_segments_for_path(
+    pub(in super::super) fn discovery_name_segments_for_path(
         &self,
         row_path: &Path,
         name: &str,
@@ -431,7 +451,7 @@ impl App {
             .find_map(|item| root_item_parent_row(item, session_path))
     }
 
-    pub fn is_vendored_path(&self, path: &Path) -> bool {
+    pub(in super::super) fn is_vendored_path(&self, path: &Path) -> bool {
         self.projects.iter().any(|item| match item {
             RootItem::Workspace(ws) => ws.vendored().iter().any(|v| v.path() == path),
             RootItem::Package(pkg) => pkg.vendored().iter().any(|v| v.path() == path),
@@ -445,7 +465,7 @@ impl App {
         })
     }
 
-    pub fn is_workspace_member_path(&self, path: &Path) -> bool {
+    pub(in super::super) fn is_workspace_member_path(&self, path: &Path) -> bool {
         self.projects.iter().any(|item| match item {
             RootItem::Workspace(ws) => ws
                 .groups()
@@ -462,7 +482,7 @@ impl App {
         })
     }
 
-    pub fn recompute_cargo_active_paths(&mut self) {
+    pub(in super::super) fn recompute_cargo_active_paths(&mut self) {
         let mut active_paths: HashSet<PathBuf> = HashSet::new();
         self.projects.for_each_leaf(|item| {
             if !self.is_vendored_path(item.path()) {
@@ -503,23 +523,23 @@ impl App {
         self.cargo_active_paths = active_paths;
     }
 
-    pub fn is_cargo_active_path(&self, path: &Path) -> bool {
+    pub(in super::super) fn is_cargo_active_path(&self, path: &Path) -> bool {
         self.cargo_active_paths.contains(path)
     }
 
-    pub fn git_path_state_for(&self, path: &Path) -> GitPathState {
+    pub(in super::super) fn git_path_state_for(&self, path: &Path) -> GitPathState {
         self.git_path_states
             .get(path)
             .copied()
             .unwrap_or(GitPathState::OutsideRepo)
     }
 
-    pub fn refresh_git_path_state(&mut self, path: &Path) {
+    pub(in super::super) fn refresh_git_path_state(&mut self, path: &Path) {
         let state = crate::project::detect_git_path_state(path);
         self.git_path_states.insert(path.to_path_buf(), state);
     }
 
-    pub fn prune_inactive_project_state(&mut self) {
+    pub(in super::super) fn prune_inactive_project_state(&mut self) {
         let mut all_paths: HashSet<PathBuf> = HashSet::new();
         self.projects.for_each_leaf_path(|path, _| {
             all_paths.insert(path.to_path_buf());
@@ -541,7 +561,7 @@ impl App {
     }
 
     /// Formatted ahead/behind sync status for the project list columns.
-    pub fn git_sync(&self, path: &Path) -> String {
+    pub(in super::super) fn git_sync(&self, path: &Path) -> String {
         if matches!(
             self.git_path_state_for(path),
             GitPathState::Untracked | GitPathState::Ignored
@@ -561,7 +581,7 @@ impl App {
         }
     }
 
-    pub fn git_main(&self, path: &Path) -> String {
+    pub(in super::super) fn git_main(&self, path: &Path) -> String {
         if matches!(
             self.git_path_state_for(path),
             GitPathState::Untracked | GitPathState::Ignored
@@ -583,7 +603,7 @@ impl App {
     /// Returns the Enter-key action label for the current cursor position,
     /// or `None` if Enter does nothing here. Used by the shortcut bar to
     /// only show Enter when it's actionable.
-    pub fn enter_action(&self) -> Option<&'static str> {
+    pub(in super::super) fn enter_action(&self) -> Option<&'static str> {
         match self.input_context() {
             InputContext::ProjectList => Some("open"),
             InputContext::DetailTargets => Some("run"),

@@ -9,7 +9,7 @@ use crate::lint::LintStatus;
 use crate::project::RootItem;
 
 impl App {
-    pub(super) fn rebuild_lint_rollups(&mut self) {
+    pub(in super::super) fn rebuild_lint_rollups(&mut self) {
         self.lint_rollup_status.clear();
         self.lint_rollup_paths.clear();
         self.lint_rollup_keys_by_path.clear();
@@ -84,7 +84,7 @@ impl App {
         self.lint_rollup_paths.insert(key, paths);
     }
 
-    pub(super) fn update_lint_rollups_for_path(&mut self, path: &Path) {
+    pub(in super::super) fn update_lint_rollups_for_path(&mut self, path: &Path) {
         let Some(keys) = self.lint_rollup_keys_by_path.get(path).cloned() else {
             return;
         };
@@ -136,7 +136,7 @@ impl App {
         }
     }
 
-    pub(super) fn selected_lint_rollup_key(&self) -> Option<LintRollupKey> {
+    pub(in super::super) fn selected_lint_rollup_key(&self) -> Option<LintRollupKey> {
         match self.selected_row()? {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
                 Some(LintRollupKey::Root { node_index })
@@ -160,13 +160,16 @@ impl App {
         }
     }
 
-    pub(super) fn lint_status_for_rollup_key(&self, key: LintRollupKey) -> Option<&LintStatus> {
+    pub(in super::super) fn lint_status_for_rollup_key(
+        &self,
+        key: LintRollupKey,
+    ) -> Option<&LintStatus> {
         self.lint_rollup_status.get(&key)
     }
 
     /// Lint icon frame for the current animation state, or a blank space if lint is
     /// disabled or no log exists.
-    pub fn lint_icon(&self, path: &Path) -> &'static str {
+    pub(in super::super) fn lint_icon(&self, path: &Path) -> &'static str {
         use crate::constants::LINT_NO_LOG;
 
         if !self.lint_enabled() {
@@ -178,7 +181,7 @@ impl App {
         status.icon().frame_at(self.animation_elapsed())
     }
 
-    pub fn lint_icon_for_root(&self, node_index: usize) -> &'static str {
+    pub(in super::super) fn lint_icon_for_root(&self, node_index: usize) -> &'static str {
         use crate::constants::LINT_NO_LOG;
 
         if !self.lint_enabled() {
@@ -191,7 +194,11 @@ impl App {
         status.icon().frame_at(self.animation_elapsed())
     }
 
-    pub fn lint_icon_for_worktree(&self, node_index: usize, worktree_index: usize) -> &'static str {
+    pub(in super::super) fn lint_icon_for_worktree(
+        &self,
+        node_index: usize,
+        worktree_index: usize,
+    ) -> &'static str {
         use crate::constants::LINT_NO_LOG;
 
         if !self.lint_enabled() {
@@ -206,7 +213,7 @@ impl App {
         status.icon().frame_at(self.animation_elapsed())
     }
 
-    pub fn selected_lint_icon(&self, path: &Path) -> Option<&'static str> {
+    pub(in super::super) fn selected_lint_icon(&self, path: &Path) -> Option<&'static str> {
         if !self.lint_enabled() {
             return None;
         }

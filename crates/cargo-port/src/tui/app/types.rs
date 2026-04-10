@@ -39,17 +39,17 @@ pub struct PendingClean {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ConfigFileStamp {
+pub(in super::super) struct ConfigFileStamp {
     pub modified: Option<SystemTime>,
     pub len:      u64,
 }
 
-pub struct FitWidthsBuildResult {
+pub(in super::super) struct FitWidthsBuildResult {
     pub build_id: u64,
     pub widths:   ResolvedWidths,
 }
 
-pub struct DiskCacheBuildResult {
+pub(in super::super) struct DiskCacheBuildResult {
     pub build_id:     u64,
     pub root_sorted:  Vec<u64>,
     pub child_sorted: HashMap<usize, Vec<u64>>,
@@ -65,20 +65,20 @@ pub struct SearchHit {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DiscoveryShimmer {
+pub(in super::super) struct DiscoveryShimmer {
     pub started_at: Instant,
     pub duration:   Duration,
 }
 
 impl DiscoveryShimmer {
-    pub const fn new(started_at: Instant, duration: Duration) -> Self {
+    pub(in super::super) const fn new(started_at: Instant, duration: Duration) -> Self {
         Self {
             started_at,
             duration,
         }
     }
 
-    pub fn is_active_at(self, now: Instant) -> bool {
+    pub(in super::super) fn is_active_at(self, now: Instant) -> bool {
         now.duration_since(self.started_at) < self.duration
     }
 }
@@ -92,7 +92,7 @@ pub enum DiscoveryRowKind {
 }
 
 #[derive(Debug, Default)]
-pub struct StartupPhaseTracker {
+pub(in super::super) struct StartupPhaseTracker {
     pub scan_complete_at:    Option<Instant>,
     pub disk_expected:       Option<usize>,
     pub disk_seen:           HashSet<PathBuf>,
@@ -112,18 +112,18 @@ pub struct StartupPhaseTracker {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Dirtiness {
+pub(in super::super) enum Dirtiness {
     #[default]
     Clean,
     Dirty,
 }
 
 impl Dirtiness {
-    pub const fn is_dirty(self) -> bool { matches!(self, Self::Dirty) }
+    pub(in super::super) const fn is_dirty(self) -> bool { matches!(self, Self::Dirty) }
 
-    pub const fn mark_dirty(&mut self) { *self = Self::Dirty; }
+    pub(in super::super) const fn mark_dirty(&mut self) { *self = Self::Dirty; }
 
-    pub const fn mark_clean(&mut self) { *self = Self::Clean; }
+    pub(in super::super) const fn mark_clean(&mut self) { *self = Self::Clean; }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -138,18 +138,18 @@ impl SearchMode {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum FinderMode {
+pub(in super::super) enum FinderMode {
     #[default]
     Hidden,
     Visible,
 }
 
 impl FinderMode {
-    pub const fn is_visible(self) -> bool { matches!(self, Self::Visible) }
+    pub(in super::super) const fn is_visible(self) -> bool { matches!(self, Self::Visible) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SettingsMode {
+pub(in super::super) enum SettingsMode {
     #[default]
     Hidden,
     Browsing,
@@ -157,13 +157,13 @@ pub enum SettingsMode {
 }
 
 impl SettingsMode {
-    pub const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
+    pub(in super::super) const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
 
-    pub const fn is_editing(self) -> bool { matches!(self, Self::Editing) }
+    pub(in super::super) const fn is_editing(self) -> bool { matches!(self, Self::Editing) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum KeymapMode {
+pub(in super::super) enum KeymapMode {
     #[default]
     Hidden,
     Browsing,
@@ -171,24 +171,26 @@ pub enum KeymapMode {
 }
 
 impl KeymapMode {
-    pub const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
+    pub(in super::super) const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
 
-    pub const fn is_awaiting_key(self) -> bool { matches!(self, Self::AwaitingKey) }
+    pub(in super::super) const fn is_awaiting_key(self) -> bool {
+        matches!(self, Self::AwaitingKey)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ScanPhase {
+pub(in super::super) enum ScanPhase {
     #[default]
     Running,
     Complete,
 }
 
 impl ScanPhase {
-    pub const fn is_complete(self) -> bool { matches!(self, Self::Complete) }
+    pub(in super::super) const fn is_complete(self) -> bool { matches!(self, Self::Complete) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ExitMode {
+pub(in super::super) enum ExitMode {
     #[default]
     Continue,
     Quit,
@@ -196,20 +198,22 @@ pub enum ExitMode {
 }
 
 impl ExitMode {
-    pub const fn should_quit(self) -> bool { matches!(self, Self::Quit | Self::Restart) }
+    pub(in super::super) const fn should_quit(self) -> bool {
+        matches!(self, Self::Quit | Self::Restart)
+    }
 
-    pub const fn should_restart(self) -> bool { matches!(self, Self::Restart) }
+    pub(in super::super) const fn should_restart(self) -> bool { matches!(self, Self::Restart) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SelectionSync {
+pub(in super::super) enum SelectionSync {
     #[default]
     Stable,
     Changed,
 }
 
 impl SelectionSync {
-    pub const fn is_changed(self) -> bool { matches!(self, Self::Changed) }
+    pub(in super::super) const fn is_changed(self) -> bool { matches!(self, Self::Changed) }
 }
 
 #[cfg(test)]
@@ -226,7 +230,7 @@ impl RetrySpawnMode {
 }
 
 #[derive(Debug)]
-pub struct DirtyState {
+pub(in super::super) struct DirtyState {
     pub rows:       Dirtiness,
     pub disk_cache: Dirtiness,
     pub fit_widths: Dirtiness,
@@ -235,7 +239,7 @@ pub struct DirtyState {
 }
 
 impl DirtyState {
-    pub const fn initial() -> Self {
+    pub(in super::super) const fn initial() -> Self {
         Self {
             rows:       Dirtiness::Dirty,
             disk_cache: Dirtiness::Dirty,
@@ -247,7 +251,7 @@ impl DirtyState {
 }
 
 #[derive(Debug, Default)]
-pub struct UiModes {
+pub(in super::super) struct UiModes {
     pub search:   SearchMode,
     pub finder:   FinderMode,
     pub settings: SettingsMode,
@@ -256,7 +260,7 @@ pub struct UiModes {
 }
 
 #[derive(Debug)]
-pub struct ScanState {
+pub(in super::super) struct ScanState {
     pub phase:          ScanPhase,
     pub started_at:     Instant,
     pub run_count:      u64,
@@ -264,7 +268,7 @@ pub struct ScanState {
 }
 
 impl ScanState {
-    pub fn new(started_at: Instant) -> Self {
+    pub(in super::super) fn new(started_at: Instant) -> Self {
         Self {
             phase: ScanPhase::Running,
             started_at,
@@ -275,7 +279,7 @@ impl ScanState {
 }
 
 #[derive(Debug, Default)]
-pub struct SelectionPaths {
+pub(in super::super) struct SelectionPaths {
     pub last_selected:      Option<AbsolutePath>,
     pub selected_project:   Option<AbsolutePath>,
     pub collapsed_selected: Option<AbsolutePath>,
@@ -283,7 +287,7 @@ pub struct SelectionPaths {
 }
 
 impl SelectionPaths {
-    pub fn new() -> Self {
+    pub(in super::super) fn new() -> Self {
         Self {
             last_selected: crate::tui::terminal::load_last_selected(),
             ..Self::default()
@@ -291,7 +295,7 @@ impl SelectionPaths {
     }
 }
 
-pub struct FinderState {
+pub(in super::super) struct FinderState {
     pub query:      String,
     pub results:    Vec<usize>,
     pub total:      usize,
@@ -301,7 +305,7 @@ pub struct FinderState {
 }
 
 impl FinderState {
-    pub const fn new() -> Self {
+    pub(in super::super) const fn new() -> Self {
         Self {
             query:      String::new(),
             results:    Vec::new(),
@@ -313,7 +317,7 @@ impl FinderState {
     }
 }
 
-pub struct BuildQueue<T> {
+pub(in super::super) struct BuildQueue<T> {
     pub tx:     mpsc::Sender<T>,
     pub rx:     Receiver<T>,
     pub active: Option<u64>,
@@ -331,13 +335,13 @@ impl<T> BuildQueue<T> {
     }
 }
 
-pub struct AsyncBuildState {
+pub(in super::super) struct AsyncBuildState {
     pub fit:  BuildQueue<FitWidthsBuildResult>,
     pub disk: BuildQueue<DiskCacheBuildResult>,
 }
 
 impl AsyncBuildState {
-    pub fn new(channels: BuildChannels) -> Self {
+    pub(in super::super) fn new(channels: BuildChannels) -> Self {
         Self {
             fit:  BuildQueue::new(channels.fit_tx, channels.fit_rx),
             disk: BuildQueue::new(channels.disk_tx, channels.disk_rx),
@@ -345,7 +349,7 @@ impl AsyncBuildState {
     }
 }
 
-pub struct BuildChannels {
+pub(in super::super) struct BuildChannels {
     pub fit_tx:  mpsc::Sender<FitWidthsBuildResult>,
     pub fit_rx:  Receiver<FitWidthsBuildResult>,
     pub disk_tx: mpsc::Sender<DiskCacheBuildResult>,
@@ -353,7 +357,7 @@ pub struct BuildChannels {
 }
 
 impl BuildChannels {
-    pub fn new() -> Self {
+    pub(in super::super) fn new() -> Self {
         let (fit_tx, fit_rx) = mpsc::channel();
         let (disk_tx, disk_rx) = mpsc::channel();
         Self {
@@ -428,7 +432,7 @@ pub enum VisibleRow {
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub enum LintRollupKey {
+pub(in super::super) enum LintRollupKey {
     Root {
         node_index: usize,
     },
@@ -481,7 +485,7 @@ impl CiState {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CiRunDisplayMode {
+pub(in super::super) enum CiRunDisplayMode {
     #[default]
     BranchOnly,
     All,
@@ -489,7 +493,7 @@ pub enum CiRunDisplayMode {
 
 /// Generation-stamped detail cache. Automatically stale when `detail_generation`
 /// on `App` has advanced past the generation stored here.
-pub struct DetailCache {
+pub(in super::super) struct DetailCache {
     pub generation: u64,
     pub selection:  String,
     pub info:       DetailInfo,

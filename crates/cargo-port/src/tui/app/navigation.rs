@@ -26,7 +26,7 @@ use crate::tui::columns::COL_NAME;
 use crate::tui::columns::ResolvedWidths;
 
 impl App {
-    pub fn ensure_visible_rows_cached(&mut self) {
+    pub(in super::super) fn ensure_visible_rows_cached(&mut self) {
         if !self.dirty.rows.is_dirty() {
             return;
         }
@@ -39,27 +39,27 @@ impl App {
     }
 
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
-    pub fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
+    pub(in super::super) fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
 
     /// Keep fit-to-content widths rebuilding in the background, never inline on the UI thread.
-    pub fn ensure_fit_widths_cached(&mut self) { self.request_fit_widths_build(); }
+    pub(in super::super) fn ensure_fit_widths_cached(&mut self) { self.request_fit_widths_build(); }
 
-    pub(super) fn observe_name_width(widths: &mut ResolvedWidths, content_width: usize) {
+    pub(in super::super) fn observe_name_width(widths: &mut ResolvedWidths, content_width: usize) {
         use COL_NAME;
 
         widths.observe(COL_NAME, Self::name_width_with_gutter(content_width));
     }
 
-    pub(super) const fn name_width_with_gutter(content_width: usize) -> usize {
+    pub(in super::super) const fn name_width_with_gutter(content_width: usize) -> usize {
         content_width.saturating_add(1)
     }
 
     /// Keep disk sort caches rebuilding in the background, never inline on the UI thread.
-    pub fn ensure_disk_cache(&mut self) { self.request_disk_cache_build(); }
+    pub(in super::super) fn ensure_disk_cache(&mut self) { self.request_disk_cache_build(); }
 
     /// Ensure the cached `DetailInfo` is up to date for the selected project.
     /// The cache is valid only when the generation AND path both match.
-    pub fn ensure_detail_cached(&mut self) {
+    pub(in super::super) fn ensure_detail_cached(&mut self) {
         let current_selection = self.current_detail_selection_key();
 
         if let Some(ref cache) = self.cached_detail
@@ -254,7 +254,7 @@ impl App {
         }
     }
 
-    pub(super) fn selected_row(&self) -> Option<VisibleRow> {
+    pub(in super::super) fn selected_row(&self) -> Option<VisibleRow> {
         if self.is_searching() && !self.search_query.is_empty() {
             return None;
         }
@@ -263,7 +263,7 @@ impl App {
         rows.get(selected).copied()
     }
 
-    pub(super) fn current_detail_selection_key(&self) -> String {
+    pub(in super::super) fn current_detail_selection_key(&self) -> String {
         if self.is_searching() && !self.search_query.is_empty() {
             return self
                 .selected_project_path()
@@ -312,7 +312,7 @@ impl App {
     }
 
     /// Returns the `RootItem` when a root row is selected.
-    pub fn selected_item(&self) -> Option<&RootItem> {
+    pub(in super::super) fn selected_item(&self) -> Option<&RootItem> {
         match self.selected_row()? {
             VisibleRow::Root { node_index } => self.projects.get(node_index),
             _ => None,
@@ -321,7 +321,7 @@ impl App {
 
     /// Returns the absolute path of the currently selected project, borrowed
     /// from `project_list_items` (or `filtered` search hits during search).
-    pub fn selected_project_path(&self) -> Option<&Path> {
+    pub(in super::super) fn selected_project_path(&self) -> Option<&Path> {
         if self.is_searching() && !self.search_query.is_empty() {
             let selected = self.list_state.selected()?;
             self.filtered
@@ -335,7 +335,7 @@ impl App {
 
     /// Given a `VisibleRow`, resolve the absolute `&Path` borrowed from
     /// `project_list_items`.
-    pub fn path_for_row(&self, row: VisibleRow) -> Option<&Path> {
+    pub(in super::super) fn path_for_row(&self, row: VisibleRow) -> Option<&Path> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
                 let item = self.projects.get(node_index)?;
@@ -419,7 +419,7 @@ impl App {
     }
 
     /// Resolve the display path of the currently selected row using `project_list_items`.
-    pub(super) fn selected_display_path(&self) -> Option<DisplayPath> {
+    pub(in super::super) fn selected_display_path(&self) -> Option<DisplayPath> {
         let rows = self.visible_rows();
         let selected = self.list_state.selected()?;
         let row = rows.get(selected)?;
@@ -427,7 +427,7 @@ impl App {
     }
 
     /// Given a `VisibleRow`, resolve the display path from `project_list_items`.
-    pub fn display_path_for_row(&self, row: VisibleRow) -> Option<DisplayPath> {
+    pub(in super::super) fn display_path_for_row(&self, row: VisibleRow) -> Option<DisplayPath> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
                 let item = self.projects.get(node_index)?;
@@ -513,7 +513,7 @@ impl App {
     }
 
     /// Given a `VisibleRow`, resolve the absolute path from `project_list_items`.
-    pub fn abs_path_for_row(&self, row: VisibleRow) -> Option<PathBuf> {
+    pub(in super::super) fn abs_path_for_row(&self, row: VisibleRow) -> Option<PathBuf> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
                 let item = self.projects.get(node_index)?;
@@ -815,7 +815,7 @@ impl App {
         }
     }
 
-    pub(super) fn selected_is_expandable(&self) -> bool {
+    pub(in super::super) fn selected_is_expandable(&self) -> bool {
         if self.is_searching() && !self.search_query.is_empty() {
             return false;
         }
@@ -829,7 +829,7 @@ impl App {
             .is_some()
     }
 
-    pub(super) fn expand_key_for_row(&self, row: VisibleRow) -> Option<ExpandKey> {
+    pub(in super::super) fn expand_key_for_row(&self, row: VisibleRow) -> Option<ExpandKey> {
         match row {
             VisibleRow::Root { node_index } => self
                 .projects
@@ -876,7 +876,7 @@ impl App {
         }
     }
 
-    pub fn expand(&mut self) -> bool {
+    pub(in super::super) fn expand(&mut self) -> bool {
         if !self.selected_is_expandable() {
             return false;
         }
@@ -898,7 +898,7 @@ impl App {
     }
 
     /// Remove `key` from expanded, recompute rows, and move cursor to `target`.
-    pub(super) fn collapse_to(&mut self, key: &ExpandKey, target: VisibleRow) {
+    pub(in super::super) fn collapse_to(&mut self, key: &ExpandKey, target: VisibleRow) {
         self.expanded.remove(key);
         self.dirty.rows.mark_dirty();
         self.ensure_visible_rows_cached();
@@ -909,7 +909,7 @@ impl App {
 
     /// Try to remove `key` from expanded. If present, mark dirty and return `true`.
     /// Otherwise return `false` (caller should cascade to parent).
-    pub(super) fn try_collapse(&mut self, key: &ExpandKey) -> bool {
+    pub(in super::super) fn try_collapse(&mut self, key: &ExpandKey) -> bool {
         if self.expanded.remove(key) {
             self.dirty.rows.mark_dirty();
             true
@@ -918,7 +918,7 @@ impl App {
         }
     }
 
-    pub fn collapse(&mut self) -> bool {
+    pub(in super::super) fn collapse(&mut self) -> bool {
         let Some(selected) = self.list_state.selected() else {
             return false;
         };
@@ -933,7 +933,7 @@ impl App {
             || self.dirty.rows.is_dirty()
     }
 
-    pub(super) fn collapse_row(&mut self, row: VisibleRow) {
+    pub(in super::super) fn collapse_row(&mut self, row: VisibleRow) {
         match row {
             VisibleRow::Root { node_index: ni } => {
                 self.try_collapse(&ExpandKey::Node(ni));
@@ -1030,7 +1030,7 @@ impl App {
         }
     }
 
-    pub fn row_count(&self) -> usize {
+    pub(in super::super) fn row_count(&self) -> usize {
         if self.is_searching() && !self.search_query.is_empty() {
             self.filtered.len()
         } else {
@@ -1038,7 +1038,7 @@ impl App {
         }
     }
 
-    pub fn move_up(&mut self) {
+    pub(in super::super) fn move_up(&mut self) {
         let count = self.row_count();
         if count == 0 {
             return;
@@ -1049,7 +1049,7 @@ impl App {
         }
     }
 
-    pub fn move_down(&mut self) {
+    pub(in super::super) fn move_down(&mut self) {
         let count = self.row_count();
         if count == 0 {
             return;
@@ -1060,20 +1060,20 @@ impl App {
         }
     }
 
-    pub fn move_to_top(&mut self) {
+    pub(in super::super) fn move_to_top(&mut self) {
         if self.row_count() > 0 {
             self.list_state.select(Some(0));
         }
     }
 
-    pub fn move_to_bottom(&mut self) {
+    pub(in super::super) fn move_to_bottom(&mut self) {
         let count = self.row_count();
         if count > 0 {
             self.list_state.select(Some(count - 1));
         }
     }
 
-    pub(super) const fn collapse_anchor_row(row: VisibleRow) -> VisibleRow {
+    pub(in super::super) const fn collapse_anchor_row(row: VisibleRow) -> VisibleRow {
         match row {
             VisibleRow::GroupHeader { node_index, .. }
             | VisibleRow::Member { node_index, .. }
@@ -1100,7 +1100,7 @@ impl App {
         }
     }
 
-    pub fn expand_all(&mut self) {
+    pub(in super::super) fn expand_all(&mut self) {
         let selected_path = self
             .selection_paths
             .collapsed_selected
@@ -1143,7 +1143,7 @@ impl App {
         }
     }
 
-    pub fn collapse_all(&mut self) {
+    pub(in super::super) fn collapse_all(&mut self) {
         let selected_path = self.selected_project_path().map(AbsolutePath::from);
         let anchor = self.selected_row().map(Self::collapse_anchor_row);
         self.expanded.clear();
@@ -1164,7 +1164,7 @@ impl App {
         }
     }
 
-    pub fn cancel_search(&mut self) {
+    pub(in super::super) fn cancel_search(&mut self) {
         self.end_search();
         self.search_query.clear();
         self.filtered.clear();
@@ -1175,7 +1175,7 @@ impl App {
         }
     }
 
-    pub fn confirm_search(&mut self) {
+    pub(in super::super) fn confirm_search(&mut self) {
         let project_path = self
             .list_state
             .selected()
@@ -1192,7 +1192,7 @@ impl App {
         }
     }
 
-    pub(super) fn expand_path_in_tree(&mut self, target_path: &Path) {
+    pub(in super::super) fn expand_path_in_tree(&mut self, target_path: &Path) {
         for (ni, item) in self.projects.iter().enumerate() {
             match item {
                 RootItem::Workspace(ws) => {
@@ -1267,12 +1267,16 @@ impl App {
         }
     }
 
-    pub(super) fn row_matches_project_path(&self, row: VisibleRow, target_path: &Path) -> bool {
+    pub(in super::super) fn row_matches_project_path(
+        &self,
+        row: VisibleRow,
+        target_path: &Path,
+    ) -> bool {
         self.path_for_row(row)
             .is_some_and(|path| path == target_path)
     }
 
-    pub(super) fn select_matching_visible_row(&mut self, target_path: &Path) {
+    pub(in super::super) fn select_matching_visible_row(&mut self, target_path: &Path) {
         self.ensure_visible_rows_cached();
         let selected_index = self
             .visible_rows()
@@ -1283,13 +1287,13 @@ impl App {
         }
     }
 
-    pub fn select_project_in_tree(&mut self, target_path: &Path) {
+    pub(in super::super) fn select_project_in_tree(&mut self, target_path: &Path) {
         self.expand_path_in_tree(target_path);
         self.dirty.rows.mark_dirty();
         self.select_matching_visible_row(target_path);
     }
 
-    pub fn update_search(&mut self, query: &str) {
+    pub(in super::super) fn update_search(&mut self, query: &str) {
         self.search_query = query.to_string();
 
         if query.is_empty() {

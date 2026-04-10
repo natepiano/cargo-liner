@@ -18,7 +18,10 @@ pub enum DismissTarget {
 // ── Resolution + dispatch ───────────────────────────────────────
 
 impl App {
-    pub(super) fn dismiss_target_for_row_inner(&self, row: VisibleRow) -> Option<DismissTarget> {
+    pub(in super::super) fn dismiss_target_for_row_inner(
+        &self,
+        row: VisibleRow,
+    ) -> Option<DismissTarget> {
         let dismiss_path = match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => self
                 .projects
@@ -77,7 +80,7 @@ impl App {
     }
 
     /// Resolve the currently focused pane into a dismiss target, if one exists.
-    pub fn focused_dismiss_target(&self) -> Option<DismissTarget> {
+    pub(in super::super) fn focused_dismiss_target(&self) -> Option<DismissTarget> {
         match self.focused_pane {
             PaneId::Toasts => self.focused_toast_id().map(DismissTarget::Toast),
             PaneId::ProjectList => self
@@ -88,7 +91,7 @@ impl App {
     }
 
     /// Perform the dismiss for the given target.
-    pub fn dismiss(&mut self, target: DismissTarget) {
+    pub(in super::super) fn dismiss(&mut self, target: DismissTarget) {
         match target {
             DismissTarget::Toast(id) => self.dismiss_toast(id),
             DismissTarget::DeletedProject(path) => {
