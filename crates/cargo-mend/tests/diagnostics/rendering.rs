@@ -236,7 +236,23 @@ fn fixture_renders_every_current_diagnostic() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let report: Report = serde_json::from_slice(&output.stdout).expect("parse mend json report");
+    let report = parse_mend_json_output(&output.stdout);
+    let stdout = String::from_utf8(output.stdout).expect("decode mend JSON output");
+    let last_message: serde_json::Value =
+        serde_json::from_str(stdout.lines().last().expect("last JSON line"))
+            .expect("parse build-finished JSON message");
+    assert_eq!(
+        last_message
+            .get("reason")
+            .and_then(serde_json::Value::as_str),
+        Some("build-finished")
+    );
+    assert_eq!(
+        last_message
+            .get("success")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
     let codes: BTreeSet<_> = report.findings.iter().map(|finding| finding.code).collect();
     let expected_codes: BTreeSet<_> = DiagnosticCode::ALL.iter().copied().collect();
 

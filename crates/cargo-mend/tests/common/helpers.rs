@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use regex::Regex;
+use serde_json::Value;
 
 use super::DiagnosticCode;
 use super::FixSummaryBucket;
@@ -162,5 +163,123 @@ pub fn run_mend_json(manifest_path: &std::path::Path) -> Report {
         output.status.code(),
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).expect("parse mend json report")
+    parse_mend_json_output(&output.stdout)
+}
+
+pub fn parse_mend_json_output(stdout: &[u8]) -> Report {
+    let output = std::str::from_utf8(stdout).expect("decode cargo-mend json output");
+    let mut findings = Vec::new();
+    let mut build_finished = false;
+
+    for (line_number, line) in output.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let message: Value = serde_json::from_str(line).unwrap_or_else(|error| {
+            panic!(
+                "parse cargo JSON message on line {}: {error}\nline:\n{line}",
+                line_number + 1
+            )
+        });
+        match message.get("reason").and_then(Value::as_str) {
+            Some("compiler-message") => findings.push(finding_from_compiler_message(&message)),
+            Some("build-finished") => {
+                assert!(
+                    message.get("success").and_then(Value::as_bool).is_some(),
+                    "build-finished message missing success: {message}"
+                );
+                build_finished = true;
+            },
+            Some(_) => {},
+            None => panic!("cargo JSON message missing reason: {message}"),
+        }
+    }
+
+    assert!(
+        build_finished,
+        "cargo-mend JSON output did not include build-finished"
+    );
+
+    let mut report = Report {
+        summary: Summary {
+            errors:                   0,
+            warnings:                 0,
+            fixable_with_fix:         0,
+            fixable_with_fix_pub_use: 0,
+        },
+        findings,
+    };
+    report.summary = expected_summary(&report);
+    report
+}
+
+fn finding_from_compiler_message(message: &Value) -> super::types::Finding {
+    let diagnostic = message
+        .get("message")
+        .unwrap_or_else(|| panic!("compiler-message missing message: {message}"));
+    let code = diagnostic
+        .pointer("/code/code")
+        .and_then(Value::as_str)
+        .map_or_else(
+            || panic!("compiler-message missing diagnostic code: {message}"),
+            code_from_str,
+        );
+    let span = diagnostic
+        .get("spans")
+        .and_then(Value::as_array)
+        .and_then(|spans| {
+            spans
+                .iter()
+                .find(|span| span.get("is_primary").and_then(Value::as_bool) == Some(true))
+                .or_else(|| spans.first())
+        });
+
+    super::types::Finding {
+        code,
+        path: span
+            .and_then(|span| span.get("file_name"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        item: span
+            .and_then(|span| span.get("label"))
+            .and_then(Value::as_str)
+            .map(String::from),
+        fix_support: fix_support_from_diagnostic_children(diagnostic),
+    }
+}
+
+fn code_from_str(code: &str) -> DiagnosticCode {
+    match code {
+        "forbidden_pub_crate" => DiagnosticCode::ForbiddenPubCrate,
+        "forbidden_pub_in_crate" => DiagnosticCode::ForbiddenPubInCrate,
+        "review_pub_mod" => DiagnosticCode::ReviewPubMod,
+        "suspicious_pub" => DiagnosticCode::SuspiciousPub,
+        "prefer_module_import" => DiagnosticCode::PreferModuleImport,
+        "inline_path_qualified_type" => DiagnosticCode::InlinePathQualifiedType,
+        "shorten_local_crate_import" => DiagnosticCode::ShortenLocalCrateImport,
+        "replace_deep_super_import" => DiagnosticCode::ReplaceDeepSuperImport,
+        "wildcard_parent_pub_use" => DiagnosticCode::WildcardParentPubUse,
+        "internal_parent_pub_use_facade" => DiagnosticCode::InternalParentPubUseFacade,
+        "narrow_to_pub_crate" => DiagnosticCode::NarrowToPubCrate,
+        _ => panic!("unknown diagnostic code in cargo JSON output: {code}"),
+    }
+}
+
+fn fix_support_from_diagnostic_children(diagnostic: &Value) -> FixSupport {
+    let child_messages = diagnostic
+        .get("children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|child| child.get("message").and_then(Value::as_str));
+
+    for message in child_messages {
+        if message.contains("`cargo mend --fix-pub-use`") {
+            return FixSupport::FixPubUse;
+        }
+    }
+
+    FixSupport::None
 }

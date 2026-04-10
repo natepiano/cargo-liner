@@ -36,13 +36,7 @@ fn run_mend_json_in(dir: &Path, args: &[&str]) -> Report {
         output.status.code(),
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
-        panic!(
-            "parse mend json report: {error}\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
-    })
+    parse_mend_json_output(&output.stdout)
 }
 
 fn run_mend_in(dir: &Path, args: &[&str]) -> Output {
@@ -194,6 +188,110 @@ fn default_invocation_from_package_root_reports_findings() {
 
     assert_eq!(narrow_findings.len(), 1);
     assert_eq!(narrow_findings[0].path, "src/helpers.rs");
+    assert_summary_matches_findings(&report);
+}
+
+#[test]
+fn positional_manifest_path_reports_findings() {
+    let temp = create_simple_lib_fixture("cli_positional_manifest_fixture");
+
+    let report = run_mend_json_in(temp.path(), &[temp.path().to_str().expect("utf-8 path")]);
+    let narrow_findings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.code == DiagnosticCode::NarrowToPubCrate)
+        .collect();
+
+    assert_eq!(narrow_findings.len(), 1);
+    assert_eq!(narrow_findings[0].path, "src/helpers.rs");
+    assert_summary_matches_findings(&report);
+}
+
+#[test]
+fn json_success_emits_clean_stdout_and_no_stderr_noise() {
+    let temp = tempdir().expect("create temp fixture dir");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"cli_json_clean_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod helpers;\n\npub fn exported() { helpers::internal_fn(); }\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/helpers.rs"),
+        "pub fn internal_fn() {}\n",
+    )
+    .expect("write helpers");
+
+    let output = mend_command()
+        .current_dir(temp.path())
+        .arg("--json")
+        .output()
+        .expect("run cargo-mend --json");
+    assert!(
+        matches!(output.status.code(), Some(0..=2)),
+        "cargo-mend returned unexpected status {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("decode stdout");
+    let json_lines = stdout.lines().collect::<Vec<_>>();
+    let first_message: serde_json::Value =
+        serde_json::from_str(json_lines.first().expect("first JSON line")).expect("parse first");
+    let last_message: serde_json::Value =
+        serde_json::from_str(json_lines.last().expect("last JSON line")).expect("parse last");
+    let report = parse_mend_json_output(stdout.as_bytes());
+    let stderr = strip_ansi(&String::from_utf8(output.stderr).expect("decode stderr"));
+
+    assert_eq!(
+        first_message
+            .get("reason")
+            .and_then(serde_json::Value::as_str),
+        Some("compiler-message")
+    );
+    assert!(
+        first_message
+            .get("package_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|package_id| !package_id.is_empty())
+    );
+    assert!(
+        first_message
+            .get("manifest_path")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|manifest_path| manifest_path.ends_with("Cargo.toml"))
+    );
+    assert_eq!(
+        first_message.pointer("/message/$message_type"),
+        Some(&serde_json::Value::String("diagnostic".to_string()))
+    );
+    assert_eq!(
+        first_message
+            .pointer("/message/spans/0/text/0/text")
+            .and_then(serde_json::Value::as_str),
+        Some("pub fn internal_fn() {}")
+    );
+    assert_eq!(
+        last_message
+            .get("reason")
+            .and_then(serde_json::Value::as_str),
+        Some("build-finished")
+    );
+    assert_eq!(
+        last_message
+            .get("success")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        stderr, "",
+        "expected successful `--json` run to keep stderr quiet"
+    );
     assert_summary_matches_findings(&report);
 }
 

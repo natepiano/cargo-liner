@@ -57,9 +57,18 @@ pub(crate) struct CargoCheckCli {
     #[arg(long, value_name = "SPEC")]
     pub exclude: Vec<String>,
 
-    /// Path to Cargo.toml
+    /// Path to `Cargo.toml` or a project/workspace directory
     #[arg(long, value_name = "PATH", help_heading = "Manifest Options")]
     pub manifest_path: Option<PathBuf>,
+
+    /// Positional alias for `--manifest-path`; accepts a `Cargo.toml` path or a
+    /// project/workspace directory
+    #[arg(
+        value_name = "PATH",
+        conflicts_with = "manifest_path",
+        help_heading = "Manifest Options"
+    )]
+    pub positional_manifest_path: Option<PathBuf>,
 
     #[command(flatten)]
     pub(crate) primary_targets: PrimaryTargetCli,
@@ -126,6 +135,12 @@ pub(crate) struct SecondaryTargetCli {
 }
 
 impl CargoCheckCli {
+    pub(crate) fn explicit_manifest_path(&self) -> Option<&std::path::Path> {
+        self.manifest_path
+            .as_deref()
+            .or(self.positional_manifest_path.as_deref())
+    }
+
     pub(crate) const fn workspace(&self) -> bool { self.workspace.workspace }
 
     pub(crate) const fn all_targets(&self) -> bool { self.primary_targets.all_targets }

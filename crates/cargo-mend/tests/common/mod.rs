@@ -27,6 +27,7 @@ pub(super) use self::helpers::expected_summary_from_findings;
 pub(super) use self::helpers::expected_summary_text;
 pub(super) use self::helpers::fix_support_for;
 pub(super) use self::helpers::mend_command;
+pub(super) use self::helpers::parse_mend_json_output;
 pub(super) use self::helpers::run_mend_json;
 pub(super) use self::helpers::strip_ansi;
 pub(super) use self::types::ExpectedFinding;

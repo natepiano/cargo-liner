@@ -26,6 +26,7 @@ pub(crate) struct Selection {
     pub analysis_root:    PathBuf,
     pub scope:            SelectionScope,
     pub package_roots:    Vec<PathBuf>,
+    pub packages:         Vec<PackageMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,11 +38,30 @@ pub(crate) struct CargoCheckPlan {
     pub cargo_args:       Vec<OsString>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PackageMetadata {
+    pub package_id:    String,
+    pub manifest_path: PathBuf,
+    pub root:          PathBuf,
+    pub targets:       Vec<TargetMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TargetMetadata {
+    pub kind:              Vec<String>,
+    pub crate_types:       Vec<String>,
+    pub name:              String,
+    pub src_path:          PathBuf,
+    pub edition:           String,
+    pub required_features: Vec<String>,
+    pub doc:               bool,
+    pub doctest:           bool,
+    pub test:              bool,
+}
+
 pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<Selection> {
     let manifest_path = match explicit_manifest_path {
-        Some(path) => path
-            .canonicalize()
-            .with_context(|| format!("failed to canonicalize {}", path.display()))?,
+        Some(path) => normalize_explicit_manifest_path(path)?,
         None => find_nearest_manifest(&std::env::current_dir()?)?,
     };
 
@@ -66,13 +86,12 @@ pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
         SelectionScope::SinglePackage
     };
 
-    let package_roots = match scope {
+    let selected_packages: Vec<&Package> = match scope {
         SelectionScope::Workspace => metadata
             .workspace_members
             .iter()
             .filter_map(|id| metadata.packages.iter().find(|pkg| &pkg.id == id))
-            .map(package_root_from_metadata)
-            .collect::<Result<Vec<_>>>()?,
+            .collect(),
         SelectionScope::SinglePackage => {
             let package = metadata
                 .packages
@@ -84,9 +103,17 @@ pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
                         manifest_path.display()
                     )
                 })?;
-            vec![package_root_from_metadata(package)?]
+            vec![package]
         },
     };
+    let package_roots = selected_packages
+        .iter()
+        .map(|package| package_root_from_metadata(package))
+        .collect::<Result<Vec<_>>>()?;
+    let packages = selected_packages
+        .into_iter()
+        .map(package_metadata_from_cargo)
+        .collect::<Result<Vec<_>>>()?;
 
     let analysis_root = match scope {
         SelectionScope::Workspace => workspace_root.clone(),
@@ -101,6 +128,7 @@ pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
         analysis_root,
         scope,
         package_roots,
+        packages,
     })
 }
 
@@ -167,11 +195,54 @@ fn package_root_from_metadata(package: &Package) -> Result<PathBuf> {
         .with_context(|| format!("failed to canonicalize {}", package_root.display()))
 }
 
+fn package_metadata_from_cargo(package: &Package) -> Result<PackageMetadata> {
+    Ok(PackageMetadata {
+        package_id:    package.id.to_string(),
+        manifest_path: package.manifest_path.clone().into_std_path_buf(),
+        root:          package_root_from_metadata(package)?,
+        targets:       package
+            .targets
+            .iter()
+            .map(target_metadata_from_cargo)
+            .collect(),
+    })
+}
+
+fn target_metadata_from_cargo(target: &cargo_metadata::Target) -> TargetMetadata {
+    TargetMetadata {
+        kind:              target.kind.iter().map(ToString::to_string).collect(),
+        crate_types:       target.crate_types.iter().map(ToString::to_string).collect(),
+        name:              target.name.clone(),
+        src_path:          target.src_path.clone().into_std_path_buf(),
+        edition:           target.edition.to_string(),
+        required_features: target.required_features.clone(),
+        doc:               target.doc,
+        doctest:           target.doctest,
+        test:              target.test,
+    }
+}
+
 fn cargo_metadata_for(manifest_path: &Path) -> Result<Metadata> {
     let mut command = MetadataCommand::new();
     command.no_deps();
     command.manifest_path(manifest_path);
     command.exec().context("failed to run cargo metadata")
+}
+
+fn normalize_explicit_manifest_path(path: &Path) -> Result<PathBuf> {
+    if path.is_dir() {
+        let manifest_path = path.join("Cargo.toml");
+        if !manifest_path.is_file() {
+            bail!("directory {} does not contain Cargo.toml", path.display());
+        }
+
+        return manifest_path
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize {}", manifest_path.display()));
+    }
+
+    path.canonicalize()
+        .with_context(|| format!("failed to canonicalize {}", path.display()))
 }
 
 fn find_nearest_manifest(start: &Path) -> Result<PathBuf> {
@@ -193,8 +264,10 @@ mod tests {
     use std::path::PathBuf;
 
     use super::CargoCheckPlan;
+    use super::PackageMetadata;
     use super::Selection;
     use super::SelectionScope;
+    use super::TargetMetadata;
     use super::build_cargo_check_plan;
     use super::resolve_cargo_selection;
     use crate::cli::CargoCheckCli;
@@ -211,6 +284,22 @@ mod tests {
             analysis_root: PathBuf::from("/workspace"),
             scope,
             package_roots: vec![PathBuf::from("/workspace/member")],
+            packages: vec![PackageMetadata {
+                package_id:    String::from("path+file:///workspace/member#member@0.1.0"),
+                manifest_path: PathBuf::from("/workspace/member/Cargo.toml"),
+                root:          PathBuf::from("/workspace/member"),
+                targets:       vec![TargetMetadata {
+                    kind:              vec![String::from("lib")],
+                    crate_types:       vec![String::from("lib")],
+                    name:              String::from("member"),
+                    src_path:          PathBuf::from("/workspace/member/src/lib.rs"),
+                    edition:           String::from("2024"),
+                    required_features: Vec::new(),
+                    doc:               true,
+                    doctest:           true,
+                    test:              true,
+                }],
+            }],
         }
     }
 
@@ -381,5 +470,30 @@ mod tests {
             std::fs::canonicalize(temp.path().join("member"))
                 .unwrap_or_else(|error| panic!("canonicalize expected package root: {error}"))
         );
+    }
+
+    #[test]
+    fn resolve_project_directory_uses_its_manifest() {
+        let temp =
+            tempfile::tempdir().unwrap_or_else(|error| panic!("create temp fixture dir: {error}"));
+        std::fs::create_dir_all(temp.path().join("src"))
+            .unwrap_or_else(|error| panic!("create src dir: {error}"));
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"dir_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap_or_else(|error| panic!("write manifest: {error}"));
+        std::fs::write(temp.path().join("src/lib.rs"), "pub fn exported() {}\n")
+            .unwrap_or_else(|error| panic!("write lib: {error}"));
+
+        let selection = resolve_cargo_selection(Some(temp.path()))
+            .unwrap_or_else(|error| panic!("resolve directory selection: {error}"));
+
+        assert_eq!(
+            selection.manifest_path,
+            std::fs::canonicalize(temp.path().join("Cargo.toml"))
+                .unwrap_or_else(|error| panic!("canonicalize manifest: {error}"))
+        );
+        assert_eq!(selection.scope, SelectionScope::SinglePackage);
     }
 }

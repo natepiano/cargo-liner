@@ -75,6 +75,7 @@ fn current_analysis_fingerprint() -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BuildOutputMode {
     Full,
+    Json,
     SuppressUnusedImportWarnings,
     Quiet,
 }
@@ -455,9 +456,9 @@ fn run_cargo_command(
     command.stderr(Stdio::piped());
     match output_mode {
         BuildOutputMode::Full => command.stdout(Stdio::inherit()),
-        BuildOutputMode::SuppressUnusedImportWarnings | BuildOutputMode::Quiet => {
-            command.stdout(Stdio::null())
-        },
+        BuildOutputMode::Json
+        | BuildOutputMode::SuppressUnusedImportWarnings
+        | BuildOutputMode::Quiet => command.stdout(Stdio::null()),
     };
     let start = Instant::now();
     let mut child = command.spawn().context("failed to spawn cargo command")?;
@@ -522,7 +523,9 @@ fn stream_cargo_stderr(
                 output_mode,
             );
             // Suppress "Finished" lines and all progress in Quiet mode
-            if !is_finished_line(&current) && !matches!(output_mode, BuildOutputMode::Quiet) {
+            if !is_finished_line(&current)
+                && !matches!(output_mode, BuildOutputMode::Json | BuildOutputMode::Quiet)
+            {
                 eprint!("{current}");
             }
             continue;
@@ -668,7 +671,9 @@ fn flush_diagnostic_block(
                         eprint!("{line}");
                     }
                 },
-                BuildOutputMode::SuppressUnusedImportWarnings | BuildOutputMode::Quiet => {},
+                BuildOutputMode::Json
+                | BuildOutputMode::SuppressUnusedImportWarnings
+                | BuildOutputMode::Quiet => {},
             }
         },
         DiagnosticBlockKind::CompilerWarningSummary {

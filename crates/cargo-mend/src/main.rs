@@ -6,6 +6,7 @@ extern crate rustc_interface;
 extern crate rustc_middle;
 extern crate rustc_span;
 
+mod cargo_json;
 mod cli;
 mod compiler;
 mod config;
@@ -69,7 +70,7 @@ fn run() -> Result<ExitCode, MendFailure> {
     let global_diagnostics = config::load_global_diagnostics();
     let after_help = build_diagnostics_help(&global_diagnostics);
     let cli = cli::parse(&after_help);
-    let selection = selection::resolve_cargo_selection(cli.cargo.manifest_path.as_deref())
+    let selection = selection::resolve_cargo_selection(cli.cargo.explicit_manifest_path())
         .map_err(MendFailure::Unexpected)?;
     let cargo_plan = selection::build_cargo_check_plan(&selection, &cli.cargo);
     let config = config::load_config(
@@ -82,7 +83,8 @@ fn run() -> Result<ExitCode, MendFailure> {
     let operation_mode = OperationMode::from_cli(&cli.fix);
     let color = color_mode();
     let start = Instant::now();
-    let outcome = MendRunner::new(&selection, &cargo_plan, &config, color).run(operation_mode)?;
+    let outcome =
+        MendRunner::new(&selection, &cargo_plan, &config, color, cli.json).run(operation_mode)?;
 
     let fix_compiler_duration = if cli.fix.fix_compiler() || cli.fix.fix_all() {
         Some(compiler::run_cargo_fix(&cargo_plan, color).map_err(MendFailure::Unexpected)?)
@@ -100,10 +102,10 @@ fn run() -> Result<ExitCode, MendFailure> {
     };
 
     if cli.json {
-        println!(
+        print!(
             "{}",
-            serde_json::to_string_pretty(&outcome.report)
-                .map_err(|err| MendFailure::Unexpected(err.into()))?
+            cargo_json::render_report(&outcome.report, &selection)
+                .map_err(MendFailure::Unexpected)?
         );
     } else {
         print!(
@@ -112,10 +114,12 @@ fn run() -> Result<ExitCode, MendFailure> {
         );
     }
 
-    eprintln!(
-        "{}",
-        render::render_timing(total_duration, check_duration, mend_duration, color)
-    );
+    if !cli.json {
+        eprintln!(
+            "{}",
+            render::render_timing(total_duration, check_duration, mend_duration, color)
+        );
+    }
 
     if let Some(notice) = outcome.notice {
         eprintln!("{}", notice.render());
