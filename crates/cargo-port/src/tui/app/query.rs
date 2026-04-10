@@ -605,14 +605,13 @@ impl App {
     /// only show Enter when it's actionable.
     pub(in super::super) fn enter_action(&self) -> Option<&'static str> {
         match self.input_context() {
-            InputContext::ProjectList => Some("open"),
             InputContext::DetailTargets => Some("run"),
             InputContext::DetailFields => {
                 let info = &self.cached_detail.as_ref()?.info;
                 if self.base_focus() == PaneId::Package {
                     let fields = crate::tui::detail::package_fields(info);
                     let field = *fields.get(self.package_pane.pos())?;
-                    if field.is_from_cargo_toml() {
+                    if field == DetailField::CratesIo && info.crates_version.is_some() {
                         Some("open")
                     } else {
                         None

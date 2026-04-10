@@ -104,7 +104,7 @@ fn render_column_inner(
     focus: PaneFocusState,
     styles: &RenderStyles,
     area: Rect,
-) {
+) -> usize {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut focused_output_line: usize = 0;
     let label_width = package_label_width(fields);
@@ -124,8 +124,8 @@ fn render_column_inner(
         let ls = selection.patch(base_label_style);
         let vs = selection.patch(base_value_style);
 
-        if matches!(*field, DetailField::Description | DetailField::RepoDesc) && !value.is_empty() {
-            let prefix = format!("  {label:<label_width$} ");
+        if *field == DetailField::RepoDesc && !value.is_empty() {
+            let prefix = format!(" {label:<label_width$} ");
             let prefix_len = prefix.width();
             let col_width = area.width as usize;
             let avail = col_width.saturating_sub(prefix_len + 1);
@@ -146,12 +146,12 @@ fn render_column_inner(
                 }
             } else {
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {label:<label_width$} "), ls),
+                    Span::styled(format!(" {label:<label_width$} "), ls),
                     Span::styled(value, vs),
                 ]));
             }
         } else if matches!(*field, DetailField::Repo | DetailField::Branch) && !value.is_empty() {
-            let prefix = format!("  {label:<label_width$} ");
+            let prefix = format!(" {label:<label_width$} ");
             let prefix_len = prefix.width();
             let col_width = area.width as usize;
             let avail = col_width.saturating_sub(prefix_len + 1);
@@ -172,25 +172,37 @@ fn render_column_inner(
                 }
             } else {
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {label:<label_width$} "), ls),
+                    Span::styled(format!(" {label:<label_width$} "), ls),
                     Span::styled(value, vs),
                 ]));
             }
         } else {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {label:<label_width$} "), ls),
+                Span::styled(format!(" {label:<label_width$} "), ls),
                 Span::styled(value, vs),
             ]));
         }
     }
 
-    let scroll_y = if matches!(focus, PaneFocusState::Active) {
-        let offset = focused_output_line.saturating_sub(area.height as usize / 2);
-        u16::try_from(offset).unwrap_or(u16::MAX)
-    } else {
-        0
-    };
+    let scroll_y = detail_column_scroll_offset(focus, focused_output_line, area.height);
     frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
+    usize::from(scroll_y)
+}
+
+pub(super) fn detail_column_scroll_offset(
+    focus: PaneFocusState,
+    focused_output_line: usize,
+    visible_height: u16,
+) -> u16 {
+    if !matches!(focus, PaneFocusState::Active) || visible_height == 0 {
+        return 0;
+    }
+
+    let visible_height = usize::from(visible_height);
+    let offset = focused_output_line
+        .saturating_add(1)
+        .saturating_sub(visible_height);
+    u16::try_from(offset).unwrap_or(u16::MAX)
 }
 
 pub(super) fn package_label_width(fields: &[DetailField]) -> usize {
@@ -223,7 +235,7 @@ fn render_git_column_inner(
     focus: PaneFocusState,
     styles: &RenderStyles,
     area: Rect,
-) {
+) -> usize {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut focused_output_line: usize = 0;
     let label_width = git_label_width(info, fields);
@@ -269,7 +281,7 @@ fn render_git_column_inner(
             DetailField::Repo | DetailField::Branch | DetailField::RepoDesc | DetailField::VsOrigin
         ) && !value.is_empty()
         {
-            let prefix = format!("  {label:<label_width$} ");
+            let prefix = format!(" {label:<label_width$} ");
             let prefix_len = prefix.width();
             let col_width = area.width as usize;
             let avail = col_width.saturating_sub(prefix_len + 1);
@@ -300,7 +312,7 @@ fn render_git_column_inner(
             }
         } else {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {label:<label_width$} "), ls),
+                Span::styled(format!(" {label:<label_width$} "), ls),
                 Span::styled(value, vs),
             ]));
         }
@@ -308,13 +320,9 @@ fn render_git_column_inner(
 
     append_worktree_lines(&mut lines, info);
 
-    let scroll_y = if matches!(focus, PaneFocusState::Active) {
-        let offset = focused_output_line.saturating_sub(area.height as usize / 2);
-        u16::try_from(offset).unwrap_or(u16::MAX)
-    } else {
-        0
-    };
+    let scroll_y = detail_column_scroll_offset(focus, focused_output_line, area.height);
     frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
+    usize::from(scroll_y)
 }
 
 fn append_worktree_lines(lines: &mut Vec<Line<'static>>, info: &DetailInfo) {
@@ -330,6 +338,25 @@ fn append_worktree_lines(lines: &mut Vec<Line<'static>>, info: &DetailInfo) {
     for name in &info.worktree_names {
         lines.push(Line::from(Span::styled(format!("    {name}"), wt_style)));
     }
+}
+
+const NO_DESCRIPTION_AVAILABLE: &str = "No description available";
+
+pub(super) fn project_panel_title(info: &DetailInfo) -> String {
+    format!(" {} - {} ", info.package_title, info.display_name)
+}
+
+struct ProjectPanelRender<'a> {
+    info:         &'a DetailInfo,
+    fields:       &'a [DetailField],
+    focus:        PaneFocusState,
+    styles:       &'a RenderStyles,
+    border_style: Style,
+}
+
+#[derive(Clone, Copy)]
+struct ProjectPanelAreas {
+    lower: Rect,
 }
 
 pub fn render_detail_panel(
@@ -396,7 +423,7 @@ pub fn render_detail_panel(
                 let git_inner = git_block.inner(columns[col]);
                 app.git_pane_mut().set_content_area(git_inner);
                 frame.render_widget(git_block, columns[col]);
-                render_git_column_inner(
+                let scroll_offset = render_git_column_inner(
                     frame,
                     info,
                     &git,
@@ -405,6 +432,7 @@ pub fn render_detail_panel(
                     &styles,
                     git_inner,
                 );
+                app.git_pane_mut().set_scroll_offset(scroll_offset);
             }
         }
 
@@ -441,63 +469,262 @@ fn render_project_panel(
     let fields = model::package_fields(info);
     app.package_pane_mut().set_len(fields.len());
     let focus = app.pane_focus_state(PaneId::Package);
+    let border_style = if matches!(focus, PaneFocusState::Active) {
+        styles.active_border
+    } else {
+        styles.inactive_border
+    };
     let project_block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {} ", info.package_title))
+        .title(project_panel_title(info))
         .title_style(styles.title)
-        .border_style(if matches!(focus, PaneFocusState::Active) {
-            styles.active_border
-        } else {
-            styles.inactive_border
-        });
+        .border_style(border_style);
     let project_inner = project_block.inner(area);
-    app.package_pane_mut().set_content_area(project_inner);
     frame.render_widget(project_block, area);
 
-    if info.stats_rows.is_empty() {
+    let context = ProjectPanelRender {
+        info,
+        fields: &fields,
+        focus,
+        styles,
+        border_style,
+    };
+    let areas = render_project_description_section(frame, &context, area, project_inner);
+    app.package_pane_mut().set_content_area(areas.lower);
+
+    let scroll_offset = render_project_metadata(frame, app.package_pane(), &context, areas.lower);
+    app.package_pane_mut().set_scroll_offset(scroll_offset);
+}
+
+fn render_project_description_section(
+    frame: &mut Frame,
+    context: &ProjectPanelRender<'_>,
+    area: Rect,
+    project_inner: Rect,
+) -> ProjectPanelAreas {
+    let lower_metadata_height = context.fields.len().max(context.info.stats_rows.len());
+    let reserved_lower_height = u16::try_from(lower_metadata_height).unwrap_or(u16::MAX);
+    let reserved_separator_height = u16::from(project_inner.height > reserved_lower_height);
+    let description_max_height = project_inner
+        .height
+        .saturating_sub(reserved_lower_height.saturating_add(reserved_separator_height));
+    let description_padding = u16::from(project_inner.width > 2);
+    let description_width = project_inner
+        .width
+        .saturating_sub(description_padding.saturating_mul(2));
+    let description_lines =
+        description_lines(context.info, description_width, description_max_height);
+    let description_height = u16::try_from(description_lines.len()).unwrap_or(u16::MAX);
+    let description_area = Rect {
+        x: project_inner.x.saturating_add(description_padding),
+        width: description_width,
+        height: description_height,
+        ..project_inner
+    };
+    frame.render_widget(Paragraph::new(description_lines), description_area);
+
+    let separator_height = u16::from(
+        description_height > 0
+            && description_area.y.saturating_add(description_height) < project_inner.bottom(),
+    );
+    let lower_y = description_area
+        .y
+        .saturating_add(description_height)
+        .saturating_add(separator_height);
+    let lower_area = Rect {
+        x:      project_inner.x,
+        y:      lower_y,
+        width:  project_inner.width,
+        height: project_inner.bottom().saturating_sub(lower_y),
+    };
+    let stats_connector_x = project_stats_connector_x(context.info, lower_area);
+    if separator_height > 0 {
+        render_separator(
+            frame,
+            Rect {
+                x:      area.x,
+                y:      description_area.y.saturating_add(description_height),
+                width:  area.width,
+                height: 1,
+            },
+            context.border_style,
+            stats_connector_x,
+        );
+    }
+    if let Some(connector_x) = stats_connector_x {
+        render_bottom_connector(frame, area, connector_x, context.border_style);
+    }
+
+    ProjectPanelAreas { lower: lower_area }
+}
+
+fn render_project_metadata(
+    frame: &mut Frame,
+    pane: &Pane,
+    context: &ProjectPanelRender<'_>,
+    lower_area: Rect,
+) -> usize {
+    if context.info.stats_rows.is_empty() {
         render_column_inner(
             frame,
-            info,
-            &fields,
-            app.package_pane(),
-            focus,
-            styles,
-            project_inner,
-        );
+            context.info,
+            context.fields,
+            pane,
+            context.focus,
+            context.styles,
+            lower_area,
+        )
     } else {
-        let (stats_width, digit_width) = stats_column_width(&info.stats_rows);
+        let (stats_width, digit_width) = stats_column_width(&context.info.stats_rows);
 
         let sub_cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(20), Constraint::Length(stats_width)])
-            .split(project_inner);
+            .split(lower_area);
 
-        render_column_inner(
+        let scroll_offset = render_column_inner(
             frame,
-            info,
-            &fields,
-            app.package_pane(),
-            focus,
-            styles,
+            context.info,
+            context.fields,
+            pane,
+            context.focus,
+            context.styles,
             sub_cols[0],
         );
-
-        let stats_block = Block::default().borders(Borders::LEFT);
-        let stats_inner = stats_block.inner(sub_cols[1]);
-        frame.render_widget(stats_block, sub_cols[1]);
-
-        let stat_label_style = Style::default().fg(Color::DarkGray);
-        let stat_num_style = Style::default().fg(Color::Yellow);
-        let dw = digit_width as usize;
-        let mut stat_lines: Vec<Line<'static>> = Vec::new();
-        for &(label, count) in &info.stats_rows {
-            stat_lines.push(Line::from(vec![
-                Span::styled(format!(" {count:>dw$} "), stat_num_style),
-                Span::styled(label, stat_label_style),
-            ]));
-        }
-        frame.render_widget(Paragraph::new(stat_lines), stats_inner);
+        render_stats_column(
+            frame,
+            context.info,
+            sub_cols[1],
+            digit_width,
+            context.border_style,
+        );
+        scroll_offset
     }
+}
+
+fn project_stats_connector_x(info: &DetailInfo, lower_area: Rect) -> Option<u16> {
+    if info.stats_rows.is_empty() {
+        return None;
+    }
+
+    let (stats_width, _) = stats_column_width(&info.stats_rows);
+    let sub_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(20), Constraint::Length(stats_width)])
+        .split(lower_area);
+    sub_cols.get(1).map(|area| area.x)
+}
+
+fn render_stats_column(
+    frame: &mut Frame,
+    info: &DetailInfo,
+    area: Rect,
+    digit_width: u16,
+    border_style: Style,
+) {
+    let stats_block = Block::default()
+        .borders(Borders::LEFT)
+        .border_style(border_style);
+    let stats_inner = stats_block.inner(area);
+    frame.render_widget(stats_block, area);
+
+    let stat_label_style = Style::default().fg(Color::DarkGray);
+    let stat_num_style = Style::default().fg(Color::Yellow);
+    let dw = digit_width as usize;
+    let stat_lines = info
+        .stats_rows
+        .iter()
+        .map(|(label, count)| {
+            Line::from(vec![
+                Span::styled(format!(" {count:>dw$} "), stat_num_style),
+                Span::styled(*label, stat_label_style),
+            ])
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(stat_lines), stats_inner);
+}
+
+pub(super) fn description_lines(
+    info: &DetailInfo,
+    width: u16,
+    max_height: u16,
+) -> Vec<Line<'static>> {
+    let max_width = usize::from(width);
+    let max_height = usize::from(max_height);
+    if max_width == 0 || max_height == 0 {
+        return Vec::new();
+    }
+
+    let (description, style) = info
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+        .map_or_else(
+            || {
+                (
+                    NO_DESCRIPTION_AVAILABLE,
+                    Style::default().fg(Color::DarkGray),
+                )
+            },
+            |description| (description, Style::default()),
+        );
+
+    let wrapped = word_wrap(description, max_width);
+    let overflowed = wrapped.len() > max_height;
+    let mut visible = wrapped.into_iter().take(max_height).collect::<Vec<_>>();
+    if overflowed && let Some(last) = visible.last_mut() {
+        let with_ellipsis = format!("{last}\u{2026}");
+        *last = render::truncate_with_ellipsis(&with_ellipsis, max_width, "\u{2026}");
+    }
+
+    visible
+        .into_iter()
+        .map(|line| Line::from(Span::styled(line, style)))
+        .collect()
+}
+
+fn render_separator(frame: &mut Frame, area: Rect, style: Style, connector_x: Option<u16>) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let line = (0..area.width)
+        .map(|offset| {
+            let x = area.x.saturating_add(offset);
+            if offset == 0 {
+                '├'
+            } else if offset == area.width.saturating_sub(1) {
+                '┤'
+            } else if connector_x == Some(x) {
+                '┬'
+            } else {
+                '─'
+            }
+        })
+        .collect::<String>();
+    frame.render_widget(Paragraph::new(Line::from(Span::styled(line, style))), area);
+}
+
+fn render_bottom_connector(frame: &mut Frame, area: Rect, connector_x: u16, style: Style) {
+    if area.width < 3 || area.height == 0 {
+        return;
+    }
+    let first_inner_x = area.x.saturating_add(1);
+    let last_inner_x = area.right().saturating_sub(2);
+    if connector_x < first_inner_x || connector_x > last_inner_x {
+        return;
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled("┴", style))),
+        Rect {
+            x:      connector_x,
+            y:      area.bottom().saturating_sub(1),
+            width:  1,
+            height: 1,
+        },
+    );
 }
 
 fn render_targets_panel(

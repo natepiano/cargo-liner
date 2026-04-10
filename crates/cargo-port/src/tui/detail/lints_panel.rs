@@ -124,7 +124,7 @@ fn lints_panel_title(app: &App, runs: &[LintRun], focused: bool) -> String {
         .cache_size_bytes
         .map_or_else(|| "unlimited".to_string(), format_bytes);
     format!(
-        " Lints (watching {}, workers {}, runs {}, cache {}/{}) ",
+        " Lint Runs (watching {}, workers {}, runs {}, cache {}/{}) ",
         if watching { "yes" } else { "no" },
         worker_count,
         runs.len(),
@@ -165,7 +165,7 @@ pub fn render_lints_panel(
         if area.height > 2 {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    "No local lint runs yet",
+                    "No local lint runs available",
                     Style::default().fg(Color::DarkGray),
                 )))
                 .alignment(ratatui::layout::Alignment::Center),

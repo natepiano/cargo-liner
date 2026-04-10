@@ -218,7 +218,7 @@ impl SelectionSync {
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum RetrySpawnMode {
+pub(super) enum RetrySpawnMode {
     #[default]
     Enabled,
     Disabled,
@@ -226,7 +226,7 @@ pub enum RetrySpawnMode {
 
 #[cfg(test)]
 impl RetrySpawnMode {
-    pub const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
+    pub(super) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
 #[derive(Debug)]

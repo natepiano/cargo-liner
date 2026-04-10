@@ -200,7 +200,6 @@ pub struct PendingCiFetch {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DetailField {
-    Name,
     Path,
     Targets,
     Disk,
@@ -221,13 +220,11 @@ pub enum DetailField {
     Worktree,
     CratesIo,
     Version,
-    Description,
 }
 
 impl DetailField {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Name => "Name",
             Self::Path => "Path",
             Self::Targets => "Targets",
             Self::Disk => "Disk",
@@ -247,20 +244,11 @@ impl DetailField {
             Self::Worktree => "Worktree",
             Self::CratesIo => "crates.io",
             Self::Version => "Version",
-            Self::Description => "Desc",
         }
-    }
-
-    pub const fn is_from_cargo_toml(self) -> bool {
-        matches!(
-            self,
-            Self::Name | Self::Targets | Self::Version | Self::Description
-        )
     }
 
     pub fn value(self, info: &DetailInfo) -> String {
         match self {
-            Self::Name => info.name.clone(),
             Self::Path => info.path.clone(),
             Self::Targets => info.types.clone(),
             Self::Disk => info.disk.clone(),
@@ -300,7 +288,6 @@ impl DetailField {
                 )
             },
             Self::Version => info.version.clone(),
-            Self::Description => info.description.as_deref().unwrap_or("—").to_string(),
         }
     }
 }
@@ -309,7 +296,7 @@ impl DetailField {
 /// Non-Rust projects show only name, path, disk, and CI.
 pub fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
     if info.package_title == "Project" {
-        let mut fields = vec![DetailField::Name, DetailField::Path];
+        let mut fields = vec![DetailField::Path];
         if info.cargo_active && !info.lint_label.is_empty() {
             fields.push(DetailField::Lint);
         }
@@ -319,7 +306,7 @@ pub fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
         fields.push(DetailField::Disk);
         return fields;
     }
-    let mut fields = vec![DetailField::Name, DetailField::Path, DetailField::Targets];
+    let mut fields = vec![DetailField::Path, DetailField::Targets];
     if info.cargo_active && !info.lint_label.is_empty() {
         fields.push(DetailField::Lint);
     }
@@ -332,7 +319,6 @@ pub fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
     }
     if info.has_package {
         fields.push(DetailField::Version);
-        fields.push(DetailField::Description);
     }
     fields
 }
@@ -383,6 +369,7 @@ pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
 pub struct DetailInfo {
     pub package_title:     String,
     pub name:              String,
+    pub display_name:      String,
     pub path:              String,
     pub version:           String,
     pub description:       Option<String>,
@@ -658,6 +645,7 @@ fn build_detail_info_for_workspace(
         DetailSource {
             abs_path,
             display_path,
+            display_name: ws.display_name(),
             name: ws.name(),
             cargo: Some(cargo),
             worktree_name: ws.worktree_name(),
@@ -693,6 +681,7 @@ fn build_detail_info_for_package(
         DetailSource {
             abs_path,
             display_path,
+            display_name: pkg.display_name(),
             name: pkg.name(),
             cargo: Some(cargo),
             worktree_name: pkg.worktree_name(),
@@ -718,6 +707,7 @@ fn build_detail_info_non_rust(
         DetailSource {
             abs_path,
             display_path,
+            display_name: nr.display_name(),
             name: nr.name(),
             cargo: None,
             worktree_name: None,
@@ -731,6 +721,7 @@ fn build_detail_info_non_rust(
 struct DetailSource<'a> {
     abs_path:      &'a Path,
     display_path:  &'a str,
+    display_name:  String,
     name:          Option<&'a str>,
     cargo:         Option<&'a Cargo>,
     worktree_name: Option<&'a str>,
@@ -781,6 +772,7 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
     DetailInfo {
         package_title: src.package_title,
         name: name.unwrap_or("-").to_string(),
+        display_name: src.display_name,
         path: src.display_path.to_string(),
         version: cargo.and_then(Cargo::version).unwrap_or("-").to_string(),
         description: cargo.and_then(Cargo::description).map(str::to_string),

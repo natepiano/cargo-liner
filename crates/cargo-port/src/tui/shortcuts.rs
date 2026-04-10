@@ -129,6 +129,10 @@ pub(super) fn for_status_bar(
         vec![
             Shortcut::from_keymap(km.global.display_key_for(GlobalAction::Find), "find"),
             Shortcut::from_keymap(
+                km.global.display_key_for(GlobalAction::OpenEditor),
+                "editor",
+            ),
+            Shortcut::from_keymap(
                 km.global.display_key_for(GlobalAction::Settings),
                 "settings",
             ),

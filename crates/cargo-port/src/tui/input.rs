@@ -326,6 +326,7 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
         GlobalAction::Quit => app.request_quit(),
         GlobalAction::Restart => app.request_restart(),
         GlobalAction::Find => open_finder(app),
+        GlobalAction::OpenEditor => open_in_editor(app),
         GlobalAction::Settings => {
             app.open_overlay(PaneId::Settings);
             app.open_settings();
@@ -375,7 +376,6 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
         return;
     };
     match action {
-        ProjectListAction::OpenEditor => open_in_editor(app),
         ProjectListAction::ExpandAll => app.expand_all(),
         ProjectListAction::CollapseAll => app.collapse_all(),
         ProjectListAction::Rescan => app.rescan(),

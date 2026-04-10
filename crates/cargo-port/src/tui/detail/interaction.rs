@@ -134,14 +134,12 @@ fn handle_detail_enter(app: &mut App) {
     } else if app.base_focus() == PaneId::Package {
         let info = app.cached_detail().map(|c| c.info.clone());
         let fields = info.as_ref().map(package_fields).unwrap_or_default();
-        match fields.get(app.package_pane().pos()) {
-            Some(DetailField::CratesIo) => {
-                if let Some(info) = info.as_ref() {
-                    open_url(&format!("https://crates.io/crates/{}", info.name));
-                }
-            },
-            Some(field) if field.is_from_cargo_toml() => open_cargo_toml(app),
-            _ => {},
+        if matches!(
+            fields.get(app.package_pane().pos()),
+            Some(DetailField::CratesIo)
+        ) && let Some(info) = info.as_ref()
+        {
+            open_url(&format!("https://crates.io/crates/{}", info.name));
         }
     } else if let Some(info) = app.cached_detail().map(|c| &c.info)
         && matches!(
@@ -322,35 +320,6 @@ fn open_lint_run_output(app: &App) {
         cmd.arg(path);
     }
     let _ = cmd
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-}
-
-fn open_cargo_toml(app: &App) {
-    let Some(abs_path) = app.selected_project_path().map(Path::to_path_buf) else {
-        return;
-    };
-    let project_dir = app
-        .projects()
-        .iter()
-        .find_map(|item| match item {
-            crate::project::RootItem::Workspace(ws)
-                if ws
-                    .groups()
-                    .iter()
-                    .any(|g| g.members().iter().any(|m| m.path() == abs_path.as_path())) =>
-            {
-                Some(ws.path().to_path_buf())
-            },
-            _ => None,
-        })
-        .unwrap_or_else(|| abs_path.clone());
-
-    let cargo_toml = abs_path.join("Cargo.toml");
-    let _ = std::process::Command::new(app.editor())
-        .arg(&project_dir)
-        .arg(&cargo_toml)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();

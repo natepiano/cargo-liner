@@ -252,6 +252,7 @@ action_enum! {
         Quit       => "quit",        "Quit application";
         Restart    => "restart",     "Restart application";
         Find       => "find",        "Open finder";
+        OpenEditor => "open_editor", "Open in editor";
         Settings   => "settings",    "Open settings";
         NextPane   => "next_pane",   "Focus next pane";
         PrevPane   => "prev_pane",   "Focus previous pane";
@@ -263,7 +264,6 @@ action_enum! {
 action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum ProjectListAction {
-        OpenEditor  => "open_editor",  "Open in editor";
         ExpandAll   => "expand_all",   "Expand all";
         CollapseAll => "collapse_all", "Collapse all";
         Rescan      => "rescan",       "Rescan projects";
@@ -379,6 +379,8 @@ impl ResolvedKeymap {
         km.global
             .insert(KeyBind::plain(KeyCode::Char('/')), GlobalAction::Find);
         km.global
+            .insert(KeyBind::plain(KeyCode::Char('e')), GlobalAction::OpenEditor);
+        km.global
             .insert(KeyBind::plain(KeyCode::Char('s')), GlobalAction::Settings);
         km.global
             .insert(KeyBind::plain(KeyCode::Tab), GlobalAction::NextPane);
@@ -394,10 +396,6 @@ impl ResolvedKeymap {
             .insert(KeyBind::plain(KeyCode::Char('x')), GlobalAction::Dismiss);
 
         // Project list
-        km.project_list.insert(
-            KeyBind::plain(KeyCode::Enter),
-            ProjectListAction::OpenEditor,
-        );
         km.project_list.insert(
             KeyBind::plain(KeyCode::Char('=')),
             ProjectListAction::ExpandAll,
@@ -853,6 +851,10 @@ fn is_navigation_reserved(bind: &KeyBind) -> bool {
     bind.modifiers == KeyModifiers::NONE && NAVIGATION_RESERVED.contains(&bind.code)
 }
 
+fn is_legacy_removed_action(scope_name: &str, action: &str) -> bool {
+    scope_name == "project_list" && action == "open_editor"
+}
+
 fn resolve_from_table(table: &toml::Table, vim_mode: NavigationKeys) -> KeymapLoadResult {
     let defaults = ResolvedKeymap::defaults();
     let mut keymap = ResolvedKeymap::default();
@@ -978,7 +980,7 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
     // Report unknown keys in this scope.
     if let Some(st) = scope_table {
         for key in st.keys() {
-            if from_toml_key(key).is_none() {
+            if from_toml_key(key).is_none() && !is_legacy_removed_action(scope_name, key) {
                 ctx.errors.push(KeymapError {
                     scope:  scope_name.to_string(),
                     action: key.clone(),
@@ -1466,6 +1468,52 @@ claen = "c"
     }
 
     #[test]
+    fn legacy_project_list_open_editor_is_ignored() {
+        let toml = r#"
+[global]
+quit = "q"
+restart = "R"
+find = "/"
+settings = "s"
+next_pane = "Tab"
+prev_pane = "Shift+Tab"
+open_keymap = "Ctrl+k"
+dismiss = "x"
+
+[project_list]
+open_editor = "Enter"
+rescan = "r"
+expand_all = "="
+collapse_all = "-"
+clean = "c"
+"#;
+        let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
+        assert!(
+            result
+                .errors
+                .iter()
+                .all(|e| !matches!(e.reason, KeymapErrorReason::UnknownAction)),
+            "legacy project_list.open_editor should not be reported as unknown: {:?}",
+            result
+                .errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            result
+                .missing_actions
+                .iter()
+                .any(|action| action == "global.open_editor"),
+            "new global.open_editor should be backfilled"
+        );
+        assert_eq!(
+            result.keymap.global.key_for(GlobalAction::OpenEditor),
+            Some(&KeyBind::plain(KeyCode::Char('e')))
+        );
+    }
+
+    #[test]
     fn partial_acceptance_valid_bindings_applied() {
         let toml = r#"
 [global]
@@ -1531,6 +1579,7 @@ open_keymap = "Ctrl+k"
         assert_eq!(GlobalAction::Quit.description(), "Quit application");
         let km = ResolvedKeymap::defaults();
         assert_eq!(km.global.display_key_for(GlobalAction::Quit), "q");
+        assert_eq!(km.global.display_key_for(GlobalAction::OpenEditor), "e");
         assert_eq!(km.global.display_key_for(GlobalAction::OpenKeymap), "⌃k");
     }
 

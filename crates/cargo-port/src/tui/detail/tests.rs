@@ -1,3 +1,6 @@
+use ratatui::style::Color;
+use ratatui::text::Line;
+
 use super::ci_panel;
 use super::ci_panel::CI_COMPACT_DURATION_WIDTH;
 use super::lints_panel;
@@ -16,6 +19,7 @@ use crate::lint::LintRunStatus;
 use crate::project::ExampleGroup;
 use crate::project::GitPathState;
 use crate::tui::render::CiColumn;
+use crate::tui::types::PaneFocusState;
 
 fn detail_info(is_rust_project: bool, lint_label: &str) -> DetailInfo {
     DetailInfo {
@@ -25,6 +29,7 @@ fn detail_info(is_rust_project: bool, lint_label: &str) -> DetailInfo {
             "Project".to_string()
         },
         name:              "demo".to_string(),
+        display_name:      "demo".to_string(),
         path:              "~/demo".to_string(),
         version:           "0.1.0".to_string(),
         description:       None,
@@ -85,6 +90,13 @@ fn run_with_commands(status: LintRunStatus, commands: Vec<LintCommand>) -> LintR
     }
 }
 
+fn line_text(line: &Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
 #[test]
 fn stats_width_cases() {
     let cases = [
@@ -119,9 +131,7 @@ fn package_fields_place_lint_and_ci_before_disk_for_rust_projects() {
             .into_iter()
             .map(DetailField::label)
             .collect::<Vec<_>>(),
-        vec![
-            "Name", "Path", "Targets", "Lint", "CI", "Disk", "Version", "Desc",
-        ]
+        vec!["Path", "Targets", "Lint", "CI", "Disk", "Version"]
     );
 }
 
@@ -133,7 +143,7 @@ fn package_fields_place_lint_and_ci_before_disk_for_non_rust_projects() {
             .into_iter()
             .map(DetailField::label)
             .collect::<Vec<_>>(),
-        vec!["Name", "Path", "Lint", "CI", "Disk"]
+        vec!["Path", "Lint", "CI", "Disk"]
     );
 }
 
@@ -146,6 +156,79 @@ fn package_label_width_expands_for_crates_io() {
     };
     let fields = model::package_fields(&info);
     assert_eq!(render::package_label_width(&fields), "crates.io".len());
+}
+
+#[test]
+fn project_panel_title_uses_display_name_when_cargo_name_missing() {
+    let info = DetailInfo {
+        package_title: "Workspace".to_string(),
+        name: "-".to_string(),
+        display_name: "hana".to_string(),
+        ..detail_info(true, "🟢")
+    };
+
+    assert_eq!(render::project_panel_title(&info), " Workspace - hana ");
+}
+
+#[test]
+fn description_lines_use_muted_fallback_when_missing() {
+    let info = detail_info(true, "🟢");
+
+    let lines = render::description_lines(&info, 80, 3);
+
+    assert_eq!(lines.len(), 1);
+    assert_eq!(line_text(&lines[0]), "No description available");
+    assert_eq!(lines[0].spans[0].style.fg, Some(Color::DarkGray));
+}
+
+#[test]
+fn description_lines_render_real_description_with_default_style() {
+    let info = DetailInfo {
+        description: Some("Real package description".to_string()),
+        ..detail_info(true, "🟢")
+    };
+
+    let lines = render::description_lines(&info, 80, 3);
+
+    assert_eq!(lines.len(), 1);
+    assert_eq!(line_text(&lines[0]), "Real package description");
+    assert_eq!(lines[0].spans[0].style.fg, None);
+}
+
+#[test]
+fn description_lines_truncate_overflow_with_ellipsis() {
+    let info = DetailInfo {
+        description: Some("one two three four five six seven eight".to_string()),
+        ..detail_info(true, "🟢")
+    };
+
+    let lines = render::description_lines(&info, 13, 2);
+
+    assert_eq!(lines.len(), 2);
+    assert_eq!(line_text(&lines[0]), "one two three");
+    assert!(line_text(&lines[1]).ends_with('…'));
+}
+
+#[test]
+fn detail_column_scroll_waits_until_cursor_reaches_bottom() {
+    let focus = PaneFocusState::Active;
+
+    assert_eq!(render::detail_column_scroll_offset(focus, 0, 4), 0);
+    assert_eq!(render::detail_column_scroll_offset(focus, 3, 4), 0);
+    assert_eq!(render::detail_column_scroll_offset(focus, 4, 4), 1);
+    assert_eq!(render::detail_column_scroll_offset(focus, 7, 4), 4);
+}
+
+#[test]
+fn detail_column_scroll_stays_at_top_when_not_active() {
+    assert_eq!(
+        render::detail_column_scroll_offset(PaneFocusState::Remembered, 7, 4),
+        0
+    );
+    assert_eq!(
+        render::detail_column_scroll_offset(PaneFocusState::Inactive, 7, 4),
+        0
+    );
 }
 
 #[test]

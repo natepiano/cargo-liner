@@ -84,6 +84,7 @@ const GLOBAL_SHORTCUTS: &[GlobalAction] = &[
     GlobalAction::Quit,
     GlobalAction::Restart,
     GlobalAction::Find,
+    GlobalAction::OpenEditor,
     GlobalAction::Settings,
     GlobalAction::OpenKeymap,
     GlobalAction::Dismiss,
