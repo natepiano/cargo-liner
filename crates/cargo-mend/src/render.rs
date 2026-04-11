@@ -22,6 +22,12 @@ impl ColorMode {
     pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutputFormat {
+    Human,
+    Json,
+}
+
 pub(crate) struct CompilerStats {
     pub warning_count: usize,
     pub fixable_count: usize,
@@ -397,7 +403,7 @@ mod tests {
                 item:          Some("example".to_string()),
                 message:       "example warning".to_string(),
                 suggestion:    Some("pub(crate) fn example() {}".to_string()),
-                fix_support:   FixSupport::NarrowToPubCrate,
+                fixability:    FixSupport::NarrowToPubCrate,
                 related:       None,
             }],
             ..Report::default()

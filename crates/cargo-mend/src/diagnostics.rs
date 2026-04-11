@@ -24,7 +24,7 @@ pub(crate) struct DiagnosticSpec {
     pub inline_help: Option<&'static str>,
     pub help_anchor: &'static str,
     detail_mode:     DetailMode,
-    pub fix_support: FixSupport,
+    pub fixability:  FixSupport,
 }
 
 pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
@@ -33,56 +33,56 @@ pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         inline_help: None,
         help_anchor: "forbidden-pub-crate",
         detail_mode: DetailMode::None,
-        fix_support: FixSupport::None,
+        fixability:  FixSupport::None,
     };
     static FORBIDDEN_PUB_IN_CRATE: DiagnosticSpec = DiagnosticSpec {
         headline:    "use of `pub(in crate::...)` is forbidden by policy",
         inline_help: None,
         help_anchor: "forbidden-pub-in-crate",
         detail_mode: DetailMode::None,
-        fix_support: FixSupport::None,
+        fixability:  FixSupport::None,
     };
     static REVIEW_PUB_MOD: DiagnosticSpec = DiagnosticSpec {
         headline:    "`pub mod` requires explicit review or allowlisting",
         inline_help: None,
         help_anchor: "review-pub-mod",
         detail_mode: DetailMode::None,
-        fix_support: FixSupport::None,
+        fixability:  FixSupport::None,
     };
     static PREFER_MODULE_IMPORT: DiagnosticSpec = DiagnosticSpec {
         headline:    "function import should use module-qualified form",
         inline_help: None,
         help_anchor: "prefer-module-import",
         detail_mode: DetailMode::MessageRelatedAndFix,
-        fix_support: FixSupport::PreferModuleImport,
+        fixability:  FixSupport::PreferModuleImport,
     };
     static INLINE_PATH_QUALIFIED_TYPE: DiagnosticSpec = DiagnosticSpec {
         headline:    "inline path-qualified type should use a `use` import",
         inline_help: None,
         help_anchor: "inline-path-qualified-type",
         detail_mode: DetailMode::MessageRelatedAndFix,
-        fix_support: FixSupport::InlinePathQualifiedType,
+        fixability:  FixSupport::InlinePathQualifiedType,
     };
     static SHORTEN_LOCAL_CRATE_IMPORT: DiagnosticSpec = DiagnosticSpec {
         headline:    "crate-relative import can be shortened to a local-relative import",
         inline_help: None,
         help_anchor: "shorten-local-crate-import",
         detail_mode: DetailMode::MessageRelatedAndFix,
-        fix_support: FixSupport::ShortenImport,
+        fixability:  FixSupport::ShortenImport,
     };
     static REPLACE_DEEP_SUPER_IMPORT: DiagnosticSpec = DiagnosticSpec {
         headline:    "deep `super::` chain should use a `crate::` path",
         inline_help: None,
         help_anchor: "replace-deep-super-import",
         detail_mode: DetailMode::MessageRelatedAndFix,
-        fix_support: FixSupport::ShortenImport,
+        fixability:  FixSupport::ShortenImport,
     };
     static WILDCARD_PARENT_PUB_USE: DiagnosticSpec = DiagnosticSpec {
         headline:    "parent module `pub use *` should be explicit",
         inline_help: Some("consider re-exporting explicit items instead of `*`"),
         help_anchor: "wildcard-parent-pub-use",
         detail_mode: DetailMode::None,
-        fix_support: FixSupport::None,
+        fixability:  FixSupport::None,
     };
     static INTERNAL_PARENT_PUB_USE_FACADE: DiagnosticSpec = DiagnosticSpec {
         headline:    "parent module `pub use` is acting as an internal facade",
@@ -91,21 +91,21 @@ pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         ),
         help_anchor: "internal-parent-pub-use-facade",
         detail_mode: DetailMode::MessageRelatedAndFix,
-        fix_support: FixSupport::InternalParentFacade,
+        fixability:  FixSupport::InternalParentFacade,
     };
     static SUSPICIOUS_PUB: DiagnosticSpec = DiagnosticSpec {
         headline:    "`pub` is broader than this nested module boundary",
         inline_help: Some("consider using: `pub(super)`"),
         help_anchor: "suspicious-pub",
         detail_mode: DetailMode::MessageRelatedAndFix,
-        fix_support: FixSupport::None,
+        fixability:  FixSupport::None,
     };
     static NARROW_TO_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
         headline:    "`pub` in top-level private module should be `pub(crate)`",
         inline_help: Some("consider using: `pub(crate)`"),
         help_anchor: "narrow-to-pub-crate",
         detail_mode: DetailMode::MessageRelatedAndFix,
-        fix_support: FixSupport::NarrowToPubCrate,
+        fixability:  FixSupport::NarrowToPubCrate,
     };
 
     match code {
@@ -136,7 +136,7 @@ pub(crate) struct Finding {
     pub message:       String,
     pub suggestion:    Option<String>,
     #[serde(default)]
-    pub fix_support:   FixSupport,
+    pub fixability:    FixSupport,
     #[serde(default)]
     pub related:       Option<String>,
 }
@@ -226,26 +226,24 @@ impl Report {
             fixable_with_fix:         self
                 .findings
                 .iter()
-                .filter(|f| {
-                    effective_fix_support(f).summary_bucket() == Some(FixSummaryBucket::Fix)
-                })
+                .filter(|f| effective_fixability(f).summary_bucket() == Some(FixSummaryBucket::Fix))
                 .count(),
             fixable_with_fix_pub_use: self
                 .findings
                 .iter()
                 .filter(|f| {
-                    effective_fix_support(f).summary_bucket() == Some(FixSummaryBucket::FixPubUse)
+                    effective_fixability(f).summary_bucket() == Some(FixSummaryBucket::FixPubUse)
                 })
                 .count(),
         };
     }
 }
 
-pub(crate) fn effective_fix_support(finding: &Finding) -> FixSupport {
-    if matches!(finding.fix_support, FixSupport::None) {
-        diagnostic_spec(finding.code).fix_support
+pub(crate) fn effective_fixability(finding: &Finding) -> FixSupport {
+    if matches!(finding.fixability, FixSupport::None) {
+        diagnostic_spec(finding.code).fixability
     } else {
-        finding.fix_support
+        finding.fixability
     }
 }
 
@@ -264,7 +262,7 @@ pub(crate) fn detail_reasons(finding: &Finding) -> Vec<String> {
             if let Some(related) = &finding.related {
                 reasons.push(related.clone());
             }
-            if let Some(note) = effective_fix_support(finding).note() {
+            if let Some(note) = effective_fixability(finding).note() {
                 reasons.push(note.to_string());
             }
             reasons

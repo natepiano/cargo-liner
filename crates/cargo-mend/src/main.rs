@@ -34,6 +34,7 @@ use config::DiagnosticsConfig;
 use constants::EXIT_CODE_ERROR;
 use constants::EXIT_CODE_WARNING;
 use outcome::MendFailure;
+use render::OutputFormat;
 use run_mode::OperationMode;
 use runner::MendRunner;
 
@@ -82,9 +83,14 @@ fn run() -> Result<ExitCode, MendFailure> {
     .map_err(MendFailure::Unexpected)?;
     let operation_mode = OperationMode::from_cli(&cli.fix);
     let color = color_mode();
+    let output = if cli.json {
+        OutputFormat::Json
+    } else {
+        OutputFormat::Human
+    };
     let start = Instant::now();
     let outcome =
-        MendRunner::new(&selection, &cargo_plan, &config, color, cli.json).run(operation_mode)?;
+        MendRunner::new(&selection, &cargo_plan, &config, color, output).run(operation_mode)?;
 
     let fix_compiler_duration = if cli.fix.fix_compiler() || cli.fix.fix_all() {
         Some(compiler::run_cargo_fix(&cargo_plan, color).map_err(MendFailure::Unexpected)?)
@@ -101,20 +107,23 @@ fn run() -> Result<ExitCode, MendFailure> {
         fixable_count: outcome.compiler_fixable_count,
     };
 
-    if cli.json {
-        print!(
-            "{}",
-            cargo_json::render_report(&outcome.report, &selection)
-                .map_err(MendFailure::Unexpected)?
-        );
-    } else {
-        print!(
-            "{}",
-            render::render_human_report(&outcome.report, &compiler_stats, color)
-        );
+    match output {
+        OutputFormat::Json => {
+            print!(
+                "{}",
+                cargo_json::render_report(&outcome.report, &selection)
+                    .map_err(MendFailure::Unexpected)?
+            );
+        },
+        OutputFormat::Human => {
+            print!(
+                "{}",
+                render::render_human_report(&outcome.report, &compiler_stats, color)
+            );
+        },
     }
 
-    if !cli.json {
+    if output == OutputFormat::Human {
         eprintln!(
             "{}",
             render::render_timing(total_duration, check_duration, mend_duration, color)

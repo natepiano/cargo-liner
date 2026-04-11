@@ -144,7 +144,7 @@ fn rustc_diagnostic(finding: &Finding, span: RustcSpan) -> RustcDiagnostic {
     if let Some(help) = diagnostics::custom_inline_help_text(finding) {
         children.push(child("help", help.to_string(), vec![span.clone()]));
     }
-    if let Some(note) = diagnostics::effective_fix_support(finding).note() {
+    if let Some(note) = diagnostics::effective_fixability(finding).note() {
         children.push(child("help", note.to_string(), Vec::new()));
     }
 
@@ -209,7 +209,7 @@ fn render_diagnostic(finding: &Finding, span: &RustcSpan, level: &str) -> String
         rendered.push_str(related);
         rendered.push('\n');
     }
-    if let Some(note) = diagnostics::effective_fix_support(finding).note() {
+    if let Some(note) = diagnostics::effective_fixability(finding).note() {
         rendered.push_str("  = help: ");
         rendered.push_str(note);
         rendered.push('\n');
@@ -234,7 +234,7 @@ fn rustc_span(finding: &Finding, selection: &Selection, absolute_path: &Path) ->
         column_end,
         column_start: finding.column,
         expansion: None,
-        file_name: finding.path_for_display(selection),
+        file_name: path_for_display(finding, selection),
         is_primary: true,
         label: finding.item.clone(),
         line_end: finding.line,
@@ -249,19 +249,13 @@ fn rustc_span(finding: &Finding, selection: &Selection, absolute_path: &Path) ->
     }
 }
 
-trait FindingPathForDisplay {
-    fn path_for_display(&self, selection: &Selection) -> String;
-}
-
-impl FindingPathForDisplay for Finding {
-    fn path_for_display(&self, selection: &Selection) -> String {
-        let path = Path::new(&self.path);
-        if path.is_absolute() {
-            path.strip_prefix(selection.analysis_root.as_path())
-                .map_or_else(|_| self.path.clone(), normalize_path)
-        } else {
-            self.path.clone()
-        }
+fn path_for_display(finding: &Finding, selection: &Selection) -> String {
+    let path = Path::new(&finding.path);
+    if path.is_absolute() {
+        path.strip_prefix(selection.analysis_root.as_path())
+            .map_or_else(|_| finding.path.clone(), normalize_path)
+    } else {
+        finding.path.clone()
     }
 }
 

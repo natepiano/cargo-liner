@@ -40,7 +40,7 @@ pub(crate) struct MendRunner<'a> {
     cargo_plan: &'a CargoCheckPlan,
     config:     &'a LoadedConfig,
     color:      render::ColorMode,
-    json:       bool,
+    output:     render::OutputFormat,
 }
 
 struct RunPlan {
@@ -62,14 +62,14 @@ impl<'a> MendRunner<'a> {
         cargo_plan: &'a CargoCheckPlan,
         config: &'a LoadedConfig,
         color: render::ColorMode,
-        json: bool,
+        output: render::OutputFormat,
     ) -> Self {
         Self {
             selection,
             cargo_plan,
             config,
             color,
-            json,
+            output,
         }
     }
 
@@ -79,7 +79,7 @@ impl<'a> MendRunner<'a> {
     }
 
     fn plan(&self, mode: OperationMode) -> Result<RunPlan, MendFailure> {
-        let output_mode = if self.json {
+        let output_mode = if self.output == render::OutputFormat::Json {
             BuildOutputMode::Json
         } else if mode.fixes.contains(FixKind::FixPubUse) {
             BuildOutputMode::SuppressUnusedImportWarnings

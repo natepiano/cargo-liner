@@ -155,7 +155,7 @@ fn scan_file(
                 occ.type_name
             ),
             suggestion: Some(format!("consider adding: `use {};`", occ.full_path)),
-            fix_support: FixSupport::InlinePathQualifiedType,
+            fixability: FixSupport::InlinePathQualifiedType,
             related: None,
         });
 

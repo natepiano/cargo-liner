@@ -132,7 +132,7 @@ impl ShortenImportFact {
             item:          None,
             message:       self.message.to_string(),
             suggestion:    Some(format!("consider using: `{replacement}`")),
-            fix_support:   FixSupport::ShortenImport,
+            fixability:    FixSupport::ShortenImport,
             related:       None,
         }
     }

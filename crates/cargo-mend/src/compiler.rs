@@ -130,7 +130,7 @@ struct StoredFinding {
     message:       String,
     suggestion:    Option<String>,
     #[serde(default)]
-    fix_support:   FixSupport,
+    fixability:    FixSupport,
     #[serde(default)]
     related:       Option<String>,
 }
@@ -848,7 +848,7 @@ fn extend_report_from_stored(
             item:          finding.item,
             message:       finding.message,
             suggestion:    finding.suggestion,
-            fix_support:   finding.fix_support,
+            fixability:    finding.fixability,
             related:       finding
                 .related
                 .map(|related| relativize_path(&related, analysis_root)),
@@ -1180,13 +1180,13 @@ fn analyze_item(
             &file_path,
             item.span,
             FindingParams {
-                severity:    Severity::Warning,
-                code:        DiagnosticCode::WildcardParentPubUse,
-                item:        None,
-                message:     String::new(),
-                suggestion:  None,
-                fix_support: FixSupport::None,
-                related:     None,
+                severity:   Severity::Warning,
+                code:       DiagnosticCode::WildcardParentPubUse,
+                item:       None,
+                message:    String::new(),
+                suggestion: None,
+                fixability: FixSupport::None,
+                related:    None,
             },
         )?);
     }
@@ -1308,13 +1308,13 @@ fn record_visibility_findings(
             item.file_path,
             item.highlight_span,
             FindingParams {
-                severity:    Severity::Error,
-                code:        DiagnosticCode::ForbiddenPubCrate,
-                item:        None,
-                message:     "use of `pub(crate)` is forbidden by policy".to_string(),
-                suggestion:  Some(forbidden_pub_crate_help(module_location).to_string()),
-                fix_support: FixSupport::None,
-                related:     None,
+                severity:   Severity::Error,
+                code:       DiagnosticCode::ForbiddenPubCrate,
+                item:       None,
+                message:    "use of `pub(crate)` is forbidden by policy".to_string(),
+                suggestion: Some(forbidden_pub_crate_help(module_location).to_string()),
+                fixability: FixSupport::None,
+                related:    None,
             },
         )?);
     }
@@ -1325,13 +1325,13 @@ fn record_visibility_findings(
             item.file_path,
             item.highlight_span,
             FindingParams {
-                severity:    Severity::Error,
-                code:        DiagnosticCode::ForbiddenPubInCrate,
-                item:        None,
-                message:     "use of `pub(in crate::...)` is forbidden by policy".to_string(),
-                suggestion:  None,
-                fix_support: FixSupport::None,
-                related:     None,
+                severity:   Severity::Error,
+                code:       DiagnosticCode::ForbiddenPubInCrate,
+                item:       None,
+                message:    "use of `pub(in crate::...)` is forbidden by policy".to_string(),
+                suggestion: None,
+                fixability: FixSupport::None,
+                related:    None,
             },
         )?);
     }
@@ -1350,13 +1350,13 @@ fn record_visibility_findings(
                 item.file_path,
                 item.highlight_span,
                 FindingParams {
-                    severity:    Severity::Error,
-                    code:        DiagnosticCode::ReviewPubMod,
-                    item:        item.item_name.map(str::to_owned),
-                    message:     "`pub mod` requires explicit review or allowlisting".to_string(),
-                    suggestion:  None,
-                    fix_support: FixSupport::None,
-                    related:     None,
+                    severity:   Severity::Error,
+                    code:       DiagnosticCode::ReviewPubMod,
+                    item:       item.item_name.map(str::to_owned),
+                    message:    "`pub mod` requires explicit review or allowlisting".to_string(),
+                    suggestion: None,
+                    fixability: FixSupport::None,
+                    related:    None,
                 },
             )?);
         }
@@ -1413,15 +1413,15 @@ fn maybe_record_narrow_to_pub_crate(
         item.file_path,
         item.highlight_span,
         FindingParams {
-            severity:    Severity::Warning,
-            code:        DiagnosticCode::NarrowToPubCrate,
-            item:        Some(format!("{kind_label} {item_name}")),
-            message:     String::from(
+            severity:   Severity::Warning,
+            code:       DiagnosticCode::NarrowToPubCrate,
+            item:       Some(format!("{kind_label} {item_name}")),
+            message:    String::from(
                 "item is not re-exported by the crate root — use `pub(crate)`",
             ),
-            suggestion:  Some(String::from("consider using: `pub(crate)`")),
-            fix_support: FixSupport::NarrowToPubCrate,
-            related:     None,
+            suggestion: Some(String::from("consider using: `pub(crate)`")),
+            fixability: FixSupport::NarrowToPubCrate,
+            related:    None,
         },
     )?);
     Ok(())
@@ -1467,13 +1467,13 @@ fn maybe_record_suspicious_pub(
                         "this `pub use` is used inside its parent module subtree",
                     ),
                     suggestion: None,
-                    fix_support: FixSupport::InternalParentFacade,
+                    fixability: FixSupport::InternalParentFacade,
                     related,
                 },
             )?);
         },
         SuspiciousPubAssessment::Warn {
-            fix_support,
+            fixability,
             related,
             stale_parent_pub_use,
         } => {
@@ -1487,12 +1487,12 @@ fn maybe_record_suspicious_pub(
                     item: input.item_name.map(|name| format!("{kind_label} {name}")),
                     message: suspicious_pub_note(input.crate_kind, kind_label),
                     suggestion: None,
-                    fix_support,
+                    fixability,
                     related,
                 },
             )?);
             if let (Some(status), Some(item_name)) = (stale_parent_pub_use, input.item_name)
-                && fix_support == FixSupport::FixPubUse
+                && fixability == FixSupport::FixPubUse
             {
                 let display = line_display(ctx.tcx, input.file_path, input.highlight_span)?;
                 let Some(child_module) = input
@@ -1587,7 +1587,7 @@ fn classify_suspicious_pub(
         ));
     }
 
-    let (related, fix_support, stale_parent_pub_use) = match stale_result {
+    let (related, fixability, stale_parent_pub_use) = match stale_result {
         Some((message, status)) => {
             let fix = if status.fix_supported {
                 FixSupport::FixPubUse
@@ -1600,7 +1600,7 @@ fn classify_suspicious_pub(
     };
 
     Ok(SuspiciousPubAssessment::Warn {
-        fix_support,
+        fixability,
         related,
         stale_parent_pub_use,
     })
@@ -1704,13 +1704,13 @@ fn assess_signature_exposure_allowance(
 }
 
 struct FindingParams {
-    severity:    Severity,
-    code:        DiagnosticCode,
-    item:        Option<String>,
-    message:     String,
-    suggestion:  Option<String>,
-    fix_support: FixSupport,
-    related:     Option<String>,
+    severity:   Severity,
+    code:       DiagnosticCode,
+    item:       Option<String>,
+    message:    String,
+    suggestion: Option<String>,
+    fixability: FixSupport,
+    related:    Option<String>,
 }
 
 fn build_finding(
@@ -1731,7 +1731,7 @@ fn build_finding(
         item:          params.item,
         message:       params.message,
         suggestion:    params.suggestion,
-        fix_support:   params.fix_support,
+        fixability:    params.fixability,
         related:       params.related,
     })
 }
@@ -1766,7 +1766,7 @@ fn build_line_finding(
         item: params.item,
         message: params.message,
         suggestion: params.suggestion,
-        fix_support: params.fix_support,
+        fixability: params.fixability,
         related: params.related,
     })
 }
@@ -3234,7 +3234,7 @@ enum SuspiciousPubAssessment {
         related: Option<String>,
     },
     Warn {
-        fix_support:          FixSupport,
+        fixability:           FixSupport,
         related:              Option<String>,
         stale_parent_pub_use: Option<ParentFacadeExportStatus>,
     },

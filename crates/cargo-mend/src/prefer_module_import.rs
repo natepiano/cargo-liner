@@ -201,7 +201,7 @@ fn build_findings_and_fixes(
                     func.module_name, func.function_name
                 ),
                 suggestion: Some(format!("consider using: `{}`", func.replacement_use)),
-                fix_support: FixSupport::PreferModuleImport,
+                fixability: FixSupport::PreferModuleImport,
                 related: None,
             });
 
