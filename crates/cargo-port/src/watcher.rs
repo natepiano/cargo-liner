@@ -483,10 +483,12 @@ fn handle_event(
 ) {
     let now = Instant::now();
 
-    if let Some((entry, refresh_kind)) = ctx.projects.values().find_map(|entry| {
-        classify_fast_git_event(event_path, entry).map(|refresh_kind| (entry, refresh_kind))
-    }) {
-        if let Some(repo_root) = &entry.repo_root {
+    let mut matched_fast_git = false;
+    for entry in ctx.projects.values() {
+        if let Some(refresh_kind) = classify_fast_git_event(event_path, entry)
+            && let Some(repo_root) = &entry.repo_root
+        {
+            matched_fast_git = true;
             tracing::info!(
                 repo_root = %repo_root.display(),
                 event_path = %event_path.display(),
@@ -507,6 +509,8 @@ fn handle_event(
                 },
             );
         }
+    }
+    if matched_fast_git {
         return;
     }
 
@@ -1852,6 +1856,77 @@ edition = "2024"
                 })
             ),
             "shared branch ref writes should enqueue a full git refresh for linked worktrees"
+        );
+    }
+
+    #[test]
+    fn shared_common_git_dir_event_refreshes_all_projects() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let common_git_dir = tmp.path().join("main_repo").join(".git");
+        std::fs::create_dir_all(common_git_dir.join("refs").join("heads"))
+            .expect("create common refs dir");
+
+        let main_root = tmp.path().join("main_repo");
+        let wt_git_dir = common_git_dir.join("worktrees").join("style_fix");
+        std::fs::create_dir_all(&wt_git_dir).expect("create worktree git dir");
+        let wt_root = tmp.path().join("main_repo_style_fix");
+        std::fs::create_dir_all(&wt_root).expect("create worktree root");
+
+        let mut projects = HashMap::new();
+        projects.insert(
+            main_root.clone(),
+            ProjectEntry {
+                project_label:  "~/main_repo".to_string(),
+                abs_path:       main_root.clone(),
+                repo_root:      Some(main_root.clone()),
+                git_dir:        Some(common_git_dir.clone()),
+                common_git_dir: Some(common_git_dir.clone()),
+            },
+        );
+        projects.insert(
+            wt_root.clone(),
+            ProjectEntry {
+                project_label:  "~/main_repo_style_fix".to_string(),
+                abs_path:       wt_root.clone(),
+                repo_root:      Some(wt_root.clone()),
+                git_dir:        Some(wt_git_dir),
+                common_git_dir: Some(common_git_dir.clone()),
+            },
+        );
+
+        let scan_root = tmp.path().to_path_buf();
+        let project_parents = HashSet::from([scan_root.clone()]);
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            scan_root:       &scan_root,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, _bg_rx) = mpsc::channel();
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        let branch_ref = common_git_dir.join("refs").join("heads").join("style_fix");
+        std::fs::write(&branch_ref, "deadbeef\n").expect("write branch ref");
+
+        handle_event(
+            &branch_ref,
+            &ctx,
+            &bg_tx,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        assert!(
+            pending_git.contains_key(&main_root),
+            "main repo should be enqueued for git refresh"
+        );
+        assert!(
+            pending_git.contains_key(&wt_root),
+            "worktree should also be enqueued for git refresh"
         );
     }
 

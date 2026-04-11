@@ -10,13 +10,14 @@ use crate::tui::types::PaneFocusState;
 use crate::tui::types::PaneId;
 
 impl App {
-    const TAB_ORDER: [PaneId; 7] = [
+    const TAB_ORDER: [PaneId; 8] = [
         PaneId::ProjectList,
         PaneId::Package,
         PaneId::Git,
         PaneId::Targets,
         PaneId::Lints,
         PaneId::CiRuns,
+        PaneId::Output,
         PaneId::Toasts,
     ];
 
@@ -146,6 +147,7 @@ impl App {
                 PaneId::Targets => InputContext::DetailTargets,
                 PaneId::Lints => InputContext::Lints,
                 PaneId::CiRuns => InputContext::CiRuns,
+                PaneId::Output => InputContext::Output,
                 PaneId::Toasts => InputContext::Toasts,
                 PaneId::Search => InputContext::Searching,
                 PaneId::Settings => InputContext::Settings,
@@ -197,31 +199,42 @@ impl App {
         self.return_focus = None;
     }
 
+    pub(in super::super) fn is_pane_tabbable(&self, pane: PaneId) -> bool {
+        match pane {
+            PaneId::ProjectList => true,
+            PaneId::Package => self.selected_project_path().is_some(),
+            PaneId::Git => self.selected_project_path().is_some_and(|path| {
+                self.git_info_for(path)
+                    .is_some_and(|info| info.url.is_some())
+            }),
+            PaneId::Targets => self.cached_detail.as_ref().is_some_and(|c| {
+                c.info.is_binary || !c.info.examples.is_empty() || !c.info.benches.is_empty()
+            }),
+            PaneId::Lints => {
+                self.example_output.is_empty()
+                    && self.selected_project_path().is_some_and(|path| {
+                        self.lint_runs
+                            .get(path)
+                            .is_some_and(|runs| !runs.is_empty())
+                    })
+            },
+            PaneId::CiRuns => {
+                self.example_output.is_empty()
+                    && self.selected_project_path().is_some_and(|path| {
+                        self.ci_state_for(path)
+                            .is_some_and(|state| !state.runs().is_empty())
+                    })
+            },
+            PaneId::Output => !self.example_output.is_empty(),
+            PaneId::Toasts => !self.active_toasts().is_empty(),
+            PaneId::Search | PaneId::Settings | PaneId::Finder | PaneId::Keymap => false,
+        }
+    }
+
     pub(in super::super) fn tabbable_panes(&self) -> Vec<PaneId> {
         Self::TAB_ORDER
             .into_iter()
-            .filter(|pane| match pane {
-                PaneId::ProjectList => true,
-                PaneId::Package => self.selected_project_path().is_some(),
-                PaneId::Git => self.selected_project_path().is_some_and(|path| {
-                    self.git_info_for(path)
-                        .is_some_and(|info| info.url.is_some())
-                }),
-                PaneId::Targets => self.cached_detail.as_ref().is_some_and(|c| {
-                    c.info.is_binary || !c.info.examples.is_empty() || !c.info.benches.is_empty()
-                }),
-                PaneId::Lints => self.selected_project_path().is_some_and(|path| {
-                    self.lint_runs
-                        .get(path)
-                        .is_some_and(|runs| !runs.is_empty())
-                }),
-                PaneId::CiRuns => self.selected_project_path().is_some_and(|path| {
-                    self.ci_state_for(path)
-                        .is_some_and(|state| !state.runs().is_empty())
-                }),
-                PaneId::Toasts => !self.active_toasts().is_empty(),
-                PaneId::Search | PaneId::Settings | PaneId::Finder | PaneId::Keymap => false,
-            })
+            .filter(|pane| self.is_pane_tabbable(*pane))
             .collect()
     }
 

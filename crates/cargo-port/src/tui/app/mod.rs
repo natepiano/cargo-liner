@@ -348,7 +348,11 @@ impl App {
     pub(super) fn example_output(&self) -> &[String] { &self.example_output }
 
     pub(super) fn set_example_output(&mut self, output: Vec<String>) {
+        let was_empty = self.example_output.is_empty();
         self.example_output = output;
+        if was_empty && !self.example_output.is_empty() {
+            self.focus_pane(PaneId::Output);
+        }
     }
 
     pub(super) const fn example_output_mut(&mut self) -> &mut Vec<String> {

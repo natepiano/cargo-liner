@@ -119,6 +119,7 @@ fn active_detail_pane(app: &mut App) -> &mut Pane {
         | PaneId::ProjectList
         | PaneId::Lints
         | PaneId::CiRuns
+        | PaneId::Output
         | PaneId::Toasts
         | PaneId::Search
         | PaneId::Settings

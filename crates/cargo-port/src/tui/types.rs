@@ -160,6 +160,7 @@ pub(super) enum PaneId {
     Targets,
     Lints,
     CiRuns,
+    Output,
     Toasts,
     Search,
     Settings,

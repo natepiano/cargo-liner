@@ -688,6 +688,12 @@ fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
         |n| format!(" Running: {n} "),
     );
 
+    let border_color = if app.is_focused(PaneId::Output) {
+        ACTIVE_FOCUS_COLOR
+    } else {
+        Color::DarkGray
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
@@ -696,11 +702,7 @@ fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )
-        .border_style(if app.example_running().is_some() {
-            Style::default().fg(ACTIVE_FOCUS_COLOR)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        });
+        .border_style(Style::default().fg(border_color));
 
     let lines: Vec<Line> = app
         .example_output()

@@ -17,6 +17,7 @@ pub(super) enum InputContext {
     CiRuns,
     Toasts,
     Lints,
+    Output,
     Searching,
     Finder,
     Settings,
@@ -158,6 +159,7 @@ pub(super) fn for_status_bar(
         InputContext::CiRuns => ci_groups(enter_action, Some("branch/all"), km),
         InputContext::Toasts => toast_groups(km),
         InputContext::Lints => lints_groups(enter_action),
+        InputContext::Output => (vec![], vec![ESC_CLOSE]),
         InputContext::ProjectList => project_list_groups(enter_action, is_rust, km),
     };
 

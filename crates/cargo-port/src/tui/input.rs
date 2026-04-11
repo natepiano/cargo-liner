@@ -68,7 +68,11 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         return;
     }
     if code == KeyCode::Esc && !app.example_output().is_empty() {
+        let was_on_output = app.is_focused(PaneId::Output);
         app.example_output_mut().clear();
+        if was_on_output {
+            app.focus_pane(PaneId::Targets);
+        }
         return;
     }
     if handle_confirm_key(app, code) {
@@ -208,6 +212,7 @@ const fn pane_label(pane: PaneId) -> &'static str {
         PaneId::Targets => "targets",
         PaneId::Lints => "lints",
         PaneId::CiRuns => "ci_runs",
+        PaneId::Output => "output",
         PaneId::Toasts => "toasts",
         PaneId::Search => "search",
         PaneId::Settings => "settings",
