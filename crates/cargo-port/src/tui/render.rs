@@ -706,10 +706,16 @@ fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
         .example_output()
         .iter()
         .map(|l| {
-            Line::from(Span::styled(
-                format!(" {l}"),
-                Style::default().fg(Color::DarkGray),
-            ))
+            let padded = format!(" {l}");
+            ansi_to_tui::IntoText::into_text(&padded).map_or_else(
+                |_| Line::from(Span::raw(padded.clone())),
+                |text| {
+                    text.lines
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| Line::from(""))
+                },
+            )
         })
         .collect();
 
@@ -877,15 +883,9 @@ fn render_root_item(
         PREFIX_ROOT_LEAF
     };
     let deleted = app.is_deleted(item.path());
-    let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
-        (
-            "0.0",
-            Some(" [x]"),
-            Some(Style::default().fg(Color::DarkGray)),
-        )
-    } else {
-        (disk.as_str(), None, None)
-    };
+    let wt_health = item.worktree_health();
+    let (disk_text, disk_suffix, disk_suffix_style) =
+        disk_suffix_for_state(&disk, deleted, wt_health);
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name,
@@ -906,6 +906,7 @@ fn render_root_item(
         git_main: &main_sync,
         ci,
         deleted,
+        worktree_health: wt_health,
     });
     ListItem::new(super::columns::row_to_line(&row, widths))
 }
@@ -982,6 +983,7 @@ fn render_child_item(
         git_main: &main_sync,
         ci,
         deleted,
+        worktree_health: project.worktree_health(),
     });
     ListItem::new(super::columns::row_to_line(&row, widths))
 }
@@ -1060,15 +1062,9 @@ fn render_worktree_entry<'a>(
     let main_sync = app.git_main(wt_abs);
     let deleted = app.is_deleted(wt_abs);
     let git_path_state = app.git_path_state_for(wt_abs);
-    let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
-        (
-            "0.0",
-            Some(" [x]"),
-            Some(Style::default().fg(Color::DarkGray)),
-        )
-    } else {
-        (disk.as_str(), None, None)
-    };
+    let wt_health = worktree_health_for_entry(item, wi);
+    let (disk_text, disk_suffix, disk_suffix_style) =
+        disk_suffix_for_state(&disk, deleted, wt_health);
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name: &wt_name,
@@ -1089,8 +1085,62 @@ fn render_worktree_entry<'a>(
         git_main: &main_sync,
         ci,
         deleted,
+        worktree_health: wt_health,
     });
     ListItem::new(super::columns::row_to_line(&row, widths))
+}
+
+fn disk_suffix_for_state(
+    disk: &str,
+    deleted: bool,
+    health: project::WorktreeHealth,
+) -> (&str, Option<&'static str>, Option<Style>) {
+    if deleted {
+        (
+            "0.0",
+            Some(" [x]"),
+            Some(Style::default().fg(Color::DarkGray)),
+        )
+    } else if matches!(health, project::WorktreeHealth::Broken) {
+        (
+            disk,
+            Some(" [broken]"),
+            Some(Style::default().fg(Color::White).bg(Color::Red)),
+        )
+    } else {
+        (disk, None, None)
+    }
+}
+
+fn worktree_health_for_entry(
+    item: &crate::project::RootItem,
+    wi: usize,
+) -> crate::project::WorktreeHealth {
+    match item {
+        crate::project::RootItem::WorkspaceWorktrees(wtg) => {
+            if wi == 0 {
+                wtg.primary().worktree_health()
+            } else {
+                wtg.linked()
+                    .get(wi - 1)
+                    .map_or(crate::project::WorktreeHealth::Normal, |ws| {
+                        ws.worktree_health()
+                    })
+            }
+        },
+        crate::project::RootItem::PackageWorktrees(wtg) => {
+            if wi == 0 {
+                wtg.primary().worktree_health()
+            } else {
+                wtg.linked()
+                    .get(wi - 1)
+                    .map_or(crate::project::WorktreeHealth::Normal, |pkg| {
+                        pkg.worktree_health()
+                    })
+            }
+        },
+        _ => crate::project::WorktreeHealth::Normal,
+    }
 }
 
 fn render_wt_group_header<'a>(
@@ -1534,6 +1584,11 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
                 git_main: &main_sync,
                 ci,
                 deleted,
+                worktree_health: metadata
+                    .as_ref()
+                    .map_or(crate::project::WorktreeHealth::Normal, |m| {
+                        m.worktree_health
+                    }),
             });
             ListItem::new(super::columns::row_to_line(&row, widths))
         })

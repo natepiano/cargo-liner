@@ -14,6 +14,7 @@ use crate::project::RustProject;
 use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
+use crate::project::WorktreeHealth;
 
 /// Owning wrapper around the project hierarchy.
 ///
@@ -32,6 +33,7 @@ pub(crate) struct SearchableItem<'a> {
     pub is_rust:          bool,
     pub visibility:       Visibility,
     pub disk_usage_bytes: Option<u64>,
+    pub worktree_health:  WorktreeHealth,
 }
 
 impl ProjectList {
@@ -585,6 +587,7 @@ fn non_rust_searchable(project: &NonRustProject) -> SearchableItem<'_> {
         is_rust:          false,
         visibility:       project.visibility(),
         disk_usage_bytes: project.disk_usage_bytes(),
+        worktree_health:  project.worktree_health(),
     }
 }
 
@@ -599,6 +602,7 @@ fn package_searchable<'a>(
         is_rust: true,
         visibility: project.visibility(),
         disk_usage_bytes: project.disk_usage_bytes(),
+        worktree_health: project.worktree_health(),
     }
 }
 
@@ -613,6 +617,7 @@ fn workspace_searchable<'a>(
         is_rust: true,
         visibility: project.visibility(),
         disk_usage_bytes: project.disk_usage_bytes(),
+        worktree_health: project.worktree_health(),
     }
 }
 
@@ -624,6 +629,7 @@ fn vendored_searchable(project: &RustProject<Package>) -> SearchableItem<'_> {
         is_rust:          true,
         visibility:       project.visibility(),
         disk_usage_bytes: project.disk_usage_bytes(),
+        worktree_health:  project.worktree_health(),
     }
 }
 

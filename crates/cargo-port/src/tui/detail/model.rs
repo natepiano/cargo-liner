@@ -15,6 +15,7 @@ use crate::project::ProjectType;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Workspace;
+use crate::project::WorktreeHealth;
 use crate::tui::app::App;
 
 #[derive(Default)]
@@ -218,6 +219,7 @@ pub enum DetailField {
     Inception,
     LastCommit,
     Worktree,
+    WorktreeError,
     CratesIo,
     Version,
 }
@@ -242,6 +244,7 @@ impl DetailField {
             Self::Inception => "Incept",
             Self::LastCommit => "Latest",
             Self::Worktree => "Worktree",
+            Self::WorktreeError => "Error",
             Self::CratesIo => "crates.io",
             Self::Version => "Version",
         }
@@ -280,6 +283,7 @@ impl DetailField {
             Self::Inception => info.git_inception.as_deref().unwrap_or("").to_string(),
             Self::LastCommit => info.git_last_commit.as_deref().unwrap_or("").to_string(),
             Self::Worktree => info.worktree_label.as_deref().unwrap_or("").to_string(),
+            Self::WorktreeError => "broken .git — gitdir target missing".to_string(),
             Self::CratesIo => {
                 let version = info.crates_version.as_deref().unwrap_or("");
                 info.crates_downloads.map_or_else(
@@ -350,6 +354,9 @@ pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     if info.worktree_label.is_some() {
         fields.push(DetailField::Worktree);
     }
+    if matches!(info.worktree_health, WorktreeHealth::Broken) {
+        fields.push(DetailField::WorktreeError);
+    }
     if info.git_stars.is_some() {
         fields.push(DetailField::Stars);
     }
@@ -398,6 +405,7 @@ pub struct DetailInfo {
     pub git_inception:     Option<String>,
     pub git_last_commit:   Option<String>,
     pub worktree_label:    Option<String>,
+    pub worktree_health:   WorktreeHealth,
     pub worktree_names:    Vec<String>,
     pub is_binary:         bool,
     pub binary_name:       Option<String>,
@@ -649,6 +657,7 @@ fn build_detail_info_for_workspace(
             name: ws.name(),
             cargo: Some(cargo),
             worktree_name: ws.worktree_name(),
+            worktree_health: ws.worktree_health(),
             wt_item: wt_item_ref,
             stats_rows,
             package_title: "Workspace".to_string(),
@@ -685,6 +694,7 @@ fn build_detail_info_for_package(
             name: pkg.name(),
             cargo: Some(cargo),
             worktree_name: pkg.worktree_name(),
+            worktree_health: pkg.worktree_health(),
             wt_item: wt_item_ref,
             stats_rows,
             package_title,
@@ -711,6 +721,7 @@ fn build_detail_info_non_rust(
             name: nr.name(),
             cargo: None,
             worktree_name: None,
+            worktree_health: nr.worktree_health(),
             wt_item: wt_item_ref,
             stats_rows: Vec::new(),
             package_title: "Project".to_string(),
@@ -719,15 +730,16 @@ fn build_detail_info_non_rust(
 }
 
 struct DetailSource<'a> {
-    abs_path:      &'a Path,
-    display_path:  &'a str,
-    display_name:  String,
-    name:          Option<&'a str>,
-    cargo:         Option<&'a Cargo>,
-    worktree_name: Option<&'a str>,
-    wt_item:       Option<&'a RootItem>,
-    stats_rows:    Vec<(&'static str, usize)>,
-    package_title: String,
+    abs_path:        &'a Path,
+    display_path:    &'a str,
+    display_name:    String,
+    name:            Option<&'a str>,
+    cargo:           Option<&'a Cargo>,
+    worktree_name:   Option<&'a str>,
+    worktree_health: WorktreeHealth,
+    wt_item:         Option<&'a RootItem>,
+    stats_rows:      Vec<(&'static str, usize)>,
+    package_title:   String,
 }
 
 fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
@@ -800,6 +812,7 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
         git_inception: git_detail.inception,
         git_last_commit: git_detail.last_commit,
         worktree_label: src.worktree_name.map(str::to_string),
+        worktree_health: src.worktree_health,
         worktree_names,
         is_binary,
         binary_name,

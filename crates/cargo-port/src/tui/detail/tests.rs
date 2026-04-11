@@ -55,6 +55,7 @@ fn detail_info(is_rust_project: bool, lint_label: &str) -> DetailInfo {
         git_inception:     None,
         git_last_commit:   None,
         worktree_label:    None,
+        worktree_health:   crate::project::WorktreeHealth::Normal,
         worktree_names:    Vec::new(),
         is_binary:         false,
         binary_name:       None,

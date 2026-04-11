@@ -272,6 +272,8 @@ fn render_git_column_inner(
             Style::default().fg(Color::Green)
         } else if *field == DetailField::Sync && value == crate::constants::NO_REMOTE_SYNC {
             Style::default().fg(Color::DarkGray)
+        } else if *field == DetailField::WorktreeError {
+            Style::default().fg(Color::White).bg(Color::Red)
         } else {
             Style::default()
         };
@@ -279,7 +281,11 @@ fn render_git_column_inner(
         let vs = selection.patch(base_value_style);
         if matches!(
             *field,
-            DetailField::Repo | DetailField::Branch | DetailField::RepoDesc | DetailField::VsOrigin
+            DetailField::Repo
+                | DetailField::Branch
+                | DetailField::RepoDesc
+                | DetailField::VsOrigin
+                | DetailField::WorktreeError
         ) && !value.is_empty()
         {
             let prefix = format!(" {label:<label_width$} ");
@@ -287,11 +293,12 @@ fn render_git_column_inner(
             let col_width = area.width as usize;
             let avail = col_width.saturating_sub(prefix_len + 1);
             if avail > 0 && value.width() > avail {
-                let wrapped = if *field == DetailField::RepoDesc {
-                    word_wrap(&value, avail)
-                } else {
-                    hard_wrap(&value, avail)
-                };
+                let wrapped =
+                    if matches!(*field, DetailField::RepoDesc | DetailField::WorktreeError) {
+                        word_wrap(&value, avail)
+                    } else {
+                        hard_wrap(&value, avail)
+                    };
                 for (wi, chunk) in wrapped.iter().enumerate() {
                     if wi == 0 {
                         lines.push(Line::from(vec![

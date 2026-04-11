@@ -406,6 +406,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         git_main:          &app.git_main(item.path()),
         ci:                app.ci_for_item(item),
         deleted:           true,
+        worktree_health:   crate::project::WorktreeHealth::Normal,
     });
     let widths = crate::tui::columns::ResolvedWidths::new(true);
     let line = crate::tui::columns::row_to_line(&row, &widths);

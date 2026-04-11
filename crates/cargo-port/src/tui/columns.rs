@@ -162,12 +162,14 @@ pub(super) struct ProjectRow<'a> {
     pub git_main:          &'a str,
     pub ci:                Option<Conclusion>,
     pub deleted:           bool,
+    pub worktree_health:   crate::project::WorktreeHealth,
 }
 
 pub(super) struct RowCells {
-    pub cells:   [CellContent; NUM_COLS],
-    pub prefix:  String,
-    pub deleted: bool,
+    pub cells:           [CellContent; NUM_COLS],
+    pub prefix:          String,
+    pub deleted:         bool,
+    pub worktree_health: crate::project::WorktreeHealth,
 }
 
 // ── Resolved widths ─────────────────────────────────────────────────
@@ -338,6 +340,11 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'stat
                 span.style = strike;
             }
         }
+    } else if matches!(row.worktree_health, crate::project::WorktreeHealth::Broken) {
+        let broken_style = Style::default().fg(Color::White).bg(Color::Red);
+        for span in &mut spans {
+            span.style = broken_style;
+        }
     }
 
     Line::from(spans)
@@ -496,6 +503,7 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         cells,
         prefix: String::from(row.prefix),
         deleted: row.deleted,
+        worktree_health: row.worktree_health,
     }
 }
 
@@ -585,6 +593,7 @@ pub(super) fn build_group_header_cells(prefix: &str, label: &str) -> RowCells {
         cells,
         prefix: String::from(prefix),
         deleted: false,
+        worktree_health: crate::project::WorktreeHealth::Normal,
     }
 }
 
@@ -627,6 +636,7 @@ pub(super) fn build_summary_cells(widths: &ResolvedWidths, disk: &str) -> RowCel
         cells,
         prefix: " ".repeat(widths.get(COL_NAME)),
         deleted: false,
+        worktree_health: crate::project::WorktreeHealth::Normal,
     }
 }
 
@@ -638,6 +648,7 @@ pub(super) fn build_summary_cells(widths: &ResolvedWidths, disk: &str) -> RowCel
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use super::*;
+    use crate::project::WorktreeHealth;
 
     #[test]
     fn resolved_widths_seeds_from_defs() {
@@ -756,6 +767,7 @@ mod tests {
             git_main:          "",
             ci:                Some(Conclusion::Success),
             deleted:           false,
+            worktree_health:   WorktreeHealth::Normal,
         });
         let row_ascii = build_row_cells(ProjectRow {
             prefix:            "▶ ",
@@ -772,6 +784,7 @@ mod tests {
             git_main:          "",
             ci:                Some(Conclusion::Success),
             deleted:           false,
+            worktree_health:   WorktreeHealth::Normal,
         });
 
         let line_emoji = row_to_line(&row_emoji, &widths);
@@ -858,6 +871,7 @@ mod tests {
             git_main:          "",
             ci:                Some(Conclusion::Success),
             deleted:           false,
+            worktree_health:   WorktreeHealth::Normal,
         });
         let line = row_to_line(&row, &widths);
 
@@ -886,6 +900,7 @@ mod tests {
             git_main:          "",
             ci:                None,
             deleted:           false,
+            worktree_health:   WorktreeHealth::Normal,
         });
         assert_eq!(modified.cells[COL_NAME].style.fg, Some(GIT_MODIFIED_COLOR));
         assert_eq!(
@@ -908,6 +923,7 @@ mod tests {
             git_main:          "",
             ci:                None,
             deleted:           false,
+            worktree_health:   WorktreeHealth::Normal,
         });
         assert_eq!(
             untracked.cells[COL_NAME].style.fg,
@@ -933,6 +949,7 @@ mod tests {
             git_main:          "",
             ci:                None,
             deleted:           false,
+            worktree_health:   WorktreeHealth::Normal,
         });
         assert_eq!(
             clean.cells[COL_GIT_PATH].text,
@@ -954,6 +971,7 @@ mod tests {
             git_main:          "",
             ci:                None,
             deleted:           false,
+            worktree_health:   WorktreeHealth::Normal,
         });
         assert_eq!(ignored.cells[COL_NAME].style.fg, Some(GIT_IGNORED_COLOR));
         assert!(ignored.cells[COL_GIT_PATH].text.is_empty());

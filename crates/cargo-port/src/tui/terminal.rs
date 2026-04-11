@@ -407,8 +407,7 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
         cmd.arg("-p").arg(pkg);
     }
     cmd.current_dir(&run.abs_path)
-        .env("CARGO_TERM_PROGRESS_WHEN", "always")
-        .env("CARGO_TERM_PROGRESS_WIDTH", "80")
+        .arg("--color=always")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -428,7 +427,7 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pid);
 
     let name = run.target_name.clone();
-    let mode = if run.release { " (release)" } else { "" };
+    let mode = if run.release { " (release)" } else { " (dev)" };
     app.set_example_output(vec![format!("Building {name}{mode}...")]);
     app.set_example_running(Some(format!("{name}{mode}")));
 

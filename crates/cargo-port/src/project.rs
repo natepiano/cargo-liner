@@ -912,6 +912,7 @@ pub(crate) fn from_cargo_toml(
 
     let worktree_name = detect_worktree_name(project_dir);
     let worktree_primary_abs_path = detect_worktree_primary(project_dir).map(PathBuf::from);
+    let worktree_health = detect_worktree_health(project_dir);
 
     let types = detect_types(&table, project_dir);
     let examples = collect_examples(&table, project_dir);
@@ -921,7 +922,7 @@ pub(crate) fn from_cargo_toml(
     let cargo = Cargo::new(version, description, types, examples, benches, test_count);
 
     if table.get("workspace").is_some() {
-        Ok(CargoParseResult::Workspace(RustProject::<Workspace>::new(
+        let mut project = RustProject::<Workspace>::new(
             abs_path,
             name,
             cargo,
@@ -929,16 +930,20 @@ pub(crate) fn from_cargo_toml(
             Vec::new(),
             worktree_name,
             worktree_primary_abs_path,
-        )))
+        );
+        project.info_mut().worktree_health = worktree_health;
+        Ok(CargoParseResult::Workspace(project))
     } else {
-        Ok(CargoParseResult::Package(RustProject::<Package>::new(
+        let mut project = RustProject::<Package>::new(
             abs_path,
             name,
             cargo,
             Vec::new(),
             worktree_name,
             worktree_primary_abs_path,
-        )))
+        );
+        project.info_mut().worktree_health = worktree_health;
+        Ok(CargoParseResult::Package(project))
     }
 }
 
@@ -948,7 +953,9 @@ pub(crate) fn from_git_dir(project_dir: &Path) -> NonRustProject {
         .file_name()
         .map(|n| n.to_string_lossy().to_string());
 
-    NonRustProject::new(project_dir.to_path_buf(), name)
+    let mut project = NonRustProject::new(project_dir.to_path_buf(), name);
+    project.info_mut().worktree_health = detect_worktree_health(project_dir);
+    project
 }
 
 fn detect_types(table: &Table, project_dir: &Path) -> Vec<ProjectType> {
@@ -1184,6 +1191,31 @@ pub(crate) fn home_relative_path(path: &Path) -> String {
     path.display().to_string()
 }
 
+/// Check if a project directory is a broken worktree — `.git` is a file whose
+/// gitdir target does not exist on disk.
+pub(crate) fn detect_worktree_health(project_dir: &Path) -> WorktreeHealth {
+    let git_path = project_dir.join(".git");
+    if !git_path.is_file() {
+        return WorktreeHealth::Normal;
+    }
+    let Ok(contents) = std::fs::read_to_string(&git_path) else {
+        return WorktreeHealth::Broken;
+    };
+    let Some(gitdir_str) = contents.strip_prefix("gitdir: ") else {
+        return WorktreeHealth::Broken;
+    };
+    let gitdir = if Path::new(gitdir_str.trim()).is_absolute() {
+        PathBuf::from(gitdir_str.trim())
+    } else {
+        project_dir.join(gitdir_str.trim())
+    };
+    if gitdir.exists() {
+        WorktreeHealth::Normal
+    } else {
+        WorktreeHealth::Broken
+    }
+}
+
 fn detect_worktree_name(project_dir: &Path) -> Option<String> {
     let mut dir = project_dir;
     loop {
@@ -1315,11 +1347,22 @@ impl Cargo {
     }
 }
 
+/// Whether a worktree's `.git` file points to a valid gitdir.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum WorktreeHealth {
+    /// Not a worktree, or health not yet checked.
+    #[default]
+    Normal,
+    /// The `.git` file's gitdir target does not exist on disk.
+    Broken,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct ProjectInfo {
     pub disk_usage_bytes: Option<u64>,
     pub git_info:         Option<GitInfo>,
     pub visibility:       Visibility,
+    pub worktree_health:  WorktreeHealth,
 }
 
 /// Per-node info access for hierarchy leaf types.
@@ -1391,6 +1434,8 @@ impl NonRustProject {
 
     pub(crate) const fn visibility(&self) -> Visibility { self.info.visibility }
 
+    pub(crate) const fn worktree_health(&self) -> WorktreeHealth { self.info.worktree_health }
+
     pub(crate) const fn disk_usage_bytes(&self) -> Option<u64> { self.info.disk_usage_bytes }
 
     pub(crate) const fn git_info(&self) -> Option<&GitInfo> { self.info.git_info.as_ref() }
@@ -1458,6 +1503,8 @@ impl<Kind: CargoKind> RustProject<Kind> {
     pub(crate) fn name(&self) -> Option<&str> { self.name.as_deref() }
 
     pub(crate) const fn visibility(&self) -> Visibility { self.info.visibility }
+
+    pub(crate) const fn worktree_health(&self) -> WorktreeHealth { self.info.worktree_health }
 
     pub(crate) const fn disk_usage_bytes(&self) -> Option<u64> { self.info.disk_usage_bytes }
 
@@ -1652,6 +1699,16 @@ impl RootItem {
             Self::NonRust(p) => p.visibility(),
             Self::WorkspaceWorktrees(g) => g.visibility(),
             Self::PackageWorktrees(g) => g.visibility(),
+        }
+    }
+
+    pub(crate) const fn worktree_health(&self) -> WorktreeHealth {
+        match self {
+            Self::Workspace(p) => p.worktree_health(),
+            Self::Package(p) => p.worktree_health(),
+            Self::NonRust(p) => p.worktree_health(),
+            Self::WorkspaceWorktrees(g) => g.primary().worktree_health(),
+            Self::PackageWorktrees(g) => g.primary().worktree_health(),
         }
     }
 
