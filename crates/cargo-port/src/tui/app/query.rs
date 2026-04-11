@@ -150,43 +150,6 @@ impl App {
         self.prune_toasts();
     }
 
-    pub(in super::super) fn lint_is_watchable(&self, path: &Path) -> bool {
-        if !self.lint_enabled() {
-            return false;
-        }
-        let mut is_rust = false;
-        self.projects.for_each_leaf_path(|p, rust| {
-            if p == path {
-                is_rust = rust;
-            }
-        });
-        crate::lint::project_is_eligible(
-            &self.current_config.lint,
-            &path.to_string_lossy(),
-            path,
-            is_rust,
-        )
-    }
-
-    pub(in super::super) fn bottom_panel_available(&self, path: &Path) -> bool {
-        let has_ci = self
-            .ci_owner_path_for(path)
-            .as_deref()
-            .is_some_and(|owner_path| {
-                self.ci_state_for(path)
-                    .is_some_and(|state| !state.runs().is_empty())
-                    || self
-                        .git_info_for(owner_path)
-                        .is_some_and(|info| info.url.is_some())
-            });
-        let has_lint_runs = self
-            .lint_runs
-            .get(path)
-            .is_some_and(|runs| !runs.is_empty())
-            || self.lint_is_watchable(path);
-        has_ci || has_lint_runs
-    }
-
     pub(in super::super) fn sync_selected_project(&mut self) {
         self.ensure_visible_rows_cached();
         let current = self.selected_project_path().map(AbsolutePath::from);

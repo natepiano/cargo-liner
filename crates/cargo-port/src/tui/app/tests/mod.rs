@@ -19,6 +19,7 @@ use ratatui::widgets::Widget;
 pub(super) use super::App;
 use super::DismissTarget;
 use super::snapshots;
+use super::types::CiState;
 use super::types::*;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;

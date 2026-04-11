@@ -210,12 +210,14 @@ impl App {
                 PaneId::Targets => self.cached_detail.as_ref().is_some_and(|c| {
                     c.info.is_binary || !c.info.examples.is_empty() || !c.info.benches.is_empty()
                 }),
-                PaneId::Lints => self.selected_project_path().is_some() && self.lint_enabled(),
+                PaneId::Lints => self.selected_project_path().is_some_and(|path| {
+                    self.lint_runs
+                        .get(path)
+                        .is_some_and(|runs| !runs.is_empty())
+                }),
                 PaneId::CiRuns => self.selected_project_path().is_some_and(|path| {
-                    self.bottom_panel_available(path)
-                        && self
-                            .git_info_for(path)
-                            .is_some_and(|info| info.workflows.is_present())
+                    self.ci_state_for(path)
+                        .is_some_and(|state| !state.runs().is_empty())
                 }),
                 PaneId::Toasts => !self.active_toasts().is_empty(),
                 PaneId::Search | PaneId::Settings | PaneId::Finder | PaneId::Keymap => false,

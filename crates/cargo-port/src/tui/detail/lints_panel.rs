@@ -112,26 +112,45 @@ pub(super) fn format_lints_slowest(run: &LintRun) -> String {
 }
 
 fn lints_panel_title(app: &App, runs: &[LintRun], focused: bool) -> String {
-    if focused && !runs.is_empty() {
+    if runs.is_empty() {
+        return " No Lint Runs ".to_string();
+    }
+    if focused {
         let indicator = crate::tui::types::scroll_indicator(app.lint_pane().pos(), runs.len());
         return format!(" Lint Runs ({indicator}) ");
     }
-    let (watching, worker_count) = app.selected_project_path().map_or((false, 0usize), |path| {
-        let watching = app.lint_is_watchable(path) && app.lint_runtime().is_some();
-        (watching, usize::from(watching))
-    });
     let cache_size = app
         .lint_cache_usage()
         .cache_size_bytes
         .map_or_else(|| "unlimited".to_string(), format_bytes);
     format!(
-        " Lint Runs (watching {}, workers {}, runs {}, cache {}/{}) ",
-        if watching { "yes" } else { "no" },
-        worker_count,
+        " Lint Runs (runs {}, cache {}/{}) ",
         runs.len(),
         format_bytes(app.lint_cache_usage().bytes),
         cache_size,
     )
+}
+
+fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'static> {
+    let title_style = if has_runs {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let border_style = if focused {
+        Style::default().fg(ACTIVE_FOCUS_COLOR)
+    } else if has_runs {
+        Style::default()
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_style(title_style)
+        .border_style(border_style)
 }
 
 pub fn render_lints_panel(
@@ -140,22 +159,9 @@ pub fn render_lints_panel(
     runs: &[LintRun],
     area: ratatui::layout::Rect,
 ) {
-    let focused = app.is_focused(PaneId::CiRuns);
+    let focused = app.is_focused(PaneId::Lints);
     let title = lints_panel_title(app, runs, focused);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-        .border_style(if focused {
-            Style::default().fg(ACTIVE_FOCUS_COLOR)
-        } else {
-            Style::default()
-        });
+    let block = lints_panel_block(title, focused, !runs.is_empty());
 
     let inner = block.inner(area);
     app.lint_pane_mut().set_len(runs.len());

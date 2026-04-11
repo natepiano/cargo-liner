@@ -16,12 +16,12 @@ use super::app::PendingClean;
 use super::detail;
 use super::finder;
 use super::settings;
+use super::shortcuts::InputContext;
 use super::types::PaneId;
 use crate::keymap::GlobalAction;
 use crate::keymap::KeyBind;
 use crate::keymap::ProjectListAction;
 use crate::project;
-use crate::tui::shortcuts::InputContext;
 
 pub(super) fn handle_event(app: &mut App, event: &Event) {
     let started = Instant::now();

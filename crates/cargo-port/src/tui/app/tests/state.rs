@@ -79,7 +79,6 @@ fn non_owner_member_ignores_stale_member_state_and_fetches_via_owner() {
 
     assert!(app.ci_state_for(member.path()).is_none());
     assert_eq!(app.ci_for(member.path()), None);
-    assert!(app.bottom_panel_available(member.path()));
 
     crate::tui::detail::handle_ci_runs_key(
         &mut app,

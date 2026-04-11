@@ -103,6 +103,13 @@ fn tabbable_panes_follow_canonical_order() {
     );
     app.detail_generation += 1;
     app.ensure_detail_cached();
+    app.ci_state.insert(
+        project.path().to_path_buf(),
+        CiState::Loaded {
+            runs:      vec![make_ci_run(1, Conclusion::Success)],
+            exhausted: false,
+        },
+    );
 
     assert_eq!(
         app.tabbable_panes(),

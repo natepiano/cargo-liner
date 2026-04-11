@@ -197,8 +197,6 @@ impl App {
         &mut self.lint_runs
     }
 
-    pub(super) const fn lint_runtime(&self) -> Option<&RuntimeHandle> { self.lint_runtime.as_ref() }
-
     pub(super) const fn crates_versions(&self) -> &HashMap<PathBuf, String> {
         &self.crates_versions
     }
