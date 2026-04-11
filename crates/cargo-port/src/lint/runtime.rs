@@ -31,6 +31,7 @@ use crate::config::CargoPortConfig;
 use crate::config::DiscoveryLint;
 use crate::config::LintCommandConfig;
 use crate::config::LintConfig;
+use crate::constants::LINTS_HISTORY_JSONL;
 use crate::constants::LINTS_LATEST_JSON;
 use crate::scan::BackgroundMsg;
 
@@ -197,8 +198,16 @@ fn hydrate_status_cache(cache_root: &Path) -> HashMap<String, LintStatus> {
     entries
         .filter_map(Result::ok)
         .filter_map(|entry| {
-            let path = entry.path().join(LINTS_LATEST_JSON);
-            let run = read_write::read_latest_file(&path)?;
+            let dir = entry.path();
+            let run = read_write::read_latest_file(&dir.join(LINTS_LATEST_JSON)).or_else(|| {
+                // `latest.json` may be missing if the app was killed mid-lint and
+                // the stale file was cleaned up. Fall back to the last completed
+                // run from history so the status icon isn't lost.
+                read_write::read_history_file(&dir.join(LINTS_HISTORY_JSONL))
+                    .into_iter()
+                    .rev()
+                    .find(|r| !matches!(r.status, LintRunStatus::Running))
+            })?;
             let status = status::parse_run(&run);
             if matches!(status, LintStatus::NoLog) {
                 return None;

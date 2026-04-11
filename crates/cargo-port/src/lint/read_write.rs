@@ -7,6 +7,7 @@ use std::path::Path;
 use super::paths;
 use super::types::LintRun;
 use super::types::LintRunStatus;
+use crate::constants::LINTS_HISTORY_JSONL;
 use crate::constants::LINTS_LATEST_JSON;
 
 pub fn write_latest_under(cache_root: &Path, project_root: &Path, run: &LintRun) -> io::Result<()> {
@@ -70,10 +71,27 @@ pub fn clear_running_latest_files_under(cache_root: &Path) -> io::Result<usize> 
             continue;
         }
 
-        match std::fs::remove_file(&latest_path) {
-            Ok(()) => cleared += 1,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {},
-            Err(err) => return Err(err),
+        // If the app was killed mid-lint, `latest.json` is stuck at "running".
+        // Deleting it loses the status icon until the next lint run completes.
+        // Recover by replacing it with the last completed run from history.
+        let history_path = entry.path().join(LINTS_HISTORY_JSONL);
+        let last_completed = read_history_file(&history_path)
+            .into_iter()
+            .rev()
+            .find(|r| !matches!(r.status, LintRunStatus::Running));
+        if let Some(run) = last_completed {
+            let json = serde_json::to_vec_pretty(&run)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            let tmp_path = latest_path.with_extension("json.tmp");
+            std::fs::write(&tmp_path, json)?;
+            std::fs::rename(tmp_path, &latest_path)?;
+            cleared += 1;
+        } else {
+            match std::fs::remove_file(&latest_path) {
+                Ok(()) => cleared += 1,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {},
+                Err(err) => return Err(err),
+            }
         }
     }
 

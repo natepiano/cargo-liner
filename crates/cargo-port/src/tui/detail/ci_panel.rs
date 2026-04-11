@@ -58,25 +58,14 @@ fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
 pub(super) const CI_COMPACT_DURATION_WIDTH: usize = 2;
 
 /// Build one data `Row` for a single `CiRun`.
-fn build_ci_data_row(
-    ci_run: &CiRun,
-    cols: &[CiColumn],
-    remembered: bool,
-    show_durations: bool,
-) -> Row<'static> {
+fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn], show_durations: bool) -> Row<'static> {
     let timestamp = timestamp::format_timestamp(&ci_run.created_at);
     let total_dur = ci_run
         .wall_clock_secs
         .map_or_else(|| "—".to_string(), ci::format_secs);
 
     let commit = ci_run.commit_title.as_deref().unwrap_or("");
-    let commit_style = if remembered {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
+    let commit_style = Style::default();
     let mut cells = vec![
         Cell::from(commit.to_string()).style(commit_style),
         Cell::from(ci_run.branch.clone()),
@@ -372,16 +361,7 @@ pub fn render_ci_panel(
     let mut rows: Vec<Row> = ci_runs
         .iter()
         .enumerate()
-        .map(|(index, ci_run)| {
-            build_ci_data_row(
-                ci_run,
-                &cols,
-                !ci_focused
-                    && index == app.ci_pane().pos()
-                    && app.remembers_selection(PaneId::CiRuns),
-                show_durations,
-            )
-        })
+        .map(|(_, ci_run)| build_ci_data_row(ci_run, &cols, show_durations))
         .collect();
 
     let widths = build_ci_widths(ci_runs, &cols, show_durations);

@@ -184,7 +184,9 @@ fn watcher_loop(
     let disk_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_DISK_CONCURRENCY));
     let git_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_GIT_CONCURRENCY));
 
+    let mut tick: u64 = 0;
     loop {
+        tick += 1;
         let watch_drain = drain_watch_messages(
             &mut watcher,
             watch_rx,
@@ -194,6 +196,7 @@ fn watcher_loop(
             &mut initializing,
         );
         if watch_drain.disconnected {
+            tracing::info!(tick, "watcher_loop_exit_disconnected");
             return;
         }
 
@@ -207,7 +210,16 @@ fn watcher_loop(
             bg_tx,
         };
         let notify_events = drain_notify_events(notify_rx);
+        let notify_count = notify_events.len();
         if watch_drain.registration_completed {
+            tracing::info!(
+                tick,
+                buffered = buffered_events.len(),
+                notify_count,
+                initializing,
+                projects = projects.len(),
+                "watcher_loop_registration_completed"
+            );
             replay_buffered_events(
                 &buffered_events,
                 &dispatch,
@@ -218,8 +230,19 @@ fn watcher_loop(
             buffered_events.clear();
         }
         if initializing {
+            if notify_count > 0 {
+                tracing::info!(
+                    tick,
+                    notify_count,
+                    buffered_total = buffered_events.len() + notify_count,
+                    "watcher_loop_buffering_while_initializing"
+                );
+            }
             buffered_events.extend(notify_events);
         } else {
+            if notify_count > 0 {
+                tracing::info!(tick, notify_count, "watcher_loop_processing_events");
+            }
             replay_buffered_events(
                 &notify_events,
                 &dispatch,

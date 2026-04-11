@@ -224,6 +224,14 @@ impl App {
     }
 
     pub(in super::super) fn ci_for(&self, path: &Path) -> Option<Conclusion> {
+        // A branch with no upstream tracking can't have CI runs — don't
+        // show the parent repo's result for an unpushed worktree branch.
+        if let Some(git) = self.git_info_for(path)
+            && git.upstream_branch.is_none()
+            && git.branch.as_deref() != git.default_branch.as_deref()
+        {
+            return None;
+        }
         self.ci_state_for(path)
             .and_then(|_| self.latest_ci_run_for_path(path))
             .map(|run| run.conclusion)
