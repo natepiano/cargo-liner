@@ -360,8 +360,7 @@ pub fn render_ci_panel(
 
     let mut rows: Vec<Row> = ci_runs
         .iter()
-        .enumerate()
-        .map(|(_, ci_run)| build_ci_data_row(ci_run, &cols, show_durations))
+        .map(|ci_run| build_ci_data_row(ci_run, &cols, show_durations))
         .collect();
 
     let widths = build_ci_widths(ci_runs, &cols, show_durations);

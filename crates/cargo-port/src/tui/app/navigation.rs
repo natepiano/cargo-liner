@@ -1323,7 +1323,17 @@ impl App {
 
             let mut buf = Vec::new();
             let haystack = Utf32Str::new(item.name.as_ref(), &mut buf);
-            if let Some(score) = atom.score(haystack, &mut matcher) {
+            let mut best_score = atom.score(haystack, &mut matcher);
+
+            if let Some(cargo_name) = &item.cargo_name {
+                let mut cn_buf = Vec::new();
+                let cn_haystack = Utf32Str::new(cargo_name.as_ref(), &mut cn_buf);
+                if let Some(cn_score) = atom.score(cn_haystack, &mut matcher) {
+                    best_score = Some(best_score.map_or(cn_score, |prev| prev.max(cn_score)));
+                }
+            }
+
+            if let Some(score) = best_score {
                 scored.push(SearchHit {
                     abs_path: item.abs_path.into(),
                     display_path: item.display_path.into_owned(),

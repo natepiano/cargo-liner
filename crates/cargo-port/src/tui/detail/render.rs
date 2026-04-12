@@ -351,7 +351,7 @@ fn append_worktree_lines(lines: &mut Vec<Line<'static>>, info: &DetailInfo) {
 const NO_DESCRIPTION_AVAILABLE: &str = "No description available";
 
 pub(super) fn project_panel_title(info: &DetailInfo) -> String {
-    format!(" {} - {} ", info.package_title, info.display_name)
+    format!(" {} - {} ", info.package_title, info.title_name)
 }
 
 struct ProjectPanelRender<'a> {

@@ -151,6 +151,34 @@ impl GitRefreshKind {
     const fn refresh_info(self) -> bool { matches!(self, Self::FullMetadata) }
 }
 
+struct WatcherLoopState {
+    projects:             HashMap<PathBuf, ProjectEntry>,
+    project_parents:      HashSet<PathBuf>,
+    pending_disk:         HashMap<String, DiskState>,
+    pending_git:          HashMap<PathBuf, GitState>,
+    pending_new:          HashMap<PathBuf, Instant>,
+    discovered:           HashSet<PathBuf>,
+    watched_git_metadata: HashSet<PathBuf>,
+    initializing:         bool,
+    buffered_events:      Vec<notify::Event>,
+}
+
+impl WatcherLoopState {
+    fn new() -> Self {
+        Self {
+            projects:             HashMap::new(),
+            project_parents:      HashSet::new(),
+            pending_disk:         HashMap::new(),
+            pending_git:          HashMap::new(),
+            pending_new:          HashMap::new(),
+            discovered:           HashSet::new(),
+            watched_git_metadata: HashSet::new(),
+            initializing:         true,
+            buffered_events:      Vec::new(),
+        }
+    }
+}
+
 fn watcher_loop(
     ctx: &WatcherLoopContext,
     watch_rx: &mpsc::Receiver<WatcherMsg>,
@@ -164,21 +192,7 @@ fn watcher_loop(
         non_rust,
         client,
     } = ctx;
-    // `abs_path` → project tracking state
-    let mut projects: HashMap<PathBuf, ProjectEntry> = HashMap::new();
-    // Directories that contain at least one known project (e.g. `~/rust/`).
-    let mut project_parents: HashSet<PathBuf> = HashSet::new();
-    // project_path → disk refresh state
-    let mut pending_disk: HashMap<String, DiskState> = HashMap::new();
-    // repo_root → git refresh state
-    let mut pending_git: HashMap<PathBuf, GitState> = HashMap::new();
-    // Directories that might be new projects → probe deadline
-    let mut pending_new: HashMap<PathBuf, Instant> = HashMap::new();
-    // Directories already discovered as new projects by this watcher.
-    let mut discovered: HashSet<PathBuf> = HashSet::new();
-    let mut watched_git_metadata: HashSet<PathBuf> = HashSet::new();
-    let mut initializing = true;
-    let mut buffered_events = Vec::new();
+    let mut state = WatcherLoopState::new();
     let (disk_done_tx, disk_done_rx) = mpsc::channel::<String>();
     let (git_done_tx, git_done_rx) = mpsc::channel::<PathBuf>();
     let disk_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_DISK_CONCURRENCY));
@@ -190,72 +204,30 @@ fn watcher_loop(
         let watch_drain = drain_watch_messages(
             &mut watcher,
             watch_rx,
-            &mut projects,
-            &mut project_parents,
-            &mut watched_git_metadata,
-            &mut initializing,
+            &mut state.projects,
+            &mut state.project_parents,
+            &mut state.watched_git_metadata,
+            &mut state.initializing,
         );
         if watch_drain.disconnected {
             tracing::info!(tick, "watcher_loop_exit_disconnected");
             return;
         }
 
-        let dispatch = WatcherDispatchContext {
-            event: EventContext {
-                scan_root,
-                projects: &projects,
-                project_parents: &project_parents,
-                discovered: &discovered,
-            },
-            bg_tx,
-        };
         let notify_events = drain_notify_events(notify_rx);
-        let notify_count = notify_events.len();
-        if watch_drain.registration_completed {
-            tracing::info!(
-                tick,
-                buffered = buffered_events.len(),
-                notify_count,
-                initializing,
-                projects = projects.len(),
-                "watcher_loop_registration_completed"
-            );
-            replay_buffered_events(
-                &buffered_events,
-                &dispatch,
-                &mut pending_disk,
-                &mut pending_git,
-                &mut pending_new,
-            );
-            buffered_events.clear();
-        }
-        if initializing {
-            if notify_count > 0 {
-                tracing::info!(
-                    tick,
-                    notify_count,
-                    buffered_total = buffered_events.len() + notify_count,
-                    "watcher_loop_buffering_while_initializing"
-                );
-            }
-            buffered_events.extend(notify_events);
-        } else {
-            if notify_count > 0 {
-                tracing::info!(tick, notify_count, "watcher_loop_processing_events");
-            }
-            replay_buffered_events(
-                &notify_events,
-                &dispatch,
-                &mut pending_disk,
-                &mut pending_git,
-                &mut pending_new,
-            );
-        }
+        process_notify_events(
+            tick,
+            &watch_drain,
+            notify_events,
+            scan_root,
+            bg_tx,
+            &mut state,
+        );
         drain_completed_refreshes(
             &disk_done_rx,
             &git_done_rx,
-            &mut pending_disk,
-            &mut pending_git,
+            &mut state.pending_disk,
+            &mut state.pending_git,
         );
 
         // Fire git refreshes whose debounce has expired.
@@ -264,8 +236,8 @@ fn watcher_loop(
             &git_limit,
             &git_done_tx,
             bg_tx,
-            &projects,
-            &mut pending_git,
+            &state.projects,
+            &mut state.pending_git,
         );
 
         // Fire disk recalculations whose debounce has expired.
@@ -274,15 +246,15 @@ fn watcher_loop(
             &disk_limit,
             &disk_done_tx,
             bg_tx,
-            &projects,
-            &mut pending_disk,
+            &state.projects,
+            &mut state.pending_disk,
         );
 
         // Probe new-project candidates whose debounce has expired.
         probe_new_projects(
             bg_tx,
-            &mut pending_new,
-            &mut discovered,
+            &mut state.pending_new,
+            &mut state.discovered,
             *ci_run_count,
             *non_rust,
             client,
@@ -373,6 +345,75 @@ fn apply_watch_request(
             common_git_dir,
         },
     );
+}
+
+fn process_notify_events(
+    tick: u64,
+    watch_drain: &WatchDrainResult,
+    notify_events: Vec<notify::Event>,
+    scan_root: &Path,
+    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    state: &mut WatcherLoopState,
+) {
+    let notify_count = notify_events.len();
+    if watch_drain.registration_completed {
+        tracing::info!(
+            tick,
+            buffered = state.buffered_events.len(),
+            notify_count,
+            initializing = state.initializing,
+            projects = state.projects.len(),
+            "watcher_loop_registration_completed"
+        );
+        let dispatch = WatcherDispatchContext {
+            event: EventContext {
+                scan_root,
+                projects: &state.projects,
+                project_parents: &state.project_parents,
+                discovered: &state.discovered,
+            },
+            bg_tx,
+        };
+        replay_buffered_events(
+            &state.buffered_events,
+            &dispatch,
+            &mut state.pending_disk,
+            &mut state.pending_git,
+            &mut state.pending_new,
+        );
+        state.buffered_events.clear();
+    }
+    if state.initializing {
+        if notify_count > 0 {
+            tracing::info!(
+                tick,
+                notify_count,
+                buffered_total = state.buffered_events.len() + notify_count,
+                "watcher_loop_buffering_while_initializing"
+            );
+        }
+        state.buffered_events.extend(notify_events);
+    } else {
+        if notify_count > 0 {
+            tracing::info!(tick, notify_count, "watcher_loop_processing_events");
+        }
+        let dispatch = WatcherDispatchContext {
+            event: EventContext {
+                scan_root,
+                projects: &state.projects,
+                project_parents: &state.project_parents,
+                discovered: &state.discovered,
+            },
+            bg_tx,
+        };
+        replay_buffered_events(
+            &notify_events,
+            &dispatch,
+            &mut state.pending_disk,
+            &mut state.pending_git,
+            &mut state.pending_new,
+        );
+    }
 }
 
 fn drain_notify_events(

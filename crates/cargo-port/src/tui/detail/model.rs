@@ -376,7 +376,9 @@ pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
 pub struct DetailInfo {
     pub package_title:     String,
     pub name:              String,
-    pub display_name:      String,
+    /// Primary name for the detail title bar. For Rust projects this is the
+    /// Cargo package name; for non-Rust projects this is the directory leaf.
+    pub title_name:        String,
     pub path:              String,
     pub version:           String,
     pub description:       Option<String>,
@@ -653,8 +655,8 @@ fn build_detail_info_for_workspace(
         DetailSource {
             abs_path,
             display_path,
-            display_name: ws.display_name(),
-            name: ws.name(),
+            title_name: ws.package_name().into_string(),
+            has_cargo: ws.name().is_some(),
             cargo: Some(cargo),
             worktree_name: ws.worktree_name(),
             worktree_health: ws.worktree_health(),
@@ -690,8 +692,8 @@ fn build_detail_info_for_package(
         DetailSource {
             abs_path,
             display_path,
-            display_name: pkg.display_name(),
-            name: pkg.name(),
+            title_name: pkg.package_name().into_string(),
+            has_cargo: true,
             cargo: Some(cargo),
             worktree_name: pkg.worktree_name(),
             worktree_health: pkg.worktree_health(),
@@ -717,8 +719,8 @@ fn build_detail_info_non_rust(
         DetailSource {
             abs_path,
             display_path,
-            display_name: nr.display_name(),
-            name: nr.name(),
+            title_name: nr.root_directory_name().into_string(),
+            has_cargo: false,
             cargo: None,
             worktree_name: None,
             worktree_health: nr.worktree_health(),
@@ -732,8 +734,8 @@ fn build_detail_info_non_rust(
 struct DetailSource<'a> {
     abs_path:        &'a Path,
     display_path:    &'a str,
-    display_name:    String,
-    name:            Option<&'a str>,
+    title_name:      String,
+    has_cargo:       bool,
     cargo:           Option<&'a Cargo>,
     worktree_name:   Option<&'a str>,
     worktree_health: WorktreeHealth,
@@ -744,7 +746,6 @@ struct DetailSource<'a> {
 
 fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
     let abs_path = src.abs_path;
-    let name = src.name;
     let cargo = src.cargo;
     let wt_item = src.wt_item;
     let git_detail = build_git_detail_fields(app, abs_path);
@@ -776,15 +777,15 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
 
     let is_binary = cargo.is_some_and(Cargo::is_binary);
     let binary_name = if is_binary {
-        name.map(str::to_string)
+        Some(src.title_name.clone())
     } else {
         None
     };
 
     DetailInfo {
         package_title: src.package_title,
-        name: name.unwrap_or("-").to_string(),
-        display_name: src.display_name,
+        name: src.title_name.clone(),
+        title_name: src.title_name,
         path: src.display_path.to_string(),
         version: cargo.and_then(Cargo::version).unwrap_or("-").to_string(),
         description: cargo.and_then(Cargo::description).map(str::to_string),
@@ -818,7 +819,7 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
         binary_name,
         examples: cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
         benches: cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
-        has_package: name.is_some(),
+        has_package: src.has_cargo,
         cargo_active,
     }
 }

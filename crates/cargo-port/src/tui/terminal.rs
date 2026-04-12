@@ -11,7 +11,9 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use crossterm::event::DisableFocusChange;
 use crossterm::event::DisableMouseCapture;
+use crossterm::event::EnableFocusChange;
 use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::execute;
@@ -82,7 +84,12 @@ struct FrameMetrics {
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableFocusChange
+    )?;
     let backend = CrosstermBackend::new(stdout);
     Terminal::new(backend)
 }
@@ -92,7 +99,8 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        DisableFocusChange
     )?;
     Ok(())
 }
@@ -135,7 +143,12 @@ pub fn run(path: &Path) -> ExitCode {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        let _ = execute!(
+            io::stdout(),
+            LeaveAlternateScreen,
+            DisableMouseCapture,
+            DisableFocusChange
+        );
         original_hook(panic_info);
     }));
 
@@ -253,6 +266,7 @@ fn process_input_frame(app: &mut App, input_rx: &mpsc::Receiver<Event>) -> (usiz
     let mut input_count = 0usize;
     while let Ok(event) = input_rx.try_recv() {
         input_count += 1;
+        tracing::info!(event = %input::event_label(&event), "input_event_received");
         input::handle_event(app, &event);
         if app.should_quit() {
             break;

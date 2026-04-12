@@ -113,8 +113,10 @@ pub(super) fn build_finder_index(
                 let dp = nr.display_path().into_string();
                 let abs = nr.path().display().to_string();
                 let branch = branch_for(nr.git_info());
+                let root_name = nr.root_directory_name().into_string();
                 let context = TypedProjectContext {
-                    project_name: &nr.display_name(),
+                    project_name: &root_name,
+                    cargo_name:   None,
                     abs_path:     &abs,
                     display_path: &dp,
                     branch:       &branch,
@@ -171,8 +173,12 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &RustProject<Workspace>)
     let root_abs_path = ws.path().display().to_string();
     let root_branch = branch_for(ws.git_info());
     let cargo = ws.cargo();
+    let root_name = ws.root_directory_name().into_string();
+    let cargo_name = ws.package_name().into_string();
+    let cargo_name = (cargo_name != root_name).then_some(cargo_name);
     let root_context = TypedProjectContext {
-        project_name: &ws.display_name(),
+        project_name: &root_name,
+        cargo_name:   cargo_name.as_deref(),
         abs_path:     &root_abs_path,
         display_path: &root_path,
         branch:       &root_branch,
@@ -191,8 +197,10 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &RustProject<Workspace>)
             let member_cargo = member.cargo();
             let member_display_path = member.display_path();
             let member_abs_path = member.path().display().to_string();
+            let member_name = member.package_name().into_string();
             let member_context = TypedProjectContext {
-                project_name: &member.display_name(),
+                project_name: &member_name,
+                cargo_name:   None,
                 abs_path:     &member_abs_path,
                 display_path: member_display_path.as_str(),
                 branch:       &root_branch,
@@ -207,8 +215,9 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &RustProject<Workspace>)
         }
     }
 
+    let ws_package_name = ws.package_name().into_string();
     for vendored in ws.vendored() {
-        add_vendored_items_typed(items, vendored, &ws.display_name());
+        add_vendored_items_typed(items, vendored, &ws_package_name);
     }
 }
 
@@ -217,8 +226,12 @@ fn add_package_items(items: &mut Vec<FinderItem>, pkg: &RustProject<Package>) {
     let root_abs_path = pkg.path().display().to_string();
     let root_branch = branch_for(pkg.git_info());
     let cargo = pkg.cargo();
+    let root_name = pkg.root_directory_name().into_string();
+    let pkg_name = pkg.package_name().into_string();
+    let cargo_name = (pkg_name != root_name).then_some(pkg_name);
     let root_context = TypedProjectContext {
-        project_name: &pkg.display_name(),
+        project_name: &root_name,
+        cargo_name:   cargo_name.as_deref(),
         abs_path:     &root_abs_path,
         display_path: &root_path,
         branch:       &root_branch,
@@ -232,8 +245,9 @@ fn add_package_items(items: &mut Vec<FinderItem>, pkg: &RustProject<Package>) {
         cargo.benches(),
     );
 
+    let pkg_parent_name = pkg.package_name().into_string();
     for vendored in pkg.vendored() {
-        add_vendored_items_typed(items, vendored, &pkg.display_name());
+        add_vendored_items_typed(items, vendored, &pkg_parent_name);
     }
 }
 
@@ -242,7 +256,7 @@ fn add_vendored_items_typed(
     project: &RustProject<Package>,
     parent_name: &str,
 ) {
-    let project_name = project.display_name();
+    let project_name = project.package_name().into_string();
     let dir = project.display_path().into_string();
     let project_path = project.path().display().to_string();
     let branch = String::new();
@@ -347,13 +361,23 @@ fn add_project_items_from_typed(
     benches: &[String],
 ) {
     let project_name = context.project_name.to_string();
+    let cargo_name = context.cargo_name.map(str::to_string);
     let branch = context.branch.to_string();
     let dir = context.display_path.to_string();
 
+    // Build base token fields shared by all rows. Cargo name is included so
+    // all targets remain findable by Cargo name when the directory differs.
+    let base_fields: Vec<&str> = [&project_name as &str, &dir, &branch]
+        .into_iter()
+        .chain(cargo_name.as_deref())
+        .collect();
+
     // The project itself
     let kind = FinderKind::Project;
+    let mut project_tokens = base_fields.clone();
+    project_tokens.push(kind.label());
     items.push(FinderItem {
-        search_tokens: build_search_tokens(&[&project_name, &dir, &branch, kind.label()]),
+        search_tokens: build_search_tokens(&project_tokens),
         display_name: project_name.clone(),
         kind,
         project_path: context.abs_path.to_string(),
@@ -366,14 +390,10 @@ fn add_project_items_from_typed(
     // Binary
     if types.contains(&ProjectType::Binary) {
         let kind = FinderKind::Binary;
+        let mut tokens = base_fields.clone();
+        tokens.push(kind.label());
         items.push(FinderItem {
-            search_tokens: build_search_tokens(&[
-                &project_name,
-                &project_name,
-                &dir,
-                &branch,
-                kind.label(),
-            ]),
+            search_tokens: build_search_tokens(&tokens),
             display_name: project_name.clone(),
             kind,
             project_path: context.abs_path.to_string(),
@@ -393,14 +413,11 @@ fn add_project_items_from_typed(
                 format!("{}/{name}", group.category)
             };
             let kind = FinderKind::Example;
+            let mut tokens = vec![display.as_str()];
+            tokens.extend_from_slice(&base_fields);
+            tokens.push(kind.label());
             items.push(FinderItem {
-                search_tokens: build_search_tokens(&[
-                    &display,
-                    &project_name,
-                    &dir,
-                    &branch,
-                    kind.label(),
-                ]),
+                search_tokens: build_search_tokens(&tokens),
                 display_name: display,
                 kind,
                 project_path: context.abs_path.to_string(),
@@ -415,8 +432,11 @@ fn add_project_items_from_typed(
     // Benches
     for name in benches {
         let kind = FinderKind::Bench;
+        let mut tokens = vec![name.as_str()];
+        tokens.extend_from_slice(&base_fields);
+        tokens.push(kind.label());
         items.push(FinderItem {
-            search_tokens: build_search_tokens(&[name, &project_name, &dir, &branch, kind.label()]),
+            search_tokens: build_search_tokens(&tokens),
             display_name: name.clone(),
             kind,
             project_path: context.abs_path.to_string(),
@@ -430,6 +450,9 @@ fn add_project_items_from_typed(
 
 struct TypedProjectContext<'a> {
     project_name: &'a str,
+    /// Cargo package name when it differs from `project_name`. Included in
+    /// search tokens so root-level Rust items remain findable by Cargo name.
+    cargo_name:   Option<&'a str>,
     abs_path:     &'a str,
     display_path: &'a str,
     branch:       &'a str,

@@ -777,10 +777,10 @@ fn package_worktree_fit_widths_use_display_name_for_primary_entry() {
 }
 
 #[test]
-fn root_rows_disambiguate_same_project_names_with_leaf_dir_suffix() {
+fn root_rows_disambiguate_same_directory_leaves_with_parent_suffix() {
     let mut app = make_app(&[
         make_project(Some("cargo-port"), "/tmp/rust/cargo-port"),
-        make_project(Some("cargo-port"), "/tmp/rust/cargo-port-old"),
+        make_project(Some("cargo-port"), "/tmp/archive/cargo-port"),
     ]);
 
     let names = rendered_root_name_cells(&mut app);
@@ -788,14 +788,14 @@ fn root_rows_disambiguate_same_project_names_with_leaf_dir_suffix() {
     assert!(
         names
             .iter()
-            .any(|name| name.contains("cargo-port [cargo-port]")),
-        "one root label should use the leaf dir suffix when it is uniquely sufficient: {names:?}"
+            .any(|name| name.contains("cargo-port [rust/cargo-port]")),
+        "colliding dir-leaf roots should disambiguate by parent path: {names:?}"
     );
     assert!(
         names
             .iter()
-            .any(|name| name.contains("cargo-port [cargo-port-old]")),
-        "one root label should use the unique differing leaf dir: {names:?}"
+            .any(|name| name.contains("cargo-port [archive/cargo-port]")),
+        "colliding dir-leaf roots should disambiguate by parent path: {names:?}"
     );
     assert_ne!(
         names[0], names[1],

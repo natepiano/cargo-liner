@@ -1,4 +1,5 @@
 use super::*;
+use crate::project::WorktreeHealth::Normal;
 
 #[test]
 fn collapse_all_anchors_member_selection_to_root() {
@@ -393,7 +394,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
     let item = &app.projects[0];
     let row = crate::tui::columns::build_row_cells(crate::tui::columns::ProjectRow {
         prefix:            crate::tui::render::PREFIX_ROOT_LEAF,
-        name:              &item.display_name(),
+        name:              &item.root_directory_name().into_string(),
         name_segments:     None,
         git_path_state:    app.git_path_state_for(item.path()),
         lint_icon:         app.lint_icon_for_root(0),
@@ -406,7 +407,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         git_main:          &app.git_main(item.path()),
         ci:                app.ci_for_item(item),
         deleted:           true,
-        worktree_health:   crate::project::WorktreeHealth::Normal,
+        worktree_health:   Normal,
     });
     let widths = crate::tui::columns::ResolvedWidths::new(true);
     let line = crate::tui::columns::row_to_line(&row, &widths);

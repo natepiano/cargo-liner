@@ -23,11 +23,28 @@ use crate::keymap::KeyBind;
 use crate::keymap::ProjectListAction;
 use crate::project;
 
+/// Last known mouse position, updated from every mouse event. Used to
+/// synthesize a click when `FocusGained` arrives because iTerm2 eats the
+/// mouse-down event that caused the focus change.
+static LAST_MOUSE_POS: std::sync::Mutex<Option<(u16, u16)>> = std::sync::Mutex::new(None);
+
 pub(super) fn handle_event(app: &mut App, event: &Event) {
     let started = Instant::now();
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => handle_key_event(app, key),
-        Event::Mouse(mouse) => handle_mouse_event(app, mouse.kind, mouse.column, mouse.row),
+        Event::Mouse(mouse) => {
+            if let Ok(mut pos) = LAST_MOUSE_POS.lock() {
+                *pos = Some((mouse.column, mouse.row));
+            }
+            handle_mouse_event(app, mouse.kind, mouse.column, mouse.row);
+        },
+        Event::FocusGained => {
+            if let Ok(pos) = LAST_MOUSE_POS.lock()
+                && let Some((column, row)) = *pos
+            {
+                handle_mouse_click(app, column, row);
+            }
+        },
         _ => {},
     }
 
@@ -221,7 +238,7 @@ const fn pane_label(pane: PaneId) -> &'static str {
     }
 }
 
-fn event_label(event: &Event) -> String {
+pub(super) fn event_label(event: &Event) -> String {
     match event {
         Event::Key(key) => format!("key:{:?}:{:?}", key.kind, key.code),
         Event::Mouse(mouse) => format!("mouse:{:?}", mouse.kind),

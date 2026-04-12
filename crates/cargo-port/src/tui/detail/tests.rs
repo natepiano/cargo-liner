@@ -18,6 +18,7 @@ use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::project::ExampleGroup;
 use crate::project::GitPathState;
+use crate::project::WorktreeHealth::Normal;
 use crate::tui::render::CiColumn;
 use crate::tui::types::PaneFocusState;
 
@@ -29,7 +30,7 @@ fn detail_info(is_rust_project: bool, lint_label: &str) -> DetailInfo {
             "Project".to_string()
         },
         name:              "demo".to_string(),
-        display_name:      "demo".to_string(),
+        title_name:        "demo".to_string(),
         path:              "~/demo".to_string(),
         version:           "0.1.0".to_string(),
         description:       None,
@@ -55,7 +56,7 @@ fn detail_info(is_rust_project: bool, lint_label: &str) -> DetailInfo {
         git_inception:     None,
         git_last_commit:   None,
         worktree_label:    None,
-        worktree_health:   crate::project::WorktreeHealth::Normal,
+        worktree_health:   Normal,
         worktree_names:    Vec::new(),
         is_binary:         false,
         binary_name:       None,
@@ -160,11 +161,11 @@ fn package_label_width_expands_for_crates_io() {
 }
 
 #[test]
-fn project_panel_title_uses_display_name_when_cargo_name_missing() {
+fn project_panel_title_uses_title_name() {
     let info = DetailInfo {
         package_title: "Workspace".to_string(),
         name: "-".to_string(),
-        display_name: "hana".to_string(),
+        title_name: "hana".to_string(),
         ..detail_info(true, "🟢")
     };
 

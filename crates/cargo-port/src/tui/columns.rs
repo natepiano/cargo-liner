@@ -11,6 +11,8 @@ use crate::constants::GIT_MODIFIED_COLOR;
 use crate::constants::GIT_UNTRACKED_COLOR;
 use crate::constants::IN_SYNC;
 use crate::project::GitPathState;
+use crate::project::WorktreeHealth;
+use crate::project::WorktreeHealth::Normal;
 
 // ── Column indices ──────────────────────────────────────────────────
 pub(super) const COL_NAME: usize = 0;
@@ -162,14 +164,14 @@ pub(super) struct ProjectRow<'a> {
     pub git_main:          &'a str,
     pub ci:                Option<Conclusion>,
     pub deleted:           bool,
-    pub worktree_health:   crate::project::WorktreeHealth,
+    pub worktree_health:   WorktreeHealth,
 }
 
 pub(super) struct RowCells {
     pub cells:           [CellContent; NUM_COLS],
     pub prefix:          String,
     pub deleted:         bool,
-    pub worktree_health: crate::project::WorktreeHealth,
+    pub worktree_health: WorktreeHealth,
 }
 
 // ── Resolved widths ─────────────────────────────────────────────────
@@ -593,7 +595,7 @@ pub(super) fn build_group_header_cells(prefix: &str, label: &str) -> RowCells {
         cells,
         prefix: String::from(prefix),
         deleted: false,
-        worktree_health: crate::project::WorktreeHealth::Normal,
+        worktree_health: Normal,
     }
 }
 
@@ -636,7 +638,7 @@ pub(super) fn build_summary_cells(widths: &ResolvedWidths, disk: &str) -> RowCel
         cells,
         prefix: " ".repeat(widths.get(COL_NAME)),
         deleted: false,
-        worktree_health: crate::project::WorktreeHealth::Normal,
+        worktree_health: Normal,
     }
 }
 

@@ -89,6 +89,46 @@ impl AsRef<str> for DisplayPath {
     fn as_ref(&self) -> &str { self.as_str() }
 }
 
+/// The last directory component of a project's root checkout path.
+/// Used for top-level root labels, disambiguation, and worktree label fallback.
+/// Never derived from Cargo metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RootDirectoryName(String);
+
+impl RootDirectoryName {
+    pub(crate) fn as_str(&self) -> &str { &self.0 }
+
+    pub(crate) fn into_string(self) -> String { self.0 }
+}
+
+impl fmt::Display for RootDirectoryName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
+}
+
+impl AsRef<str> for RootDirectoryName {
+    fn as_ref(&self) -> &str { self.as_str() }
+}
+
+/// The Cargo package name when present, otherwise the directory leaf.
+/// Used for workspace member rows, vendored rows, detail title bars, and
+/// finder parent labels. Only available on `RustProject<Kind>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PackageName(String);
+
+impl PackageName {
+    pub(crate) fn as_str(&self) -> &str { &self.0 }
+
+    pub(crate) fn into_string(self) -> String { self.0 }
+}
+
+impl fmt::Display for PackageName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
+}
+
+impl AsRef<str> for PackageName {
+    fn as_ref(&self) -> &str { self.as_str() }
+}
+
 /// Whether a project is a plain clone or a fork (has an "upstream" remote).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1443,17 +1483,9 @@ impl NonRustProject {
     /// Display path: `~/`-prefixed for home-relative, otherwise absolute.
     pub(crate) fn display_path(&self) -> DisplayPath { self.path.display_path() }
 
-    /// Display name: project name or last path component.
-    pub(crate) fn display_name(&self) -> String {
-        self.name
-            .as_deref()
-            .unwrap_or_else(|| {
-                self.path
-                    .as_path()
-                    .file_name()
-                    .map_or("", |n| n.to_str().unwrap_or(""))
-            })
-            .to_string()
+    /// Directory leaf name for top-level root labels and disambiguation.
+    pub(crate) fn root_directory_name(&self) -> RootDirectoryName {
+        RootDirectoryName(directory_leaf(self.path.as_path()))
     }
 
     /// Language icon for the project list.
@@ -1529,17 +1561,19 @@ impl<Kind: CargoKind> RustProject<Kind> {
             .map(AbsolutePath::as_path)
     }
 
-    /// Display name: project name or last path component.
-    pub(crate) fn display_name(&self) -> String {
-        self.name
-            .as_deref()
-            .unwrap_or_else(|| {
-                self.path
-                    .as_path()
-                    .file_name()
-                    .map_or("", |n| n.to_str().unwrap_or(""))
-            })
-            .to_string()
+    /// Directory leaf name for top-level root labels and disambiguation.
+    pub(crate) fn root_directory_name(&self) -> RootDirectoryName {
+        RootDirectoryName(directory_leaf(self.path.as_path()))
+    }
+
+    /// Cargo package name when present, otherwise directory leaf.
+    /// Used for member rows, vendored rows, detail title bars, and finder parent labels.
+    pub(crate) fn package_name(&self) -> PackageName {
+        PackageName(
+            self.name
+                .as_deref()
+                .map_or_else(|| directory_leaf(self.path.as_path()), str::to_string),
+        )
     }
 }
 
@@ -1743,16 +1777,6 @@ impl RootItem {
         }
     }
 
-    pub(crate) fn display_name(&self) -> String {
-        match self {
-            Self::Workspace(p) => p.display_name(),
-            Self::Package(p) => p.display_name(),
-            Self::NonRust(p) => p.display_name(),
-            Self::WorkspaceWorktrees(g) => g.primary().display_name(),
-            Self::PackageWorktrees(g) => g.primary().display_name(),
-        }
-    }
-
     pub(crate) fn git_directory(&self) -> Option<AbsolutePath> {
         let project_path = match self {
             Self::Workspace(project) => project.path(),
@@ -1764,7 +1788,16 @@ impl RootItem {
         resolve_git_dir(project_path).map(AbsolutePath::from)
     }
 
-    pub(crate) fn root_name_base(&self) -> String { self.display_name() }
+    /// Directory leaf name for top-level root labels and disambiguation.
+    pub(crate) fn root_directory_name(&self) -> RootDirectoryName {
+        match self {
+            Self::Workspace(p) => p.root_directory_name(),
+            Self::Package(p) => p.root_directory_name(),
+            Self::NonRust(p) => p.root_directory_name(),
+            Self::WorkspaceWorktrees(g) => g.primary().root_directory_name(),
+            Self::PackageWorktrees(g) => g.primary().root_directory_name(),
+        }
+    }
 
     pub(crate) fn worktree_badge_suffix(&self) -> Option<String> {
         let live_worktrees = match self {
@@ -2105,6 +2138,15 @@ fn count_rs_files_recursive(dir: &Path) -> usize {
         }
     }
     count
+}
+
+/// Extract the last path component as a `String`, returning an empty string
+/// if the path has no file name or is not valid UTF-8.
+fn directory_leaf(path: &Path) -> String {
+    path.file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("")
+        .to_string()
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ use std::ops::DerefMut;
 use std::path::Path;
 
 use crate::project::AbsolutePath;
+use crate::project::CargoKind;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
 use crate::project::Package;
@@ -30,6 +31,9 @@ pub(crate) struct SearchableItem<'a> {
     pub abs_path:         &'a Path,
     pub display_path:     Cow<'a, str>,
     pub name:             Cow<'a, str>,
+    /// Cargo package name when it differs from the visible label. Not displayed,
+    /// only used for search matching.
+    pub cargo_name:       Option<Cow<'a, str>>,
     pub is_rust:          bool,
     pub visibility:       Visibility,
     pub disk_usage_bytes: Option<u64>,
@@ -43,7 +47,7 @@ impl ProjectList {
         let mut labels: Vec<String> = self
             .root_items
             .iter()
-            .map(RootItem::root_name_base)
+            .map(|item| item.root_directory_name().into_string())
             .collect();
         let mut collision_sets: HashMap<String, Vec<usize>> = HashMap::new();
 
@@ -55,7 +59,7 @@ impl ProjectList {
                 continue;
             }
             collision_sets
-                .entry(item.root_name_base())
+                .entry(item.root_directory_name().into_string())
                 .or_default()
                 .push(index);
         }
@@ -149,11 +153,15 @@ impl ProjectList {
                 RootItem::WorkspaceWorktrees(g) => {
                     visit_workspace_searchables(g.primary(), &mut f);
                     for linked in g.linked() {
+                        let worktree_label = linked.worktree_name().map_or_else(
+                            || Cow::Owned(linked.root_directory_name().into_string()),
+                            Cow::Borrowed,
+                        );
+                        let cargo_name = root_cargo_name(linked, worktree_label.as_ref());
                         visit_workspace_searchables_with_root_name(
                             linked,
-                            linked
-                                .worktree_name()
-                                .map_or_else(|| Cow::Owned(linked.display_name()), Cow::Borrowed),
+                            worktree_label,
+                            cargo_name,
                             &mut f,
                         );
                     }
@@ -161,11 +169,15 @@ impl ProjectList {
                 RootItem::PackageWorktrees(g) => {
                     visit_package_searchables(g.primary(), &mut f);
                     for linked in g.linked() {
+                        let worktree_label = linked.worktree_name().map_or_else(
+                            || Cow::Owned(linked.root_directory_name().into_string()),
+                            Cow::Borrowed,
+                        );
+                        let cargo_name = root_cargo_name(linked, worktree_label.as_ref());
                         visit_package_searchables_with_root_name(
                             linked,
-                            linked
-                                .worktree_name()
-                                .map_or_else(|| Cow::Owned(linked.display_name()), Cow::Borrowed),
+                            worktree_label,
+                            cargo_name,
                             &mut f,
                         );
                     }
@@ -583,7 +595,8 @@ fn non_rust_searchable(project: &NonRustProject) -> SearchableItem<'_> {
     SearchableItem {
         abs_path:         project.path(),
         display_path:     Cow::Owned(project.display_path().into_string()),
-        name:             Cow::Owned(project.display_name()),
+        name:             Cow::Owned(project.root_directory_name().into_string()),
+        cargo_name:       None,
         is_rust:          false,
         visibility:       project.visibility(),
         disk_usage_bytes: project.disk_usage_bytes(),
@@ -594,11 +607,13 @@ fn non_rust_searchable(project: &NonRustProject) -> SearchableItem<'_> {
 fn package_searchable<'a>(
     project: &'a RustProject<Package>,
     name: Cow<'a, str>,
+    cargo_name: Option<Cow<'a, str>>,
 ) -> SearchableItem<'a> {
     SearchableItem {
         abs_path: project.path(),
         display_path: Cow::Owned(project.display_path().into_string()),
         name,
+        cargo_name,
         is_rust: true,
         visibility: project.visibility(),
         disk_usage_bytes: project.disk_usage_bytes(),
@@ -609,11 +624,13 @@ fn package_searchable<'a>(
 fn workspace_searchable<'a>(
     project: &'a RustProject<Workspace>,
     name: Cow<'a, str>,
+    cargo_name: Option<Cow<'a, str>>,
 ) -> SearchableItem<'a> {
     SearchableItem {
         abs_path: project.path(),
         display_path: Cow::Owned(project.display_path().into_string()),
         name,
+        cargo_name,
         is_rust: true,
         visibility: project.visibility(),
         disk_usage_bytes: project.disk_usage_bytes(),
@@ -625,7 +642,8 @@ fn vendored_searchable(project: &RustProject<Package>) -> SearchableItem<'_> {
     SearchableItem {
         abs_path:         project.path(),
         display_path:     Cow::Owned(project.display_path().into_string()),
-        name:             Cow::Owned(format!("{} (vendored)", project.display_name())),
+        name:             Cow::Owned(format!("{} (vendored)", project.package_name())),
+        cargo_name:       None,
         is_rust:          true,
         visibility:       project.visibility(),
         disk_usage_bytes: project.disk_usage_bytes(),
@@ -634,15 +652,18 @@ fn vendored_searchable(project: &RustProject<Package>) -> SearchableItem<'_> {
 }
 
 fn visit_package_searchables(pkg: &RustProject<Package>, f: &mut impl FnMut(SearchableItem<'_>)) {
-    visit_package_searchables_with_root_name(pkg, Cow::Owned(pkg.display_name()), f);
+    let root_name = pkg.root_directory_name().into_string();
+    let cargo_name = root_cargo_name(pkg, &root_name);
+    visit_package_searchables_with_root_name(pkg, Cow::Owned(root_name), cargo_name, f);
 }
 
 fn visit_package_searchables_with_root_name<'a>(
     pkg: &'a RustProject<Package>,
     root_name: Cow<'a, str>,
+    cargo_name: Option<Cow<'a, str>>,
     f: &mut impl FnMut(SearchableItem<'a>),
 ) {
-    f(package_searchable(pkg, root_name));
+    f(package_searchable(pkg, root_name, cargo_name));
     for vendored in pkg.vendored() {
         f(vendored_searchable(vendored));
     }
@@ -653,7 +674,9 @@ fn find_package_searchable<'a>(
     target: &Path,
 ) -> Option<SearchableItem<'a>> {
     if pkg.path() == target {
-        return Some(package_searchable(pkg, Cow::Owned(pkg.display_name())));
+        let root_name = pkg.root_directory_name().into_string();
+        let cargo_name = root_cargo_name(pkg, &root_name);
+        return Some(package_searchable(pkg, Cow::Owned(root_name), cargo_name));
     }
     pkg.vendored()
         .iter()
@@ -665,20 +688,24 @@ fn visit_workspace_searchables(
     ws: &RustProject<Workspace>,
     f: &mut impl FnMut(SearchableItem<'_>),
 ) {
-    visit_workspace_searchables_with_root_name(ws, Cow::Owned(ws.display_name()), f);
+    let root_name = ws.root_directory_name().into_string();
+    let cargo_name = root_cargo_name(ws, &root_name);
+    visit_workspace_searchables_with_root_name(ws, Cow::Owned(root_name), cargo_name, f);
 }
 
 fn visit_workspace_searchables_with_root_name<'a>(
     ws: &'a RustProject<Workspace>,
     root_name: Cow<'a, str>,
+    cargo_name: Option<Cow<'a, str>>,
     f: &mut impl FnMut(SearchableItem<'a>),
 ) {
-    f(workspace_searchable(ws, root_name));
+    f(workspace_searchable(ws, root_name, cargo_name));
     for group in ws.groups() {
         for member in group.members() {
             f(package_searchable(
                 member,
-                Cow::Owned(member.display_name()),
+                Cow::Owned(member.package_name().into_string()),
+                None,
             ));
             for vendored in member.vendored() {
                 f(vendored_searchable(vendored));
@@ -695,14 +722,17 @@ fn find_workspace_searchable<'a>(
     target: &Path,
 ) -> Option<SearchableItem<'a>> {
     if ws.path() == target {
-        return Some(workspace_searchable(ws, Cow::Owned(ws.display_name())));
+        let root_name = ws.root_directory_name().into_string();
+        let cargo_name = root_cargo_name(ws, &root_name);
+        return Some(workspace_searchable(ws, Cow::Owned(root_name), cargo_name));
     }
     for group in ws.groups() {
         for member in group.members() {
             if member.path() == target {
                 return Some(package_searchable(
                     member,
-                    Cow::Owned(member.display_name()),
+                    Cow::Owned(member.package_name().into_string()),
+                    None,
                 ));
             }
             if let Some(vendored) = member
@@ -720,6 +750,20 @@ fn find_workspace_searchable<'a>(
         .map(vendored_searchable)
 }
 
+/// Return the Cargo package name as a search-only token when it differs from the
+/// visible label. Returns `None` when both names match (no alias needed).
+fn root_cargo_name<'a, Kind: CargoKind>(
+    project: &'a RustProject<Kind>,
+    visible_name: &str,
+) -> Option<Cow<'a, str>> {
+    let cargo_name = project.package_name();
+    if cargo_name.as_str() == visible_name {
+        None
+    } else {
+        Some(Cow::Owned(cargo_name.into_string()))
+    }
+}
+
 fn try_insert_member(ws: &mut RustProject<Workspace>, item_path: &Path, item: &RootItem) -> bool {
     if !item_path.starts_with(ws.path()) || item_path == ws.path() {
         return false;
@@ -731,11 +775,9 @@ fn try_insert_member(ws: &mut RustProject<Workspace>, item_path: &Path, item: &R
     let inline = ws.groups_mut().iter_mut().find(|g| g.is_inline());
     if let Some(group) = inline {
         group.members_mut().push(pkg.clone());
-        group.members_mut().sort_by(|a, b| {
-            let na = a.name().unwrap_or_else(|| a.path().to_str().unwrap_or(""));
-            let nb = b.name().unwrap_or_else(|| b.path().to_str().unwrap_or(""));
-            na.cmp(nb)
-        });
+        group
+            .members_mut()
+            .sort_by(|a, b| a.package_name().as_str().cmp(b.package_name().as_str()));
     } else {
         ws.groups_mut().push(MemberGroup::Inline {
             members: vec![pkg.clone()],

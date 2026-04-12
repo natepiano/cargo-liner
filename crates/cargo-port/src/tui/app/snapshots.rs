@@ -398,7 +398,7 @@ fn observe_new_member_group_fit_widths(
             } else {
                 inline_prefix
             };
-            App::observe_name_width(widths, dw(prefix) + dw(&member.display_name()));
+            App::observe_name_width(widths, dw(prefix) + dw(member.package_name().as_str()));
             widths.observe(COL_DISK, dw(&formatted_disk(member.disk_usage_bytes())));
         }
         if group.is_named() {
@@ -415,7 +415,7 @@ fn observe_typed_vendored_fit_widths(
 ) {
     let dw = columns::display_width;
     for project in vendored {
-        let label = format!("{} (vendored)", project.display_name());
+        let label = format!("{} (vendored)", project.package_name());
         App::observe_name_width(widths, dw(prefix) + dw(&label));
         widths.observe(COL_DISK, dw(&formatted_disk(project.disk_usage_bytes())));
     }
@@ -429,7 +429,7 @@ fn observe_workspace_worktree_entry_fit_widths(
     let dw = columns::display_width;
     let wt_name = ws
         .worktree_name()
-        .map_or_else(|| ws.display_name(), String::from);
+        .map_or_else(|| ws.root_directory_name().into_string(), String::from);
     let prefix = if ws.has_members() {
         PREFIX_WT_COLLAPSED
     } else {
@@ -465,7 +465,7 @@ fn observe_package_worktree_entry_fit_widths(
     let dw = columns::display_width;
     let wt_name = pkg
         .worktree_name()
-        .map_or_else(|| pkg.display_name(), String::from);
+        .map_or_else(|| pkg.root_directory_name().into_string(), String::from);
     App::observe_name_width(widths, dw(PREFIX_WT_FLAT) + dw(&wt_name));
     widths.observe(COL_DISK, dw(&formatted_disk(pkg.disk_usage_bytes())));
     widths.observe(

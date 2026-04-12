@@ -462,11 +462,7 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
             })
             .collect();
 
-        all_members.sort_by(|a, b| {
-            let name_a = a.name().unwrap_or_else(|| a.path().to_str().unwrap_or(""));
-            let name_b = b.name().unwrap_or_else(|| b.path().to_str().unwrap_or(""));
-            name_a.cmp(name_b)
-        });
+        all_members.sort_by(|a, b| a.package_name().as_str().cmp(b.package_name().as_str()));
 
         let groups = group_members_new(&ws_path, all_members, inline_dirs);
 

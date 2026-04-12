@@ -46,7 +46,10 @@ use crate::lint::LintRun;
 use crate::project;
 use crate::project::GitOrigin;
 use crate::project::RootItem;
+use crate::project::RustProject;
 use crate::project::Visibility;
+use crate::project::WorktreeHealth;
+use crate::project::WorktreeHealth::Normal;
 use crate::scan;
 
 #[derive(Clone, Copy)]
@@ -1018,7 +1021,7 @@ fn render_worktree_entry<'a>(
                 wtg.linked().get(wi - 1).unwrap_or_else(|| wtg.primary())
             };
             ws.worktree_name()
-                .map_or_else(|| ws.display_name(), str::to_string)
+                .map_or_else(|| ws.root_directory_name().into_string(), str::to_string)
         },
         crate::project::RootItem::PackageWorktrees(wtg) => {
             let pkg = if wi == 0 {
@@ -1027,7 +1030,7 @@ fn render_worktree_entry<'a>(
                 wtg.linked().get(wi - 1).unwrap_or_else(|| wtg.primary())
             };
             pkg.worktree_name()
-                .map_or_else(|| pkg.display_name(), str::to_string)
+                .map_or_else(|| pkg.root_directory_name().into_string(), str::to_string)
         },
         _ => dp,
     };
@@ -1114,10 +1117,7 @@ fn disk_suffix_for_state(
     }
 }
 
-fn worktree_health_for_entry(
-    item: &crate::project::RootItem,
-    wi: usize,
-) -> crate::project::WorktreeHealth {
+fn worktree_health_for_entry(item: &RootItem, wi: usize) -> WorktreeHealth {
     match item {
         crate::project::RootItem::WorkspaceWorktrees(wtg) => {
             if wi == 0 {
@@ -1125,9 +1125,7 @@ fn worktree_health_for_entry(
             } else {
                 wtg.linked()
                     .get(wi - 1)
-                    .map_or(crate::project::WorktreeHealth::Normal, |ws| {
-                        ws.worktree_health()
-                    })
+                    .map_or(Normal, RustProject::worktree_health)
             }
         },
         crate::project::RootItem::PackageWorktrees(wtg) => {
@@ -1136,12 +1134,10 @@ fn worktree_health_for_entry(
             } else {
                 wtg.linked()
                     .get(wi - 1)
-                    .map_or(crate::project::WorktreeHealth::Normal, |pkg| {
-                        pkg.worktree_health()
-                    })
+                    .map_or(Normal, RustProject::worktree_health)
             }
         },
-        _ => crate::project::WorktreeHealth::Normal,
+        _ => Normal,
     }
 }
 
@@ -1200,7 +1196,7 @@ fn render_wt_member<'a>(
             };
             let group = &ws.groups()[gi];
             let m = &group.members()[mi];
-            (Some(m), m.display_name(), group.is_named())
+            (Some(m), m.package_name().into_string(), group.is_named())
         },
         _ => (None, String::new(), false),
     };
@@ -1254,13 +1250,13 @@ fn render_member_item(
         crate::project::RootItem::Workspace(ws) => {
             let group = &ws.groups()[group_index];
             let m = &group.members()[member_index];
-            (Some(m), m.display_name(), group.is_named())
+            (Some(m), m.package_name().into_string(), group.is_named())
         },
         crate::project::RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => {
             let ws = wtg.single_live().unwrap_or_else(|| wtg.primary());
             let group = &ws.groups()[group_index];
             let m = &group.members()[member_index];
-            (Some(m), m.display_name(), group.is_named())
+            (Some(m), m.package_name().into_string(), group.is_named())
         },
         _ => (None, String::new(), false),
     };
@@ -1302,21 +1298,21 @@ fn render_vendored_item(
     let (vendored, vendored_display_name) = match item {
         crate::project::RootItem::Workspace(ws) => {
             let v = &ws.vendored()[vendored_index];
-            (Some(v), v.display_name())
+            (Some(v), v.package_name().into_string())
         },
         crate::project::RootItem::WorkspaceWorktrees(wtg) if !wtg.renders_as_group() => {
             let ws = wtg.single_live().unwrap_or_else(|| wtg.primary());
             let v = &ws.vendored()[vendored_index];
-            (Some(v), v.display_name())
+            (Some(v), v.package_name().into_string())
         },
         crate::project::RootItem::Package(pkg) => {
             let v = &pkg.vendored()[vendored_index];
-            (Some(v), v.display_name())
+            (Some(v), v.package_name().into_string())
         },
         crate::project::RootItem::PackageWorktrees(wtg) if !wtg.renders_as_group() => {
             let pkg = wtg.single_live().unwrap_or_else(|| wtg.primary());
             let v = &pkg.vendored()[vendored_index];
-            (Some(v), v.display_name())
+            (Some(v), v.package_name().into_string())
         },
         _ => (None, String::new()),
     };
@@ -1376,7 +1372,7 @@ fn render_wt_vendored_item(
         _ => None,
     };
     let vendored_display_name =
-        vendored_pkg.map_or_else(String::new, crate::project::RustProject::display_name);
+        vendored_pkg.map_or_else(String::new, |p| p.package_name().into_string());
     let name = format!("{vendored_display_name} (vendored)");
     vendored_pkg.map_or_else(
         || {
@@ -1586,11 +1582,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
                 git_main: &main_sync,
                 ci,
                 deleted,
-                worktree_health: metadata
-                    .as_ref()
-                    .map_or(crate::project::WorktreeHealth::Normal, |m| {
-                        m.worktree_health
-                    }),
+                worktree_health: metadata.as_ref().map_or(Normal, |m| m.worktree_health),
             });
             ListItem::new(super::columns::row_to_line(&row, widths))
         })
