@@ -877,7 +877,7 @@ fn render_root_item(
     let lint = app.lint_icon_for_root(node_index);
     let origin_sync = app.git_sync(item.path());
     let main_sync = app.git_main(item.path());
-    let git_path_state = app.git_path_state_for(item.path());
+    let git_path_state = app.git_path_state_for_item(item);
     let prefix = if item.has_children() {
         if app.expanded().contains(&ExpandKey::Node(node_index)) {
             PREFIX_ROOT_EXPANDED

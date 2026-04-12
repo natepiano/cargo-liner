@@ -428,11 +428,10 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
     if app.is_vendored_path(item.path()) {
         return "Vendored Crate".to_string();
     }
-    if matches!(
-        item,
-        RootItem::Rust(RustProject::Workspace(_))
-            | RootItem::Worktrees(WorktreeGroup::Workspaces { .. })
-    ) {
+    if matches!(item, RootItem::Worktrees(_)) {
+        return "Worktree Group".to_string();
+    }
+    if matches!(item, RootItem::Rust(RustProject::Workspace(_))) {
         return "Workspace".to_string();
     }
     if app.is_workspace_member_path(item.path()) {

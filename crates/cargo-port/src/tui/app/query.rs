@@ -523,6 +523,32 @@ impl App {
             .unwrap_or(GitPathState::OutsideRepo)
     }
 
+    /// Roll up the worst git path state across all children of a `RootItem`.
+    /// For worktree groups, checks primary + all linked entries.
+    /// For everything else, returns the state for the single path.
+    pub(in super::super) fn git_path_state_for_item(&self, item: &RootItem) -> GitPathState {
+        match item {
+            RootItem::Worktrees(g) => {
+                let states: Box<dyn Iterator<Item = GitPathState>> = match g {
+                    WorktreeGroup::Workspaces {
+                        primary, linked, ..
+                    } => Box::new(
+                        std::iter::once(self.git_path_state_for(primary.path()))
+                            .chain(linked.iter().map(|l| self.git_path_state_for(l.path()))),
+                    ),
+                    WorktreeGroup::Packages {
+                        primary, linked, ..
+                    } => Box::new(
+                        std::iter::once(self.git_path_state_for(primary.path()))
+                            .chain(linked.iter().map(|l| self.git_path_state_for(l.path()))),
+                    ),
+                };
+                worst_git_path_state(states)
+            },
+            _ => self.git_path_state_for(item.path()),
+        }
+    }
+
     pub(in super::super) fn refresh_git_path_state(&mut self, path: &Path) {
         let state = crate::project::detect_git_path_state(path);
         self.git_path_states.insert(path.to_path_buf(), state);
@@ -876,4 +902,21 @@ fn package_parent_row(
             path: pkg.path().to_path_buf(),
             kind: parent_kind,
         })
+}
+
+/// Return the most severe git path state from an iterator.
+/// Severity: `Modified` > `Untracked` > `Clean` > `Ignored` > `OutsideRepo`.
+fn worst_git_path_state(states: impl Iterator<Item = GitPathState>) -> GitPathState {
+    const fn severity(state: GitPathState) -> u8 {
+        match state {
+            GitPathState::Modified => 4,
+            GitPathState::Untracked => 3,
+            GitPathState::Clean => 2,
+            GitPathState::Ignored => 1,
+            GitPathState::OutsideRepo => 0,
+        }
+    }
+    states
+        .max_by_key(|s| severity(*s))
+        .unwrap_or(GitPathState::OutsideRepo)
 }
