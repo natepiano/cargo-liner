@@ -1,1 +1,2 @@
 install_verify = "."
+install_verify_script = ".claude/scripts/release/install_verify.sh"
