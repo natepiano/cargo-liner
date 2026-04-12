@@ -560,6 +560,7 @@ fn is_progress_line(line: &str) -> bool {
         return false;
     }
     trimmed.starts_with("Blocking waiting for file lock")
+        || trimmed.starts_with("Building ")
         || trimmed.starts_with("Checking ")
         || trimmed.starts_with("Compiling ")
         || trimmed.starts_with("Finished ")
@@ -687,7 +688,7 @@ fn flush_diagnostic_block(
             // Suppressed — will be rendered in the unified summary
         },
         DiagnosticBlockKind::ForwardedDiagnostic => {
-            if !matches!(output_mode, BuildOutputMode::Quiet) {
+            if !matches!(output_mode, BuildOutputMode::Json | BuildOutputMode::Quiet) {
                 for line in block.iter() {
                     eprint!("{line}");
                 }
@@ -3672,6 +3673,12 @@ mod tests {
         let exports = exported_names_from_parent_boundary(&file, "child", "Other");
         assert_eq!(exports.explicit, vec!["Other".to_string()]);
         assert!(exports.fix_supported);
+    }
+
+    #[test]
+    fn plain_building_progress_line_is_treated_as_progress() {
+        let line = "    Building [                             ] 0/1: cli_json_clean_fixture      \r    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s\n";
+        assert!(is_progress_line(line));
     }
 
     #[test]
