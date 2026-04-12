@@ -288,12 +288,13 @@ mod tests {
     use crate::project::ExampleGroup;
     use crate::project::GitInfo;
     use crate::project::GitOrigin;
-    use crate::project::Package;
+    use crate::project::PackageProject;
     use crate::project::ProjectType;
     use crate::project::RootItem;
     use crate::project::RustProject;
     use crate::project::Visibility;
     use crate::project::WorkflowPresence;
+    use crate::project::WorktreeGroup;
     use crate::project_list::ProjectList;
     use crate::tui::app::App;
     use crate::tui::app::DismissTarget;
@@ -326,14 +327,14 @@ mod tests {
     }
 
     fn make_package_with_cargo(name: &str, path: &Path, cargo: Cargo) -> RootItem {
-        RootItem::Package(RustProject::<Package>::new(
+        RootItem::Rust(RustProject::Package(PackageProject::new(
             path.to_path_buf(),
             Some(name.to_string()),
             cargo,
             Vec::new(),
             None,
             None,
-        ))
+        )))
     }
 
     fn make_package_worktree(
@@ -341,8 +342,8 @@ mod tests {
         path: &Path,
         worktree_name: Option<&str>,
         primary_abs_path: Option<&Path>,
-    ) -> RustProject<Package> {
-        RustProject::<Package>::new(
+    ) -> PackageProject {
+        PackageProject::new(
             path.to_path_buf(),
             Some(name.to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -788,17 +789,17 @@ mod tests {
     fn expanded_tree_reshape_rebuilds_clickable_rows() {
         let primary = PathBuf::from("/abs/app");
         let linked = PathBuf::from("/abs/app_feat");
-        let mut app = make_app(&[RootItem::Package(make_package_worktree(
+        let mut app = make_app(&[RootItem::Rust(RustProject::Package(make_package_worktree(
             "app",
             &primary,
             None,
             Some(primary.as_path()),
-        ))]);
+        )))]);
         app.expanded_mut().insert(ExpandKey::Node(0));
         render_ui(&mut app);
 
-        app.set_projects(ProjectList::new(vec![RootItem::PackageWorktrees(
-            crate::project::WorktreeGroup::new(
+        app.set_projects(ProjectList::new(vec![RootItem::Worktrees(
+            WorktreeGroup::new_packages(
                 make_package_worktree("app", &primary, None, Some(primary.as_path())),
                 vec![make_package_worktree(
                     "app",

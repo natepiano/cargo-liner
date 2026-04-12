@@ -141,9 +141,21 @@ fn disk_rollup_deduplicates_primary_worktree_path() {
 fn handle_project_discovered_deduplicates_by_path() {
     let mut app = make_app(&[]);
 
-    let pkg1 = RootItem::Package(make_package_raw(Some("foo"), "/abs/foo", None));
-    let pkg2 = RootItem::Package(make_package_raw(Some("foo"), "/abs/foo", None));
-    let pkg3 = RootItem::Package(make_package_raw(Some("bar"), "/abs/bar", None));
+    let pkg1 = RootItem::Rust(RustProject::Package(make_package_raw(
+        Some("foo"),
+        "/abs/foo",
+        None,
+    )));
+    let pkg2 = RootItem::Rust(RustProject::Package(make_package_raw(
+        Some("foo"),
+        "/abs/foo",
+        None,
+    )));
+    let pkg3 = RootItem::Rust(RustProject::Package(make_package_raw(
+        Some("bar"),
+        "/abs/bar",
+        None,
+    )));
 
     app.handle_project_discovered(pkg1);
     app.handle_project_discovered(pkg2);
@@ -224,12 +236,12 @@ fn discovered_workspace_worktree_with_members_expands_as_worktree_then_workspace
         BackgroundMsg::ProjectDiscovered { item: linked_item },
     );
 
-    let RootItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+    let RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) = &app.projects[0] else {
         panic!("expected discovered workspace worktree to form a worktree group");
     };
-    assert_eq!(group.linked().len(), 1);
+    assert_eq!(linked.len(), 1);
     assert!(
-        group.linked()[0].has_members(),
+        linked[0].has_members(),
         "linked workspace worktree should arrive with member groups populated"
     );
 
@@ -278,7 +290,7 @@ fn expanded_workspace_root_discovery_immediately_renders_primary_workspace_and_l
     init_workspace_git_project_with_member(&primary_dir, "bevy_brp", "extras");
 
     let mut primary_item = item_from_project_dir(&primary_dir);
-    let RootItem::Workspace(primary_ws) = &mut primary_item else {
+    let RootItem::Rust(RustProject::Workspace(primary_ws)) = &mut primary_item else {
         panic!("expected primary workspace root item");
     };
     *primary_ws.groups_mut() = vec![inline_group(vec![make_member(
@@ -358,7 +370,7 @@ fn project_discovery_updates_cached_rows_for_expanded_workspace_immediately() {
     init_workspace_git_project_with_member(&primary_dir, "bevy_brp", "extras");
 
     let mut primary_item = item_from_project_dir(&primary_dir);
-    let RootItem::Workspace(primary_ws) = &mut primary_item else {
+    let RootItem::Rust(RustProject::Workspace(primary_ws)) = &mut primary_item else {
         panic!("expected primary workspace root item");
     };
     *primary_ws.groups_mut() = vec![inline_group(vec![make_member(
@@ -412,7 +424,7 @@ fn stale_workspace_regroup_immediately_renders_primary_workspace_and_linked_row(
     init_workspace_git_project_with_member(&primary_dir, "bevy_brp", "extras");
 
     let mut primary_item = item_from_project_dir(&primary_dir);
-    let RootItem::Workspace(primary_ws) = &mut primary_item else {
+    let RootItem::Rust(RustProject::Workspace(primary_ws)) = &mut primary_item else {
         panic!("expected primary workspace root item");
     };
     *primary_ws.groups_mut() = vec![inline_group(vec![make_member(
@@ -438,12 +450,12 @@ fn stale_workspace_regroup_immediately_renders_primary_workspace_and_linked_row(
     );
 
     add_git_worktree(&primary_dir, &linked_dir, "test/brp");
-    let stale_discovery = RootItem::Workspace(make_workspace_raw(
+    let stale_discovery = RootItem::Rust(RustProject::Workspace(make_workspace_raw(
         Some("bevy_brp"),
         &linked_dir.to_string_lossy(),
         Vec::new(),
         None,
-    ));
+    )));
     apply_bg_msg(
         &mut app,
         BackgroundMsg::ProjectDiscovered {
@@ -532,12 +544,12 @@ fn stale_discovery_refresh_then_delete_dismiss_workspace_returns_to_root() {
 
     add_git_worktree(&primary_dir, &linked_dir, "test/obsidian");
 
-    let stale_discovery = RootItem::Workspace(make_workspace_raw(
+    let stale_discovery = RootItem::Rust(RustProject::Workspace(make_workspace_raw(
         Some("obsidian_knife"),
         &linked_dir.to_string_lossy(),
         Vec::new(),
         None,
-    ));
+    )));
     apply_bg_msg(
         &mut app,
         BackgroundMsg::ProjectDiscovered {
@@ -564,11 +576,11 @@ fn stale_discovery_refresh_then_delete_dismiss_package_returns_to_root() {
 
     add_git_worktree(&primary_dir, &linked_dir, "test/app");
 
-    let stale_discovery = RootItem::Package(make_package_raw(
+    let stale_discovery = RootItem::Rust(RustProject::Package(make_package_raw(
         Some("app"),
         &linked_dir.to_string_lossy(),
         None,
-    ));
+    )));
     apply_bg_msg(
         &mut app,
         BackgroundMsg::ProjectDiscovered {
@@ -619,7 +631,7 @@ fn handle_project_discovered_does_not_allocate_per_comparison() {
     let start = std::time::Instant::now();
     for i in 0..200 {
         let path = format!("/abs/project_{i}");
-        let item = RootItem::Package(make_package_raw(None, &path, None));
+        let item = RootItem::Rust(RustProject::Package(make_package_raw(None, &path, None)));
         app.handle_project_discovered(item);
     }
     let elapsed = start.elapsed();
@@ -635,7 +647,7 @@ fn is_deleted_does_not_allocate_display_paths() {
     let mut app = make_app(&[]);
     for i in 0..200 {
         let path = format!("/abs/project_{i}");
-        let item = RootItem::Package(make_package_raw(None, &path, None));
+        let item = RootItem::Rust(RustProject::Package(make_package_raw(None, &path, None)));
         app.projects.push(item);
     }
     let target = app.projects[100].path().to_path_buf();

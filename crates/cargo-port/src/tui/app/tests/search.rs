@@ -4,13 +4,13 @@ use super::*;
 fn search_finds_workspace_members_and_vendored_crates() {
     let member_path = "~/ws/crates/member";
     let vendored_path = "~/ws/vendor/helper";
-    let workspace = RootItem::Workspace(make_workspace_raw_with_vendored(
+    let workspace = RootItem::Rust(RustProject::Workspace(make_workspace_raw_with_vendored(
         Some("ws"),
         "~/ws",
         vec![inline_group(vec![make_member(Some("member"), member_path)])],
         vec![make_member(Some("helper"), vendored_path)],
         None,
-    ));
+    )));
     let mut app = make_app(&[make_workspace_project(Some("ws"), "~/ws")]);
     apply_items(&mut app, &[workspace]);
 

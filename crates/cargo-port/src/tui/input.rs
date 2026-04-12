@@ -22,6 +22,7 @@ use crate::keymap::GlobalAction;
 use crate::keymap::KeyBind;
 use crate::keymap::ProjectListAction;
 use crate::project;
+use crate::project::ProjectFields;
 
 /// Last known mouse position, updated from every mouse event. Used to
 /// synthesize a click when `FocusGained` arrives because iTerm2 eats the
@@ -306,7 +307,7 @@ fn open_in_editor(app: &App) {
         .projects()
         .iter()
         .find_map(|item| match item {
-            crate::project::RootItem::Workspace(ws)
+            crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws))
                 if ws.groups().iter().any(|g| {
                     g.members()
                         .iter()

@@ -1,0 +1,298 @@
+use std::path::Path;
+use std::path::PathBuf;
+
+use super::git::GitInfo;
+use super::info::ProjectInfo;
+use super::info::Visibility;
+use super::info::WorktreeHealth;
+use super::non_rust::NonRustProject;
+use super::paths::AbsolutePath;
+use super::paths::DisplayPath;
+use super::paths::RootDirectoryName;
+use super::project_fields::ProjectFields;
+use super::rust_project::RustProject;
+use super::worktree_group::WorktreeGroup;
+
+/// The top-level enum for the project list — 3 variants.
+#[derive(Clone)]
+pub(crate) enum RootItem {
+    Rust(RustProject),
+    NonRust(NonRustProject),
+    Worktrees(WorktreeGroup),
+}
+
+impl RootItem {
+    pub(crate) fn visibility(&self) -> Visibility {
+        match self {
+            Self::Rust(p) => p.visibility(),
+            Self::NonRust(p) => p.visibility(),
+            Self::Worktrees(g) => g.visibility(),
+        }
+    }
+
+    pub(crate) fn worktree_health(&self) -> WorktreeHealth {
+        match self {
+            Self::Rust(p) => p.worktree_health(),
+            Self::NonRust(p) => p.worktree_health(),
+            Self::Worktrees(g) => g.primary_worktree_health(),
+        }
+    }
+
+    /// Absolute path to the primary project root.
+    pub(crate) fn path(&self) -> &Path {
+        match self {
+            Self::Rust(p) => p.path(),
+            Self::NonRust(p) => p.path(),
+            Self::Worktrees(g) => g.primary_path(),
+        }
+    }
+
+    pub(crate) fn name(&self) -> Option<&str> {
+        match self {
+            Self::Rust(p) => p.name(),
+            Self::NonRust(p) => p.name(),
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces { primary, .. } => primary.name(),
+                WorktreeGroup::Packages { primary, .. } => primary.name(),
+            },
+        }
+    }
+
+    pub(crate) fn display_path(&self) -> DisplayPath {
+        match self {
+            Self::Rust(p) => p.display_path(),
+            Self::NonRust(p) => p.display_path(),
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces { primary, .. } => primary.display_path(),
+                WorktreeGroup::Packages { primary, .. } => primary.display_path(),
+            },
+        }
+    }
+
+    pub(crate) fn git_directory(&self) -> Option<AbsolutePath> {
+        super::git::resolve_git_dir(self.path()).map(AbsolutePath::from)
+    }
+
+    /// Directory leaf name for top-level root labels and disambiguation.
+    pub(crate) fn root_directory_name(&self) -> RootDirectoryName {
+        match self {
+            Self::Rust(p) => p.root_directory_name(),
+            Self::NonRust(p) => p.root_directory_name(),
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces { primary, .. } => primary.root_directory_name(),
+                WorktreeGroup::Packages { primary, .. } => primary.root_directory_name(),
+            },
+        }
+    }
+
+    pub(crate) fn worktree_badge_suffix(&self) -> Option<String> {
+        let live_worktrees = match self {
+            Self::Worktrees(g) if g.renders_as_group() => g.live_entry_count(),
+            _ => 0,
+        };
+        (live_worktrees > 0).then(|| format!(" {}:{live_worktrees}", crate::constants::WORKTREE))
+    }
+
+    /// Whether this item has expandable children.
+    pub(crate) fn has_children(&self) -> bool {
+        match self {
+            Self::Rust(RustProject::Workspace(ws)) => {
+                ws.groups().iter().any(|g| !g.members().is_empty()) || !ws.vendored().is_empty()
+            },
+            Self::Rust(RustProject::Package(pkg)) => !pkg.vendored().is_empty(),
+            Self::NonRust(_) => false,
+            Self::Worktrees(g) => {
+                if g.renders_as_group() {
+                    true
+                } else {
+                    match g {
+                        WorktreeGroup::Workspaces {
+                            primary, linked, ..
+                        } => single_live_workspace(primary, linked)
+                            .is_some_and(|ws| ws.has_members() || !ws.vendored().is_empty()),
+                        WorktreeGroup::Packages {
+                            primary, linked, ..
+                        } => single_live_package(primary, linked)
+                            .is_some_and(|pkg| !pkg.vendored().is_empty()),
+                    }
+                }
+            },
+        }
+    }
+
+    /// Language icon for the project list.
+    pub(crate) const fn lang_icon(&self) -> &'static str {
+        match self {
+            Self::Rust(_) | Self::Worktrees(_) => "\u{1f980}",
+            Self::NonRust(_) => "  ",
+        }
+    }
+
+    /// Whether this is a Rust project (has `Cargo.toml`).
+    pub(crate) const fn is_rust(&self) -> bool {
+        matches!(self, Self::Rust(_) | Self::Worktrees(_))
+    }
+
+    /// Disk usage for this item. Worktree groups sum primary + linked.
+    pub(crate) fn disk_usage_bytes(&self) -> Option<u64> {
+        match self {
+            Self::Rust(p) => p.disk_usage_bytes(),
+            Self::NonRust(p) => p.disk_usage_bytes(),
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                } => sum_disk(
+                    primary.disk_usage_bytes(),
+                    linked.iter().map(ProjectFields::disk_usage_bytes),
+                ),
+                WorktreeGroup::Packages {
+                    primary, linked, ..
+                } => sum_disk(
+                    primary.disk_usage_bytes(),
+                    linked.iter().map(ProjectFields::disk_usage_bytes),
+                ),
+            },
+        }
+    }
+
+    pub(crate) fn git_info(&self) -> Option<&GitInfo> {
+        match self {
+            Self::Rust(p) => p.git_info(),
+            Self::NonRust(p) => p.git_info(),
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces { primary, .. } => primary.git_info(),
+                WorktreeGroup::Packages { primary, .. } => primary.git_info(),
+            },
+        }
+    }
+
+    pub(crate) fn at_path(&self, path: &Path) -> Option<&ProjectInfo> {
+        match self {
+            Self::Rust(p) => p.at_path(path),
+            Self::NonRust(p) => (p.path() == path).then(|| p.info()),
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                } => super::rust_project::info_in_workspace(primary, path).or_else(|| {
+                    linked
+                        .iter()
+                        .find_map(|l| super::rust_project::info_in_workspace(l, path))
+                }),
+                WorktreeGroup::Packages {
+                    primary, linked, ..
+                } => super::rust_project::info_in_package(primary, path).or_else(|| {
+                    linked
+                        .iter()
+                        .find_map(|l| super::rust_project::info_in_package(l, path))
+                }),
+            },
+        }
+    }
+
+    pub(crate) fn at_path_mut(&mut self, path: &Path) -> Option<&mut ProjectInfo> {
+        match self {
+            Self::Rust(p) => p.at_path_mut(path),
+            Self::NonRust(p) => (p.path() == path).then(|| p.info_mut()),
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                } => {
+                    if super::rust_project::info_in_workspace(primary, path).is_some() {
+                        return super::rust_project::info_in_workspace_mut(primary, path);
+                    }
+                    let idx = linked
+                        .iter()
+                        .position(|l| super::rust_project::info_in_workspace(l, path).is_some())?;
+                    super::rust_project::info_in_workspace_mut(&mut linked[idx], path)
+                },
+                WorktreeGroup::Packages {
+                    primary, linked, ..
+                } => {
+                    if super::rust_project::info_in_package(primary, path).is_some() {
+                        return super::rust_project::info_in_package_mut(primary, path);
+                    }
+                    let idx = linked
+                        .iter()
+                        .position(|l| super::rust_project::info_in_package(l, path).is_some())?;
+                    super::rust_project::info_in_package_mut(&mut linked[idx], path)
+                },
+            },
+        }
+    }
+
+    pub(crate) fn collect_project_info(&self) -> Vec<(PathBuf, ProjectInfo)> {
+        let mut out = Vec::new();
+        match self {
+            Self::Rust(p) => p.collect_project_info(&mut out),
+            Self::NonRust(p) => {
+                out.push((p.path().to_path_buf(), p.info().clone()));
+            },
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                } => {
+                    RustProject::Workspace(primary.clone()).collect_project_info(&mut out);
+                    for l in linked {
+                        RustProject::Workspace(l.clone()).collect_project_info(&mut out);
+                    }
+                },
+                WorktreeGroup::Packages {
+                    primary, linked, ..
+                } => {
+                    RustProject::Package(primary.clone()).collect_project_info(&mut out);
+                    for l in linked {
+                        RustProject::Package(l.clone()).collect_project_info(&mut out);
+                    }
+                },
+            },
+        }
+        out
+    }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+fn sum_disk(primary: Option<u64>, linked: impl Iterator<Item = Option<u64>>) -> Option<u64> {
+    let mut total = 0u64;
+    let mut any = false;
+    for b in std::iter::once(primary).chain(linked).flatten() {
+        total += b;
+        any = true;
+    }
+    any.then_some(total)
+}
+
+use super::package::PackageProject;
+use super::workspace::WorkspaceProject;
+
+pub(super) fn single_live_workspace<'a>(
+    primary: &'a WorkspaceProject,
+    linked: &'a [WorkspaceProject],
+) -> Option<&'a WorkspaceProject> {
+    let live_count = std::iter::once(primary.visibility())
+        .chain(linked.iter().map(WorkspaceProject::visibility))
+        .filter(|v| !matches!(v, Visibility::Dismissed))
+        .count();
+    if live_count != 1 {
+        return None;
+    }
+    std::iter::once(primary)
+        .chain(linked.iter())
+        .find(|p| !matches!(p.visibility(), Visibility::Dismissed))
+}
+
+pub(super) fn single_live_package<'a>(
+    primary: &'a PackageProject,
+    linked: &'a [PackageProject],
+) -> Option<&'a PackageProject> {
+    let live_count = std::iter::once(primary.visibility())
+        .chain(linked.iter().map(PackageProject::visibility))
+        .filter(|v| !matches!(v, Visibility::Dismissed))
+        .count();
+    if live_count != 1 {
+        return None;
+    }
+    std::iter::once(primary)
+        .chain(linked.iter())
+        .find(|p| !matches!(p.visibility(), Visibility::Dismissed))
+}

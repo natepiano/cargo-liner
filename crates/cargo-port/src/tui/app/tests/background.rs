@@ -6,7 +6,7 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
     let primary = make_workspace_raw_with_primary(
         Some("bevy_window_manager"),
         "~/rust/bevy_window_manager",
-        vec![inline_group(vec![RustProject::<Package>::new(
+        vec![inline_group(vec![PackageProject::new(
             test_path("~/rust/bevy_window_manager/crates/bevy_window_manager"),
             Some("bevy_window_manager".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -20,7 +20,7 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
     let linked = make_workspace_raw_with_primary(
         Some("bevy_window_manager_style_fix"),
         "~/rust/bevy_window_manager_style_fix",
-        vec![inline_group(vec![RustProject::<Package>::new(
+        vec![inline_group(vec![PackageProject::new(
             test_path("~/rust/bevy_window_manager_style_fix/crates/bevy_window_manager"),
             Some("bevy_window_manager".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),

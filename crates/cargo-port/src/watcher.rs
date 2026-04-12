@@ -35,6 +35,8 @@ use super::http::HttpClient;
 use super::project;
 use super::project::GitInfo;
 use super::project::GitRepoPresence;
+#[cfg(test)]
+use super::project::ProjectFields;
 use super::scan;
 use super::scan::BackgroundMsg;
 use crate::project::RootItem;
@@ -1726,18 +1728,12 @@ edition = "2024"
         assert_eq!(refreshed.path(), project_root.path());
         // Verify examples were parsed from the refreshed Cargo.toml
         let example_count = match &refreshed {
-            crate::project::RootItem::Package(pkg) => pkg
-                .cargo()
-                .examples()
-                .iter()
-                .map(|g| g.names.len())
-                .sum::<usize>(),
-            crate::project::RootItem::Workspace(ws) => ws
-                .cargo()
-                .examples()
-                .iter()
-                .map(|g| g.names.len())
-                .sum::<usize>(),
+            crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
+                ws.cargo().examples().iter().map(|g| g.names.len()).sum()
+            },
+            crate::project::RootItem::Rust(crate::project::RustProject::Package(pkg)) => {
+                pkg.cargo().examples().iter().map(|g| g.names.len()).sum()
+            },
             _ => 0,
         };
         assert_eq!(example_count, 1);
@@ -2639,7 +2635,7 @@ edition = "2024"
         else {
             panic!("unexpected message");
         };
-        let RootItem::Package(pkg) = item else {
+        let RootItem::Rust(crate::project::RustProject::Package(pkg)) = item else {
             panic!("expected package worktree item");
         };
         assert_eq!(pkg.path(), linked_dir.as_path());
@@ -2685,7 +2681,7 @@ edition = "2024"
         else {
             panic!("unexpected message");
         };
-        let RootItem::Workspace(ws) = item else {
+        let RootItem::Rust(crate::project::RustProject::Workspace(ws)) = item else {
             panic!("expected workspace worktree item");
         };
         assert_eq!(ws.path(), linked_dir.as_path());
@@ -2730,7 +2726,7 @@ edition = "2024"
         else {
             panic!("unexpected message");
         };
-        let RootItem::Workspace(ws) = item else {
+        let RootItem::Rust(crate::project::RustProject::Workspace(ws)) = item else {
             panic!("expected normalized workspace refresh");
         };
         assert!(

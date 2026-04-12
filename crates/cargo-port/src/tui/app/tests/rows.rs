@@ -224,7 +224,9 @@ fn worktree_section_collapses_when_one_dismissed() {
 
     let mut items = vec![root];
     let linked_path = match &items[0] {
-        RootItem::PackageWorktrees(wtg) => wtg.linked()[0].path().to_path_buf(),
+        RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }) => {
+            linked[0].path().to_path_buf()
+        },
         _ => unreachable!("expected package worktrees"),
     };
     items[0]
@@ -295,14 +297,13 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
     );
     assert_eq!(
         match &app.projects[0] {
-            RootItem::PackageWorktrees(group) => {
-                assert_eq!(group.live_entry_count(), 1);
-                usize::from(group.renders_as_group())
+            RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. }) => {
+                assert_eq!(wtg.live_entry_count(), 1);
+                usize::from(wtg.renders_as_group())
             },
-            RootItem::Workspace(_)
-            | RootItem::Package(_)
+            RootItem::Rust(_)
             | RootItem::NonRust(_)
-            | RootItem::WorkspaceWorktrees(_) => 0,
+            | RootItem::Worktrees(WorktreeGroup::Workspaces { .. }) => 0,
         },
         0,
         "the remaining primary should no longer render as a worktree group"
@@ -381,14 +382,13 @@ fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() 
     );
     assert_eq!(
         match &app.projects[0] {
-            RootItem::WorkspaceWorktrees(group) => {
-                assert_eq!(group.live_entry_count(), 1);
-                usize::from(group.renders_as_group())
+            RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) => {
+                assert_eq!(wtg.live_entry_count(), 1);
+                usize::from(wtg.renders_as_group())
             },
-            RootItem::Workspace(_)
-            | RootItem::Package(_)
+            RootItem::Rust(_)
             | RootItem::NonRust(_)
-            | RootItem::PackageWorktrees(_) => 0,
+            | RootItem::Worktrees(WorktreeGroup::Packages { .. }) => 0,
         },
         0,
         "the remaining primary should no longer render as a worktree group"
@@ -877,7 +877,7 @@ fn visible_rows_workspace_no_worktrees() {
 
 #[test]
 fn visible_rows_include_vendored_children() {
-    let ws = RustProject::<Workspace>::new(
+    let ws = WorkspaceProject::new(
         test_path("~/ws"),
         None,
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -889,7 +889,7 @@ fn visible_rows_include_vendored_children() {
         None,
         None,
     );
-    let root = RootItem::Workspace(ws);
+    let root = RootItem::Rust(RustProject::Workspace(ws));
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
     let rows = snapshots::build_visible_rows(&[root], &expanded, true);

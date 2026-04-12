@@ -125,14 +125,16 @@ fn discovered_workspace_member_shimmers_parent_and_self_but_not_siblings() {
     app.scan.phase = ScanPhase::Complete;
 
     assert!(
-        app.handle_project_discovered(RootItem::Package(make_package_with_vendored(
-            Some("crate_new"),
-            "~/rust/ws/crates/crate_new",
-            vec![make_member(
-                Some("helper_new"),
-                "~/rust/ws/crates/crate_new/vendor/helper_new",
-            )],
-        ),))
+        app.handle_project_discovered(RootItem::Rust(RustProject::Package(
+            make_package_with_vendored(
+                Some("crate_new"),
+                "~/rust/ws/crates/crate_new",
+                vec![make_member(
+                    Some("helper_new"),
+                    "~/rust/ws/crates/crate_new/vendor/helper_new",
+                )],
+            )
+        )))
     );
 
     assert!(
@@ -194,11 +196,11 @@ fn discovered_linked_worktree_shimmers_parent_and_subtree_but_not_existing_sibli
         Some("app_feat"),
         Some("/canonical/app"),
     );
-    let primary_item = RootItem::Workspace(primary);
+    let primary_item = RootItem::Rust(RustProject::Workspace(primary));
     let mut app = make_app(&[primary_item]);
     app.scan.phase = ScanPhase::Complete;
 
-    assert!(app.handle_project_discovered(RootItem::Workspace(linked)));
+    assert!(app.handle_project_discovered(RootItem::Rust(RustProject::Workspace(linked))));
 
     assert!(
         app.discovery_name_segments_for_path(
@@ -262,12 +264,14 @@ fn discovered_package_worktree_shimmers_parent_and_self_but_not_existing_sibling
     app.scan.phase = ScanPhase::Complete;
 
     assert!(
-        app.handle_project_discovered(RootItem::Package(make_package_raw_with_primary(
-            Some("cargo-port"),
-            "~/rust/cargo-port-test",
-            Some("cargo-port-test"),
-            Some("/canonical/cargo-port"),
-        ),))
+        app.handle_project_discovered(RootItem::Rust(RustProject::Package(
+            make_package_raw_with_primary(
+                Some("cargo-port"),
+                "~/rust/cargo-port-test",
+                Some("cargo-port-test"),
+                Some("/canonical/cargo-port"),
+            )
+        )))
     );
 
     assert!(
@@ -325,12 +329,14 @@ fn refreshed_stale_package_worktree_keeps_shimmer_after_regroup() {
         app.handle_project_discovered(make_project(Some("cargo-port"), "~/rust/cargo-port-test",))
     );
     assert!(
-        app.handle_project_refreshed(RootItem::Package(make_package_raw_with_primary(
-            Some("cargo-port"),
-            "~/rust/cargo-port-test",
-            Some("cargo-port-test"),
-            Some("/canonical/cargo-port"),
-        ),))
+        app.handle_project_refreshed(RootItem::Rust(RustProject::Package(
+            make_package_raw_with_primary(
+                Some("cargo-port"),
+                "~/rust/cargo-port-test",
+                Some("cargo-port-test"),
+                Some("/canonical/cargo-port"),
+            )
+        )))
     );
 
     assert!(
@@ -373,14 +379,16 @@ fn discovered_worktree_member_shimmers_parent_self_and_children_but_not_siblings
     app.scan.phase = ScanPhase::Complete;
 
     assert!(
-        app.handle_project_discovered(RootItem::Package(make_package_with_vendored(
-            Some("crate_new"),
-            "~/rust/app_feat/crates/crate_new",
-            vec![make_member(
-                Some("helper_new"),
-                "~/rust/app_feat/crates/crate_new/vendor/helper_new",
-            )],
-        ),))
+        app.handle_project_discovered(RootItem::Rust(RustProject::Package(
+            make_package_with_vendored(
+                Some("crate_new"),
+                "~/rust/app_feat/crates/crate_new",
+                vec![make_member(
+                    Some("helper_new"),
+                    "~/rust/app_feat/crates/crate_new/vendor/helper_new",
+                )],
+            )
+        )))
     );
 
     assert!(

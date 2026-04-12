@@ -5,15 +5,15 @@ use std::ops::DerefMut;
 use std::path::Path;
 
 use crate::project::AbsolutePath;
-use crate::project::CargoKind;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
-use crate::project::Package;
+use crate::project::PackageProject;
+use crate::project::ProjectFields;
 use crate::project::ProjectInfo;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Visibility;
-use crate::project::Workspace;
+use crate::project::WorkspaceProject;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeHealth;
 
@@ -99,22 +99,26 @@ impl ProjectList {
 
     /// Iterate all leaf-level projects from the hierarchy.
     ///
-    /// For `Workspace`, `Package`, `NonRust`: yields the item directly.
+    /// For `Rust`, `NonRust`: yields the item directly.
     /// For worktree groups: yields primary and each linked entry wrapped as
-    /// `Workspace` or `Package`.
+    /// `Rust(Workspace(..))` or `Rust(Package(..))`.
     pub(crate) fn for_each_leaf(&self, mut f: impl FnMut(&RootItem)) {
         for item in &self.root_items {
             match item {
-                RootItem::WorkspaceWorktrees(g) => {
-                    f(&RootItem::Workspace(g.primary().clone()));
-                    for linked in g.linked() {
-                        f(&RootItem::Workspace(linked.clone()));
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => {
+                    f(&RootItem::Rust(RustProject::Workspace(primary.clone())));
+                    for l in linked {
+                        f(&RootItem::Rust(RustProject::Workspace(l.clone())));
                     }
                 },
-                RootItem::PackageWorktrees(g) => {
-                    f(&RootItem::Package(g.primary().clone()));
-                    for linked in g.linked() {
-                        f(&RootItem::Package(linked.clone()));
+                RootItem::Worktrees(WorktreeGroup::Packages {
+                    primary, linked, ..
+                }) => {
+                    f(&RootItem::Rust(RustProject::Package(primary.clone())));
+                    for l in linked {
+                        f(&RootItem::Rust(RustProject::Package(l.clone())));
                     }
                 },
                 other => f(other),
@@ -127,13 +131,17 @@ impl ProjectList {
     pub(crate) fn for_each_leaf_path(&self, mut f: impl FnMut(&Path, bool)) {
         for item in &self.root_items {
             match item {
-                RootItem::WorkspaceWorktrees(g) => {
-                    for ws in std::iter::once(g.primary()).chain(g.linked()) {
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => {
+                    for ws in std::iter::once(primary).chain(linked) {
                         f(ws.path(), true);
                     }
                 },
-                RootItem::PackageWorktrees(g) => {
-                    for pkg in std::iter::once(g.primary()).chain(g.linked()) {
+                RootItem::Worktrees(WorktreeGroup::Packages {
+                    primary, linked, ..
+                }) => {
+                    for pkg in std::iter::once(primary).chain(linked) {
                         f(pkg.path(), true);
                     }
                 },
@@ -147,35 +155,43 @@ impl ProjectList {
     pub(crate) fn visit_searchables(&self, mut f: impl FnMut(SearchableItem<'_>)) {
         for item in &self.root_items {
             match item {
-                RootItem::Workspace(ws) => visit_workspace_searchables(ws, &mut f),
-                RootItem::Package(pkg) => visit_package_searchables(pkg, &mut f),
+                RootItem::Rust(RustProject::Workspace(ws)) => {
+                    visit_workspace_searchables(ws, &mut f);
+                },
+                RootItem::Rust(RustProject::Package(pkg)) => {
+                    visit_package_searchables(pkg, &mut f);
+                },
                 RootItem::NonRust(nr) => f(non_rust_searchable(nr)),
-                RootItem::WorkspaceWorktrees(g) => {
-                    visit_workspace_searchables(g.primary(), &mut f);
-                    for linked in g.linked() {
-                        let worktree_label = linked.worktree_name().map_or_else(
-                            || Cow::Owned(linked.root_directory_name().into_string()),
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => {
+                    visit_workspace_searchables(primary, &mut f);
+                    for l in linked {
+                        let worktree_label = l.worktree_name().map_or_else(
+                            || Cow::Owned(l.root_directory_name().into_string()),
                             Cow::Borrowed,
                         );
-                        let cargo_name = root_cargo_name(linked, worktree_label.as_ref());
+                        let cargo_name = ws_root_cargo_name(l, worktree_label.as_ref());
                         visit_workspace_searchables_with_root_name(
-                            linked,
+                            l,
                             worktree_label,
                             cargo_name,
                             &mut f,
                         );
                     }
                 },
-                RootItem::PackageWorktrees(g) => {
-                    visit_package_searchables(g.primary(), &mut f);
-                    for linked in g.linked() {
-                        let worktree_label = linked.worktree_name().map_or_else(
-                            || Cow::Owned(linked.root_directory_name().into_string()),
+                RootItem::Worktrees(WorktreeGroup::Packages {
+                    primary, linked, ..
+                }) => {
+                    visit_package_searchables(primary, &mut f);
+                    for l in linked {
+                        let worktree_label = l.worktree_name().map_or_else(
+                            || Cow::Owned(l.root_directory_name().into_string()),
                             Cow::Borrowed,
                         );
-                        let cargo_name = root_cargo_name(linked, worktree_label.as_ref());
+                        let cargo_name = pkg_root_cargo_name(l, worktree_label.as_ref());
                         visit_package_searchables_with_root_name(
-                            linked,
+                            l,
                             worktree_label,
                             cargo_name,
                             &mut f,
@@ -189,21 +205,23 @@ impl ProjectList {
     pub(crate) fn find_searchable_by_abs_path(&self, target: &Path) -> Option<SearchableItem<'_>> {
         for item in &self.root_items {
             let found = match item {
-                RootItem::Workspace(ws) => find_workspace_searchable(ws, target),
-                RootItem::Package(pkg) => find_package_searchable(pkg, target),
+                RootItem::Rust(RustProject::Workspace(ws)) => find_workspace_searchable(ws, target),
+                RootItem::Rust(RustProject::Package(pkg)) => find_package_searchable(pkg, target),
                 RootItem::NonRust(nr) => (nr.path() == target).then(|| non_rust_searchable(nr)),
-                RootItem::WorkspaceWorktrees(g) => find_workspace_searchable(g.primary(), target)
-                    .or_else(|| {
-                        g.linked()
-                            .iter()
-                            .find_map(|ws| find_workspace_searchable(ws, target))
-                    }),
-                RootItem::PackageWorktrees(g) => find_package_searchable(g.primary(), target)
-                    .or_else(|| {
-                        g.linked()
-                            .iter()
-                            .find_map(|pkg| find_package_searchable(pkg, target))
-                    }),
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => find_workspace_searchable(primary, target).or_else(|| {
+                    linked
+                        .iter()
+                        .find_map(|ws| find_workspace_searchable(ws, target))
+                }),
+                RootItem::Worktrees(WorktreeGroup::Packages {
+                    primary, linked, ..
+                }) => find_package_searchable(primary, target).or_else(|| {
+                    linked
+                        .iter()
+                        .find_map(|pkg| find_package_searchable(pkg, target))
+                }),
             };
             if found.is_some() {
                 return found;
@@ -233,45 +251,49 @@ impl ProjectList {
     ) -> Option<RootItem> {
         for item in &mut self.root_items {
             match item {
-                RootItem::Workspace(_) | RootItem::Package(_) | RootItem::NonRust(_) => {
+                RootItem::Rust(_) | RootItem::NonRust(_) => {
                     if item.path() == path {
                         std::mem::swap(item, &mut replacement);
                         return Some(replacement);
                     }
                 },
-                RootItem::WorkspaceWorktrees(g) => {
-                    if g.primary().path() == path
-                        && let RootItem::Workspace(ws) = replacement
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => {
+                    if primary.path() == path
+                        && let RootItem::Rust(RustProject::Workspace(ws)) = replacement
                     {
-                        let old = g.primary().clone();
-                        *g.primary_mut() = ws;
-                        return Some(RootItem::Workspace(old));
+                        let old = primary.clone();
+                        *primary = ws;
+                        return Some(RootItem::Rust(RustProject::Workspace(old)));
                     }
-                    for linked in g.linked_mut() {
-                        if linked.path() == path
-                            && let RootItem::Workspace(ws) = replacement
+                    for l in linked {
+                        if l.path() == path
+                            && let RootItem::Rust(RustProject::Workspace(ws)) = replacement
                         {
-                            let old = linked.clone();
-                            *linked = ws;
-                            return Some(RootItem::Workspace(old));
+                            let old = l.clone();
+                            *l = ws;
+                            return Some(RootItem::Rust(RustProject::Workspace(old)));
                         }
                     }
                 },
-                RootItem::PackageWorktrees(g) => {
-                    if g.primary().path() == path
-                        && let RootItem::Package(pkg) = replacement
+                RootItem::Worktrees(WorktreeGroup::Packages {
+                    primary, linked, ..
+                }) => {
+                    if primary.path() == path
+                        && let RootItem::Rust(RustProject::Package(pkg)) = replacement
                     {
-                        let old = g.primary().clone();
-                        *g.primary_mut() = pkg;
-                        return Some(RootItem::Package(old));
+                        let old = primary.clone();
+                        *primary = pkg;
+                        return Some(RootItem::Rust(RustProject::Package(old)));
                     }
-                    for linked in g.linked_mut() {
-                        if linked.path() == path
-                            && let RootItem::Package(pkg) = replacement
+                    for l in linked {
+                        if l.path() == path
+                            && let RootItem::Rust(RustProject::Package(pkg)) = replacement
                         {
-                            let old = linked.clone();
-                            *linked = pkg;
-                            return Some(RootItem::Package(old));
+                            let old = l.clone();
+                            *l = pkg;
+                            return Some(RootItem::Rust(RustProject::Package(old)));
                         }
                     }
                 },
@@ -294,10 +316,14 @@ impl ProjectList {
             }
 
             let inserted = match existing {
-                RootItem::Workspace(ws) => try_insert_member(ws, &item_path, &item),
-                RootItem::WorkspaceWorktrees(g) => {
-                    try_insert_member(g.primary_mut(), &item_path, &item)
-                        || g.linked_mut()
+                RootItem::Rust(RustProject::Workspace(ws)) => {
+                    try_insert_member(ws, &item_path, &item)
+                },
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => {
+                    try_insert_member(primary, &item_path, &item)
+                        || linked
                             .iter_mut()
                             .any(|ws| try_insert_member(ws, &item_path, &item))
                 },
@@ -324,13 +350,15 @@ impl ProjectList {
     pub(crate) fn regroup_members(&mut self, inline_dirs: &[String]) {
         for item in &mut self.root_items {
             match item {
-                RootItem::Workspace(ws) => {
+                RootItem::Rust(RustProject::Workspace(ws)) => {
                     regroup_workspace(ws, inline_dirs);
                 },
-                RootItem::WorkspaceWorktrees(g) => {
-                    regroup_workspace(g.primary_mut(), inline_dirs);
-                    for linked in g.linked_mut() {
-                        regroup_workspace(linked, inline_dirs);
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => {
+                    regroup_workspace(primary, inline_dirs);
+                    for l in linked {
+                        regroup_workspace(l, inline_dirs);
                     }
                 },
                 _ => {},
@@ -429,44 +457,48 @@ fn join_suffix(segments: &[&str], suffix_len: usize) -> String {
 fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
     let existing_identity = item_worktree_identity(existing).map(Path::to_path_buf);
 
-    if let RootItem::Workspace(linked) = item
+    if let RootItem::Rust(RustProject::Workspace(linked)) = item
         && linked.worktree_name().is_some()
     {
         match existing {
-            RootItem::Workspace(primary)
+            RootItem::Rust(RustProject::Workspace(primary))
                 if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
             {
                 let primary = primary.clone();
-                *existing =
-                    RootItem::WorkspaceWorktrees(WorktreeGroup::new(primary, vec![linked.clone()]));
+                *existing = RootItem::Worktrees(WorktreeGroup::new_workspaces(
+                    primary,
+                    vec![linked.clone()],
+                ));
                 return true;
             },
-            RootItem::WorkspaceWorktrees(group)
-                if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
-            {
-                group.linked_mut().push(linked.clone());
+            RootItem::Worktrees(WorktreeGroup::Workspaces {
+                linked: group_linked,
+                ..
+            }) if linked.worktree_primary_abs_path() == existing_identity.as_deref() => {
+                group_linked.push(linked.clone());
                 return true;
             },
             _ => {},
         }
     }
 
-    if let RootItem::Package(linked) = item
+    if let RootItem::Rust(RustProject::Package(linked)) = item
         && linked.worktree_name().is_some()
     {
         match existing {
-            RootItem::Package(primary)
+            RootItem::Rust(RustProject::Package(primary))
                 if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
             {
                 let primary = primary.clone();
                 *existing =
-                    RootItem::PackageWorktrees(WorktreeGroup::new(primary, vec![linked.clone()]));
+                    RootItem::Worktrees(WorktreeGroup::new_packages(primary, vec![linked.clone()]));
                 return true;
             },
-            RootItem::PackageWorktrees(group)
-                if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
-            {
-                group.linked_mut().push(linked.clone());
+            RootItem::Worktrees(WorktreeGroup::Packages {
+                linked: group_linked,
+                ..
+            }) if linked.worktree_primary_abs_path() == existing_identity.as_deref() => {
+                group_linked.push(linked.clone());
                 return true;
             },
             _ => {},
@@ -478,22 +510,20 @@ fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
 
 fn item_worktree_identity(item: &RootItem) -> Option<&Path> {
     match item {
-        RootItem::Workspace(project) => project.worktree_primary_abs_path(),
-        RootItem::Package(project) => project.worktree_primary_abs_path(),
-        RootItem::WorkspaceWorktrees(group) => group.primary().worktree_primary_abs_path(),
-        RootItem::PackageWorktrees(group) => group.primary().worktree_primary_abs_path(),
+        RootItem::Rust(p) => p.worktree_primary_abs_path(),
+        RootItem::Worktrees(WorktreeGroup::Workspaces { primary, .. }) => {
+            primary.worktree_primary_abs_path()
+        },
+        RootItem::Worktrees(WorktreeGroup::Packages { primary, .. }) => {
+            primary.worktree_primary_abs_path()
+        },
         RootItem::NonRust(_) => None,
     }
 }
 
 fn linked_worktree_identity(item: &RootItem) -> Option<&Path> {
     match item {
-        RootItem::Workspace(project) if project.worktree_name().is_some() => {
-            project.worktree_primary_abs_path()
-        },
-        RootItem::Package(project) if project.worktree_name().is_some() => {
-            project.worktree_primary_abs_path()
-        },
+        RootItem::Rust(p) if p.worktree_name().is_some() => p.worktree_primary_abs_path(),
         _ => None,
     }
 }
@@ -541,16 +571,16 @@ impl<'a> IntoIterator for &'a mut ProjectList {
 
 // -- Helpers --------------------------------------------------------------
 
-fn regroup_workspace(ws: &mut RustProject<Workspace>, inline_dirs: &[String]) {
+fn regroup_workspace(ws: &mut WorkspaceProject, inline_dirs: &[String]) {
     // Collect all members from all existing groups.
-    let members: Vec<RustProject<Package>> = ws
+    let members: Vec<PackageProject> = ws
         .groups_mut()
         .drain(..)
         .flat_map(MemberGroup::into_members)
         .collect();
 
     // Re-sort into groups based on subdirectory and inline_dirs.
-    let mut group_map: std::collections::HashMap<String, Vec<RustProject<Package>>> =
+    let mut group_map: std::collections::HashMap<String, Vec<PackageProject>> =
         std::collections::HashMap::new();
     for member in members {
         let relative = member
@@ -605,7 +635,7 @@ fn non_rust_searchable(project: &NonRustProject) -> SearchableItem<'_> {
 }
 
 fn package_searchable<'a>(
-    project: &'a RustProject<Package>,
+    project: &'a PackageProject,
     name: Cow<'a, str>,
     cargo_name: Option<Cow<'a, str>>,
 ) -> SearchableItem<'a> {
@@ -622,7 +652,7 @@ fn package_searchable<'a>(
 }
 
 fn workspace_searchable<'a>(
-    project: &'a RustProject<Workspace>,
+    project: &'a WorkspaceProject,
     name: Cow<'a, str>,
     cargo_name: Option<Cow<'a, str>>,
 ) -> SearchableItem<'a> {
@@ -638,7 +668,7 @@ fn workspace_searchable<'a>(
     }
 }
 
-fn vendored_searchable(project: &RustProject<Package>) -> SearchableItem<'_> {
+fn vendored_searchable(project: &PackageProject) -> SearchableItem<'_> {
     SearchableItem {
         abs_path:         project.path(),
         display_path:     Cow::Owned(project.display_path().into_string()),
@@ -651,14 +681,14 @@ fn vendored_searchable(project: &RustProject<Package>) -> SearchableItem<'_> {
     }
 }
 
-fn visit_package_searchables(pkg: &RustProject<Package>, f: &mut impl FnMut(SearchableItem<'_>)) {
+fn visit_package_searchables(pkg: &PackageProject, f: &mut impl FnMut(SearchableItem<'_>)) {
     let root_name = pkg.root_directory_name().into_string();
-    let cargo_name = root_cargo_name(pkg, &root_name);
+    let cargo_name = pkg_root_cargo_name(pkg, &root_name);
     visit_package_searchables_with_root_name(pkg, Cow::Owned(root_name), cargo_name, f);
 }
 
 fn visit_package_searchables_with_root_name<'a>(
-    pkg: &'a RustProject<Package>,
+    pkg: &'a PackageProject,
     root_name: Cow<'a, str>,
     cargo_name: Option<Cow<'a, str>>,
     f: &mut impl FnMut(SearchableItem<'a>),
@@ -670,12 +700,12 @@ fn visit_package_searchables_with_root_name<'a>(
 }
 
 fn find_package_searchable<'a>(
-    pkg: &'a RustProject<Package>,
+    pkg: &'a PackageProject,
     target: &Path,
 ) -> Option<SearchableItem<'a>> {
     if pkg.path() == target {
         let root_name = pkg.root_directory_name().into_string();
-        let cargo_name = root_cargo_name(pkg, &root_name);
+        let cargo_name = pkg_root_cargo_name(pkg, &root_name);
         return Some(package_searchable(pkg, Cow::Owned(root_name), cargo_name));
     }
     pkg.vendored()
@@ -684,17 +714,14 @@ fn find_package_searchable<'a>(
         .map(vendored_searchable)
 }
 
-fn visit_workspace_searchables(
-    ws: &RustProject<Workspace>,
-    f: &mut impl FnMut(SearchableItem<'_>),
-) {
+fn visit_workspace_searchables(ws: &WorkspaceProject, f: &mut impl FnMut(SearchableItem<'_>)) {
     let root_name = ws.root_directory_name().into_string();
-    let cargo_name = root_cargo_name(ws, &root_name);
+    let cargo_name = ws_root_cargo_name(ws, &root_name);
     visit_workspace_searchables_with_root_name(ws, Cow::Owned(root_name), cargo_name, f);
 }
 
 fn visit_workspace_searchables_with_root_name<'a>(
-    ws: &'a RustProject<Workspace>,
+    ws: &'a WorkspaceProject,
     root_name: Cow<'a, str>,
     cargo_name: Option<Cow<'a, str>>,
     f: &mut impl FnMut(SearchableItem<'a>),
@@ -718,12 +745,12 @@ fn visit_workspace_searchables_with_root_name<'a>(
 }
 
 fn find_workspace_searchable<'a>(
-    ws: &'a RustProject<Workspace>,
+    ws: &'a WorkspaceProject,
     target: &Path,
 ) -> Option<SearchableItem<'a>> {
     if ws.path() == target {
         let root_name = ws.root_directory_name().into_string();
-        let cargo_name = root_cargo_name(ws, &root_name);
+        let cargo_name = ws_root_cargo_name(ws, &root_name);
         return Some(workspace_searchable(ws, Cow::Owned(root_name), cargo_name));
     }
     for group in ws.groups() {
@@ -752,8 +779,8 @@ fn find_workspace_searchable<'a>(
 
 /// Return the Cargo package name as a search-only token when it differs from the
 /// visible label. Returns `None` when both names match (no alias needed).
-fn root_cargo_name<'a, Kind: CargoKind>(
-    project: &'a RustProject<Kind>,
+fn ws_root_cargo_name<'a>(
+    project: &'a WorkspaceProject,
     visible_name: &str,
 ) -> Option<Cow<'a, str>> {
     let cargo_name = project.package_name();
@@ -764,11 +791,23 @@ fn root_cargo_name<'a, Kind: CargoKind>(
     }
 }
 
-fn try_insert_member(ws: &mut RustProject<Workspace>, item_path: &Path, item: &RootItem) -> bool {
+fn pkg_root_cargo_name<'a>(
+    project: &'a PackageProject,
+    visible_name: &str,
+) -> Option<Cow<'a, str>> {
+    let cargo_name = project.package_name();
+    if cargo_name.as_str() == visible_name {
+        None
+    } else {
+        Some(Cow::Owned(cargo_name.into_string()))
+    }
+}
+
+fn try_insert_member(ws: &mut WorkspaceProject, item_path: &Path, item: &RootItem) -> bool {
     if !item_path.starts_with(ws.path()) || item_path == ws.path() {
         return false;
     }
-    let RootItem::Package(pkg) = item else {
+    let RootItem::Rust(RustProject::Package(pkg)) = item else {
         return false;
     };
     // Add to the first inline group, or create one.

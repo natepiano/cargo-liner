@@ -10,12 +10,11 @@ use toml::Table;
 use toml::Value;
 
 use super::git;
-use super::types::Cargo;
-use super::types::InfoProvider;
-use super::types::NonRustProject;
-use super::types::Package;
-use super::types::RustProject;
-use super::types::Workspace;
+use super::non_rust::NonRustProject;
+use super::package::PackageProject;
+use super::project_fields::ProjectFields;
+use super::rust_info::Cargo;
+use super::workspace::WorkspaceProject;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -61,8 +60,8 @@ impl fmt::Display for ProjectParseError {
 
 /// Result of parsing a `Cargo.toml`: either a workspace or a standalone package.
 pub(crate) enum CargoParseResult {
-    Workspace(RustProject<Workspace>),
-    Package(RustProject<Package>),
+    Workspace(WorkspaceProject),
+    Package(PackageProject),
 }
 
 /// Parse a `Cargo.toml` and return either a workspace or a package project.
@@ -116,7 +115,7 @@ pub(crate) fn from_cargo_toml(
     let cargo = Cargo::new(version, description, types, examples, benches, test_count);
 
     if table.get("workspace").is_some() {
-        let mut project = RustProject::<Workspace>::new(
+        let mut project = WorkspaceProject::new(
             abs_path,
             name,
             cargo,
@@ -125,10 +124,10 @@ pub(crate) fn from_cargo_toml(
             worktree_name,
             worktree_primary_abs_path,
         );
-        project.info_mut().worktree_health = worktree_health;
+        project.rust.info.worktree_health = worktree_health;
         Ok(CargoParseResult::Workspace(project))
     } else {
-        let mut project = RustProject::<Package>::new(
+        let mut project = PackageProject::new(
             abs_path,
             name,
             cargo,
@@ -136,7 +135,7 @@ pub(crate) fn from_cargo_toml(
             worktree_name,
             worktree_primary_abs_path,
         );
-        project.info_mut().worktree_health = worktree_health;
+        project.rust.info.worktree_health = worktree_health;
         Ok(CargoParseResult::Package(project))
     }
 }

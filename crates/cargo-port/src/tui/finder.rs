@@ -30,11 +30,13 @@ use super::types::Pane;
 use super::types::PaneId;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
-use crate::project::Package;
+use crate::project::PackageProject;
+use crate::project::ProjectFields;
 use crate::project::ProjectType;
 use crate::project::RootItem;
 use crate::project::RustProject;
-use crate::project::Workspace;
+use crate::project::WorkspaceProject;
+use crate::project::WorktreeGroup;
 
 /// A searchable item in the universal finder.
 #[derive(Clone)]
@@ -103,10 +105,10 @@ pub(super) fn build_finder_index(
 
     for list_item in list_items {
         match list_item {
-            RootItem::Workspace(ws) => {
+            RootItem::Rust(RustProject::Workspace(ws)) => {
                 add_workspace_items(&mut items, ws);
             },
-            RootItem::Package(pkg) => {
+            RootItem::Rust(RustProject::Package(pkg)) => {
                 add_package_items(&mut items, pkg);
             },
             RootItem::NonRust(nr) => {
@@ -123,22 +125,26 @@ pub(super) fn build_finder_index(
                 };
                 add_project_items_from_typed(&mut items, &context, &[], &[], &[]);
             },
-            RootItem::WorkspaceWorktrees(wtg) => {
-                add_workspace_items(&mut items, wtg.primary());
-                for linked in wtg.linked() {
-                    if linked.path() == wtg.primary().path() {
+            RootItem::Worktrees(WorktreeGroup::Workspaces {
+                primary, linked, ..
+            }) => {
+                add_workspace_items(&mut items, primary);
+                for l in linked {
+                    if l.path() == primary.path() {
                         continue;
                     }
-                    add_workspace_items(&mut items, linked);
+                    add_workspace_items(&mut items, l);
                 }
             },
-            RootItem::PackageWorktrees(wtg) => {
-                add_package_items(&mut items, wtg.primary());
-                for linked in wtg.linked() {
-                    if linked.path() == wtg.primary().path() {
+            RootItem::Worktrees(WorktreeGroup::Packages {
+                primary, linked, ..
+            }) => {
+                add_package_items(&mut items, primary);
+                for l in linked {
+                    if l.path() == primary.path() {
                         continue;
                     }
-                    add_package_items(&mut items, linked);
+                    add_package_items(&mut items, l);
                 }
             },
         }
@@ -168,7 +174,7 @@ fn branch_for(git_info: Option<&GitInfo>) -> String {
         .to_string()
 }
 
-fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &RustProject<Workspace>) {
+fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &WorkspaceProject) {
     let root_path = ws.display_path().into_string();
     let root_abs_path = ws.path().display().to_string();
     let root_branch = branch_for(ws.git_info());
@@ -221,7 +227,7 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &RustProject<Workspace>)
     }
 }
 
-fn add_package_items(items: &mut Vec<FinderItem>, pkg: &RustProject<Package>) {
+fn add_package_items(items: &mut Vec<FinderItem>, pkg: &PackageProject) {
     let root_path = pkg.display_path().into_string();
     let root_abs_path = pkg.path().display().to_string();
     let root_branch = branch_for(pkg.git_info());
@@ -253,7 +259,7 @@ fn add_package_items(items: &mut Vec<FinderItem>, pkg: &RustProject<Package>) {
 
 fn add_vendored_items_typed(
     items: &mut Vec<FinderItem>,
-    project: &RustProject<Package>,
+    project: &PackageProject,
     parent_name: &str,
 ) {
     let project_name = project.package_name().into_string();
@@ -847,11 +853,11 @@ mod tests {
     use super::*;
     use crate::project::Cargo;
     use crate::project::ExampleGroup;
-    use crate::project::Package;
+    use crate::project::PackageProject;
     use crate::project::ProjectType;
     use crate::project::RootItem;
     use crate::project::RustProject;
-    use crate::project::Workspace;
+    use crate::project::WorkspaceProject;
 
     fn test_path(path: &str) -> PathBuf {
         if path == "~" {
@@ -867,12 +873,12 @@ mod tests {
 
     #[test]
     fn build_finder_index_includes_vendored_projects() {
-        let ws = RustProject::<Workspace>::new(
+        let ws = WorkspaceProject::new(
             test_path("~/rust/hana"),
             Some("hana".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
             Vec::new(),
-            vec![RustProject::<Package>::new(
+            vec![PackageProject::new(
                 test_path("~/rust/hana/crates/clay-layout"),
                 Some("clay-layout".to_string()),
                 Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -883,7 +889,7 @@ mod tests {
             None,
             None,
         );
-        let list_items = vec![RootItem::Workspace(ws)];
+        let list_items = vec![RootItem::Rust(RustProject::Workspace(ws))];
         let (items, _widths) = build_finder_index(&list_items);
         assert!(items.iter().any(|item| {
             item.project_path
@@ -970,7 +976,7 @@ mod tests {
 
     #[test]
     fn build_finder_index_tokenizes_display_name_and_dir_segments() {
-        let pkg = RustProject::<Package>::new(
+        let pkg = PackageProject::new(
             test_path("~/rust/bevy/tools/build-easefunction-graphs"),
             Some("build-easefunction-graphs".to_string()),
             Cargo::new(
@@ -989,7 +995,7 @@ mod tests {
             None,
         );
 
-        let (items, _widths) = build_finder_index(&[RootItem::Package(pkg)]);
+        let (items, _widths) = build_finder_index(&[RootItem::Rust(RustProject::Package(pkg))]);
         assert!(items.iter().any(|item| {
             item.display_name == "build-easefunction-graphs"
                 && item.search_tokens.iter().any(|token| token == "tools")

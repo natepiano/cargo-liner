@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use super::App;
 use super::types::VisibleRow;
+use crate::project::ProjectFields;
 use crate::project::Visibility::Dismissed;
 use crate::tui::types::PaneId;
 
@@ -50,20 +51,28 @@ impl App {
                 worktree_index,
                 ..
             } => match self.projects.get(node_index)? {
-                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
+                crate::project::RootItem::Worktrees(
+                    crate::project::WorktreeGroup::Workspaces {
+                        primary, linked, ..
+                    },
+                ) => {
                     if worktree_index == 0 {
-                        Some(wtg.primary().path().to_path_buf())
+                        Some(primary.path().to_path_buf())
                     } else {
-                        wtg.linked()
+                        linked
                             .get(worktree_index - 1)
                             .map(|ws| ws.path().to_path_buf())
                     }
                 },
-                crate::project::RootItem::PackageWorktrees(wtg) => {
+                crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
+                    primary,
+                    linked,
+                    ..
+                }) => {
                     if worktree_index == 0 {
-                        Some(wtg.primary().path().to_path_buf())
+                        Some(primary.path().to_path_buf())
                     } else {
-                        wtg.linked()
+                        linked
                             .get(worktree_index - 1)
                             .map(|pkg| pkg.path().to_path_buf())
                     }
@@ -124,14 +133,22 @@ impl App {
             .iter()
             .enumerate()
             .find_map(|(ni, item)| match item {
-                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
-                    let has_match = wtg.primary().path() == path
-                        || wtg.linked().iter().any(|l| l.path() == path);
+                crate::project::RootItem::Worktrees(
+                    crate::project::WorktreeGroup::Workspaces {
+                        primary, linked, ..
+                    },
+                ) => {
+                    let has_match =
+                        primary.path() == path || linked.iter().any(|l| l.path() == path);
                     has_match.then_some(ni)
                 },
-                crate::project::RootItem::PackageWorktrees(wtg) => {
-                    let has_match = wtg.primary().path() == path
-                        || wtg.linked().iter().any(|l| l.path() == path);
+                crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
+                    primary,
+                    linked,
+                    ..
+                }) => {
+                    let has_match =
+                        primary.path() == path || linked.iter().any(|l| l.path() == path);
                     has_match.then_some(ni)
                 },
                 _ => None,

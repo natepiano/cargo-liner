@@ -14,11 +14,12 @@ use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::MemberGroup;
-use crate::project::Package;
+use crate::project::PackageProject;
+use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Visibility;
-use crate::project::Workspace;
+use crate::project::WorkspaceProject;
 use crate::project::WorktreeGroup;
 use crate::tui::columns;
 use crate::tui::columns::COL_DISK;
@@ -57,26 +58,26 @@ pub(super) fn build_visible_rows(
         }
 
         match item {
-            RootItem::Workspace(ws) => {
+            RootItem::Rust(RustProject::Workspace(ws)) => {
                 emit_groups(&mut rows, ni, ws.groups(), expanded);
                 emit_vendored_rows(&mut rows, ni, ws.vendored());
             },
-            RootItem::Package(pkg) => {
+            RootItem::Rust(RustProject::Package(pkg)) => {
                 emit_vendored_rows(&mut rows, ni, pkg.vendored());
             },
             RootItem::NonRust(_) => {},
-            RootItem::WorkspaceWorktrees(wtg) => {
+            RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) => {
                 if wtg.renders_as_group() {
                     emit_workspace_worktree_group(&mut rows, ni, wtg, expanded);
-                } else if let Some(workspace) = wtg.single_live() {
+                } else if let Some(workspace) = wtg.single_live_workspace() {
                     emit_groups(&mut rows, ni, workspace.groups(), expanded);
                     emit_vendored_rows(&mut rows, ni, workspace.vendored());
                 }
             },
-            RootItem::PackageWorktrees(wtg) => {
+            RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. }) => {
                 if wtg.renders_as_group() {
                     emit_package_worktree_group(&mut rows, ni, wtg, expanded);
-                } else if let Some(package) = wtg.single_live() {
+                } else if let Some(package) = wtg.single_live_package() {
                     emit_vendored_rows(&mut rows, ni, package.vendored());
                 }
             },
@@ -121,7 +122,7 @@ fn emit_groups(
     }
 }
 
-fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[RustProject<Package>]) {
+fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[PackageProject]) {
     for (vi, _) in vendored.iter().enumerate() {
         rows.push(VisibleRow::Vendored {
             node_index:     ni,
@@ -130,34 +131,33 @@ fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[RustPro
     }
 }
 
-/// Emit worktree entries for a `WorktreeGroup<Workspace>`.
+/// Emit worktree entries for a `WorktreeGroup::Workspaces`.
 fn emit_workspace_worktree_group(
     rows: &mut Vec<VisibleRow>,
     ni: usize,
-    wtg: &WorktreeGroup<Workspace>,
+    wtg: &WorktreeGroup,
     expanded: &HashSet<ExpandKey>,
 ) {
+    let WorktreeGroup::Workspaces {
+        primary, linked, ..
+    } = wtg
+    else {
+        return;
+    };
     // Primary at index 0
-    if !matches!(wtg.primary().visibility(), Visibility::Dismissed) {
+    if !matches!(primary.visibility(), Visibility::Dismissed) {
         let wi = 0;
         rows.push(VisibleRow::WorktreeEntry {
             node_index:     ni,
             worktree_index: wi,
         });
-        if wtg.primary().has_members() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
-            emit_worktree_children(
-                rows,
-                ni,
-                wi,
-                wtg.primary().groups(),
-                wtg.primary().vendored(),
-                expanded,
-            );
+        if primary.has_members() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
+            emit_worktree_children(rows, ni, wi, primary.groups(), primary.vendored(), expanded);
         }
     }
     // Linked at indices 1..
-    for (i, linked) in wtg.linked().iter().enumerate() {
-        if matches!(linked.visibility(), Visibility::Dismissed) {
+    for (i, ws) in linked.iter().enumerate() {
+        if matches!(ws.visibility(), Visibility::Dismissed) {
             continue;
         }
         let wi = i + 1;
@@ -165,29 +165,35 @@ fn emit_workspace_worktree_group(
             node_index:     ni,
             worktree_index: wi,
         });
-        if linked.has_members() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
-            emit_worktree_children(rows, ni, wi, linked.groups(), linked.vendored(), expanded);
+        if ws.has_members() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
+            emit_worktree_children(rows, ni, wi, ws.groups(), ws.vendored(), expanded);
         }
     }
 }
 
-/// Emit worktree entries for a `WorktreeGroup<Package>`.
+/// Emit worktree entries for a `WorktreeGroup::Packages`.
 fn emit_package_worktree_group(
     rows: &mut Vec<VisibleRow>,
     ni: usize,
-    wtg: &WorktreeGroup<Package>,
+    wtg: &WorktreeGroup,
     _expanded: &HashSet<ExpandKey>,
 ) {
+    let WorktreeGroup::Packages {
+        primary, linked, ..
+    } = wtg
+    else {
+        return;
+    };
     // Primary at index 0
-    if !matches!(wtg.primary().visibility(), Visibility::Dismissed) {
+    if !matches!(primary.visibility(), Visibility::Dismissed) {
         rows.push(VisibleRow::WorktreeEntry {
             node_index:     ni,
             worktree_index: 0,
         });
     }
     // Linked at indices 1..
-    for (i, linked) in wtg.linked().iter().enumerate() {
-        if matches!(linked.visibility(), Visibility::Dismissed) {
+    for (i, pkg) in linked.iter().enumerate() {
+        if matches!(pkg.visibility(), Visibility::Dismissed) {
             continue;
         }
         rows.push(VisibleRow::WorktreeEntry {
@@ -203,7 +209,7 @@ fn emit_worktree_children(
     ni: usize,
     wi: usize,
     groups: &[MemberGroup],
-    vendored: &[RustProject<Package>],
+    vendored: &[PackageProject],
     expanded: &HashSet<ExpandKey>,
 ) {
     for (gi, group) in groups.iter().enumerate() {
@@ -355,18 +361,18 @@ fn observe_item_fit_widths(
     );
 
     match item {
-        RootItem::Workspace(ws) => {
+        RootItem::Rust(RustProject::Workspace(ws)) => {
             observe_new_member_group_fit_widths(widths, ws.groups(), false);
             observe_typed_vendored_fit_widths(widths, ws.vendored(), PREFIX_VENDORED);
         },
-        RootItem::Package(pkg) => {
+        RootItem::Rust(RustProject::Package(pkg)) => {
             observe_typed_vendored_fit_widths(widths, pkg.vendored(), PREFIX_VENDORED);
         },
         RootItem::NonRust(_) => {},
-        RootItem::WorkspaceWorktrees(wtg) => {
+        RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) => {
             observe_workspace_worktree_group_fit_widths(widths, wtg, state);
         },
-        RootItem::PackageWorktrees(wtg) => {
+        RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. }) => {
             observe_package_worktree_group_fit_widths(widths, wtg, state);
         },
     }
@@ -410,7 +416,7 @@ fn observe_new_member_group_fit_widths(
 
 fn observe_typed_vendored_fit_widths(
     widths: &mut ResolvedWidths,
-    vendored: &[RustProject<Package>],
+    vendored: &[PackageProject],
     prefix: &str,
 ) {
     let dw = columns::display_width;
@@ -423,7 +429,7 @@ fn observe_typed_vendored_fit_widths(
 
 fn observe_workspace_worktree_entry_fit_widths(
     widths: &mut ResolvedWidths,
-    ws: &RustProject<Workspace>,
+    ws: &WorkspaceProject,
     state: &FitWidthsState<'_>,
 ) {
     let dw = columns::display_width;
@@ -459,7 +465,7 @@ fn observe_workspace_worktree_entry_fit_widths(
 
 fn observe_package_worktree_entry_fit_widths(
     widths: &mut ResolvedWidths,
-    pkg: &RustProject<Package>,
+    pkg: &PackageProject,
     state: &FitWidthsState<'_>,
 ) {
     let dw = columns::display_width;
@@ -489,23 +495,35 @@ fn observe_package_worktree_entry_fit_widths(
 
 fn observe_workspace_worktree_group_fit_widths(
     widths: &mut ResolvedWidths,
-    wtg: &WorktreeGroup<Workspace>,
+    wtg: &WorktreeGroup,
     state: &FitWidthsState<'_>,
 ) {
-    observe_workspace_worktree_entry_fit_widths(widths, wtg.primary(), state);
-    for linked in wtg.linked() {
-        observe_workspace_worktree_entry_fit_widths(widths, linked, state);
+    let WorktreeGroup::Workspaces {
+        primary, linked, ..
+    } = wtg
+    else {
+        return;
+    };
+    observe_workspace_worktree_entry_fit_widths(widths, primary, state);
+    for ws in linked {
+        observe_workspace_worktree_entry_fit_widths(widths, ws, state);
     }
 }
 
 fn observe_package_worktree_group_fit_widths(
     widths: &mut ResolvedWidths,
-    wtg: &WorktreeGroup<Package>,
+    wtg: &WorktreeGroup,
     state: &FitWidthsState<'_>,
 ) {
-    observe_package_worktree_entry_fit_widths(widths, wtg.primary(), state);
-    for linked in wtg.linked() {
-        observe_package_worktree_entry_fit_widths(widths, linked, state);
+    let WorktreeGroup::Packages {
+        primary, linked, ..
+    } = wtg
+    else {
+        return;
+    };
+    observe_package_worktree_entry_fit_widths(widths, primary, state);
+    for pkg in linked {
+        observe_package_worktree_entry_fit_widths(widths, pkg, state);
     }
 }
 
@@ -536,16 +554,18 @@ pub(super) fn build_disk_cache_snapshot(
 /// Collect disk bytes for all children (members, vendored, worktree entries) of an item.
 fn collect_child_disk_values(item: &RootItem, values: &mut Vec<u64>) {
     match item {
-        RootItem::Workspace(ws) => {
+        RootItem::Rust(RustProject::Workspace(ws)) => {
             collect_member_group_disk(ws.groups(), values);
             collect_vendored_disk(ws.vendored(), values);
         },
-        RootItem::Package(pkg) => {
+        RootItem::Rust(RustProject::Package(pkg)) => {
             collect_vendored_disk(pkg.vendored(), values);
         },
         RootItem::NonRust(_) => {},
-        RootItem::WorkspaceWorktrees(wtg) => {
-            for ws in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
+        RootItem::Worktrees(WorktreeGroup::Workspaces {
+            primary, linked, ..
+        }) => {
+            for ws in std::iter::once(primary).chain(linked.iter()) {
                 if let Some(bytes) = ws.disk_usage_bytes() {
                     values.push(bytes);
                 }
@@ -553,8 +573,10 @@ fn collect_child_disk_values(item: &RootItem, values: &mut Vec<u64>) {
                 collect_vendored_disk(ws.vendored(), values);
             }
         },
-        RootItem::PackageWorktrees(wtg) => {
-            for pkg in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
+        RootItem::Worktrees(WorktreeGroup::Packages {
+            primary, linked, ..
+        }) => {
+            for pkg in std::iter::once(primary).chain(linked.iter()) {
                 if let Some(bytes) = pkg.disk_usage_bytes() {
                     values.push(bytes);
                 }
@@ -574,7 +596,7 @@ fn collect_member_group_disk(groups: &[MemberGroup], values: &mut Vec<u64>) {
     }
 }
 
-fn collect_vendored_disk(vendored: &[RustProject<Package>], values: &mut Vec<u64>) {
+fn collect_vendored_disk(vendored: &[PackageProject], values: &mut Vec<u64>) {
     for project in vendored {
         if let Some(bytes) = project.disk_usage_bytes() {
             values.push(bytes);

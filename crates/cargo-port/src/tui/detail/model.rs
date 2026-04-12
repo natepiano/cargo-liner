@@ -10,11 +10,13 @@ use crate::project::Cargo;
 use crate::project::ExampleGroup;
 use crate::project::GitPathState;
 use crate::project::NonRustProject;
-use crate::project::Package;
+use crate::project::PackageProject;
+use crate::project::ProjectFields;
 use crate::project::ProjectType;
 use crate::project::RootItem;
 use crate::project::RustProject;
-use crate::project::Workspace;
+use crate::project::WorkspaceProject;
+use crate::project::WorktreeGroup;
 use crate::project::WorktreeHealth;
 use crate::tui::app::App;
 
@@ -30,9 +32,9 @@ struct ProjectCounts {
 }
 
 impl ProjectCounts {
-    fn add_package(&mut self, project: &RustProject<Package>) { self.add_cargo(project.cargo()); }
+    fn add_package(&mut self, project: &PackageProject) { self.add_cargo(project.cargo()); }
 
-    fn add_workspace(&mut self, ws: &RustProject<Workspace>) {
+    fn add_workspace(&mut self, ws: &WorkspaceProject) {
         self.workspaces += 1;
         self.add_cargo(ws.cargo());
     }
@@ -428,7 +430,8 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
     }
     if matches!(
         item,
-        RootItem::Workspace(_) | RootItem::WorkspaceWorktrees(_)
+        RootItem::Rust(RustProject::Workspace(_))
+            | RootItem::Worktrees(WorktreeGroup::Workspaces { .. })
     ) {
         return "Workspace".to_string();
     }
@@ -440,7 +443,7 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
 }
 
 /// Resolve the package title for a non-root package (member or vendored).
-fn resolve_package_title_for_package(app: &App, pkg: &RustProject<Package>) -> String {
+fn resolve_package_title_for_package(app: &App, pkg: &PackageProject) -> String {
     if app.is_vendored_path(pkg.path()) {
         "Vendored Crate".to_string()
     } else if app.is_workspace_member_path(pkg.path()) {
@@ -557,26 +560,25 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
 }
 
 /// Check whether a `RootItem` is a worktree group.
-const fn is_worktree_group(item: &RootItem) -> bool {
-    matches!(
-        item,
-        RootItem::WorkspaceWorktrees(_) | RootItem::PackageWorktrees(_)
-    )
-}
+const fn is_worktree_group(item: &RootItem) -> bool { matches!(item, RootItem::Worktrees(_)) }
 
 /// Collect worktree names from a worktree group item.
 fn worktree_names_from_item(item: &RootItem) -> Vec<String> {
     match item {
-        crate::project::RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
-            .chain(wtg.linked().iter())
+        RootItem::Worktrees(WorktreeGroup::Workspaces {
+            primary, linked, ..
+        }) => std::iter::once(primary)
+            .chain(linked.iter())
             .map(|ws| {
                 ws.worktree_name()
                     .unwrap_or_else(|| ws.path().to_str().unwrap_or(""))
                     .to_string()
             })
             .collect(),
-        crate::project::RootItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
-            .chain(wtg.linked().iter())
+        RootItem::Worktrees(WorktreeGroup::Packages {
+            primary, linked, ..
+        }) => std::iter::once(primary)
+            .chain(linked.iter())
             .map(|pkg| {
                 pkg.worktree_name()
                     .unwrap_or_else(|| pkg.path().to_str().unwrap_or(""))
@@ -593,28 +595,26 @@ pub fn build_detail_info(app: &App, item: &RootItem) -> DetailInfo {
     let is_wt_group = is_worktree_group(item);
 
     match item {
-        RootItem::Workspace(ws) => {
+        RootItem::Rust(RustProject::Workspace(ws)) => {
             build_detail_info_for_workspace(app, ws, &display_path, is_wt_group, Some(item))
         },
-        RootItem::Package(pkg) => {
+        RootItem::Rust(RustProject::Package(pkg)) => {
             build_detail_info_for_package(app, pkg, &display_path, is_wt_group, Some(item))
         },
         RootItem::NonRust(nr) => {
             build_detail_info_non_rust(app, nr, &display_path, is_wt_group, Some(item))
         },
-        RootItem::WorkspaceWorktrees(wtg) => {
-            let ws = wtg.primary();
-            build_detail_info_for_workspace(app, ws, &display_path, true, Some(item))
+        RootItem::Worktrees(WorktreeGroup::Workspaces { primary, .. }) => {
+            build_detail_info_for_workspace(app, primary, &display_path, true, Some(item))
         },
-        RootItem::PackageWorktrees(wtg) => {
-            let pkg = wtg.primary();
-            build_detail_info_for_package(app, pkg, &display_path, true, Some(item))
+        RootItem::Worktrees(WorktreeGroup::Packages { primary, .. }) => {
+            build_detail_info_for_package(app, primary, &display_path, true, Some(item))
         },
     }
 }
 
 /// Build `DetailInfo` for a `Project<Package>` (member or vendored row).
-pub fn build_detail_info_for_member(app: &App, pkg: &RustProject<Package>) -> DetailInfo {
+pub fn build_detail_info_for_member(app: &App, pkg: &PackageProject) -> DetailInfo {
     let display_path = pkg.display_path().into_string();
     build_detail_info_for_package(app, pkg, &display_path, false, None)
 }
@@ -622,7 +622,7 @@ pub fn build_detail_info_for_member(app: &App, pkg: &RustProject<Package>) -> De
 /// Build `DetailInfo` for a linked `Project<Workspace>` worktree entry.
 pub fn build_detail_info_for_workspace_ref(
     app: &App,
-    ws: &RustProject<Workspace>,
+    ws: &WorkspaceProject,
     display_path: &str,
 ) -> DetailInfo {
     build_detail_info_for_workspace(app, ws, display_path, false, None)
@@ -630,7 +630,7 @@ pub fn build_detail_info_for_workspace_ref(
 
 fn build_detail_info_for_workspace(
     app: &App,
-    ws: &RustProject<Workspace>,
+    ws: &WorkspaceProject,
     display_path: &str,
     is_wt_group: bool,
     wt_item: Option<&RootItem>,
@@ -669,7 +669,7 @@ fn build_detail_info_for_workspace(
 
 fn build_detail_info_for_package(
     app: &App,
-    pkg: &RustProject<Package>,
+    pkg: &PackageProject,
     display_path: &str,
     is_wt_group: bool,
     wt_item: Option<&RootItem>,

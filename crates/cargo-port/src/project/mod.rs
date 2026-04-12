@@ -1,10 +1,17 @@
 mod cargo;
 mod git;
+mod info;
 mod member_group;
+mod non_rust;
+mod package;
 mod paths;
-mod types;
+mod project_fields;
+mod root_item;
+mod rust_info;
+mod rust_project;
+mod workspace;
+mod worktree_group;
 
-// ── Path types ───────────────────────────────────────────────────────
 // ── Cargo parsing ────────────────────────────────────────────────────
 pub(crate) use cargo::CargoParseResult;
 pub(crate) use cargo::ExampleGroup;
@@ -24,19 +31,22 @@ pub(crate) use git::detect_git_path_states_batch;
 pub(crate) use git::git_repo_root;
 pub(crate) use git::resolve_common_git_dir;
 pub(crate) use git::resolve_git_dir;
+// ── Info types ───────────────────────────────────────────────────────
+pub(crate) use info::ProjectInfo;
+pub(crate) use info::Visibility;
+pub(crate) use info::WorktreeHealth;
+// ── Project types ────────────────────────────────────────────────────
+pub(crate) use member_group::MemberGroup;
+pub(crate) use non_rust::NonRustProject;
+pub(crate) use package::PackageProject;
+// ── Path types ───────────────────────────────────────────────────────
 pub(crate) use paths::AbsolutePath;
 pub(crate) use paths::DisplayPath;
 pub(crate) use paths::home_relative_path;
-// ── Core project types ───────────────────────────────────────────────
-pub(crate) use types::Cargo;
-pub(crate) use types::CargoKind;
-pub(crate) use types::MemberGroup;
-pub(crate) use types::NonRustProject;
-pub(crate) use types::Package;
-pub(crate) use types::ProjectInfo;
-pub(crate) use types::RootItem;
-pub(crate) use types::RustProject;
-pub(crate) use types::Visibility;
-pub(crate) use types::Workspace;
-pub(crate) use types::WorktreeGroup;
-pub(crate) use types::WorktreeHealth;
+pub(crate) use project_fields::ProjectFields;
+pub(crate) use root_item::RootItem;
+// ── Rust info ────────────────────────────────────────────────────────
+pub(crate) use rust_info::Cargo;
+pub(crate) use rust_project::RustProject;
+pub(crate) use workspace::WorkspaceProject;
+pub(crate) use worktree_group::WorktreeGroup;

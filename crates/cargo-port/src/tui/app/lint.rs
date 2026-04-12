@@ -6,6 +6,7 @@ use super::App;
 use super::types::LintRollupKey;
 use super::types::VisibleRow;
 use crate::lint::LintStatus;
+use crate::project::ProjectFields;
 use crate::project::RootItem;
 
 impl App {
@@ -21,40 +22,47 @@ impl App {
                 Self::lint_root_paths_for_item(item),
             ));
             match item {
-                RootItem::WorkspaceWorktrees(wtg) => {
-                    // Primary at wi=0, linked at wi=1+
+                RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
+                    primary,
+                    linked,
+                    ..
+                }) => {
                     registrations.push((
                         LintRollupKey::Worktree {
                             node_index,
                             worktree_index: 0,
                         },
-                        vec![wtg.primary().path().to_path_buf()],
+                        vec![primary.path().to_path_buf()],
                     ));
-                    for (i, linked) in wtg.linked().iter().enumerate() {
+                    for (i, l) in linked.iter().enumerate() {
                         registrations.push((
                             LintRollupKey::Worktree {
                                 node_index,
                                 worktree_index: i + 1,
                             },
-                            vec![linked.path().to_path_buf()],
+                            vec![l.path().to_path_buf()],
                         ));
                     }
                 },
-                RootItem::PackageWorktrees(wtg) => {
+                RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
+                    primary,
+                    linked,
+                    ..
+                }) => {
                     registrations.push((
                         LintRollupKey::Worktree {
                             node_index,
                             worktree_index: 0,
                         },
-                        vec![wtg.primary().path().to_path_buf()],
+                        vec![primary.path().to_path_buf()],
                     ));
-                    for (i, linked) in wtg.linked().iter().enumerate() {
+                    for (i, l) in linked.iter().enumerate() {
                         registrations.push((
                             LintRollupKey::Worktree {
                                 node_index,
                                 worktree_index: i + 1,
                             },
-                            vec![linked.path().to_path_buf()],
+                            vec![l.path().to_path_buf()],
                         ));
                     }
                 },
@@ -124,13 +132,19 @@ impl App {
 
     fn lint_root_paths_for_item(item: &RootItem) -> Vec<PathBuf> {
         match item {
-            RootItem::WorkspaceWorktrees(wtg) => {
-                std::iter::once(wtg.primary().path().to_path_buf())
-                    .chain(wtg.linked().iter().map(|p| p.path().to_path_buf()))
-                    .collect()
-            },
-            RootItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary().path().to_path_buf())
-                .chain(wtg.linked().iter().map(|p| p.path().to_path_buf()))
+            RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
+                primary,
+                linked,
+                ..
+            }) => std::iter::once(primary.path().to_path_buf())
+                .chain(linked.iter().map(|p| p.path().to_path_buf()))
+                .collect(),
+            RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
+                primary,
+                linked,
+                ..
+            }) => std::iter::once(primary.path().to_path_buf())
+                .chain(linked.iter().map(|p| p.path().to_path_buf()))
                 .collect(),
             _ => vec![item.path().to_path_buf()],
         }

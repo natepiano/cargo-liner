@@ -20,10 +20,12 @@ use crate::constants::SYNC_UP;
 use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
-use crate::project::Package;
+use crate::project::PackageProject;
+use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
-use crate::project::Workspace;
+use crate::project::WorkspaceProject;
+use crate::project::WorktreeGroup;
 use crate::tui::columns;
 use crate::tui::detail::DetailField;
 use crate::tui::shortcuts::InputContext;
@@ -255,17 +257,17 @@ impl App {
         let mut paths = Vec::new();
         paths.push(item.path().to_path_buf());
         match item {
-            RootItem::WorkspaceWorktrees(wtg) => {
-                for linked in wtg.linked() {
-                    let p = linked.path().to_path_buf();
+            RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) => {
+                for l in linked {
+                    let p = l.path().to_path_buf();
                     if !paths.contains(&p) {
                         paths.push(p);
                     }
                 }
             },
-            RootItem::PackageWorktrees(wtg) => {
-                for linked in wtg.linked() {
-                    let p = linked.path().to_path_buf();
+            RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }) => {
+                for l in linked {
+                    let p = l.path().to_path_buf();
                     if !paths.contains(&p) {
                         paths.push(p);
                     }
@@ -432,13 +434,21 @@ impl App {
 
     pub(in super::super) fn is_vendored_path(&self, path: &Path) -> bool {
         self.projects.iter().any(|item| match item {
-            RootItem::Workspace(ws) => ws.vendored().iter().any(|v| v.path() == path),
-            RootItem::Package(pkg) => pkg.vendored().iter().any(|v| v.path() == path),
-            RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
-                .chain(wtg.linked().iter())
+            RootItem::Rust(RustProject::Workspace(ws)) => {
+                ws.vendored().iter().any(|v| v.path() == path)
+            },
+            RootItem::Rust(RustProject::Package(pkg)) => {
+                pkg.vendored().iter().any(|v| v.path() == path)
+            },
+            RootItem::Worktrees(WorktreeGroup::Workspaces {
+                primary, linked, ..
+            }) => std::iter::once(primary)
+                .chain(linked.iter())
                 .any(|ws| ws.vendored().iter().any(|v| v.path() == path)),
-            RootItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
-                .chain(wtg.linked().iter())
+            RootItem::Worktrees(WorktreeGroup::Packages {
+                primary, linked, ..
+            }) => std::iter::once(primary)
+                .chain(linked.iter())
                 .any(|pkg| pkg.vendored().iter().any(|v| v.path() == path)),
             RootItem::NonRust(_) => false,
         })
@@ -446,17 +456,17 @@ impl App {
 
     pub(in super::super) fn is_workspace_member_path(&self, path: &Path) -> bool {
         self.projects.iter().any(|item| match item {
-            RootItem::Workspace(ws) => ws
+            RootItem::Rust(RustProject::Workspace(ws)) => ws
                 .groups()
                 .iter()
                 .any(|g| g.members().iter().any(|m| m.path() == path)),
-            RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
-                .chain(wtg.linked().iter())
-                .any(|ws| {
-                    ws.groups()
-                        .iter()
-                        .any(|g| g.members().iter().any(|m| m.path() == path))
-                }),
+            RootItem::Worktrees(WorktreeGroup::Workspaces {
+                primary, linked, ..
+            }) => std::iter::once(primary).chain(linked.iter()).any(|ws| {
+                ws.groups()
+                    .iter()
+                    .any(|g| g.members().iter().any(|m| m.path() == path))
+            }),
             _ => false,
         })
     }
@@ -472,23 +482,23 @@ impl App {
         // Include vendored projects whose parent is active.
         for item in &self.projects {
             let vendored_paths: Vec<&Path> = match item {
-                RootItem::Workspace(ws) => ws
-                    .vendored()
-                    .iter()
-                    .map(RustProject::<Package>::path)
+                RootItem::Rust(RustProject::Workspace(ws)) => {
+                    ws.vendored().iter().map(PackageProject::path).collect()
+                },
+                RootItem::Rust(RustProject::Package(pkg)) => {
+                    pkg.vendored().iter().map(PackageProject::path).collect()
+                },
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => std::iter::once(primary)
+                    .chain(linked.iter())
+                    .flat_map(|ws| ws.vendored().iter().map(PackageProject::path))
                     .collect(),
-                RootItem::Package(pkg) => pkg
-                    .vendored()
-                    .iter()
-                    .map(RustProject::<Package>::path)
-                    .collect(),
-                RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
-                    .chain(wtg.linked().iter())
-                    .flat_map(|ws| ws.vendored().iter().map(RustProject::<Package>::path))
-                    .collect(),
-                RootItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
-                    .chain(wtg.linked().iter())
-                    .flat_map(|pkg| pkg.vendored().iter().map(RustProject::<Package>::path))
+                RootItem::Worktrees(WorktreeGroup::Packages {
+                    primary, linked, ..
+                }) => std::iter::once(primary)
+                    .chain(linked.iter())
+                    .flat_map(|pkg| pkg.vendored().iter().map(PackageProject::path))
                     .collect(),
                 RootItem::NonRust(_) => Vec::new(),
             };
@@ -685,7 +695,7 @@ impl DiscoveryRowKind {
     }
 }
 
-fn package_contains_path(pkg: &RustProject<Package>, row_path: &Path) -> bool {
+fn package_contains_path(pkg: &PackageProject, row_path: &Path) -> bool {
     pkg.path() == row_path
         || pkg
             .vendored()
@@ -693,7 +703,7 @@ fn package_contains_path(pkg: &RustProject<Package>, row_path: &Path) -> bool {
             .any(|vendored| vendored.path() == row_path)
 }
 
-fn workspace_contains_path(ws: &RustProject<Workspace>, row_path: &Path) -> bool {
+fn workspace_contains_path(ws: &WorkspaceProject, row_path: &Path) -> bool {
     ws.path() == row_path
         || ws.groups().iter().any(|group| {
             group
@@ -709,31 +719,33 @@ fn workspace_contains_path(ws: &RustProject<Workspace>, row_path: &Path) -> bool
 
 fn root_item_scope_contains(item: &RootItem, session_path: &Path, row_path: &Path) -> bool {
     match item {
-        RootItem::Workspace(ws) => workspace_scope_contains(ws, session_path, row_path),
-        RootItem::Package(pkg) => package_scope_contains(pkg, session_path, row_path),
-        RootItem::NonRust(project) => project.path() == session_path && project.path() == row_path,
-        RootItem::WorkspaceWorktrees(group) => {
-            workspace_scope_contains(group.primary(), session_path, row_path)
-                || group
-                    .linked()
-                    .iter()
-                    .any(|linked| workspace_scope_contains(linked, session_path, row_path))
+        RootItem::Rust(RustProject::Workspace(ws)) => {
+            workspace_scope_contains(ws, session_path, row_path)
         },
-        RootItem::PackageWorktrees(group) => {
-            package_scope_contains(group.primary(), session_path, row_path)
-                || group
-                    .linked()
+        RootItem::Rust(RustProject::Package(pkg)) => {
+            package_scope_contains(pkg, session_path, row_path)
+        },
+        RootItem::NonRust(project) => project.path() == session_path && project.path() == row_path,
+        RootItem::Worktrees(WorktreeGroup::Workspaces {
+            primary, linked, ..
+        }) => {
+            workspace_scope_contains(primary, session_path, row_path)
+                || linked
                     .iter()
-                    .any(|linked| package_scope_contains(linked, session_path, row_path))
+                    .any(|l| workspace_scope_contains(l, session_path, row_path))
+        },
+        RootItem::Worktrees(WorktreeGroup::Packages {
+            primary, linked, ..
+        }) => {
+            package_scope_contains(primary, session_path, row_path)
+                || linked
+                    .iter()
+                    .any(|l| package_scope_contains(l, session_path, row_path))
         },
     }
 }
 
-fn workspace_scope_contains(
-    ws: &RustProject<Workspace>,
-    session_path: &Path,
-    row_path: &Path,
-) -> bool {
+fn workspace_scope_contains(ws: &WorkspaceProject, session_path: &Path, row_path: &Path) -> bool {
     if ws.path() == session_path {
         return workspace_contains_path(ws, row_path);
     }
@@ -752,11 +764,7 @@ fn workspace_scope_contains(
     })
 }
 
-fn package_scope_contains(
-    pkg: &RustProject<Package>,
-    session_path: &Path,
-    row_path: &Path,
-) -> bool {
+fn package_scope_contains(pkg: &PackageProject, session_path: &Path, row_path: &Path) -> bool {
     if pkg.path() == session_path {
         return package_contains_path(pkg, row_path);
     }
@@ -767,64 +775,58 @@ fn package_scope_contains(
 
 fn root_item_parent_row(item: &RootItem, session_path: &Path) -> Option<DiscoveryParentRow> {
     match item {
-        RootItem::Workspace(ws) => workspace_parent_row(ws, session_path, DiscoveryRowKind::Root),
-        RootItem::Package(pkg) => package_parent_row(pkg, session_path, DiscoveryRowKind::Root),
-        RootItem::NonRust(_) => None,
-        RootItem::WorkspaceWorktrees(group) => {
-            if group.primary().path() == session_path {
-                return None;
-            }
-            if group
-                .linked()
-                .iter()
-                .any(|linked| linked.path() == session_path)
-            {
-                return Some(DiscoveryParentRow {
-                    path: group.primary().path().to_path_buf(),
-                    kind: DiscoveryRowKind::Root,
-                });
-            }
-            workspace_parent_row(
-                group.primary(),
-                session_path,
-                DiscoveryRowKind::WorktreeEntry,
-            )
-            .or_else(|| {
-                group.linked().iter().find_map(|linked| {
-                    workspace_parent_row(linked, session_path, DiscoveryRowKind::WorktreeEntry)
-                })
-            })
+        RootItem::Rust(RustProject::Workspace(ws)) => {
+            workspace_parent_row(ws, session_path, DiscoveryRowKind::Root)
         },
-        RootItem::PackageWorktrees(group) => {
-            if group.primary().path() == session_path {
+        RootItem::Rust(RustProject::Package(pkg)) => {
+            package_parent_row(pkg, session_path, DiscoveryRowKind::Root)
+        },
+        RootItem::NonRust(_) => None,
+        RootItem::Worktrees(WorktreeGroup::Workspaces {
+            primary, linked, ..
+        }) => {
+            if primary.path() == session_path {
                 return None;
             }
-            if group
-                .linked()
-                .iter()
-                .any(|linked| linked.path() == session_path)
-            {
+            if linked.iter().any(|l| l.path() == session_path) {
                 return Some(DiscoveryParentRow {
-                    path: group.primary().path().to_path_buf(),
+                    path: primary.path().to_path_buf(),
                     kind: DiscoveryRowKind::Root,
                 });
             }
-            package_parent_row(
-                group.primary(),
-                session_path,
-                DiscoveryRowKind::WorktreeEntry,
+            workspace_parent_row(primary, session_path, DiscoveryRowKind::WorktreeEntry).or_else(
+                || {
+                    linked.iter().find_map(|l| {
+                        workspace_parent_row(l, session_path, DiscoveryRowKind::WorktreeEntry)
+                    })
+                },
             )
-            .or_else(|| {
-                group.linked().iter().find_map(|linked| {
-                    package_parent_row(linked, session_path, DiscoveryRowKind::WorktreeEntry)
-                })
-            })
+        },
+        RootItem::Worktrees(WorktreeGroup::Packages {
+            primary, linked, ..
+        }) => {
+            if primary.path() == session_path {
+                return None;
+            }
+            if linked.iter().any(|l| l.path() == session_path) {
+                return Some(DiscoveryParentRow {
+                    path: primary.path().to_path_buf(),
+                    kind: DiscoveryRowKind::Root,
+                });
+            }
+            package_parent_row(primary, session_path, DiscoveryRowKind::WorktreeEntry).or_else(
+                || {
+                    linked.iter().find_map(|l| {
+                        package_parent_row(l, session_path, DiscoveryRowKind::WorktreeEntry)
+                    })
+                },
+            )
         },
     }
 }
 
 fn workspace_parent_row(
-    ws: &RustProject<Workspace>,
+    ws: &WorkspaceProject,
     session_path: &Path,
     parent_kind: DiscoveryRowKind,
 ) -> Option<DiscoveryParentRow> {
@@ -860,7 +862,7 @@ fn workspace_parent_row(
 }
 
 fn package_parent_row(
-    pkg: &RustProject<Package>,
+    pkg: &PackageProject,
     session_path: &Path,
     parent_kind: DiscoveryRowKind,
 ) -> Option<DiscoveryParentRow> {

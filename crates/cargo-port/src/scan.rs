@@ -32,10 +32,11 @@ use super::project::GitInfo;
 use super::project::GitPathState;
 use super::project::GitRepoPresence;
 use super::project::MemberGroup;
-use super::project::Package;
+use super::project::PackageProject;
+use super::project::ProjectFields;
 use super::project::RootItem;
 use super::project::RustProject;
-use super::project::Workspace;
+use super::project::WorkspaceProject;
 use super::project::WorktreeGroup;
 
 pub(crate) enum BackgroundMsg {
@@ -396,7 +397,7 @@ pub(crate) fn dir_size(path: &Path) -> u64 {
 
 /// Build a project tree from a flat list of discovered `RootItem`s.
 ///
-/// The input must contain only `Workspace`, `Package`, and `NonRust` variants
+/// The input must contain only `Rust(Workspace)`, `Rust(Package)`, and `NonRust` variants
 /// (discovery does not produce worktree groups). This function:
 /// 1. Nests workspace members into their parent workspace's `groups`
 /// 2. Detects vendored crates nested inside other projects
@@ -404,7 +405,7 @@ pub(crate) fn dir_size(path: &Path) -> u64 {
 pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<RootItem> {
     let workspace_paths: Vec<PathBuf> = items
         .iter()
-        .filter(|item| matches!(item, RootItem::Workspace(_)))
+        .filter(|item| matches!(item, RootItem::Rust(RustProject::Workspace(_))))
         .map(|item| item.path().to_path_buf())
         .collect();
 
@@ -416,7 +417,7 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
         .iter()
         .enumerate()
         .filter(|(_, item)| {
-            matches!(item, RootItem::Workspace(_))
+            matches!(item, RootItem::Rust(RustProject::Workspace(_)))
                 && !workspace_paths
                     .iter()
                     .any(|ws| *ws != item.path() && item.path().starts_with(ws))
@@ -428,13 +429,13 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
         if !top_level_workspaces.contains(&i) {
             continue;
         }
-        let RootItem::Workspace(ws) = item else {
+        let RootItem::Rust(RustProject::Workspace(ws)) = item else {
             continue;
         };
         let ws_path = ws.path().to_path_buf();
         let member_paths = workspace_member_paths_new(&ws_path, items);
 
-        let mut all_members: Vec<RustProject<Package>> = items
+        let mut all_members: Vec<PackageProject> = items
             .iter()
             .enumerate()
             .filter(|(j, candidate)| {
@@ -444,11 +445,11 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
             })
             .filter_map(|(j, candidate)| {
                 consumed.insert(j);
-                if let RootItem::Package(pkg) = candidate {
+                if let RootItem::Rust(RustProject::Package(pkg)) = candidate {
                     Some(pkg.clone())
-                } else if let RootItem::Workspace(nested_ws) = candidate {
+                } else if let RootItem::Rust(RustProject::Workspace(nested_ws)) = candidate {
                     // Nested workspace treated as a package member
-                    Some(RustProject::<Package>::new(
+                    Some(PackageProject::new(
                         nested_ws.path().to_path_buf(),
                         nested_ws.name().map(str::to_string),
                         nested_ws.cargo().clone(),
@@ -469,7 +470,7 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
         let mut new_ws = ws.clone();
         *new_ws.groups_mut() = groups;
         consumed.insert(i);
-        result.push(RootItem::Workspace(new_ws));
+        result.push(RootItem::Rust(RustProject::Workspace(new_ws)));
     }
 
     for (i, item) in items.iter().enumerate() {
@@ -607,21 +608,20 @@ fn workspace_pattern_matches_segment(pattern: &str, value: &str) -> bool {
 
 /// Group worktree checkouts under their primary project.
 ///
-/// Projects sharing the same `worktree_primary_abs_path` are grouped.
-/// Workspaces → `WorkspaceWorktrees`, Packages → `PackageWorktrees`.
+/// Projects sharing the same `worktree_primary_abs_path` are grouped
+/// into `Worktrees(WorktreeGroup::Workspaces { .. })` or
+/// `Worktrees(WorktreeGroup::Packages { .. })`.
 /// `NonRust` projects are not grouped into worktree variants.
 fn item_worktree_identity(item: &RootItem) -> Option<&Path> {
     match item {
-        RootItem::Workspace(p) => p.worktree_primary_abs_path(),
-        RootItem::Package(p) => p.worktree_primary_abs_path(),
+        RootItem::Rust(p) => p.worktree_primary_abs_path(),
         _ => None,
     }
 }
 
 fn item_is_linked(item: &RootItem) -> bool {
     match item {
-        RootItem::Workspace(p) => p.worktree_name().is_some(),
-        RootItem::Package(p) => p.worktree_name().is_some(),
+        RootItem::Rust(p) => p.worktree_name().is_some(),
         _ => false,
     }
 }
@@ -696,31 +696,31 @@ fn merge_worktrees_new(items: &mut Vec<RootItem>) {
         let linked = linked_by_id.remove(id).unwrap_or_default();
         let primary_item = &items[*idx];
         let replacement = match primary_item {
-            RootItem::Workspace(ws) => {
-                let linked_ws: Vec<RustProject<Workspace>> = linked
+            RootItem::Rust(RustProject::Workspace(ws)) => {
+                let linked_ws: Vec<WorkspaceProject> = linked
                     .into_iter()
                     .filter_map(|item| {
-                        if let RootItem::Workspace(linked_ws) = item {
+                        if let RootItem::Rust(RustProject::Workspace(linked_ws)) = item {
                             Some(linked_ws)
                         } else {
                             None
                         }
                     })
                     .collect();
-                RootItem::WorkspaceWorktrees(WorktreeGroup::new(ws.clone(), linked_ws))
+                RootItem::Worktrees(WorktreeGroup::new_workspaces(ws.clone(), linked_ws))
             },
-            RootItem::Package(pkg) => {
-                let linked_pkg: Vec<RustProject<Package>> = linked
+            RootItem::Rust(RustProject::Package(pkg)) => {
+                let linked_pkg: Vec<PackageProject> = linked
                     .into_iter()
                     .filter_map(|item| {
-                        if let RootItem::Package(linked_pkg) = item {
+                        if let RootItem::Rust(RustProject::Package(linked_pkg)) = item {
                             Some(linked_pkg)
                         } else {
                             None
                         }
                     })
                     .collect();
-                RootItem::PackageWorktrees(WorktreeGroup::new(pkg.clone(), linked_pkg))
+                RootItem::Worktrees(WorktreeGroup::new_packages(pkg.clone(), linked_pkg))
             },
             _ => continue,
         };
@@ -745,8 +745,10 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
 
     for (vi, vitem) in items.iter().enumerate() {
         let has_structure = match vitem {
-            RootItem::Workspace(ws) => ws.groups().iter().any(|g| !g.members().is_empty()),
-            RootItem::WorkspaceWorktrees(_) | RootItem::PackageWorktrees(_) => true,
+            RootItem::Rust(RustProject::Workspace(ws)) => {
+                ws.groups().iter().any(|g| !g.members().is_empty())
+            },
+            RootItem::Worktrees(_) => true,
             _ => false,
         };
         if has_structure {
@@ -771,12 +773,12 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
     remove_indices.sort_unstable();
     remove_indices.dedup();
 
-    // Convert vendored items to Project<Package>
-    let mut vendored_projects: Vec<(usize, RustProject<Package>)> = Vec::new();
+    // Convert vendored items to `PackageProject`
+    let mut vendored_projects: Vec<(usize, PackageProject)> = Vec::new();
     for &(vi, ni) in &vendored_map {
         let pkg = match &items[vi] {
-            RootItem::Package(p) => p.clone(),
-            RootItem::Workspace(ws) => RustProject::<Package>::new(
+            RootItem::Rust(RustProject::Package(p)) => p.clone(),
+            RootItem::Rust(RustProject::Workspace(ws)) => PackageProject::new(
                 ws.path().to_path_buf(),
                 ws.name().map(str::to_string),
                 ws.cargo().clone(),
@@ -784,7 +786,7 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
                 ws.worktree_name().map(str::to_string),
                 ws.worktree_primary_abs_path().map(Path::to_path_buf),
             ),
-            RootItem::NonRust(nr) => RustProject::<Package>::new(
+            RootItem::NonRust(nr) => PackageProject::new(
                 nr.path().to_path_buf(),
                 nr.name().map(str::to_string),
                 Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -806,8 +808,8 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
         let target_ni = ni - adjusted_ni;
         if let Some(item) = items.get_mut(target_ni) {
             match item {
-                RootItem::Workspace(ws) => ws.vendored_mut().push(pkg),
-                RootItem::Package(p) => p.vendored_mut().push(pkg),
+                RootItem::Rust(RustProject::Workspace(ws)) => ws.vendored_mut().push(pkg),
+                RootItem::Rust(RustProject::Package(p)) => p.vendored_mut().push(pkg),
                 _ => {},
             }
         }
@@ -816,10 +818,10 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
     // Sort vendored lists
     for item in items {
         match item {
-            RootItem::Workspace(ws) => {
+            RootItem::Rust(RustProject::Workspace(ws)) => {
                 ws.vendored_mut().sort_by(|a, b| a.path().cmp(b.path()));
             },
-            RootItem::Package(pkg) => {
+            RootItem::Rust(RustProject::Package(pkg)) => {
                 pkg.vendored_mut().sort_by(|a, b| a.path().cmp(b.path()));
             },
             _ => {},
@@ -829,10 +831,10 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
 
 fn group_members_new(
     workspace_path: &Path,
-    members: Vec<RustProject<Package>>,
+    members: Vec<PackageProject>,
     inline_dirs: &[String],
 ) -> Vec<MemberGroup> {
-    let mut group_map: HashMap<String, Vec<RustProject<Package>>> = HashMap::new();
+    let mut group_map: HashMap<String, Vec<PackageProject>> = HashMap::new();
 
     for member in members {
         let relative = member
@@ -879,8 +881,8 @@ fn group_members_new(
 /// Convert a `CargoProject` (from `from_cargo_toml()`) into a `RootItem`.
 pub(crate) fn cargo_project_to_item(cp: CargoParseResult) -> RootItem {
     match cp {
-        CargoParseResult::Workspace(ws) => RootItem::Workspace(ws),
-        CargoParseResult::Package(pkg) => RootItem::Package(pkg),
+        CargoParseResult::Workspace(ws) => RootItem::Rust(RustProject::Workspace(ws)),
+        CargoParseResult::Package(pkg) => RootItem::Rust(RustProject::Package(pkg)),
     }
 }
 
@@ -1365,7 +1367,7 @@ mod tests {
         worktree_name: Option<&str>,
         primary_abs: Option<&str>,
     ) -> RootItem {
-        RootItem::Workspace(RustProject::<Workspace>::new(
+        RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
             PathBuf::from(abs_path),
             name.map(String::from),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -1373,7 +1375,7 @@ mod tests {
             Vec::new(),
             worktree_name.map(String::from),
             primary_abs.map(PathBuf::from),
-        ))
+        )))
     }
 
     fn make_package(
@@ -1382,14 +1384,14 @@ mod tests {
         worktree_name: Option<&str>,
         primary_abs: Option<&str>,
     ) -> RootItem {
-        RootItem::Package(RustProject::<Package>::new(
+        RootItem::Rust(RustProject::Package(PackageProject::new(
             PathBuf::from(abs_path),
             name.map(String::from),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
             Vec::new(),
             worktree_name.map(String::from),
             primary_abs.map(PathBuf::from),
-        ))
+        )))
     }
 
     #[test]
@@ -1400,10 +1402,10 @@ mod tests {
         merge_worktrees_new(&mut items);
 
         assert_eq!(items.len(), 1, "worktree should be merged into primary");
-        let RootItem::WorkspaceWorktrees(ref wtg) = items[0] else {
+        let RootItem::Worktrees(WorktreeGroup::Workspaces { ref linked, .. }) = items[0] else {
             std::process::abort()
         };
-        assert_eq!(wtg.linked().len(), 1, "should have one linked worktree");
+        assert_eq!(linked.len(), 1, "should have one linked worktree");
     }
 
     #[test]
@@ -1419,10 +1421,10 @@ mod tests {
         merge_worktrees_new(&mut items);
 
         assert_eq!(items.len(), 1);
-        let RootItem::WorkspaceWorktrees(ref wtg) = items[0] else {
+        let RootItem::Worktrees(WorktreeGroup::Workspaces { ref linked, .. }) = items[0] else {
             std::process::abort()
         };
-        assert_eq!(wtg.linked().len(), 1);
+        assert_eq!(linked.len(), 1);
     }
 
     #[test]
@@ -1469,7 +1471,7 @@ mod tests {
             .iter()
             .find(|item| item.path() == workspace_dir.as_path())
             .unwrap_or_else(|| std::process::abort());
-        let RootItem::Workspace(ws) = ws_item else {
+        let RootItem::Rust(RustProject::Workspace(ws)) = ws_item else {
             std::process::abort()
         };
         assert_eq!(ws.groups().len(), 1);
@@ -1499,10 +1501,10 @@ mod tests {
         merge_worktrees_new(&mut items);
 
         assert_eq!(items.len(), 1);
-        let RootItem::PackageWorktrees(ref wtg) = items[0] else {
+        let RootItem::Worktrees(WorktreeGroup::Packages { ref linked, .. }) = items[0] else {
             std::process::abort()
         };
-        assert_eq!(wtg.linked().len(), 1);
+        assert_eq!(linked.len(), 1);
     }
 
     #[test]

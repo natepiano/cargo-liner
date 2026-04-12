@@ -33,6 +33,7 @@ use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
 use crate::project::GitRepoPresence;
+use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Visible;
@@ -94,13 +95,17 @@ impl App {
         for item in &self.projects {
             let root_path = item.path();
             let member_paths: Vec<PathBuf> = match item {
-                crate::project::RootItem::Workspace(ws) => ws
+                crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => ws
                     .groups()
                     .iter()
                     .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
                     .collect(),
-                crate::project::RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
-                    .chain(wtg.linked().iter())
+                crate::project::RootItem::Worktrees(
+                    crate::project::WorktreeGroup::Workspaces {
+                        primary, linked, ..
+                    },
+                ) => std::iter::once(primary)
+                    .chain(linked.iter())
                     .flat_map(|ws| {
                         ws.groups()
                             .iter()
@@ -576,12 +581,20 @@ impl App {
 
         for item in &self.projects {
             let items: Vec<(&Path, bool)> = match item {
-                crate::project::RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
-                    .chain(wtg.linked().iter())
+                crate::project::RootItem::Worktrees(
+                    crate::project::WorktreeGroup::Workspaces {
+                        primary, linked, ..
+                    },
+                ) => std::iter::once(primary)
+                    .chain(linked.iter())
                     .map(|p| (p.path(), true))
                     .collect(),
-                crate::project::RootItem::PackageWorktrees(wtg) => std::iter::once(wtg.primary())
-                    .chain(wtg.linked().iter())
+                crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
+                    primary,
+                    linked,
+                    ..
+                }) => std::iter::once(primary)
+                    .chain(linked.iter())
                     .map(|p| (p.path(), true))
                     .collect(),
                 _ => vec![(item.path(), item.is_rust())],
@@ -626,7 +639,7 @@ impl App {
         let mut count = 0;
         for item in &self.projects {
             match item {
-                RootItem::Workspace(ws) => {
+                RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
                     runtime.register_project(crate::lint::RegisterProjectRequest {
                         project_label: ws.display_path().into_string(),
                         abs_path:      ws.path().to_path_buf(),
@@ -634,7 +647,7 @@ impl App {
                     });
                     count += 1;
                 },
-                RootItem::Package(pkg) => {
+                RootItem::Rust(crate::project::RustProject::Package(pkg)) => {
                     runtime.register_project(crate::lint::RegisterProjectRequest {
                         project_label: pkg.display_path().into_string(),
                         abs_path:      pkg.path().to_path_buf(),
@@ -642,8 +655,12 @@ impl App {
                     });
                     count += 1;
                 },
-                RootItem::WorkspaceWorktrees(wtg) => {
-                    for ws in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
+                RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
+                    primary,
+                    linked,
+                    ..
+                }) => {
+                    for ws in std::iter::once(primary).chain(linked.iter()) {
                         runtime.register_project(crate::lint::RegisterProjectRequest {
                             project_label: ws.display_path().into_string(),
                             abs_path:      ws.path().to_path_buf(),
@@ -652,8 +669,12 @@ impl App {
                         count += 1;
                     }
                 },
-                RootItem::PackageWorktrees(wtg) => {
-                    for pkg in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
+                RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
+                    primary,
+                    linked,
+                    ..
+                }) => {
+                    for pkg in std::iter::once(primary).chain(linked.iter()) {
                         runtime.register_project(crate::lint::RegisterProjectRequest {
                             project_label: pkg.display_path().into_string(),
                             abs_path:      pkg.path().to_path_buf(),
@@ -677,8 +698,10 @@ impl App {
         // Skip workspace members — the workspace root's watcher covers them.
         let mut is_member = false;
         self.projects.for_each_leaf(|existing| {
-            if matches!(existing, RootItem::Workspace(_))
-                && existing.path() != path
+            if matches!(
+                existing,
+                RootItem::Rust(crate::project::RustProject::Workspace(_))
+            ) && existing.path() != path
                 && path.starts_with(existing.path())
             {
                 is_member = true;
@@ -1296,29 +1319,33 @@ impl App {
                 }
 
                 match item {
-                    RootItem::Workspace(ws) => Some(LegacyRootExpansion {
-                        root_path:      ws.path().to_path_buf(),
-                        old_node_index: ni,
-                        had_children:   ws.has_members() || !ws.vendored().is_empty(),
-                        named_groups:   ws
-                            .groups()
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(gi, group)| {
-                                group
-                                    .is_named()
-                                    .then(|| self.expanded.contains(&Group(ni, gi)))
-                                    .filter(|expanded| *expanded)
-                                    .map(|_| gi)
-                            })
-                            .collect(),
-                    }),
-                    RootItem::Package(pkg) => Some(LegacyRootExpansion {
-                        root_path:      pkg.path().to_path_buf(),
-                        old_node_index: ni,
-                        had_children:   !pkg.vendored().is_empty(),
-                        named_groups:   Vec::new(),
-                    }),
+                    RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
+                        Some(LegacyRootExpansion {
+                            root_path:      ws.path().to_path_buf(),
+                            old_node_index: ni,
+                            had_children:   ws.has_members() || !ws.vendored().is_empty(),
+                            named_groups:   ws
+                                .groups()
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(gi, group)| {
+                                    group
+                                        .is_named()
+                                        .then(|| self.expanded.contains(&Group(ni, gi)))
+                                        .filter(|expanded| *expanded)
+                                        .map(|_| gi)
+                                })
+                                .collect(),
+                        })
+                    },
+                    RootItem::Rust(crate::project::RustProject::Package(pkg)) => {
+                        Some(LegacyRootExpansion {
+                            root_path:      pkg.path().to_path_buf(),
+                            old_node_index: ni,
+                            had_children:   !pkg.vendored().is_empty(),
+                            named_groups:   Vec::new(),
+                        })
+                    },
                     _ => None,
                 }
             })
@@ -1337,13 +1364,15 @@ impl App {
             };
 
             match current_item {
-                RootItem::WorkspaceWorktrees(group) if group.renders_as_group() => {
+                RootItem::Worktrees(
+                    group @ crate::project::WorktreeGroup::Workspaces { primary, .. },
+                ) if group.renders_as_group() => {
                     self.expanded.insert(Node(current_index));
                     if legacy_root.had_children {
                         self.expanded.insert(Worktree(current_index, 0));
                     }
                     for &group_index in &legacy_root.named_groups {
-                        if group.primary().groups().get(group_index).is_some() {
+                        if primary.groups().get(group_index).is_some() {
                             self.expanded
                                 .insert(WorktreeGroup(current_index, 0, group_index));
                         }
@@ -1351,7 +1380,9 @@ impl App {
                             .remove(&Group(legacy_root.old_node_index, group_index));
                     }
                 },
-                RootItem::PackageWorktrees(group) if group.renders_as_group() => {
+                RootItem::Worktrees(group @ crate::project::WorktreeGroup::Packages { .. })
+                    if group.renders_as_group() =>
+                {
                     self.expanded.insert(Node(current_index));
                     if legacy_root.had_children {
                         self.expanded.insert(Worktree(current_index, 0));
@@ -1640,7 +1671,9 @@ impl App {
         let mut fallback_worktree_paths = Vec::new();
         for item in &self.projects {
             match item {
-                crate::project::RootItem::Workspace(ws) if ws.path() == path => {
+                crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws))
+                    if ws.path() == path =>
+                {
                     member_paths.extend(ws.groups().iter().flat_map(|group| {
                         group
                             .members()
@@ -1648,8 +1681,12 @@ impl App {
                             .map(|member| member.path().to_path_buf())
                     }));
                 },
-                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
-                    for ws in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
+                crate::project::RootItem::Worktrees(
+                    crate::project::WorktreeGroup::Workspaces {
+                        primary, linked, ..
+                    },
+                ) => {
+                    for ws in std::iter::once(primary).chain(linked.iter()) {
                         if ws.path() == path {
                             member_paths.extend(ws.groups().iter().flat_map(|group| {
                                 group
@@ -1659,21 +1696,25 @@ impl App {
                             }));
                         }
                     }
-                    if wtg.primary().path() == path {
+                    if primary.path() == path {
                         fallback_worktree_paths.extend(
-                            wtg.linked()
+                            linked
                                 .iter()
-                                .filter(|linked| self.git_info_for(linked.path()).is_none())
-                                .map(|linked| linked.path().to_path_buf()),
+                                .filter(|l| self.git_info_for(l.path()).is_none())
+                                .map(|l| l.path().to_path_buf()),
                         );
                     }
                 },
-                crate::project::RootItem::PackageWorktrees(wtg) if wtg.primary().path() == path => {
+                crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
+                    primary,
+                    linked,
+                    ..
+                }) if primary.path() == path => {
                     fallback_worktree_paths.extend(
-                        wtg.linked()
+                        linked
                             .iter()
-                            .filter(|linked| self.git_info_for(linked.path()).is_none())
-                            .map(|linked| linked.path().to_path_buf()),
+                            .filter(|l| self.git_info_for(l.path()).is_none())
+                            .map(|l| l.path().to_path_buf()),
                     );
                 },
                 _ => {},
@@ -1840,7 +1881,9 @@ impl App {
         // Propagate stars to workspace members.
         for item in &self.projects {
             match item {
-                crate::project::RootItem::Workspace(ws) if ws.path() == abs => {
+                crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws))
+                    if ws.path() == abs =>
+                {
                     for group in ws.groups() {
                         for member in group.members() {
                             self.stars
@@ -1849,8 +1892,12 @@ impl App {
                         }
                     }
                 },
-                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
-                    for ws in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
+                crate::project::RootItem::Worktrees(
+                    crate::project::WorktreeGroup::Workspaces {
+                        primary, linked, ..
+                    },
+                ) => {
+                    for ws in std::iter::once(primary).chain(linked.iter()) {
                         if ws.path() == abs {
                             for group in ws.groups() {
                                 for member in group.members() {
@@ -2146,13 +2193,17 @@ impl App {
         for item in &self.projects {
             let root_path = item.path();
             let member_paths: Vec<PathBuf> = match item {
-                RootItem::Workspace(ws) => ws
+                RootItem::Rust(crate::project::RustProject::Workspace(ws)) => ws
                     .groups()
                     .iter()
                     .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
                     .collect(),
-                RootItem::WorkspaceWorktrees(wtg) => std::iter::once(wtg.primary())
-                    .chain(wtg.linked().iter())
+                RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
+                    primary,
+                    linked,
+                    ..
+                }) => std::iter::once(primary)
+                    .chain(linked.iter())
                     .flat_map(|ws| {
                         ws.groups()
                             .iter()

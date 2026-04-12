@@ -61,7 +61,7 @@ fn name_width_with_gutter_reserves_space_before_lint() {
 
 #[test]
 fn tabbable_panes_follow_canonical_order() {
-    let project = RootItem::Package(RustProject::<Package>::new(
+    let project = RootItem::Rust(RustProject::Package(PackageProject::new(
         test_path("~/demo"),
         Some("demo".to_string()),
         Cargo::new(
@@ -78,7 +78,7 @@ fn tabbable_panes_follow_canonical_order() {
         Vec::new(),
         None,
         None,
-    ));
+    )));
 
     let mut app = make_app(std::slice::from_ref(&project));
     app.toasts = ToastManager::default();
@@ -179,7 +179,7 @@ fn project_refresh_updates_selected_tree_project_targets() {
     assert_eq!(example_count, Some(0));
     assert!(!app.tabbable_panes().contains(&PaneId::Targets));
 
-    let refreshed = RootItem::Package(RustProject::<Package>::new(
+    let refreshed = RootItem::Rust(RustProject::Package(PackageProject::new(
         test_path("~/demo"),
         Some("demo".to_string()),
         Cargo::new(
@@ -196,7 +196,7 @@ fn project_refresh_updates_selected_tree_project_targets() {
         Vec::new(),
         None,
         None,
-    ));
+    )));
 
     app.handle_project_refreshed(refreshed);
     app.sync_selected_project();
@@ -495,14 +495,14 @@ fn disk_updates_skip_git_path_refresh_during_scan() {
     std::fs::create_dir_all(&abs_path).unwrap_or_else(|_| std::process::abort());
 
     let abs_str = abs_path.to_string_lossy().to_string();
-    let project = RootItem::Package(RustProject::<Package>::new(
+    let project = RootItem::Rust(RustProject::Package(PackageProject::new(
         abs_path,
         Some("demo".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
         Vec::new(),
         None,
         None,
-    ));
+    )));
     let mut app = make_app(&[project]);
 
     app.handle_disk_usage(Path::new(&abs_str), 123);

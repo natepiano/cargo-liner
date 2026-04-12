@@ -823,9 +823,7 @@ pub(super) fn detect_worktree_primary(project_dir: &Path) -> Option<String> {
     }
 }
 
-// Re-export `WorktreeHealth` here since `detect_worktree_health` returns it
-// and it's conceptually a git type.
-use super::types::WorktreeHealth;
+use super::info::WorktreeHealth;
 
 #[cfg(test)]
 #[allow(

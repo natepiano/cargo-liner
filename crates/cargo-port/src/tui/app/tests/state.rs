@@ -377,11 +377,11 @@ fn startup_git_expected_uses_top_level_git_directories() {
         non_rust_dir.clone(),
         Some(".claude".to_string()),
     ));
-    let workspace = RootItem::Workspace(RustProject::<Workspace>::new(
+    let workspace = RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
         workspace_dir.clone(),
         Some("bevy".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
-        vec![inline_group(vec![RustProject::<Package>::new(
+        vec![inline_group(vec![PackageProject::new(
             member_dir,
             Some("core".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -392,8 +392,8 @@ fn startup_git_expected_uses_top_level_git_directories() {
         Vec::new(),
         None,
         None,
-    ));
-    let primary = RustProject::<Package>::new(
+    )));
+    let primary = PackageProject::new(
         primary_dir.clone(),
         Some("cargo-port".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -401,7 +401,7 @@ fn startup_git_expected_uses_top_level_git_directories() {
         None,
         None,
     );
-    let linked = RustProject::<Package>::new(
+    let linked = PackageProject::new(
         linked_dir,
         Some("cargo-port_feat".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -409,7 +409,7 @@ fn startup_git_expected_uses_top_level_git_directories() {
         Some("cargo-port_feat".to_string()),
         Some(primary_dir.clone()),
     );
-    let worktrees = RootItem::PackageWorktrees(WorktreeGroup::new(primary, vec![linked]));
+    let worktrees = RootItem::Worktrees(WorktreeGroup::new_packages(primary, vec![linked]));
 
     let mut app = make_app(&[]);
     apply_items(&mut app, &[non_rust, workspace, worktrees]);
@@ -435,11 +435,11 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
     std::fs::create_dir_all(workspace_dir.join(".git")).unwrap_or_else(|_| std::process::abort());
     std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
 
-    let workspace = RootItem::Workspace(RustProject::<Workspace>::new(
+    let workspace = RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
         workspace_dir.clone(),
         Some("bevy".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
-        vec![inline_group(vec![RustProject::<Package>::new(
+        vec![inline_group(vec![PackageProject::new(
             member_dir.clone(),
             Some("core".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -450,7 +450,7 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
         Vec::new(),
         None,
         None,
-    ));
+    )));
 
     let mut app = make_app(&[]);
     apply_items(&mut app, &[workspace]);
@@ -541,7 +541,7 @@ fn lint_runtime_snapshot_deduplicates_primary_worktree_path() {
 #[test]
 fn vendored_path_dependency_becomes_cargo_active() {
     let root_item = {
-        let pkg = RustProject::<Package>::new(
+        let pkg = PackageProject::new(
             test_path("~/app"),
             Some("app".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -549,7 +549,7 @@ fn vendored_path_dependency_becomes_cargo_active() {
             None,
             None,
         );
-        RootItem::Package(pkg)
+        RootItem::Rust(RustProject::Package(pkg))
     };
     let vendored = make_project(Some("helper"), "~/app/vendor/helper");
 

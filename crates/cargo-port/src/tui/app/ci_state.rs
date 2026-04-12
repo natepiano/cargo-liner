@@ -7,6 +7,7 @@ use super::types::CiRunDisplayMode;
 use super::types::CiState;
 use crate::ci;
 use crate::ci::CiRun;
+use crate::project::ProjectFields;
 use crate::scan;
 use crate::scan::CiFetchResult;
 use crate::tui::detail::CiFetchKind;
@@ -41,24 +42,36 @@ impl App {
     pub(super) fn ci_owner_path_for_inner(&self, path: &Path) -> Option<PathBuf> {
         for item in &self.projects {
             match item {
-                crate::project::RootItem::Workspace(ws) if path.starts_with(ws.path()) => {
+                crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws))
+                    if path.starts_with(ws.path()) =>
+                {
                     return Some(ws.path().to_path_buf());
                 },
-                crate::project::RootItem::Package(pkg) if path.starts_with(pkg.path()) => {
+                crate::project::RootItem::Rust(crate::project::RustProject::Package(pkg))
+                    if path.starts_with(pkg.path()) =>
+                {
                     return Some(pkg.path().to_path_buf());
                 },
                 crate::project::RootItem::NonRust(project) if project.path() == path => {
                     return Some(project.path().to_path_buf());
                 },
-                crate::project::RootItem::WorkspaceWorktrees(wtg) => {
-                    for ws in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
+                crate::project::RootItem::Worktrees(
+                    crate::project::WorktreeGroup::Workspaces {
+                        primary, linked, ..
+                    },
+                ) => {
+                    for ws in std::iter::once(primary).chain(linked.iter()) {
                         if path.starts_with(ws.path()) {
                             return Some(ws.path().to_path_buf());
                         }
                     }
                 },
-                crate::project::RootItem::PackageWorktrees(wtg) => {
-                    for pkg in std::iter::once(wtg.primary()).chain(wtg.linked().iter()) {
+                crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
+                    primary,
+                    linked,
+                    ..
+                }) => {
+                    for pkg in std::iter::once(primary).chain(linked.iter()) {
                         if path.starts_with(pkg.path()) {
                             return Some(pkg.path().to_path_buf());
                         }
@@ -188,12 +201,12 @@ impl App {
         self.projects.iter().any(|item| {
             item.path() == path
                 || match item {
-                    crate::project::RootItem::WorkspaceWorktrees(wtg) => {
-                        wtg.linked().iter().any(|l| l.path() == path)
-                    },
-                    crate::project::RootItem::PackageWorktrees(wtg) => {
-                        wtg.linked().iter().any(|l| l.path() == path)
-                    },
+                    crate::project::RootItem::Worktrees(
+                        crate::project::WorktreeGroup::Workspaces { linked, .. },
+                    ) => linked.iter().any(|l| l.path() == path),
+                    crate::project::RootItem::Worktrees(
+                        crate::project::WorktreeGroup::Packages { linked, .. },
+                    ) => linked.iter().any(|l| l.path() == path),
                     _ => false,
                 }
         })

@@ -37,13 +37,15 @@ use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
-use crate::project::Package;
+use crate::project::PackageProject;
+use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Dismissed;
 use crate::project::WorkflowPresence;
-use crate::project::Workspace;
+use crate::project::WorkspaceProject;
+use crate::project::WorktreeGroup;
 use crate::project_list::ProjectList;
 use crate::scan::BackgroundMsg;
 use crate::tui::columns::ResolvedWidths;
@@ -79,14 +81,14 @@ fn test_path(path: &str) -> PathBuf {
 }
 
 fn make_project(name: Option<&str>, path: &str) -> RootItem {
-    RootItem::Package(RustProject::<Package>::new(
+    RootItem::Rust(RustProject::Package(PackageProject::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
         Vec::new(),
         None,
         None,
-    ))
+    )))
 }
 
 fn make_app(projects: &[RootItem]) -> App {
@@ -193,7 +195,7 @@ fn make_non_rust_project(name: Option<&str>, path: &str) -> RootItem {
 }
 
 fn make_workspace_project(name: Option<&str>, path: &str) -> RootItem {
-    RootItem::Workspace(RustProject::<Workspace>::new(
+    RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -201,7 +203,7 @@ fn make_workspace_project(name: Option<&str>, path: &str) -> RootItem {
         Vec::new(),
         None,
         None,
-    ))
+    )))
 }
 
 fn make_workspace_with_members(
@@ -209,7 +211,7 @@ fn make_workspace_with_members(
     path: &str,
     groups: Vec<MemberGroup>,
 ) -> RootItem {
-    RootItem::Workspace(RustProject::<Workspace>::new(
+    RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -217,11 +219,11 @@ fn make_workspace_with_members(
         Vec::new(),
         None,
         None,
-    ))
+    )))
 }
 
-fn make_member(name: Option<&str>, path: &str) -> RustProject<Package> {
-    RustProject::<Package>::new(
+fn make_member(name: Option<&str>, path: &str) -> PackageProject {
+    PackageProject::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -232,24 +234,17 @@ fn make_member(name: Option<&str>, path: &str) -> RustProject<Package> {
 }
 
 fn make_workspace_worktrees_item(
-    primary: RustProject<Workspace>,
-    linked: Vec<RustProject<Workspace>>,
+    primary: WorkspaceProject,
+    linked: Vec<WorkspaceProject>,
 ) -> RootItem {
-    RootItem::WorkspaceWorktrees(crate::project::WorktreeGroup::new(primary, linked))
+    RootItem::Worktrees(WorktreeGroup::new_workspaces(primary, linked))
 }
 
-fn make_package_worktrees_item(
-    primary: RustProject<Package>,
-    linked: Vec<RustProject<Package>>,
-) -> RootItem {
-    RootItem::PackageWorktrees(crate::project::WorktreeGroup::new(primary, linked))
+fn make_package_worktrees_item(primary: PackageProject, linked: Vec<PackageProject>) -> RootItem {
+    RootItem::Worktrees(WorktreeGroup::new_packages(primary, linked))
 }
 
-fn make_package_raw(
-    name: Option<&str>,
-    path: &str,
-    worktree_name: Option<&str>,
-) -> RustProject<Package> {
+fn make_package_raw(name: Option<&str>, path: &str, worktree_name: Option<&str>) -> PackageProject {
     make_package_raw_with_primary(name, path, worktree_name, None)
 }
 
@@ -258,8 +253,8 @@ fn make_package_raw_with_primary(
     path: &str,
     worktree_name: Option<&str>,
     primary_abs_path: Option<&str>,
-) -> RustProject<Package> {
-    RustProject::<Package>::new(
+) -> PackageProject {
+    PackageProject::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -274,7 +269,7 @@ fn make_workspace_raw(
     path: &str,
     groups: Vec<MemberGroup>,
     worktree_name: Option<&str>,
-) -> RustProject<Workspace> {
+) -> WorkspaceProject {
     make_workspace_raw_with_primary(name, path, groups, worktree_name, None)
 }
 
@@ -284,8 +279,8 @@ fn make_workspace_raw_with_primary(
     groups: Vec<MemberGroup>,
     worktree_name: Option<&str>,
     primary_abs_path: Option<&str>,
-) -> RustProject<Workspace> {
-    RustProject::<Workspace>::new(
+) -> WorkspaceProject {
+    WorkspaceProject::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -296,11 +291,11 @@ fn make_workspace_raw_with_primary(
     )
 }
 
-fn inline_group(members: Vec<RustProject<Package>>) -> MemberGroup {
+fn inline_group(members: Vec<PackageProject>) -> MemberGroup {
     crate::project::MemberGroup::Inline { members }
 }
 
-fn named_group(name: &str, members: Vec<RustProject<Package>>) -> MemberGroup {
+fn named_group(name: &str, members: Vec<PackageProject>) -> MemberGroup {
     crate::project::MemberGroup::Named {
         name: name.to_string(),
         members,
@@ -310,9 +305,9 @@ fn named_group(name: &str, members: Vec<RustProject<Package>>) -> MemberGroup {
 fn make_package_with_vendored(
     name: Option<&str>,
     path: &str,
-    vendored: Vec<RustProject<Package>>,
-) -> RustProject<Package> {
-    RustProject::<Package>::new(
+    vendored: Vec<PackageProject>,
+) -> PackageProject {
+    PackageProject::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -326,10 +321,10 @@ fn make_workspace_raw_with_vendored(
     name: Option<&str>,
     path: &str,
     groups: Vec<MemberGroup>,
-    vendored: Vec<RustProject<Package>>,
+    vendored: Vec<PackageProject>,
     worktree_name: Option<&str>,
-) -> RustProject<Workspace> {
-    RustProject::<Workspace>::new(
+) -> WorkspaceProject {
+    WorkspaceProject::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
@@ -560,11 +555,11 @@ impl WorktreeProjectKind {
     fn assert_group_shape(self, app: &App, linked_len: usize, context: &str) {
         assert_eq!(app.projects.len(), 1, "{context}");
         match (self, &app.projects[0]) {
-            (Self::Package, RootItem::PackageWorktrees(group)) => {
-                assert_eq!(group.linked().len(), linked_len, "{context}");
+            (Self::Package, RootItem::Worktrees(WorktreeGroup::Packages { linked, .. })) => {
+                assert_eq!(linked.len(), linked_len, "{context}");
             },
-            (Self::Workspace, RootItem::WorkspaceWorktrees(group)) => {
-                assert_eq!(group.linked().len(), linked_len, "{context}");
+            (Self::Workspace, RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. })) => {
+                assert_eq!(linked.len(), linked_len, "{context}");
             },
             (Self::Package, _) => panic!("expected package worktree group: {context}"),
             (Self::Workspace, _) => panic!("expected workspace worktree group: {context}"),
@@ -645,58 +640,64 @@ fn expect_synthetic_discovery_creates_group(kind: WorktreeProjectKind) {
         WorktreeProjectKind::Package => {
             let primary_path = "/abs/app";
             let linked_path = "/abs/app_feat";
-            let primary = RootItem::Package(make_package_raw_with_primary(
+            let primary = RootItem::Rust(RustProject::Package(make_package_raw_with_primary(
                 Some("app"),
                 primary_path,
                 None,
                 Some("/canonical/app"),
-            ));
-            let linked = RootItem::Package(make_package_raw_with_primary(
+            )));
+            let linked = RootItem::Rust(RustProject::Package(make_package_raw_with_primary(
                 Some("app"),
                 linked_path,
                 Some("app_feat"),
                 Some("/canonical/app"),
-            ));
+            )));
 
             let mut app = make_app(&[primary]);
             assert!(app.handle_project_discovered(linked));
             assert_eq!(app.projects.len(), 1);
 
-            let RootItem::PackageWorktrees(group) = &app.projects[0] else {
+            let RootItem::Worktrees(WorktreeGroup::Packages {
+                primary, linked, ..
+            }) = &app.projects[0]
+            else {
                 panic!("expected discovered worktree to create a package worktree group");
             };
-            assert_eq!(group.primary().path(), Path::new(primary_path));
-            assert_eq!(group.linked().len(), 1);
-            assert_eq!(group.linked()[0].path(), Path::new(linked_path));
+            assert_eq!(primary.path(), Path::new(primary_path));
+            assert_eq!(linked.len(), 1);
+            assert_eq!(linked[0].path(), Path::new(linked_path));
         },
         WorktreeProjectKind::Workspace => {
             let primary_path = "/abs/obsidian_knife";
             let linked_path = "/abs/obsidian_knife_test";
-            let primary = RootItem::Workspace(make_workspace_raw_with_primary(
+            let primary = RootItem::Rust(RustProject::Workspace(make_workspace_raw_with_primary(
                 Some("obsidian_knife"),
                 primary_path,
                 Vec::new(),
                 None,
                 Some("/canonical/obsidian_knife"),
-            ));
-            let linked = RootItem::Workspace(make_workspace_raw_with_primary(
+            )));
+            let linked = RootItem::Rust(RustProject::Workspace(make_workspace_raw_with_primary(
                 Some("obsidian_knife"),
                 linked_path,
                 Vec::new(),
                 Some("obsidian_knife_test"),
                 Some("/canonical/obsidian_knife"),
-            ));
+            )));
 
             let mut app = make_app(&[primary]);
             assert!(app.handle_project_discovered(linked));
             assert_eq!(app.projects.len(), 1);
 
-            let RootItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+            let RootItem::Worktrees(WorktreeGroup::Workspaces {
+                primary, linked, ..
+            }) = &app.projects[0]
+            else {
                 panic!("expected discovered workspace worktree to create a worktree group");
             };
-            assert_eq!(group.primary().path(), Path::new(primary_path));
-            assert_eq!(group.linked().len(), 1);
-            assert_eq!(group.linked()[0].path(), Path::new(linked_path));
+            assert_eq!(primary.path(), Path::new(primary_path));
+            assert_eq!(linked.len(), 1);
+            assert_eq!(linked[0].path(), Path::new(linked_path));
         },
     }
 }
@@ -721,32 +722,33 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
                     Some("/canonical/app"),
                 )],
             );
-            let new_linked = RootItem::Package(make_package_raw_with_primary(
+            let new_linked = RootItem::Rust(RustProject::Package(make_package_raw_with_primary(
                 Some("app"),
                 new_linked_path,
                 Some("app_fix"),
                 Some("/canonical/app"),
-            ));
+            )));
 
             let mut app = make_app(&[root]);
             assert!(app.handle_project_discovered(new_linked));
             assert_eq!(app.projects.len(), 1);
 
-            let RootItem::PackageWorktrees(group) = &app.projects[0] else {
+            let RootItem::Worktrees(WorktreeGroup::Packages {
+                primary: _, linked, ..
+            }) = &app.projects[0]
+            else {
                 panic!("expected existing root to remain a package worktree group");
             };
-            assert_eq!(group.linked().len(), 2);
+            assert_eq!(linked.len(), 2);
             assert!(
-                group
-                    .linked()
+                linked
                     .iter()
-                    .any(|linked| linked.path() == Path::new(existing_linked_path))
+                    .any(|l| l.path() == Path::new(existing_linked_path))
             );
             assert!(
-                group
-                    .linked()
+                linked
                     .iter()
-                    .any(|linked| linked.path() == Path::new(new_linked_path))
+                    .any(|l| l.path() == Path::new(new_linked_path))
             );
         },
         WorktreeProjectKind::Workspace => {
@@ -769,33 +771,33 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
                     Some("/canonical/obsidian_knife"),
                 )],
             );
-            let new_linked = RootItem::Workspace(make_workspace_raw_with_primary(
-                Some("obsidian_knife"),
-                new_linked_path,
-                Vec::new(),
-                Some("obsidian_knife_test"),
-                Some("/canonical/obsidian_knife"),
-            ));
+            let new_linked =
+                RootItem::Rust(RustProject::Workspace(make_workspace_raw_with_primary(
+                    Some("obsidian_knife"),
+                    new_linked_path,
+                    Vec::new(),
+                    Some("obsidian_knife_test"),
+                    Some("/canonical/obsidian_knife"),
+                )));
 
             let mut app = make_app(&[root]);
             assert!(app.handle_project_discovered(new_linked));
             assert_eq!(app.projects.len(), 1);
 
-            let RootItem::WorkspaceWorktrees(group) = &app.projects[0] else {
+            let RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) = &app.projects[0]
+            else {
                 panic!("expected existing root to remain a workspace worktree group");
             };
-            assert_eq!(group.linked().len(), 2);
+            assert_eq!(linked.len(), 2);
             assert!(
-                group
-                    .linked()
+                linked
                     .iter()
-                    .any(|linked| linked.path() == Path::new(existing_linked_path))
+                    .any(|l| l.path() == Path::new(existing_linked_path))
             );
             assert!(
-                group
-                    .linked()
+                linked
                     .iter()
-                    .any(|linked| linked.path() == Path::new(new_linked_path))
+                    .any(|l| l.path() == Path::new(new_linked_path))
             );
         },
     }
@@ -816,17 +818,19 @@ fn expect_refresh_regroups_stale_top_level_discovery(kind: WorktreeProjectKind) 
     );
 
     let stale_discovery = match kind {
-        WorktreeProjectKind::Package => RootItem::Package(make_package_raw(
+        WorktreeProjectKind::Package => RootItem::Rust(RustProject::Package(make_package_raw(
             Some(kind.primary_name()),
             &linked_dir.to_string_lossy(),
             None,
-        )),
-        WorktreeProjectKind::Workspace => RootItem::Workspace(make_workspace_raw(
-            Some(kind.primary_name()),
-            &linked_dir.to_string_lossy(),
-            Vec::new(),
-            None,
-        )),
+        ))),
+        WorktreeProjectKind::Workspace => {
+            RootItem::Rust(RustProject::Workspace(make_workspace_raw(
+                Some(kind.primary_name()),
+                &linked_dir.to_string_lossy(),
+                Vec::new(),
+                None,
+            )))
+        },
     };
     apply_bg_msg(
         &mut app,
@@ -848,11 +852,17 @@ fn expect_refresh_regroups_stale_top_level_discovery(kind: WorktreeProjectKind) 
         "refreshing the stale top-level row should regroup it under the primary worktree container",
     );
     match (kind, &app.projects[0]) {
-        (WorktreeProjectKind::Package, RootItem::PackageWorktrees(group)) => {
-            assert_eq!(group.linked()[0].path(), linked_dir.as_path());
+        (
+            WorktreeProjectKind::Package,
+            RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }),
+        ) => {
+            assert_eq!(linked[0].path(), linked_dir.as_path());
         },
-        (WorktreeProjectKind::Workspace, RootItem::WorkspaceWorktrees(group)) => {
-            assert_eq!(group.linked()[0].path(), linked_dir.as_path());
+        (
+            WorktreeProjectKind::Workspace,
+            RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }),
+        ) => {
+            assert_eq!(linked[0].path(), linked_dir.as_path());
         },
         _ => unreachable!(),
     }
@@ -880,17 +890,19 @@ fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProj
         &format!("test/{}", kind.branch_prefix()),
     );
     let stale_discovery = match kind {
-        WorktreeProjectKind::Package => RootItem::Package(make_package_raw(
+        WorktreeProjectKind::Package => RootItem::Rust(RustProject::Package(make_package_raw(
             Some(kind.primary_name()),
             &linked_two_dir.to_string_lossy(),
             None,
-        )),
-        WorktreeProjectKind::Workspace => RootItem::Workspace(make_workspace_raw(
-            Some(kind.primary_name()),
-            &linked_two_dir.to_string_lossy(),
-            Vec::new(),
-            None,
-        )),
+        ))),
+        WorktreeProjectKind::Workspace => {
+            RootItem::Rust(RustProject::Workspace(make_workspace_raw(
+                Some(kind.primary_name()),
+                &linked_two_dir.to_string_lossy(),
+                Vec::new(),
+                None,
+            )))
+        },
     };
     apply_bg_msg(
         &mut app,
@@ -912,33 +924,19 @@ fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProj
         "refresh should fold the stale row into the existing worktree group",
     );
     match (kind, &app.projects[0]) {
-        (WorktreeProjectKind::Package, RootItem::PackageWorktrees(group)) => {
-            assert!(
-                group
-                    .linked()
-                    .iter()
-                    .any(|linked| linked.path() == linked_one_dir.as_path())
-            );
-            assert!(
-                group
-                    .linked()
-                    .iter()
-                    .any(|linked| linked.path() == linked_two_dir.as_path())
-            );
+        (
+            WorktreeProjectKind::Package,
+            RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }),
+        ) => {
+            assert!(linked.iter().any(|l| l.path() == linked_one_dir.as_path()));
+            assert!(linked.iter().any(|l| l.path() == linked_two_dir.as_path()));
         },
-        (WorktreeProjectKind::Workspace, RootItem::WorkspaceWorktrees(group)) => {
-            assert!(
-                group
-                    .linked()
-                    .iter()
-                    .any(|linked| linked.path() == linked_one_dir.as_path())
-            );
-            assert!(
-                group
-                    .linked()
-                    .iter()
-                    .any(|linked| linked.path() == linked_two_dir.as_path())
-            );
+        (
+            WorktreeProjectKind::Workspace,
+            RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }),
+        ) => {
+            assert!(linked.iter().any(|l| l.path() == linked_one_dir.as_path()));
+            assert!(linked.iter().any(|l| l.path() == linked_two_dir.as_path()));
         },
         _ => unreachable!(),
     }

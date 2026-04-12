@@ -1,28 +1,27 @@
 use std::path::Path;
 
-use super::types::Package;
-use super::types::RustProject;
+use super::package::PackageProject;
 
 /// Members within a workspace organized into groups.
 #[derive(Clone)]
 pub(crate) enum MemberGroup {
     Named {
         name:    String,
-        members: Vec<RustProject<Package>>,
+        members: Vec<PackageProject>,
     },
     Inline {
-        members: Vec<RustProject<Package>>,
+        members: Vec<PackageProject>,
     },
 }
 
 impl MemberGroup {
-    pub(crate) fn members(&self) -> &[RustProject<Package>] {
+    pub(crate) fn members(&self) -> &[PackageProject] {
         match self {
             Self::Named { members, .. } | Self::Inline { members } => members,
         }
     }
 
-    pub(crate) const fn members_mut(&mut self) -> &mut Vec<RustProject<Package>> {
+    pub(crate) const fn members_mut(&mut self) -> &mut Vec<PackageProject> {
         match self {
             Self::Named { members, .. } | Self::Inline { members } => members,
         }
@@ -39,7 +38,7 @@ impl MemberGroup {
 
     pub(crate) const fn is_inline(&self) -> bool { matches!(self, Self::Inline { .. }) }
 
-    pub(crate) fn into_members(self) -> Vec<RustProject<Package>> {
+    pub(crate) fn into_members(self) -> Vec<PackageProject> {
         match self {
             Self::Named { members, .. } | Self::Inline { members } => members,
         }
