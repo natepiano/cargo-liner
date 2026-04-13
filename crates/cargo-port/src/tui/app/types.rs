@@ -440,9 +440,12 @@ pub enum VisibleRow {
 /// ci_no_more_runs, ci_fetch_count)` fields with a single enum so invalid
 /// combinations are unrepresentable.
 pub enum CiState {
-    /// A fetch-more request is in progress. Keeps existing runs visible
-    /// so the UI never flashes empty during pagination.
-    Fetching { runs: Vec<CiRun> },
+    /// A fetch-more request is in progress. Keeps existing runs and
+    /// totals visible so the UI never flashes empty during pagination.
+    Fetching {
+        runs:         Vec<CiRun>,
+        github_total: u32,
+    },
     /// Runs are available (possibly empty when the repo genuinely has no CI).
     Loaded {
         runs:         Vec<CiRun>,
@@ -475,8 +478,9 @@ impl CiState {
     /// Total completed runs reported by GitHub, or 0 if not yet fetched.
     pub const fn github_total(&self) -> u32 {
         match self {
-            Self::Loaded { github_total, .. } => *github_total,
-            Self::Fetching { .. } => 0,
+            Self::Loaded { github_total, .. } | Self::Fetching { github_total, .. } => {
+                *github_total
+            },
         }
     }
 }

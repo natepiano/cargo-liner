@@ -340,6 +340,10 @@ fn spawn_pending_background_tasks(app: &mut App) {
 
     if let Some(fetch) = app.take_pending_ci_fetch() {
         let abs = PathBuf::from(&fetch.project_path);
+        let prev_total = app
+            .ci_state_mut()
+            .get(&abs)
+            .map_or(0, super::app::CiState::github_total);
         let existing_runs = app
             .ci_state_mut()
             .remove(&abs)
@@ -351,7 +355,8 @@ fn spawn_pending_background_tasks(app: &mut App) {
         app.ci_state_mut().insert(
             abs,
             super::app::CiState::Fetching {
-                runs: existing_runs,
+                runs:         existing_runs,
+                github_total: prev_total,
             },
         );
         app.increment_data_generation();
@@ -540,26 +545,36 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     let bg_tx = app.bg_tx();
     let client = app.http_client();
     let project_path = fetch.project_path.clone();
-    let current_count = fetch.current_count;
+    let ci_run_count = fetch.ci_run_count;
+    let oldest_created_at = fetch.oldest_created_at.clone();
     let kind = fetch.kind;
     let url = repo_url.clone();
 
     thread::spawn(move || {
         let (result, network) = match kind {
-            CiFetchKind::FetchOlder => scan::fetch_older_runs(
-                &client,
-                &url,
-                owner_repo.owner(),
-                owner_repo.repo(),
-                current_count,
-            ),
-            CiFetchKind::Refresh => scan::fetch_newer_runs(
-                &client,
-                &url,
-                owner_repo.owner(),
-                owner_repo.repo(),
-                current_count,
-            ),
+            CiFetchKind::FetchOlder => {
+                let oldest = oldest_created_at
+                    .as_deref()
+                    .unwrap_or("1970-01-01T00:00:00Z");
+                scan::fetch_older_runs(
+                    &client,
+                    &url,
+                    owner_repo.owner(),
+                    owner_repo.repo(),
+                    oldest,
+                    ci_run_count,
+                )
+            },
+            CiFetchKind::Sync => {
+                let (result, _meta, signal) = scan::fetch_ci_runs_cached(
+                    &client,
+                    &url,
+                    owner_repo.owner(),
+                    owner_repo.repo(),
+                    ci_run_count,
+                );
+                (result, signal)
+            },
         };
         scan::emit_service_signal(&bg_tx, network);
         let _ = tx.send(CiFetchMsg::Complete {

@@ -108,6 +108,7 @@ fn ci_run_with_jobs(jobs: Vec<CiJob>) -> CiRun {
         jobs,
         wall_clock_secs: Some(17),
         commit_title: Some("feat: add box select".to_string()),
+        updated_at: None,
         fetched: Fetched,
     }
 }

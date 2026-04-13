@@ -204,11 +204,16 @@ impl HttpClient {
         repo: &str,
         branch: Option<&str>,
         count: u32,
+        created_before: Option<&str>,
     ) -> HttpOutcome<GhRunsList> {
         let mut path =
             format!("repos/{owner}/{repo}/actions/runs?per_page={count}&status=completed");
         if let Some(branch) = branch {
             let _ = write!(path, "&branch={branch}");
+        }
+        // ISO 8601 timestamp from CiRun.created_at — strict less-than.
+        if let Some(date) = created_before {
+            let _ = write!(path, "&created=<{date}");
         }
         let (body, signal) = self.github_get_async(&path).await;
         let value = body.and_then(|body| {
@@ -355,9 +360,10 @@ impl HttpClient {
         repo: &str,
         branch: Option<&str>,
         count: u32,
+        created_before: Option<&str>,
     ) -> HttpOutcome<GhRunsList> {
         self.handle
-            .block_on(self.list_runs_async(owner, repo, branch, count))
+            .block_on(self.list_runs_async(owner, repo, branch, count, created_before))
     }
 
     /// Batch-fetch job details + repo metadata (sync wrapper).

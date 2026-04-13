@@ -386,6 +386,7 @@ mod tests {
             }],
             wall_clock_secs: Some(60),
             commit_title: Some("commit".to_string()),
+            updated_at: None,
             fetched: FetchStatus::Fetched,
         }
     }

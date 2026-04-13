@@ -48,7 +48,9 @@ use crate::project::WorkspaceProject;
 use crate::project::WorktreeGroup;
 use crate::project_list::ProjectList;
 use crate::scan::BackgroundMsg;
+use crate::scan::CiFetchResult;
 use crate::tui::columns::ResolvedWidths;
+use crate::tui::detail::CiFetchKind;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastManager;
 use crate::tui::types::PaneId;
@@ -489,6 +491,7 @@ fn make_ci_run(run_id: u64, conclusion: Conclusion) -> CiRun {
         jobs: Vec::new(),
         wall_clock_secs: Some(1),
         commit_title: Some(format!("run {run_id}")),
+        updated_at: None,
         fetched: FetchStatus::Fetched,
     }
 }

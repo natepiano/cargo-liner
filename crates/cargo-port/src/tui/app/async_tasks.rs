@@ -1146,6 +1146,15 @@ impl App {
             let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
             self.toasts
                 .add_new_tracked_items(task_id, &running_items, linger);
+            // Restart items that were already tracked but re-triggered
+            // (e.g. file change while lingering) — resets the spinner
+            // and duration counter.
+            for item in &running_items {
+                if let Some(started) = item.started_at {
+                    self.toasts
+                        .restart_tracked_item(task_id, &item.key, started);
+                }
+            }
         } else {
             let items = running_items;
             let body = self.running_lint_toast_body();

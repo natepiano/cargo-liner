@@ -192,20 +192,21 @@ pub struct PendingExampleRun {
     pub release:      bool,
 }
 
-/// Whether a CI fetch should look for older runs or just refresh for new ones.
+/// Whether a CI fetch should sync recent runs or discover older history.
 #[derive(Clone, Copy)]
 pub enum CiFetchKind {
-    /// Increment the limit to discover older history.
+    /// Fetch runs older than the oldest cached run.
     FetchOlder,
-    /// Re-fetch at the current limit to pick up newly created runs.
-    Refresh,
+    /// Re-sync the most recent N runs, refreshing stale failures.
+    Sync,
 }
 
 /// A pending request to fetch more CI runs for a project.
 pub struct PendingCiFetch {
-    pub project_path:  String,
-    pub current_count: u32,
-    pub kind:          CiFetchKind,
+    pub project_path:      String,
+    pub ci_run_count:      u32,
+    pub oldest_created_at: Option<String>,
+    pub kind:              CiFetchKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

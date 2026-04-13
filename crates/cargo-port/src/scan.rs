@@ -19,7 +19,6 @@ use super::ci::GhRun;
 use super::ci::OwnerRepo;
 use super::config::NonRustInclusion;
 use super::constants::NO_MORE_RUNS_MARKER;
-use super::constants::OLDER_RUNS_FETCH_INCREMENT;
 use super::constants::SCAN_DISK_CONCURRENCY;
 use super::http::HttpClient;
 use super::http::ServiceKind;
@@ -182,6 +181,14 @@ pub(crate) enum CiFetchResult {
     CacheOnly(Vec<CiRun>),
 }
 
+impl CiFetchResult {
+    pub(crate) fn into_runs(self) -> Vec<CiRun> {
+        match self {
+            Self::Loaded { runs, .. } | Self::CacheOnly(runs) => runs,
+        }
+    }
+}
+
 /// Base cache directory for CI metadata.
 pub(crate) fn cache_dir() -> PathBuf { cache_paths::ci_cache_root() }
 
@@ -254,13 +261,20 @@ fn fetch_recent_runs(
 ) -> (Vec<CiRun>, Option<RepoMetaInfo>, Option<ServiceSignal>) {
     let mut result: Vec<CiRun> = Vec::with_capacity(gh_runs.len());
 
-    // Partition into cached hits and misses.
+    // Partition into cached hits and misses.  Cached failures are
+    // re-fetched when their `updated_at` differs from the REST response,
+    // which indicates the run was re-run on GitHub.
     let mut uncached: Vec<&GhRun> = Vec::new();
     for gh_run in gh_runs {
-        if let Some(cached) = load_cached_run(owner, repo, gh_run.id) {
-            result.push(cached);
-        } else {
-            uncached.push(gh_run);
+        match load_cached_run(owner, repo, gh_run.id) {
+            Some(cached)
+                if cached.conclusion.is_failure()
+                    && cached.updated_at.as_deref() != Some(&gh_run.updated_at) =>
+            {
+                uncached.push(gh_run);
+            },
+            Some(cached) => result.push(cached),
+            None => uncached.push(gh_run),
         }
     }
 
@@ -311,7 +325,7 @@ pub(crate) fn fetch_ci_runs_cached(
     repo: &str,
     count: u32,
 ) -> (CiFetchResult, Option<RepoMetaInfo>, Option<ServiceSignal>) {
-    let (gh_list, list_signal) = client.list_runs(owner, repo, None, count);
+    let (gh_list, list_signal) = client.list_runs(owner, repo, None, count, None);
     let (gh_runs, github_total) =
         gh_list.map_or_else(|| (Vec::new(), 0), |list| (list.runs, list.total_count));
     let (fetched, meta, detail_signal) = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
@@ -333,50 +347,24 @@ pub(crate) fn fetch_ci_runs_cached(
     )
 }
 
-/// Fetch older CI runs beyond what we currently have, by requesting a
-/// larger limit and returning any newly discovered runs.
+/// Fetch CI runs older than the oldest cached run, using the
+/// `created=<{date}` filter so the request size is always `count`.
 pub(crate) fn fetch_older_runs(
     client: &HttpClient,
     repo_url: &str,
     owner: &str,
     repo: &str,
-    current_count: u32,
+    oldest_created_at: &str,
+    count: u32,
 ) -> (CiFetchResult, Option<ServiceSignal>) {
-    let fetch_count = current_count + OLDER_RUNS_FETCH_INCREMENT;
-    let (gh_list, list_signal) = client.list_runs(owner, repo, None, fetch_count);
+    let (gh_list, list_signal) =
+        client.list_runs(owner, repo, None, count, Some(oldest_created_at));
     let (gh_runs, github_total) =
         gh_list.map_or_else(|| (Vec::new(), 0), |list| (list.runs, list.total_count));
     let (fetched, _meta, detail_signal) =
         fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
 
     let mut result = fetched;
-    result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
-
-    let result = if gh_runs.is_empty() {
-        CiFetchResult::CacheOnly(result)
-    } else {
-        CiFetchResult::Loaded {
-            runs: result,
-            github_total,
-        }
-    };
-    (result, combine_service_signal(list_signal, detail_signal))
-}
-
-/// Re-fetch at the current count to pick up newly created runs without
-/// requesting deeper history.
-pub(crate) fn fetch_newer_runs(
-    client: &HttpClient,
-    repo_url: &str,
-    owner: &str,
-    repo: &str,
-    current_count: u32,
-) -> (CiFetchResult, Option<ServiceSignal>) {
-    let (gh_list, list_signal) = client.list_runs(owner, repo, None, current_count);
-    let (gh_runs, github_total) =
-        gh_list.map_or_else(|| (Vec::new(), 0), |list| (list.runs, list.total_count));
-    let (mut result, _meta, detail_signal) =
-        fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
     result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
 
     let result = if gh_runs.is_empty() {

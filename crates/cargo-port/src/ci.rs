@@ -36,6 +36,7 @@ pub(crate) struct GhRun {
     pub id:            u64,
     pub node_id:       String,
     pub created_at:    String,
+    pub updated_at:    String,
     pub head_branch:   String,
     pub display_title: Option<String>,
 }
@@ -97,6 +98,8 @@ pub(crate) struct CiRun {
     #[serde(default)]
     pub commit_title:    Option<String>,
     #[serde(default)]
+    pub updated_at:      Option<String>,
+    #[serde(default)]
     pub fetched:         FetchStatus,
 }
 
@@ -156,6 +159,7 @@ pub(crate) fn build_ci_run(gh_run: &GhRun, check_runs: Vec<GqlCheckRun>, repo_ur
         wall_clock_secs,
         jobs: ci_jobs,
         commit_title: gh_run.display_title.clone(),
+        updated_at: Some(gh_run.updated_at.clone()),
         fetched: FetchStatus::Fetched,
     }
 }

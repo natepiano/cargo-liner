@@ -140,8 +140,8 @@ fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -
             .iter()
             .map(|run| run.commit_title.as_deref().unwrap_or("").len())
             .max()
-            .unwrap_or("Commit".len())
-            .max("Commit".len()),
+            .unwrap_or(" Commit".len())
+            .max(" Commit".len()),
     )
     .unwrap_or(u16::MAX);
     let mut widths = vec![

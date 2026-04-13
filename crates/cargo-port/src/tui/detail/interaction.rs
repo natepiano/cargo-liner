@@ -225,19 +225,22 @@ fn handle_ci_fetch_more(app: &mut App) {
                 .and_then(|item| item.name().map(str::to_string))
         })
         .unwrap_or_else(|| crate::project::home_relative_path(&ci_path));
-    let run_count = app
-        .selected_project_path()
-        .map_or(0, |path| app.ci_runs_for_display(path).len());
-    let current_count = u32::try_from(run_count).unwrap_or(u32::MAX);
     let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
-    let kind = if is_exhausted {
-        CiFetchKind::Refresh
+    let oldest_created_at = app
+        .selected_project_path()
+        .map(|path| app.ci_runs_for_display(path))
+        .and_then(|runs| runs.last().map(|r| r.created_at.clone()));
+    // Sync when exhausted or when there are no cached runs (e.g., after
+    // cache clear) — FetchOlder needs a date cursor to work.
+    let kind = if is_exhausted || oldest_created_at.is_none() {
+        CiFetchKind::Sync
     } else {
         CiFetchKind::FetchOlder
     };
     app.set_pending_ci_fetch(PendingCiFetch {
         project_path: ci_path.display().to_string(),
-        current_count,
+        ci_run_count: app.ci_run_count(),
+        oldest_created_at,
         kind,
     });
     let task_id = app.start_task_toast("Fetching CI", &project_name);
@@ -287,13 +290,21 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
         .filter(|paths| !paths.is_empty())
         .unwrap_or_else(|| vec![abs.to_path_buf()]);
 
-    for owner_path in owner_paths {
+    let prev_totals: Vec<_> = owner_paths
+        .iter()
+        .map(|p| {
+            app.ci_state_mut()
+                .get(p.as_path())
+                .map_or(0, CiState::github_total)
+        })
+        .collect();
+    for (owner_path, prev_total) in owner_paths.iter().zip(prev_totals) {
         app.ci_state_mut().insert(
-            owner_path,
+            owner_path.clone(),
             CiState::Loaded {
                 runs:         Vec::new(),
                 exhausted:    false,
-                github_total: 0,
+                github_total: prev_total,
             },
         );
     }

@@ -815,3 +815,168 @@ fn lint_rollup_prefers_running_worktree_over_failed_root_history() {
         LintStatus::Running(_)
     ));
 }
+
+// ── CI fetch pipeline tests ───────────────────────────────────────────
+
+#[test]
+fn sync_does_not_mark_exhausted_when_no_new_runs() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    let path = project.path().display().to_string();
+
+    app.ci_state.insert(
+        project.path().to_path_buf(),
+        CiState::Loaded {
+            runs:         vec![make_ci_run(5, Conclusion::Success)],
+            exhausted:    false,
+            github_total: 10,
+        },
+    );
+
+    // Sync returns the same run — no new runs found.
+    app.handle_ci_fetch_complete(
+        &path,
+        CiFetchResult::Loaded {
+            runs:         vec![make_ci_run(5, Conclusion::Success)],
+            github_total: 10,
+        },
+        CiFetchKind::Sync,
+    );
+
+    let state = app.ci_state.get(project.path()).expect("ci state exists");
+    assert!(
+        !state.is_exhausted(),
+        "Sync should not mark exhausted when no new runs found"
+    );
+}
+
+#[test]
+fn fetch_older_marks_exhausted_when_no_new_runs() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    let path = project.path().display().to_string();
+
+    app.ci_state.insert(
+        project.path().to_path_buf(),
+        CiState::Loaded {
+            runs:         vec![make_ci_run(5, Conclusion::Success)],
+            exhausted:    false,
+            github_total: 10,
+        },
+    );
+
+    // FetchOlder returns the same run — no new runs found.
+    app.handle_ci_fetch_complete(
+        &path,
+        CiFetchResult::Loaded {
+            runs:         vec![make_ci_run(5, Conclusion::Success)],
+            github_total: 10,
+        },
+        CiFetchKind::FetchOlder,
+    );
+
+    let state = app.ci_state.get(project.path()).expect("ci state exists");
+    assert!(
+        state.is_exhausted(),
+        "FetchOlder should mark exhausted when no new runs found"
+    );
+}
+
+#[test]
+fn cache_only_preserves_github_total() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    let path = project.path().display().to_string();
+
+    app.ci_state.insert(
+        project.path().to_path_buf(),
+        CiState::Loaded {
+            runs:         vec![make_ci_run(5, Conclusion::Success)],
+            exhausted:    false,
+            github_total: 57,
+        },
+    );
+
+    // CacheOnly (network failed) should preserve the previous github_total.
+    app.handle_ci_fetch_complete(
+        &path,
+        CiFetchResult::CacheOnly(vec![make_ci_run(5, Conclusion::Success)]),
+        CiFetchKind::Sync,
+    );
+
+    let state = app.ci_state.get(project.path()).expect("ci state exists");
+    assert_eq!(
+        state.github_total(),
+        57,
+        "CacheOnly should preserve previous github_total"
+    );
+}
+
+#[test]
+fn sync_clears_exhaustion_when_new_runs_found() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    let path = project.path().display().to_string();
+
+    app.ci_state.insert(
+        project.path().to_path_buf(),
+        CiState::Loaded {
+            runs:         vec![make_ci_run(5, Conclusion::Success)],
+            exhausted:    true,
+            github_total: 10,
+        },
+    );
+
+    // Sync finds a new run — should clear exhaustion.
+    app.handle_ci_fetch_complete(
+        &path,
+        CiFetchResult::Loaded {
+            runs:         vec![
+                make_ci_run(6, Conclusion::Success),
+                make_ci_run(5, Conclusion::Success),
+            ],
+            github_total: 11,
+        },
+        CiFetchKind::Sync,
+    );
+
+    let state = app.ci_state.get(project.path()).expect("ci state exists");
+    assert!(
+        !state.is_exhausted(),
+        "Sync should clear exhaustion when new runs found"
+    );
+    assert_eq!(state.runs().len(), 2);
+}
+
+#[test]
+fn fetch_more_uses_sync_when_no_cached_runs() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    app.handle_git_info(
+        project.path(),
+        make_git_info(Some("https://github.com/natepiano/demo")),
+    );
+
+    // Empty CI state — no cached runs.
+    app.ci_state.insert(
+        project.path().to_path_buf(),
+        CiState::Loaded {
+            runs:         Vec::new(),
+            exhausted:    false,
+            github_total: 57,
+        },
+    );
+
+    app.select_project_in_tree(project.path());
+
+    crate::tui::detail::handle_ci_runs_key(
+        &mut app,
+        &crossterm::event::KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::NONE),
+    );
+
+    let fetch = app.pending_ci_fetch.as_ref().expect("fetch should be set");
+    assert!(
+        matches!(fetch.kind, CiFetchKind::Sync),
+        "should use Sync when no cached runs exist"
+    );
+}

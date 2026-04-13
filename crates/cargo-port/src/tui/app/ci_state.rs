@@ -117,10 +117,6 @@ impl App {
         kind: CiFetchKind,
     ) {
         let abs = PathBuf::from(path);
-        let (new_runs, github_total) = match result {
-            CiFetchResult::Loaded { runs, github_total } => (runs, github_total),
-            CiFetchResult::CacheOnly(runs) => (runs, 0),
-        };
 
         let owner_paths = self
             .owner_repo_for_path_inner(&abs)
@@ -128,10 +124,20 @@ impl App {
             .filter(|paths| !paths.is_empty())
             .unwrap_or_else(|| vec![abs.clone()]);
 
-        let prev_count = self
-            .ci_state
-            .get(&owner_paths[0])
-            .map_or(0, |state| state.runs().len());
+        let prev_state = self.ci_state.get(&owner_paths[0]);
+        let prev_count = prev_state.map_or(0, |state| state.runs().len());
+        let prev_exhausted = prev_state.is_some_and(CiState::is_exhausted);
+        let prev_github_total = prev_state.map_or(0, CiState::github_total);
+
+        // Only Sync returns an unfiltered total_count from GitHub.
+        // FetchOlder uses created=<{date} which returns a filtered count,
+        // and CacheOnly means the network failed.  In both cases, keep
+        // the previous total.
+        let github_total = match (&result, kind) {
+            (CiFetchResult::Loaded { github_total, .. }, CiFetchKind::Sync) => *github_total,
+            _ => prev_github_total,
+        };
+        let new_runs = result.into_runs();
 
         let existing = self
             .ci_state
@@ -156,27 +162,46 @@ impl App {
         merged.sort_by(|left, right| right.run_id.cmp(&left.run_id));
 
         let found_new = merged.len() > prev_count;
-        let exhausted = if found_new {
-            if let Some(git) = self.git_info_for(&abs)
-                && let Some(ref url) = git.url
-                && let Some(owner_repo) = ci::parse_owner_repo(url)
-            {
-                scan::clear_exhausted(owner_repo.owner(), owner_repo.repo());
-            }
-            false
-        } else {
-            if let Some(git) = self.git_info_for(&abs)
-                && let Some(ref url) = git.url
-                && let Some(owner_repo) = ci::parse_owner_repo(url)
-            {
-                scan::mark_exhausted(owner_repo.owner(), owner_repo.repo());
-            }
-            if matches!(kind, CiFetchKind::Refresh) {
-                self.status_flash =
-                    Some(("no new runs found".to_string(), std::time::Instant::now()));
-                self.show_timed_toast("CI", "No new runs found".to_string());
-            }
-            true
+        // Only FetchOlder marks/clears exhaustion.  Sync clears it when
+        // new runs appear but never marks it — we don't want a routine
+        // refresh to block future FetchOlder requests.
+        let exhausted = match kind {
+            CiFetchKind::Sync => {
+                if found_new {
+                    if let Some(git) = self.git_info_for(&abs)
+                        && let Some(ref url) = git.url
+                        && let Some(owner_repo) = ci::parse_owner_repo(url)
+                    {
+                        scan::clear_exhausted(owner_repo.owner(), owner_repo.repo());
+                    }
+                    false
+                } else {
+                    self.status_flash =
+                        Some(("no new runs found".to_string(), std::time::Instant::now()));
+                    self.show_timed_toast("CI", "No new runs found".to_string());
+                    // Preserve current exhaustion state.
+                    prev_exhausted
+                }
+            },
+            CiFetchKind::FetchOlder => {
+                if found_new {
+                    if let Some(git) = self.git_info_for(&abs)
+                        && let Some(ref url) = git.url
+                        && let Some(owner_repo) = ci::parse_owner_repo(url)
+                    {
+                        scan::clear_exhausted(owner_repo.owner(), owner_repo.repo());
+                    }
+                    false
+                } else {
+                    if let Some(git) = self.git_info_for(&abs)
+                        && let Some(ref url) = git.url
+                        && let Some(owner_repo) = ci::parse_owner_repo(url)
+                    {
+                        scan::mark_exhausted(owner_repo.owner(), owner_repo.repo());
+                    }
+                    true
+                }
+            },
         };
 
         self.ci_pane.set_pos(merged.len());

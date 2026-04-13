@@ -470,6 +470,27 @@ impl ToastManager {
         }
     }
 
+    /// Restart a tracked item — reset its `started_at` and clear
+    /// `completed_at` so the spinner and duration counter restart.
+    pub fn restart_tracked_item(
+        &mut self,
+        task_id: ToastTaskId,
+        key: &TrackedItemKey,
+        started_at: Instant,
+    ) {
+        for toast in &mut self.toasts {
+            if toast.task_id == Some(task_id) {
+                for item in &mut toast.tracked_items {
+                    if item.key.as_str() == key.as_str() {
+                        item.started_at = Some(started_at);
+                        item.completed_at = None;
+                    }
+                }
+                break;
+            }
+        }
+    }
+
     /// Mark a tracked item as completed by label.
     pub fn mark_item_completed(&mut self, task_id: ToastTaskId, label: &str) {
         let now = Instant::now();
