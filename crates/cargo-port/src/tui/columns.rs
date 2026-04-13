@@ -96,10 +96,11 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
             header_mode: HeaderMode::Hidden,
         },
         // 4: Git path status glyph, labeled as Git in the header.
+        // Right-align so "t" sits above the right edge of the 2-wide emoji.
         ColumnDef {
             header:      "Git",
             width:       ColumnWidth::Fixed(2),
-            align:       Align::Left,
+            align:       Align::Right,
             gap:         1,
             header_mode: HeaderMode::BorrowLeft,
         },
@@ -703,7 +704,7 @@ mod tests {
         assert_eq!(display_width(line.spans[COL_NAME].content.as_ref()), 28);
         assert_eq!(display_width(line.spans[COL_LINT].content.as_ref()), 4);
         assert_eq!(line.spans[COL_CI].content.as_ref(), " CI");
-        assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), "Git ");
+        assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), " Git");
         assert_eq!(line.spans[COL_SYNC].content.as_ref(), "  O");
         assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  M");
         assert_eq!(line.spans[COL_DISK].content.as_ref(), "    Disk");
@@ -722,7 +723,7 @@ mod tests {
 
         assert_eq!(line.spans[COL_CI].content.as_ref(), " CI");
         assert_eq!(display_width(line.spans[COL_LANG].content.as_ref()), 2);
-        assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), "Git ");
+        assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), " Git");
         assert_eq!(line.spans[COL_SYNC].content.as_ref(), "  O");
         assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  M");
         assert_eq!(line.width(), widths.total_width());

@@ -183,11 +183,6 @@ impl App {
         if let Some(abs_path) = current
             && self.selection_paths.last_selected.as_ref() != Some(&abs_path)
         {
-            if self.selected_row_owns_lint()
-                && let Some(path) = self.selected_project_path().map(Path::to_path_buf)
-            {
-                self.reload_lint_history(&path);
-            }
             self.data_generation += 1;
             self.detail_generation += 1;
             self.selection_paths.last_selected = Some(abs_path);

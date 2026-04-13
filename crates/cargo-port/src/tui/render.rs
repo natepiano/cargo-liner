@@ -1370,7 +1370,7 @@ fn render_vendored_item(
         },
         _ => (None, String::new()),
     };
-    let name = format!("{vendored_display_name} (vendored)");
+    let name = format!("{vendored_display_name} (v)");
     vendored.map_or_else(
         || {
             let row = super::columns::build_group_header_cells(PREFIX_VENDORED, &name);
@@ -1431,7 +1431,7 @@ fn render_wt_vendored_item(
     };
     let vendored_display_name =
         vendored_pkg.map_or_else(String::new, |p| p.package_name().into_string());
-    let name = format!("{vendored_display_name} (vendored)");
+    let name = format!("{vendored_display_name} (v)");
     vendored_pkg.map_or_else(
         || {
             let row = super::columns::build_group_header_cells(PREFIX_WT_VENDORED, &name);

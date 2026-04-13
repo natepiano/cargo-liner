@@ -2042,8 +2042,16 @@ impl App {
     }
 
     fn handle_git_path_state_msg(&mut self, path: &AbsolutePath, state: GitPathState) {
-        tracing::info!(path = %path, state = %state.label(), "app_git_path_state_applied");
+        let changed = self
+            .git_path_states
+            .get(path.as_path())
+            .is_none_or(|old| *old != state);
+        tracing::info!(path = %path, state = %state.label(), changed, "app_git_path_state_applied");
         self.git_path_states.insert(path.to_path_buf(), state);
+        if changed {
+            self.dirty.rows.mark_dirty();
+            self.dirty.fit_widths.mark_dirty();
+        }
     }
 
     fn handle_crates_io_version_msg(&mut self, path: &Path, version: String, downloads: u64) {
@@ -2085,6 +2093,9 @@ impl App {
         if eligible {
             if let Some(lr) = self.projects.lint_at_path_mut(&abs) {
                 lr.set_status(status);
+            }
+            if status_is_terminal {
+                self.reload_lint_history(&abs);
             }
         } else {
             if let Some(lr) = self.projects.lint_at_path_mut(&abs) {
