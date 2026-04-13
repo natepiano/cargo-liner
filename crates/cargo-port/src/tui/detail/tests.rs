@@ -1,3 +1,8 @@
+use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::sync::mpsc;
+use std::time::Instant;
+
 use ratatui::text::Line;
 
 use super::ci_panel;
@@ -11,6 +16,8 @@ use crate::ci::CiJob;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::ci::FetchStatus::Fetched;
+use crate::config::CargoPortConfig;
+use crate::http::HttpClient;
 use crate::lint::LintCommand;
 use crate::lint::LintCommandStatus;
 use crate::lint::LintRun;
@@ -18,11 +25,36 @@ use crate::lint::LintRunStatus;
 use crate::project::ExampleGroup;
 use crate::project::GitPathState;
 use crate::project::WorktreeHealth::Normal;
+use crate::scan::BackgroundMsg;
+use crate::tui::app::App;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::render::CiColumn;
 use crate::tui::types::PaneFocusState;
 
-fn detail_info(is_rust_project: bool, lint_label: &str) -> DetailInfo {
+fn test_http_client() -> HttpClient {
+    static TEST_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    let rt = TEST_RT
+        .get_or_init(|| tokio::runtime::Runtime::new().unwrap_or_else(|_| std::process::abort()));
+    HttpClient::new(rt.handle().clone()).unwrap_or_else(|| std::process::abort())
+}
+
+fn test_app() -> App {
+    let (bg_tx, bg_rx) = mpsc::channel::<BackgroundMsg>();
+    let scan_root =
+        std::env::temp_dir().join(format!("cargo-port-detail-test-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&scan_root);
+    App::new(
+        scan_root,
+        &[],
+        bg_tx,
+        bg_rx,
+        &CargoPortConfig::default(),
+        test_http_client(),
+        Instant::now(),
+    )
+}
+
+fn detail_info(is_rust_project: bool) -> DetailInfo {
     DetailInfo {
         package_title:     if is_rust_project {
             "Package".to_string()
@@ -31,6 +63,7 @@ fn detail_info(is_rust_project: bool, lint_label: &str) -> DetailInfo {
         },
         name:              "demo".to_string(),
         title_name:        "demo".to_string(),
+        abs_path:          PathBuf::from("/tmp/demo"),
         path:              "~/demo".to_string(),
         version:           "0.1.0".to_string(),
         description:       None,
@@ -38,11 +71,7 @@ fn detail_info(is_rust_project: bool, lint_label: &str) -> DetailInfo {
         crates_downloads:  None,
         types:             "lib".to_string(),
         disk:              "36.3 GiB".to_string(),
-        lint_label:        lint_label.to_string(),
-        lint_run_count:    None,
         ci:                None,
-        ci_runs_label:     String::new(),
-        has_ci_workflows:  false,
         stats_rows:        Vec::new(),
         git_branch:        None,
         git_path:          GitPathState::OutsideRepo,
@@ -66,7 +95,6 @@ fn detail_info(is_rust_project: bool, lint_label: &str) -> DetailInfo {
         examples:          Vec::<ExampleGroup>::new(),
         benches:           Vec::new(),
         has_package:       true,
-        cargo_active:      true,
     }
 }
 
@@ -130,7 +158,7 @@ fn stats_width_cases() {
 
 #[test]
 fn package_fields_place_lint_and_ci_before_disk_for_rust_projects() {
-    let info = detail_info(true, "🟢");
+    let info = detail_info(true);
     assert_eq!(
         model::package_fields(&info)
             .into_iter()
@@ -142,7 +170,7 @@ fn package_fields_place_lint_and_ci_before_disk_for_rust_projects() {
 
 #[test]
 fn package_fields_place_lint_and_ci_before_disk_for_non_rust_projects() {
-    let info = detail_info(false, "🔴");
+    let info = detail_info(false);
     assert_eq!(
         model::package_fields(&info)
             .into_iter()
@@ -157,7 +185,7 @@ fn package_label_width_expands_for_crates_io() {
     let info = DetailInfo {
         crates_version: Some("0.0.3".to_string()),
         crates_downloads: Some(74),
-        ..detail_info(true, "🟢")
+        ..detail_info(true)
     };
     let fields = model::package_fields(&info);
     assert_eq!(render::package_label_width(&fields), "crates.io".len());
@@ -169,7 +197,7 @@ fn project_panel_title_uses_title_name() {
         package_title: "Workspace".to_string(),
         name: "-".to_string(),
         title_name: "hana".to_string(),
-        ..detail_info(true, "🟢")
+        ..detail_info(true)
     };
 
     assert_eq!(render::project_panel_title(&info), " Workspace - hana ");
@@ -177,7 +205,7 @@ fn project_panel_title_uses_title_name() {
 
 #[test]
 fn description_lines_use_muted_fallback_when_missing() {
-    let info = detail_info(true, "🟢");
+    let info = detail_info(true);
 
     let lines = render::description_lines(&info, 80, 3);
 
@@ -190,7 +218,7 @@ fn description_lines_use_muted_fallback_when_missing() {
 fn description_lines_render_real_description_with_default_style() {
     let info = DetailInfo {
         description: Some("Real package description".to_string()),
-        ..detail_info(true, "🟢")
+        ..detail_info(true)
     };
 
     let lines = render::description_lines(&info, 80, 3);
@@ -204,7 +232,7 @@ fn description_lines_render_real_description_with_default_style() {
 fn description_lines_truncate_overflow_with_ellipsis() {
     let info = DetailInfo {
         description: Some("one two three four five six seven eight".to_string()),
-        ..detail_info(true, "🟢")
+        ..detail_info(true)
     };
 
     let lines = render::description_lines(&info, 13, 2);
@@ -238,12 +266,13 @@ fn detail_column_scroll_stays_at_top_when_not_active() {
 
 #[test]
 fn git_path_value_appends_status_icon() {
+    let app = test_app();
     let info = DetailInfo {
         git_path: GitPathState::Modified,
-        ..detail_info(true, "🟢")
+        ..detail_info(true)
     };
 
-    assert_eq!(DetailField::GitPath.value(&info), "🟠 modified");
+    assert_eq!(DetailField::GitPath.value(&info, &app), "🟠 modified");
 }
 
 #[test]
@@ -257,7 +286,7 @@ fn git_label_width_uses_origin_and_configured_main_labels() {
         git_vs_origin: Some("origin/main (local cached ref)".to_string()),
         git_vs_local: Some("↑11 ↓3".to_string()),
         main_branch_label: "primary".to_string(),
-        ..detail_info(true, "🟢")
+        ..detail_info(true)
     };
     let fields = vec![DetailField::VsOrigin, DetailField::VsLocal];
 
@@ -273,7 +302,7 @@ fn git_fields_show_explicit_remote_and_local_rows_for_unpublished_branch() {
         git_sync: Some(crate::constants::NO_REMOTE_SYNC.to_string()),
         git_vs_origin: Some("none".to_string()),
         git_vs_local: Some("↑11 ↓3".to_string()),
-        ..detail_info(true, "🟢")
+        ..detail_info(true)
     };
 
     assert_eq!(

@@ -5,6 +5,12 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
+use super::constants::COLUMN_HEADER_COLOR;
+use super::constants::DISCOVERY_SHIMMER_COLOR;
+use super::constants::ERROR_COLOR;
+use super::constants::LABEL_COLOR;
+use super::constants::SECONDARY_TEXT_COLOR;
+use super::constants::TITLE_COLOR;
 use crate::ci::Conclusion;
 use crate::constants::GIT_IGNORED_COLOR;
 use crate::constants::GIT_MODIFIED_COLOR;
@@ -13,12 +19,6 @@ use crate::constants::IN_SYNC;
 use crate::project::GitPathState;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
-use crate::tui::constants::COLUMN_HEADER_COLOR;
-use crate::tui::constants::DISCOVERY_SHIMMER_COLOR;
-use crate::tui::constants::ERROR_COLOR;
-use crate::tui::constants::LABEL_COLOR;
-use crate::tui::constants::SECONDARY_TEXT_COLOR;
-use crate::tui::constants::TITLE_COLOR;
 
 // ── Column indices ──────────────────────────────────────────────────
 pub(super) const COL_NAME: usize = 0;

@@ -106,6 +106,7 @@ const fn has_targets(info: &DetailInfo) -> bool {
 
 fn render_column_inner(
     frame: &mut Frame,
+    app: &App,
     info: &DetailInfo,
     fields: &[DetailField],
     pane: &Pane,
@@ -122,7 +123,7 @@ fn render_column_inner(
         }
         let label = field.label();
         let selection = pane.selection_state(i, focus);
-        let value = field.value(info);
+        let value = field.value(info, app);
         let base_label_style = styles.readonly_label;
         let base_value_style = if *field == DetailField::Ci {
             if value == crate::constants::NO_CI_WORKFLOW || value == crate::constants::NO_CI_RUNS {
@@ -243,6 +244,7 @@ pub(super) fn git_label_width(info: &DetailInfo, fields: &[DetailField]) -> usiz
 
 fn render_git_column_inner(
     frame: &mut Frame,
+    app: &App,
     info: &DetailInfo,
     fields: &[DetailField],
     pane: &Pane,
@@ -271,7 +273,7 @@ fn render_git_column_inner(
             },
             _ => field.label(),
         };
-        let value = field.value(info);
+        let value = field.value(info, app);
         let selection = pane.selection_state(i, focus);
         let base_value_style = if *field == DetailField::Origin && value.starts_with('⑂') {
             Style::default()
@@ -446,6 +448,7 @@ pub fn render_detail_panel(
                 frame.render_widget(git_block, columns[col]);
                 let scroll_offset = render_git_column_inner(
                     frame,
+                    app,
                     info,
                     &git,
                     app.git_pane(),
@@ -513,7 +516,8 @@ fn render_project_panel(
     let areas = render_project_description_section(frame, &context, area, project_inner);
     app.package_pane_mut().set_content_area(areas.lower);
 
-    let scroll_offset = render_project_metadata(frame, app.package_pane(), &context, areas.lower);
+    let scroll_offset =
+        render_project_metadata(frame, app, app.package_pane(), &context, areas.lower);
     app.package_pane_mut().set_scroll_offset(scroll_offset);
 }
 
@@ -581,6 +585,7 @@ fn render_project_description_section(
 
 fn render_project_metadata(
     frame: &mut Frame,
+    app: &App,
     pane: &Pane,
     context: &ProjectPanelRender<'_>,
     lower_area: Rect,
@@ -588,6 +593,7 @@ fn render_project_metadata(
     if context.info.stats_rows.is_empty() {
         render_column_inner(
             frame,
+            app,
             context.info,
             context.fields,
             pane,
@@ -605,6 +611,7 @@ fn render_project_metadata(
 
         let scroll_offset = render_column_inner(
             frame,
+            app,
             context.info,
             context.fields,
             pane,

@@ -1,8 +1,13 @@
 use std::path::Path;
+use std::path::PathBuf;
 
 use super::timestamp;
 use crate::ci::Conclusion;
 use crate::constants::IN_SYNC;
+use crate::constants::NO_CI_RUNS;
+use crate::constants::NO_CI_WORKFLOW;
+use crate::constants::NO_LINT_RUNS;
+use crate::constants::NO_LINT_RUNS_NOT_RUST;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
@@ -254,30 +259,44 @@ impl DetailField {
         }
     }
 
-    pub fn value(self, info: &DetailInfo) -> String {
+    pub fn value(self, info: &DetailInfo, app: &App) -> String {
         match self {
             Self::Path => info.path.clone(),
             Self::Targets => info.types.clone(),
             Self::Disk => info.disk.clone(),
             Self::Lint => {
-                if !info.cargo_active {
-                    return crate::constants::NO_LINT_RUNS_NOT_RUST.to_string();
+                if !app.is_rust_at_path(info.abs_path.as_path()) {
+                    return NO_LINT_RUNS_NOT_RUST.to_string();
                 }
-                let icon = &info.lint_label;
-                match info.lint_run_count {
-                    Some(0) | None => crate::constants::NO_LINT_RUNS.to_string(),
-                    Some(n) => format!("{icon} {n}"),
+                let abs_path = info.abs_path.as_path();
+                let is_worktree_group = app
+                    .projects()
+                    .iter()
+                    .any(|item| item.path() == abs_path && matches!(item, RootItem::Worktrees(_)));
+                let lint_icon = if is_worktree_group {
+                    app.selected_lint_icon(abs_path)
+                        .unwrap_or_else(|| app.lint_icon(abs_path))
+                } else {
+                    app.lint_icon(abs_path)
+                };
+                match lint_run_count_for(app, abs_path, is_worktree_group) {
+                    Some(0) | None => NO_LINT_RUNS.to_string(),
+                    Some(n) => format!("{lint_icon} {n}"),
                 }
             },
             Self::Ci => {
-                if !info.has_ci_workflows {
-                    return crate::constants::NO_CI_WORKFLOW.to_string();
+                let has_workflows = app
+                    .git_info_for(info.abs_path.as_path())
+                    .is_some_and(|git| git.workflows.is_present());
+                if !has_workflows {
+                    return NO_CI_WORKFLOW.to_string();
                 }
                 let icon = info.ci.map_or_else(String::new, |c| c.icon().to_string());
-                if !info.ci_runs_label.is_empty() {
-                    format!("{icon} {}", info.ci_runs_label)
+                let ci_runs_label = build_ci_runs_label(app, info.abs_path.as_path());
+                if !ci_runs_label.is_empty() {
+                    format!("{icon} {ci_runs_label}")
                 } else if icon.is_empty() {
-                    crate::constants::NO_CI_RUNS.to_string()
+                    NO_CI_RUNS.to_string()
                 } else {
                     icon
                 }
@@ -327,19 +346,15 @@ pub fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
     if info.package_title == "Project" {
         let mut fields = vec![DetailField::Path];
         fields.push(DetailField::Lint);
-        if info.cargo_active {
-            fields.push(DetailField::Ci);
-        }
+        fields.push(DetailField::Ci);
         fields.push(DetailField::Disk);
         return fields;
     }
     let mut fields = vec![DetailField::Path, DetailField::Targets];
     fields.push(DetailField::Lint);
-    if info.cargo_active {
-        fields.push(DetailField::Ci);
-    }
+    fields.push(DetailField::Ci);
     fields.push(DetailField::Disk);
-    if info.cargo_active && info.crates_version.is_some() {
+    if info.crates_version.is_some() {
         fields.push(DetailField::CratesIo);
     }
     if info.has_package {
@@ -400,6 +415,7 @@ pub struct DetailInfo {
     /// Primary name for the detail title bar. For Rust projects this is the
     /// Cargo package name; for non-Rust projects this is the directory leaf.
     pub title_name:        String,
+    pub abs_path:          PathBuf,
     pub path:              String,
     pub version:           String,
     pub description:       Option<String>,
@@ -407,11 +423,7 @@ pub struct DetailInfo {
     pub crates_downloads:  Option<u64>,
     pub types:             String,
     pub disk:              String,
-    pub lint_label:        String,
-    pub lint_run_count:    Option<usize>,
     pub ci:                Option<Conclusion>,
-    pub ci_runs_label:     String,
-    pub has_ci_workflows:  bool,
     pub stats_rows:        Vec<(&'static str, usize)>,
     pub git_branch:        Option<String>,
     pub git_path:          GitPathState,
@@ -439,7 +451,6 @@ pub struct DetailInfo {
     pub benches:           Vec<String>,
     /// Whether this project declares `[package]` (has version/description fields).
     pub has_package:       bool,
-    pub cargo_active:      bool,
 }
 
 /// Resolve the title shown in the `Package` column header.
@@ -665,6 +676,7 @@ pub fn build_detail_info_for_submodule(app: &App, submodule: &SubmoduleInfo) -> 
         package_title: "Submodule".to_string(),
         name: submodule.name.clone(),
         title_name: submodule.name.clone(),
+        abs_path: abs_path.to_path_buf(),
         path: display_path,
         version,
         description: submodule.url.clone(),
@@ -672,11 +684,7 @@ pub fn build_detail_info_for_submodule(app: &App, submodule: &SubmoduleInfo) -> 
         crates_downloads: None,
         types: String::new(),
         disk,
-        lint_label: String::new(),
-        lint_run_count: None,
         ci: None,
-        ci_runs_label: String::new(),
-        has_ci_workflows: false,
         stats_rows: Vec::new(),
         git_branch: git_detail.branch,
         git_path: git_detail.path,
@@ -700,7 +708,6 @@ pub fn build_detail_info_for_submodule(app: &App, submodule: &SubmoduleInfo) -> 
         examples: Vec::new(),
         benches: Vec::new(),
         has_package: false,
-        cargo_active: false,
     }
 }
 
@@ -827,11 +834,10 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
     let git_detail = build_git_detail_fields(app, abs_path);
     let crates_version = app.crates_versions().get(abs_path).cloned();
     let crates_downloads = app.crates_downloads().get(abs_path).copied();
-    let cargo_active = app.is_cargo_active_path(abs_path);
 
     let (disk, ci) = wt_item.map_or_else(
         || {
-            let ci = if cargo_active {
+            let ci = if app.is_rust_at_path(abs_path) {
                 app.ci_for(abs_path)
             } else {
                 None
@@ -862,6 +868,7 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
         package_title: src.package_title,
         name: src.title_name.clone(),
         title_name: src.title_name,
+        abs_path: abs_path.to_path_buf(),
         path: src.display_path.to_string(),
         version: cargo.and_then(Cargo::version).unwrap_or("-").to_string(),
         description: cargo.and_then(Cargo::description).map(str::to_string),
@@ -869,15 +876,7 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
         crates_downloads,
         types: types_str,
         disk,
-        lint_label: app
-            .selected_lint_icon(abs_path)
-            .map_or_else(String::new, std::string::ToString::to_string),
-        lint_run_count: lint_run_count_for(app, abs_path, src.wt_item),
         ci,
-        ci_runs_label: build_ci_runs_label(app, abs_path),
-        has_ci_workflows: app
-            .git_info_for(abs_path)
-            .is_some_and(|g| g.workflows.is_present()),
         stats_rows: src.stats_rows,
         git_branch: git_detail.branch,
         git_path: git_detail.path,
@@ -901,14 +900,20 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
         examples: cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
         benches: cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
         has_package: src.has_cargo,
-        cargo_active,
     }
 }
 
 /// Lint run count: for worktree groups, sum across all entries; for single
 /// projects, return the run count at the given path.
-fn lint_run_count_for(app: &App, abs_path: &Path, wt_item: Option<&RootItem>) -> Option<usize> {
-    if let Some(RootItem::Worktrees(g)) = wt_item {
+fn lint_run_count_for(app: &App, abs_path: &Path, is_worktree_group: bool) -> Option<usize> {
+    if is_worktree_group {
+        let Some(RootItem::Worktrees(g)) = app
+            .projects()
+            .iter()
+            .find(|item| item.path() == abs_path && matches!(item, RootItem::Worktrees(_)))
+        else {
+            return app.lint_at_path(abs_path).map(|lr| lr.runs().len());
+        };
         let mut total = 0usize;
         let paths: Vec<std::path::PathBuf> = match g {
             WorktreeGroup::Workspaces {
@@ -931,10 +936,9 @@ fn lint_run_count_for(app: &App, abs_path: &Path, wt_item: Option<&RootItem>) ->
                 any = true;
             }
         }
-        any.then_some(total)
-    } else {
-        app.lint_at_path(abs_path).map(|lr| lr.runs().len())
+        return any.then_some(total);
     }
+    app.lint_at_path(abs_path).map(|lr| lr.runs().len())
 }
 
 fn build_ci_runs_label(app: &App, abs_path: &Path) -> String {

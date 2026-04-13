@@ -247,6 +247,19 @@ impl App {
             .and_then(|project| project.git_info.as_ref())
     }
 
+    pub(in super::super) fn is_rust_at_path(&self, path: &Path) -> bool {
+        self.projects.iter().any(|item| {
+            if item
+                .submodules()
+                .iter()
+                .any(|submodule| submodule.path.as_path() == path)
+            {
+                return false;
+            }
+            (item.path() == path || item.at_path(path).is_some()) && item.is_rust()
+        })
+    }
+
     // ── RootItem query methods ─────────────────────────────────────
 
     /// All absolute paths for a `RootItem` (root + worktrees).

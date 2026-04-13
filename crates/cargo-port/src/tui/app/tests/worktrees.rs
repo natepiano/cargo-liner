@@ -35,11 +35,17 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
     app.list_state.select(Some(0));
     app.sync_selected_project();
     app.ensure_detail_cached();
+    let root_worktree_names = app
+        .cached_detail
+        .as_ref()
+        .map(|cache| cache.info.worktree_names.clone());
+    assert_eq!(root_worktree_names.as_ref().map(Vec::len), Some(2));
     assert_eq!(
-        app.cached_detail
+        root_worktree_names
             .as_ref()
-            .map(|cache| cache.info.lint_label.as_str()),
-        Some("🔴")
+            .and_then(|names| names.get(1))
+            .map(String::as_str),
+        Some("ws_feat")
     );
 
     app.list_state.select(Some(1));
@@ -48,8 +54,8 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
     assert_eq!(
         app.cached_detail
             .as_ref()
-            .map(|cache| cache.info.lint_label.as_str()),
-        Some("🟢")
+            .map(|cache| cache.info.worktree_names.clone()),
+        Some(Vec::new())
     );
 }
 
