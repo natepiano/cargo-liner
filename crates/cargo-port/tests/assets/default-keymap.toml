@@ -14,6 +14,7 @@ open_keymap   = "Ctrl+k"
 open_terminal = "t"
 prev_pane     = "Shift+Tab"
 quit          = "q"
+rescan        = "Ctrl+r"
 restart       = "R"
 settings      = "s"
 
@@ -21,7 +22,6 @@ settings      = "s"
 clean        = "c"
 collapse_all = "-"
 expand_all   = "+"
-rescan       = "r"
 
 [package]
 activate = "Enter"
@@ -38,9 +38,9 @@ release_build = "r"
 
 [ci_runs]
 activate    = "Enter"
-clear_cache = "c"
+clear_cache = "d"
 toggle_view = "v"
 
 [lints]
 activate      = "Enter"
-clear_history = "c"
+clear_history = "d"

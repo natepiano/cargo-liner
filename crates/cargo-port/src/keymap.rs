@@ -258,6 +258,7 @@ action_enum! {
         NextPane   => "next_pane",   "Focus next pane";
         PrevPane   => "prev_pane",   "Focus previous pane";
         OpenKeymap => "open_keymap", "Open keymap";
+        Rescan     => "rescan",      "Rescan projects";
         Dismiss    => "dismiss",     "Dismiss focused item";
     }
 }
@@ -267,7 +268,6 @@ action_enum! {
     pub enum ProjectListAction {
         ExpandAll   => "expand_all",   "Expand all";
         CollapseAll => "collapse_all", "Collapse all";
-        Rescan      => "rescan",       "Rescan projects";
         Clean       => "clean",        "Clean project";
     }
 }
@@ -397,6 +397,10 @@ impl ResolvedKeymap {
             KeyBind::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
             GlobalAction::OpenKeymap,
         );
+        km.global.insert(
+            KeyBind::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+            GlobalAction::Rescan,
+        );
         km.global
             .insert(KeyBind::plain(KeyCode::Char('x')), GlobalAction::Dismiss);
 
@@ -408,10 +412,6 @@ impl ResolvedKeymap {
         km.project_list.insert(
             KeyBind::plain(KeyCode::Char('-')),
             ProjectListAction::CollapseAll,
-        );
-        km.project_list.insert(
-            KeyBind::plain(KeyCode::Char('r')),
-            ProjectListAction::Rescan,
         );
         km.project_list
             .insert(KeyBind::plain(KeyCode::Char('c')), ProjectListAction::Clean);
@@ -444,13 +444,13 @@ impl ResolvedKeymap {
         km.ci_runs
             .insert(KeyBind::plain(KeyCode::Char('v')), CiRunsAction::ToggleView);
         km.ci_runs
-            .insert(KeyBind::plain(KeyCode::Char('c')), CiRunsAction::ClearCache);
+            .insert(KeyBind::plain(KeyCode::Char('d')), CiRunsAction::ClearCache);
 
         // Lints
         km.lints
             .insert(KeyBind::plain(KeyCode::Enter), LintsAction::Activate);
         km.lints.insert(
-            KeyBind::plain(KeyCode::Char('c')),
+            KeyBind::plain(KeyCode::Char('d')),
             LintsAction::ClearHistory,
         );
 
@@ -802,7 +802,7 @@ fn is_navigation_reserved(bind: &KeyBind) -> bool {
 }
 
 fn is_legacy_removed_action(scope_name: &str, action: &str) -> bool {
-    scope_name == "project_list" && action == "open_editor"
+    scope_name == "project_list" && matches!(action, "open_editor" | "rescan")
 }
 
 fn resolve_from_table(table: &toml::Table, vim_mode: NavigationKeys) -> KeymapLoadResult {
@@ -1271,7 +1271,7 @@ prev_pane = "Shift+Tab"
 open_keymap = "Ctrl+k"
 
 [project_list]
-rescan = "q"
+clean = "q"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
         assert!(
@@ -1299,7 +1299,7 @@ open_keymap = "Ctrl+k"
 clean = "c"
 
 [ci_runs]
-clear_cache = "c"
+clear_cache = "d"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
         assert!(
@@ -1324,7 +1324,7 @@ prev_pane = "Shift+Tab"
 open_keymap = "Ctrl+k"
 
 [project_list]
-rescan = "h"
+clean = "h"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsAndVim);
         assert!(
@@ -1433,11 +1433,11 @@ settings = "s"
 next_pane = "Tab"
 prev_pane = "Shift+Tab"
 open_keymap = "Ctrl+k"
+rescan = "r"
 dismiss = "x"
 
 [project_list]
 open_editor = "Enter"
-rescan = "r"
 expand_all = "="
 collapse_all = "-"
 clean = "c"
@@ -1558,7 +1558,7 @@ open_keymap = "Ctrl+k"
 [ci_runs]
 activate = "Enter"
 toggle_view = "t"
-clear_cache = "c"
+clear_cache = "d"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
 

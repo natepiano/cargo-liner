@@ -194,6 +194,7 @@ pub(super) fn for_status_bar(
                 km.global.display_key_for(GlobalAction::OpenKeymap),
                 "keymap",
             ),
+            Shortcut::from_keymap(km.global.display_key_for(GlobalAction::Rescan), "rescan"),
             Shortcut::from_keymap(km.global.display_key_for(GlobalAction::Quit), "quit"),
             Shortcut::from_keymap(km.global.display_key_for(GlobalAction::Restart), "restart"),
         ]
@@ -310,11 +311,6 @@ fn project_list_groups(
             "clean",
         ));
     }
-    actions.push(Shortcut::from_keymap(
-        km.project_list.display_key_for(ProjectListAction::Rescan),
-        "rescan",
-    ));
-
     (navigation, actions)
 }
 

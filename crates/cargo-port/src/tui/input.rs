@@ -475,6 +475,7 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
             app.keymap_pane_mut()
                 .set_len(super::keymap_ui::selectable_row_count());
         },
+        GlobalAction::Rescan => app.rescan(),
         GlobalAction::Dismiss => {
             if let Some(target) = app.focused_dismiss_target() {
                 app.dismiss(target);
@@ -514,7 +515,6 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
     match action {
         ProjectListAction::ExpandAll => app.expand_all(),
         ProjectListAction::CollapseAll => app.collapse_all(),
-        ProjectListAction::Rescan => app.rescan(),
         ProjectListAction::Clean => {
             if let Some(path) = app.selected_project_path()
                 && app
