@@ -17,6 +17,7 @@ use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
 use super::rust_info::Cargo;
 use super::rust_info::RustInfo;
+use crate::lint::LintRuns;
 
 /// A Rust workspace project. Contains member groups in addition to the
 /// shared `RustInfo` data. Derefs to `RustInfo` for uniform access.
@@ -47,6 +48,7 @@ impl WorkspaceProject {
                 vendored,
                 worktree_name,
                 worktree_primary_abs_path: worktree_primary_abs_path.map(AbsolutePath::from),
+                lint_runs: LintRuns::default(),
             },
             groups,
         }

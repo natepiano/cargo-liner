@@ -290,8 +290,8 @@ fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let has_ci = selected_ci_state.is_some() && has_workflows;
     let detail_lint_runs = app
         .selected_project_path()
-        .and_then(|path| app.lint_runs().get(path))
-        .cloned()
+        .and_then(|path| app.lint_at_path(path))
+        .map(|lr| lr.runs().to_vec())
         .unwrap_or_default();
     let detail_ci_runs: Vec<CiRun> = app.selected_ci_runs();
     let has_example_output = !app.example_output().is_empty();
@@ -785,10 +785,16 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let context = app.input_context();
     let enter_action = app.enter_action();
     let is_rust = app.selected_item().is_some_and(RootItem::is_rust);
+    let clear_lint_action = app
+        .selected_project_path()
+        .and_then(|path| app.lint_at_path(path))
+        .filter(|lr| !lr.runs().is_empty())
+        .map(|_| "clear cache");
     let groups = super::shortcuts::for_status_bar(
         context,
         enter_action,
         is_rust,
+        clear_lint_action,
         app.current_keymap(),
         app.terminal_command_configured(),
     );

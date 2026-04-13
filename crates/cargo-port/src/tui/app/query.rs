@@ -183,7 +183,9 @@ impl App {
         if let Some(abs_path) = current
             && self.selection_paths.last_selected.as_ref() != Some(&abs_path)
         {
-            if let Some(path) = self.selected_project_path().map(Path::to_path_buf) {
+            if self.selected_row_owns_lint()
+                && let Some(path) = self.selected_project_path().map(Path::to_path_buf)
+            {
                 self.reload_lint_history(&path);
             }
             self.data_generation += 1;
@@ -570,8 +572,6 @@ impl App {
             self.ci_state.remove(path);
             self.crates_versions.remove(path);
             self.crates_downloads.remove(path);
-            self.lint_runs.remove(path);
-            self.lint_status.remove(path);
         }
     }
 

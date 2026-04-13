@@ -10,6 +10,7 @@ use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
 use super::workspace::WorkspaceProject;
+use crate::lint::LintRuns;
 
 /// A Rust project — either a workspace or a standalone package.
 ///
@@ -106,6 +107,24 @@ impl RustProject {
         }
     }
 
+    /// Returns the `LintRuns` for the lint-owning node that contains `path`.
+    ///
+    /// Lint runs at the workspace/package level. Members and vendored packages
+    /// resolve to their owning parent's `LintRuns`.
+    pub(crate) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {
+        match self {
+            Self::Workspace(ws) => lint_in_workspace(ws, path),
+            Self::Package(pkg) => lint_in_package(pkg, path),
+        }
+    }
+
+    pub(crate) fn lint_at_path_mut(&mut self, path: &Path) -> Option<&mut LintRuns> {
+        match self {
+            Self::Workspace(ws) => lint_in_workspace_mut(ws, path),
+            Self::Package(pkg) => lint_in_package_mut(pkg, path),
+        }
+    }
+
     pub(crate) fn collect_project_info(&self, out: &mut Vec<(PathBuf, ProjectInfo)>) {
         match self {
             Self::Workspace(ws) => collect_project_info_from_workspace(ws, out),
@@ -198,6 +217,57 @@ pub(super) fn info_in_package_mut<'a>(
         }
     }
     None
+}
+
+// ── Lint traversal helpers ───────────────────────────────────────────
+//
+// Lint runs at the workspace/package level. Members and vendored packages
+// resolve to the owning root's `LintRuns`.
+
+pub(super) fn lint_in_workspace<'a>(ws: &'a WorkspaceProject, path: &Path) -> Option<&'a LintRuns> {
+    if ws.path() == path {
+        return Some(ws.lint_runs());
+    }
+    let is_child = ws
+        .groups()
+        .iter()
+        .any(|g| g.members().iter().any(|m| m.path() == path))
+        || ws.vendored().iter().any(|v| v.path() == path);
+    is_child.then(|| ws.lint_runs())
+}
+
+pub(super) fn lint_in_package<'a>(pkg: &'a PackageProject, path: &Path) -> Option<&'a LintRuns> {
+    if pkg.path() == path {
+        return Some(pkg.lint_runs());
+    }
+    let is_child = pkg.vendored().iter().any(|v| v.path() == path);
+    is_child.then(|| pkg.lint_runs())
+}
+
+pub(super) fn lint_in_workspace_mut<'a>(
+    ws: &'a mut WorkspaceProject,
+    path: &Path,
+) -> Option<&'a mut LintRuns> {
+    if ws.path() == path {
+        return Some(ws.lint_runs_mut());
+    }
+    let is_child = ws
+        .groups()
+        .iter()
+        .any(|g| g.members().iter().any(|m| m.path() == path))
+        || ws.vendored().iter().any(|v| v.path() == path);
+    is_child.then(|| ws.lint_runs_mut())
+}
+
+pub(super) fn lint_in_package_mut<'a>(
+    pkg: &'a mut PackageProject,
+    path: &Path,
+) -> Option<&'a mut LintRuns> {
+    if pkg.path() == path {
+        return Some(pkg.lint_runs_mut());
+    }
+    let is_child = pkg.vendored().iter().any(|v| v.path() == path);
+    is_child.then(|| pkg.lint_runs_mut())
 }
 
 fn collect_project_info_from_workspace(

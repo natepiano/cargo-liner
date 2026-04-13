@@ -6,6 +6,7 @@ use super::cargo::ProjectType;
 use super::info::ProjectInfo;
 use super::package::PackageProject;
 use super::paths::AbsolutePath;
+use crate::lint::LintRuns;
 
 /// Rust-specific project data shared by both `WorkspaceProject` and
 /// `PackageProject`. Derefs to `ProjectInfo` for uniform metadata access.
@@ -16,6 +17,7 @@ pub(crate) struct RustInfo {
     pub(super) vendored:                  Vec<PackageProject>,
     pub(super) worktree_name:             Option<String>,
     pub(super) worktree_primary_abs_path: Option<AbsolutePath>,
+    pub(super) lint_runs:                 LintRuns,
 }
 
 impl RustInfo {
@@ -36,6 +38,10 @@ impl RustInfo {
     pub(crate) const fn info(&self) -> &ProjectInfo { &self.info }
 
     pub(crate) const fn info_mut(&mut self) -> &mut ProjectInfo { &mut self.info }
+
+    pub(crate) const fn lint_runs(&self) -> &LintRuns { &self.lint_runs }
+
+    pub(crate) const fn lint_runs_mut(&mut self) -> &mut LintRuns { &mut self.lint_runs }
 }
 
 impl Deref for RustInfo {

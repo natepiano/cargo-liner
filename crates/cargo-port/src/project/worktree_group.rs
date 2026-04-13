@@ -5,6 +5,7 @@ use super::info::WorktreeHealth;
 use super::package::PackageProject;
 use super::project_fields::ProjectFields;
 use super::workspace::WorkspaceProject;
+use crate::lint::LintStatus;
 
 /// A worktree group: primary checkout + linked worktree checkouts.
 ///
@@ -99,6 +100,64 @@ impl WorktreeGroup {
                 primary, linked, ..
             } => super::root_item::single_live_package(primary, linked),
             Self::Workspaces { .. } => None,
+        }
+    }
+
+    /// Aggregate lint status across all worktree entries (primary + linked).
+    ///
+    /// Running takes priority: if any entry is actively running, the rollup
+    /// shows Running so the user sees that work is in progress.
+    pub(crate) fn lint_rollup_status(&self) -> LintStatus {
+        let statuses: Vec<LintStatus> = match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => std::iter::once(primary.lint_runs().status())
+                .chain(linked.iter().map(|l| l.lint_runs().status()))
+                .cloned()
+                .collect(),
+            Self::Packages {
+                primary, linked, ..
+            } => std::iter::once(primary.lint_runs().status())
+                .chain(linked.iter().map(|l| l.lint_runs().status()))
+                .cloned()
+                .collect(),
+        };
+        let running: Vec<LintStatus> = statuses
+            .iter()
+            .filter(|s| matches!(s, LintStatus::Running(_)))
+            .cloned()
+            .collect();
+        if !running.is_empty() {
+            return LintStatus::aggregate(running);
+        }
+        LintStatus::aggregate(statuses)
+    }
+
+    /// Lint status for a single worktree entry by index (0 = primary).
+    pub(crate) fn lint_status_for_worktree(&self, worktree_index: usize) -> LintStatus {
+        match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => {
+                if worktree_index == 0 {
+                    primary.lint_runs().status().clone()
+                } else {
+                    linked
+                        .get(worktree_index - 1)
+                        .map_or(LintStatus::NoLog, |l| l.lint_runs().status().clone())
+                }
+            },
+            Self::Packages {
+                primary, linked, ..
+            } => {
+                if worktree_index == 0 {
+                    primary.lint_runs().status().clone()
+                } else {
+                    linked
+                        .get(worktree_index - 1)
+                        .map_or(LintStatus::NoLog, |l| l.lint_runs().status().clone())
+                }
+            },
         }
     }
 }

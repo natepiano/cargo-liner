@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use crate::keymap::CiRunsAction;
 use crate::keymap::GlobalAction;
+use crate::keymap::LintsAction;
 use crate::keymap::PackageAction;
 use crate::keymap::ProjectListAction;
 use crate::keymap::ResolvedKeymap;
@@ -122,6 +123,7 @@ pub(super) fn for_status_bar(
     context: InputContext,
     enter_action: Option<&'static str>,
     is_rust: bool,
+    clear_lint_action: Option<&'static str>,
     km: &ResolvedKeymap,
     terminal_command_configured: bool,
 ) -> StatusBarGroups {
@@ -158,7 +160,7 @@ pub(super) fn for_status_bar(
         },
         InputContext::CiRuns => ci_groups(enter_action, Some("branch/all"), km),
         InputContext::Toasts => toast_groups(km),
-        InputContext::Lints => lints_groups(enter_action),
+        InputContext::Lints => lints_groups(enter_action, clear_lint_action, km),
         InputContext::Output => (vec![], vec![ESC_CLOSE]),
         InputContext::ProjectList => project_list_groups(enter_action, is_rust, km),
     };
@@ -270,12 +272,22 @@ fn toast_groups(km: &ResolvedKeymap) -> (Vec<Shortcut>, Vec<Shortcut>) {
     )
 }
 
-fn lints_groups(enter_action: Option<&'static str>) -> (Vec<Shortcut>, Vec<Shortcut>) {
+fn lints_groups(
+    enter_action: Option<&'static str>,
+    clear_action: Option<&'static str>,
+    km: &ResolvedKeymap,
+) -> (Vec<Shortcut>, Vec<Shortcut>) {
     let navigation = vec![NAV, TAB_PANE];
 
     let mut actions = Vec::new();
     if let Some(action) = enter_action {
         actions.push(enter(action));
+    }
+    if let Some(action) = clear_action {
+        actions.push(Shortcut::from_keymap(
+            km.lints.display_key_for(LintsAction::ClearHistory),
+            action,
+        ));
     }
 
     (navigation, actions)
@@ -320,6 +332,7 @@ mod tests {
             InputContext::ProjectList,
             None,
             true,
+            None,
             &ResolvedKeymap::defaults(),
             true,
         );
@@ -341,6 +354,7 @@ mod tests {
             InputContext::ProjectList,
             None,
             true,
+            None,
             &ResolvedKeymap::defaults(),
             false,
         );
@@ -359,6 +373,7 @@ mod tests {
             InputContext::CiRuns,
             None,
             true,
+            None,
             &ResolvedKeymap::defaults(),
             true,
         );
@@ -377,6 +392,7 @@ mod tests {
             InputContext::Settings,
             None,
             true,
+            None,
             &ResolvedKeymap::defaults(),
             true,
         );
@@ -395,6 +411,7 @@ mod tests {
             InputContext::Keymap,
             None,
             true,
+            None,
             &ResolvedKeymap::defaults(),
             true,
         );

@@ -4,6 +4,7 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::path::Path;
 
+use crate::lint::LintRuns;
 use crate::project::AbsolutePath;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
@@ -238,6 +239,18 @@ impl ProjectList {
         self.root_items
             .iter_mut()
             .find_map(|item| item.at_path_mut(target))
+    }
+
+    pub(crate) fn lint_at_path(&self, target: &Path) -> Option<&LintRuns> {
+        self.root_items
+            .iter()
+            .find_map(|item| item.lint_at_path(target))
+    }
+
+    pub(crate) fn lint_at_path_mut(&mut self, target: &Path) -> Option<&mut LintRuns> {
+        self.root_items
+            .iter_mut()
+            .find_map(|item| item.lint_at_path_mut(target))
     }
 
     // -- Hierarchy mutations ----------------------------------------------

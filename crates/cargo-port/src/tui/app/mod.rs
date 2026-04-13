@@ -12,6 +12,7 @@ mod types;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -27,8 +28,7 @@ use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::keymap::ResolvedKeymap;
 use crate::lint::CacheUsage;
-use crate::lint::LintRun;
-use crate::lint::LintStatus;
+use crate::lint::LintRuns;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::GitPathState;
@@ -82,12 +82,7 @@ pub(super) struct App {
     projects:                 ProjectList,
     ci_state:                 HashMap<PathBuf, CiState>,
     ci_display_modes:         HashMap<PathBuf, types::CiRunDisplayMode>,
-    lint_status:              HashMap<PathBuf, LintStatus>,
     lint_cache_usage:         CacheUsage,
-    lint_runs:                HashMap<PathBuf, Vec<LintRun>>,
-    lint_rollup_status:       HashMap<types::LintRollupKey, LintStatus>,
-    lint_rollup_paths:        HashMap<types::LintRollupKey, Vec<PathBuf>>,
-    lint_rollup_keys_by_path: HashMap<PathBuf, Vec<types::LintRollupKey>>,
     git_path_states:          HashMap<PathBuf, GitPathState>,
     cargo_active_paths:       HashSet<PathBuf>,
     crates_versions:          HashMap<PathBuf, String>,
@@ -191,10 +186,26 @@ impl App {
 
     pub(super) const fn lint_cache_usage(&self) -> &CacheUsage { &self.lint_cache_usage }
 
-    pub(super) const fn lint_runs(&self) -> &HashMap<PathBuf, Vec<LintRun>> { &self.lint_runs }
+    pub(super) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {
+        self.projects.lint_at_path(path)
+    }
 
-    pub(super) const fn lint_runs_mut(&mut self) -> &mut HashMap<PathBuf, Vec<LintRun>> {
-        &mut self.lint_runs
+    pub(super) fn lint_at_path_mut(&mut self, path: &Path) -> Option<&mut LintRuns> {
+        self.projects.lint_at_path_mut(path)
+    }
+
+    pub(super) fn clear_all_lint_state(&mut self) {
+        let mut paths = Vec::new();
+        self.projects.for_each_leaf_path(|path, is_rust| {
+            if is_rust {
+                paths.push(path.to_path_buf());
+            }
+        });
+        for path in &paths {
+            if let Some(lr) = self.projects.lint_at_path_mut(path) {
+                lr.clear_runs();
+            }
+        }
     }
 
     pub(super) const fn crates_versions(&self) -> &HashMap<PathBuf, String> {

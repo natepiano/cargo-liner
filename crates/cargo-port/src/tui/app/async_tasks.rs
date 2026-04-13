@@ -77,7 +77,7 @@ impl App {
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
         self.register_lint_for_root_items();
-        self.rebuild_lint_rollups();
+        self.refresh_lint_runs_from_disk();
         self.data_generation += 1;
         self.detail_generation += 1;
 
@@ -361,12 +361,11 @@ impl App {
     pub(in super::super) fn refresh_lint_runtime_from_config(&mut self, cfg: &CargoPortConfig) {
         let lint_spawn = lint::spawn(cfg, self.bg_tx.clone());
         self.lint_runtime = lint_spawn.handle;
-        self.lint_status.clear();
+        self.clear_all_lint_state();
         self.running_lint_paths.clear();
         self.sync_running_lint_toast();
         self.sync_lint_runtime_projects();
         self.refresh_lint_runs_from_disk();
-        self.rebuild_lint_rollups();
         self.cached_fit_widths = ResolvedWidths::new(self.lint_enabled());
         self.dirty.rows.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
@@ -406,46 +405,28 @@ impl App {
     }
 
     pub(in super::super) fn refresh_lint_runs_from_disk(&mut self) {
-        self.lint_runs.clear();
-        let paths: Vec<PathBuf> = {
-            let mut v = Vec::new();
-            self.projects.for_each_leaf_path(|path, _| {
-                v.push(path.to_path_buf());
-            });
-            v
-        };
-        for path in &paths {
-            if !self.is_cargo_active_path(path) {
-                continue;
+        let mut paths = Vec::new();
+        self.projects.for_each_leaf_path(|path, is_rust| {
+            if is_rust {
+                paths.push(path.to_path_buf());
             }
+        });
+        for path in &paths {
             let runs = crate::lint::read_history(path);
-            if !runs.is_empty() {
-                self.lint_runs.insert(path.clone(), runs);
+            if let Some(lr) = self.projects.lint_at_path_mut(path) {
+                lr.set_runs(runs);
             }
         }
         self.refresh_lint_cache_usage_from_disk();
     }
 
     pub(in super::super) fn reload_lint_history(&mut self, project_path: &Path) {
-        let mut found = false;
-        self.projects.for_each_leaf_path(|path, _| {
-            if path == project_path {
-                found = true;
-            }
-        });
-        if !found {
-            self.lint_runs.remove(project_path);
-            return;
-        }
         if !self.is_cargo_active_path(project_path) {
-            self.lint_runs.remove(project_path);
             return;
         }
         let runs = crate::lint::read_history(project_path);
-        if runs.is_empty() {
-            self.lint_runs.remove(project_path);
-        } else {
-            self.lint_runs.insert(project_path.to_path_buf(), runs);
+        if let Some(lr) = self.projects.lint_at_path_mut(project_path) {
+            lr.set_runs(runs);
         }
         self.refresh_lint_cache_usage_from_disk();
     }
@@ -1412,9 +1393,8 @@ impl App {
         // disk_usage lives on project items — cleared with projects above
         self.ci_state.clear();
         self.ci_display_modes.clear();
-        self.lint_status.clear();
+        self.clear_all_lint_state();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
-        self.lint_runs.clear();
         self.git_path_states.clear();
         self.cargo_active_paths.clear();
         self.crates_versions.clear();
@@ -1961,6 +1941,7 @@ impl App {
         // Re-replace with the runtime-data-enriched version.
         self.projects.replace_leaf_by_path(&path, item);
         self.projects.regroup_top_level_worktrees();
+        self.reload_lint_history(&path);
         self.migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
         self.cached_detail = None;
@@ -2084,8 +2065,9 @@ impl App {
             LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog
         );
         if !self.is_cargo_active_path(&abs) {
-            self.lint_runs.remove(&abs);
-            self.lint_status.remove(&abs);
+            if let Some(lr) = self.projects.lint_at_path_mut(&abs) {
+                lr.clear_runs();
+            }
             return;
         }
         let mut is_rust = false;
@@ -2101,17 +2083,15 @@ impl App {
             is_rust,
         );
         if eligible {
-            if matches!(status, LintStatus::NoLog) {
-                self.lint_status.remove(&abs);
-            } else {
-                self.lint_status.insert(abs.clone(), status);
+            if let Some(lr) = self.projects.lint_at_path_mut(&abs) {
+                lr.set_status(status);
             }
         } else {
-            self.lint_runs.remove(&abs);
-            self.lint_status.remove(&abs);
+            if let Some(lr) = self.projects.lint_at_path_mut(&abs) {
+                lr.clear_runs();
+            }
             self.running_lint_paths.remove(&abs);
         }
-        self.update_lint_rollups_for_path(&abs);
         if status_started {
             self.running_lint_paths.insert(abs.clone(), Instant::now());
         }
@@ -2175,7 +2155,7 @@ impl App {
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
         self.register_lint_for_root_items();
-        self.rebuild_lint_rollups();
+        self.refresh_lint_runs_from_disk();
         self.data_generation += 1;
         self.detail_generation += 1;
 
@@ -2348,15 +2328,16 @@ impl App {
         let Some(selected_path) = self.selected_project_path() else {
             return false;
         };
-        let abs = path;
-        self.selected_lint_rollup_key().map_or_else(
-            || selected_path == abs,
-            |key| {
-                self.lint_rollup_paths
-                    .get(&key)
-                    .is_some_and(|paths| paths.iter().any(|candidate| candidate == abs))
-            },
-        )
+        if selected_path == path {
+            return true;
+        }
+        // Check if both paths resolve to the same lint-owning node (e.g.,
+        // a worktree group where one entry's status change affects the
+        // root rollup displayed in the detail pane).
+        self.projects
+            .lint_at_path(selected_path)
+            .zip(self.projects.lint_at_path(path))
+            .is_some_and(|(a, b)| std::ptr::eq(a, b))
     }
 
     /// Spawn a priority fetch for the selected project if it hasn't been loaded yet.

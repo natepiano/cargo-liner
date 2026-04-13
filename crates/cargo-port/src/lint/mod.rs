@@ -1,6 +1,7 @@
 //! Reads per-project lint state from cache-rooted JSON artifacts.
 
 mod history;
+mod lint_runs;
 mod paths;
 mod read_write;
 mod runtime;
@@ -17,6 +18,7 @@ mod tests;
 pub use history::CacheUsage;
 pub use history::read_history;
 pub use history::retained_cache_usage;
+pub use lint_runs::LintRuns;
 #[cfg(test)]
 pub use paths::cache_root;
 #[cfg(test)]

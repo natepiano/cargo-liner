@@ -3,12 +3,9 @@ use ratatui::layout::Constraint;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Cell;
-use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
@@ -169,16 +166,6 @@ pub fn render_lints_panel(
 
     if runs.is_empty() {
         frame.render_widget(block, area);
-        if area.height > 2 {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    "No local lint runs available",
-                    Style::default().fg(Color::DarkGray),
-                )))
-                .alignment(ratatui::layout::Alignment::Center),
-                inner,
-            );
-        }
         return;
     }
 

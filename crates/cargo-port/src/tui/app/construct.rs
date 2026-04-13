@@ -187,12 +187,7 @@ impl App {
             projects: init.projects,
             ci_state: HashMap::new(),
             ci_display_modes: HashMap::new(),
-            lint_status: HashMap::new(),
             lint_cache_usage: crate::lint::CacheUsage::default(),
-            lint_runs: HashMap::new(),
-            lint_rollup_status: HashMap::new(),
-            lint_rollup_paths: HashMap::new(),
-            lint_rollup_keys_by_path: HashMap::new(),
             git_path_states: HashMap::new(),
             cargo_active_paths: HashSet::new(),
             crates_versions: HashMap::new(),
@@ -298,6 +293,5 @@ impl App {
             self.finish_watcher_registration_batch();
         }
         self.refresh_lint_runs_from_disk();
-        self.rebuild_lint_rollups();
     }
 }

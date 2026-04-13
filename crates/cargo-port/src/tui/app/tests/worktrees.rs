@@ -23,15 +23,14 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
     app.dirty.rows.mark_dirty();
     app.ensure_visible_rows_cached();
 
-    app.lint_status.insert(
-        test_path("~/ws"),
-        LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")),
-    );
-    app.lint_status.insert(
-        test_path("~/ws_feat"),
-        LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
-    );
-    app.rebuild_lint_rollups();
+    app.projects_mut()
+        .lint_at_path_mut(&test_path("~/ws"))
+        .unwrap()
+        .set_status(LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")));
+    app.projects_mut()
+        .lint_at_path_mut(&test_path("~/ws_feat"))
+        .unwrap()
+        .set_status(LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")));
 
     app.list_state.select(Some(0));
     app.sync_selected_project();

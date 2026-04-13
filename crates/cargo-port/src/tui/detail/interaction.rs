@@ -279,26 +279,38 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
 }
 
 fn clear_lint_history(app: &mut App) {
+    if !app.selected_row_owns_lint() {
+        return;
+    }
     let Some(abs_path) = app.selected_project_path().map(Path::to_path_buf) else {
         return;
     };
     let project_cache_dir = crate::lint::project_dir(&abs_path);
     let _ = std::fs::remove_dir_all(project_cache_dir);
 
-    app.lint_runs_mut().remove(abs_path.as_path());
+    if let Some(lr) = app.lint_at_path_mut(&abs_path) {
+        lr.clear_runs();
+    }
     app.lint_pane_mut().home();
+    app.focus_pane(PaneId::ProjectList);
     app.refresh_lint_cache_usage_from_disk();
     app.increment_data_generation();
 }
 
 fn open_lint_run_output(app: &App) {
+    if !app.selected_row_owns_lint() {
+        return;
+    }
     let Some(abs_path) = app.selected_project_path() else {
         return;
     };
-    let runs = match app.lint_runs().get(abs_path) {
-        Some(runs) if !runs.is_empty() => runs,
-        _ => return,
+    let Some(lr) = app.lint_at_path(abs_path) else {
+        return;
     };
+    let runs = lr.runs();
+    if runs.is_empty() {
+        return;
+    }
     let Some(run) = runs.get(app.lint_pane().pos()) else {
         return;
     };

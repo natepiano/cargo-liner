@@ -11,12 +11,13 @@ use crate::tui::Icon;
 use crate::tui::LINT_SPINNER;
 
 /// Lint status derived from the latest lint run record.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum LintStatus {
     Running(DateTime<FixedOffset>),
     Passed(DateTime<FixedOffset>),
     Failed(DateTime<FixedOffset>),
     Stale,
+    #[default]
     NoLog,
 }
 

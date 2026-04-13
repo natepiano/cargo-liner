@@ -431,17 +431,6 @@ pub enum VisibleRow {
     },
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub(in super::super) enum LintRollupKey {
-    Root {
-        node_index: usize,
-    },
-    Worktree {
-        node_index:     usize,
-        worktree_index: usize,
-    },
-}
-
 /// Per-project CI state. Replaces the scattered `(ci_runs, ci_fetching,
 /// ci_no_more_runs, ci_fetch_count)` fields with a single enum so invalid
 /// combinations are unrepresentable.

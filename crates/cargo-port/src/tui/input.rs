@@ -289,7 +289,7 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    if app.lint_pane().content_area().contains(pos) {
+    if app.lint_pane().content_area().contains(pos) && app.is_pane_tabbable(PaneId::Lints) {
         app.focus_pane(PaneId::Lints);
     } else if app.ci_pane().content_area().contains(pos) {
         app.focus_pane(PaneId::CiRuns);

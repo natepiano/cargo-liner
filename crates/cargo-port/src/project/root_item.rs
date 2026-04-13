@@ -12,6 +12,8 @@ use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
 use super::rust_project::RustProject;
 use super::worktree_group::WorktreeGroup;
+use crate::lint::LintRuns;
+use crate::lint::LintStatus;
 
 /// The top-level enum for the project list — 3 variants.
 #[derive(Clone)]
@@ -217,6 +219,76 @@ impl RootItem {
                     super::rust_project::info_in_package_mut(&mut linked[idx], path)
                 },
             },
+        }
+    }
+
+    /// Returns the `LintRuns` for the lint-owning node that contains `path`.
+    pub(crate) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {
+        match self {
+            Self::Rust(p) => p.lint_at_path(path),
+            Self::NonRust(_) => None,
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                } => super::rust_project::lint_in_workspace(primary, path).or_else(|| {
+                    linked
+                        .iter()
+                        .find_map(|l| super::rust_project::lint_in_workspace(l, path))
+                }),
+                WorktreeGroup::Packages {
+                    primary, linked, ..
+                } => super::rust_project::lint_in_package(primary, path).or_else(|| {
+                    linked
+                        .iter()
+                        .find_map(|l| super::rust_project::lint_in_package(l, path))
+                }),
+            },
+        }
+    }
+
+    pub(crate) fn lint_at_path_mut(&mut self, path: &Path) -> Option<&mut LintRuns> {
+        match self {
+            Self::Rust(p) => p.lint_at_path_mut(path),
+            Self::NonRust(_) => None,
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                } => {
+                    if super::rust_project::lint_in_workspace(primary, path).is_some() {
+                        return super::rust_project::lint_in_workspace_mut(primary, path);
+                    }
+                    let idx = linked
+                        .iter()
+                        .position(|l| super::rust_project::lint_in_workspace(l, path).is_some())?;
+                    super::rust_project::lint_in_workspace_mut(&mut linked[idx], path)
+                },
+                WorktreeGroup::Packages {
+                    primary, linked, ..
+                } => {
+                    if super::rust_project::lint_in_package(primary, path).is_some() {
+                        return super::rust_project::lint_in_package_mut(primary, path);
+                    }
+                    let idx = linked
+                        .iter()
+                        .position(|l| super::rust_project::lint_in_package(l, path).is_some())?;
+                    super::rust_project::lint_in_package_mut(&mut linked[idx], path)
+                },
+            },
+        }
+    }
+
+    /// Aggregate lint status for this root item.
+    ///
+    /// For `Worktrees`, aggregates across all entries.
+    /// For `Rust`, returns the node's own lint status.
+    /// For `NonRust`, returns `NoLog`.
+    pub(crate) fn lint_rollup_status(&self) -> LintStatus {
+        match self {
+            Self::Rust(p) => p
+                .lint_at_path(p.path())
+                .map_or(LintStatus::NoLog, |lr| lr.status().clone()),
+            Self::NonRust(_) => LintStatus::NoLog,
+            Self::Worktrees(g) => g.lint_rollup_status(),
         }
     }
 

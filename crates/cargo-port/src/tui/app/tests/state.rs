@@ -732,33 +732,28 @@ fn lint_rollups_distinguish_root_from_primary_worktree() {
     let mut app = make_app(&[make_project(None, "~/ws")]);
     app.current_config.lint.enabled = true;
     apply_items(&mut app, &[root]);
-    app.lint_status.insert(
-        test_path("~/ws"),
-        LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")),
-    );
-    app.lint_status.insert(
-        test_path("~/ws_feat"),
-        LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
-    );
-    app.rebuild_lint_rollups();
+    app.projects_mut()
+        .lint_at_path_mut(&test_path("~/ws"))
+        .unwrap()
+        .set_status(LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")));
+    app.projects_mut()
+        .lint_at_path_mut(&test_path("~/ws_feat"))
+        .unwrap()
+        .set_status(LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")));
 
+    let root_status = app.projects().first().unwrap().lint_rollup_status();
+    assert!(matches!(root_status, LintStatus::Failed(_)));
+
+    let RootItem::Worktrees(g) = app.projects().first().unwrap() else {
+        panic!("expected Worktrees");
+    };
     assert!(matches!(
-        app.lint_status_for_rollup_key(LintRollupKey::Root { node_index: 0 }),
-        Some(LintStatus::Failed(_))
+        g.lint_status_for_worktree(0),
+        LintStatus::Passed(_)
     ));
     assert!(matches!(
-        app.lint_status_for_rollup_key(LintRollupKey::Worktree {
-            node_index:     0,
-            worktree_index: 0,
-        }),
-        Some(LintStatus::Passed(_))
-    ));
-    assert!(matches!(
-        app.lint_status_for_rollup_key(LintRollupKey::Worktree {
-            node_index:     0,
-            worktree_index: 1,
-        }),
-        Some(LintStatus::Failed(_))
+        g.lint_status_for_worktree(1),
+        LintStatus::Failed(_)
     ));
 }
 
@@ -773,20 +768,13 @@ fn lint_rollup_prefers_running_root_over_member_history() {
     let mut app = make_app(&[make_workspace_project(None, "~/ws")]);
     app.current_config.lint.enabled = true;
     apply_items(&mut app, &[root]);
-    app.lint_status.insert(
-        test_path("~/ws"),
-        LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")),
-    );
-    app.lint_status.insert(
-        test_path("~/ws/a"),
-        LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
-    );
-    app.rebuild_lint_rollups();
+    app.projects_mut()
+        .lint_at_path_mut(&test_path("~/ws"))
+        .unwrap()
+        .set_status(LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")));
 
-    assert!(matches!(
-        app.lint_status_for_rollup_key(LintRollupKey::Root { node_index: 0 }),
-        Some(LintStatus::Running(_))
-    ));
+    let root_status = app.projects().first().unwrap().lint_rollup_status();
+    assert!(matches!(root_status, LintStatus::Running(_)));
 }
 
 #[test]
@@ -799,25 +787,23 @@ fn lint_rollup_prefers_running_worktree_over_failed_root_history() {
     let mut app = make_app(&[make_project(None, "~/ws")]);
     app.current_config.lint.enabled = true;
     apply_items(&mut app, &[root]);
-    app.lint_status.insert(
-        test_path("~/ws"),
-        LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")),
-    );
-    app.lint_status.insert(
-        test_path("~/ws_feat"),
-        LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")),
-    );
-    app.rebuild_lint_rollups();
+    app.projects_mut()
+        .lint_at_path_mut(&test_path("~/ws"))
+        .unwrap()
+        .set_status(LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")));
+    app.projects_mut()
+        .lint_at_path_mut(&test_path("~/ws_feat"))
+        .unwrap()
+        .set_status(LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")));
 
+    let root_status = app.projects().first().unwrap().lint_rollup_status();
+    assert!(matches!(root_status, LintStatus::Running(_)));
+
+    let RootItem::Worktrees(g) = app.projects().first().unwrap() else {
+        panic!("expected Worktrees");
+    };
     assert!(matches!(
-        app.lint_status_for_rollup_key(LintRollupKey::Root { node_index: 0 }),
-        Some(LintStatus::Running(_))
-    ));
-    assert!(matches!(
-        app.lint_status_for_rollup_key(LintRollupKey::Worktree {
-            node_index:     0,
-            worktree_index: 1,
-        }),
-        Some(LintStatus::Running(_))
+        g.lint_status_for_worktree(1),
+        LintStatus::Running(_)
     ));
 }

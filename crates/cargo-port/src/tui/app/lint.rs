@@ -1,184 +1,31 @@
-use std::collections::HashSet;
 use std::path::Path;
-use std::path::PathBuf;
 
 use super::App;
-use super::types::LintRollupKey;
 use super::types::VisibleRow;
-use crate::lint::LintStatus;
-use crate::project::ProjectFields;
 use crate::project::RootItem;
 
 impl App {
-    pub(in super::super) fn rebuild_lint_rollups(&mut self) {
-        self.lint_rollup_status.clear();
-        self.lint_rollup_paths.clear();
-        self.lint_rollup_keys_by_path.clear();
-
-        let mut registrations: Vec<(LintRollupKey, Vec<PathBuf>)> = Vec::new();
-        for (node_index, item) in self.projects.iter().enumerate() {
-            registrations.push((
-                LintRollupKey::Root { node_index },
-                Self::lint_root_paths_for_item(item),
-            ));
-            match item {
-                RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
-                    primary,
-                    linked,
-                    ..
-                }) => {
-                    registrations.push((
-                        LintRollupKey::Worktree {
-                            node_index,
-                            worktree_index: 0,
-                        },
-                        vec![primary.path().to_path_buf()],
-                    ));
-                    for (i, l) in linked.iter().enumerate() {
-                        registrations.push((
-                            LintRollupKey::Worktree {
-                                node_index,
-                                worktree_index: i + 1,
-                            },
-                            vec![l.path().to_path_buf()],
-                        ));
-                    }
-                },
-                RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
-                    primary,
-                    linked,
-                    ..
-                }) => {
-                    registrations.push((
-                        LintRollupKey::Worktree {
-                            node_index,
-                            worktree_index: 0,
-                        },
-                        vec![primary.path().to_path_buf()],
-                    ));
-                    for (i, l) in linked.iter().enumerate() {
-                        registrations.push((
-                            LintRollupKey::Worktree {
-                                node_index,
-                                worktree_index: i + 1,
-                            },
-                            vec![l.path().to_path_buf()],
-                        ));
-                    }
-                },
-                _ => {},
-            }
+    /// Whether the currently selected row is a lint-owning node.
+    ///
+    /// Only roots and worktree entries own lint state. Members, vendored
+    /// packages, and group headers do not — the match is exhaustive so new
+    /// variants must be classified.
+    pub(in super::super) fn selected_row_owns_lint(&self) -> bool {
+        match self.selected_row() {
+            Some(
+                VisibleRow::Root { .. }
+                | VisibleRow::WorktreeEntry { .. }
+                | VisibleRow::WorktreeGroupHeader { .. },
+            ) => true,
+            Some(
+                VisibleRow::GroupHeader { .. }
+                | VisibleRow::Member { .. }
+                | VisibleRow::Vendored { .. }
+                | VisibleRow::WorktreeMember { .. }
+                | VisibleRow::WorktreeVendored { .. },
+            )
+            | None => false,
         }
-
-        for (key, paths) in registrations {
-            self.register_lint_rollup(key, paths);
-        }
-
-        let keys: Vec<LintRollupKey> = self.lint_rollup_paths.keys().copied().collect();
-        for key in keys {
-            self.recompute_lint_rollup(key);
-        }
-    }
-
-    fn register_lint_rollup(&mut self, key: LintRollupKey, mut paths: Vec<PathBuf>) {
-        let mut seen = HashSet::new();
-        paths.retain(|path| seen.insert(path.clone()));
-        for path in &paths {
-            self.lint_rollup_keys_by_path
-                .entry(path.clone())
-                .or_default()
-                .push(key);
-        }
-        self.lint_rollup_paths.insert(key, paths);
-    }
-
-    pub(in super::super) fn update_lint_rollups_for_path(&mut self, path: &Path) {
-        let Some(keys) = self.lint_rollup_keys_by_path.get(path).cloned() else {
-            return;
-        };
-        for key in keys {
-            self.recompute_lint_rollup(key);
-        }
-    }
-
-    fn recompute_lint_rollup(&mut self, key: LintRollupKey) {
-        let Some(paths) = self.lint_rollup_paths.get(&key) else {
-            self.lint_rollup_status.remove(&key);
-            return;
-        };
-        let statuses: Vec<LintStatus> = paths
-            .iter()
-            .filter_map(|path| self.lint_status.get(path).cloned())
-            .collect();
-        let status = Self::aggregate_lint_rollup_statuses(&statuses);
-        if matches!(status, LintStatus::NoLog) {
-            self.lint_rollup_status.remove(&key);
-        } else {
-            self.lint_rollup_status.insert(key, status);
-        }
-    }
-
-    fn aggregate_lint_rollup_statuses(statuses: &[LintStatus]) -> LintStatus {
-        let running_statuses: Vec<LintStatus> = statuses
-            .iter()
-            .filter(|status| matches!(status, LintStatus::Running(_)))
-            .cloned()
-            .collect();
-        if !running_statuses.is_empty() {
-            return LintStatus::aggregate(running_statuses);
-        }
-        LintStatus::aggregate(statuses.iter().cloned())
-    }
-
-    fn lint_root_paths_for_item(item: &RootItem) -> Vec<PathBuf> {
-        match item {
-            RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
-                primary,
-                linked,
-                ..
-            }) => std::iter::once(primary.path().to_path_buf())
-                .chain(linked.iter().map(|p| p.path().to_path_buf()))
-                .collect(),
-            RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
-                primary,
-                linked,
-                ..
-            }) => std::iter::once(primary.path().to_path_buf())
-                .chain(linked.iter().map(|p| p.path().to_path_buf()))
-                .collect(),
-            _ => vec![item.path().to_path_buf()],
-        }
-    }
-
-    pub(in super::super) fn selected_lint_rollup_key(&self) -> Option<LintRollupKey> {
-        match self.selected_row()? {
-            VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                Some(LintRollupKey::Root { node_index })
-            },
-            VisibleRow::WorktreeEntry {
-                node_index,
-                worktree_index,
-            }
-            | VisibleRow::WorktreeGroupHeader {
-                node_index,
-                worktree_index,
-                ..
-            } => Some(LintRollupKey::Worktree {
-                node_index,
-                worktree_index,
-            }),
-            VisibleRow::Member { .. }
-            | VisibleRow::Vendored { .. }
-            | VisibleRow::WorktreeMember { .. }
-            | VisibleRow::WorktreeVendored { .. } => None,
-        }
-    }
-
-    pub(in super::super) fn lint_status_for_rollup_key(
-        &self,
-        key: LintRollupKey,
-    ) -> Option<&LintStatus> {
-        self.lint_rollup_status.get(&key)
     }
 
     /// Lint icon frame for the current animation state, or a blank space if lint is
@@ -189,10 +36,10 @@ impl App {
         if !self.lint_enabled() {
             return LINT_NO_LOG;
         }
-        let Some(status) = self.lint_status.get(path) else {
+        let Some(lr) = self.projects.lint_at_path(path) else {
             return LINT_NO_LOG;
         };
-        status.icon().frame_at(self.animation_elapsed())
+        lr.status().icon().frame_at(self.animation_elapsed())
     }
 
     pub(in super::super) fn lint_icon_for_root(&self, node_index: usize) -> &'static str {
@@ -201,10 +48,10 @@ impl App {
         if !self.lint_enabled() {
             return LINT_NO_LOG;
         }
-        let Some(status) = self.lint_status_for_rollup_key(LintRollupKey::Root { node_index })
-        else {
+        let Some(item) = self.projects.get(node_index) else {
             return LINT_NO_LOG;
         };
+        let status = item.lint_rollup_status();
         status.icon().frame_at(self.animation_elapsed())
     }
 
@@ -218,12 +65,10 @@ impl App {
         if !self.lint_enabled() {
             return LINT_NO_LOG;
         }
-        let Some(status) = self.lint_status_for_rollup_key(LintRollupKey::Worktree {
-            node_index,
-            worktree_index,
-        }) else {
+        let Some(RootItem::Worktrees(g)) = self.projects.get(node_index) else {
             return LINT_NO_LOG;
         };
+        let status = g.lint_status_for_worktree(worktree_index);
         status.icon().frame_at(self.animation_elapsed())
     }
 
@@ -233,8 +78,11 @@ impl App {
         }
         match self.selected_row() {
             Some(VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. }) => {
-                self.lint_status_for_rollup_key(LintRollupKey::Root { node_index })
-                    .map(|status| status.icon().frame_at(self.animation_elapsed()))
+                self.projects.get(node_index).map(|item| {
+                    item.lint_rollup_status()
+                        .icon()
+                        .frame_at(self.animation_elapsed())
+                })
             },
             Some(
                 VisibleRow::WorktreeEntry {
@@ -246,12 +94,13 @@ impl App {
                     worktree_index,
                     ..
                 },
-            ) => self
-                .lint_status_for_rollup_key(LintRollupKey::Worktree {
-                    node_index,
-                    worktree_index,
-                })
-                .map(|status| status.icon().frame_at(self.animation_elapsed())),
+            ) => {
+                let RootItem::Worktrees(g) = self.projects.get(node_index)? else {
+                    return None;
+                };
+                let status = g.lint_status_for_worktree(worktree_index);
+                Some(status.icon().frame_at(self.animation_elapsed()))
+            },
             Some(
                 VisibleRow::Member { .. }
                 | VisibleRow::Vendored { .. }
@@ -259,9 +108,9 @@ impl App {
                 | VisibleRow::WorktreeVendored { .. },
             )
             | None => self
-                .lint_status
-                .get(path)
-                .map(|status| status.icon().frame_at(self.animation_elapsed())),
+                .projects
+                .lint_at_path(path)
+                .map(|lr| lr.status().icon().frame_at(self.animation_elapsed())),
         }
     }
 }

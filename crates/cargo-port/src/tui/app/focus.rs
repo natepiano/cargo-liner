@@ -213,9 +213,9 @@ impl App {
             PaneId::Lints => {
                 self.example_output.is_empty()
                     && self.selected_project_path().is_some_and(|path| {
-                        self.lint_runs
-                            .get(path)
-                            .is_some_and(|runs| !runs.is_empty())
+                        self.projects
+                            .lint_at_path(path)
+                            .is_some_and(|lr| !lr.runs().is_empty())
                     })
             },
             PaneId::CiRuns => {
