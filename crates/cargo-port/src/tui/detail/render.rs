@@ -90,9 +90,9 @@ fn detail_layout_spec(git: GitPresence, targets: TargetPresence) -> DetailLayout
     };
     DetailLayoutSpec {
         constraints: vec![
-            Constraint::Percentage(40),
-            Constraint::Percentage(40),
-            Constraint::Percentage(20),
+            Constraint::Percentage(39),
+            Constraint::Percentage(39),
+            Constraint::Percentage(22),
         ],
         git_col: Some(1),
         targets_col: Some(2),
@@ -801,10 +801,11 @@ fn render_targets_panel(
     let content_inner = targets_block.inner(area);
     app.targets_pane_mut().set_content_area(content_inner);
 
-    let kind_col_width: usize = 7;
+    let kind_col_width = model::RunTargetKind::padded_label_width();
     let col_spacing: usize = 1;
+    let leading_pad: usize = 1;
     let name_max_width =
-        (content_inner.width as usize).saturating_sub(kind_col_width + col_spacing);
+        (content_inner.width as usize).saturating_sub(kind_col_width + col_spacing + leading_pad);
 
     let rows: Vec<Row> = entries
         .iter()
@@ -816,13 +817,18 @@ fn render_targets_panel(
             );
             Row::new(vec![
                 Cell::from(format!(" {display}")),
-                Cell::from(Line::from(entry.kind.label()).alignment(Alignment::Right))
-                    .style(Style::default().fg(entry.kind.color())),
+                Cell::from(
+                    Line::from(format!("{} ", entry.kind.label())).alignment(Alignment::Right),
+                )
+                .style(Style::default().fg(entry.kind.color())),
             ])
         })
         .collect();
 
-    let widths = [Constraint::Fill(1), Constraint::Length(7)];
+    let widths = [
+        Constraint::Fill(1),
+        Constraint::Length(kind_col_width as u16),
+    ];
     let highlight_style = Pane::selection_style(focus);
 
     let table = Table::new(rows, widths)
@@ -830,11 +836,7 @@ fn render_targets_panel(
         .column_spacing(1)
         .row_highlight_style(highlight_style);
 
-    let selected = match focus {
-        PaneFocusState::Inactive => None,
-        PaneFocusState::Active | PaneFocusState::Remembered => Some(cursor),
-    };
-    let mut table_state = TableState::default().with_selected(selected);
+    let mut table_state = TableState::default().with_selected(Some(cursor));
     frame.render_stateful_widget(table, area, &mut table_state);
     app.targets_pane_mut()
         .set_scroll_offset(table_state.offset());

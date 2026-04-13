@@ -115,6 +115,20 @@ impl RunTargetKind {
             Self::Bench => "bench",
         }
     }
+
+    /// Longest label width across all variants, plus 1 for trailing pad.
+    pub const fn padded_label_width() -> usize {
+        let mut max = 0;
+        let labels: [&str; 3] = ["bin", "example", "bench"];
+        let mut i = 0;
+        while i < labels.len() {
+            if labels[i].len() > max {
+                max = labels[i].len();
+            }
+            i += 1;
+        }
+        max + 1
+    }
 }
 
 pub struct TargetEntry {

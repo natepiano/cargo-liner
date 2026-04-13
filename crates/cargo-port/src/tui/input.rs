@@ -206,19 +206,59 @@ fn handle_mouse_event(app: &mut App, kind: MouseEventKind, column: u16, row: u16
         return;
     }
     match kind {
-        MouseEventKind::ScrollUp => scroll_main(app, true),
-        MouseEventKind::ScrollDown => scroll_main(app, false),
+        MouseEventKind::ScrollUp => scroll_pane_at(app, column, row, true),
+        MouseEventKind::ScrollDown => scroll_pane_at(app, column, row, false),
         MouseEventKind::Down(MouseButton::Left) => handle_mouse_click(app, column, row),
         _ => {},
     }
 }
 
-fn scroll_main(app: &mut App, scroll_up: bool) {
+fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
     let up = scroll_up ^ app.invert_scroll().is_inverted();
-    if up {
-        app.move_up();
-    } else {
-        app.move_down();
+    let pos = Position::new(column, row);
+
+    if app.layout_cache().project_list.contains(pos) {
+        if up {
+            app.move_up()
+        } else {
+            app.move_down()
+        }
+        return;
+    }
+
+    let detail_columns = app.layout_cache().detail_columns.clone();
+    let detail_targets_col = app.layout_cache().detail_targets_col;
+    for (col_idx, col_rect) in detail_columns.iter().enumerate() {
+        if !col_rect.contains(pos) {
+            continue;
+        }
+        let pane = if Some(col_idx) == detail_targets_col {
+            app.targets_pane_mut()
+        } else if col_idx == 0 {
+            app.package_pane_mut()
+        } else {
+            app.git_pane_mut()
+        };
+        if up {
+            pane.up()
+        } else {
+            pane.down()
+        }
+        return;
+    }
+
+    if app.lint_pane().content_area().contains(pos) {
+        if up {
+            app.lint_pane_mut().up()
+        } else {
+            app.lint_pane_mut().down()
+        }
+    } else if app.ci_pane().content_area().contains(pos) {
+        if up {
+            app.ci_pane_mut().up()
+        } else {
+            app.ci_pane_mut().down()
+        }
     }
 }
 
