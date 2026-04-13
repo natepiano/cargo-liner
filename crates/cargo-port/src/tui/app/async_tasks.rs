@@ -1732,11 +1732,17 @@ impl App {
                         ci_run_count,
                     );
                     crate::scan::emit_service_signal(&tx, signal);
-                    let runs = match result {
-                        crate::scan::CiFetchResult::Loaded(runs)
-                        | crate::scan::CiFetchResult::CacheOnly(runs) => runs,
+                    let (runs, github_total) = match result {
+                        crate::scan::CiFetchResult::Loaded { runs, github_total } => {
+                            (runs, github_total)
+                        },
+                        crate::scan::CiFetchResult::CacheOnly(runs) => (runs, 0),
                     };
-                    let data = crate::scan::CachedRepoData { runs, meta };
+                    let data = crate::scan::CachedRepoData {
+                        runs,
+                        meta,
+                        github_total,
+                    };
                     crate::scan::store_cached_repo_data(&repo_cache, &owner_repo, data.clone());
                     let _ = tx.send(BackgroundMsg::RepoFetchComplete {
                         repo: owner_repo.clone(),
@@ -1745,8 +1751,9 @@ impl App {
                 });
 
             let _ = tx.send(BackgroundMsg::CiRuns {
-                path: path.clone(),
-                runs: data.runs,
+                path:         path.clone(),
+                runs:         data.runs,
+                github_total: data.github_total,
             });
             if let Some(meta) = data.meta {
                 let _ = tx.send(BackgroundMsg::RepoMeta {
@@ -2261,8 +2268,12 @@ impl App {
             BackgroundMsg::DiskUsageBatch { root_path, entries } => {
                 self.handle_disk_usage_batch_msg(&root_path, entries);
             },
-            BackgroundMsg::CiRuns { path, runs } => {
-                self.insert_ci_runs(path.as_path(), runs);
+            BackgroundMsg::CiRuns {
+                path,
+                runs,
+                github_total,
+            } => {
+                self.insert_ci_runs(path.as_path(), runs, github_total);
             },
             BackgroundMsg::RepoFetchQueued { repo } => {
                 self.scan.startup_phases.repo_expected.insert(repo);

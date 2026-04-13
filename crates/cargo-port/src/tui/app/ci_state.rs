@@ -84,7 +84,7 @@ impl App {
     }
 
     /// Insert CI runs from the initial scan for a CI owner path.
-    pub(super) fn insert_ci_runs(&mut self, path: &Path, runs: Vec<CiRun>) {
+    pub(super) fn insert_ci_runs(&mut self, path: &Path, runs: Vec<CiRun>, github_total: u32) {
         let abs = path.to_path_buf();
         if !self.is_cargo_active_path(&abs) {
             self.ci_state.remove(&abs);
@@ -99,8 +99,14 @@ impl App {
                 })
             })
             .unwrap_or(false);
-        self.ci_state
-            .insert(abs, CiState::Loaded { runs, exhausted });
+        self.ci_state.insert(
+            abs,
+            CiState::Loaded {
+                runs,
+                exhausted,
+                github_total,
+            },
+        );
     }
 
     /// Process a completed CI fetch: merge runs and detect exhaustion.
@@ -111,8 +117,9 @@ impl App {
         kind: CiFetchKind,
     ) {
         let abs = PathBuf::from(path);
-        let new_runs = match result {
-            CiFetchResult::Loaded(runs) | CiFetchResult::CacheOnly(runs) => runs,
+        let (new_runs, github_total) = match result {
+            CiFetchResult::Loaded { runs, github_total } => (runs, github_total),
+            CiFetchResult::CacheOnly(runs) => (runs, 0),
         };
 
         let owner_paths = self
@@ -182,6 +189,7 @@ impl App {
                 crate::scan::CachedRepoData {
                     runs: merged.clone(),
                     meta,
+                    github_total,
                 },
             );
         }
@@ -191,6 +199,7 @@ impl App {
                 CiState::Loaded {
                     runs: merged.clone(),
                     exhausted,
+                    github_total,
                 },
             );
         }

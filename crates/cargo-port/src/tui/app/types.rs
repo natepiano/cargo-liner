@@ -445,8 +445,10 @@ pub enum CiState {
     Fetching { runs: Vec<CiRun>, count: u32 },
     /// Runs are available (possibly empty when the repo genuinely has no CI).
     Loaded {
-        runs:      Vec<CiRun>,
-        exhausted: bool,
+        runs:         Vec<CiRun>,
+        exhausted:    bool,
+        /// Total completed workflow runs reported by the GitHub API.
+        github_total: u32,
     },
 }
 
@@ -474,6 +476,14 @@ impl CiState {
         match self {
             Self::Fetching { count, .. } => *count,
             Self::Loaded { .. } => 0,
+        }
+    }
+
+    /// Total completed runs reported by GitHub, or 0 if not yet fetched.
+    pub const fn github_total(&self) -> u32 {
+        match self {
+            Self::Loaded { github_total, .. } => *github_total,
+            Self::Fetching { .. } => 0,
         }
     }
 }

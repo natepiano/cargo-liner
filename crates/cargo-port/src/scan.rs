@@ -50,8 +50,9 @@ pub(crate) enum BackgroundMsg {
         entries:   Vec<(AbsolutePath, u64)>,
     },
     CiRuns {
-        path: AbsolutePath,
-        runs: Vec<CiRun>,
+        path:         AbsolutePath,
+        runs:         Vec<CiRun>,
+        github_total: u32,
     },
     RepoFetchQueued {
         repo: OwnerRepo,
@@ -173,7 +174,10 @@ pub(crate) fn emit_service_recovered(tx: &mpsc::Sender<BackgroundMsg>, service: 
 /// let you silently discard cached runs.
 pub(crate) enum CiFetchResult {
     /// Fresh runs (network succeeded), merged with cache.
-    Loaded(Vec<CiRun>),
+    Loaded {
+        runs:         Vec<CiRun>,
+        github_total: u32,
+    },
     /// Network failed; returning whatever the disk cache had.
     CacheOnly(Vec<CiRun>),
 }
@@ -220,18 +224,6 @@ fn load_cached_run(owner: &str, repo: &str, run_id: u64) -> Option<CiRun> {
     let path = dir.join(format!("{run_id}.json"));
     let contents = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&contents).ok()
-}
-
-/// Count the number of cached CI run files on disk for a given repo.
-pub(crate) fn count_cached_runs(owner: &str, repo: &str) -> usize {
-    let dir = ci_cache_dir(owner, repo);
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    entries
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
-        .count()
 }
 
 /// Load all cached CI runs for a given repo.
@@ -319,8 +311,9 @@ pub(crate) fn fetch_ci_runs_cached(
     repo: &str,
     count: u32,
 ) -> (CiFetchResult, Option<RepoMetaInfo>, Option<ServiceSignal>) {
-    let (gh_runs, list_signal) = client.list_runs(owner, repo, None, count);
-    let gh_runs = gh_runs.unwrap_or_default();
+    let (gh_list, list_signal) = client.list_runs(owner, repo, None, count);
+    let (gh_runs, github_total) =
+        gh_list.map_or_else(|| (Vec::new(), 0), |list| (list.runs, list.total_count));
     let (fetched, meta, detail_signal) = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
     let cached = load_all_cached_runs(owner, repo);
     let merged = merge_runs(fetched, cached);
@@ -328,7 +321,10 @@ pub(crate) fn fetch_ci_runs_cached(
     let result = if gh_runs.is_empty() {
         CiFetchResult::CacheOnly(merged)
     } else {
-        CiFetchResult::Loaded(merged)
+        CiFetchResult::Loaded {
+            runs: merged,
+            github_total,
+        }
     };
     (
         result,
@@ -347,8 +343,9 @@ pub(crate) fn fetch_older_runs(
     current_count: u32,
 ) -> (CiFetchResult, Option<ServiceSignal>) {
     let fetch_count = current_count + OLDER_RUNS_FETCH_INCREMENT;
-    let (gh_runs, list_signal) = client.list_runs(owner, repo, None, fetch_count);
-    let gh_runs = gh_runs.unwrap_or_default();
+    let (gh_list, list_signal) = client.list_runs(owner, repo, None, fetch_count);
+    let (gh_runs, github_total) =
+        gh_list.map_or_else(|| (Vec::new(), 0), |list| (list.runs, list.total_count));
     let (fetched, _meta, detail_signal) =
         fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
 
@@ -358,7 +355,10 @@ pub(crate) fn fetch_older_runs(
     let result = if gh_runs.is_empty() {
         CiFetchResult::CacheOnly(result)
     } else {
-        CiFetchResult::Loaded(result)
+        CiFetchResult::Loaded {
+            runs: result,
+            github_total,
+        }
     };
     (result, combine_service_signal(list_signal, detail_signal))
 }
@@ -372,8 +372,9 @@ pub(crate) fn fetch_newer_runs(
     repo: &str,
     current_count: u32,
 ) -> (CiFetchResult, Option<ServiceSignal>) {
-    let (gh_runs, list_signal) = client.list_runs(owner, repo, None, current_count);
-    let gh_runs = gh_runs.unwrap_or_default();
+    let (gh_list, list_signal) = client.list_runs(owner, repo, None, current_count);
+    let (gh_runs, github_total) =
+        gh_list.map_or_else(|| (Vec::new(), 0), |list| (list.runs, list.total_count));
     let (mut result, _meta, detail_signal) =
         fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
     result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
@@ -381,7 +382,10 @@ pub(crate) fn fetch_newer_runs(
     let result = if gh_runs.is_empty() {
         CiFetchResult::CacheOnly(result)
     } else {
-        CiFetchResult::Loaded(result)
+        CiFetchResult::Loaded {
+            runs: result,
+            github_total,
+        }
     };
     (result, combine_service_signal(list_signal, detail_signal))
 }
@@ -1027,8 +1031,9 @@ pub(crate) struct RepoMetaInfo {
 /// HTTP calls.
 #[derive(Clone)]
 pub(crate) struct CachedRepoData {
-    pub(crate) runs: Vec<CiRun>,
-    pub(crate) meta: Option<RepoMetaInfo>,
+    pub(crate) runs:         Vec<CiRun>,
+    pub(crate) meta:         Option<RepoMetaInfo>,
+    pub(crate) github_total: u32,
 }
 
 pub(crate) type RepoCache = Arc<Mutex<HashMap<OwnerRepo, CachedRepoData>>>;

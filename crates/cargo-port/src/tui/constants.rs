@@ -31,16 +31,37 @@ pub(super) const SECTION_ITEM_INDENT: &str = "    ";
 pub(super) const CI_EXTRA_ROWS: usize = 1;
 
 // Semantic colors
+
+/// Spinners, shortcut key hints, running/in-progress indicators, finder
+/// query input cursor.
 pub(super) const ACCENT_COLOR: Color = Color::Cyan;
-pub(super) const ACTIVE_FOCUS_COLOR: Color = Color::Rgb(0, 96, 96);
-pub(super) const BENCH_COLOR: Color = Color::Magenta;
-pub(super) const COLUMN_HEADER_COLOR: Color = Color::Rgb(120, 150, 180);
+/// Background highlight for the currently focused pane row.
+pub(super) const ACTIVE_FOCUS_COLOR: Color = Color::Rgb(0, 156, 156);
+/// Project list column headers ("Name", "Disk", "Sync", etc.).
+pub(super) const COLUMN_HEADER_COLOR: Color = Color::Rgb(150, 190, 180);
+/// Shimmer animation on newly discovered projects.
 pub(super) const DISCOVERY_SHIMMER_COLOR: Color = Color::Rgb(150, 210, 255);
+/// Error text, failure icons, broken worktree backgrounds, error toasts.
 pub(super) const ERROR_COLOR: Color = Color::Red;
+/// Unfocused pane borders and titles ("No Lint Runs", "No Targets",
+/// "Not a git repo", empty CI panels).
 pub(super) const INACTIVE_BORDER_COLOR: Color = Color::DarkGray;
-pub(super) const LABEL_COLOR: Color = Color::Rgb(120, 150, 180);
+/// Detail panel field labels ("Path", "Branch", "Disk"), stat labels,
+/// settings labels, toast countdowns, finder hints, chevron arrows.
+pub(super) const LABEL_COLOR: Color = COLUMN_HEADER_COLOR;
+/// Background highlight showing the previously focused row when a pane
+/// loses focus.
 pub(super) const REMEMBERED_FOCUS_COLOR: Color = Color::DarkGray;
+/// Dimmed secondary text: shortcut descriptions, scan progress, ignored
+/// git paths in the shimmer view.
 pub(super) const SECONDARY_TEXT_COLOR: Color = Color::Gray;
+/// Bottom status bar background.
 pub(super) const STATUS_BAR_COLOR: Color = Color::DarkGray;
+/// Clean/passed/synced states: lint passed, CI success, git in-sync,
+/// settings toggle "on" state.
 pub(super) const SUCCESS_COLOR: Color = Color::Green;
+/// Bench target type in the targets panel.
+pub(super) const TARGET_BENCH_COLOR: Color = Color::Magenta;
+/// Active pane titles, section headers, group header labels, stat
+/// numbers, confirm dialog prompts, popup titles, summary row.
 pub(super) const TITLE_COLOR: Color = Color::Yellow;

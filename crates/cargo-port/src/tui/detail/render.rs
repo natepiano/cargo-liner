@@ -125,6 +125,8 @@ fn render_column_inner(
         let base_label_style = styles.readonly_label;
         let base_value_style = if *field == DetailField::Ci {
             render::conclusion_style(info.ci)
+        } else if *field == DetailField::Lint && is_lint_spinner(&value) {
+            Style::default().fg(ACCENT_COLOR)
         } else {
             Style::default()
         };
@@ -280,8 +282,6 @@ fn render_git_column_inner(
             Style::default().fg(LABEL_COLOR)
         } else if *field == DetailField::WorktreeError {
             Style::default().fg(Color::White).bg(ERROR_COLOR)
-        } else if *field == DetailField::Lint && is_lint_spinner(&value) {
-            Style::default().fg(ACCENT_COLOR)
         } else {
             Style::default()
         };

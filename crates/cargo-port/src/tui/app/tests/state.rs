@@ -33,6 +33,7 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
     app.insert_ci_runs(
         test_path("~/ws").as_path(),
         vec![make_ci_run(1, Conclusion::Success)],
+        0,
     );
 
     assert_eq!(
@@ -68,8 +69,9 @@ fn non_owner_member_ignores_stale_member_state_and_fetches_via_owner() {
     app.ci_state.insert(
         member.path().to_path_buf(),
         CiState::Loaded {
-            runs:      vec![make_ci_run(2, Conclusion::Failure)],
-            exhausted: false,
+            runs:         vec![make_ci_run(2, Conclusion::Failure)],
+            exhausted:    false,
+            github_total: 0,
         },
     );
     app.handle_git_info(
@@ -121,22 +123,25 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
     app.ci_state.insert(
         root_path,
         CiState::Loaded {
-            runs:      vec![make_ci_run(3, Conclusion::Success)],
-            exhausted: false,
+            runs:         vec![make_ci_run(3, Conclusion::Success)],
+            exhausted:    false,
+            github_total: 0,
         },
     );
     app.ci_state.insert(
         feature_path,
         CiState::Loaded {
-            runs:      vec![make_ci_run(4, Conclusion::Failure)],
-            exhausted: false,
+            runs:         vec![make_ci_run(4, Conclusion::Failure)],
+            exhausted:    false,
+            github_total: 0,
         },
     );
     app.ci_state.insert(
         member.path().to_path_buf(),
         CiState::Loaded {
-            runs:      vec![make_ci_run(5, Conclusion::Success)],
-            exhausted: false,
+            runs:         vec![make_ci_run(5, Conclusion::Success)],
+            exhausted:    false,
+            github_total: 0,
         },
     );
 
@@ -169,7 +174,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
     app.ci_state.insert(
         project.path().to_path_buf(),
         CiState::Loaded {
-            runs:      vec![
+            runs:         vec![
                 CiRun {
                     branch: "main".to_string(),
                     ..make_ci_run(9, Conclusion::Success)
@@ -179,7 +184,8 @@ fn ci_for_prefers_runs_matching_local_branch() {
                     ..make_ci_run(8, Conclusion::Failure)
                 },
             ],
-            exhausted: false,
+            exhausted:    false,
+            github_total: 0,
         },
     );
 
@@ -211,7 +217,7 @@ fn ci_for_default_branch_uses_full_repo_run_list() {
     app.ci_state.insert(
         project.path().to_path_buf(),
         CiState::Loaded {
-            runs:      vec![
+            runs:         vec![
                 CiRun {
                     branch: "release".to_string(),
                     ..make_ci_run(9, Conclusion::Failure)
@@ -221,7 +227,8 @@ fn ci_for_default_branch_uses_full_repo_run_list() {
                     ..make_ci_run(8, Conclusion::Success)
                 },
             ],
-            exhausted: false,
+            exhausted:    false,
+            github_total: 0,
         },
     );
 
@@ -253,7 +260,7 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
     app.ci_state.insert(
         project.path().to_path_buf(),
         CiState::Loaded {
-            runs:      vec![
+            runs:         vec![
                 CiRun {
                     branch: "main".to_string(),
                     ..make_ci_run(9, Conclusion::Success)
@@ -263,7 +270,8 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
                     ..make_ci_run(8, Conclusion::Failure)
                 },
             ],
-            exhausted: false,
+            exhausted:    false,
+            github_total: 0,
         },
     );
 

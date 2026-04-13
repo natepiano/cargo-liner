@@ -67,7 +67,14 @@ fn classify_network_error(service: ServiceKind, error: &reqwest::Error) -> Optio
 
 #[derive(Deserialize)]
 struct GhRunsResponse {
+    total_count:   u32,
     workflow_runs: Vec<GhRun>,
+}
+
+/// Workflow runs plus the total count reported by GitHub.
+pub(crate) struct GhRunsList {
+    pub runs:        Vec<GhRun>,
+    pub total_count: u32,
 }
 
 #[derive(Deserialize)]
@@ -197,7 +204,7 @@ impl HttpClient {
         repo: &str,
         branch: Option<&str>,
         count: u32,
-    ) -> HttpOutcome<Vec<GhRun>> {
+    ) -> HttpOutcome<GhRunsList> {
         let mut path =
             format!("repos/{owner}/{repo}/actions/runs?per_page={count}&status=completed");
         if let Some(branch) = branch {
@@ -207,7 +214,10 @@ impl HttpClient {
         let value = body.and_then(|body| {
             serde_json::from_slice::<GhRunsResponse>(&body)
                 .ok()
-                .map(|response| response.workflow_runs)
+                .map(|response| GhRunsList {
+                    runs:        response.workflow_runs,
+                    total_count: response.total_count,
+                })
         });
         (value, signal)
     }
@@ -345,7 +355,7 @@ impl HttpClient {
         repo: &str,
         branch: Option<&str>,
         count: u32,
-    ) -> HttpOutcome<Vec<GhRun>> {
+    ) -> HttpOutcome<GhRunsList> {
         self.handle
             .block_on(self.list_runs_async(owner, repo, branch, count))
     }

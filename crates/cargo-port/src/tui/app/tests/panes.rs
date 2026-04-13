@@ -107,8 +107,9 @@ fn tabbable_panes_follow_canonical_order() {
     app.ci_state.insert(
         project.path().to_path_buf(),
         CiState::Loaded {
-            runs:      vec![make_ci_run(1, Conclusion::Success)],
-            exhausted: false,
+            runs:         vec![make_ci_run(1, Conclusion::Success)],
+            exhausted:    false,
+            github_total: 0,
         },
     );
 

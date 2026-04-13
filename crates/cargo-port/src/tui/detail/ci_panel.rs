@@ -14,7 +14,6 @@ use super::timestamp;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
-use crate::scan;
 use crate::tui::animation::BRAILLE_SPINNER;
 use crate::tui::app::App;
 use crate::tui::app::CiState;
@@ -228,8 +227,8 @@ pub(super) fn ci_table_shows_durations(
 fn selected_ci_state(app: &App) -> Option<&CiState> { app.selected_ci_state() }
 
 fn ci_panel_title(
-    total: usize,
-    cached: usize,
+    local: usize,
+    github_total: u32,
     is_fetching: bool,
     fetch_count: u32,
     elapsed: std::time::Duration,
@@ -241,12 +240,14 @@ fn ci_panel_title(
         let spinner = BRAILLE_SPINNER.frame_at(elapsed);
         format!(" CI Runs{suffix} {spinner} fetching {fetch_count} more… ")
     } else if let Some(pos) = focused_pos
-        && pos < total
+        && pos < local
     {
-        let indicator = crate::tui::types::scroll_indicator(pos, total);
+        let indicator = crate::tui::types::scroll_indicator(pos, local);
         format!(" CI Runs{suffix} ({indicator}) ")
+    } else if github_total > 0 {
+        format!(" CI Runs{suffix} (local {local} / github {github_total}) ")
     } else {
-        format!(" CI Runs{suffix} (cached {cached}, total {total}) ")
+        format!(" CI Runs{suffix} ({local}) ")
     }
 }
 
@@ -273,20 +274,6 @@ fn build_fetch_row(
     Row::new(fetch_cells)
 }
 
-fn cached_run_count(app: &App) -> usize {
-    app.selected_ci_path()
-        .as_deref()
-        .and_then(|path| app.git_info_for(path))
-        .and_then(|git| {
-            git.url.as_ref().and_then(|url| {
-                ci::parse_owner_repo(url).map(|owner_repo| {
-                    scan::count_cached_runs(owner_repo.owner(), owner_repo.repo())
-                })
-            })
-        })
-        .unwrap_or(0)
-}
-
 pub fn render_ci_panel(
     frame: &mut Frame,
     app: &mut App,
@@ -295,10 +282,9 @@ pub fn render_ci_panel(
 ) {
     let ci_focused = app.is_focused(PaneId::CiRuns);
 
-    let total = ci_runs.len();
-    let cached = cached_run_count(app);
-
+    let local = ci_runs.len();
     let ci_state = selected_ci_state(app);
+    let github_total = ci_state.map_or(0, CiState::github_total);
     let is_fetching = ci_state.is_some_and(CiState::is_fetching);
     let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
     let fetch_count = ci_state.map_or(0, CiState::fetch_count);
@@ -313,8 +299,8 @@ pub fn render_ci_panel(
             .then(|| app.ci_display_mode_label_for(path))
     });
     let title = ci_panel_title(
-        total,
-        cached,
+        local,
+        github_total,
         is_fetching,
         fetch_count,
         elapsed,

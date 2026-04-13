@@ -269,8 +269,9 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
         app.ci_state_mut().insert(
             owner_path,
             CiState::Loaded {
-                runs:      Vec::new(),
-                exhausted: false,
+                runs:         Vec::new(),
+                exhausted:    false,
+                github_total: 0,
             },
         );
     }
