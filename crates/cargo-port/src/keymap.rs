@@ -457,25 +457,33 @@ impl ResolvedKeymap {
         km
     }
 
-    /// Generate the default TOML content for `keymap.toml`.
-    pub(crate) fn default_toml() -> String {
-        fn write_scope<A: Copy + Eq + std::hash::Hash>(
-            out: &mut String,
-            header: &str,
-            scope: &ScopeMap<A>,
-            actions: &[A],
-            toml_key: fn(A) -> &'static str,
-        ) {
-            let _ = writeln!(out, "[{header}]");
-            for &action in actions {
+    fn write_scope<A: Copy + Eq + std::hash::Hash>(
+        out: &mut String,
+        header: &str,
+        scope: &ScopeMap<A>,
+        actions: &[A],
+        toml_key: fn(A) -> &'static str,
+    ) {
+        let _ = writeln!(out, "[{header}]");
+        let mut entries: Vec<(&str, String)> = actions
+            .iter()
+            .map(|&action| {
                 let key_str = scope
                     .key_for(action)
                     .map_or_else(String::new, KeyBind::to_toml_string);
-                let _ = writeln!(out, "{} = \"{key_str}\"", toml_key(action));
-            }
-            out.push('\n');
+                (toml_key(action), key_str)
+            })
+            .collect();
+        entries.sort_by_key(|(name, _)| *name);
+        let max_len = entries.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+        for (name, value) in &entries {
+            let _ = writeln!(out, "{name:<max_len$} = \"{value}\"");
         }
+        out.push('\n');
+    }
 
+    /// Generate the default TOML content for `keymap.toml`.
+    pub(crate) fn default_toml() -> String {
         let km = Self::defaults();
         let mut out = String::from(
             "# cargo-port keymap configuration\n\
@@ -486,129 +494,68 @@ impl ResolvedKeymap {
              #       for navigation and cannot be used as action keys.\n\n",
         );
 
-        write_scope(
-            &mut out,
-            "global",
-            &km.global,
-            GlobalAction::ALL,
-            GlobalAction::toml_key,
-        );
-        write_scope(
-            &mut out,
-            "project_list",
-            &km.project_list,
-            ProjectListAction::ALL,
-            ProjectListAction::toml_key,
-        );
-        write_scope(
-            &mut out,
-            "package",
-            &km.package,
-            PackageAction::ALL,
-            PackageAction::toml_key,
-        );
-        write_scope(
-            &mut out,
-            "git",
-            &km.git,
-            GitAction::ALL,
-            GitAction::toml_key,
-        );
-        write_scope(
-            &mut out,
-            "targets",
-            &km.targets,
-            TargetsAction::ALL,
-            TargetsAction::toml_key,
-        );
-        write_scope(
-            &mut out,
-            "ci_runs",
-            &km.ci_runs,
-            CiRunsAction::ALL,
-            CiRunsAction::toml_key,
-        );
-        write_scope(
-            &mut out,
-            "lints",
-            &km.lints,
-            LintsAction::ALL,
-            LintsAction::toml_key,
-        );
+        Self::write_all_scopes(&mut out, &km);
 
         out
     }
 
     /// Generate TOML content from the given keymap (for saving after UI edits).
     pub(crate) fn default_toml_from(km: &Self) -> String {
-        fn write_scope<A: Copy + Eq + std::hash::Hash>(
-            out: &mut String,
-            header: &str,
-            scope: &ScopeMap<A>,
-            actions: &[A],
-            toml_key: fn(A) -> &'static str,
-        ) {
-            let _ = writeln!(out, "[{header}]");
-            for &action in actions {
-                let key_str = scope
-                    .key_for(action)
-                    .map_or_else(String::new, KeyBind::to_toml_string);
-                let _ = writeln!(out, "{} = \"{key_str}\"", toml_key(action));
-            }
-            out.push('\n');
-        }
-
         let mut out = String::new();
-        write_scope(
-            &mut out,
+        Self::write_all_scopes(&mut out, km);
+        out
+    }
+
+    fn write_all_scopes(out: &mut String, km: &Self) {
+        Self::write_scope(
+            out,
             "global",
             &km.global,
             GlobalAction::ALL,
             GlobalAction::toml_key,
         );
-        write_scope(
-            &mut out,
+        Self::write_scope(
+            out,
             "project_list",
             &km.project_list,
             ProjectListAction::ALL,
             ProjectListAction::toml_key,
         );
-        write_scope(
-            &mut out,
+        Self::write_scope(
+            out,
             "package",
             &km.package,
             PackageAction::ALL,
             PackageAction::toml_key,
         );
-        write_scope(
-            &mut out,
+        Self::write_scope(
+            out,
             "git",
             &km.git,
             GitAction::ALL,
             GitAction::toml_key,
         );
-        write_scope(
-            &mut out,
+        Self::write_scope(
+            out,
             "targets",
             &km.targets,
             TargetsAction::ALL,
             TargetsAction::toml_key,
         );
-        write_scope(
-            &mut out,
+        Self::write_scope(
+            out,
             "ci_runs",
             &km.ci_runs,
             CiRunsAction::ALL,
             CiRunsAction::toml_key,
         );
-        write_scope(
-            &mut out,
+        Self::write_scope(
+            out,
             "lints",
             &km.lints,
             LintsAction::ALL,
             LintsAction::toml_key,
         );
-        out
     }
 }
 
