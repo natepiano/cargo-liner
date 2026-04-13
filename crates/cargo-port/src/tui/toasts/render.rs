@@ -15,10 +15,14 @@ use super::manager::ToastStyle;
 use super::manager::ToastView;
 use super::manager::TrackedItemView;
 use crate::tui::LINT_SPINNER;
+use crate::tui::constants::ACCENT_COLOR;
+use crate::tui::constants::ACTIVE_FOCUS_COLOR;
+use crate::tui::constants::ERROR_COLOR;
+use crate::tui::constants::LABEL_COLOR;
+use crate::tui::constants::TITLE_COLOR;
 use crate::tui::constants::TOAST_GAP;
 use crate::tui::constants::TOAST_WIDTH;
 use crate::tui::interaction::ToastHitbox;
-use crate::tui::types::ACTIVE_FOCUS_COLOR;
 
 /// Fade text from white to grey based on progress (0.0 = white, 1.0 = grey).
 #[expect(
@@ -191,7 +195,7 @@ fn render_toast_card(
     let border_style = if focused {
         Style::default().fg(ACTIVE_FOCUS_COLOR)
     } else if is_error {
-        Style::default().fg(Color::Red)
+        Style::default().fg(ERROR_COLOR)
     } else {
         Style::default().fg(Color::White)
     };
@@ -232,7 +236,7 @@ fn render_toast_card(
 
     // Full inner area is body content (title is on border, not inner).
     let body_style = if is_error {
-        Style::default().fg(Color::Red)
+        Style::default().fg(ERROR_COLOR)
     } else {
         Style::default()
     };
@@ -249,7 +253,7 @@ fn render_toast_card(
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 countdown,
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(LABEL_COLOR),
             ))),
             countdown_rect,
         );
@@ -294,7 +298,7 @@ fn body_lines_plain<'a>(
         .collect();
     if let Some(overflow) = overflow_line {
         let overflow_style = Style::default()
-            .fg(Color::DarkGray)
+            .fg(LABEL_COLOR)
             .add_modifier(Modifier::ITALIC);
         result.push(toast.linger_progress().map_or_else(
             || Line::from(Span::styled(overflow.clone(), overflow_style)),
@@ -327,7 +331,7 @@ fn body_lines_tracked<'a>(
         .collect();
     if let Some(overflow) = overflow_line {
         let overflow_style = Style::default()
-            .fg(Color::DarkGray)
+            .fg(LABEL_COLOR)
             .add_modifier(Modifier::ITALIC);
         result.push(Line::from(Span::styled(overflow, overflow_style)));
     }
@@ -364,11 +368,11 @@ fn tracked_item_line<'a>(item: &TrackedItemView, body_style: Style, line_width: 
         .saturating_sub(suffix_width);
     let duration_style = item
         .linger_progress
-        .map_or_else(|| Style::default().fg(Color::Yellow), fade_to_style);
+        .map_or_else(|| Style::default().fg(TITLE_COLOR), fade_to_style);
     Line::from(vec![
         Span::styled(label, label_style),
         Span::raw(" ".repeat(padding)),
-        Span::styled(spinner_text, Style::default().fg(Color::Cyan)),
+        Span::styled(spinner_text, Style::default().fg(ACCENT_COLOR)),
         Span::styled(duration_suffix, duration_style),
     ])
 }
@@ -422,7 +426,7 @@ fn render_toast_body(
             Paragraph::new(Line::from(Span::styled(
                 "⏎ open",
                 Style::default()
-                    .fg(Color::DarkGray)
+                    .fg(LABEL_COLOR)
                     .add_modifier(Modifier::ITALIC),
             ))),
             hint_area,

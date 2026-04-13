@@ -1,4 +1,3 @@
-use ratatui::style::Color;
 use ratatui::text::Line;
 
 use super::ci_panel;
@@ -19,6 +18,7 @@ use crate::lint::LintRunStatus;
 use crate::project::ExampleGroup;
 use crate::project::GitPathState;
 use crate::project::WorktreeHealth::Normal;
+use crate::tui::constants::LABEL_COLOR;
 use crate::tui::render::CiColumn;
 use crate::tui::types::PaneFocusState;
 
@@ -180,7 +180,7 @@ fn description_lines_use_muted_fallback_when_missing() {
 
     assert_eq!(lines.len(), 1);
     assert_eq!(line_text(&lines[0]), "No description available");
-    assert_eq!(lines[0].spans[0].style.fg, Some(Color::DarkGray));
+    assert_eq!(lines[0].spans[0].style.fg, Some(LABEL_COLOR));
 }
 
 #[test]

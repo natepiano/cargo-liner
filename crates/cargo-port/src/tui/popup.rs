@@ -8,9 +8,10 @@ use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
 
+use super::constants::TITLE_COLOR;
 use super::render;
 
-const TITLE_STYLE: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+const TITLE_STYLE: Style = Style::new().fg(TITLE_COLOR).add_modifier(Modifier::BOLD);
 
 /// Shared chrome for popup overlays.
 ///

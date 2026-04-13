@@ -1,3 +1,6 @@
+use ratatui::style::Color;
+
+// Byte sizes
 pub(super) const BYTES_PER_KIB: u64 = 1024;
 pub(super) const BYTES_PER_MIB: u64 = 1024 * 1024;
 pub(super) const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
@@ -26,3 +29,18 @@ pub(super) const SECTION_HEADER_INDENT: &str = "  ";
 pub(super) const SECTION_ITEM_INDENT: &str = "    ";
 
 pub(super) const CI_EXTRA_ROWS: usize = 1;
+
+// Semantic colors
+pub(super) const ACCENT_COLOR: Color = Color::Cyan;
+pub(super) const ACTIVE_FOCUS_COLOR: Color = Color::Rgb(0, 96, 96);
+pub(super) const BENCH_COLOR: Color = Color::Magenta;
+pub(super) const COLUMN_HEADER_COLOR: Color = Color::Rgb(120, 150, 180);
+pub(super) const DISCOVERY_SHIMMER_COLOR: Color = Color::Rgb(150, 210, 255);
+pub(super) const ERROR_COLOR: Color = Color::Red;
+pub(super) const INACTIVE_BORDER_COLOR: Color = Color::DarkGray;
+pub(super) const LABEL_COLOR: Color = Color::Rgb(120, 150, 180);
+pub(super) const REMEMBERED_FOCUS_COLOR: Color = Color::DarkGray;
+pub(super) const SECONDARY_TEXT_COLOR: Color = Color::Gray;
+pub(super) const STATUS_BAR_COLOR: Color = Color::DarkGray;
+pub(super) const SUCCESS_COLOR: Color = Color::Green;
+pub(super) const TITLE_COLOR: Color = Color::Yellow;

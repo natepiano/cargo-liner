@@ -23,8 +23,14 @@ use super::model::DetailField;
 use super::model::DetailInfo;
 use crate::constants::IN_SYNC;
 use crate::tui::app::App;
+use crate::tui::constants::ACCENT_COLOR;
+use crate::tui::constants::ACTIVE_FOCUS_COLOR;
+use crate::tui::constants::ERROR_COLOR;
+use crate::tui::constants::INACTIVE_BORDER_COLOR;
+use crate::tui::constants::LABEL_COLOR;
+use crate::tui::constants::SUCCESS_COLOR;
+use crate::tui::constants::TITLE_COLOR;
 use crate::tui::render;
-use crate::tui::types::ACTIVE_FOCUS_COLOR;
 use crate::tui::types::Pane;
 use crate::tui::types::PaneFocusState;
 use crate::tui::types::PaneId;
@@ -262,18 +268,20 @@ fn render_git_column_inner(
         let selection = pane.selection_state(i, focus);
         let base_value_style = if *field == DetailField::Origin && value.starts_with('⑂') {
             Style::default()
-                .fg(Color::Yellow)
+                .fg(TITLE_COLOR)
                 .add_modifier(Modifier::BOLD)
         } else if matches!(
             *field,
             DetailField::Sync | DetailField::VsOrigin | DetailField::VsLocal
         ) && value == IN_SYNC
         {
-            Style::default().fg(Color::Green)
+            Style::default().fg(SUCCESS_COLOR)
         } else if *field == DetailField::Sync && value == crate::constants::NO_REMOTE_SYNC {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(LABEL_COLOR)
         } else if *field == DetailField::WorktreeError {
-            Style::default().fg(Color::White).bg(Color::Red)
+            Style::default().fg(Color::White).bg(ERROR_COLOR)
+        } else if *field == DetailField::Lint && is_lint_spinner(&value) {
+            Style::default().fg(ACCENT_COLOR)
         } else {
             Style::default()
         };
@@ -339,10 +347,10 @@ fn append_worktree_lines(lines: &mut Vec<Line<'static>>, info: &DetailInfo) {
     }
     lines.push(Line::from(""));
     let wt_title_style = Style::default()
-        .fg(Color::Yellow)
+        .fg(TITLE_COLOR)
         .add_modifier(Modifier::BOLD);
     lines.push(Line::from(Span::styled("  Worktrees", wt_title_style)));
-    let wt_style = Style::default().fg(Color::DarkGray);
+    let wt_style = Style::default().fg(LABEL_COLOR);
     for name in &info.worktree_names {
         lines.push(Line::from(Span::styled(format!("    {name}"), wt_style)));
     }
@@ -374,7 +382,7 @@ pub fn render_detail_panel(
     area: Rect,
 ) {
     let title_style = Style::default()
-        .fg(Color::Yellow)
+        .fg(TITLE_COLOR)
         .add_modifier(Modifier::BOLD);
 
     if let Some(info) = detail_info {
@@ -400,7 +408,7 @@ pub fn render_detail_panel(
         app.layout_cache_mut().detail_targets_col = spec.targets_col;
 
         let styles = RenderStyles {
-            readonly_label:  Style::default().fg(Color::DarkGray),
+            readonly_label:  Style::default().fg(LABEL_COLOR),
             active_border:   Style::default().fg(ACTIVE_FOCUS_COLOR),
             inactive_border: Style::default(),
             title:           title_style,
@@ -413,8 +421,8 @@ pub fn render_detail_panel(
                 let empty_git = Block::default()
                     .borders(Borders::ALL)
                     .title(" Not a git repo ")
-                    .title_style(Style::default().fg(Color::DarkGray))
-                    .border_style(Style::default().fg(Color::DarkGray));
+                    .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
+                    .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
                 frame.render_widget(empty_git, columns[col]);
             } else {
                 app.git_pane_mut().set_len(git.len());
@@ -451,8 +459,8 @@ pub fn render_detail_panel(
                 let empty_targets = Block::default()
                     .borders(Borders::ALL)
                     .title(" No Targets ")
-                    .title_style(Style::default().fg(Color::DarkGray))
-                    .border_style(Style::default().fg(Color::DarkGray));
+                    .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
+                    .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
                 frame.render_widget(empty_targets, columns[col]);
             }
         }
@@ -636,8 +644,8 @@ fn render_stats_column(
     let stats_inner = stats_block.inner(area);
     frame.render_widget(stats_block, area);
 
-    let stat_label_style = Style::default().fg(Color::DarkGray);
-    let stat_num_style = Style::default().fg(Color::Yellow);
+    let stat_label_style = Style::default().fg(LABEL_COLOR);
+    let stat_num_style = Style::default().fg(TITLE_COLOR);
     let dw = digit_width as usize;
     let stat_lines = info
         .stats_rows
@@ -669,12 +677,7 @@ pub(super) fn description_lines(
         .map(str::trim)
         .filter(|description| !description.is_empty())
         .map_or_else(
-            || {
-                (
-                    NO_DESCRIPTION_AVAILABLE,
-                    Style::default().fg(Color::DarkGray),
-                )
-            },
+            || (NO_DESCRIPTION_AVAILABLE, Style::default().fg(LABEL_COLOR)),
             |description| (description, Style::default()),
         );
 
@@ -854,6 +857,21 @@ fn detail_layout(app: &App) -> DetailLayoutSpec {
         TargetPresence::Missing
     };
     detail_layout_spec(git, targets)
+}
+
+/// Returns `true` when the lint label text is a running spinner (braille), not
+/// a static icon (emoji) or blank.
+fn is_lint_spinner(value: &str) -> bool {
+    use crate::constants::LINT_FAILED;
+    use crate::constants::LINT_NO_LOG;
+    use crate::constants::LINT_PASSED;
+    use crate::constants::LINT_STALE;
+
+    !value.is_empty()
+        && value != LINT_PASSED
+        && value != LINT_FAILED
+        && value != LINT_STALE
+        && value.trim() != LINT_NO_LOG.trim()
 }
 
 /// Word-wrap text to fit within `max_width` characters, breaking at word boundaries.

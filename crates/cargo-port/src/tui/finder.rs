@@ -21,11 +21,14 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
 use super::app::App;
+use super::constants::ACCENT_COLOR;
+use super::constants::ACTIVE_FOCUS_COLOR;
 use super::constants::FINDER_POPUP_HEIGHT;
+use super::constants::LABEL_COLOR;
 use super::constants::MAX_FINDER_RESULTS;
+use super::constants::TITLE_COLOR;
 use super::detail::RunTargetKind;
 use super::interaction::UiSurface::Overlay;
-use super::types::ACTIVE_FOCUS_COLOR;
 use super::types::Pane;
 use super::types::PaneId;
 use crate::project::ExampleGroup;
@@ -79,7 +82,7 @@ impl FinderKind {
 
     pub const fn color(self) -> Color {
         match self {
-            Self::Project => Color::Yellow,
+            Self::Project => TITLE_COLOR,
             Self::Binary => RunTargetKind::BINARY_COLOR,
             Self::Example => RunTargetKind::EXAMPLE_COLOR,
             Self::Bench => RunTargetKind::BENCH_COLOR,
@@ -712,13 +715,13 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
         height: 1,
     };
     let prompt_style = Style::default()
-        .fg(Color::Cyan)
+        .fg(ACCENT_COLOR)
         .add_modifier(Modifier::BOLD);
     let input_line = Line::from(vec![
         Span::styled("  / ", prompt_style),
         Span::styled(
             format!("{}_", app.finder().query),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(TITLE_COLOR),
         ),
     ]);
     frame.render_widget(ratatui::widgets::Paragraph::new(input_line), input_area);
@@ -735,7 +738,7 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     };
     let sep = Line::from(Span::styled(
         "─".repeat(inner.width as usize),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(LABEL_COLOR),
     ));
     frame.render_widget(ratatui::widgets::Paragraph::new(sep), sep_area);
 
@@ -767,15 +770,15 @@ fn render_finder_results(
         };
         let hint = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
             format!("  {msg}"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(LABEL_COLOR),
         )));
         frame.render_widget(hint, area);
         return;
     }
 
     let branch_style = Style::default().fg(Color::Blue);
-    let parent_style = Style::default().fg(Color::DarkGray);
-    let dir_style = Style::default().fg(Color::DarkGray);
+    let parent_style = Style::default().fg(LABEL_COLOR);
+    let dir_style = Style::default().fg(LABEL_COLOR);
     let rows: Vec<Row> = app
         .finder()
         .results
@@ -803,7 +806,7 @@ fn render_finder_results(
     let widths = col_widths.map(|w| Constraint::Length(u16::try_from(w).unwrap_or(u16::MAX)));
 
     let header_style = Style::default()
-        .fg(Color::DarkGray)
+        .fg(LABEL_COLOR)
         .add_modifier(Modifier::BOLD);
     let header = Row::new(
         FINDER_HEADERS

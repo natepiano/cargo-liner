@@ -1,6 +1,5 @@
 use ratatui::Frame;
 use ratatui::layout::Constraint;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::widgets::Block;
@@ -19,12 +18,16 @@ use crate::scan;
 use crate::tui::animation::BRAILLE_SPINNER;
 use crate::tui::app::App;
 use crate::tui::app::CiState;
+use crate::tui::constants::ACCENT_COLOR;
+use crate::tui::constants::ACTIVE_FOCUS_COLOR;
 use crate::tui::constants::CI_EXTRA_ROWS;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
+use crate::tui::constants::COLUMN_HEADER_COLOR;
+use crate::tui::constants::LABEL_COLOR;
+use crate::tui::constants::TITLE_COLOR;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface;
 use crate::tui::render::CiColumn;
-use crate::tui::types::ACTIVE_FOCUS_COLOR;
 use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
 
@@ -32,7 +35,7 @@ use crate::tui::types::PaneId;
 fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
     let right_aligned = Style::default()
         .add_modifier(Modifier::BOLD)
-        .fg(Color::DarkGray);
+        .fg(COLUMN_HEADER_COLOR);
     let mut header_cells = vec![
         Cell::from("Commit").style(right_aligned),
         Cell::from("Branch").style(right_aligned),
@@ -93,7 +96,7 @@ fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn], show_durations: bool) ->
                 Cell::from(
                     ratatui::text::Line::from("—").alignment(ratatui::layout::Alignment::Right),
                 )
-                .style(Style::default().fg(Color::DarkGray)),
+                .style(Style::default().fg(LABEL_COLOR)),
             );
             cells.push(Cell::from(""));
         }
@@ -262,7 +265,7 @@ fn build_fetch_row(
     } else {
         "↓ fetch more runs".to_string()
     };
-    let fetch_style = Style::default().fg(Color::Cyan);
+    let fetch_style = Style::default().fg(ACCENT_COLOR);
     let mut fetch_cells: Vec<Cell> = vec![Cell::from(fetch_label).style(fetch_style)];
     for _ in 1..widths_len {
         fetch_cells.push(Cell::from(""));
@@ -324,7 +327,7 @@ pub fn render_ci_panel(
         .title(title)
         .title_style(
             Style::default()
-                .fg(Color::Yellow)
+                .fg(TITLE_COLOR)
                 .add_modifier(Modifier::BOLD),
         )
         .border_style(if ci_focused {

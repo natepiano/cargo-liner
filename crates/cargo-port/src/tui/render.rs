@@ -25,18 +25,27 @@ use super::app::DiscoveryRowKind;
 use super::app::ExpandKey;
 use super::app::ResolvedWidths;
 use super::app::VisibleRow;
+use super::constants::ACCENT_COLOR;
+use super::constants::ACTIVE_FOCUS_COLOR;
 use super::constants::BLOCK_BORDER_WIDTH;
 use super::constants::BYTES_PER_GIB;
 use super::constants::BYTES_PER_KIB;
 use super::constants::BYTES_PER_MIB;
+use super::constants::COLUMN_HEADER_COLOR;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::constants::DETAIL_PANEL_HEIGHT;
+use super::constants::ERROR_COLOR;
+use super::constants::INACTIVE_BORDER_COLOR;
+use super::constants::LABEL_COLOR;
 use super::constants::SEARCH_BAR_HEIGHT;
+use super::constants::SECONDARY_TEXT_COLOR;
+use super::constants::STATUS_BAR_COLOR;
+use super::constants::SUCCESS_COLOR;
+use super::constants::TITLE_COLOR;
 use super::detail::DetailInfo;
 use super::interaction::UiSurface::Content;
 use super::shortcuts::Shortcut;
 use super::shortcuts::ShortcutState;
-use super::types::ACTIVE_FOCUS_COLOR;
 use super::types::LayoutCache;
 use super::types::Pane;
 use super::types::PaneId;
@@ -127,10 +136,22 @@ pub(super) const PREFIX_WT_MEMBER_INLINE: &str = "        ";
 pub(super) const PREFIX_WT_MEMBER_NAMED: &str = "            ";
 pub(super) const PREFIX_WT_VENDORED: &str = "        ";
 
+/// Returns `ACCENT_COLOR` style when lint is running (spinner), default otherwise.
+fn lint_style_for(app: &App, path: &std::path::Path) -> Style {
+    let is_running = app
+        .lint_at_path(path)
+        .is_some_and(|lr| matches!(lr.status(), crate::lint::LintStatus::Running(_)));
+    if is_running {
+        Style::default().fg(ACCENT_COLOR)
+    } else {
+        Style::default()
+    }
+}
+
 pub(super) fn conclusion_style(conclusion: Option<Conclusion>) -> Style {
     match conclusion {
-        Some(Conclusion::Success) => Style::default().fg(Color::Green),
-        Some(Conclusion::Failure) => Style::default().fg(Color::Red),
+        Some(Conclusion::Success) => Style::default().fg(SUCCESS_COLOR),
+        Some(Conclusion::Failure) => Style::default().fg(ERROR_COLOR),
         _ => Style::default(),
     }
 }
@@ -166,7 +187,7 @@ pub(super) fn disk_percentile(bytes: Option<u64>, sorted_values: &[u64]) -> Opti
 )]
 pub(super) fn disk_color(percentile: Option<f64>) -> Style {
     let Some(pos) = percentile else {
-        return Style::default().fg(Color::DarkGray);
+        return Style::default().fg(LABEL_COLOR);
     };
 
     // Green (0.0) → White (0.5) → Red (1.0)
@@ -241,7 +262,7 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
 
     let inner = super::popup::PopupFrame {
         title: None,
-        border_color: Color::Yellow,
+        border_color: TITLE_COLOR,
         width,
         height: CONFIRM_DIALOG_HEIGHT,
     }
@@ -252,7 +273,7 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
         Span::styled(
             "(y/n)",
             Style::default()
-                .fg(Color::Yellow)
+                .fg(TITLE_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
     ]);
@@ -423,14 +444,16 @@ fn render_unreachable_overlay(frame: &mut Frame, area: Rect, msg: &str) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Red));
+        .border_style(Style::default().fg(ERROR_COLOR));
     let inner = block.inner(overlay_area);
     frame.render_widget(block, overlay_area);
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             msg,
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(ERROR_COLOR)
+                .add_modifier(Modifier::BOLD),
         )))
         .alignment(ratatui::layout::Alignment::Center),
         inner,
@@ -474,8 +497,8 @@ fn render_empty_ci_panel(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .title_style(Style::default().fg(Color::DarkGray))
-        .border_style(Style::default().fg(Color::DarkGray));
+        .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
+        .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
     frame.render_widget(block, area);
 }
 
@@ -484,7 +507,7 @@ pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     let search_style = if search_focused {
         Style::default().fg(Color::White)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(LABEL_COLOR)
     };
 
     let search_text = if search_focused {
@@ -498,7 +521,7 @@ pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let search_bar = Paragraph::new(Line::from(vec![
-        Span::styled(" 🔍 ", Style::default().fg(Color::Yellow)),
+        Span::styled(" 🔍 ", Style::default().fg(TITLE_COLOR)),
         Span::styled(search_text, search_style),
     ]))
     .block(
@@ -507,7 +530,7 @@ pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
             .border_style(if search_focused {
                 Style::default().fg(ACTIVE_FOCUS_COLOR)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(LABEL_COLOR)
             }),
     );
 
@@ -548,7 +571,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
         })
         .title_style(
             Style::default()
-                .fg(Color::Yellow)
+                .fg(TITLE_COLOR)
                 .add_modifier(Modifier::BOLD),
         );
     let inner = block.inner(area);
@@ -560,7 +583,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
 
     let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
     frame.render_widget(
-        Paragraph::new(header).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(header).style(Style::default().fg(COLUMN_HEADER_COLOR)),
         header_area,
     );
 
@@ -702,7 +725,7 @@ fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
     let border_color = if app.is_focused(PaneId::Output) {
         ACTIVE_FOCUS_COLOR
     } else {
-        Color::DarkGray
+        LABEL_COLOR
     };
 
     let block = Block::default()
@@ -710,7 +733,7 @@ fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
         .title(title)
         .title_style(
             Style::default()
-                .fg(Color::Yellow)
+                .fg(TITLE_COLOR)
                 .add_modifier(Modifier::BOLD),
         )
         .border_style(Style::default().fg(border_color));
@@ -752,15 +775,15 @@ fn shortcut_spans(shortcuts: &[Shortcut]) -> Vec<Span<'static>> {
         let (key_style, description_style) = match shortcut.state {
             ShortcutState::Enabled => (
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(ACCENT_COLOR)
                     .add_modifier(Modifier::BOLD),
                 Style::default(),
             ),
             ShortcutState::Disabled => (
                 Style::default()
-                    .fg(Color::Gray)
+                    .fg(SECONDARY_TEXT_COLOR)
                     .add_modifier(Modifier::BOLD),
-                Style::default().fg(Color::Gray),
+                Style::default().fg(SECONDARY_TEXT_COLOR),
             ),
         };
         spans.push(Span::styled(format!(" {}", shortcut.key), key_style));
@@ -785,7 +808,7 @@ fn shortcut_display_width(shortcuts: &[Shortcut]) -> usize {
 }
 
 pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let bar_style = Style::default().bg(Color::DarkGray).fg(Color::White);
+    let bar_style = Style::default().bg(STATUS_BAR_COLOR).fg(Color::White);
 
     // Fill the entire bar with the background color
     frame.render_widget(Paragraph::new("").style(bar_style), area);
@@ -810,7 +833,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let mut left_spans = Vec::new();
     if !app.is_scan_complete() {
         let key_style = Style::default()
-            .fg(Color::Cyan)
+            .fg(ACCENT_COLOR)
             .add_modifier(Modifier::BOLD);
         left_spans.push(Span::styled(" ⟳ scanning… ", key_style));
     }
@@ -916,6 +939,7 @@ fn render_root_item(
         ),
         git_path_state,
         lint_icon: lint,
+        lint_style: lint_style_for(app, item.path()),
         disk: disk_text,
         disk_style: ds,
         disk_suffix,
@@ -974,11 +998,7 @@ fn render_child_item(
     let deleted = inherited_deleted || app.is_deleted(project.path());
     let git_path_state = app.git_path_state_for(path);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
-        (
-            "0.0",
-            Some(" [x]"),
-            Some(Style::default().fg(Color::DarkGray)),
-        )
+        ("0.0", Some(" [x]"), Some(Style::default().fg(LABEL_COLOR)))
     } else {
         (disk.as_str(), None, None)
     };
@@ -993,6 +1013,7 @@ fn render_child_item(
         ),
         git_path_state,
         lint_icon: lint,
+        lint_style: lint_style_for(app, path),
         disk: disk_text,
         disk_style: ds,
         disk_suffix,
@@ -1063,6 +1084,7 @@ fn render_worktree_entry<'a>(
         ),
         git_path_state,
         lint_icon: lint,
+        lint_style: lint_style_for(app, wt_abs),
         disk: disk_text,
         disk_style: ds,
         disk_suffix,
@@ -1137,16 +1159,12 @@ fn disk_suffix_for_state(
     health: project::WorktreeHealth,
 ) -> (&str, Option<&'static str>, Option<Style>) {
     if deleted {
-        (
-            "0.0",
-            Some(" [x]"),
-            Some(Style::default().fg(Color::DarkGray)),
-        )
+        ("0.0", Some(" [x]"), Some(Style::default().fg(LABEL_COLOR)))
     } else if matches!(health, project::WorktreeHealth::Broken) {
         (
             disk,
             Some(" [broken]"),
-            Some(Style::default().fg(Color::White).bg(Color::Red)),
+            Some(Style::default().fg(Color::White).bg(ERROR_COLOR)),
         )
     } else {
         (disk, None, None)
@@ -1425,6 +1443,7 @@ fn render_submodule_item(
         ),
         git_path_state,
         lint_icon: " ",
+        lint_style: Style::default(),
         disk: "",
         disk_style: Style::default(),
         disk_suffix: None,
@@ -1668,11 +1687,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
                 .is_some_and(|item| matches!(item.visibility, Visibility::Deleted));
             let git_path_state = app.git_path_state_for(abs);
             let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
-                (
-                    "0.0",
-                    Some(" [x]"),
-                    Some(Style::default().fg(Color::DarkGray)),
-                )
+                ("0.0", Some(" [x]"), Some(Style::default().fg(LABEL_COLOR)))
             } else {
                 (disk.as_str(), None, None)
             };
@@ -1687,6 +1702,7 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
                 ),
                 git_path_state,
                 lint_icon: lint,
+                lint_style: lint_style_for(app, abs),
                 disk: disk_text,
                 disk_style: ds,
                 disk_suffix,

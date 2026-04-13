@@ -1,6 +1,5 @@
 use ratatui::Frame;
 use ratatui::layout::Constraint;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::widgets::Block;
@@ -14,9 +13,15 @@ use crate::lint::LintCommandStatus;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::tui::app::App;
+use crate::tui::constants::ACCENT_COLOR;
+use crate::tui::constants::ACTIVE_FOCUS_COLOR;
+use crate::tui::constants::COLUMN_HEADER_COLOR;
+use crate::tui::constants::ERROR_COLOR;
+use crate::tui::constants::INACTIVE_BORDER_COLOR;
+use crate::tui::constants::SUCCESS_COLOR;
+use crate::tui::constants::TITLE_COLOR;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface::Content;
-use crate::tui::types::ACTIVE_FOCUS_COLOR;
 use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
 
@@ -131,17 +136,17 @@ fn lints_panel_title(app: &App, runs: &[LintRun], focused: bool) -> String {
 fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'static> {
     let title_style = if has_runs {
         Style::default()
-            .fg(Color::Yellow)
+            .fg(TITLE_COLOR)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(INACTIVE_BORDER_COLOR)
     };
     let border_style = if focused {
         Style::default().fg(ACTIVE_FOCUS_COLOR)
     } else if has_runs {
         Style::default()
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(INACTIVE_BORDER_COLOR)
     };
     Block::default()
         .borders(Borders::ALL)
@@ -173,9 +178,9 @@ pub fn render_lints_panel(
         .iter()
         .map(|run| {
             let style = match run.status {
-                LintRunStatus::Running => Style::default().fg(Color::Cyan),
-                LintRunStatus::Passed => Style::default().fg(Color::Green),
-                LintRunStatus::Failed => Style::default().fg(Color::Red),
+                LintRunStatus::Running => Style::default().fg(ACCENT_COLOR),
+                LintRunStatus::Passed => Style::default().fg(SUCCESS_COLOR),
+                LintRunStatus::Failed => Style::default().fg(ERROR_COLOR),
             };
             Row::new(vec![
                 Cell::from(super::timestamp::format_timestamp(&run.started_at)),
@@ -206,7 +211,7 @@ pub fn render_lints_panel(
         ])
         .style(
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(COLUMN_HEADER_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
     )

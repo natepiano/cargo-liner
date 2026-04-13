@@ -398,6 +398,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         name_segments:     None,
         git_path_state:    app.git_path_state_for(item.path()),
         lint_icon:         app.lint_icon_for_root(0),
+        lint_style:        Style::default(),
         disk:              "0.0",
         disk_style:        Style::default(),
         disk_suffix:       Some(" [x]"),

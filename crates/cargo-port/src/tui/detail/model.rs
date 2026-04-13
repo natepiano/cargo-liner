@@ -91,9 +91,9 @@ pub enum RunTargetKind {
 }
 
 impl RunTargetKind {
-    pub const BINARY_COLOR: ratatui::style::Color = ratatui::style::Color::Green;
-    pub const EXAMPLE_COLOR: ratatui::style::Color = ratatui::style::Color::Cyan;
-    pub const BENCH_COLOR: ratatui::style::Color = ratatui::style::Color::Magenta;
+    pub const BINARY_COLOR: ratatui::style::Color = crate::tui::constants::SUCCESS_COLOR;
+    pub const EXAMPLE_COLOR: ratatui::style::Color = crate::tui::constants::ACCENT_COLOR;
+    pub const BENCH_COLOR: ratatui::style::Color = crate::tui::constants::BENCH_COLOR;
 
     pub const fn color(self) -> ratatui::style::Color {
         match self {

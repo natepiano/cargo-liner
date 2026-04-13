@@ -1,6 +1,5 @@
 use crossterm::event::KeyCode;
 use ratatui::Frame;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -12,11 +11,15 @@ use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
+use super::constants::ACTIVE_FOCUS_COLOR;
+use super::constants::ERROR_COLOR;
+use super::constants::LABEL_COLOR;
 use super::constants::SECTION_HEADER_INDENT;
 use super::constants::SECTION_ITEM_INDENT;
 use super::constants::SETTINGS_POPUP_WIDTH;
+use super::constants::SUCCESS_COLOR;
+use super::constants::TITLE_COLOR;
 use super::interaction::UiSurface::Overlay;
-use super::types::ACTIVE_FOCUS_COLOR;
 use super::types::PaneId;
 use super::types::PaneSelectionState;
 use crate::config;
@@ -487,7 +490,7 @@ fn save_updated_config(app: &mut App, cfg: &config::CargoPortConfig) -> bool {
 
 pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     let rows = settings_rows(app, app.current_config());
-    let label_style = Style::default().fg(Color::DarkGray);
+    let label_style = Style::default().fg(LABEL_COLOR);
     let content_width = usize::from(SETTINGS_POPUP_WIDTH.saturating_sub(2));
 
     let mut lines: Vec<Line<'static>> = vec![Line::from("")];
@@ -573,17 +576,19 @@ fn push_toggle_row(
     let is_on = value == "ON";
     let toggle_style = if is_on {
         Style::default()
-            .fg(Color::Green)
+            .fg(SUCCESS_COLOR)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(ERROR_COLOR)
+            .add_modifier(Modifier::BOLD)
     };
     let row_style = selection.patch(label_style);
     lines.push(Line::from(vec![
         Span::styled(label.to_owned(), row_style),
-        Span::styled("< ", selection.patch(Style::default().fg(Color::DarkGray))),
+        Span::styled("< ", selection.patch(Style::default().fg(LABEL_COLOR))),
         Span::styled(value.to_owned(), selection.patch(toggle_style)),
-        Span::styled(" >", selection.patch(Style::default().fg(Color::DarkGray))),
+        Span::styled(" >", selection.patch(Style::default().fg(LABEL_COLOR))),
     ]));
     line_targets.push(target);
 }
@@ -625,7 +630,7 @@ pub(super) fn build_settings_lines(
                 prefix: &label,
                 value: &error,
                 prefix_style: selection.patch(label_style),
-                value_style: selection.patch(Style::default().fg(Color::Red)),
+                value_style: selection.patch(Style::default().fg(ERROR_COLOR)),
                 content_width,
             };
             push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
@@ -635,8 +640,8 @@ pub(super) fn build_settings_lines(
             let row = WrappedValueRow {
                 prefix: &label,
                 value: &edit_buffer,
-                prefix_style: selection.patch(Style::default().fg(Color::Yellow)),
-                value_style: selection.patch(Style::default().fg(Color::Yellow)),
+                prefix_style: selection.patch(Style::default().fg(TITLE_COLOR)),
+                value_style: selection.patch(Style::default().fg(TITLE_COLOR)),
                 content_width,
             };
             push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
@@ -656,12 +661,12 @@ pub(super) fn build_settings_lines(
         {
             lines.push(Line::from(vec![
                 Span::styled(label, selection.patch(label_style)),
-                Span::styled("< ", selection.patch(Style::default().fg(Color::DarkGray))),
+                Span::styled("< ", selection.patch(Style::default().fg(LABEL_COLOR))),
                 Span::styled(
                     (*value).clone(),
                     selection.patch(Style::default().add_modifier(Modifier::BOLD)),
                 ),
-                Span::styled(" >", selection.patch(Style::default().fg(Color::DarkGray))),
+                Span::styled(" >", selection.patch(Style::default().fg(LABEL_COLOR))),
             ]));
             line_targets.push(Some(selection_index));
         } else if setting == Some(SettingOption::TerminalCommand)
@@ -671,7 +676,7 @@ pub(super) fn build_settings_lines(
                 prefix: &label,
                 value,
                 prefix_style: selection.patch(label_style),
-                value_style: selection.patch(Style::default().fg(Color::Yellow)),
+                value_style: selection.patch(Style::default().fg(TITLE_COLOR)),
                 content_width,
             };
             push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
@@ -700,7 +705,7 @@ fn push_settings_header(
         Span::styled(
             format!("{name}:"),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(TITLE_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
     ]));

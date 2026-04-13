@@ -1,10 +1,9 @@
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Style;
 
+use super::constants::ACTIVE_FOCUS_COLOR;
+use super::constants::REMEMBERED_FOCUS_COLOR;
 use super::interaction::UiHitbox;
-
-pub(super) const ACTIVE_FOCUS_COLOR: Color = Color::Rgb(0, 96, 96);
 
 /// A bounded cursor for scrollable lists. Replaces raw `usize` index + manual
 /// bounds checking with a single type that enforces invariants.
@@ -130,7 +129,7 @@ impl Pane {
     pub fn selection_style(focus: PaneFocusState) -> Style {
         match focus {
             PaneFocusState::Active => Style::default().bg(ACTIVE_FOCUS_COLOR),
-            PaneFocusState::Remembered => Style::default().bg(Color::DarkGray),
+            PaneFocusState::Remembered => Style::default().bg(REMEMBERED_FOCUS_COLOR),
             PaneFocusState::Inactive => Style::default(),
         }
     }
@@ -219,6 +218,6 @@ mod tests {
         let patched = PaneSelectionState::Remembered.patch(base);
 
         assert_eq!(patched.fg, Some(Color::Green));
-        assert_eq!(patched.bg, Some(Color::DarkGray));
+        assert_eq!(patched.bg, Some(super::REMEMBERED_FOCUS_COLOR));
     }
 }

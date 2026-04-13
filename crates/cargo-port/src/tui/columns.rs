@@ -13,6 +13,12 @@ use crate::constants::IN_SYNC;
 use crate::project::GitPathState;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
+use crate::tui::constants::COLUMN_HEADER_COLOR;
+use crate::tui::constants::DISCOVERY_SHIMMER_COLOR;
+use crate::tui::constants::ERROR_COLOR;
+use crate::tui::constants::LABEL_COLOR;
+use crate::tui::constants::SECONDARY_TEXT_COLOR;
+use crate::tui::constants::TITLE_COLOR;
 
 // ── Column indices ──────────────────────────────────────────────────
 pub(super) const COL_NAME: usize = 0;
@@ -156,6 +162,7 @@ pub(super) struct ProjectRow<'a> {
     pub name_segments:     Option<Vec<StyledSegment>>,
     pub git_path_state:    GitPathState,
     pub lint_icon:         &'a str,
+    pub lint_style:        Style,
     pub disk:              &'a str,
     pub disk_style:        Style,
     pub disk_suffix:       Option<&'a str>,
@@ -336,7 +343,7 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'stat
 
     if row.deleted {
         let strike = Style::default()
-            .fg(Color::DarkGray)
+            .fg(LABEL_COLOR)
             .add_modifier(Modifier::CROSSED_OUT);
         for (i, span) in spans.iter_mut().enumerate() {
             if !suffix_indices.contains(&i) {
@@ -344,7 +351,7 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'stat
             }
         }
     } else if matches!(row.worktree_health, crate::project::WorktreeHealth::Broken) {
-        let broken_style = Style::default().fg(Color::White).bg(Color::Red);
+        let broken_style = Style::default().fg(Color::White).bg(ERROR_COLOR);
         for span in &mut spans {
             span.style = broken_style;
         }
@@ -358,7 +365,7 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'stat
 pub(super) fn header_line(widths: &ResolvedWidths, name_text: &str) -> Line<'static> {
     let defs = column_defs(widths.lint_enabled());
     let header_style = Style::default()
-        .fg(Color::DarkGray)
+        .fg(COLUMN_HEADER_COLOR)
         .add_modifier(Modifier::BOLD);
 
     let mut spans = Vec::with_capacity(NUM_COLS);
@@ -459,7 +466,7 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     };
     cells[COL_LINT] = CellContent {
         text: String::from(row.lint_icon),
-        style: Style::default(),
+        style: row.lint_style,
         align_override: None,
         ..CellContent::default()
     };
@@ -521,11 +528,11 @@ pub(super) fn project_name_style(git_path_state: GitPathState) -> Style {
 
 pub(super) fn project_name_shimmer_style(git_path_state: GitPathState) -> Style {
     match git_path_state {
-        GitPathState::Modified => Style::default().fg(Color::Indexed(216)),
-        GitPathState::Untracked => Style::default().fg(Color::Rgb(120, 255, 160)),
-        GitPathState::Ignored => Style::default().fg(Color::Gray),
+        GitPathState::Modified => Style::default().fg(GIT_MODIFIED_COLOR),
+        GitPathState::Untracked => Style::default().fg(GIT_UNTRACKED_COLOR),
+        GitPathState::Ignored => Style::default().fg(SECONDARY_TEXT_COLOR),
         GitPathState::OutsideRepo | GitPathState::Clean => {
-            Style::default().fg(Color::Rgb(150, 210, 255))
+            Style::default().fg(DISCOVERY_SHIMMER_COLOR)
         },
     }
 }
@@ -588,7 +595,7 @@ pub(super) fn build_group_header_cells(prefix: &str, label: &str) -> RowCells {
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
     cells[COL_NAME] = CellContent {
         text: String::from(label),
-        style: Style::default().fg(Color::Yellow),
+        style: Style::default().fg(TITLE_COLOR),
         align_override: None,
         ..CellContent::default()
     };
@@ -610,7 +617,7 @@ fn summary_label_col(widths: &ResolvedWidths) -> usize {
 /// Build a `RowCells` for the summary (Σ) row.
 pub(super) fn build_summary_cells(widths: &ResolvedWidths, disk: &str) -> RowCells {
     let total_style = Style::default()
-        .fg(Color::Yellow)
+        .fg(TITLE_COLOR)
         .add_modifier(Modifier::BOLD);
 
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
@@ -761,6 +768,7 @@ mod tests {
             name_segments:     None,
             git_path_state:    GitPathState::Clean,
             lint_icon:         crate::constants::LINT_PASSED,
+            lint_style:        Style::default(),
             disk:              "36.3 GiB",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -778,6 +786,7 @@ mod tests {
             name_segments:     None,
             git_path_state:    GitPathState::Clean,
             lint_icon:         crate::constants::LINT_PASSED,
+            lint_style:        Style::default(),
             disk:              "36.3 GiB",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -865,6 +874,7 @@ mod tests {
             name_segments:     None,
             git_path_state:    GitPathState::Clean,
             lint_icon:         crate::constants::LINT_PASSED,
+            lint_style:        Style::default(),
             disk:              "36.3 GiB",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -894,6 +904,7 @@ mod tests {
             name_segments:     None,
             git_path_state:    GitPathState::Modified,
             lint_icon:         " ",
+            lint_style:        Style::default(),
             disk:              "—",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -917,6 +928,7 @@ mod tests {
             name_segments:     None,
             git_path_state:    GitPathState::Untracked,
             lint_icon:         " ",
+            lint_style:        Style::default(),
             disk:              "—",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -943,6 +955,7 @@ mod tests {
             name_segments:     None,
             git_path_state:    GitPathState::Clean,
             lint_icon:         " ",
+            lint_style:        Style::default(),
             disk:              "—",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -965,6 +978,7 @@ mod tests {
             name_segments:     None,
             git_path_state:    GitPathState::Ignored,
             lint_icon:         " ",
+            lint_style:        Style::default(),
             disk:              "—",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -985,7 +999,7 @@ mod tests {
         let segments = build_shimmer_segments(
             "abcd",
             Style::default(),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(TITLE_COLOR),
             3,
             2,
         );
@@ -997,9 +1011,9 @@ mod tests {
         assert_eq!(
             actual,
             vec![
-                ("a", Some(Color::Yellow)),
+                ("a", Some(TITLE_COLOR)),
                 ("bc", None),
-                ("d", Some(Color::Yellow)),
+                ("d", Some(TITLE_COLOR)),
             ]
         );
     }
@@ -1025,11 +1039,11 @@ mod tests {
     fn clean_shimmer_style_uses_explicit_high_contrast_foreground() {
         assert_eq!(
             project_name_shimmer_style(GitPathState::Clean).fg,
-            Some(Color::Rgb(150, 210, 255))
+            Some(DISCOVERY_SHIMMER_COLOR)
         );
         assert_eq!(
             project_name_shimmer_style(GitPathState::OutsideRepo).fg,
-            Some(Color::Rgb(150, 210, 255))
+            Some(DISCOVERY_SHIMMER_COLOR)
         );
     }
 }

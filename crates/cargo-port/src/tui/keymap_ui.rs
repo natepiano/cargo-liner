@@ -10,9 +10,12 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
 use super::app::App;
+use super::constants::ACTIVE_FOCUS_COLOR;
+use super::constants::ERROR_COLOR;
+use super::constants::LABEL_COLOR;
 use super::constants::SECTION_HEADER_INDENT;
 use super::constants::SECTION_ITEM_INDENT;
-use super::types::ACTIVE_FOCUS_COLOR;
+use super::constants::TITLE_COLOR;
 use super::types::PaneId;
 use super::types::PaneSelectionState;
 use crate::keymap::CiRunsAction;
@@ -487,7 +490,7 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
                 Span::styled(
                     format!("{}:", row.scope),
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(TITLE_COLOR)
                         .add_modifier(Modifier::BOLD),
                 ),
             ]));
@@ -517,7 +520,7 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
                     format!("{SECTION_ITEM_INDENT}  {padded_desc}"),
                     selection.patch(Style::default().fg(Color::White)),
                 ),
-                Span::styled(key_text, selection.patch(Style::default().fg(Color::Red))),
+                Span::styled(key_text, selection.patch(Style::default().fg(ERROR_COLOR))),
             ])
         } else if selection != PaneSelectionState::Unselected {
             Line::from(vec![
@@ -529,10 +532,10 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
                     key_text,
                     selection.patch(if is_awaiting {
                         Style::default()
-                            .fg(Color::Yellow)
+                            .fg(TITLE_COLOR)
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        Style::default().fg(LABEL_COLOR)
                     }),
                 ),
             ])
@@ -542,7 +545,7 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
                     format!("{SECTION_ITEM_INDENT}  {padded_desc}"),
                     Style::default().fg(Color::White),
                 ),
-                Span::styled(key_text, Style::default().fg(Color::DarkGray)),
+                Span::styled(key_text, Style::default().fg(LABEL_COLOR)),
             ])
         };
 
