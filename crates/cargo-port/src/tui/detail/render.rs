@@ -827,7 +827,7 @@ fn render_targets_panel(
 
     let widths = [
         Constraint::Fill(1),
-        Constraint::Length(kind_col_width as u16),
+        Constraint::Length(u16::try_from(kind_col_width).unwrap_or(u16::MAX)),
     ];
     let highlight_style = Pane::selection_style(focus);
 

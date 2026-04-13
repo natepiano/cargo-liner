@@ -219,9 +219,9 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
 
     if app.layout_cache().project_list.contains(pos) {
         if up {
-            app.move_up()
+            app.move_up();
         } else {
-            app.move_down()
+            app.move_down();
         }
         return;
     }
@@ -240,24 +240,24 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
             app.git_pane_mut()
         };
         if up {
-            pane.up()
+            pane.up();
         } else {
-            pane.down()
+            pane.down();
         }
         return;
     }
 
     if app.lint_pane().content_area().contains(pos) {
         if up {
-            app.lint_pane_mut().up()
+            app.lint_pane_mut().up();
         } else {
-            app.lint_pane_mut().down()
+            app.lint_pane_mut().down();
         }
     } else if app.ci_pane().content_area().contains(pos) {
         if up {
-            app.ci_pane_mut().up()
+            app.ci_pane_mut().up();
         } else {
-            app.ci_pane_mut().down()
+            app.ci_pane_mut().down();
         }
     }
 }
