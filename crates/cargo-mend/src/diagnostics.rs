@@ -211,7 +211,7 @@ impl Report {
 
     pub(crate) const fn has_warnings(&self) -> bool { self.summary.warnings > 0 }
 
-    pub(super) fn refresh_summary(&mut self) {
+    pub(crate) fn refresh_summary(&mut self) {
         self.summary = ReportSummary {
             errors:                   self
                 .findings

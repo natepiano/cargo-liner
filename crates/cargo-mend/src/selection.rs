@@ -9,7 +9,7 @@ use cargo_metadata::Metadata;
 use cargo_metadata::MetadataCommand;
 use cargo_metadata::Package;
 
-use crate::cli::CargoCheckCli;
+use super::cli::CargoCheckCli;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectionScope {

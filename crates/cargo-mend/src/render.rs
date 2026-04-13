@@ -101,14 +101,13 @@ fn render_finding(output: &mut String, finding: &Finding, color: ColorMode) {
     let _ = writeln!(output, "{severity} {headline}");
     let _ = writeln!(
         output,
-        "{}{} {}:{}:{}",
-        arrow_pad,
+        "{arrow_pad}{} {}:{}:{}",
         blue_bold("-->", color),
         finding.path,
         finding.line,
         finding.column
     );
-    let _ = writeln!(output, "{}{}", gutter_pad, blue_bold("|", color));
+    let _ = writeln!(output, "{gutter_pad}{}", blue_bold("|", color));
     let _ = writeln!(
         output,
         "{:>width$} {} {}",
@@ -119,8 +118,7 @@ fn render_finding(output: &mut String, finding: &Finding, color: ColorMode) {
     );
     let _ = writeln!(
         output,
-        "{}{} {}",
-        gutter_pad,
+        "{gutter_pad}{} {}",
         blue_bold("|", color),
         severity_marker(
             finding.severity,
@@ -132,11 +130,10 @@ fn render_finding(output: &mut String, finding: &Finding, color: ColorMode) {
     if let Some(inline_help) = diagnostics::custom_inline_help_text(finding)
         .or_else(|| diagnostics::inline_help_text(finding))
     {
-        let _ = writeln!(output, "{}{}", gutter_pad, blue_bold("|", color));
+        let _ = writeln!(output, "{gutter_pad}{}", blue_bold("|", color));
         let _ = writeln!(
             output,
-            "{}{} {}",
-            gutter_pad,
+            "{gutter_pad}{} {}",
             blue_bold("|", color),
             blue_bold(&format!("help: {inline_help}"), color)
         );
@@ -147,14 +144,13 @@ fn render_finding(output: &mut String, finding: &Finding, color: ColorMode) {
         || diagnostics::inline_help_text(finding).is_some()
         || !reasons.is_empty()
     {
-        let _ = writeln!(output, "{}{}", gutter_pad, blue_bold("|", color));
+        let _ = writeln!(output, "{gutter_pad}{}", blue_bold("|", color));
     }
     if !reasons.is_empty() {
         for reason in reasons {
             let _ = writeln!(
                 output,
-                "{}{} {}",
-                gutter_pad,
+                "{gutter_pad}{} {}",
                 diagnostic_label("note", color),
                 reason
             );
@@ -163,8 +159,7 @@ fn render_finding(output: &mut String, finding: &Finding, color: ColorMode) {
     let help_url = diagnostics::finding_help_url(finding);
     let _ = writeln!(
         output,
-        "{}{} for further information visit {help_url}",
-        gutter_pad,
+        "{gutter_pad}{} for further information visit {help_url}",
         diagnostic_label("help", color)
     );
     let _ = writeln!(output);

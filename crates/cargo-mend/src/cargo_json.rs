@@ -189,15 +189,12 @@ fn render_diagnostic(finding: &Finding, span: &RustcSpan, level: &str) -> String
         .or_else(|| diagnostics::custom_inline_help_text(finding))
         .map_or_else(String::new, |help| format!(" help: {help}"));
     let mut rendered = format!(
-        "{level}: {}\n --> {}:{}:{}\n{}|\n{} | {}\n{}| {marker_pad}{marker}{inline_help}\n",
+        "{level}: {}\n --> {}:{}:{}\n{gutter_pad}|\n{line_label} | {}\n{gutter_pad}| {marker_pad}{marker}{inline_help}\n",
         diagnostics::finding_headline(finding),
         span.file_name,
         finding.line,
         finding.column,
-        gutter_pad,
-        line_label,
         finding.source_line,
-        gutter_pad,
     );
     if !finding.message.is_empty() {
         rendered.push_str("  = note: ");
