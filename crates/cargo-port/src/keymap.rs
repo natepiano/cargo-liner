@@ -475,7 +475,11 @@ impl ResolvedKeymap {
             })
             .collect();
         entries.sort_by_key(|(name, _)| *name);
-        let max_len = entries.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+        let max_len = entries
+            .iter()
+            .map(|(name, _)| name.len())
+            .max()
+            .unwrap_or(0);
         for (name, value) in &entries {
             let _ = writeln!(out, "{name:<max_len$} = \"{value}\"");
         }
@@ -528,13 +532,7 @@ impl ResolvedKeymap {
             PackageAction::ALL,
             PackageAction::toml_key,
         );
-        Self::write_scope(
-            out,
-            "git",
-            &km.git,
-            GitAction::ALL,
-            GitAction::toml_key,
-        );
+        Self::write_scope(out, "git", &km.git, GitAction::ALL, GitAction::toml_key);
         Self::write_scope(
             out,
             "targets",
