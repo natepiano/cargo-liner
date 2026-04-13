@@ -5,10 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.1] - 2026-04-13
 
 ### Fixed
 - `cargo mend --fix` no longer fails to qualify function references inside macro invocations (e.g., `matches!`, `assert!`), preventing rollback-on-compile-error when `prefer_module_import` rewrites imports for functions called within macros
+- `--json` mode no longer leaks cargo `Building` progress lines to stderr
 
 ## [0.6.0] - 2026-04-11
 
