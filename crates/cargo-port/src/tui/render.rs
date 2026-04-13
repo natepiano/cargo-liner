@@ -118,23 +118,23 @@ pub(super) fn format_bytes(bytes: u64) -> String {
 // ── Row prefix strings ───────────────────────────────────────────────
 // Single source of truth: width calc and render both reference these.
 
-pub(super) const PREFIX_ROOT_EXPANDED: &str = "▼ ";
-pub(super) const PREFIX_ROOT_COLLAPSED: &str = "▶ ";
-pub(super) const PREFIX_ROOT_LEAF: &str = "  ";
-pub(super) const PREFIX_MEMBER_INLINE: &str = "    ";
-pub(super) const PREFIX_MEMBER_NAMED: &str = "        ";
-pub(super) const PREFIX_SUBMODULE: &str = "    ";
-pub(super) const PREFIX_VENDORED: &str = "    ";
-pub(super) const PREFIX_GROUP_EXPANDED: &str = "    ▼ ";
-pub(super) const PREFIX_GROUP_COLLAPSED: &str = "    ▶ ";
-pub(super) const PREFIX_WT_EXPANDED: &str = "    ▼ ";
-pub(super) const PREFIX_WT_COLLAPSED: &str = "    ▶ ";
-pub(super) const PREFIX_WT_FLAT: &str = "    ";
-pub(super) const PREFIX_WT_GROUP_EXPANDED: &str = "        ▼ ";
-pub(super) const PREFIX_WT_GROUP_COLLAPSED: &str = "        ▶ ";
-pub(super) const PREFIX_WT_MEMBER_INLINE: &str = "        ";
-pub(super) const PREFIX_WT_MEMBER_NAMED: &str = "            ";
-pub(super) const PREFIX_WT_VENDORED: &str = "        ";
+pub(super) const PREFIX_ROOT_EXPANDED: &str = "▼";
+pub(super) const PREFIX_ROOT_COLLAPSED: &str = "▶";
+pub(super) const PREFIX_ROOT_LEAF: &str = " ";
+pub(super) const PREFIX_MEMBER_INLINE: &str = "   ";
+pub(super) const PREFIX_MEMBER_NAMED: &str = "       ";
+pub(super) const PREFIX_SUBMODULE: &str = "   ";
+pub(super) const PREFIX_VENDORED: &str = "   ";
+pub(super) const PREFIX_GROUP_EXPANDED: &str = "   ▼";
+pub(super) const PREFIX_GROUP_COLLAPSED: &str = "   ▶";
+pub(super) const PREFIX_WT_EXPANDED: &str = "   ▼";
+pub(super) const PREFIX_WT_COLLAPSED: &str = "   ▶";
+pub(super) const PREFIX_WT_FLAT: &str = "   ";
+pub(super) const PREFIX_WT_GROUP_EXPANDED: &str = "       ▼";
+pub(super) const PREFIX_WT_GROUP_COLLAPSED: &str = "       ▶";
+pub(super) const PREFIX_WT_MEMBER_INLINE: &str = "       ";
+pub(super) const PREFIX_WT_MEMBER_NAMED: &str = "           ";
+pub(super) const PREFIX_WT_VENDORED: &str = "       ";
 
 /// Returns `ACCENT_COLOR` style when lint is running (spinner), default otherwise.
 fn lint_style_for(app: &App, path: &std::path::Path) -> Style {
@@ -544,7 +544,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
                 .filter_map(RootItem::disk_usage_bytes)
                 .sum(),
         );
-        let header = super::columns::header_line(widths, "Projects");
+        let header = super::columns::header_line(widths, " Projects");
         let summary = super::columns::build_summary_cells(widths, &total_str);
         let summary_line = Some(super::columns::row_to_line(&summary, widths));
         let row_width = u16::try_from(widths.total_width()).unwrap_or(u16::MAX);
@@ -630,17 +630,19 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
 }
 
 fn project_panel_title(app: &App, max_width: usize) -> String {
-    let prefix = "roots: ";
-    if max_width <= prefix.width() {
-        return truncate_to_width(prefix, max_width);
+    let prefix = "Roots: ";
+    // Reserve 2 chars for the leading/trailing space around the title.
+    let inner_max = max_width.saturating_sub(2);
+    if inner_max <= prefix.width() {
+        return format!(" {} ", truncate_to_width(prefix, inner_max));
     }
     let roots = scan::resolve_include_dirs(app.scan_root(), &app.current_config().tui.include_dirs)
         .into_iter()
         .map(|path| project::home_relative_path(path.as_path()))
         .collect::<Vec<_>>();
     format!(
-        "{prefix}{}",
-        truncate_root_title(&roots, max_width.saturating_sub(prefix.width()))
+        " {prefix}{} ",
+        truncate_root_title(&roots, inner_max.saturating_sub(prefix.width()))
     )
 }
 

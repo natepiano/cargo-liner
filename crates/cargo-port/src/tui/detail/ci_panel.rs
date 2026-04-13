@@ -36,7 +36,7 @@ fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
         .add_modifier(Modifier::BOLD)
         .fg(COLUMN_HEADER_COLOR);
     let mut header_cells = vec![
-        Cell::from("Commit").style(right_aligned),
+        Cell::from(" Commit").style(right_aligned),
         Cell::from("Branch").style(right_aligned),
         Cell::from("Timestamp").style(right_aligned),
     ];
@@ -69,7 +69,7 @@ fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn], show_durations: bool) ->
     let commit = ci_run.commit_title.as_deref().unwrap_or("");
     let commit_style = Style::default();
     let mut cells = vec![
-        Cell::from(commit.to_string()).style(commit_style),
+        Cell::from(format!(" {commit}")).style(commit_style),
         Cell::from(ci_run.branch.clone()),
         Cell::from(timestamp),
     ];
@@ -266,11 +266,11 @@ fn build_fetch_row(
 ) -> Row<'static> {
     let fetch_label = if is_fetching {
         let spinner = BRAILLE_SPINNER.frame_at(elapsed);
-        format!("{spinner} fetching {fetch_count} more…")
+        format!(" {spinner} fetching {fetch_count} more…")
     } else if is_exhausted {
-        "↓ fetch new runs".to_string()
+        " ↓ fetch new runs".to_string()
     } else {
-        "↓ fetch more runs".to_string()
+        " ↓ fetch more runs".to_string()
     };
     let fetch_style = Style::default().fg(ACCENT_COLOR);
     let mut fetch_cells: Vec<Cell> = vec![Cell::from(fetch_label).style(fetch_style)];

@@ -152,7 +152,10 @@ pub fn render_lints_panel(
                 LintRunStatus::Failed => Style::default().fg(ERROR_COLOR),
             };
             Row::new(vec![
-                Cell::from(super::timestamp::format_timestamp(&run.started_at)),
+                Cell::from(format!(
+                    " {}",
+                    super::timestamp::format_timestamp(&run.started_at)
+                )),
                 Cell::from(format_lints_finished(run)),
                 Cell::from(run.status.label()),
                 Cell::from(format_lints_commands(run)),
@@ -193,7 +196,7 @@ pub fn render_lints_panel(
     )
     .header(
         Row::new(vec![
-            "Started", "Finished", "Result", "Cmds", "Pending", "Slowest",
+            " Started", "Finished", "Result", "Cmds", "Pending", "Slowest",
         ])
         .style(
             Style::default()

@@ -763,7 +763,7 @@ mod tests {
         widths.observe(COL_MAIN, 2);
 
         let row_emoji = build_row_cells(ProjectRow {
-            prefix:            "▶ ",
+            prefix:            "▶",
             name:              "bevy_brp 🌲:2",
             name_segments:     None,
             git_path_state:    GitPathState::Clean,
@@ -781,7 +781,7 @@ mod tests {
             worktree_health:   WorktreeHealth::Normal,
         });
         let row_ascii = build_row_cells(ProjectRow {
-            prefix:            "▶ ",
+            prefix:            "▶",
             name:              "bevy_mesh_outline_benchmark",
             name_segments:     None,
             git_path_state:    GitPathState::Clean,
@@ -869,7 +869,7 @@ mod tests {
         widths.observe(COL_MAIN, 2);
 
         let row = build_row_cells(ProjectRow {
-            prefix:            "▶ ",
+            prefix:            "▶",
             name:              "demo",
             name_segments:     None,
             git_path_state:    GitPathState::Clean,

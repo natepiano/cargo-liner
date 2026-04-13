@@ -439,7 +439,7 @@ pub fn render_detail_panel(
                 let focus = app.pane_focus_state(PaneId::Git);
                 let git_block = Block::default()
                     .borders(Borders::ALL)
-                    .title("  Git ")
+                    .title(" Git ")
                     .title_style(styles.title)
                     .border_style(if matches!(focus, PaneFocusState::Active) {
                         styles.active_border
@@ -815,7 +815,7 @@ fn render_targets_panel(
                 "\u{2026}",
             );
             Row::new(vec![
-                Cell::from(display),
+                Cell::from(format!(" {display}")),
                 Cell::from(Line::from(entry.kind.label()).alignment(Alignment::Right))
                     .style(Style::default().fg(entry.kind.color())),
             ])
