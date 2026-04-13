@@ -137,13 +137,13 @@ impl App {
         self.toast_pane.set_len(self.active_toasts().len());
     }
 
-    pub(in super::super) fn start_clean(&mut self, project_path: &Path) {
-        self.running_clean_paths.insert(project_path.to_path_buf());
+    pub(in super::super) fn start_clean(&mut self, project_path: &AbsolutePath) {
+        self.running_clean_paths.insert(project_path.clone());
         self.sync_running_clean_toast();
     }
 
-    pub(in super::super) fn clean_spawn_failed(&mut self, project_path: &Path) {
-        self.running_clean_paths.remove(project_path);
+    pub(in super::super) fn clean_spawn_failed(&mut self, project_path: &AbsolutePath) {
+        self.running_clean_paths.remove(project_path.as_path());
         self.sync_running_clean_toast();
     }
 

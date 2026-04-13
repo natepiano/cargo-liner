@@ -63,7 +63,7 @@ pub(super) enum CiFetchMsg {
 }
 
 pub(super) enum CleanMsg {
-    Finished(String),
+    Finished(AbsolutePath),
 }
 
 #[derive(Clone, Copy)]
@@ -516,16 +516,16 @@ fn spawn_clean_process(app: &mut App, pending: &PendingClean) {
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            app.clean_spawn_failed(Path::new(&pending.project_path));
+            app.clean_spawn_failed(&pending.abs_path);
             app.show_timed_toast("cargo clean failed", e.to_string());
             return;
         },
     };
     let tx = app.clean_tx();
-    let project_path = pending.project_path.clone();
+    let abs_path = pending.abs_path.clone();
     thread::spawn(move || {
         let _ = child.wait();
-        let _ = tx.send(CleanMsg::Finished(project_path));
+        let _ = tx.send(CleanMsg::Finished(abs_path));
     });
 }
 

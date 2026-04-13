@@ -105,7 +105,7 @@ fn request_clean(app: &mut App) {
             .selected_item()
             .is_some_and(crate::project::RootItem::is_rust)
     {
-        app.set_confirm(ConfirmAction::Clean(path.display().to_string()));
+        app.set_confirm(ConfirmAction::Clean(path.into()));
     }
 }
 

@@ -29,13 +29,12 @@ pub enum ExpandKey {
 /// An action waiting for user confirmation (y/n).
 pub enum ConfirmAction {
     /// `cargo clean` on the project at this absolute path.
-    Clean(String),
+    Clean(AbsolutePath),
 }
 
 #[derive(Clone)]
 pub struct PendingClean {
-    pub abs_path:     String,
-    pub project_path: String,
+    pub abs_path: AbsolutePath,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

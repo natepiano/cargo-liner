@@ -31,6 +31,7 @@ use super::detail::RunTargetKind;
 use super::interaction::UiSurface::Overlay;
 use super::types::Pane;
 use super::types::PaneId;
+use crate::project::AbsolutePath;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
 use crate::project::PackageProject;
@@ -51,7 +52,7 @@ pub(super) struct FinderItem {
     /// What kind of item this is.
     pub kind:          FinderKind,
     /// Path of the project this item belongs to (for navigation).
-    pub project_path:  String,
+    pub project_path:  AbsolutePath,
     /// For targets: the cargo target name (used with --example/--bench).
     pub target_name:   Option<String>,
     /// Parent project display name (shown dimmed for non-project items).
@@ -116,13 +117,13 @@ pub(super) fn build_finder_index(
             },
             RootItem::NonRust(nr) => {
                 let dp = nr.display_path().into_string();
-                let abs = nr.path().display().to_string();
+                let abs = nr.path();
                 let branch = branch_for(nr.git_info());
                 let root_name = nr.root_directory_name().into_string();
                 let context = TypedProjectContext {
                     project_name: &root_name,
                     cargo_name:   None,
-                    abs_path:     &abs,
+                    abs_path:     abs,
                     display_path: &dp,
                     branch:       &branch,
                 };
@@ -179,7 +180,7 @@ fn branch_for(git_info: Option<&GitInfo>) -> String {
 
 fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &WorkspaceProject) {
     let root_path = ws.display_path().into_string();
-    let root_abs_path = ws.path().display().to_string();
+    let root_abs_path = ws.path();
     let root_branch = branch_for(ws.git_info());
     let cargo = ws.cargo();
     let root_name = ws.root_directory_name().into_string();
@@ -188,7 +189,7 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &WorkspaceProject) {
     let root_context = TypedProjectContext {
         project_name: &root_name,
         cargo_name:   cargo_name.as_deref(),
-        abs_path:     &root_abs_path,
+        abs_path:     root_abs_path,
         display_path: &root_path,
         branch:       &root_branch,
     };
@@ -205,12 +206,12 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &WorkspaceProject) {
         for member in group.members() {
             let member_cargo = member.cargo();
             let member_display_path = member.display_path();
-            let member_abs_path = member.path().display().to_string();
+            let member_abs_path = member.path();
             let member_name = member.package_name().into_string();
             let member_context = TypedProjectContext {
                 project_name: &member_name,
                 cargo_name:   None,
-                abs_path:     &member_abs_path,
+                abs_path:     member_abs_path,
                 display_path: member_display_path.as_str(),
                 branch:       &root_branch,
             };
@@ -232,7 +233,7 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &WorkspaceProject) {
 
 fn add_package_items(items: &mut Vec<FinderItem>, pkg: &PackageProject) {
     let root_path = pkg.display_path().into_string();
-    let root_abs_path = pkg.path().display().to_string();
+    let root_abs_path = pkg.path();
     let root_branch = branch_for(pkg.git_info());
     let cargo = pkg.cargo();
     let root_name = pkg.root_directory_name().into_string();
@@ -241,7 +242,7 @@ fn add_package_items(items: &mut Vec<FinderItem>, pkg: &PackageProject) {
     let root_context = TypedProjectContext {
         project_name: &root_name,
         cargo_name:   cargo_name.as_deref(),
-        abs_path:     &root_abs_path,
+        abs_path:     root_abs_path,
         display_path: &root_path,
         branch:       &root_branch,
     };
@@ -267,7 +268,7 @@ fn add_vendored_items_typed(
 ) {
     let project_name = project.package_name().into_string();
     let dir = project.display_path().into_string();
-    let project_path = project.path().display().to_string();
+    let project_path: AbsolutePath = project.path().into();
     let branch = String::new();
     let display_name = format!("{project_name} (vendored)");
 
@@ -389,7 +390,7 @@ fn add_project_items_from_typed(
         search_tokens: build_search_tokens(&project_tokens),
         display_name: project_name.clone(),
         kind,
-        project_path: context.abs_path.to_string(),
+        project_path: context.abs_path.into(),
         target_name: None,
         parent_label: String::new(),
         branch: branch.clone(),
@@ -405,7 +406,7 @@ fn add_project_items_from_typed(
             search_tokens: build_search_tokens(&tokens),
             display_name: project_name.clone(),
             kind,
-            project_path: context.abs_path.to_string(),
+            project_path: context.abs_path.into(),
             target_name: Some(project_name.clone()),
             parent_label: project_name.clone(),
             branch: branch.clone(),
@@ -429,7 +430,7 @@ fn add_project_items_from_typed(
                 search_tokens: build_search_tokens(&tokens),
                 display_name: display,
                 kind,
-                project_path: context.abs_path.to_string(),
+                project_path: context.abs_path.into(),
                 target_name: Some(name.clone()),
                 parent_label: project_name.clone(),
                 branch: branch.clone(),
@@ -448,7 +449,7 @@ fn add_project_items_from_typed(
             search_tokens: build_search_tokens(&tokens),
             display_name: name.clone(),
             kind,
-            project_path: context.abs_path.to_string(),
+            project_path: context.abs_path.into(),
             target_name: Some(name.clone()),
             parent_label: project_name.clone(),
             branch: branch.clone(),
@@ -462,7 +463,7 @@ struct TypedProjectContext<'a> {
     /// Cargo package name when it differs from `project_name`. Included in
     /// search tokens so root-level Rust items remain findable by Cargo name.
     cargo_name:   Option<&'a str>,
-    abs_path:     &'a str,
+    abs_path:     &'a Path,
     display_path: &'a str,
     branch:       &'a str,
 }
@@ -627,7 +628,7 @@ fn confirm_finder(app: &mut App) {
     app.close_overlay();
 
     // Navigate to the project
-    app.select_project_in_tree(Path::new(&item.project_path));
+    app.select_project_in_tree(item.project_path.as_path());
 
     match item.kind {
         FinderKind::Project => {
@@ -895,10 +896,7 @@ mod tests {
         let list_items = vec![RootItem::Rust(RustProject::Workspace(ws))];
         let (items, _widths) = build_finder_index(&list_items);
         assert!(items.iter().any(|item| {
-            item.project_path
-                == test_path("~/rust/hana/crates/clay-layout")
-                    .display()
-                    .to_string()
+            item.project_path == AbsolutePath::from(test_path("~/rust/hana/crates/clay-layout"))
                 && item.display_name == "clay-layout (vendored)"
                 && item.branch.is_empty()
         }));
@@ -917,7 +915,7 @@ mod tests {
                 FinderKind::Project.label(),
             ]),
             kind:          FinderKind::Project,
-            project_path:  "~/rust/bevy_diegetic/clay-layout".to_string(),
+            project_path:  AbsolutePath::from(test_path("~/rust/bevy_diegetic/clay-layout")),
             target_name:   None,
             parent_label:  "clay-layout".to_string(),
             branch:        String::new(),
@@ -941,7 +939,7 @@ mod tests {
                 FinderKind::Example.label(),
             ]),
             kind:          FinderKind::Example,
-            project_path:  "~/rust/bevy_diegetic/clay-layout".to_string(),
+            project_path:  AbsolutePath::from(test_path("~/rust/bevy_diegetic/clay-layout")),
             target_name:   Some("raylib_renderer".to_string()),
             parent_label:  "clay-layout".to_string(),
             branch:        String::new(),
@@ -965,7 +963,9 @@ mod tests {
                 FinderKind::Binary.label(),
             ]),
             kind:          FinderKind::Binary,
-            project_path:  "~/rust/bevy/tools/build-easefunction-graphs".to_string(),
+            project_path:  AbsolutePath::from(test_path(
+                "~/rust/bevy/tools/build-easefunction-graphs",
+            )),
             target_name:   Some("build-easefunction-graphs".to_string()),
             parent_label:  "build-easefunction-graphs".to_string(),
             branch:        "fix/position-before-size-v0.19".to_string(),

@@ -21,7 +21,6 @@ use super::types::PaneId;
 use crate::keymap::GlobalAction;
 use crate::keymap::KeyBind;
 use crate::keymap::ProjectListAction;
-use crate::project;
 use crate::project::ProjectFields;
 
 /// Last known mouse position, updated from every mouse event. Used to
@@ -189,12 +188,9 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
     if key == KeyCode::Char('y') {
         match action {
             ConfirmAction::Clean(abs_path) => {
-                let project_path = project::home_relative_path(Path::new(&abs_path));
-                app.start_clean(Path::new(&abs_path));
-                app.pending_cleans_mut().push_back(PendingClean {
-                    abs_path,
-                    project_path,
-                });
+                app.start_clean(&abs_path);
+                app.pending_cleans_mut()
+                    .push_back(PendingClean { abs_path });
             },
         }
     }
@@ -561,7 +557,7 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
                     .selected_item()
                     .is_some_and(crate::project::RootItem::is_rust)
             {
-                app.set_confirm(ConfirmAction::Clean(path.display().to_string()));
+                app.set_confirm(ConfirmAction::Clean(path.into()));
             }
         },
     }

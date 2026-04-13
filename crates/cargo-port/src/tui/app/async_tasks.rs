@@ -1080,8 +1080,8 @@ impl App {
             .running_clean_paths
             .iter()
             .map(|p| TrackedItem {
-                label:        crate::project::home_relative_path(p),
-                key:          AbsolutePath::from(p.as_path()).into(),
+                label:        crate::project::home_relative_path(p.as_path()),
+                key:          p.clone().into(),
                 started_at:   None,
                 completed_at: None,
             })
@@ -1100,7 +1100,7 @@ impl App {
         let items: Vec<String> = self
             .running_clean_paths
             .iter()
-            .map(|p| crate::project::home_relative_path(p))
+            .map(|p| crate::project::home_relative_path(p.as_path()))
             .collect();
         let refs: Vec<&str> = items.iter().map(String::as_str).collect();
         crate::tui::toasts::format_toast_items(&refs, crate::tui::toasts::toast_body_width())
@@ -1623,16 +1623,15 @@ impl App {
     pub(in super::super) fn poll_clean_msgs(&mut self) {
         while let Ok(msg) = self.clean_rx.try_recv() {
             match msg {
-                CleanMsg::Finished(path) => {
-                    let abs = PathBuf::from(&path);
+                CleanMsg::Finished(abs_path) => {
                     let already_zero = self
                         .projects
                         .iter()
-                        .find(|i| i.path() == abs)
+                        .find(|i| i.path() == abs_path.as_path())
                         .and_then(RootItem::disk_usage_bytes)
                         .is_none_or(|bytes| bytes == 0);
                     if already_zero {
-                        self.running_clean_paths.remove(&abs);
+                        self.running_clean_paths.remove(abs_path.as_path());
                         self.sync_running_clean_toast();
                     }
                 },
