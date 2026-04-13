@@ -139,8 +139,17 @@ fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -
             .max(Conclusion::Failure.icon().width()),
     )
     .unwrap_or(u16::MAX);
+    let commit_width = u16::try_from(
+        ci_runs
+            .iter()
+            .map(|run| run.commit_title.as_deref().unwrap_or("").len())
+            .max()
+            .unwrap_or("Commit".len())
+            .max("Commit".len()),
+    )
+    .unwrap_or(u16::MAX);
     let mut widths = vec![
-        Constraint::Fill(1),
+        Constraint::Length(commit_width),
         Constraint::Length(branch_width),
         Constraint::Length(CI_TIMESTAMP_WIDTH),
     ];

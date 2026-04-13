@@ -676,7 +676,7 @@ pub fn build_detail_info_for_submodule(app: &App, submodule: &SubmoduleInfo) -> 
         package_title: "Submodule".to_string(),
         name: submodule.name.clone(),
         title_name: submodule.name.clone(),
-        abs_path: abs_path.to_path_buf(),
+        abs_path: abs_path.clone(),
         path: display_path,
         version,
         description: submodule.url.clone(),
@@ -919,13 +919,13 @@ fn lint_run_count_for(app: &App, abs_path: &Path, is_worktree_group: bool) -> Op
             WorktreeGroup::Workspaces {
                 primary, linked, ..
             } => std::iter::once(primary.path())
-                .chain(linked.iter().map(|l| l.path()))
+                .chain(linked.iter().map(ProjectFields::path))
                 .map(std::path::Path::to_path_buf)
                 .collect(),
             WorktreeGroup::Packages {
                 primary, linked, ..
             } => std::iter::once(primary.path())
-                .chain(linked.iter().map(|l| l.path()))
+                .chain(linked.iter().map(ProjectFields::path))
                 .map(std::path::Path::to_path_buf)
                 .collect(),
         };

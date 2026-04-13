@@ -104,16 +104,22 @@ const fn has_targets(info: &DetailInfo) -> bool {
     info.is_binary || !info.examples.is_empty() || !info.benches.is_empty()
 }
 
-fn render_column_inner(
-    frame: &mut Frame,
-    app: &App,
-    info: &DetailInfo,
-    fields: &[DetailField],
-    pane: &Pane,
-    focus: PaneFocusState,
-    styles: &RenderStyles,
-    area: Rect,
-) -> usize {
+struct ColumnRenderCtx<'a> {
+    app:    &'a App,
+    info:   &'a DetailInfo,
+    fields: &'a [DetailField],
+    pane:   &'a Pane,
+    focus:  PaneFocusState,
+    styles: &'a RenderStyles,
+}
+
+fn render_column_inner(frame: &mut Frame, ctx: &ColumnRenderCtx<'_>, area: Rect) -> usize {
+    let app = ctx.app;
+    let info = ctx.info;
+    let fields = ctx.fields;
+    let pane = ctx.pane;
+    let focus = ctx.focus;
+    let styles = ctx.styles;
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut focused_output_line: usize = 0;
     let label_width = package_label_width(fields);
@@ -242,16 +248,13 @@ pub(super) fn git_label_width(info: &DetailInfo, fields: &[DetailField]) -> usiz
         .max(8)
 }
 
-fn render_git_column_inner(
-    frame: &mut Frame,
-    app: &App,
-    info: &DetailInfo,
-    fields: &[DetailField],
-    pane: &Pane,
-    focus: PaneFocusState,
-    styles: &RenderStyles,
-    area: Rect,
-) -> usize {
+fn render_git_column_inner(frame: &mut Frame, ctx: &ColumnRenderCtx<'_>, area: Rect) -> usize {
+    let app = ctx.app;
+    let info = ctx.info;
+    let fields = ctx.fields;
+    let pane = ctx.pane;
+    let focus = ctx.focus;
+    let styles = ctx.styles;
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut focused_output_line: usize = 0;
     let label_width = git_label_width(info, fields);
@@ -446,16 +449,15 @@ pub fn render_detail_panel(
                 let git_inner = git_block.inner(columns[col]);
                 app.git_pane_mut().set_content_area(git_inner);
                 frame.render_widget(git_block, columns[col]);
-                let scroll_offset = render_git_column_inner(
-                    frame,
+                let git_ctx = ColumnRenderCtx {
                     app,
                     info,
-                    &git,
-                    app.git_pane(),
+                    fields: &git,
+                    pane: app.git_pane(),
                     focus,
-                    &styles,
-                    git_inner,
-                );
+                    styles: &styles,
+                };
+                let scroll_offset = render_git_column_inner(frame, &git_ctx, git_inner);
                 app.git_pane_mut().set_scroll_offset(scroll_offset);
             }
         }
@@ -590,17 +592,16 @@ fn render_project_metadata(
     context: &ProjectPanelRender<'_>,
     lower_area: Rect,
 ) -> usize {
+    let col_ctx = ColumnRenderCtx {
+        app,
+        info: context.info,
+        fields: context.fields,
+        pane,
+        focus: context.focus,
+        styles: context.styles,
+    };
     if context.info.stats_rows.is_empty() {
-        render_column_inner(
-            frame,
-            app,
-            context.info,
-            context.fields,
-            pane,
-            context.focus,
-            context.styles,
-            lower_area,
-        )
+        render_column_inner(frame, &col_ctx, lower_area)
     } else {
         let (stats_width, digit_width) = stats_column_width(&context.info.stats_rows);
 
@@ -609,16 +610,7 @@ fn render_project_metadata(
             .constraints([Constraint::Min(20), Constraint::Length(stats_width)])
             .split(lower_area);
 
-        let scroll_offset = render_column_inner(
-            frame,
-            app,
-            context.info,
-            context.fields,
-            pane,
-            context.focus,
-            context.styles,
-            sub_cols[0],
-        );
+        let scroll_offset = render_column_inner(frame, &col_ctx, sub_cols[0]);
         render_stats_column(
             frame,
             context.info,

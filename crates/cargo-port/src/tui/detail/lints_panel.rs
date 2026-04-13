@@ -163,15 +163,32 @@ pub fn render_lints_panel(
         })
         .collect();
 
+    let cmds_width = u16::try_from(
+        runs.iter()
+            .map(|run| format_lints_commands(run).len())
+            .max()
+            .unwrap_or("Cmds".len())
+            .max("Cmds".len()),
+    )
+    .unwrap_or(u16::MAX);
+    let slowest_width = u16::try_from(
+        runs.iter()
+            .map(|run| format_lints_slowest(run).len())
+            .max()
+            .unwrap_or("Slowest".len())
+            .max("Slowest".len()),
+    )
+    .unwrap_or(u16::MAX);
+
     let table = Table::new(
         rows,
         [
             Constraint::Length(16),
             Constraint::Length(16),
             Constraint::Length(8),
-            Constraint::Fill(1),
+            Constraint::Length(cmds_width),
             Constraint::Length(7),
-            Constraint::Length(16),
+            Constraint::Length(slowest_width),
         ],
     )
     .header(
