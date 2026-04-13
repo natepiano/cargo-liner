@@ -22,6 +22,7 @@ use super::model;
 use super::model::DetailField;
 use super::model::DetailInfo;
 use crate::constants::IN_SYNC;
+use crate::constants::NO_LINT_RUNS;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
 use crate::tui::constants::ACTIVE_FOCUS_COLOR;
@@ -124,9 +125,13 @@ fn render_column_inner(
         let value = field.value(info);
         let base_label_style = styles.readonly_label;
         let base_value_style = if *field == DetailField::Ci {
-            render::conclusion_style(info.ci)
-        } else if *field == DetailField::Lint && is_lint_spinner(&value) {
-            Style::default().fg(ACCENT_COLOR)
+            if value == crate::constants::NO_CI_WORKFLOW || value == crate::constants::NO_CI_RUNS {
+                Style::default().fg(INACTIVE_BORDER_COLOR)
+            } else {
+                render::conclusion_style(info.ci)
+            }
+        } else if *field == DetailField::Lint {
+            lint_value_style(&value)
         } else {
             Style::default()
         };
@@ -859,19 +864,24 @@ fn detail_layout(app: &App) -> DetailLayoutSpec {
     detail_layout_spec(git, targets)
 }
 
-/// Returns `true` when the lint label text is a running spinner (braille), not
-/// a static icon (emoji) or blank.
-fn is_lint_spinner(value: &str) -> bool {
+/// Returns the appropriate style for the lint detail field value based on
+/// the icon: green for passed, red for failed, accent for running spinner,
+/// inactive for "no lint runs".
+fn lint_value_style(value: &str) -> Style {
     use crate::constants::LINT_FAILED;
-    use crate::constants::LINT_NO_LOG;
     use crate::constants::LINT_PASSED;
-    use crate::constants::LINT_STALE;
 
-    !value.is_empty()
-        && value != LINT_PASSED
-        && value != LINT_FAILED
-        && value != LINT_STALE
-        && value.trim() != LINT_NO_LOG.trim()
+    if value.contains(LINT_PASSED) {
+        Style::default().fg(SUCCESS_COLOR)
+    } else if value.contains(LINT_FAILED) {
+        Style::default().fg(ERROR_COLOR)
+    } else if value.starts_with(NO_LINT_RUNS) {
+        Style::default().fg(INACTIVE_BORDER_COLOR)
+    } else if !value.is_empty() && value.trim() != " " {
+        Style::default().fg(ACCENT_COLOR)
+    } else {
+        Style::default()
+    }
 }
 
 /// Word-wrap text to fit within `max_width` characters, breaking at word boundaries.

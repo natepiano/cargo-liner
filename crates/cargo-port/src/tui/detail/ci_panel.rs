@@ -228,7 +228,6 @@ fn selected_ci_state(app: &App) -> Option<&CiState> { app.selected_ci_state() }
 
 fn ci_panel_title(
     local: usize,
-    github_total: u32,
     is_fetching: bool,
     fetch_count: u32,
     elapsed: std::time::Duration,
@@ -244,10 +243,8 @@ fn ci_panel_title(
     {
         let indicator = crate::tui::types::scroll_indicator(pos, local);
         format!(" CI Runs{suffix} ({indicator}) ")
-    } else if github_total > 0 {
-        format!(" CI Runs{suffix} (local {local} / github {github_total}) ")
     } else {
-        format!(" CI Runs{suffix} ({local}) ")
+        format!(" CI Runs{suffix} ")
     }
 }
 
@@ -284,7 +281,6 @@ pub fn render_ci_panel(
 
     let local = ci_runs.len();
     let ci_state = selected_ci_state(app);
-    let github_total = ci_state.map_or(0, CiState::github_total);
     let is_fetching = ci_state.is_some_and(CiState::is_fetching);
     let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
     let fetch_count = ci_state.map_or(0, CiState::fetch_count);
@@ -300,7 +296,6 @@ pub fn render_ci_panel(
     });
     let title = ci_panel_title(
         local,
-        github_total,
         is_fetching,
         fetch_count,
         elapsed,

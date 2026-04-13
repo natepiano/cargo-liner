@@ -70,13 +70,13 @@ impl WorktreeGroup {
                 primary, linked, ..
             } => std::iter::once(primary.visibility())
                 .chain(linked.iter().map(WorkspaceProject::visibility))
-                .filter(|v| !matches!(v, Visibility::Dismissed))
+                .filter(|v| matches!(v, Visibility::Visible))
                 .count(),
             Self::Packages {
                 primary, linked, ..
             } => std::iter::once(primary.visibility())
                 .chain(linked.iter().map(PackageProject::visibility))
-                .filter(|v| !matches!(v, Visibility::Dismissed))
+                .filter(|v| matches!(v, Visibility::Visible))
                 .count(),
         }
     }

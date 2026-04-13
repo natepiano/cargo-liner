@@ -25,36 +25,6 @@ use crate::tui::interaction::UiSurface::Content;
 use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
 
-fn format_bytes(bytes: u64) -> String {
-    const BYTES_PER_KIB: u64 = 1024;
-    const BYTES_PER_MIB: u64 = BYTES_PER_KIB * 1024;
-    const BYTES_PER_GIB: u64 = BYTES_PER_MIB * 1024;
-
-    if bytes >= BYTES_PER_GIB {
-        format_decimal_unit(bytes, BYTES_PER_GIB, "GiB")
-    } else if bytes >= BYTES_PER_MIB {
-        format_decimal_unit(bytes, BYTES_PER_MIB, "MiB")
-    } else if bytes >= BYTES_PER_KIB {
-        format_decimal_unit(bytes, BYTES_PER_KIB, "KiB")
-    } else {
-        format!("{bytes} B")
-    }
-}
-
-fn format_decimal_unit(bytes: u64, unit_bytes: u64, unit_label: &str) -> String {
-    let whole = bytes / unit_bytes;
-    let remainder = bytes % unit_bytes;
-    let mut tenths =
-        (u128::from(remainder) * 10 + u128::from(unit_bytes / 2)) / u128::from(unit_bytes);
-    let mut whole = whole;
-    if tenths == 10 {
-        whole += 1;
-        tenths = 0;
-    }
-
-    format!("{whole}.{tenths} {unit_label}")
-}
-
 fn format_lints_finished(run: &LintRun) -> String {
     run.finished_at
         .as_deref()
@@ -115,22 +85,21 @@ pub(super) fn format_lints_slowest(run: &LintRun) -> String {
 
 fn lints_panel_title(app: &App, runs: &[LintRun], focused: bool) -> String {
     if runs.is_empty() {
-        return " No Lint Runs ".to_string();
+        let is_rust = app
+            .selected_project_path()
+            .is_some_and(|path| app.is_cargo_active_path(path));
+        let msg = if is_rust {
+            crate::constants::NO_LINT_RUNS
+        } else {
+            crate::constants::NO_LINT_RUNS_NOT_RUST
+        };
+        return format!(" {msg} ");
     }
     if focused {
         let indicator = crate::tui::types::scroll_indicator(app.lint_pane().pos(), runs.len());
         return format!(" Lint Runs ({indicator}) ");
     }
-    let cache_size = app
-        .lint_cache_usage()
-        .cache_size_bytes
-        .map_or_else(|| "unlimited".to_string(), format_bytes);
-    format!(
-        " Lint Runs (runs {}, cache {}/{}) ",
-        runs.len(),
-        format_bytes(app.lint_cache_usage().bytes),
-        cache_size,
-    )
+    " Lint Runs ".to_string()
 }
 
 fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'static> {

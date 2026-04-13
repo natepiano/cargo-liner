@@ -640,8 +640,8 @@ pub(super) fn build_settings_lines(
             let row = WrappedValueRow {
                 prefix: &label,
                 value: &edit_buffer,
-                prefix_style: selection.patch(Style::default().fg(TITLE_COLOR)),
-                value_style: selection.patch(Style::default().fg(TITLE_COLOR)),
+                prefix_style: selection.patch(label_style),
+                value_style: selection.patch(Style::default()),
                 content_width,
             };
             push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
@@ -662,10 +662,7 @@ pub(super) fn build_settings_lines(
             lines.push(Line::from(vec![
                 Span::styled(label, selection.patch(label_style)),
                 Span::styled("< ", selection.patch(Style::default().fg(LABEL_COLOR))),
-                Span::styled(
-                    (*value).clone(),
-                    selection.patch(Style::default().add_modifier(Modifier::BOLD)),
-                ),
+                Span::styled((*value).clone(), selection.patch(Style::default())),
                 Span::styled(" >", selection.patch(Style::default().fg(LABEL_COLOR))),
             ]));
             line_targets.push(Some(selection_index));
@@ -676,17 +673,26 @@ pub(super) fn build_settings_lines(
                 prefix: &label,
                 value,
                 prefix_style: selection.patch(label_style),
-                value_style: selection.patch(Style::default().fg(TITLE_COLOR)),
+                value_style: selection.patch(Style::default().fg(ERROR_COLOR)),
                 content_width,
             };
             push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
+        } else if setting == Some(SettingOption::LintCacheSize) {
+            let used = crate::tui::render::format_bytes(app.lint_cache_usage().bytes);
+            let limit = &app.current_config().lint.cache_size;
+            let usage_suffix = format!("  {used} / {limit}");
+            lines.push(Line::from(vec![
+                Span::styled(label, selection.patch(label_style)),
+                Span::styled((*value).clone(), selection.patch(Style::default())),
+                Span::styled(usage_suffix, Style::default().fg(LABEL_COLOR)),
+            ]));
+            line_targets.push(Some(selection_index));
         } else {
-            let style = selection.patch(label_style);
             let row = WrappedValueRow {
                 prefix: &label,
                 value,
-                prefix_style: style,
-                value_style: style,
+                prefix_style: selection.patch(label_style),
+                value_style: selection.patch(Style::default()),
                 content_width,
             };
             push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
@@ -839,7 +845,7 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
             begin_settings_edit(app, format_lint_commands(app.current_config()));
         },
         Some(SettingOption::LintCacheSize) => {
-            begin_settings_edit(app, format_lint_cache_size(app.current_config()));
+            begin_settings_edit(app, app.current_config().lint.cache_size.clone());
         },
         Some(SettingOption::StatusFlashSecs) => {
             begin_settings_edit(app, format_flash_secs(app.current_config()));

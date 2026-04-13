@@ -487,7 +487,7 @@ fn render_empty_ci_panel(
     } else if is_local || !has_url {
         " CI Runs — requires a GitHub origin remote "
     } else if !has_workflows {
-        " CI Runs — no .yml or .yaml in .github/workflows/ "
+        " No CI workflow configured "
     } else if !app.is_scan_complete() {
         " CI Runs — loading… "
     } else {
