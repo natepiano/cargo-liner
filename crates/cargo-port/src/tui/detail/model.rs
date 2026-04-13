@@ -6,6 +6,7 @@ use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
+use crate::project;
 use crate::project::Cargo;
 use crate::project::ExampleGroup;
 use crate::project::GitPathState;
@@ -15,6 +16,7 @@ use crate::project::ProjectFields;
 use crate::project::ProjectType;
 use crate::project::RootItem;
 use crate::project::RustProject;
+use crate::project::SubmoduleInfo;
 use crate::project::WorkspaceProject;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeHealth;
@@ -625,6 +627,58 @@ pub fn build_detail_info_for_workspace_ref(
     display_path: &str,
 ) -> DetailInfo {
     build_detail_info_for_workspace(app, ws, display_path, false, None)
+}
+
+/// Build `DetailInfo` for a git submodule nested under a project.
+pub fn build_detail_info_for_submodule(app: &App, submodule: &SubmoduleInfo) -> DetailInfo {
+    let abs_path = &submodule.path;
+    let display_path = project::home_relative_path(abs_path);
+    let git_detail = build_git_detail_fields(app, abs_path);
+
+    let version = submodule.commit.as_deref().unwrap_or("-").to_string();
+    let disk = submodule
+        .info
+        .disk_usage_bytes
+        .map_or_else(String::new, crate::tui::render::format_bytes);
+
+    DetailInfo {
+        package_title: "Submodule".to_string(),
+        name: submodule.name.clone(),
+        title_name: submodule.name.clone(),
+        path: display_path,
+        version,
+        description: submodule.url.clone(),
+        crates_version: None,
+        crates_downloads: None,
+        types: String::new(),
+        disk,
+        lint_label: String::new(),
+        ci: None,
+        stats_rows: Vec::new(),
+        git_branch: git_detail.branch,
+        git_path: git_detail.path,
+        git_sync: git_detail.sync,
+        git_vs_origin: git_detail.vs_origin,
+        git_vs_local: git_detail.vs_local,
+        local_main_branch: git_detail.local_main_branch,
+        main_branch_label: git_detail.main_branch_label,
+        git_origin: git_detail.origin,
+        git_owner: git_detail.owner,
+        git_url: git_detail.url,
+        git_stars: git_detail.stars,
+        repo_description: git_detail.description,
+        git_inception: git_detail.inception,
+        git_last_commit: git_detail.last_commit,
+        worktree_label: None,
+        worktree_health: WorktreeHealth::Normal,
+        worktree_names: Vec::new(),
+        is_binary: false,
+        binary_name: None,
+        examples: Vec::new(),
+        benches: Vec::new(),
+        has_package: false,
+        cargo_active: false,
+    }
 }
 
 fn build_detail_info_for_workspace(

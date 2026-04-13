@@ -9,6 +9,7 @@ mod project_fields;
 mod root_item;
 mod rust_info;
 mod rust_project;
+mod submodule;
 mod workspace;
 mod worktree_group;
 
@@ -48,5 +49,8 @@ pub(crate) use root_item::RootItem;
 // ── Rust info ────────────────────────────────────────────────────────
 pub(crate) use rust_info::Cargo;
 pub(crate) use rust_project::RustProject;
+// ── Submodule types ─────────────────────────────────────────────────
+pub(crate) use submodule::SubmoduleInfo;
+pub(crate) use submodule::detect_submodules;
 pub(crate) use workspace::WorkspaceProject;
 pub(crate) use worktree_group::WorktreeGroup;

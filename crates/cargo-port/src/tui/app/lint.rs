@@ -21,6 +21,7 @@ impl App {
                 VisibleRow::GroupHeader { .. }
                 | VisibleRow::Member { .. }
                 | VisibleRow::Vendored { .. }
+                | VisibleRow::Submodule { .. }
                 | VisibleRow::WorktreeMember { .. }
                 | VisibleRow::WorktreeVendored { .. },
             )
@@ -104,6 +105,7 @@ impl App {
             Some(
                 VisibleRow::Member { .. }
                 | VisibleRow::Vendored { .. }
+                | VisibleRow::Submodule { .. }
                 | VisibleRow::WorktreeMember { .. }
                 | VisibleRow::WorktreeVendored { .. },
             )

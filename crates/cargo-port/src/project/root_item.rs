@@ -11,6 +11,7 @@ use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
 use super::rust_project::RustProject;
+use super::submodule::SubmoduleInfo;
 use super::worktree_group::WorktreeGroup;
 use crate::lint::LintRuns;
 use crate::lint::LintStatus;
@@ -97,6 +98,9 @@ impl RootItem {
 
     /// Whether this item has expandable children.
     pub(crate) fn has_children(&self) -> bool {
+        if !self.submodules().is_empty() {
+            return true;
+        }
         match self {
             Self::Rust(RustProject::Workspace(ws)) => {
                 ws.groups().iter().any(|g| !g.members().is_empty()) || !ws.vendored().is_empty()
@@ -127,6 +131,19 @@ impl RootItem {
         match self {
             Self::Rust(_) | Self::Worktrees(_) => "\u{1f980}",
             Self::NonRust(_) => "  ",
+        }
+    }
+
+    /// Git submodules for this item's primary project info.
+    pub(crate) fn submodules(&self) -> &[SubmoduleInfo] {
+        match self {
+            Self::Rust(RustProject::Workspace(ws)) => &ws.info().submodules,
+            Self::Rust(RustProject::Package(pkg)) => &pkg.info().submodules,
+            Self::NonRust(p) => &p.info().submodules,
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces { primary, .. } => &primary.info().submodules,
+                WorktreeGroup::Packages { primary, .. } => &primary.info().submodules,
+            },
         }
     }
 
@@ -169,7 +186,7 @@ impl RootItem {
     }
 
     pub(crate) fn at_path(&self, path: &Path) -> Option<&ProjectInfo> {
-        match self {
+        let result = match self {
             Self::Rust(p) => p.at_path(path),
             Self::NonRust(p) => (p.path() == path).then(|| p.info()),
             Self::Worktrees(g) => match g {
@@ -188,10 +205,21 @@ impl RootItem {
                         .find_map(|l| super::rust_project::info_in_package(l, path))
                 }),
             },
-        }
+        };
+        result.or_else(|| {
+            self.submodules()
+                .iter()
+                .find(|s| s.path.as_path() == path)
+                .map(|s| &s.info)
+        })
     }
 
     pub(crate) fn at_path_mut(&mut self, path: &Path) -> Option<&mut ProjectInfo> {
+        // Check submodules first to avoid double-borrowing through the main
+        // hierarchy and then falling back to submodules on the same `&mut self`.
+        if self.submodules().iter().any(|s| s.path.as_path() == path) {
+            return submodule_info_mut(self, path);
+        }
         match self {
             Self::Rust(p) => p.at_path_mut(path),
             Self::NonRust(p) => (p.path() == path).then(|| p.info_mut()),
@@ -323,6 +351,47 @@ impl RootItem {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+/// Mutable access to a submodule's `ProjectInfo` by path.
+///
+/// Separated from `at_path_mut` to avoid borrow-checker conflicts when
+/// the caller has already borrowed `self` immutably for the submodule check.
+fn submodule_info_mut<'a>(item: &'a mut RootItem, path: &Path) -> Option<&'a mut ProjectInfo> {
+    match item {
+        RootItem::Rust(RustProject::Workspace(ws)) => ws
+            .info_mut()
+            .submodules
+            .iter_mut()
+            .find(|s| s.path.as_path() == path)
+            .map(|s| &mut s.info),
+        RootItem::Rust(RustProject::Package(pkg)) => pkg
+            .info_mut()
+            .submodules
+            .iter_mut()
+            .find(|s| s.path.as_path() == path)
+            .map(|s| &mut s.info),
+        RootItem::NonRust(nr) => nr
+            .info_mut()
+            .submodules
+            .iter_mut()
+            .find(|s| s.path.as_path() == path)
+            .map(|s| &mut s.info),
+        RootItem::Worktrees(g) => match g {
+            WorktreeGroup::Workspaces { primary, .. } => primary
+                .info_mut()
+                .submodules
+                .iter_mut()
+                .find(|s| s.path.as_path() == path)
+                .map(|s| &mut s.info),
+            WorktreeGroup::Packages { primary, .. } => primary
+                .info_mut()
+                .submodules
+                .iter_mut()
+                .find(|s| s.path.as_path() == path)
+                .map(|s| &mut s.info),
+        },
+    }
+}
 
 fn sum_disk(primary: Option<u64>, linked: impl Iterator<Item = Option<u64>>) -> Option<u64> {
     let mut total = 0u64;

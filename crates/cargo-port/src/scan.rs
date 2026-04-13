@@ -36,6 +36,7 @@ use super::project::PackageProject;
 use super::project::ProjectFields;
 use super::project::RootItem;
 use super::project::RustProject;
+use super::project::SubmoduleInfo;
 use super::project::WorkspaceProject;
 use super::project::WorktreeGroup;
 
@@ -90,6 +91,10 @@ pub(crate) enum BackgroundMsg {
     ProjectRefreshed {
         item: RootItem,
     },
+    Submodules {
+        path:       AbsolutePath,
+        submodules: Vec<SubmoduleInfo>,
+    },
     LintStatus {
         path:   AbsolutePath,
         status: LintStatus,
@@ -120,6 +125,7 @@ impl BackgroundMsg {
             | Self::GitPathState { path, .. }
             | Self::CratesIoVersion { path, .. }
             | Self::RepoMeta { path, .. }
+            | Self::Submodules { path, .. }
             | Self::LintStatus { path, .. } => Some(path.as_path()),
             Self::ProjectDiscovered { item } | Self::ProjectRefreshed { item } => Some(item.path()),
             Self::ScanResult { .. }
@@ -968,6 +974,39 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
                 version:   info.version,
                 downloads: info.downloads,
             });
+        }
+    }
+
+    // Submodules (local, fast — reads .gitmodules + one git ls-tree).
+    // Send the Submodules message first so `at_path_mut` can find them,
+    // then send standard GitInfo/GitPathState/DiskUsage messages that the
+    // existing handlers route through the normal lookup machinery.
+    if repo_presence.is_in_repo() {
+        let submodules = super::project::detect_submodules(abs_path);
+        if !submodules.is_empty() {
+            let sub_paths: Vec<PathBuf> = submodules.iter().map(|s| s.path.clone()).collect();
+            let _ = tx.send(BackgroundMsg::Submodules {
+                path: abs.clone(),
+                submodules,
+            });
+            for sub_path in &sub_paths {
+                let sub_abs: AbsolutePath = sub_path.clone().into();
+                let _ = tx.send(BackgroundMsg::GitPathState {
+                    path:  sub_abs.clone(),
+                    state: super::project::detect_git_path_state(sub_path),
+                });
+                if let Some(info) = GitInfo::detect(sub_path) {
+                    let _ = tx.send(BackgroundMsg::GitInfo {
+                        path: sub_abs.clone(),
+                        info,
+                    });
+                }
+                let bytes = dir_size(sub_path);
+                let _ = tx.send(BackgroundMsg::DiskUsage {
+                    path: sub_abs,
+                    bytes,
+                });
+            }
         }
     }
 

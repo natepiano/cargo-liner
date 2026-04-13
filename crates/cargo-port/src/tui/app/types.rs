@@ -429,6 +429,11 @@ pub enum VisibleRow {
         worktree_index: usize,
         vendored_index: usize,
     },
+    /// A git submodule nested under the root project.
+    Submodule {
+        node_index:      usize,
+        submodule_index: usize,
+    },
 }
 
 /// Per-project CI state. Replaces the scattered `(ci_runs, ci_fetching,

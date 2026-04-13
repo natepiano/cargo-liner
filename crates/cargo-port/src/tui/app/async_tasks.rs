@@ -1510,6 +1510,7 @@ impl App {
             | BackgroundMsg::RepoFetchComplete { .. }
             | BackgroundMsg::CratesIoVersion { .. }
             | BackgroundMsg::RepoMeta { .. }
+            | BackgroundMsg::Submodules { .. }
             | BackgroundMsg::ScanResult { .. }
             | BackgroundMsg::ProjectDiscovered { .. }
             | BackgroundMsg::ProjectRefreshed { .. }
@@ -2278,6 +2279,12 @@ impl App {
             },
             BackgroundMsg::GitPathState { path, state } => {
                 self.handle_git_path_state_msg(&path, state);
+            },
+            BackgroundMsg::Submodules { path, submodules } => {
+                if let Some(info) = self.projects.at_path_mut(path.as_path()) {
+                    info.submodules = submodules;
+                    self.detail_generation += 1;
+                }
             },
             BackgroundMsg::CratesIoVersion {
                 path,

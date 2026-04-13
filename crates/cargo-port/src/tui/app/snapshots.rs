@@ -18,6 +18,7 @@ use crate::project::PackageProject;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
+use crate::project::SubmoduleInfo;
 use crate::project::Visibility;
 use crate::project::WorkspaceProject;
 use crate::project::WorktreeGroup;
@@ -30,6 +31,7 @@ use crate::tui::render;
 use crate::tui::render::PREFIX_GROUP_COLLAPSED;
 use crate::tui::render::PREFIX_MEMBER_INLINE;
 use crate::tui::render::PREFIX_MEMBER_NAMED;
+use crate::tui::render::PREFIX_SUBMODULE;
 use crate::tui::render::PREFIX_VENDORED;
 use crate::tui::render::PREFIX_WT_COLLAPSED;
 use crate::tui::render::PREFIX_WT_FLAT;
@@ -82,6 +84,7 @@ pub(super) fn build_visible_rows(
                 }
             },
         }
+        emit_submodule_rows(&mut rows, ni, item.submodules());
     }
     rows
 }
@@ -127,6 +130,15 @@ fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[Package
         rows.push(VisibleRow::Vendored {
             node_index:     ni,
             vendored_index: vi,
+        });
+    }
+}
+
+fn emit_submodule_rows(rows: &mut Vec<VisibleRow>, ni: usize, submodules: &[SubmoduleInfo]) {
+    for (si, _) in submodules.iter().enumerate() {
+        rows.push(VisibleRow::Submodule {
+            node_index:      ni,
+            submodule_index: si,
         });
     }
 }
@@ -375,6 +387,10 @@ fn observe_item_fit_widths(
         RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. }) => {
             observe_package_worktree_group_fit_widths(widths, wtg, state);
         },
+    }
+    for submodule in item.submodules() {
+        let label = format!("{} (s)", submodule.name);
+        App::observe_name_width(widths, dw(PREFIX_SUBMODULE) + dw(&label));
     }
 }
 

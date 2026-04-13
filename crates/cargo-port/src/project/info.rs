@@ -1,4 +1,5 @@
 use super::git::GitInfo;
+use super::submodule::SubmoduleInfo;
 
 /// Visibility state for projects and worktree groups.
 /// Progression: `Visible -> Deleted -> Dismissed`.
@@ -31,4 +32,5 @@ pub(crate) struct ProjectInfo {
     pub git_info:         Option<GitInfo>,
     pub visibility:       Visibility,
     pub worktree_health:  WorktreeHealth,
+    pub submodules:       Vec<SubmoduleInfo>,
 }

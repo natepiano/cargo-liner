@@ -15,6 +15,7 @@ use super::types::ExpandKey;
 use super::types::SearchHit;
 use super::types::SearchMode;
 use super::types::VisibleRow;
+use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::DisplayPath;
 use crate::project::PackageProject;
@@ -139,6 +140,16 @@ impl App {
                 let item = self.projects.get(node_index)?;
                 let pkg = Self::worktree_vendored_ref(item, worktree_index, vendored_index)?;
                 Some(tui::detail::build_detail_info_for_member(self, pkg))
+            },
+            VisibleRow::Submodule {
+                node_index,
+                submodule_index,
+            } => {
+                let item = self.projects.get(node_index)?;
+                let submodule = item.submodules().get(submodule_index)?;
+                Some(tui::detail::build_detail_info_for_submodule(
+                    self, submodule,
+                ))
             },
         }
     }
@@ -327,6 +338,10 @@ impl App {
                 worktree_index,
                 vendored_index,
             }) => format!("worktree-vendored:{node_index}:{worktree_index}:{vendored_index}"),
+            Some(VisibleRow::Submodule {
+                node_index,
+                submodule_index,
+            }) => format!("submodule:{node_index}:{submodule_index}"),
             None => String::new(),
         }
     }
@@ -443,6 +458,15 @@ impl App {
                 let item = self.projects.get(node_index)?;
                 Self::worktree_vendored_path_ref(item, worktree_index, vendored_index)
             },
+            VisibleRow::Submodule {
+                node_index,
+                submodule_index,
+            } => {
+                let item = self.projects.get(node_index)?;
+                item.submodules()
+                    .get(submodule_index)
+                    .map(|s| s.path.as_path())
+            },
         }
     }
 
@@ -545,6 +569,16 @@ impl App {
                 let item = self.projects.get(node_index)?;
                 Self::worktree_vendored_display_path(item, worktree_index, vendored_index)
             },
+            VisibleRow::Submodule {
+                node_index,
+                submodule_index,
+            } => {
+                let item = self.projects.get(node_index)?;
+                let submodule = item.submodules().get(submodule_index)?;
+                Some(DisplayPath::new(project::home_relative_path(
+                    &submodule.path,
+                )))
+            },
         }
     }
 
@@ -638,6 +672,15 @@ impl App {
             } => {
                 let item = self.projects.get(node_index)?;
                 Self::worktree_vendored_abs_path(item, worktree_index, vendored_index)
+            },
+            VisibleRow::Submodule {
+                node_index,
+                submodule_index,
+            } => {
+                let item = self.projects.get(node_index)?;
+                item.submodules()
+                    .get(submodule_index)
+                    .map(|s| s.path.clone())
             },
         }
     }
@@ -951,6 +994,7 @@ impl App {
             )),
             VisibleRow::Member { .. }
             | VisibleRow::Vendored { .. }
+            | VisibleRow::Submodule { .. }
             | VisibleRow::WorktreeMember { .. }
             | VisibleRow::WorktreeVendored { .. } => None,
         }
@@ -1043,7 +1087,8 @@ impl App {
                     );
                 }
             },
-            VisibleRow::Vendored { node_index: ni, .. } => {
+            VisibleRow::Vendored { node_index: ni, .. }
+            | VisibleRow::Submodule { node_index: ni, .. } => {
                 self.collapse_to(&ExpandKey::Node(ni), VisibleRow::Root { node_index: ni });
             },
             VisibleRow::WorktreeEntry {
@@ -1157,7 +1202,8 @@ impl App {
         match row {
             VisibleRow::GroupHeader { node_index, .. }
             | VisibleRow::Member { node_index, .. }
-            | VisibleRow::Vendored { node_index, .. } => VisibleRow::Root { node_index },
+            | VisibleRow::Vendored { node_index, .. }
+            | VisibleRow::Submodule { node_index, .. } => VisibleRow::Root { node_index },
             VisibleRow::Root { .. } | VisibleRow::WorktreeEntry { .. } => row,
             VisibleRow::WorktreeGroupHeader {
                 node_index,

@@ -21,6 +21,7 @@ pub(super) use model::PendingExampleRun;
 pub(super) use model::RunTargetKind;
 pub(super) use model::build_detail_info;
 pub(super) use model::build_detail_info_for_member;
+pub(super) use model::build_detail_info_for_submodule;
 pub(super) use model::build_detail_info_for_workspace_ref;
 pub(super) use model::build_target_list;
 pub(super) use model::git_fields;

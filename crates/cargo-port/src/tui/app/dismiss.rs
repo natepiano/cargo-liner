@@ -28,7 +28,9 @@ impl App {
                 .projects
                 .get(node_index)
                 .map(|item| item.path().to_path_buf()),
-            VisibleRow::Member { node_index, .. } | VisibleRow::Vendored { node_index, .. } => self
+            VisibleRow::Member { node_index, .. }
+            | VisibleRow::Vendored { node_index, .. }
+            | VisibleRow::Submodule { node_index, .. } => self
                 .projects
                 .get(node_index)
                 .map(|item| item.path().to_path_buf()),

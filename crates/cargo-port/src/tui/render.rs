@@ -114,6 +114,7 @@ pub(super) const PREFIX_ROOT_COLLAPSED: &str = "▶ ";
 pub(super) const PREFIX_ROOT_LEAF: &str = "  ";
 pub(super) const PREFIX_MEMBER_INLINE: &str = "    ";
 pub(super) const PREFIX_MEMBER_NAMED: &str = "        ";
+pub(super) const PREFIX_SUBMODULE: &str = "    ";
 pub(super) const PREFIX_VENDORED: &str = "    ";
 pub(super) const PREFIX_GROUP_EXPANDED: &str = "    ▼ ";
 pub(super) const PREFIX_GROUP_COLLAPSED: &str = "    ▶ ";
@@ -1398,6 +1399,46 @@ fn render_vendored_item(
     )
 }
 
+fn render_submodule_item(
+    app: &App,
+    node_index: usize,
+    submodule_index: usize,
+    widths: &ResolvedWidths,
+) -> ListItem<'static> {
+    let item = &app.projects()[node_index];
+    let Some(submodule) = item.submodules().get(submodule_index) else {
+        let row = super::columns::build_group_header_cells(PREFIX_SUBMODULE, "");
+        return ListItem::new(super::columns::row_to_line(&row, widths));
+    };
+    let path = submodule.path.as_path();
+    let name = format!("{} (s)", submodule.name);
+    let git_path_state = app.git_path_state_for(path);
+    let deleted = app.is_deleted(item.path());
+    let row = super::columns::build_row_cells(super::columns::ProjectRow {
+        prefix: PREFIX_SUBMODULE,
+        name: &name,
+        name_segments: app.discovery_name_segments_for_path(
+            path,
+            &name,
+            git_path_state,
+            DiscoveryRowKind::PathOnly,
+        ),
+        git_path_state,
+        lint_icon: " ",
+        disk: "",
+        disk_style: Style::default(),
+        disk_suffix: None,
+        disk_suffix_style: None,
+        lang_icon: "  ",
+        git_origin_sync: "",
+        git_main: "",
+        ci: None,
+        deleted,
+        worktree_health: crate::project::WorktreeHealth::Normal,
+    });
+    ListItem::new(super::columns::row_to_line(&row, widths))
+}
+
 fn render_wt_vendored_item(
     app: &App,
     node_index: usize,
@@ -1573,6 +1614,10 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                 child_sorted,
                 widths,
             ),
+            VisibleRow::Submodule {
+                node_index,
+                submodule_index,
+            } => render_submodule_item(app, *node_index, *submodule_index, widths),
         })
         .collect()
 }
