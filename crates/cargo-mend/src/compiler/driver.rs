@@ -11,7 +11,7 @@ use rustc_driver::Compilation;
 use rustc_middle::ty::TyCtxt;
 
 use super::DriverSettings;
-use super::visibility::collect_and_store_findings;
+use super::visibility;
 use crate::constants::EXIT_CODE_ERROR;
 
 #[derive(Debug)]
@@ -35,7 +35,7 @@ impl Callbacks for AnalysisCallbacks {
         _compiler: &rustc_interface::interface::Compiler,
         tcx: TyCtxt<'_>,
     ) -> Compilation {
-        match collect_and_store_findings(tcx, &self.settings) {
+        match visibility::collect_and_store_findings(tcx, &self.settings) {
             Ok(true | false) => Compilation::Continue,
             Err(err) => {
                 self.error = Some(err);

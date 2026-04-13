@@ -12,8 +12,7 @@ use std::time::Instant;
 use anyhow::Context;
 use anyhow::Result;
 
-use super::persistence::load_report;
-use super::persistence::prepare_findings_dir;
+use super::persistence;
 use crate::config::LoadedConfig;
 use crate::constants::CONFIG_FINGERPRINT_ENV;
 use crate::constants::CONFIG_JSON_ENV;
@@ -71,8 +70,8 @@ pub(crate) fn run_selection(
     output_mode: BuildOutputMode,
     color: ColorMode,
 ) -> Result<SelectionResult, MendFailure> {
-    let findings_dir =
-        prepare_findings_dir(cargo_plan.target_directory.as_path()).map_err(|err| {
+    let findings_dir = persistence::prepare_findings_dir(cargo_plan.target_directory.as_path())
+        .map_err(|err| {
             MendFailure::Analysis(AnalysisFailure {
                 cause: CompilerFailureCause::DriverSetup(err),
             })
@@ -99,7 +98,7 @@ pub(crate) fn run_selection(
         }));
     }
 
-    let report = load_report(
+    let report = persistence::load_report(
         &findings_dir,
         selection,
         &loaded_config.fingerprint,

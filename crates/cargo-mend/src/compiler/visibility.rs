@@ -19,22 +19,18 @@ use rustc_span::def_id::LocalDefId;
 
 use super::DriverSettings;
 use super::config_relative_path_for_settings;
-use super::exposure::child_item_is_exposed_by_other_crate_visible_signature;
-use super::exposure::child_item_is_exposed_by_sibling_boundary_signature;
-use super::exposure::impl_item_is_exposed_by_exported_self_type;
-use super::exposure::parent_boundary_public_signature_exposes_child_used_outside_parent;
+use super::exposure;
+use super::facade;
 use super::facade::ParentFacadeExportStatus;
 use super::facade::ParentFacadeUsage;
 use super::facade::ParentFacadeVisibility;
-use super::facade::parent_facade_export_status;
-use super::facade::root_module_exports_item;
+use super::persistence;
 use super::persistence::FindingsSink;
 use super::persistence::StoredFinding;
 use super::persistence::StoredPubUseFixFact;
 use super::persistence::StoredReport;
-use super::persistence::cache_filename_for;
+use super::source_cache;
 use super::source_cache::SourceCache;
-use super::source_cache::analysis_source_root_for;
 use crate::config::DiagnosticCode;
 use crate::constants::FINDINGS_SCHEMA_VERSION;
 use crate::diagnostics::CompilerWarningFacts;
@@ -134,7 +130,9 @@ pub(super) fn collect_and_store_findings(
 ) -> Result<bool> {
     let crate_root_file = real_file_path(tcx, tcx.def_span(CRATE_DEF_ID))
         .context("failed to determine local crate root file")?;
-    let Some(src_root) = analysis_source_root_for(&crate_root_file, &settings.package_root) else {
+    let Some(src_root) =
+        source_cache::analysis_source_root_for(&crate_root_file, &settings.package_root)
+    else {
         return Ok(false);
     };
 
@@ -170,9 +168,10 @@ pub(super) fn collect_and_store_findings(
         analyze_foreign_item(&ctx, item, &mut sink)?;
     }
 
-    let output_path = settings
-        .findings_dir
-        .join(cache_filename_for(&settings.package_root, &crate_root_file));
+    let output_path = settings.findings_dir.join(persistence::cache_filename_for(
+        &settings.package_root,
+        &crate_root_file,
+    ));
     let stored_crate_root = if crate_root_file.is_absolute() {
         crate_root_file.clone()
     } else {
@@ -454,13 +453,23 @@ fn maybe_record_narrow_to_pub_crate(
         return Ok(());
     };
     // Check if the item itself is re-exported by the crate root.
-    if root_module_exports_item(ctx.source_cache, ctx.root_module, item.file_path, item_name) {
+    if facade::root_module_exports_item(
+        ctx.source_cache,
+        ctx.root_module,
+        item.file_path,
+        item_name,
+    ) {
         return Ok(());
     }
     // For impl items (methods, consts, types), also check if the self type
     // is re-exported — pub methods on re-exported types must stay pub.
     if let Some(self_name) = &item.impl_self_name
-        && root_module_exports_item(ctx.source_cache, ctx.root_module, item.file_path, self_name)
+        && facade::root_module_exports_item(
+            ctx.source_cache,
+            ctx.root_module,
+            item.file_path,
+            self_name,
+        )
     {
         return Ok(());
     }
@@ -498,7 +507,7 @@ fn maybe_record_suspicious_pub(
             let Some(status) = input
                 .item_name
                 .map(|name| {
-                    parent_facade_export_status(
+                    facade::parent_facade_export_status(
                         ctx.source_cache,
                         ctx.settings,
                         ctx.src_root,
@@ -592,7 +601,7 @@ fn classify_suspicious_pub(
     let parent_facade_export = input
         .item_name
         .map(|name| {
-            parent_facade_export_status(
+            facade::parent_facade_export_status(
                 ctx.source_cache,
                 ctx.settings,
                 ctx.src_root,
@@ -729,25 +738,25 @@ fn assess_signature_exposure_allowance(
     let Some(item_name) = item_name else {
         return Ok(None);
     };
-    if child_item_is_exposed_by_other_crate_visible_signature(
+    if exposure::child_item_is_exposed_by_other_crate_visible_signature(
         source_cache,
         settings,
         src_root,
         file_path,
         item_name,
-    )? || impl_item_is_exposed_by_exported_self_type(
+    )? || exposure::impl_item_is_exposed_by_exported_self_type(
         source_cache,
         settings,
         src_root,
         file_path,
         item_name,
-    )? || child_item_is_exposed_by_sibling_boundary_signature(
+    )? || exposure::child_item_is_exposed_by_sibling_boundary_signature(
         source_cache,
         settings,
         src_root,
         file_path,
         item_name,
-    )? || parent_boundary_public_signature_exposes_child_used_outside_parent(
+    )? || exposure::parent_boundary_public_signature_exposes_child_used_outside_parent(
         source_cache,
         settings,
         src_root,

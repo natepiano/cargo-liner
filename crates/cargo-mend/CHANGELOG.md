@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `cargo mend --fix` no longer fails to qualify function references inside macro invocations (e.g., `matches!`, `assert!`), preventing rollback-on-compile-error when `prefer_module_import` rewrites imports for functions called within macros
+
 ## [0.6.0] - 2026-04-11
 
 ### Added

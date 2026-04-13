@@ -4,7 +4,7 @@ mod exposure;
 mod facade;
 mod persistence;
 mod source_cache;
-pub(super) mod visibility;
+mod visibility;
 
 use std::env;
 use std::fs;

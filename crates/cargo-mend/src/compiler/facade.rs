@@ -6,14 +6,11 @@ use syn::ItemUse;
 use syn::UseTree;
 
 use super::DriverSettings;
+use super::source_cache;
 use super::source_cache::ExtractedPaths;
 use super::source_cache::PathOrigin;
 use super::source_cache::SourceCache;
-use super::source_cache::first_line_matching;
-use super::source_cache::flatten_use_tree;
-use super::source_cache::module_path_from_boundary_file;
-use super::source_cache::module_path_from_dir;
-use super::source_cache::module_path_from_source_file;
+use super::source_cache::UseRename;
 
 #[derive(Debug, Clone)]
 pub(super) struct ParentBoundary {
@@ -129,7 +126,7 @@ pub(super) fn parent_facade_export_status(
         .to_string_lossy()
         .replace('\\', "/");
     let parent_source = source_cache.read_source(&parent_boundary.boundary_file)?;
-    let parent_line = first_line_matching(parent_source, item_name).unwrap_or(1);
+    let parent_line = source_cache::first_line_matching(parent_source, item_name).unwrap_or(1);
 
     let usage = scan_facade_usage(
         source_cache,
@@ -163,7 +160,9 @@ pub(super) fn scan_facade_usage(
         if source_path == parent_boundary.boundary_file {
             continue;
         }
-        let Some(current_module_path) = module_path_from_source_file(src_root, source_path) else {
+        let Some(current_module_path) =
+            source_cache::module_path_from_source_file(src_root, source_path)
+        else {
             continue;
         };
         let Some(extracted) = source_cache.extracted_paths(source_path) else {
@@ -278,7 +277,7 @@ pub(super) fn parent_boundary_for_child(
         return Some(ParentBoundary {
             boundary_file: parent_mod_rs,
             subtree_root:  parent_dir.to_path_buf(),
-            module_path:   module_path_from_dir(src_root, parent_dir)?,
+            module_path:   source_cache::module_path_from_dir(src_root, parent_dir)?,
         });
     }
 
@@ -287,7 +286,7 @@ pub(super) fn parent_boundary_for_child(
         return Some(ParentBoundary {
             boundary_file: parent_file.clone(),
             subtree_root:  parent_dir.to_path_buf(),
-            module_path:   module_path_from_boundary_file(src_root, &parent_file)?,
+            module_path:   source_cache::module_path_from_boundary_file(src_root, &parent_file)?,
         });
     }
 
@@ -313,7 +312,7 @@ pub(super) fn parent_of_boundary(src_root: &Path, boundary_file: &Path) -> Optio
         return Some(ParentBoundary {
             boundary_file: mod_rs,
             subtree_root:  container_dir.to_path_buf(),
-            module_path:   module_path_from_dir(src_root, container_dir)?,
+            module_path:   source_cache::module_path_from_dir(src_root, container_dir)?,
         });
     }
 
@@ -322,7 +321,7 @@ pub(super) fn parent_of_boundary(src_root: &Path, boundary_file: &Path) -> Optio
         return Some(ParentBoundary {
             boundary_file: named_file.clone(),
             subtree_root:  container_dir.to_path_buf(),
-            module_path:   module_path_from_boundary_file(src_root, &named_file)?,
+            module_path:   source_cache::module_path_from_boundary_file(src_root, &named_file)?,
         });
     }
 
@@ -371,7 +370,7 @@ fn collect_matching_pub_use_exports(
         exported.fix_supported = true;
     }
     let mut paths = Vec::new();
-    flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
+    source_cache::flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
     for path in paths {
         let normalized = if path.first().is_some_and(|segment| segment == "self") {
             &path[1..]
@@ -488,10 +487,7 @@ pub(super) fn source_references_parent_export(
 /// Given `["test_utils", "assert_test_case"]` and a rename mapping
 /// `test_utils → ["crate", "test_support"]`, returns
 /// `["crate", "test_support", "assert_test_case"]`.
-fn resolve_alias_expr_path(
-    raw: &[String],
-    renames: &[super::source_cache::UseRename],
-) -> Option<Vec<String>> {
+fn resolve_alias_expr_path(raw: &[String], renames: &[UseRename]) -> Option<Vec<String>> {
     let first = raw.first()?;
     let rename = renames.iter().find(|rename| rename.alias == *first)?;
     let mut resolved = rename.original_path.clone();
@@ -596,7 +592,8 @@ pub(super) fn public_reexport_exists_outside_parent(
     let Some(parent_boundary) = parent_boundary_for_child(src_root, child_file) else {
         return Ok(false);
     };
-    let Some(child_module_path) = module_path_from_source_file(src_root, child_file) else {
+    let Some(child_module_path) = source_cache::module_path_from_source_file(src_root, child_file)
+    else {
         return Ok(false);
     };
 
@@ -607,7 +604,9 @@ pub(super) fn public_reexport_exists_outside_parent(
         let Some(file) = source_cache.parsed_file(source_file) else {
             continue;
         };
-        let Some(current_module_path) = module_path_from_source_file(src_root, source_file) else {
+        let Some(current_module_path) =
+            source_cache::module_path_from_source_file(src_root, source_file)
+        else {
             continue;
         };
 
@@ -619,7 +618,7 @@ pub(super) fn public_reexport_exists_outside_parent(
                 continue;
             };
             let mut paths = Vec::new();
-            flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
+            source_cache::flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
             for path in paths {
                 for resolved in resolve_module_relative_paths(&path, &current_module_path) {
                     if resolved.len() != child_module_path.len() + 1 {

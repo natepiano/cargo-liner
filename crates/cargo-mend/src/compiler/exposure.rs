@@ -6,15 +6,11 @@ use quote::ToTokens;
 use syn::visit::Visit;
 
 use super::DriverSettings;
+use super::facade;
 use super::facade::ParentFacadeReferenceUsage;
 use super::facade::ParentFacadeUsage;
-use super::facade::parent_boundary_for_child;
-use super::facade::parent_facade_export_status;
-use super::facade::public_reexport_exists_outside_parent;
-use super::facade::source_references_parent_export;
-use super::facade::workspace_source_mentions_parent_export_literal;
+use super::source_cache;
 use super::source_cache::SourceCache;
-use super::source_cache::module_path_from_source_file;
 
 pub(super) fn child_item_is_exposed_by_other_crate_visible_signature(
     source_cache: &SourceCache,
@@ -82,7 +78,7 @@ pub(super) fn child_item_is_exposed_by_sibling_boundary_signature(
     child_file: &Path,
     item_name: &str,
 ) -> Result<bool> {
-    let Some(parent_boundary) = parent_boundary_for_child(src_root, child_file) else {
+    let Some(parent_boundary) = facade::parent_boundary_for_child(src_root, child_file) else {
         return Ok(false);
     };
 
@@ -262,7 +258,7 @@ pub(super) fn parent_boundary_public_signature_exposes_child_used_outside_parent
     child_file: &Path,
     item_name: &str,
 ) -> Result<bool> {
-    let Some(parent_boundary) = parent_boundary_for_child(src_root, child_file) else {
+    let Some(parent_boundary) = facade::parent_boundary_for_child(src_root, child_file) else {
         return Ok(false);
     };
 
@@ -290,14 +286,16 @@ pub(super) fn parent_boundary_public_signature_exposes_child_used_outside_parent
         {
             continue;
         }
-        let Some(current_module_path) = module_path_from_source_file(src_root, source_file) else {
+        let Some(current_module_path) =
+            source_cache::module_path_from_source_file(src_root, source_file)
+        else {
             continue;
         };
         let Some(extracted) = source_cache.extracted_paths(source_file) else {
             continue;
         };
         if !matches!(
-            source_references_parent_export(
+            facade::source_references_parent_export(
                 extracted,
                 &current_module_path,
                 &parent_boundary.module_path,
@@ -309,7 +307,7 @@ pub(super) fn parent_boundary_public_signature_exposes_child_used_outside_parent
         }
     }
 
-    if workspace_source_mentions_parent_export_literal(
+    if facade::workspace_source_mentions_parent_export_literal(
         source_cache,
         settings,
         &parent_boundary,
@@ -328,38 +326,42 @@ pub(super) fn type_is_exposed_outside_parent(
     child_file: &Path,
     item_name: &str,
 ) -> Result<bool> {
-    Ok(
-        parent_facade_export_status(source_cache, settings, src_root, child_file, item_name)?
-            .is_some_and(|status| status.usage == ParentFacadeUsage::UsedOutsideParentSubtree)
-            || public_reexport_exists_outside_parent(
-                source_cache,
-                settings,
-                src_root,
-                child_file,
-                item_name,
-            )?
-            || child_item_is_exposed_by_other_crate_visible_signature(
-                source_cache,
-                settings,
-                src_root,
-                child_file,
-                item_name,
-            )?
-            || child_item_is_exposed_by_sibling_boundary_signature(
-                source_cache,
-                settings,
-                src_root,
-                child_file,
-                item_name,
-            )?
-            || parent_boundary_public_signature_exposes_child_used_outside_parent(
-                source_cache,
-                settings,
-                src_root,
-                child_file,
-                item_name,
-            )?,
-    )
+    Ok(facade::parent_facade_export_status(
+        source_cache,
+        settings,
+        src_root,
+        child_file,
+        item_name,
+    )?
+    .is_some_and(|status| status.usage == ParentFacadeUsage::UsedOutsideParentSubtree)
+        || facade::public_reexport_exists_outside_parent(
+            source_cache,
+            settings,
+            src_root,
+            child_file,
+            item_name,
+        )?
+        || child_item_is_exposed_by_other_crate_visible_signature(
+            source_cache,
+            settings,
+            src_root,
+            child_file,
+            item_name,
+        )?
+        || child_item_is_exposed_by_sibling_boundary_signature(
+            source_cache,
+            settings,
+            src_root,
+            child_file,
+            item_name,
+        )?
+        || parent_boundary_public_signature_exposes_child_used_outside_parent(
+            source_cache,
+            settings,
+            src_root,
+            child_file,
+            item_name,
+        )?)
 }
 
 pub(super) fn public_item_name(item: &syn::Item) -> Option<String> {

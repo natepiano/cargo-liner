@@ -1065,3 +1065,74 @@ edition = "2024"
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn fix_qualifies_bare_refs_inside_macros() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "macro_ref_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod utils;\nmod consumer;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/utils.rs"),
+        r#"#[derive(Debug, PartialEq)]
+pub enum Status { Ready, NotReady }
+
+pub fn check_status() -> Status { Status::Ready }
+"#,
+    )
+    .expect("write utils");
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        r#"use crate::parent::utils::check_status;
+use crate::parent::utils::Status;
+
+fn example() -> bool {
+    matches!(check_status(), Status::Ready)
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
+    assert!(
+        consumer.contains("utils::check_status()"),
+        "expected qualified call inside matches!, got:\n{consumer}"
+    );
+    assert!(
+        !consumer.contains("use crate::parent::utils::check_status;")
+            && !consumer.contains("use super::utils::check_status;"),
+        "function import should be removed, got:\n{consumer}"
+    );
+}
