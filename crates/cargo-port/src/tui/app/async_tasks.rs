@@ -1542,11 +1542,39 @@ impl App {
         while let Ok(msg) = self.ci_fetch_rx.try_recv() {
             match msg {
                 CiFetchMsg::Complete { path, result, kind } => {
+                    let before = self
+                        .ci_state
+                        .get(&std::path::PathBuf::from(&path))
+                        .map_or(0, |s| s.runs().len());
                     self.handle_ci_fetch_complete(&path, result, kind);
+                    let after = self
+                        .ci_state
+                        .get(&std::path::PathBuf::from(&path))
+                        .map_or(0, |s| s.runs().len());
+                    let new_runs = after.saturating_sub(before);
                     if let Some(task_id) = self.ci_fetch_toast.take() {
                         let empty: std::collections::HashSet<String> =
                             std::collections::HashSet::new();
                         self.toasts.complete_missing_items(task_id, &empty);
+                        let label = if new_runs > 0 {
+                            format!("{new_runs} new runs fetched")
+                        } else {
+                            "no new runs".to_string()
+                        };
+                        let result_item = crate::tui::toasts::TrackedItem {
+                            label,
+                            key: crate::project::AbsolutePath::from(std::path::PathBuf::from(
+                                format!("{path}:result"),
+                            ))
+                            .into(),
+                            started_at: None,
+                            completed_at: None,
+                        };
+                        let linger = std::time::Duration::from_secs_f64(
+                            self.current_config.tui.task_linger_secs,
+                        );
+                        self.toasts
+                            .add_new_tracked_items(task_id, &[result_item], linger);
                         self.finish_task_toast(task_id);
                     }
                 },

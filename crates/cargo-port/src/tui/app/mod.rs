@@ -310,7 +310,7 @@ impl App {
         self.pending_ci_fetch = Some(fetch);
     }
 
-    pub(super) fn set_ci_fetch_toast(&mut self, task_id: ToastTaskId) {
+    pub(super) const fn set_ci_fetch_toast(&mut self, task_id: ToastTaskId) {
         self.ci_fetch_toast = Some(task_id);
     }
 

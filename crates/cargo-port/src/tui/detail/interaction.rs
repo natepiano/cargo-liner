@@ -198,7 +198,7 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     }
 }
 
-fn handle_ci_enter(app: &mut App) {
+fn handle_ci_enter(app: &App) {
     let visible_runs = app
         .selected_project_path()
         .map_or_else(Vec::new, |path| app.ci_runs_for_display(path));

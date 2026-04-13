@@ -338,7 +338,21 @@ fn body_lines_tracked<'a>(
     result
 }
 
+/// Format an elapsed duration as a compact string (e.g. "3s", "1m 23s").
+fn format_elapsed(elapsed: std::time::Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs >= 60 {
+        format!("{}m {:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
 fn tracked_item_line<'a>(item: &TrackedItemView, body_style: Style, line_width: usize) -> Line<'a> {
+    // Always reserve 4 chars for the spinner slot (space + 2 braille + space)
+    // so the duration doesn't jump when the spinner disappears on completion.
+    const SPINNER_SLOT: usize = 4;
+
     let label_style = item.linger_progress.map_or(body_style, fade_to_style);
     let Some(elapsed) = item.elapsed else {
         return Line::from(Span::styled(item.label.clone(), label_style));
@@ -347,32 +361,42 @@ fn tracked_item_line<'a>(item: &TrackedItemView, body_style: Style, line_width: 
     let is_running = item.linger_progress.is_none();
     let spinner_text = if is_running {
         let frame = LINT_SPINNER.frame_at(elapsed);
-        format!(" {frame}")
+        format!(" {frame} ")
     } else {
-        String::new()
+        " ".repeat(SPINNER_SLOT)
     };
-    let spinner_width = spinner_text.len();
 
-    let secs = elapsed.as_secs();
-    let duration_suffix = format!(" {secs}s");
+    // Duration is right-aligned: "{duration} " (1 trailing space before border).
+    let duration_text = format_elapsed(elapsed);
+    let duration_suffix = format!("{duration_text} ");
     let suffix_width = duration_suffix.len();
-    let label_budget = line_width.saturating_sub(suffix_width + spinner_width);
+
+    // Label budget is fixed regardless of spinner state.
+    let label_budget = line_width.saturating_sub(suffix_width + SPINNER_SLOT + 1);
     let label = if item.label.len() > label_budget && label_budget > 1 {
         format!("{}…", &item.label[..label_budget.saturating_sub(1)])
     } else {
         item.label.clone()
     };
-    let padding = line_width
-        .saturating_sub(label.len())
-        .saturating_sub(spinner_width)
-        .saturating_sub(suffix_width);
+
+    // Padding fills between label and spinner slot.
+    let used = label.len() + SPINNER_SLOT + suffix_width;
+    let padding = line_width.saturating_sub(used);
+
     let duration_style = item
         .linger_progress
         .map_or_else(|| Style::default().fg(TITLE_COLOR), fade_to_style);
     Line::from(vec![
         Span::styled(label, label_style),
         Span::raw(" ".repeat(padding)),
-        Span::styled(spinner_text, Style::default().fg(ACCENT_COLOR)),
+        Span::styled(
+            spinner_text,
+            if is_running {
+                Style::default().fg(ACCENT_COLOR)
+            } else {
+                Style::default()
+            },
+        ),
         Span::styled(duration_suffix, duration_style),
     ])
 }
