@@ -6,41 +6,41 @@
 #       for navigation and cannot be used as action keys.
 
 [global]
-quit = "q"
-restart = "R"
-find = "/"
-open_editor = "e"
+dismiss       = "x"
+find          = "/"
+next_pane     = "Tab"
+open_editor   = "e"
+open_keymap   = "Ctrl+k"
 open_terminal = "t"
-settings = "s"
-next_pane = "Tab"
-prev_pane = "Shift+Tab"
-open_keymap = "Ctrl+k"
-dismiss = "x"
+prev_pane     = "Shift+Tab"
+quit          = "q"
+restart       = "R"
+settings      = "s"
 
 [project_list]
-expand_all = "+"
+clean        = "c"
 collapse_all = "-"
-rescan = "r"
-clean = "c"
+expand_all   = "+"
+rescan       = "r"
 
 [package]
 activate = "Enter"
-clean = "c"
+clean    = "c"
 
 [git]
 activate = "Enter"
-clean = "c"
+clean    = "c"
 
 [targets]
-activate = "Enter"
+activate      = "Enter"
+clean         = "c"
 release_build = "r"
-clean = "c"
 
 [ci_runs]
-activate = "Enter"
-toggle_view = "v"
+activate    = "Enter"
 clear_cache = "c"
+toggle_view = "v"
 
 [lints]
-activate = "Enter"
+activate      = "Enter"
 clear_history = "c"
