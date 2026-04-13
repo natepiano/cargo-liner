@@ -84,7 +84,7 @@ fn non_owner_member_ignores_stale_member_state_and_fetches_via_owner() {
 
     crate::tui::detail::handle_ci_runs_key(
         &mut app,
-        &crossterm::event::KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE),
+        &crossterm::event::KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::NONE),
     );
     assert_eq!(
         app.pending_ci_fetch

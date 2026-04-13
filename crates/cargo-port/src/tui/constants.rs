@@ -9,7 +9,6 @@ pub(super) const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 pub(super) const BLOCK_BORDER_WIDTH: usize = 2;
 
 pub(super) const FRAME_POLL_MILLIS: u64 = 16;
-pub(super) const CI_FETCH_DISPLAY_COUNT: u32 = 5;
 
 pub(super) const SEARCH_BAR_HEIGHT: u16 = 3;
 pub(super) const DETAIL_PANEL_HEIGHT: u16 = 14;
@@ -27,8 +26,6 @@ pub(super) const MAX_FINDER_RESULTS: usize = 50;
 // Popup section layout
 pub(super) const SECTION_HEADER_INDENT: &str = "  ";
 pub(super) const SECTION_ITEM_INDENT: &str = "    ";
-
-pub(super) const CI_EXTRA_ROWS: usize = 1;
 
 // Semantic colors
 

@@ -129,6 +129,7 @@ pub(super) struct App {
     clean_toast:              Option<ToastTaskId>,
     running_lint_paths:       HashMap<PathBuf, Instant>,
     lint_toast:               Option<ToastTaskId>,
+    ci_fetch_toast:           Option<ToastTaskId>,
     watch_tx:                 mpsc::Sender<WatcherMsg>,
     lint_runtime:             Option<RuntimeHandle>,
     unreachable_services:     HashSet<ServiceKind>,
@@ -307,6 +308,10 @@ impl App {
 
     pub(super) fn set_pending_ci_fetch(&mut self, fetch: PendingCiFetch) {
         self.pending_ci_fetch = Some(fetch);
+    }
+
+    pub(super) fn set_ci_fetch_toast(&mut self, task_id: ToastTaskId) {
+        self.ci_fetch_toast = Some(task_id);
     }
 
     pub(super) const fn take_pending_ci_fetch(&mut self) -> Option<PendingCiFetch> {

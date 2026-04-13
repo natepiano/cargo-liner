@@ -39,6 +39,7 @@ release_build = "r"
 [ci_runs]
 activate    = "Enter"
 clear_cache = "d"
+fetch_more  = "f"
 toggle_view = "v"
 
 [lints]

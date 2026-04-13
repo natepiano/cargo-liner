@@ -1543,6 +1543,12 @@ impl App {
             match msg {
                 CiFetchMsg::Complete { path, result, kind } => {
                     self.handle_ci_fetch_complete(&path, result, kind);
+                    if let Some(task_id) = self.ci_fetch_toast.take() {
+                        let empty: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
+                        self.toasts.complete_missing_items(task_id, &empty);
+                        self.finish_task_toast(task_id);
+                    }
                 },
             }
             count += 1;

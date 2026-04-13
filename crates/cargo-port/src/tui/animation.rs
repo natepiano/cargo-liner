@@ -58,9 +58,6 @@ impl Icon {
     }
 }
 
-pub const BRAILLE_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-pub const BRAILLE_SPINNER: FrameCycle =
-    FrameCycle::new(BRAILLE_FRAMES, Duration::from_millis(1000));
 pub const LINT_SPINNER_FRAMES: &[&str] = &[
     "⠉⠉", "⠈⠙", "⠀⠹", "⠀⢸", "⠀⣰", "⢀⣠", "⣀⣀", "⣄⡀", "⣆⠀", "⡇⠀", "⠏⠀", "⠋⠁",
 ];

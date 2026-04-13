@@ -234,6 +234,7 @@ impl App {
             clean_toast: None,
             running_lint_paths: HashMap::new(),
             lint_toast: None,
+            ci_fetch_toast: None,
             watch_tx: init.watch_tx,
             lint_runtime: init.lint_runtime,
             unreachable_services: HashSet::new(),

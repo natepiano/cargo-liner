@@ -300,7 +300,8 @@ action_enum! {
 action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum CiRunsAction {
-        Activate   => "activate",    "Open run or fetch more";
+        Activate   => "activate",    "Open run";
+        FetchMore  => "fetch_more",  "Fetch more CI runs";
         ToggleView => "toggle_view", "Toggle branch/all filter";
         ClearCache => "clear_cache", "Clear CI cache";
     }
@@ -441,6 +442,8 @@ impl ResolvedKeymap {
         // CI runs
         km.ci_runs
             .insert(KeyBind::plain(KeyCode::Enter), CiRunsAction::Activate);
+        km.ci_runs
+            .insert(KeyBind::plain(KeyCode::Char('f')), CiRunsAction::FetchMore);
         km.ci_runs
             .insert(KeyBind::plain(KeyCode::Char('v')), CiRunsAction::ToggleView);
         km.ci_runs

@@ -184,6 +184,7 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     };
     match action {
         CiRunsAction::Activate => handle_ci_enter(app),
+        CiRunsAction::FetchMore => handle_ci_fetch_more(app),
         CiRunsAction::ToggleView => {
             if let Some(path) = app.selected_project_path().map(Path::to_path_buf) {
                 app.toggle_ci_display_mode_for(&path);
@@ -198,35 +199,56 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
 }
 
 fn handle_ci_enter(app: &mut App) {
-    let ci_state = app.selected_ci_state();
     let visible_runs = app
         .selected_project_path()
         .map_or_else(Vec::new, |path| app.ci_runs_for_display(path));
-    let run_count = visible_runs.len();
-    let is_fetching = ci_state.is_some_and(CiState::is_fetching);
-    let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
-
     let cursor_pos = app.ci_pane().pos();
-    if cursor_pos < run_count {
-        if let Some(run) = visible_runs.get(cursor_pos) {
-            open_url(&run.url);
-        }
-    } else if cursor_pos == run_count
-        && !is_fetching
-        && let Some(ci_path) = app.selected_ci_path()
-    {
-        let current_count = u32::try_from(run_count).unwrap_or(u32::MAX);
-        let kind = if is_exhausted {
-            CiFetchKind::Refresh
-        } else {
-            CiFetchKind::FetchOlder
-        };
-        app.set_pending_ci_fetch(PendingCiFetch {
-            project_path: ci_path.display().to_string(),
-            current_count,
-            kind,
-        });
+    if let Some(run) = visible_runs.get(cursor_pos) {
+        open_url(&run.url);
     }
+}
+
+fn handle_ci_fetch_more(app: &mut App) {
+    let ci_state = app.selected_ci_state();
+    if ci_state.is_some_and(CiState::is_fetching) {
+        return;
+    }
+    let Some(ci_path) = app.selected_ci_path() else {
+        return;
+    };
+    let project_name = app
+        .selected_project_path()
+        .and_then(|path| {
+            app.projects()
+                .iter()
+                .find(|item| item.path() == path)
+                .and_then(|item| item.name().map(str::to_string))
+        })
+        .unwrap_or_else(|| crate::project::home_relative_path(&ci_path));
+    let run_count = app
+        .selected_project_path()
+        .map_or(0, |path| app.ci_runs_for_display(path).len());
+    let current_count = u32::try_from(run_count).unwrap_or(u32::MAX);
+    let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
+    let kind = if is_exhausted {
+        CiFetchKind::Refresh
+    } else {
+        CiFetchKind::FetchOlder
+    };
+    app.set_pending_ci_fetch(PendingCiFetch {
+        project_path: ci_path.display().to_string(),
+        current_count,
+        kind,
+    });
+    let task_id = app.start_task_toast("Fetching CI", &project_name);
+    let item = crate::tui::toasts::TrackedItem {
+        label:        project_name,
+        key:          crate::project::AbsolutePath::from(ci_path).into(),
+        started_at:   Some(std::time::Instant::now()),
+        completed_at: None,
+    };
+    app.set_task_tracked_items(task_id, &[item]);
+    app.set_ci_fetch_toast(task_id);
 }
 
 pub fn handle_lints_key(app: &mut App, event: &KeyEvent) {

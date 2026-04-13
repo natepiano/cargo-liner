@@ -29,7 +29,6 @@ use ratatui::backend::CrosstermBackend;
 use super::app::App;
 use super::app::PendingClean;
 use super::app::PollBackgroundStats;
-use super::constants::CI_FETCH_DISPLAY_COUNT;
 use super::constants::FRAME_POLL_MILLIS;
 use super::detail::CiFetchKind;
 use super::detail::PendingCiFetch;
@@ -352,8 +351,7 @@ fn spawn_pending_background_tasks(app: &mut App) {
         app.ci_state_mut().insert(
             abs,
             super::app::CiState::Fetching {
-                runs:  existing_runs,
-                count: CI_FETCH_DISPLAY_COUNT,
+                runs: existing_runs,
             },
         );
         app.increment_data_generation();

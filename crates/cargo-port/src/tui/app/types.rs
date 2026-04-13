@@ -442,7 +442,7 @@ pub enum VisibleRow {
 pub enum CiState {
     /// A fetch-more request is in progress. Keeps existing runs visible
     /// so the UI never flashes empty during pagination.
-    Fetching { runs: Vec<CiRun>, count: u32 },
+    Fetching { runs: Vec<CiRun> },
     /// Runs are available (possibly empty when the repo genuinely has no CI).
     Loaded {
         runs:         Vec<CiRun>,
@@ -470,13 +470,6 @@ impl CiState {
                 ..
             }
         )
-    }
-
-    pub const fn fetch_count(&self) -> u32 {
-        match self {
-            Self::Fetching { count, .. } => *count,
-            Self::Loaded { .. } => 0,
-        }
     }
 
     /// Total completed runs reported by GitHub, or 0 if not yet fetched.

@@ -256,6 +256,10 @@ fn ci_groups(
         ));
     }
     actions.push(Shortcut::from_keymap(
+        km.ci_runs.display_key_for(CiRunsAction::FetchMore),
+        "fetch more",
+    ));
+    actions.push(Shortcut::from_keymap(
         km.ci_runs.display_key_for(CiRunsAction::ClearCache),
         "clear cache",
     ));

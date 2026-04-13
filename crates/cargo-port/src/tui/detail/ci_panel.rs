@@ -14,12 +14,8 @@ use super::timestamp;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
-use crate::tui::animation::BRAILLE_SPINNER;
 use crate::tui::app::App;
-use crate::tui::app::CiState;
-use crate::tui::constants::ACCENT_COLOR;
 use crate::tui::constants::ACTIVE_FOCUS_COLOR;
-use crate::tui::constants::CI_EXTRA_ROWS;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
@@ -233,21 +229,9 @@ pub(super) fn ci_table_shows_durations(
     ci_table_fixed_width(ci_runs, cols, true) <= usize::from(inner_width)
 }
 
-fn selected_ci_state(app: &App) -> Option<&CiState> { app.selected_ci_state() }
-
-fn ci_panel_title(
-    local: usize,
-    is_fetching: bool,
-    fetch_count: u32,
-    elapsed: std::time::Duration,
-    focused_pos: Option<usize>,
-    mode_label: Option<&str>,
-) -> String {
+fn ci_panel_title(local: usize, focused_pos: Option<usize>, mode_label: Option<&str>) -> String {
     let suffix = mode_label.map_or(String::new(), |label| format!(" [{label}]"));
-    if is_fetching {
-        let spinner = BRAILLE_SPINNER.frame_at(elapsed);
-        format!(" CI Runs{suffix} {spinner} fetching {fetch_count} more… ")
-    } else if let Some(pos) = focused_pos
+    if let Some(pos) = focused_pos
         && pos < local
     {
         let indicator = crate::tui::types::scroll_indicator(pos, local);
@@ -255,29 +239,6 @@ fn ci_panel_title(
     } else {
         format!(" CI Runs{suffix} ")
     }
-}
-
-fn build_fetch_row(
-    widths_len: usize,
-    is_fetching: bool,
-    is_exhausted: bool,
-    fetch_count: u32,
-    elapsed: std::time::Duration,
-) -> Row<'static> {
-    let fetch_label = if is_fetching {
-        let spinner = BRAILLE_SPINNER.frame_at(elapsed);
-        format!(" {spinner} fetching {fetch_count} more…")
-    } else if is_exhausted {
-        " ↓ fetch new runs".to_string()
-    } else {
-        " ↓ fetch more runs".to_string()
-    };
-    let fetch_style = Style::default().fg(ACCENT_COLOR);
-    let mut fetch_cells: Vec<Cell> = vec![Cell::from(fetch_label).style(fetch_style)];
-    for _ in 1..widths_len {
-        fetch_cells.push(Cell::from(""));
-    }
-    Row::new(fetch_cells)
 }
 
 pub fn render_ci_panel(
@@ -289,11 +250,6 @@ pub fn render_ci_panel(
     let ci_focused = app.is_focused(PaneId::CiRuns);
 
     let local = ci_runs.len();
-    let ci_state = selected_ci_state(app);
-    let is_fetching = ci_state.is_some_and(CiState::is_fetching);
-    let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
-    let fetch_count = ci_state.map_or(0, CiState::fetch_count);
-    let elapsed = app.animation_elapsed();
     let focused_pos = if ci_focused {
         Some(app.ci_pane().pos())
     } else {
@@ -303,14 +259,7 @@ pub fn render_ci_panel(
         app.ci_toggle_available_for(path)
             .then(|| app.ci_display_mode_label_for(path))
     });
-    let title = ci_panel_title(
-        local,
-        is_fetching,
-        fetch_count,
-        elapsed,
-        focused_pos,
-        mode_label,
-    );
+    let title = ci_panel_title(local, focused_pos, mode_label);
 
     let ci_block = Block::default()
         .borders(Borders::ALL)
@@ -327,7 +276,7 @@ pub fn render_ci_panel(
         });
 
     let inner = ci_block.inner(area);
-    app.ci_pane_mut().set_len(ci_runs.len() + CI_EXTRA_ROWS);
+    app.ci_pane_mut().set_len(ci_runs.len());
     app.ci_pane_mut().set_content_area(inner);
 
     let all_columns = [
@@ -351,19 +300,12 @@ pub fn render_ci_panel(
 
     let header = build_ci_header_row(&cols);
 
-    let mut rows: Vec<Row> = ci_runs
+    let rows: Vec<Row> = ci_runs
         .iter()
         .map(|ci_run| build_ci_data_row(ci_run, &cols, show_durations))
         .collect();
 
     let widths = build_ci_widths(ci_runs, &cols, show_durations);
-    rows.push(build_fetch_row(
-        widths.len(),
-        is_fetching,
-        is_exhausted,
-        fetch_count,
-        elapsed,
-    ));
 
     let highlight_style = Pane::selection_style(app.pane_focus_state(PaneId::CiRuns));
 
