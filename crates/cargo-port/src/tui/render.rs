@@ -280,7 +280,14 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Clear, area);
 
-    let detail_info = app.cached_detail().map(|c| c.info.clone());
+    let detail_info = app.cached_detail().map(|c| c.info.clone()).map(|mut info| {
+        if let Some(path) = app.selected_project_path() {
+            info.lint_label = app
+                .selected_lint_icon(path)
+                .map_or_else(String::new, str::to_string);
+        }
+        info
+    });
     let selected_ci_state = app.selected_ci_state();
     let selected_has_ci_owner = app.selected_ci_path().is_some();
     let has_workflows = app

@@ -14,6 +14,7 @@ use ratatui::widgets::Wrap;
 use super::manager::ToastStyle;
 use super::manager::ToastView;
 use super::manager::TrackedItemView;
+use crate::tui::LINT_SPINNER;
 use crate::tui::constants::TOAST_GAP;
 use crate::tui::constants::TOAST_WIDTH;
 use crate::tui::interaction::ToastHitbox;
@@ -335,13 +336,23 @@ fn body_lines_tracked<'a>(
 
 fn tracked_item_line<'a>(item: &TrackedItemView, body_style: Style, line_width: usize) -> Line<'a> {
     let label_style = item.linger_progress.map_or(body_style, fade_to_style);
-    let Some(secs) = item.elapsed_secs else {
+    let Some(elapsed) = item.elapsed else {
         return Line::from(Span::styled(item.label.clone(), label_style));
     };
 
+    let is_running = item.linger_progress.is_none();
+    let spinner_text = if is_running {
+        let frame = LINT_SPINNER.frame_at(elapsed);
+        format!(" {frame}")
+    } else {
+        String::new()
+    };
+    let spinner_width = spinner_text.len();
+
+    let secs = elapsed.as_secs();
     let duration_suffix = format!(" {secs}s");
     let suffix_width = duration_suffix.len();
-    let label_budget = line_width.saturating_sub(suffix_width);
+    let label_budget = line_width.saturating_sub(suffix_width + spinner_width);
     let label = if item.label.len() > label_budget && label_budget > 1 {
         format!("{}…", &item.label[..label_budget.saturating_sub(1)])
     } else {
@@ -349,6 +360,7 @@ fn tracked_item_line<'a>(item: &TrackedItemView, body_style: Style, line_width: 
     };
     let padding = line_width
         .saturating_sub(label.len())
+        .saturating_sub(spinner_width)
         .saturating_sub(suffix_width);
     let duration_style = item
         .linger_progress
@@ -356,6 +368,7 @@ fn tracked_item_line<'a>(item: &TrackedItemView, body_style: Style, line_width: 
     Line::from(vec![
         Span::styled(label, label_style),
         Span::raw(" ".repeat(padding)),
+        Span::styled(spinner_text, Style::default().fg(Color::Cyan)),
         Span::styled(duration_suffix, duration_style),
     ])
 }

@@ -181,8 +181,8 @@ pub struct TrackedItemView {
     pub label:           String,
     /// None = pending. Some(0.0..1.0) = lingering with strikethrough progress.
     pub linger_progress: Option<f64>,
-    /// Elapsed seconds since the item started. `None` if no start time recorded.
-    pub elapsed_secs:    Option<u64>,
+    /// Elapsed duration since the item started. `None` if no start time recorded.
+    pub elapsed:         Option<Duration>,
 }
 
 impl<'a> ToastView<'a> {
@@ -558,14 +558,14 @@ impl ToastManager {
                                 }
                             })
                         });
-                        let elapsed_secs = item.started_at.map(|started| {
+                        let elapsed = item.started_at.map(|started| {
                             let end = item.completed_at.unwrap_or(now);
-                            end.duration_since(started).as_secs()
+                            end.duration_since(started)
                         });
                         TrackedItemView {
                             label: item.label.clone(),
                             linger_progress: item_progress,
-                            elapsed_secs,
+                            elapsed,
                         }
                     })
                     .collect();
