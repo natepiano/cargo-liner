@@ -131,24 +131,37 @@ enum DiskState {
 
 enum GitRefreshState {
     Pending {
-        debounce_deadline:     Instant,
-        max_deadline:          Instant,
-        refresh_repo_metadata: bool,
+        debounce_deadline: Instant,
+        max_deadline:      Instant,
+        refresh_scope:     GitRefreshKind,
     },
     Running {
-        dirty_since_start:     bool,
-        refresh_repo_metadata: bool,
+        dirty_since_start: bool,
+        refresh_scope:     GitRefreshKind,
     },
 }
 
-#[derive(Clone, Copy)]
+/// Classifies a filesystem event by what level of git detection it requires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GitRefreshKind {
+    /// The event can only change per-project path state
+    /// (clean/modified/untracked/ignored). Examples: `.gitignore` edits, git
+    /// index updates, `info/exclude` changes.
     PathStateOnly,
+    /// The event may have changed repo-level metadata (branch, remote,
+    /// ahead/behind). Examples: `HEAD` changes, ref updates, `packed-refs`
+    /// writes.
     FullMetadata,
 }
 
 impl GitRefreshKind {
-    const fn refresh_info(self) -> bool { matches!(self, Self::FullMetadata) }
+    /// Widen scope: if either side is `FullMetadata`, the result is
+    /// `FullMetadata`.
+    const fn widen(&mut self, other: Self) {
+        if matches!(other, Self::FullMetadata) {
+            *self = Self::FullMetadata;
+        }
+    }
 }
 
 struct WatcherLoopState {
@@ -568,7 +581,7 @@ fn handle_event(
             tracing::info!(
                 repo_root = %repo_root.display(),
                 event_path = %event_path.display(),
-                refresh_info = %refresh_kind.refresh_info(),
+                refresh_scope = ?refresh_kind,
                 "watcher_fast_git_metadata_event"
             );
             emit_root_git_info_refresh(bg_tx, ctx.projects, repo_root);
@@ -577,11 +590,10 @@ fn handle_event(
                 repo_root.clone(),
                 now,
                 false,
-                refresh_kind.refresh_info(),
-                if refresh_kind.refresh_info() {
-                    "fast_git_metadata"
-                } else {
-                    "fast_git_path_state"
+                refresh_kind,
+                match refresh_kind {
+                    GitRefreshKind::FullMetadata => "fast_git_metadata",
+                    GitRefreshKind::PathStateOnly => "fast_git_path_state",
                 },
             );
         }
@@ -608,11 +620,10 @@ fn handle_event(
                     repo_root.clone(),
                     now,
                     false,
-                    refresh_kind.refresh_info(),
-                    if refresh_kind.refresh_info() {
-                        "git_internal"
-                    } else {
-                        "git_internal_path_state"
+                    refresh_kind,
+                    match refresh_kind {
+                        GitRefreshKind::FullMetadata => "git_internal",
+                        GitRefreshKind::PathStateOnly => "git_internal_path_state",
                     },
                 );
             }
@@ -621,13 +632,14 @@ fn handle_event(
         let is_target_event = event_path.starts_with(entry.abs_path.join("target"));
         schedule_disk_refresh(pending_disk, &entry.project_label, now);
         if !is_target_event && let Some(repo_root) = &entry.repo_root {
+            let scope = classify_internal_git_event(event_path, entry)
+                .unwrap_or(GitRefreshKind::PathStateOnly);
             enqueue_git_refresh(
                 pending_git,
                 repo_root.clone(),
                 now,
                 false,
-                classify_internal_git_event(event_path, entry)
-                    .is_some_and(GitRefreshKind::refresh_info),
+                scope,
                 "project_event",
             );
         }
@@ -710,16 +722,16 @@ fn handle_git_completion(
     };
     if let GitRefreshState::Running {
         dirty_since_start,
-        refresh_repo_metadata: refresh_info,
+        refresh_scope,
     } = state
         && dirty_since_start
     {
         pending_git.insert(
             repo_root,
             GitRefreshState::Pending {
-                debounce_deadline:     now + DEBOUNCE_DURATION,
-                max_deadline:          now + MAX_WAIT,
-                refresh_repo_metadata: refresh_info,
+                debounce_deadline: now + DEBOUNCE_DURATION,
+                max_deadline: now + MAX_WAIT,
+                refresh_scope,
             },
         );
     }
@@ -841,7 +853,7 @@ fn enqueue_git_refresh(
     repo_root: AbsolutePath,
     now: Instant,
     immediate: bool,
-    refresh_info: bool,
+    refresh_scope: GitRefreshKind,
     cause: &str,
 ) {
     let pending_count = pending_git
@@ -856,7 +868,7 @@ fn enqueue_git_refresh(
     tracing::info!(
         repo_root = %repo_root.display(),
         immediate,
-        refresh_info,
+        refresh_scope = ?refresh_scope,
         cause,
         pending_git = pending_count,
         "watcher_enqueue_git_refresh"
@@ -864,7 +876,7 @@ fn enqueue_git_refresh(
     match pending_git.get_mut(&repo_root) {
         Some(GitRefreshState::Pending {
             debounce_deadline,
-            refresh_repo_metadata: pending_refresh_info,
+            refresh_scope: pending_scope,
             ..
         }) => {
             *debounce_deadline = if immediate {
@@ -872,26 +884,26 @@ fn enqueue_git_refresh(
             } else {
                 now + DEBOUNCE_DURATION
             };
-            *pending_refresh_info |= refresh_info;
+            pending_scope.widen(refresh_scope);
         },
         Some(GitRefreshState::Running {
             dirty_since_start,
-            refresh_repo_metadata: pending_refresh_info,
+            refresh_scope: pending_scope,
         }) => {
             *dirty_since_start = true;
-            *pending_refresh_info |= refresh_info;
+            pending_scope.widen(refresh_scope);
         },
         None => {
             pending_git.insert(
                 repo_root,
                 GitRefreshState::Pending {
-                    debounce_deadline:     if immediate {
+                    debounce_deadline: if immediate {
                         now
                     } else {
                         now + DEBOUNCE_DURATION
                     },
-                    max_deadline:          now + MAX_WAIT,
-                    refresh_repo_metadata: refresh_info,
+                    max_deadline: now + MAX_WAIT,
+                    refresh_scope,
                 },
             );
         },
@@ -935,21 +947,21 @@ fn fire_git_updates(
     pending_git: &mut HashMap<AbsolutePath, GitRefreshState>,
 ) {
     let now = Instant::now();
-    let ready: Vec<(AbsolutePath, bool)> = pending_git
+    let ready: Vec<(AbsolutePath, GitRefreshKind)> = pending_git
         .iter()
         .filter_map(|(repo_root, state)| match state {
             GitRefreshState::Pending {
                 debounce_deadline,
                 max_deadline,
-                refresh_repo_metadata: refresh_info,
+                refresh_scope,
             } if now >= *debounce_deadline || now >= *max_deadline => {
-                Some((repo_root.clone(), *refresh_info))
+                Some((repo_root.clone(), *refresh_scope))
             },
             GitRefreshState::Pending { .. } | GitRefreshState::Running { .. } => None,
         })
         .collect();
 
-    for (repo_root, refresh_info) in ready {
+    for (repo_root, refresh_scope) in ready {
         let affected: Vec<(String, String)> = projects
             .values()
             .filter(|entry| entry.repo_root.as_deref() == Some(repo_root.as_path()))
@@ -965,8 +977,8 @@ fn fire_git_updates(
         pending_git.insert(
             repo_root.clone(),
             GitRefreshState::Running {
-                dirty_since_start:     false,
-                refresh_repo_metadata: false,
+                dirty_since_start: false,
+                refresh_scope:     GitRefreshKind::PathStateOnly,
             },
         );
         spawn_git_refresh(
@@ -976,7 +988,7 @@ fn fire_git_updates(
             bg_tx.clone(),
             repo_root,
             affected,
-            refresh_info,
+            refresh_scope,
         );
     }
 }
@@ -988,7 +1000,7 @@ fn spawn_git_refresh(
     bg_tx: mpsc::Sender<BackgroundMsg>,
     repo_root: AbsolutePath,
     affected: Vec<(String, String)>,
-    refresh_info: bool,
+    refresh_scope: GitRefreshKind,
 ) {
     let handle = handle.clone();
     let git_limit = Arc::clone(git_limit);
@@ -1005,7 +1017,8 @@ fn spawn_git_refresh(
         );
 
         let started = Instant::now();
-        let git_info_elapsed_ms = if refresh_info {
+        let detect_repo_metadata = matches!(refresh_scope, GitRefreshKind::FullMetadata);
+        let git_info_elapsed_ms = if detect_repo_metadata {
             let repo_root_for_git_info = repo_root.clone();
             let git_info_started = Instant::now();
             let git_info =
@@ -1018,8 +1031,8 @@ fn spawn_git_refresh(
                 elapsed_ms = crate::perf_log::ms(git_info_started.elapsed().as_millis()),
                 repo_root = %repo_root.display(),
                 affected_rows = affected.len(),
-                refresh_info,
-                "watcher_git_info_detect"
+                refresh_scope = ?refresh_scope,
+                "watcher_git_repo_metadata_detect"
             );
             if let Some(info) = git_info {
                 for (path, _) in &affected {
@@ -1038,7 +1051,7 @@ fn spawn_git_refresh(
             elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
             repo_root = %repo_root.display(),
             affected_rows = affected.len(),
-            refresh_info,
+            refresh_scope = ?refresh_scope,
             git_info_ms = git_info_elapsed_ms,
             "watcher_git_refresh"
         );
@@ -1923,7 +1936,7 @@ edition = "2024"
             matches!(
                 pending_git.get(wt_root.as_path()),
                 Some(GitRefreshState::Pending {
-                    refresh_repo_metadata: true,
+                    refresh_scope: GitRefreshKind::FullMetadata,
                     ..
                 })
             ),
@@ -2076,7 +2089,7 @@ edition = "2024"
             matches!(
                 pending_git.get(wt_root.as_path()),
                 Some(GitRefreshState::Pending {
-                    refresh_repo_metadata: true,
+                    refresh_scope: GitRefreshKind::FullMetadata,
                     ..
                 })
             ),
