@@ -93,54 +93,34 @@ impl App {
             self.filtered.clear();
         }
 
-        // Propagate git info and stars from workspace roots to their members.
-        let mut inherited_git_info = Vec::new();
+        // Propagate stars from workspace roots to their members.
         for item in &self.projects {
             let root_path = item.path();
-            let member_paths: Vec<AbsolutePath> = match item {
-                crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => ws
-                    .groups()
-                    .iter()
-                    .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
-                    .collect(),
-                crate::project::RootItem::Worktrees(
-                    crate::project::WorktreeGroup::Workspaces {
-                        primary, linked, ..
-                    },
-                ) => std::iter::once(primary)
-                    .chain(linked.iter())
-                    .flat_map(|ws| {
+            if let Some(&stars) = self.stars.get::<Path>(root_path) {
+                let member_paths: Vec<AbsolutePath> = match item {
+                    crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
                         ws.groups()
                             .iter()
                             .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            };
-            if let Some(info) = self
-                .projects
-                .at_path(root_path)
-                .and_then(|project| project.git_state.info().cloned())
-            {
-                for member_path in &member_paths {
-                    if self
-                        .projects
-                        .at_path(member_path)
-                        .is_none_or(|project| project.git_state.info().is_none())
-                    {
-                        inherited_git_info.push((member_path.clone(), info.clone()));
-                    }
-                }
-            }
-            if let Some(&stars) = self.stars.get::<Path>(root_path) {
+                            .collect()
+                    },
+                    crate::project::RootItem::Worktrees(
+                        crate::project::WorktreeGroup::Workspaces {
+                            primary, linked, ..
+                        },
+                    ) => std::iter::once(primary)
+                        .chain(linked.iter())
+                        .flat_map(|ws| {
+                            ws.groups()
+                                .iter()
+                                .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
                 for member_path in &member_paths {
                     self.stars.entry(member_path.clone()).or_insert(stars);
                 }
-            }
-        }
-        for (member_path, info) in inherited_git_info {
-            if let Some(project) = self.projects.at_path_mut(&member_path) {
-                project.git_state = GitState::Detected(Box::new(info));
             }
         }
 
@@ -1696,57 +1676,6 @@ impl App {
         }
     }
 
-    fn inherited_git_info_paths(&self, path: &Path) -> (Vec<AbsolutePath>, Vec<AbsolutePath>) {
-        let mut member_paths = Vec::new();
-        let mut fallback_worktree_paths = Vec::new();
-        for item in &self.projects {
-            match item {
-                crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws))
-                    if ws.path() == path =>
-                {
-                    member_paths.extend(ws.groups().iter().flat_map(|group| {
-                        group.members().iter().map(|member| member.path().clone())
-                    }));
-                },
-                crate::project::RootItem::Worktrees(
-                    crate::project::WorktreeGroup::Workspaces {
-                        primary, linked, ..
-                    },
-                ) => {
-                    for ws in std::iter::once(primary).chain(linked.iter()) {
-                        if ws.path() == path {
-                            member_paths.extend(ws.groups().iter().flat_map(|group| {
-                                group.members().iter().map(|member| member.path().clone())
-                            }));
-                        }
-                    }
-                    if primary.path() == path {
-                        fallback_worktree_paths.extend(
-                            linked
-                                .iter()
-                                .filter(|l| self.git_info_for(l.path()).is_none())
-                                .map(|l| l.path().clone()),
-                        );
-                    }
-                },
-                crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
-                    primary,
-                    linked,
-                    ..
-                }) if primary.path() == path => {
-                    fallback_worktree_paths.extend(
-                        linked
-                            .iter()
-                            .filter(|l| self.git_info_for(l.path()).is_none())
-                            .map(|l| l.path().clone()),
-                    );
-                },
-                _ => {},
-            }
-        }
-        (member_paths, fallback_worktree_paths)
-    }
-
     fn spawn_repo_fetch_for_git_info(&self, path: &Path, info: &GitInfo) {
         let Some(repo_url) = info.url.as_deref() else {
             return;
@@ -1823,19 +1752,8 @@ impl App {
             info.first_commit =
                 preserved_first_commit.or_else(|| self.pending_git_first_commit.remove(path));
         }
-        let (member_paths, fallback_worktree_paths) = self.inherited_git_info_paths(path);
         if let Some(project) = self.projects.at_path_mut(path) {
             project.git_state = GitState::Detected(Box::new(info.clone()));
-        }
-        for member_path in member_paths {
-            if let Some(project) = self.projects.at_path_mut(&member_path) {
-                project.git_state = GitState::Detected(Box::new(info.clone()));
-            }
-        }
-        for linked_path in fallback_worktree_paths {
-            if let Some(project) = self.projects.at_path_mut(&linked_path) {
-                project.git_state = GitState::Detected(Box::new(info.clone()));
-            }
         }
         if self.is_scan_complete() {
             let git_dir = self
@@ -1856,7 +1774,6 @@ impl App {
         path: &Path,
         first_commit: Option<&str>,
     ) {
-        let (member_paths, fallback_worktree_paths) = self.inherited_git_info_paths(path);
         let first_commit = first_commit.map(String::from);
         let mut applied = false;
         let Some(project) = self.projects.at_path_mut(path) else {
@@ -1871,20 +1788,6 @@ impl App {
         if let Some(info) = project.git_state.info_mut() {
             info.first_commit.clone_from(&first_commit);
             applied = true;
-        }
-        for member_path in member_paths {
-            if let Some(project) = self.projects.at_path_mut(&member_path)
-                && let Some(info) = project.git_state.info_mut()
-            {
-                info.first_commit.clone_from(&first_commit);
-            }
-        }
-        for linked_path in fallback_worktree_paths {
-            if let Some(project) = self.projects.at_path_mut(&linked_path)
-                && let Some(info) = project.git_state.info_mut()
-            {
-                info.first_commit.clone_from(&first_commit);
-            }
         }
         if applied {
             self.pending_git_first_commit.remove(path);
@@ -2297,54 +2200,33 @@ impl App {
             self.filtered.clear();
         }
 
-        // Propagate git info and stars from workspace roots to members.
-        let mut inherited_git_info = Vec::new();
+        // Propagate stars from workspace roots to members.
         for item in &self.projects {
             let root_path = item.path();
-            let member_paths: Vec<AbsolutePath> = match item {
-                RootItem::Rust(crate::project::RustProject::Workspace(ws)) => ws
-                    .groups()
-                    .iter()
-                    .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
-                    .collect(),
-                RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
-                    primary,
-                    linked,
-                    ..
-                }) => std::iter::once(primary)
-                    .chain(linked.iter())
-                    .flat_map(|ws| {
-                        ws.groups()
-                            .iter()
-                            .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            };
-            if let Some(info) = self
-                .projects
-                .at_path(root_path)
-                .and_then(|project| project.git_state.info().cloned())
-            {
-                for member_path in &member_paths {
-                    if self
-                        .projects
-                        .at_path(member_path)
-                        .is_none_or(|project| project.git_state.info().is_none())
-                    {
-                        inherited_git_info.push((member_path.clone(), info.clone()));
-                    }
-                }
-            }
             if let Some(&stars) = self.stars.get::<Path>(root_path) {
+                let member_paths: Vec<AbsolutePath> = match item {
+                    RootItem::Rust(crate::project::RustProject::Workspace(ws)) => ws
+                        .groups()
+                        .iter()
+                        .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
+                        .collect(),
+                    RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
+                        primary,
+                        linked,
+                        ..
+                    }) => std::iter::once(primary)
+                        .chain(linked.iter())
+                        .flat_map(|ws| {
+                            ws.groups()
+                                .iter()
+                                .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
                 for member_path in &member_paths {
                     self.stars.entry(member_path.clone()).or_insert(stars);
                 }
-            }
-        }
-        for (member_path, info) in inherited_git_info {
-            if let Some(project) = self.projects.at_path_mut(&member_path) {
-                project.git_state = GitState::Detected(Box::new(info));
             }
         }
 

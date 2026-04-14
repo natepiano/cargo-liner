@@ -553,9 +553,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let owner_path = app
         .ci_owner_path_for(abs_path)
         .unwrap_or_else(|| AbsolutePath::from(abs_path));
-    let git = app
-        .git_info_for(abs_path)
-        .or_else(|| app.git_info_for(owner_path.as_path()));
+    let git = app.git_info_for(owner_path.as_path());
     let branch = git.and_then(|info| info.branch.clone());
     let sync = git.map(|info| format_remote_status(info.ahead_behind));
     let vs_origin = git.map(|info| {
