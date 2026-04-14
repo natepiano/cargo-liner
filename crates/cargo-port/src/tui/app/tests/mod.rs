@@ -100,16 +100,16 @@ fn make_app(projects: &[RootItem]) -> App {
 }
 
 fn make_app_with_config(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
+    let mut cfg = cfg.clone();
+    if cfg.tui.include_dirs.is_empty() {
+        cfg.tui.include_dirs = vec!["/tmp/test".to_string()];
+    }
     let (bg_tx, bg_rx) = mpsc::channel();
-    let scan_root =
-        std::env::temp_dir().join(format!("cargo-port-polish-test-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&scan_root);
     let mut app = App::new(
-        scan_root,
         projects,
         bg_tx,
         bg_rx,
-        cfg,
+        &cfg,
         test_http_client(),
         Instant::now(),
     );

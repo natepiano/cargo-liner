@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::Path;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -33,6 +32,7 @@ use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::GitPathState;
 use crate::project_list::ProjectList;
+use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::RepoCache;
 use crate::watcher::WatcherMsg;
@@ -76,7 +76,6 @@ use super::types::PaneId;
 
 pub(super) struct App {
     current_config:           CargoPortConfig,
-    scan_root:                PathBuf,
     http_client:              HttpClient,
     repo_fetch_cache:         RepoCache,
     projects:                 ProjectList,
@@ -172,7 +171,9 @@ impl App {
         &mut self.current_keymap
     }
 
-    pub(super) const fn scan_root(&self) -> &PathBuf { &self.scan_root }
+    pub(super) fn resolved_dirs(&self) -> Vec<AbsolutePath> {
+        scan::resolve_include_dirs(&self.current_config.tui.include_dirs)
+    }
 
     pub(super) const fn projects(&self) -> &ProjectList { &self.projects }
 

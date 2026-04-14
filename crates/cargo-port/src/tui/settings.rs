@@ -13,6 +13,7 @@ use unicode_width::UnicodeWidthStr;
 use super::app::App;
 use super::constants::ACTIVE_FOCUS_COLOR;
 use super::constants::ERROR_COLOR;
+use super::constants::INLINE_ERROR_COLOR;
 use super::constants::LABEL_COLOR;
 use super::constants::SECTION_HEADER_INDENT;
 use super::constants::SECTION_ITEM_INDENT;
@@ -630,7 +631,7 @@ pub(super) fn build_settings_lines(
                 prefix: &label,
                 value: &error,
                 prefix_style: selection.patch(label_style),
-                value_style: selection.patch(Style::default().fg(ERROR_COLOR)),
+                value_style: selection.patch(Style::default().fg(INLINE_ERROR_COLOR)),
                 content_width,
             };
             push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
@@ -673,7 +674,7 @@ pub(super) fn build_settings_lines(
                 prefix: &label,
                 value,
                 prefix_style: selection.patch(label_style),
-                value_style: selection.patch(Style::default().fg(ERROR_COLOR)),
+                value_style: selection.patch(Style::default().fg(INLINE_ERROR_COLOR)),
                 content_width,
             };
             push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
@@ -734,6 +735,10 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
 
     match key {
         KeyCode::Esc | KeyCode::Char('s') => {
+            if app.current_config().tui.include_dirs.is_empty() {
+                app.set_inline_error("Configure at least one include directory before continuing");
+                return;
+            }
             app.close_settings();
             app.close_overlay();
         },

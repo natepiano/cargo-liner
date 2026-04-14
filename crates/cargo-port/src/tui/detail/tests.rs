@@ -38,19 +38,10 @@ fn test_http_client() -> HttpClient {
 }
 
 fn test_app() -> App {
+    let mut cfg = CargoPortConfig::default();
+    cfg.tui.include_dirs = vec!["/tmp/test".to_string()];
     let (bg_tx, bg_rx) = mpsc::channel::<BackgroundMsg>();
-    let scan_root =
-        std::env::temp_dir().join(format!("cargo-port-detail-test-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&scan_root);
-    App::new(
-        scan_root,
-        &[],
-        bg_tx,
-        bg_rx,
-        &CargoPortConfig::default(),
-        test_http_client(),
-        Instant::now(),
-    )
+    App::new(&[], bg_tx, bg_rx, &cfg, test_http_client(), Instant::now())
 }
 
 fn detail_info(is_rust_project: bool) -> DetailInfo {

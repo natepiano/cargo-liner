@@ -159,6 +159,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     let non_rust_project = make_non_rust_project(Some("js"), "~/js");
     let mut cfg = CargoPortConfig::default();
     cfg.tui.include_non_rust = NonRustInclusion::Include;
+    cfg.tui.include_dirs = vec!["/tmp/test".to_string()];
     let mut app = make_app_with_config(&[rust_project, non_rust_project], &cfg);
     app.scan.phase = ScanPhase::Complete;
 

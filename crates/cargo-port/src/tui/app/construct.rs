@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::path::Path;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -89,7 +87,6 @@ struct AppInit {
 
 impl AppInit {
     fn new(
-        scan_root: &Path,
         projects: &[RootItem],
         bg_tx: &mpsc::Sender<BackgroundMsg>,
         cfg: &CargoPortConfig,
@@ -99,12 +96,12 @@ impl AppInit {
         let config_path = crate::config::config_path();
         let config_last_seen = config_path.as_deref().and_then(App::config_file_stamp);
         let lint_spawn = lint::spawn(cfg, bg_tx.clone());
+        let watch_roots = scan::resolve_include_dirs(&cfg.tui.include_dirs);
         let watch_tx = watcher::spawn_watcher(
-            scan_root.to_path_buf(),
+            watch_roots,
             bg_tx.clone(),
             cfg.tui.ci_run_count,
             cfg.tui.include_non_rust,
-            &cfg.tui.include_dirs,
             http_client.clone(),
         );
         let built = scan::build_tree(projects, &cfg.tui.inline_dirs);
@@ -124,7 +121,6 @@ impl AppInit {
 }
 
 struct CoreInputs {
-    scan_root:       PathBuf,
     http_client:     HttpClient,
     bg_tx:           mpsc::Sender<BackgroundMsg>,
     bg_rx:           Receiver<BackgroundMsg>,
@@ -148,7 +144,6 @@ impl App {
     }
 
     pub(in super::super) fn new(
-        scan_root: PathBuf,
         projects: &[RootItem],
         bg_tx: mpsc::Sender<BackgroundMsg>,
         bg_rx: Receiver<BackgroundMsg>,
@@ -158,10 +153,9 @@ impl App {
     ) -> Self {
         let channels = AppChannels::new();
         let builds = AsyncBuildState::new(BuildChannels::new());
-        let init = AppInit::new(&scan_root, projects, &bg_tx, cfg, &http_client);
+        let init = AppInit::new(projects, &bg_tx, cfg, &http_client);
         let status_flash = init.lint_warning.clone().map(|w| (w, Instant::now()));
         let mut app = Self::build_core(CoreInputs {
-            scan_root,
             http_client,
             bg_tx,
             bg_rx,
@@ -182,7 +176,6 @@ impl App {
         let cached_fit_widths = ResolvedWidths::new(inputs.cfg.lint.enabled);
         Self {
             current_config: inputs.cfg,
-            scan_root: inputs.scan_root,
             http_client: inputs.http_client,
             repo_fetch_cache: crate::scan::new_repo_cache(),
             projects: init.projects,
@@ -279,15 +272,7 @@ impl App {
         {
             self.show_timed_toast("Lint runtime", warning);
         }
-        if self.current_config.tui.include_dirs.is_empty() {
-            self.show_timed_toast(
-                "Scan root",
-                format!(
-                    "Using {}. Set include_dirs in Settings to limit scan scope.",
-                    crate::project::home_relative_path(&self.scan_root)
-                ),
-            );
-        }
+        self.force_settings_if_unconfigured();
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
         self.register_existing_projects();

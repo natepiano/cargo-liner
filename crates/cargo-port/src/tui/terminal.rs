@@ -103,12 +103,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
     Ok(())
 }
 
-pub fn run(path: &Path) -> ExitCode {
-    let Ok(scan_root) = path.canonicalize() else {
-        tracing::error!("Error: cannot resolve path '{}'", path.display());
-        return ExitCode::FAILURE;
-    };
-
+pub fn run() -> ExitCode {
     let cfg = match config::try_load() {
         Ok(cfg) => cfg,
         Err(err) => {
@@ -129,9 +124,9 @@ pub fn run(path: &Path) -> ExitCode {
     };
     let scan_started_at = std::time::Instant::now();
     tracing::info!(kind = "initial", run = 1, "scan_start");
+    let scan_dirs = scan::resolve_include_dirs(&cfg.tui.include_dirs);
     let (bg_tx, bg_rx) = scan::spawn_streaming_scan(
-        &scan_root,
-        &cfg.tui.include_dirs,
+        scan_dirs,
         &cfg.tui.inline_dirs,
         cfg.tui.include_non_rust,
         http_client.clone(),
@@ -158,15 +153,7 @@ pub fn run(path: &Path) -> ExitCode {
         },
     };
 
-    let mut app = App::new(
-        scan_root,
-        &projects,
-        bg_tx,
-        bg_rx,
-        &cfg,
-        http_client,
-        scan_started_at,
-    );
+    let mut app = App::new(&projects, bg_tx, bg_rx, &cfg, http_client, scan_started_at);
     tracing::info!(perf_log = %perf_log_path.display(), "tui_ready");
     let input_rx = spawn_input_thread();
 

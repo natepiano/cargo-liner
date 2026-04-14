@@ -1,3 +1,5 @@
+use strum::IntoEnumIterator;
+
 use super::App;
 use super::types::ExitMode;
 use super::types::FinderMode;
@@ -5,9 +7,12 @@ use super::types::KeymapMode;
 use super::types::SearchMode;
 use super::types::SelectionSync;
 use super::types::SettingsMode;
+use crate::tui::settings::SettingOption;
+use crate::tui::settings::SettingOption::IncludeDirs;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::types::PaneFocusState;
 use crate::tui::types::PaneId;
+use crate::tui::types::PaneId::Settings;
 
 impl App {
     const TAB_ORDER: [PaneId; 8] = [
@@ -78,6 +83,20 @@ impl App {
     pub(in super::super) fn close_settings(&mut self) {
         self.ui_modes.settings = SettingsMode::Hidden;
         self.inline_error = None;
+    }
+
+    /// Open the settings overlay and position the cursor on `IncludeDirs`
+    /// when no include directories are configured.
+    pub(in super::super) fn force_settings_if_unconfigured(&mut self) {
+        if !self.current_config.tui.include_dirs.is_empty() {
+            return;
+        }
+        self.open_overlay(Settings);
+        self.open_settings();
+        if let Some(idx) = SettingOption::iter().position(|s| s == IncludeDirs) {
+            self.settings_pane_mut().set_pos(idx);
+        }
+        self.set_inline_error("Configure at least one include directory before continuing");
     }
 
     pub(in super::super) const fn is_keymap_open(&self) -> bool {

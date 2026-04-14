@@ -343,6 +343,7 @@ impl App {
 
         if actions.rescan {
             self.rescan();
+            self.force_settings_if_unconfigured();
         } else {
             if actions.refresh_lint_runtime {
                 self.respawn_watcher_and_register_existing_projects();
@@ -377,12 +378,12 @@ impl App {
     }
 
     pub(in super::super) fn respawn_watcher(&mut self) {
+        let watch_roots = crate::scan::resolve_include_dirs(&self.current_config.tui.include_dirs);
         self.watch_tx = watcher::spawn_watcher(
-            self.scan_root.clone(),
+            watch_roots,
             self.bg_tx.clone(),
             self.ci_run_count(),
             self.include_non_rust(),
-            &self.current_config.tui.include_dirs,
             self.http_client.clone(),
         );
     }
@@ -1435,9 +1436,9 @@ impl App {
         self.builds.disk.latest = 0;
         self.data_generation += 1;
         self.detail_generation += 1;
+        let scan_dirs = scan::resolve_include_dirs(&self.current_config.tui.include_dirs);
         let (tx, rx) = scan::spawn_streaming_scan(
-            &self.scan_root,
-            &self.current_config.tui.include_dirs,
+            scan_dirs,
             &self.current_config.tui.inline_dirs,
             self.include_non_rust(),
             self.http_client.clone(),

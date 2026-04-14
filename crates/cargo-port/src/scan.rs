@@ -1052,16 +1052,11 @@ pub(crate) fn store_cached_repo_data(
     }
 }
 
-/// Resolve include-dir entries to absolute paths. Relative entries are
-/// joined to `scan_root`; absolute entries are used as-is. An empty
-/// list falls back to `[scan_root]` so the whole tree is walked.
-pub(crate) fn resolve_include_dirs(
-    scan_root: AbsolutePath,
-    include_dirs: &[String],
-) -> Vec<AbsolutePath> {
-    if include_dirs.is_empty() {
-        return vec![scan_root];
-    }
+/// Resolve include-dir entries to absolute paths. `~` and `~/…` entries
+/// expand via the user's home directory; already-absolute entries are
+/// used as-is; relative entries are joined to the home directory.
+/// An empty list returns an empty vec (no fallback).
+pub(crate) fn resolve_include_dirs(include_dirs: &[String]) -> Vec<AbsolutePath> {
     include_dirs
         .iter()
         .map(|dir| {
@@ -1069,7 +1064,9 @@ pub(crate) fn resolve_include_dirs(
             let resolved = if expanded.is_absolute() {
                 expanded
             } else {
-                scan_root.join(&expanded)
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(&expanded)
             };
             AbsolutePath::from(resolved.canonicalize().unwrap_or(resolved))
         })
@@ -1107,14 +1104,12 @@ struct StreamingScanContext {
 /// `ScanResult` is sent after discovery/local work has finished, containing the complete tree
 /// and flat entries. Disk and HTTP results may continue to stream in afterward.
 pub(crate) fn spawn_streaming_scan(
-    scan_root: &Path,
-    include_dirs: &[String],
+    scan_dirs: Vec<AbsolutePath>,
     inline_dirs: &[String],
     non_rust: NonRustInclusion,
     client: HttpClient,
 ) -> (mpsc::Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
     let (tx, rx) = mpsc::channel();
-    let scan_dirs = resolve_include_dirs(AbsolutePath::from(scan_root), include_dirs);
     let inline_dirs = inline_dirs.to_vec();
 
     let scan_tx = tx.clone();
