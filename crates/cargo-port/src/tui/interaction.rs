@@ -233,7 +233,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
                 PaneId::Settings => app.settings_pane_mut().set_pos(row),
                 PaneId::Package => app.package_pane_mut().set_pos(row),
                 PaneId::Git => app.git_pane_mut().set_pos(row),
-                PaneId::Targets => app.targets_pane_mut().set_pos(row),
+                PaneId::Targets => app.pane_manager_mut().targets.set_pos(row),
                 PaneId::Lints => app.lint_pane_mut().set_pos(row),
                 PaneId::CiRuns => app.ci_pane_mut().set_pos(row),
                 _ => return false,
@@ -990,11 +990,11 @@ mod tests {
         let mut app = make_app(&[make_package_with_cargo("demo", &project_dir, cargo)]);
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.targets_pane(), 1);
+        let (x, y) = pane_row_point(&app.pane_manager().targets, 1);
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::Targets);
-        assert_eq!(app.targets_pane().pos(), 1);
+        assert_eq!(app.pane_manager().targets.pos(), 1);
     }
 
     #[test]

@@ -253,10 +253,6 @@ impl App {
 
     pub(super) const fn git_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.git }
 
-    pub(super) const fn targets_pane(&self) -> &Pane { &self.pane_manager.targets }
-
-    pub(super) const fn targets_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.targets }
-
     pub(super) const fn ci_pane(&self) -> &Pane { &self.pane_manager.ci }
 
     pub(super) const fn ci_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.ci }

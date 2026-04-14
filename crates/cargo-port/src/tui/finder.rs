@@ -663,7 +663,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
                 if entry.name == target_name
                     && std::mem::discriminant(&entry.kind) == std::mem::discriminant(&target_kind)
                 {
-                    app.targets_pane_mut().set_pos(i);
+                    app.pane_manager_mut().targets.set_pos(i);
                     return;
                 }
             }

@@ -352,7 +352,7 @@ fn sync_detail_pane_hitboxes(app: &mut App, detail_info: Option<&DetailInfo>) {
 
     reset_pane(app.package_pane_mut());
     reset_pane(app.git_pane_mut());
-    reset_pane(app.targets_pane_mut());
+    reset_pane(&mut app.pane_manager_mut().targets);
 }
 
 fn register_detail_pane_hitboxes(app: &mut App) {
@@ -373,7 +373,7 @@ fn register_detail_pane_hitboxes(app: &mut App) {
     if app.cached_detail().is_some_and(|cached| {
         cached.info.is_binary || !cached.info.examples.is_empty() || !cached.info.benches.is_empty()
     }) {
-        let targets_pane = app.targets_pane().clone();
+        let targets_pane = app.pane_manager().targets.clone();
         super::interaction::register_pane_row_hitboxes(
             app,
             PaneId::Targets,
@@ -381,7 +381,7 @@ fn register_detail_pane_hitboxes(app: &mut App) {
             Content,
         );
     } else {
-        reset_pane(app.targets_pane_mut());
+        reset_pane(&mut app.pane_manager_mut().targets);
     }
 }
 

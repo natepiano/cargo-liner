@@ -230,7 +230,7 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
             continue;
         }
         let pane = if Some(col_idx) == detail_targets_col {
-            app.targets_pane_mut()
+            &mut app.pane_manager_mut().targets
         } else if col_idx == 0 {
             app.package_pane_mut()
         } else {

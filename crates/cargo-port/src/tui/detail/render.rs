@@ -798,7 +798,7 @@ fn render_targets_panel(
     let bench_count = info.benches.len();
 
     let focus = app.pane_focus_state(PaneId::Targets);
-    let cursor = app.targets_pane().pos();
+    let cursor = app.pane_manager().targets.pos();
 
     let targets_title = {
         let mut parts = Vec::new();
@@ -841,9 +841,11 @@ fn render_targets_panel(
         });
 
     let entries = model::build_target_list(info);
-    app.targets_pane_mut().set_len(entries.len());
+    app.pane_manager_mut().targets.set_len(entries.len());
     let content_inner = targets_block.inner(area);
-    app.targets_pane_mut().set_content_area(content_inner);
+    app.pane_manager_mut()
+        .targets
+        .set_content_area(content_inner);
 
     let kind_col_width = model::RunTargetKind::padded_label_width();
     let col_spacing: usize = 1;
@@ -882,7 +884,8 @@ fn render_targets_panel(
 
     let mut table_state = TableState::default().with_selected(Some(cursor));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.targets_pane_mut()
+    app.pane_manager_mut()
+        .targets
         .set_scroll_offset(table_state.offset());
 }
 

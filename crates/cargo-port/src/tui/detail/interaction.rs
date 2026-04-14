@@ -36,7 +36,7 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
         return;
     };
     let entries = build_target_list(&info);
-    if let Some(entry) = entries.get(app.targets_pane().pos())
+    if let Some(entry) = entries.get(app.pane_manager().targets.pos())
         && let Some(abs_path) = app.selected_project_path()
     {
         let package_name = if info.name == "-" {
@@ -113,7 +113,7 @@ fn request_clean(app: &mut App) {
 /// currently active detail column.
 fn active_detail_pane(app: &mut App) -> &mut Pane {
     match app.base_focus() {
-        PaneId::Targets => app.targets_pane_mut(),
+        PaneId::Targets => &mut app.pane_manager_mut().targets,
         PaneId::Git => app.git_pane_mut(),
         PaneId::Package
         | PaneId::ProjectList
