@@ -203,7 +203,7 @@ impl App {
             },
         };
 
-        self.ci_pane.set_pos(merged.len());
+        self.pane_manager.ci.set_pos(merged.len());
         if let Some(repo) = self.owner_repo_for_path_inner(&abs) {
             let meta = crate::scan::load_cached_repo_data(&self.repo_fetch_cache, &repo)
                 .and_then(|cached| cached.meta);
@@ -278,7 +278,7 @@ impl App {
         };
         self.ci_display_modes
             .insert(AbsolutePath::from(path), new_mode);
-        self.ci_pane.home();
+        self.pane_manager.ci.home();
         self.data_generation += 1;
         self.detail_generation += 1;
     }

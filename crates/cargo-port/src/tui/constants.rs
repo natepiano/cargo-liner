@@ -32,6 +32,8 @@ pub(super) const SECTION_ITEM_INDENT: &str = "    ";
 /// Spinners, shortcut key hints, running/in-progress indicators, finder
 /// query input cursor.
 pub(super) const ACCENT_COLOR: Color = Color::Cyan;
+/// Border color for the currently focused pane (matches `TITLE_COLOR`).
+pub(super) const ACTIVE_BORDER_COLOR: Color = Color::Yellow;
 /// Background highlight for the currently focused pane row.
 pub(super) const ACTIVE_FOCUS_COLOR: Color = Color::Rgb(70, 70, 70);
 /// Project list column headers ("Name", "Disk", "Sync", etc.).

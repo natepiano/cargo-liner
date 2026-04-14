@@ -73,7 +73,9 @@ impl App {
 
     pub(in super::super) fn focused_toast_id(&self) -> Option<u64> {
         let active = self.active_toasts();
-        active.get(self.toast_pane.pos()).map(ToastView::id)
+        active
+            .get(self.pane_manager.toasts.pos())
+            .map(ToastView::id)
     }
 
     pub(in super::super) fn prune_toasts(&mut self) {
@@ -81,7 +83,7 @@ impl App {
         let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
         self.toasts.prune_tracked_items(now, linger);
         self.toasts.prune(now);
-        self.toast_pane.set_len(self.active_toasts().len());
+        self.pane_manager.toasts.set_len(self.active_toasts().len());
         if self.base_focus() == PaneId::Toasts && self.active_toasts().is_empty() {
             self.focus_pane(PaneId::ProjectList);
         }
@@ -93,7 +95,7 @@ impl App {
         body: impl Into<String>,
     ) {
         self.toasts.push_timed(title, body, self.toast_timeout(), 1);
-        self.toast_pane.set_len(self.active_toasts().len());
+        self.pane_manager.toasts.set_len(self.active_toasts().len());
     }
 
     pub(in super::super) fn start_task_toast(
@@ -102,7 +104,7 @@ impl App {
         body: impl Into<String>,
     ) -> ToastTaskId {
         let task_id = self.toasts.push_task(title, body, 1);
-        self.toast_pane.set_len(self.active_toasts().len());
+        self.pane_manager.toasts.set_len(self.active_toasts().len());
         task_id
     }
 
@@ -125,7 +127,7 @@ impl App {
     ) {
         let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
         self.toasts.set_tracked_items(task_id, items, linger);
-        self.toast_pane.set_len(self.active_toasts().len());
+        self.pane_manager.toasts.set_len(self.active_toasts().len());
     }
 
     pub(in super::super) fn mark_tracked_item_completed(
@@ -134,7 +136,7 @@ impl App {
         key: &str,
     ) {
         self.toasts.mark_item_completed(task_id, key);
-        self.toast_pane.set_len(self.active_toasts().len());
+        self.pane_manager.toasts.set_len(self.active_toasts().len());
     }
 
     pub(in super::super) fn start_clean(&mut self, project_path: &AbsolutePath) {
@@ -630,7 +632,7 @@ impl App {
                 let info = &self.cached_detail.as_ref()?.info;
                 if self.base_focus() == PaneId::Package {
                     let fields = crate::tui::detail::package_fields(info);
-                    let field = *fields.get(self.package_pane.pos())?;
+                    let field = *fields.get(self.pane_manager.package.pos())?;
                     if field == DetailField::CratesIo && info.crates_version.is_some() {
                         Some("open")
                     } else {
@@ -639,7 +641,7 @@ impl App {
                 } else {
                     // Git column — Repo field opens URL
                     let fields = crate::tui::detail::git_fields(info);
-                    match fields.get(self.git_pane.pos()) {
+                    match fields.get(self.pane_manager.git.pos()) {
                         Some(DetailField::Repo) if info.git_url.is_some() => Some("open"),
                         _ => None,
                     }
@@ -650,7 +652,7 @@ impl App {
                     .selected_project_path()
                     .and_then(|path| self.ci_state_for(path));
                 let run_count = ci_state.map_or(0, |s| s.runs().len());
-                if self.ci_pane.pos() == run_count
+                if self.pane_manager.ci.pos() == run_count
                     && !ci_state.is_some_and(CiState::is_fetching)
                     && !ci_state.is_some_and(CiState::is_exhausted)
                 {

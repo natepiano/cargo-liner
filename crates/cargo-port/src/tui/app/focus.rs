@@ -264,8 +264,10 @@ impl App {
             return;
         }
         let current = self.base_focus();
-        if current == PaneId::Toasts && self.toast_pane.pos() + 1 < self.active_toasts().len() {
-            self.toast_pane.down();
+        if current == PaneId::Toasts
+            && self.pane_manager.toasts.pos() + 1 < self.active_toasts().len()
+        {
+            self.pane_manager.toasts.down();
             self.focus_pane(PaneId::Toasts);
             return;
         }
@@ -273,7 +275,7 @@ impl App {
         let next = panes[(index + 1) % panes.len()];
         self.focus_pane(next);
         if next == PaneId::Toasts {
-            self.toast_pane.home();
+            self.pane_manager.toasts.home();
         }
     }
 
@@ -284,8 +286,8 @@ impl App {
             return;
         }
         let current = self.base_focus();
-        if current == PaneId::Toasts && self.toast_pane.pos() > 0 {
-            self.toast_pane.up();
+        if current == PaneId::Toasts && self.pane_manager.toasts.pos() > 0 {
+            self.pane_manager.toasts.up();
             self.focus_pane(PaneId::Toasts);
             return;
         }
@@ -293,18 +295,19 @@ impl App {
         let prev = panes[(index + panes.len() - 1) % panes.len()];
         self.focus_pane(prev);
         if prev == PaneId::Toasts {
-            self.toast_pane
+            self.pane_manager
+                .toasts
                 .set_pos(self.active_toasts().len().saturating_sub(1));
         }
     }
 
     pub(in super::super) fn reset_project_panes(&mut self) {
-        self.package_pane.home();
-        self.git_pane.home();
-        self.targets_pane.home();
-        self.ci_pane.home();
-        self.lint_pane.home();
-        self.toast_pane.home();
+        self.pane_manager.package.home();
+        self.pane_manager.git.home();
+        self.pane_manager.targets.home();
+        self.pane_manager.ci.home();
+        self.pane_manager.lints.home();
+        self.pane_manager.toasts.home();
         self.visited_panes.remove(&PaneId::Package);
         self.visited_panes.remove(&PaneId::Git);
         self.visited_panes.remove(&PaneId::Targets);

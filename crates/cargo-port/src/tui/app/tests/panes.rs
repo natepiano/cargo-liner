@@ -83,7 +83,7 @@ fn tabbable_panes_follow_canonical_order() {
 
     let mut app = make_app(std::slice::from_ref(&project));
     app.toasts = ToastManager::default();
-    app.toast_pane.set_len(0);
+    app.pane_manager.toasts.set_len(0);
     app.scan.phase = ScanPhase::Complete;
     app.handle_git_info(
         project.path(),
@@ -280,18 +280,18 @@ fn project_change_resets_project_dependent_panes() {
     app.focus_pane(PaneId::Git);
     app.focus_pane(PaneId::Targets);
     app.focus_pane(PaneId::CiRuns);
-    app.package_pane.set_pos(3);
-    app.git_pane.set_pos(4);
-    app.targets_pane.set_pos(5);
-    app.ci_pane.set_pos(6);
+    app.pane_manager.package.set_pos(3);
+    app.pane_manager.git.set_pos(4);
+    app.pane_manager.targets.set_pos(5);
+    app.pane_manager.ci.set_pos(6);
 
     app.list_state.select(Some(1));
     app.sync_selected_project();
 
-    assert_eq!(app.package_pane.pos(), 0);
-    assert_eq!(app.git_pane.pos(), 0);
-    assert_eq!(app.targets_pane.pos(), 0);
-    assert_eq!(app.ci_pane.pos(), 0);
+    assert_eq!(app.pane_manager.package.pos(), 0);
+    assert_eq!(app.pane_manager.git.pos(), 0);
+    assert_eq!(app.pane_manager.targets.pos(), 0);
+    assert_eq!(app.pane_manager.ci.pos(), 0);
     assert!(!app.remembers_selection(PaneId::Package));
     assert!(!app.remembers_selection(PaneId::Git));
     assert!(!app.remembers_selection(PaneId::Targets));

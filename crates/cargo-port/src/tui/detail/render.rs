@@ -25,7 +25,7 @@ use crate::constants::IN_SYNC;
 use crate::constants::NO_LINT_RUNS;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
-use crate::tui::constants::ACTIVE_FOCUS_COLOR;
+use crate::tui::constants::ACTIVE_BORDER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::INACTIVE_BORDER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
@@ -435,7 +435,7 @@ pub fn render_detail_panel(
 
         let styles = RenderStyles {
             readonly_label:  Style::default().fg(LABEL_COLOR),
-            active_border:   Style::default().fg(ACTIVE_FOCUS_COLOR),
+            active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
             inactive_border: Style::default(),
             title:           title_style,
         };

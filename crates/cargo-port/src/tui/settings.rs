@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
-use super::constants::ACTIVE_FOCUS_COLOR;
+use super::constants::ACTIVE_BORDER_COLOR;
 use super::constants::ERROR_COLOR;
 use super::constants::INLINE_ERROR_COLOR;
 use super::constants::LABEL_COLOR;
@@ -524,7 +524,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
 
     let inner = super::popup::PopupFrame {
         title:        Some(" Settings ".to_string()),
-        border_color: ACTIVE_FOCUS_COLOR,
+        border_color: ACTIVE_BORDER_COLOR,
         width:        SETTINGS_POPUP_WIDTH,
         height:       popup_height,
     }

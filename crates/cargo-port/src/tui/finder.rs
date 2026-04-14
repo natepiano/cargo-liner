@@ -22,7 +22,7 @@ use ratatui::widgets::TableState;
 
 use super::app::App;
 use super::constants::ACCENT_COLOR;
-use super::constants::ACTIVE_FOCUS_COLOR;
+use super::constants::ACTIVE_BORDER_COLOR;
 use super::constants::FINDER_MATCH_BG;
 use super::constants::FINDER_POPUP_HEIGHT;
 use super::constants::LABEL_COLOR;
@@ -699,7 +699,7 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
 
     let inner = super::popup::PopupFrame {
         title:        Some(title),
-        border_color: ACTIVE_FOCUS_COLOR,
+        border_color: ACTIVE_BORDER_COLOR,
         width:        popup_width,
         height:       FINDER_POPUP_HEIGHT,
     }

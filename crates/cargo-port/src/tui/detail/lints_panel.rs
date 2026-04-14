@@ -14,7 +14,7 @@ use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
-use crate::tui::constants::ACTIVE_FOCUS_COLOR;
+use crate::tui::constants::ACTIVE_BORDER_COLOR;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::INACTIVE_BORDER_COLOR;
@@ -111,7 +111,7 @@ fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'sta
         Style::default().fg(INACTIVE_BORDER_COLOR)
     };
     let border_style = if focused {
-        Style::default().fg(ACTIVE_FOCUS_COLOR)
+        Style::default().fg(ACTIVE_BORDER_COLOR)
     } else if has_runs {
         Style::default()
     } else {

@@ -26,7 +26,7 @@ use super::app::ExpandKey;
 use super::app::ResolvedWidths;
 use super::app::VisibleRow;
 use super::constants::ACCENT_COLOR;
-use super::constants::ACTIVE_FOCUS_COLOR;
+use super::constants::ACTIVE_BORDER_COLOR;
 use super::constants::BLOCK_BORDER_WIDTH;
 use super::constants::BYTES_PER_GIB;
 use super::constants::BYTES_PER_KIB;
@@ -520,7 +520,7 @@ pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .border_style(if search_focused {
-                Style::default().fg(ACTIVE_FOCUS_COLOR)
+                Style::default().fg(ACTIVE_BORDER_COLOR)
             } else {
                 Style::default().fg(LABEL_COLOR)
             }),
@@ -557,7 +557,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
         .borders(Borders::ALL)
         .title(title)
         .border_style(if app.is_focused(PaneId::ProjectList) {
-            Style::default().fg(ACTIVE_FOCUS_COLOR)
+            Style::default().fg(ACTIVE_BORDER_COLOR)
         } else {
             Style::default()
         })
@@ -718,7 +718,7 @@ fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let border_color = if app.is_focused(PaneId::Output) {
-        ACTIVE_FOCUS_COLOR
+        ACTIVE_BORDER_COLOR
     } else {
         LABEL_COLOR
     };

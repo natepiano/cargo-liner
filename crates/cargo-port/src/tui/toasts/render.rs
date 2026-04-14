@@ -16,7 +16,7 @@ use super::manager::ToastView;
 use super::manager::TrackedItemView;
 use crate::tui::LINT_SPINNER;
 use crate::tui::constants::ACCENT_COLOR;
-use crate::tui::constants::ACTIVE_FOCUS_COLOR;
+use crate::tui::constants::ACTIVE_BORDER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::TITLE_COLOR;
@@ -193,7 +193,7 @@ fn render_toast_card(
     let focused = pane_focused && focused_toast_id == Some(toast.id());
     let is_error = toast.style() == ToastStyle::Error;
     let border_style = if focused {
-        Style::default().fg(ACTIVE_FOCUS_COLOR)
+        Style::default().fg(ACTIVE_BORDER_COLOR)
     } else if is_error {
         Style::default().fg(ERROR_COLOR)
     } else {

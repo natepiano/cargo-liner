@@ -91,18 +91,12 @@ pub(super) struct App {
     list_state:               ListState,
     search_query:             String,
     filtered:                 Vec<types::SearchHit>,
-    settings_pane:            Pane,
+    pane_manager:             super::panes::PaneManager,
     settings_edit_buf:        String,
     settings_edit_cursor:     usize,
     focused_pane:             PaneId,
     return_focus:             Option<PaneId>,
     visited_panes:            HashSet<PaneId>,
-    package_pane:             Pane,
-    git_pane:                 Pane,
-    targets_pane:             Pane,
-    ci_pane:                  Pane,
-    toast_pane:               Pane,
-    lint_pane:                Pane,
     pending_example_run:      Option<PendingExampleRun>,
     pending_ci_fetch:         Option<PendingCiFetch>,
     pending_cleans:           VecDeque<PendingClean>,
@@ -145,7 +139,6 @@ pub(super) struct App {
     keymap_path:              Option<AbsolutePath>,
     keymap_last_seen:         Option<types::ConfigFileStamp>,
     keymap_diagnostics_id:    Option<u64>,
-    keymap_pane:              Pane,
     inline_error:             Option<String>,
     ui_modes:                 types::UiModes,
     dirty:                    types::DirtyState,
@@ -240,37 +233,45 @@ impl App {
     #[cfg(test)]
     pub(super) const fn ui_modes_mut(&mut self) -> &mut types::UiModes { &mut self.ui_modes }
 
-    pub(super) const fn settings_pane(&self) -> &Pane { &self.settings_pane }
+    pub(super) const fn pane_manager(&self) -> &super::panes::PaneManager { &self.pane_manager }
 
-    pub(super) const fn settings_pane_mut(&mut self) -> &mut Pane { &mut self.settings_pane }
+    pub(super) const fn pane_manager_mut(&mut self) -> &mut super::panes::PaneManager {
+        &mut self.pane_manager
+    }
 
-    pub(super) const fn package_pane(&self) -> &Pane { &self.package_pane }
+    pub(super) const fn settings_pane(&self) -> &Pane { &self.pane_manager.settings }
 
-    pub(super) const fn package_pane_mut(&mut self) -> &mut Pane { &mut self.package_pane }
+    pub(super) const fn settings_pane_mut(&mut self) -> &mut Pane {
+        &mut self.pane_manager.settings
+    }
 
-    pub(super) const fn git_pane(&self) -> &Pane { &self.git_pane }
+    pub(super) const fn package_pane(&self) -> &Pane { &self.pane_manager.package }
 
-    pub(super) const fn git_pane_mut(&mut self) -> &mut Pane { &mut self.git_pane }
+    pub(super) const fn package_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.package }
 
-    pub(super) const fn targets_pane(&self) -> &Pane { &self.targets_pane }
+    pub(super) const fn git_pane(&self) -> &Pane { &self.pane_manager.git }
 
-    pub(super) const fn targets_pane_mut(&mut self) -> &mut Pane { &mut self.targets_pane }
+    pub(super) const fn git_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.git }
 
-    pub(super) const fn ci_pane(&self) -> &Pane { &self.ci_pane }
+    pub(super) const fn targets_pane(&self) -> &Pane { &self.pane_manager.targets }
 
-    pub(super) const fn ci_pane_mut(&mut self) -> &mut Pane { &mut self.ci_pane }
+    pub(super) const fn targets_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.targets }
 
-    pub(super) const fn toast_pane(&self) -> &Pane { &self.toast_pane }
+    pub(super) const fn ci_pane(&self) -> &Pane { &self.pane_manager.ci }
 
-    pub(super) const fn toast_pane_mut(&mut self) -> &mut Pane { &mut self.toast_pane }
+    pub(super) const fn ci_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.ci }
 
-    pub(super) const fn lint_pane(&self) -> &Pane { &self.lint_pane }
+    pub(super) const fn toast_pane(&self) -> &Pane { &self.pane_manager.toasts }
 
-    pub(super) const fn lint_pane_mut(&mut self) -> &mut Pane { &mut self.lint_pane }
+    pub(super) const fn toast_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.toasts }
 
-    pub(super) const fn keymap_pane(&self) -> &Pane { &self.keymap_pane }
+    pub(super) const fn lint_pane(&self) -> &Pane { &self.pane_manager.lints }
 
-    pub(super) const fn keymap_pane_mut(&mut self) -> &mut Pane { &mut self.keymap_pane }
+    pub(super) const fn lint_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.lints }
+
+    pub(super) const fn keymap_pane(&self) -> &Pane { &self.pane_manager.keymap }
+
+    pub(super) const fn keymap_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.keymap }
 
     pub(super) const fn finder(&self) -> &types::FinderState { &self.finder }
 

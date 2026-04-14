@@ -15,7 +15,7 @@ use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::tui::app::App;
-use crate::tui::constants::ACTIVE_FOCUS_COLOR;
+use crate::tui::constants::ACTIVE_BORDER_COLOR;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
@@ -270,7 +270,7 @@ pub fn render_ci_panel(
                 .add_modifier(Modifier::BOLD),
         )
         .border_style(if ci_focused {
-            Style::default().fg(ACTIVE_FOCUS_COLOR)
+            Style::default().fg(ACTIVE_BORDER_COLOR)
         } else {
             Style::default()
         });

@@ -228,7 +228,7 @@ impl App {
             1,
         );
         self.keymap_diagnostics_id = Some(id);
-        self.toast_pane.set_len(self.active_toasts().len());
+        self.pane_manager.toasts.set_len(self.active_toasts().len());
     }
 
     fn dismiss_keymap_diagnostics(&mut self) {
@@ -1846,7 +1846,7 @@ impl App {
                     }],
                     linger,
                 );
-                self.toast_pane.set_len(self.active_toasts().len());
+                self.pane_manager.toasts.set_len(self.active_toasts().len());
             }
         }
         if self.is_scan_complete() {

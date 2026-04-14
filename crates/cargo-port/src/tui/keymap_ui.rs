@@ -10,7 +10,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
 use super::app::App;
-use super::constants::ACTIVE_FOCUS_COLOR;
+use super::constants::ACTIVE_BORDER_COLOR;
 use super::constants::ERROR_COLOR;
 use super::constants::LABEL_COLOR;
 use super::constants::SECTION_HEADER_INDENT;
@@ -576,7 +576,7 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
 
     let inner = super::popup::PopupFrame {
         title: Some(" Keymap ".to_string()),
-        border_color: ACTIVE_FOCUS_COLOR,
+        border_color: ACTIVE_BORDER_COLOR,
         width,
         height,
     }

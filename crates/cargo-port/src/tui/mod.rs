@@ -8,6 +8,7 @@ mod finder;
 mod input;
 mod interaction;
 mod keymap_ui;
+mod panes;
 mod popup;
 mod render;
 mod settings;
