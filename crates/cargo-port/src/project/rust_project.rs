@@ -6,6 +6,7 @@ use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
 use super::package::PackageProject;
+use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
@@ -23,7 +24,7 @@ pub(crate) enum RustProject {
 }
 
 impl RustProject {
-    pub(crate) fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &AbsolutePath {
         match self {
             Self::Workspace(ws) => ws.path(),
             Self::Package(pkg) => pkg.path(),
@@ -44,7 +45,7 @@ impl RustProject {
         }
     }
 
-    pub(crate) fn worktree_primary_abs_path(&self) -> Option<&Path> {
+    pub(crate) fn worktree_primary_abs_path(&self) -> Option<&AbsolutePath> {
         match self {
             Self::Workspace(ws) => ws.worktree_primary_abs_path(),
             Self::Package(pkg) => pkg.worktree_primary_abs_path(),

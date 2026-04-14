@@ -105,7 +105,7 @@ fn tabbable_panes_follow_canonical_order() {
     app.detail_generation += 1;
     app.ensure_detail_cached();
     app.ci_state.insert(
-        project.path().to_path_buf(),
+        project.path().clone(),
         CiState::Loaded {
             runs:         vec![make_ci_run(1, Conclusion::Success)],
             exhausted:    false,
@@ -498,7 +498,7 @@ fn disk_updates_skip_git_path_refresh_during_scan() {
 
     let abs_str = abs_path.to_string_lossy().to_string();
     let project = RootItem::Rust(RustProject::Package(PackageProject::new(
-        abs_path,
+        AbsolutePath::from(abs_path),
         Some("demo".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
         Vec::new(),

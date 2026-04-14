@@ -1,7 +1,5 @@
 use std::ops::Deref;
 use std::ops::DerefMut;
-use std::path::Path;
-use std::path::PathBuf;
 
 use super::git::GitInfo;
 use super::info::ProjectInfo;
@@ -31,23 +29,23 @@ pub(crate) struct WorkspaceProject {
 
 impl WorkspaceProject {
     pub(crate) fn new(
-        path: PathBuf,
+        path: AbsolutePath,
         name: Option<String>,
         cargo: Cargo,
         groups: Vec<MemberGroup>,
         vendored: Vec<PackageProject>,
         worktree_name: Option<String>,
-        worktree_primary_abs_path: Option<PathBuf>,
+        worktree_primary_abs_path: Option<AbsolutePath>,
     ) -> Self {
         Self {
-            path: path.into(),
+            path,
             name,
             rust: RustInfo {
                 info: ProjectInfo::default(),
                 cargo,
                 vendored,
                 worktree_name,
-                worktree_primary_abs_path: worktree_primary_abs_path.map(AbsolutePath::from),
+                worktree_primary_abs_path,
                 lint_runs: LintRuns::default(),
             },
             groups,
@@ -70,7 +68,7 @@ impl WorkspaceProject {
 }
 
 impl ProjectFields for WorkspaceProject {
-    fn path(&self) -> &Path { self.path.as_path() }
+    fn path(&self) -> &AbsolutePath { &self.path }
 
     fn name(&self) -> Option<&str> { self.name.as_deref() }
 

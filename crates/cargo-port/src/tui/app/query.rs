@@ -207,7 +207,7 @@ impl App {
         crate::tui::render::format_bytes(bytes)
     }
 
-    pub(in super::super) fn selected_ci_path(&self) -> Option<PathBuf> {
+    pub(in super::super) fn selected_ci_path(&self) -> Option<AbsolutePath> {
         self.selected_project_path()
             .and_then(|path| self.ci_owner_path_for(path))
     }
@@ -344,7 +344,7 @@ impl App {
             return;
         }
         self.discovery_shimmers.insert(
-            path.to_path_buf(),
+            AbsolutePath::from(path),
             DiscoveryShimmer::new(Instant::now(), self.discovery_shimmer_duration()),
         );
     }
@@ -401,7 +401,7 @@ impl App {
         row_path: &Path,
         now: Instant,
         row_kind: DiscoveryRowKind,
-    ) -> Option<(PathBuf, DiscoveryShimmer)> {
+    ) -> Option<(AbsolutePath, DiscoveryShimmer)> {
         self.discovery_shimmers
             .iter()
             .filter(|(session_path, shimmer)| {
@@ -482,16 +482,16 @@ impl App {
     }
 
     pub(in super::super) fn recompute_cargo_active_paths(&mut self) {
-        let mut active_paths: HashSet<PathBuf> = HashSet::new();
+        let mut active_paths: HashSet<AbsolutePath> = HashSet::new();
         self.projects.for_each_leaf(|item| {
             if !self.is_vendored_path(item.path()) {
-                active_paths.insert(item.path().to_path_buf());
+                active_paths.insert(item.path().clone());
             }
         });
 
         // Include vendored projects whose parent is active.
         for item in &self.projects {
-            let vendored_paths: Vec<&Path> = match item {
+            let vendored_paths: Vec<&AbsolutePath> = match item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     ws.vendored().iter().map(PackageProject::path).collect()
                 },
@@ -514,7 +514,7 @@ impl App {
             };
             if active_paths.contains(item.path()) {
                 for vp in vendored_paths {
-                    active_paths.insert(vp.to_path_buf());
+                    active_paths.insert(vp.clone());
                 }
             }
         }
@@ -561,13 +561,13 @@ impl App {
 
     pub(in super::super) fn refresh_git_path_state(&mut self, path: &Path) {
         let state = crate::project::detect_git_path_state(path);
-        self.git_path_states.insert(path.to_path_buf(), state);
+        self.git_path_states.insert(AbsolutePath::from(path), state);
     }
 
     pub(in super::super) fn prune_inactive_project_state(&mut self) {
-        let mut all_paths: HashSet<PathBuf> = HashSet::new();
+        let mut all_paths: HashSet<AbsolutePath> = HashSet::new();
         self.projects.for_each_leaf_path(|path, _| {
-            all_paths.insert(path.to_path_buf());
+            all_paths.insert(AbsolutePath::from(path));
         });
         self.git_path_states
             .retain(|path, _| all_paths.contains(path));
@@ -577,9 +577,9 @@ impl App {
             if self.is_cargo_active_path(path) {
                 continue;
             }
-            self.ci_state.remove(path);
-            self.crates_versions.remove(path);
-            self.crates_downloads.remove(path);
+            self.ci_state.remove(path.as_path());
+            self.crates_versions.remove(path.as_path());
+            self.crates_downloads.remove(path.as_path());
         }
     }
 

@@ -55,7 +55,7 @@ use crate::watcher::WatcherMsg;
 
 #[derive(Clone)]
 struct LegacyRootExpansion {
-    root_path:      PathBuf,
+    root_path:      AbsolutePath,
     old_node_index: usize,
     had_children:   bool,
     named_groups:   Vec<usize>,
@@ -94,11 +94,11 @@ impl App {
         let mut inherited_git_info = Vec::new();
         for item in &self.projects {
             let root_path = item.path();
-            let member_paths: Vec<PathBuf> = match item {
+            let member_paths: Vec<AbsolutePath> = match item {
                 crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => ws
                     .groups()
                     .iter()
-                    .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
+                    .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
                     .collect(),
                 crate::project::RootItem::Worktrees(
                     crate::project::WorktreeGroup::Workspaces {
@@ -109,7 +109,7 @@ impl App {
                     .flat_map(|ws| {
                         ws.groups()
                             .iter()
-                            .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
+                            .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
                     })
                     .collect(),
                 _ => Vec::new(),
@@ -129,7 +129,7 @@ impl App {
                     }
                 }
             }
-            if let Some(&stars) = self.stars.get(root_path) {
+            if let Some(&stars) = self.stars.get::<Path>(root_path) {
                 for member_path in &member_paths {
                     self.stars.entry(member_path.clone()).or_insert(stars);
                 }
@@ -454,8 +454,8 @@ impl App {
 
     pub(in super::super) fn register_item_background_services(&self, item: &RootItem) {
         let started = Instant::now();
-        let abs_path = item.path().to_path_buf();
-        let repo_root = crate::project::git_repo_root(&abs_path);
+        let abs_path = AbsolutePath::from(item.path().to_path_buf());
+        let repo_root = crate::project::git_repo_root(&abs_path).map(AbsolutePath::from);
         let has_repo_root = repo_root.is_some();
         let _ = self.watch_tx.send(WatcherMsg::Register(WatchRequest {
             project_label: abs_path.to_string_lossy().to_string(),
@@ -523,14 +523,14 @@ impl App {
 
     pub(in super::super) fn schedule_git_first_commit_refreshes(&self) {
         let tx = self.bg_tx.clone();
-        let mut projects_by_repo: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        let mut projects_by_repo: HashMap<AbsolutePath, Vec<AbsolutePath>> = HashMap::new();
         self.projects.for_each_leaf_path(|path, _| {
-            let abs_path = path.to_path_buf();
+            let abs_path = AbsolutePath::from(path);
             let Some(repo_root) = crate::project::git_repo_root(&abs_path) else {
                 return;
             };
             projects_by_repo
-                .entry(repo_root)
+                .entry(AbsolutePath::from(repo_root))
                 .or_default()
                 .push(abs_path);
         });
@@ -556,12 +556,12 @@ impl App {
     }
 
     /// Collect root project paths and metadata for the lint runtime.
-    fn lint_runtime_root_entries(&self) -> Vec<(PathBuf, bool)> {
+    fn lint_runtime_root_entries(&self) -> Vec<(AbsolutePath, bool)> {
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
 
         for item in &self.projects {
-            let items: Vec<(&Path, bool)> = match item {
+            let items: Vec<(&AbsolutePath, bool)> = match item {
                 crate::project::RootItem::Worktrees(
                     crate::project::WorktreeGroup::Workspaces {
                         primary, linked, ..
@@ -581,7 +581,7 @@ impl App {
                 _ => vec![(item.path(), item.is_rust())],
             };
             for (path, is_rust) in items {
-                let owned = path.to_path_buf();
+                let owned = path.clone();
                 if seen.insert(owned.clone()) {
                     entries.push((owned, is_rust));
                 }
@@ -623,7 +623,7 @@ impl App {
                 RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
                     runtime.register_project(crate::lint::RegisterProjectRequest {
                         project_label: ws.display_path().into_string(),
-                        abs_path:      ws.path().to_path_buf(),
+                        abs_path:      ws.path().clone(),
                         is_rust:       true,
                     });
                     count += 1;
@@ -631,7 +631,7 @@ impl App {
                 RootItem::Rust(crate::project::RustProject::Package(pkg)) => {
                     runtime.register_project(crate::lint::RegisterProjectRequest {
                         project_label: pkg.display_path().into_string(),
-                        abs_path:      pkg.path().to_path_buf(),
+                        abs_path:      pkg.path().clone(),
                         is_rust:       true,
                     });
                     count += 1;
@@ -644,7 +644,7 @@ impl App {
                     for ws in std::iter::once(primary).chain(linked.iter()) {
                         runtime.register_project(crate::lint::RegisterProjectRequest {
                             project_label: ws.display_path().into_string(),
-                            abs_path:      ws.path().to_path_buf(),
+                            abs_path:      ws.path().clone(),
                             is_rust:       true,
                         });
                         count += 1;
@@ -658,7 +658,7 @@ impl App {
                     for pkg in std::iter::once(primary).chain(linked.iter()) {
                         runtime.register_project(crate::lint::RegisterProjectRequest {
                             project_label: pkg.display_path().into_string(),
-                            abs_path:      pkg.path().to_path_buf(),
+                            abs_path:      pkg.path().clone(),
                             is_rust:       true,
                         });
                         count += 1;
@@ -699,7 +699,7 @@ impl App {
         tracing::info!(path = %item.display_path(), "lint_register");
         runtime.register_project(crate::lint::RegisterProjectRequest {
             project_label: item.display_path().into_string(),
-            abs_path:      path.to_path_buf(),
+            abs_path:      path.clone(),
             is_rust:       true,
         });
     }
@@ -716,13 +716,12 @@ impl App {
             .projects
             .git_directories()
             .into_iter()
-            .map(|path| path.to_path_buf())
             .collect::<HashSet<_>>();
         let git_seen = self
             .projects
             .iter()
             .filter(|item| item.git_info().is_some())
-            .filter_map(|item| item.git_directory().map(|path| path.to_path_buf()))
+            .filter_map(|item| item.git_directory())
             .collect::<HashSet<_>>();
         self.scan.startup_phases.disk_complete_at = None;
         self.scan.startup_phases.scan_complete_at = Some(Instant::now());
@@ -986,8 +985,8 @@ impl App {
     /// Build tracked items from expected/seen path sets. Already-seen paths
     /// are pre-marked as completed so the renderer shows them with strikethrough.
     pub(in super::super) fn tracked_items_for_startup(
-        expected: &HashSet<PathBuf>,
-        seen: &HashSet<PathBuf>,
+        expected: &HashSet<AbsolutePath>,
+        seen: &HashSet<AbsolutePath>,
     ) -> Vec<TrackedItem> {
         expected
             .iter()
@@ -1000,7 +999,7 @@ impl App {
                 };
                 TrackedItem {
                     label,
-                    key: AbsolutePath::from(path.as_path()).into(),
+                    key: path.into(),
                     started_at: None,
                     completed_at,
                 }
@@ -1009,8 +1008,8 @@ impl App {
     }
 
     pub(in super::super) fn startup_remaining_toast_body(
-        expected: &HashSet<PathBuf>,
-        seen: &HashSet<PathBuf>,
+        expected: &HashSet<AbsolutePath>,
+        seen: &HashSet<AbsolutePath>,
     ) -> String {
         let items: Vec<String> = expected
             .iter()
@@ -1040,16 +1039,16 @@ impl App {
         toasts::format_toast_items(&refs, toasts::toast_body_width())
     }
 
-    fn startup_git_directory_for_path(&self, path: &Path) -> Option<PathBuf> {
+    fn startup_git_directory_for_path(&self, path: &Path) -> Option<AbsolutePath> {
         self.projects
             .iter()
             .find(|item| item.at_path(path).is_some())
-            .and_then(|item| item.git_directory().map(|git_dir| git_dir.to_path_buf()))
+            .and_then(RootItem::git_directory)
     }
 
     pub(in super::super) fn startup_lint_toast_body_for(
-        expected: &HashSet<PathBuf>,
-        seen: &HashSet<PathBuf>,
+        expected: &HashSet<AbsolutePath>,
+        seen: &HashSet<AbsolutePath>,
     ) -> String {
         let items: Vec<String> = expected
             .iter()
@@ -1064,7 +1063,7 @@ impl App {
     }
 
     pub(in super::super) fn running_lint_toast_body(&self) -> String {
-        let paths: HashSet<PathBuf> = self.running_lint_paths.keys().cloned().collect();
+        let paths: HashSet<AbsolutePath> = self.running_lint_paths.keys().cloned().collect();
         Self::startup_lint_toast_body_for(&paths, &HashSet::new())
     }
 
@@ -1127,7 +1126,7 @@ impl App {
             .iter()
             .map(|(p, &started)| TrackedItem {
                 label:        crate::project::home_relative_path(p),
-                key:          AbsolutePath::from(p.as_path()).into(),
+                key:          p.clone().into(),
                 started_at:   Some(started),
                 completed_at: None,
             })
@@ -1311,7 +1310,7 @@ impl App {
                 match item {
                     RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
                         Some(LegacyRootExpansion {
-                            root_path:      ws.path().to_path_buf(),
+                            root_path:      ws.path().clone(),
                             old_node_index: ni,
                             had_children:   ws.has_members() || !ws.vendored().is_empty(),
                             named_groups:   ws
@@ -1330,7 +1329,7 @@ impl App {
                     },
                     RootItem::Rust(crate::project::RustProject::Package(pkg)) => {
                         Some(LegacyRootExpansion {
-                            root_path:      pkg.path().to_path_buf(),
+                            root_path:      pkg.path().clone(),
                             old_node_index: ni,
                             had_children:   !pkg.vendored().is_empty(),
                             named_groups:   Vec::new(),
@@ -1553,12 +1552,12 @@ impl App {
                 CiFetchMsg::Complete { path, result, kind } => {
                     let before = self
                         .ci_state
-                        .get(&std::path::PathBuf::from(&path))
+                        .get(Path::new(&path))
                         .map_or(0, |s| s.runs().len());
                     self.handle_ci_fetch_complete(&path, result, kind);
                     let after = self
                         .ci_state
-                        .get(&std::path::PathBuf::from(&path))
+                        .get(Path::new(&path))
                         .map_or(0, |s| s.runs().len());
                     let new_runs = after.saturating_sub(before);
                     if let Some(task_id) = self.ci_fetch_toast.take() {
@@ -1572,10 +1571,7 @@ impl App {
                         };
                         let result_item = crate::tui::toasts::TrackedItem {
                             label,
-                            key: crate::project::AbsolutePath::from(std::path::PathBuf::from(
-                                format!("{path}:result"),
-                            ))
-                            .into(),
+                            key: AbsolutePath::from(format!("{path}:result")).into(),
                             started_at: None,
                             completed_at: None,
                         };
@@ -1658,7 +1654,7 @@ impl App {
         bytes: u64,
         refresh_git_path_state: bool,
     ) {
-        self.fully_loaded.insert(path.to_path_buf());
+        self.fully_loaded.insert(AbsolutePath::from(path));
         if refresh_git_path_state {
             self.refresh_git_path_state(path);
         }
@@ -1681,7 +1677,7 @@ impl App {
             if let Some(runtime) = &self.lint_runtime
                 && bytes == 0
             {
-                runtime.unregister_project(path.to_path_buf());
+                runtime.unregister_project(AbsolutePath::from(path));
             }
             if bytes > 0 {
                 self.register_lint_for_path(path);
@@ -1689,7 +1685,7 @@ impl App {
         }
     }
 
-    fn inherited_git_info_paths(&self, path: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    fn inherited_git_info_paths(&self, path: &Path) -> (Vec<AbsolutePath>, Vec<AbsolutePath>) {
         let mut member_paths = Vec::new();
         let mut fallback_worktree_paths = Vec::new();
         for item in &self.projects {
@@ -1698,10 +1694,7 @@ impl App {
                     if ws.path() == path =>
                 {
                     member_paths.extend(ws.groups().iter().flat_map(|group| {
-                        group
-                            .members()
-                            .iter()
-                            .map(|member| member.path().to_path_buf())
+                        group.members().iter().map(|member| member.path().clone())
                     }));
                 },
                 crate::project::RootItem::Worktrees(
@@ -1712,10 +1705,7 @@ impl App {
                     for ws in std::iter::once(primary).chain(linked.iter()) {
                         if ws.path() == path {
                             member_paths.extend(ws.groups().iter().flat_map(|group| {
-                                group
-                                    .members()
-                                    .iter()
-                                    .map(|member| member.path().to_path_buf())
+                                group.members().iter().map(|member| member.path().clone())
                             }));
                         }
                     }
@@ -1724,7 +1714,7 @@ impl App {
                             linked
                                 .iter()
                                 .filter(|l| self.git_info_for(l.path()).is_none())
-                                .map(|l| l.path().to_path_buf()),
+                                .map(|l| l.path().clone()),
                         );
                     }
                 },
@@ -1737,7 +1727,7 @@ impl App {
                         linked
                             .iter()
                             .filter(|l| self.git_info_for(l.path()).is_none())
-                            .map(|l| l.path().to_path_buf()),
+                            .map(|l| l.path().clone()),
                     );
                 },
                 _ => {},
@@ -1757,7 +1747,7 @@ impl App {
         let tx = self.bg_tx.clone();
         let client = self.http_client.clone();
         let repo_cache = self.repo_fetch_cache.clone();
-        let path: AbsolutePath = path.to_path_buf().into();
+        let path: AbsolutePath = AbsolutePath::from(path);
         let repo_url = repo_url.to_string();
         let ci_run_count = self.ci_run_count();
         thread::spawn(move || {
@@ -1809,17 +1799,16 @@ impl App {
 
     pub(in super::super) fn handle_git_info(&mut self, path: &Path, info: GitInfo) {
         self.dirty.fit_widths.mark_dirty();
-        let abs = path.to_path_buf();
         let preserved_first_commit = self
-            .git_info_for(&abs)
+            .git_info_for(path)
             .and_then(|existing| existing.first_commit.clone());
         let mut info = info;
         if info.first_commit.is_none() {
             info.first_commit =
-                preserved_first_commit.or_else(|| self.pending_git_first_commit.remove(&abs));
+                preserved_first_commit.or_else(|| self.pending_git_first_commit.remove(path));
         }
-        let (member_paths, fallback_worktree_paths) = self.inherited_git_info_paths(&abs);
-        if let Some(project) = self.projects.at_path_mut(&abs) {
+        let (member_paths, fallback_worktree_paths) = self.inherited_git_info_paths(path);
+        if let Some(project) = self.projects.at_path_mut(path) {
             project.git_info = Some(info.clone());
         }
         for member_path in member_paths {
@@ -1834,8 +1823,8 @@ impl App {
         }
         if self.is_scan_complete() {
             let git_dir = self
-                .startup_git_directory_for_path(&abs)
-                .unwrap_or_else(|| abs.clone());
+                .startup_git_directory_for_path(path)
+                .unwrap_or_else(|| AbsolutePath::from(path));
             self.scan.startup_phases.git_seen.insert(git_dir.clone());
             if let Some(git_toast) = self.scan.startup_phases.git_toast {
                 let label = crate::project::home_relative_path(&git_dir);
@@ -1843,7 +1832,7 @@ impl App {
             }
             self.maybe_log_startup_phase_completions();
         }
-        self.spawn_repo_fetch_for_git_info(&abs, &info);
+        self.spawn_repo_fetch_for_git_info(path, &info);
         self.dirty.finder.mark_dirty();
     }
 
@@ -1858,7 +1847,7 @@ impl App {
         let Some(project) = self.projects.at_path_mut(path) else {
             if let Some(first_commit) = first_commit {
                 self.pending_git_first_commit
-                    .insert(path.to_path_buf(), first_commit);
+                    .insert(AbsolutePath::from(path), first_commit);
             } else {
                 self.pending_git_first_commit.remove(path);
             }
@@ -1886,7 +1875,7 @@ impl App {
             self.pending_git_first_commit.remove(path);
         } else if let Some(first_commit) = first_commit {
             self.pending_git_first_commit
-                .insert(path.to_path_buf(), first_commit);
+                .insert(AbsolutePath::from(path), first_commit);
         } else {
             self.pending_git_first_commit.remove(path);
         }
@@ -1907,18 +1896,15 @@ impl App {
         stars: u64,
         description: Option<String>,
     ) {
-        let abs = path.to_path_buf();
         // Propagate stars to workspace members.
         for item in &self.projects {
             match item {
                 crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws))
-                    if ws.path() == abs =>
+                    if ws.path() == path =>
                 {
                     for group in ws.groups() {
                         for member in group.members() {
-                            self.stars
-                                .entry(member.path().to_path_buf())
-                                .or_insert(stars);
+                            self.stars.entry(member.path().clone()).or_insert(stars);
                         }
                     }
                 },
@@ -1928,12 +1914,10 @@ impl App {
                     },
                 ) => {
                     for ws in std::iter::once(primary).chain(linked.iter()) {
-                        if ws.path() == abs {
+                        if ws.path() == path {
                             for group in ws.groups() {
                                 for member in group.members() {
-                                    self.stars
-                                        .entry(member.path().to_path_buf())
-                                        .or_insert(stars);
+                                    self.stars.entry(member.path().clone()).or_insert(stars);
                                 }
                             }
                         }
@@ -1942,9 +1926,10 @@ impl App {
                 _ => {},
             }
         }
-        self.stars.insert(abs.clone(), stars);
+        self.stars.insert(AbsolutePath::from(path), stars);
         if let Some(desc) = description {
-            self.repo_descriptions.insert(abs, desc);
+            self.repo_descriptions
+                .insert(AbsolutePath::from(path), desc);
         }
     }
 
@@ -2066,7 +2051,7 @@ impl App {
         self.scan
             .startup_phases
             .disk_seen
-            .insert(path.to_path_buf());
+            .insert(AbsolutePath::from(path));
         self.handle_disk_usage(path, bytes);
         self.maybe_log_startup_phase_completions();
     }
@@ -2083,10 +2068,7 @@ impl App {
         {
             self.detail_generation += 1;
         }
-        self.scan
-            .startup_phases
-            .disk_seen
-            .insert(root_path.to_path_buf());
+        self.scan.startup_phases.disk_seen.insert(root_path.clone());
         self.handle_disk_usage_batch(entries);
         self.maybe_log_startup_phase_completions();
     }
@@ -2097,7 +2079,7 @@ impl App {
             .get(path.as_path())
             .is_none_or(|old| *old != state);
         tracing::info!(path = %path, state = %state.label(), changed, "app_git_path_state_applied");
-        self.git_path_states.insert(path.to_path_buf(), state);
+        self.git_path_states.insert(path.clone(), state);
         if changed {
             self.dirty.rows.mark_dirty();
             self.dirty.fit_widths.mark_dirty();
@@ -2105,83 +2087,86 @@ impl App {
     }
 
     fn handle_crates_io_version_msg(&mut self, path: &Path, version: String, downloads: u64) {
-        let abs = path.to_path_buf();
-        if self.is_cargo_active_path(&abs) {
+        if self.is_cargo_active_path(path) {
+            let abs = AbsolutePath::from(path);
             self.crates_versions.insert(abs.clone(), version);
             self.crates_downloads.insert(abs, downloads);
         } else {
-            self.crates_versions.remove(&abs);
-            self.crates_downloads.remove(&abs);
+            self.crates_versions.remove(path);
+            self.crates_downloads.remove(path);
         }
     }
 
     fn handle_lint_status_msg(&mut self, path: &Path, status: LintStatus) {
-        let abs = path.to_path_buf();
+        let abs = AbsolutePath::from(path);
         let status_started = matches!(status, LintStatus::Running(_));
         let status_is_terminal = matches!(
             status,
             LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog
         );
-        if !self.is_cargo_active_path(&abs) {
-            if let Some(lr) = self.projects.lint_at_path_mut(&abs) {
+        if !self.is_cargo_active_path(path) {
+            if let Some(lr) = self.projects.lint_at_path_mut(path) {
                 lr.clear_runs();
             }
             return;
         }
         let mut is_rust = false;
-        self.projects.for_each_leaf_path(|path, rust| {
-            if path == abs.as_path() {
+        self.projects.for_each_leaf_path(|p, rust| {
+            if p == path {
                 is_rust = rust;
             }
         });
         let eligible = crate::lint::project_is_eligible(
             &self.current_config.lint,
-            &abs.to_string_lossy(),
-            &abs,
+            &path.to_string_lossy(),
+            path,
             is_rust,
         );
         if eligible {
-            if let Some(lr) = self.projects.lint_at_path_mut(&abs) {
+            if let Some(lr) = self.projects.lint_at_path_mut(path) {
                 lr.set_status(status);
             }
             if status_is_terminal {
-                self.reload_lint_history(&abs);
+                self.reload_lint_history(path);
             }
         } else {
-            if let Some(lr) = self.projects.lint_at_path_mut(&abs) {
+            if let Some(lr) = self.projects.lint_at_path_mut(path) {
                 lr.clear_runs();
             }
-            self.running_lint_paths.remove(&abs);
+            self.running_lint_paths.remove(path);
         }
         if status_started {
             self.running_lint_paths.insert(abs.clone(), Instant::now());
         }
         if status_is_terminal {
-            self.running_lint_paths.remove(&abs);
+            self.running_lint_paths.remove(path);
         }
         self.sync_running_lint_toast();
         if !self.is_scan_complete() {
             return;
         }
         if status_started {
+            let abs_path = AbsolutePath::from(path);
             let expected = self
                 .scan
                 .startup_phases
                 .lint_expected
                 .get_or_insert_with(HashSet::new);
-            if expected.insert(abs.clone()) {
+            if expected.insert(abs_path) {
                 self.scan.startup_phases.lint_complete_at = None;
             }
         }
-        if status_is_terminal
-            && self
+        if status_is_terminal {
+            let abs_path = AbsolutePath::from(path);
+            if self
                 .scan
                 .startup_phases
                 .lint_expected
                 .as_ref()
-                .is_some_and(|expected| expected.contains(&abs))
-        {
-            self.scan.startup_phases.lint_seen_terminal.insert(abs);
+                .is_some_and(|expected| expected.contains(path))
+            {
+                self.scan.startup_phases.lint_seen_terminal.insert(abs_path);
+            }
         }
         self.maybe_log_startup_phase_completions();
     }
@@ -2233,11 +2218,11 @@ impl App {
         let mut inherited_git_info = Vec::new();
         for item in &self.projects {
             let root_path = item.path();
-            let member_paths: Vec<PathBuf> = match item {
+            let member_paths: Vec<AbsolutePath> = match item {
                 RootItem::Rust(crate::project::RustProject::Workspace(ws)) => ws
                     .groups()
                     .iter()
-                    .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
+                    .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
                     .collect(),
                 RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
                     primary,
@@ -2248,7 +2233,7 @@ impl App {
                     .flat_map(|ws| {
                         ws.groups()
                             .iter()
-                            .flat_map(|g| g.members().iter().map(|m| m.path().to_path_buf()))
+                            .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
                     })
                     .collect(),
                 _ => Vec::new(),
@@ -2268,7 +2253,7 @@ impl App {
                     }
                 }
             }
-            if let Some(&stars) = self.stars.get(root_path) {
+            if let Some(&stars) = self.stars.get::<Path>(root_path) {
                 for member_path in &member_paths {
                     self.stars.entry(member_path.clone()).or_insert(stars);
                 }
@@ -2425,7 +2410,7 @@ impl App {
             .as_ref()
             .map(|c| c.info.name.clone())
             .filter(|n| n != "-");
-        if !self.fully_loaded.contains(&abs_path)
+        if !self.fully_loaded.contains(&abs_key)
             && self.priority_fetch_path.as_ref() != Some(&abs_key)
         {
             self.priority_fetch_path = Some(abs_key);

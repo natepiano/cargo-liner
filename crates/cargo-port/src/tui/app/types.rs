@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -94,18 +93,18 @@ pub enum DiscoveryRowKind {
 pub(in super::super) struct StartupPhaseTracker {
     pub scan_complete_at:    Option<Instant>,
     pub disk_expected:       Option<usize>,
-    pub disk_seen:           HashSet<PathBuf>,
+    pub disk_seen:           HashSet<AbsolutePath>,
     pub disk_complete_at:    Option<Instant>,
-    pub git_expected:        HashSet<PathBuf>,
-    pub git_seen:            HashSet<PathBuf>,
+    pub git_expected:        HashSet<AbsolutePath>,
+    pub git_seen:            HashSet<AbsolutePath>,
     pub git_complete_at:     Option<Instant>,
     pub repo_expected:       HashSet<OwnerRepo>,
     pub repo_seen:           HashSet<OwnerRepo>,
     pub repo_complete_at:    Option<Instant>,
     pub git_toast:           Option<ToastTaskId>,
     pub repo_toast:          Option<ToastTaskId>,
-    pub lint_expected:       Option<HashSet<PathBuf>>,
-    pub lint_seen_terminal:  HashSet<PathBuf>,
+    pub lint_expected:       Option<HashSet<AbsolutePath>>,
+    pub lint_seen_terminal:  HashSet<AbsolutePath>,
     pub lint_complete_at:    Option<Instant>,
     pub startup_complete_at: Option<Instant>,
 }

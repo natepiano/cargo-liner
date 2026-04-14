@@ -448,7 +448,7 @@ fn prune_discovery_shimmers_removes_expired_entries() {
     let mut app = make_app(&[]);
     let path = test_path("~/rust/demo");
     app.discovery_shimmers.insert(
-        path.clone(),
+        crate::project::AbsolutePath::from(path.as_path()),
         DiscoveryShimmer::new(
             Instant::now()
                 .checked_sub(Duration::from_secs(5))

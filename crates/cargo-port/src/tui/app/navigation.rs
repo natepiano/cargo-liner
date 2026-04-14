@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::path::PathBuf;
 
 use nucleo_matcher::Matcher;
 use nucleo_matcher::Utf32Str;
@@ -374,7 +373,7 @@ impl App {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
                 let item = self.projects.get(node_index)?;
-                Some(item.path())
+                Some(item.path().as_path())
             },
             VisibleRow::Member {
                 node_index,
@@ -386,14 +385,14 @@ impl App {
                     RootItem::Rust(RustProject::Workspace(ws)) => {
                         let group = ws.groups().get(group_index)?;
                         let member = group.members().get(member_index)?;
-                        Some(member.path())
+                        Some(member.path().as_path())
                     },
                     RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. })
                         if !wtg.renders_as_group() =>
                     {
                         let group = wtg.single_live_workspace()?.groups().get(group_index)?;
                         let member = group.members().get(member_index)?;
-                        Some(member.path())
+                        Some(member.path().as_path())
                     },
                     _ => None,
                 }
@@ -404,19 +403,21 @@ impl App {
             } => {
                 let item = self.projects.get(node_index)?;
                 match item {
-                    RootItem::Rust(RustProject::Workspace(ws)) => {
-                        ws.vendored().get(vendored_index).map(ProjectFields::path)
-                    },
-                    RootItem::Rust(RustProject::Package(pkg)) => {
-                        pkg.vendored().get(vendored_index).map(ProjectFields::path)
-                    },
+                    RootItem::Rust(RustProject::Workspace(ws)) => ws
+                        .vendored()
+                        .get(vendored_index)
+                        .map(|p| p.path().as_path()),
+                    RootItem::Rust(RustProject::Package(pkg)) => pkg
+                        .vendored()
+                        .get(vendored_index)
+                        .map(|p| p.path().as_path()),
                     RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. })
                         if !wtg.renders_as_group() =>
                     {
                         wtg.single_live_workspace()?
                             .vendored()
                             .get(vendored_index)
-                            .map(ProjectFields::path)
+                            .map(|p| p.path().as_path())
                     },
                     RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. })
                         if !wtg.renders_as_group() =>
@@ -424,7 +425,7 @@ impl App {
                         wtg.single_live_package()?
                             .vendored()
                             .get(vendored_index)
-                            .map(ProjectFields::path)
+                            .map(|p| p.path().as_path())
                     },
                     _ => None,
                 }
@@ -583,11 +584,11 @@ impl App {
     }
 
     /// Given a `VisibleRow`, resolve the absolute path from `project_list_items`.
-    pub(in super::super) fn abs_path_for_row(&self, row: VisibleRow) -> Option<PathBuf> {
+    pub(in super::super) fn abs_path_for_row(&self, row: VisibleRow) -> Option<AbsolutePath> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
                 let item = self.projects.get(node_index)?;
-                Some(item.path().to_path_buf())
+                Some(item.path().clone())
             },
             VisibleRow::Member {
                 node_index,
@@ -599,14 +600,14 @@ impl App {
                     RootItem::Rust(RustProject::Workspace(ws)) => {
                         let group = ws.groups().get(group_index)?;
                         let member = group.members().get(member_index)?;
-                        Some(member.path().to_path_buf())
+                        Some(member.path().clone())
                     },
                     RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. })
                         if !wtg.renders_as_group() =>
                     {
                         let group = wtg.single_live_workspace()?.groups().get(group_index)?;
                         let member = group.members().get(member_index)?;
-                        Some(member.path().to_path_buf())
+                        Some(member.path().clone())
                     },
                     _ => None,
                 }
@@ -617,21 +618,19 @@ impl App {
             } => {
                 let item = self.projects.get(node_index)?;
                 match item {
-                    RootItem::Rust(RustProject::Workspace(ws)) => ws
-                        .vendored()
-                        .get(vendored_index)
-                        .map(|p| p.path().to_path_buf()),
-                    RootItem::Rust(RustProject::Package(pkg)) => pkg
-                        .vendored()
-                        .get(vendored_index)
-                        .map(|p| p.path().to_path_buf()),
+                    RootItem::Rust(RustProject::Workspace(ws)) => {
+                        ws.vendored().get(vendored_index).map(|p| p.path().clone())
+                    },
+                    RootItem::Rust(RustProject::Package(pkg)) => {
+                        pkg.vendored().get(vendored_index).map(|p| p.path().clone())
+                    },
                     RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. })
                         if !wtg.renders_as_group() =>
                     {
                         wtg.single_live_workspace()?
                             .vendored()
                             .get(vendored_index)
-                            .map(|p| p.path().to_path_buf())
+                            .map(|p| p.path().clone())
                     },
                     RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. })
                         if !wtg.renders_as_group() =>
@@ -639,7 +638,7 @@ impl App {
                         wtg.single_live_package()?
                             .vendored()
                             .get(vendored_index)
-                            .map(|p| p.path().to_path_buf())
+                            .map(|p| p.path().clone())
                     },
                     _ => None,
                 }
@@ -680,7 +679,7 @@ impl App {
                 let item = self.projects.get(node_index)?;
                 item.submodules()
                     .get(submodule_index)
-                    .map(|s| s.path.clone())
+                    .map(|s| AbsolutePath::from(s.path.clone()))
             },
         }
     }
@@ -797,24 +796,24 @@ impl App {
         }
     }
 
-    fn worktree_abs_path(item: &RootItem, wi: usize) -> Option<PathBuf> {
+    fn worktree_abs_path(item: &RootItem, wi: usize) -> Option<AbsolutePath> {
         match item {
             RootItem::Worktrees(WorktreeGroup::Workspaces {
                 primary, linked, ..
             }) => {
                 if wi == 0 {
-                    Some(primary.path().to_path_buf())
+                    Some(primary.path().clone())
                 } else {
-                    linked.get(wi - 1).map(|p| p.path().to_path_buf())
+                    linked.get(wi - 1).map(|p| p.path().clone())
                 }
             },
             RootItem::Worktrees(WorktreeGroup::Packages {
                 primary, linked, ..
             }) => {
                 if wi == 0 {
-                    Some(primary.path().to_path_buf())
+                    Some(primary.path().clone())
                 } else {
-                    linked.get(wi - 1).map(|p| p.path().to_path_buf())
+                    linked.get(wi - 1).map(|p| p.path().clone())
                 }
             },
             _ => None,
@@ -826,7 +825,7 @@ impl App {
         wi: usize,
         gi: usize,
         mi: usize,
-    ) -> Option<PathBuf> {
+    ) -> Option<AbsolutePath> {
         match item {
             RootItem::Worktrees(WorktreeGroup::Workspaces {
                 primary, linked, ..
@@ -837,13 +836,13 @@ impl App {
                     linked.get(wi - 1)?
                 };
                 let group = ws.groups().get(gi)?;
-                group.members().get(mi).map(|p| p.path().to_path_buf())
+                group.members().get(mi).map(|p| p.path().clone())
             },
             _ => None,
         }
     }
 
-    fn worktree_vendored_abs_path(item: &RootItem, wi: usize, vi: usize) -> Option<PathBuf> {
+    fn worktree_vendored_abs_path(item: &RootItem, wi: usize, vi: usize) -> Option<AbsolutePath> {
         match item {
             RootItem::Worktrees(WorktreeGroup::Workspaces {
                 primary, linked, ..
@@ -853,7 +852,7 @@ impl App {
                 } else {
                     linked.get(wi - 1)?
                 };
-                ws.vendored().get(vi).map(|p| p.path().to_path_buf())
+                ws.vendored().get(vi).map(|p| p.path().clone())
             },
             RootItem::Worktrees(WorktreeGroup::Packages {
                 primary, linked, ..
@@ -863,7 +862,7 @@ impl App {
                 } else {
                     linked.get(wi - 1)?
                 };
-                pkg.vendored().get(vi).map(|p| p.path().to_path_buf())
+                pkg.vendored().get(vi).map(|p| p.path().clone())
             },
             _ => None,
         }
@@ -875,18 +874,18 @@ impl App {
                 primary, linked, ..
             }) => {
                 if wi == 0 {
-                    Some(primary.path())
+                    Some(primary.path().as_path())
                 } else {
-                    linked.get(wi - 1).map(ProjectFields::path)
+                    linked.get(wi - 1).map(|p| p.path().as_path())
                 }
             },
             RootItem::Worktrees(WorktreeGroup::Packages {
                 primary, linked, ..
             }) => {
                 if wi == 0 {
-                    Some(primary.path())
+                    Some(primary.path().as_path())
                 } else {
-                    linked.get(wi - 1).map(ProjectFields::path)
+                    linked.get(wi - 1).map(|p| p.path().as_path())
                 }
             },
             _ => None,
@@ -904,7 +903,7 @@ impl App {
                     linked.get(wi - 1)?
                 };
                 let group = ws.groups().get(gi)?;
-                group.members().get(mi).map(ProjectFields::path)
+                group.members().get(mi).map(|p| p.path().as_path())
             },
             _ => None,
         }
@@ -920,7 +919,7 @@ impl App {
                 } else {
                     linked.get(wi - 1)?
                 };
-                ws.vendored().get(vi).map(ProjectFields::path)
+                ws.vendored().get(vi).map(|p| p.path().as_path())
             },
             RootItem::Worktrees(WorktreeGroup::Packages {
                 primary, linked, ..
@@ -930,7 +929,7 @@ impl App {
                 } else {
                     linked.get(wi - 1)?
                 };
-                pkg.vendored().get(vi).map(ProjectFields::path)
+                pkg.vendored().get(vi).map(|p| p.path().as_path())
             },
             _ => None,
         }

@@ -21,6 +21,7 @@ use super::types::PaneId;
 use crate::keymap::GlobalAction;
 use crate::keymap::KeyBind;
 use crate::keymap::ProjectListAction;
+use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
 
 /// Last known mouse position, updated from every mouse event. Used to
@@ -397,8 +398,8 @@ fn handle_overlay_editor_key(app: &mut App, event: &KeyEvent) -> bool {
     let context = app.input_context();
     let Some(path) = overlay_editor_target_path(
         context,
-        app.config_path().map(std::path::PathBuf::as_path),
-        app.keymap_path().map(std::path::PathBuf::as_path),
+        app.config_path().map(AbsolutePath::as_path),
+        app.keymap_path().map(AbsolutePath::as_path),
     ) else {
         return false;
     };

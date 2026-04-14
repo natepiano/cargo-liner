@@ -80,20 +80,20 @@ pub(super) struct App {
     http_client:              HttpClient,
     repo_fetch_cache:         RepoCache,
     projects:                 ProjectList,
-    ci_state:                 HashMap<PathBuf, CiState>,
-    ci_display_modes:         HashMap<PathBuf, types::CiRunDisplayMode>,
+    ci_state:                 HashMap<AbsolutePath, CiState>,
+    ci_display_modes:         HashMap<AbsolutePath, types::CiRunDisplayMode>,
     lint_cache_usage:         CacheUsage,
-    git_path_states:          HashMap<PathBuf, GitPathState>,
-    cargo_active_paths:       HashSet<PathBuf>,
-    crates_versions:          HashMap<PathBuf, String>,
-    crates_downloads:         HashMap<PathBuf, u64>,
-    stars:                    HashMap<PathBuf, u64>,
-    repo_descriptions:        HashMap<PathBuf, String>,
-    discovery_shimmers:       HashMap<PathBuf, types::DiscoveryShimmer>,
-    pending_git_first_commit: HashMap<PathBuf, String>,
+    git_path_states:          HashMap<AbsolutePath, GitPathState>,
+    cargo_active_paths:       HashSet<AbsolutePath>,
+    crates_versions:          HashMap<AbsolutePath, String>,
+    crates_downloads:         HashMap<AbsolutePath, u64>,
+    stars:                    HashMap<AbsolutePath, u64>,
+    repo_descriptions:        HashMap<AbsolutePath, String>,
+    discovery_shimmers:       HashMap<AbsolutePath, types::DiscoveryShimmer>,
+    pending_git_first_commit: HashMap<AbsolutePath, String>,
     bg_tx:                    mpsc::Sender<BackgroundMsg>,
     bg_rx:                    mpsc::Receiver<BackgroundMsg>,
-    fully_loaded:             HashSet<PathBuf>,
+    fully_loaded:             HashSet<AbsolutePath>,
     priority_fetch_path:      Option<AbsolutePath>,
     expanded:                 HashSet<ExpandKey>,
     list_state:               ListState,
@@ -127,7 +127,7 @@ pub(super) struct App {
     example_rx:               mpsc::Receiver<ExampleMsg>,
     running_clean_paths:      HashSet<AbsolutePath>,
     clean_toast:              Option<ToastTaskId>,
-    running_lint_paths:       HashMap<PathBuf, Instant>,
+    running_lint_paths:       HashMap<AbsolutePath, Instant>,
     lint_toast:               Option<ToastTaskId>,
     ci_fetch_toast:           Option<ToastTaskId>,
     watch_tx:                 mpsc::Sender<WatcherMsg>,
@@ -147,10 +147,10 @@ pub(super) struct App {
     layout_cache:             LayoutCache,
     status_flash:             Option<(String, std::time::Instant)>,
     toasts:                   ToastManager,
-    config_path:              Option<PathBuf>,
+    config_path:              Option<AbsolutePath>,
     config_last_seen:         Option<types::ConfigFileStamp>,
     current_keymap:           ResolvedKeymap,
-    keymap_path:              Option<PathBuf>,
+    keymap_path:              Option<AbsolutePath>,
     keymap_last_seen:         Option<types::ConfigFileStamp>,
     keymap_diagnostics_id:    Option<u64>,
     keymap_pane:              Pane,
@@ -181,7 +181,7 @@ impl App {
 
     pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { &self.repo_fetch_cache }
 
-    pub(super) const fn ci_state_mut(&mut self) -> &mut HashMap<PathBuf, CiState> {
+    pub(super) const fn ci_state_mut(&mut self) -> &mut HashMap<AbsolutePath, CiState> {
         &mut self.ci_state
     }
 
@@ -209,15 +209,17 @@ impl App {
         }
     }
 
-    pub(super) const fn crates_versions(&self) -> &HashMap<PathBuf, String> {
+    pub(super) const fn crates_versions(&self) -> &HashMap<AbsolutePath, String> {
         &self.crates_versions
     }
 
-    pub(super) const fn crates_downloads(&self) -> &HashMap<PathBuf, u64> { &self.crates_downloads }
+    pub(super) const fn crates_downloads(&self) -> &HashMap<AbsolutePath, u64> {
+        &self.crates_downloads
+    }
 
-    pub(super) const fn stars(&self) -> &HashMap<PathBuf, u64> { &self.stars }
+    pub(super) const fn stars(&self) -> &HashMap<AbsolutePath, u64> { &self.stars }
 
-    pub(super) const fn repo_descriptions(&self) -> &HashMap<PathBuf, String> {
+    pub(super) const fn repo_descriptions(&self) -> &HashMap<AbsolutePath, String> {
         &self.repo_descriptions
     }
 
@@ -393,9 +395,9 @@ impl App {
     #[cfg(test)]
     pub(super) const fn filtered_mut(&mut self) -> &mut Vec<types::SearchHit> { &mut self.filtered }
 
-    pub(super) const fn config_path(&self) -> Option<&PathBuf> { self.config_path.as_ref() }
+    pub(super) const fn config_path(&self) -> Option<&AbsolutePath> { self.config_path.as_ref() }
 
-    pub(super) const fn keymap_path(&self) -> Option<&PathBuf> { self.keymap_path.as_ref() }
+    pub(super) const fn keymap_path(&self) -> Option<&AbsolutePath> { self.keymap_path.as_ref() }
 
     pub(super) const fn ui_modes(&self) -> &types::UiModes { &self.ui_modes }
 
@@ -415,11 +417,11 @@ impl App {
         self.owner_repo_for_path_inner(path)
     }
 
-    pub(super) fn owner_paths_for_repo(&self, repo: &OwnerRepo) -> Vec<std::path::PathBuf> {
+    pub(super) fn owner_paths_for_repo(&self, repo: &OwnerRepo) -> Vec<AbsolutePath> {
         self.owner_paths_for_repo_inner(repo)
     }
 
-    pub(super) fn ci_owner_path_for(&self, path: &std::path::Path) -> Option<std::path::PathBuf> {
+    pub(super) fn ci_owner_path_for(&self, path: &std::path::Path) -> Option<AbsolutePath> {
         self.ci_owner_path_for_inner(path)
     }
 

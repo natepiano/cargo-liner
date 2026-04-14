@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
 use std::fmt;
+use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -16,6 +17,28 @@ impl AbsolutePath {
     pub(crate) fn display_path(&self) -> DisplayPath {
         DisplayPath::new(home_relative_path(&self.0))
     }
+}
+
+impl PartialEq<Path> for AbsolutePath {
+    fn eq(&self, other: &Path) -> bool { self.0.as_path() == other }
+}
+
+impl PartialEq<AbsolutePath> for Path {
+    fn eq(&self, other: &AbsolutePath) -> bool { self == other.0.as_path() }
+}
+
+impl PartialEq<AbsolutePath> for PathBuf {
+    fn eq(&self, other: &AbsolutePath) -> bool { self.as_path() == other.0.as_path() }
+}
+
+impl PartialEq<PathBuf> for AbsolutePath {
+    fn eq(&self, other: &PathBuf) -> bool { self.0.as_path() == other.as_path() }
+}
+
+impl Deref for AbsolutePath {
+    type Target = Path;
+
+    fn deref(&self) -> &Path { &self.0 }
 }
 
 impl AsRef<Path> for AbsolutePath {
@@ -38,6 +61,18 @@ impl From<PathBuf> for AbsolutePath {
             path.display()
         );
         Self(path)
+    }
+}
+
+impl From<String> for AbsolutePath {
+    fn from(path: String) -> Self {
+        let pb = PathBuf::from(path);
+        debug_assert!(
+            pb.is_absolute(),
+            "AbsolutePath requires an absolute path: {}",
+            pb.display()
+        );
+        Self(pb)
     }
 }
 

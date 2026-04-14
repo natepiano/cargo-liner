@@ -1,6 +1,7 @@
 use super::*;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
+use crate::project::AbsolutePath;
 use crate::project::WorktreeGroup;
 
 #[test]
@@ -67,7 +68,7 @@ fn non_owner_member_ignores_stale_member_state_and_fetches_via_owner() {
     app.select_project_in_tree(member.path());
 
     app.ci_state.insert(
-        member.path().to_path_buf(),
+        member.path().clone(),
         CiState::Loaded {
             runs:         vec![make_ci_run(2, Conclusion::Failure)],
             exhausted:    false,
@@ -114,8 +115,8 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
         Some("ws_feat"),
     );
     let root = make_workspace_worktrees_item(primary_ws, vec![linked_ws]);
-    let root_path = test_path("~/ws");
-    let feature_path = test_path("~/ws_feat");
+    let root_path: crate::project::AbsolutePath = test_path("~/ws").into();
+    let feature_path: crate::project::AbsolutePath = test_path("~/ws_feat").into();
 
     let mut app = make_app(&[make_workspace_project(Some("ws"), "~/ws"), member.clone()]);
     apply_items(&mut app, &[root]);
@@ -137,7 +138,7 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
         },
     );
     app.ci_state.insert(
-        member.path().to_path_buf(),
+        member.path().clone(),
         CiState::Loaded {
             runs:         vec![make_ci_run(5, Conclusion::Success)],
             exhausted:    false,
@@ -172,7 +173,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
         },
     );
     app.ci_state.insert(
-        project.path().to_path_buf(),
+        project.path().clone(),
         CiState::Loaded {
             runs:         vec![
                 CiRun {
@@ -215,7 +216,7 @@ fn ci_for_default_branch_uses_full_repo_run_list() {
         },
     );
     app.ci_state.insert(
-        project.path().to_path_buf(),
+        project.path().clone(),
         CiState::Loaded {
             runs:         vec![
                 CiRun {
@@ -258,7 +259,7 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
         },
     );
     app.ci_state.insert(
-        project.path().to_path_buf(),
+        project.path().clone(),
         CiState::Loaded {
             runs:         vec![
                 CiRun {
@@ -326,12 +327,12 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .as_ref()
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
-    assert!(expected.contains(project_a.path()));
+    assert!(expected.contains(project_a.path().as_path()));
     assert!(
         !app.scan
             .startup_phases
             .lint_seen_terminal
-            .contains(project_a.path())
+            .contains(project_a.path().as_path())
     );
     assert!(app.running_lint_paths.contains_key(project_a.path()));
     assert!(app.lint_toast.is_some());
@@ -349,13 +350,13 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
 #[test]
 fn startup_lint_toast_body_shows_paths_then_others() {
     let expected = HashSet::from([
-        test_path("~/a"),
-        test_path("~/b"),
-        test_path("~/c"),
-        test_path("~/d"),
-        test_path("~/e"),
+        AbsolutePath::from(test_path("~/a")),
+        AbsolutePath::from(test_path("~/b")),
+        AbsolutePath::from(test_path("~/c")),
+        AbsolutePath::from(test_path("~/d")),
+        AbsolutePath::from(test_path("~/e")),
     ]);
-    let seen = HashSet::from([test_path("~/e")]);
+    let seen = HashSet::from([AbsolutePath::from(test_path("~/e"))]);
 
     let body = App::startup_lint_toast_body_for(&expected, &seen);
     let lines: Vec<&str> = body.lines().collect();
@@ -386,11 +387,11 @@ fn startup_git_expected_uses_top_level_git_directories() {
         Some(".claude".to_string()),
     ));
     let workspace = RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
-        workspace_dir.clone(),
+        AbsolutePath::from(workspace_dir.clone()),
         Some("bevy".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
         vec![inline_group(vec![PackageProject::new(
-            member_dir,
+            AbsolutePath::from(member_dir),
             Some("core".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
             Vec::new(),
@@ -402,7 +403,7 @@ fn startup_git_expected_uses_top_level_git_directories() {
         None,
     )));
     let primary = PackageProject::new(
-        primary_dir.clone(),
+        AbsolutePath::from(primary_dir.clone()),
         Some("cargo-port".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
         Vec::new(),
@@ -410,12 +411,12 @@ fn startup_git_expected_uses_top_level_git_directories() {
         None,
     );
     let linked = PackageProject::new(
-        linked_dir,
+        AbsolutePath::from(linked_dir),
         Some("cargo-port_feat".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
         Vec::new(),
         Some("cargo-port_feat".to_string()),
-        Some(primary_dir.clone()),
+        Some(AbsolutePath::from(primary_dir.clone())),
     );
     let worktrees = RootItem::Worktrees(WorktreeGroup::new_packages(primary, vec![linked]));
 
@@ -428,9 +429,9 @@ fn startup_git_expected_uses_top_level_git_directories() {
     assert_eq!(
         app.scan.startup_phases.git_expected,
         HashSet::from([
-            non_rust_dir.join(".git"),
-            workspace_dir.join(".git"),
-            primary_dir.join(".git"),
+            AbsolutePath::from(non_rust_dir.join(".git")),
+            AbsolutePath::from(workspace_dir.join(".git")),
+            AbsolutePath::from(primary_dir.join(".git")),
         ])
     );
 }
@@ -444,11 +445,11 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
     std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
 
     let workspace = RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
-        workspace_dir.clone(),
+        AbsolutePath::from(workspace_dir.clone()),
         Some("bevy".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
         vec![inline_group(vec![PackageProject::new(
-            member_dir.clone(),
+            AbsolutePath::from(member_dir.clone()),
             Some("core".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
             Vec::new(),
@@ -471,7 +472,7 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
         app.scan
             .startup_phases
             .git_seen
-            .contains(&workspace_dir.join(".git"))
+            .contains(workspace_dir.join(".git").as_path())
     );
 }
 
@@ -593,11 +594,11 @@ fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
     );
 
     app.git_path_states
-        .insert(project.path().to_path_buf(), GitPathState::Untracked);
+        .insert(project.path().clone(), GitPathState::Untracked);
     assert!(app.git_sync(project.path()).is_empty());
 
     app.git_path_states
-        .insert(project.path().to_path_buf(), GitPathState::Ignored);
+        .insert(project.path().clone(), GitPathState::Ignored);
     assert!(app.git_sync(project.path()).is_empty());
 }
 
@@ -825,7 +826,7 @@ fn sync_does_not_mark_exhausted_when_no_new_runs() {
     let path = project.path().display().to_string();
 
     app.ci_state.insert(
-        project.path().to_path_buf(),
+        project.path().clone(),
         CiState::Loaded {
             runs:         vec![make_ci_run(5, Conclusion::Success)],
             exhausted:    false,
@@ -857,7 +858,7 @@ fn fetch_older_marks_exhausted_when_no_new_runs() {
     let path = project.path().display().to_string();
 
     app.ci_state.insert(
-        project.path().to_path_buf(),
+        project.path().clone(),
         CiState::Loaded {
             runs:         vec![make_ci_run(5, Conclusion::Success)],
             exhausted:    false,
@@ -889,7 +890,7 @@ fn cache_only_preserves_github_total() {
     let path = project.path().display().to_string();
 
     app.ci_state.insert(
-        project.path().to_path_buf(),
+        project.path().clone(),
         CiState::Loaded {
             runs:         vec![make_ci_run(5, Conclusion::Success)],
             exhausted:    false,
@@ -919,7 +920,7 @@ fn sync_clears_exhaustion_when_new_runs_found() {
     let path = project.path().display().to_string();
 
     app.ci_state.insert(
-        project.path().to_path_buf(),
+        project.path().clone(),
         CiState::Loaded {
             runs:         vec![make_ci_run(5, Conclusion::Success)],
             exhausted:    true,
@@ -959,7 +960,7 @@ fn fetch_more_uses_sync_when_no_cached_runs() {
 
     // Empty CI state — no cached runs.
     app.ci_state.insert(
-        project.path().to_path_buf(),
+        project.path().clone(),
         CiState::Loaded {
             runs:         Vec::new(),
             exhausted:    false,

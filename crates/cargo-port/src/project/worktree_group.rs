@@ -1,8 +1,7 @@
-use std::path::Path;
-
 use super::info::Visibility;
 use super::info::WorktreeHealth;
 use super::package::PackageProject;
+use super::paths::AbsolutePath;
 use super::project_fields::ProjectFields;
 use super::workspace::WorkspaceProject;
 use crate::lint::LintStatus;
@@ -44,7 +43,7 @@ impl WorktreeGroup {
 
     // ── Shared delegation ────────────────────────────────────────────
 
-    pub(crate) fn primary_path(&self) -> &Path {
+    pub(crate) fn primary_path(&self) -> &AbsolutePath {
         match self {
             Self::Workspaces { primary, .. } => primary.path(),
             Self::Packages { primary, .. } => primary.path(),

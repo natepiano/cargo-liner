@@ -53,6 +53,7 @@ use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::lint::LintRun;
 use crate::project;
+use crate::project::AbsolutePath;
 use crate::project::GitOrigin;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
@@ -636,10 +637,13 @@ fn project_panel_title(app: &App, max_width: usize) -> String {
     if inner_max <= prefix.width() {
         return format!(" {} ", truncate_to_width(prefix, inner_max));
     }
-    let roots = scan::resolve_include_dirs(app.scan_root(), &app.current_config().tui.include_dirs)
-        .into_iter()
-        .map(|path| project::home_relative_path(path.as_path()))
-        .collect::<Vec<_>>();
+    let roots = scan::resolve_include_dirs(
+        AbsolutePath::from(app.scan_root().clone()),
+        &app.current_config().tui.include_dirs,
+    )
+    .into_iter()
+    .map(|path| project::home_relative_path(path.as_path()))
+    .collect::<Vec<_>>();
     format!(
         " {prefix}{} ",
         truncate_root_title(&roots, inner_max.saturating_sub(prefix.width()))

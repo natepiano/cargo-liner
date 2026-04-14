@@ -30,6 +30,7 @@ use crate::config::ScrollDirection;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::lint::LintStatus;
+use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
@@ -70,16 +71,17 @@ fn test_http_client() -> HttpClient {
     HttpClient::new(rt.handle().clone()).unwrap_or_else(|| std::process::abort())
 }
 
-fn test_path(path: &str) -> PathBuf {
-    if path == "~" {
-        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
-    }
-    if let Some(rest) = path.strip_prefix("~/") {
-        return dirs::home_dir()
+fn test_path(path: &str) -> AbsolutePath {
+    let pb = if path == "~" {
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from(path))
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(rest);
-    }
-    PathBuf::from(path)
+            .join(rest)
+    } else {
+        PathBuf::from(path)
+    };
+    AbsolutePath::from(pb)
 }
 
 fn make_project(name: Option<&str>, path: &str) -> RootItem {
@@ -193,7 +195,10 @@ fn resolved_root_label(item: &RootItem) -> String {
 }
 
 fn make_non_rust_project(name: Option<&str>, path: &str) -> RootItem {
-    RootItem::NonRust(NonRustProject::new(test_path(path), name.map(String::from)))
+    RootItem::NonRust(NonRustProject::new(
+        test_path(path).to_path_buf(),
+        name.map(String::from),
+    ))
 }
 
 fn make_workspace_project(name: Option<&str>, path: &str) -> RootItem {

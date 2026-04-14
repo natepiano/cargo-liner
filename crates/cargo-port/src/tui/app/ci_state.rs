@@ -1,12 +1,12 @@
 use std::collections::HashSet;
 use std::path::Path;
-use std::path::PathBuf;
 
 use super::App;
 use super::types::CiRunDisplayMode;
 use super::types::CiState;
 use crate::ci;
 use crate::ci::CiRun;
+use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
 use crate::scan;
 use crate::scan::CiFetchResult;
@@ -20,7 +20,7 @@ impl App {
             .and_then(ci::parse_owner_repo)
     }
 
-    pub(super) fn owner_paths_for_repo_inner(&self, repo: &ci::OwnerRepo) -> Vec<PathBuf> {
+    pub(super) fn owner_paths_for_repo_inner(&self, repo: &ci::OwnerRepo) -> Vec<AbsolutePath> {
         let mut owner_paths = Vec::new();
         self.projects.for_each_leaf_path(|path, _| {
             if !self.is_ci_owner_path(path) {
@@ -33,27 +33,27 @@ impl App {
                 return;
             };
             if ci::parse_owner_repo(url).as_ref() == Some(repo) {
-                owner_paths.push(path.to_path_buf());
+                owner_paths.push(AbsolutePath::from(path));
             }
         });
         owner_paths
     }
 
-    pub(super) fn ci_owner_path_for_inner(&self, path: &Path) -> Option<PathBuf> {
+    pub(super) fn ci_owner_path_for_inner(&self, path: &Path) -> Option<AbsolutePath> {
         for item in &self.projects {
             match item {
                 crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws))
                     if path.starts_with(ws.path()) =>
                 {
-                    return Some(ws.path().to_path_buf());
+                    return Some(ws.path().clone());
                 },
                 crate::project::RootItem::Rust(crate::project::RustProject::Package(pkg))
                     if path.starts_with(pkg.path()) =>
                 {
-                    return Some(pkg.path().to_path_buf());
+                    return Some(pkg.path().clone());
                 },
                 crate::project::RootItem::NonRust(project) if project.path() == path => {
-                    return Some(project.path().to_path_buf());
+                    return Some(project.path().clone());
                 },
                 crate::project::RootItem::Worktrees(
                     crate::project::WorktreeGroup::Workspaces {
@@ -62,7 +62,7 @@ impl App {
                 ) => {
                     for ws in std::iter::once(primary).chain(linked.iter()) {
                         if path.starts_with(ws.path()) {
-                            return Some(ws.path().to_path_buf());
+                            return Some(ws.path().clone());
                         }
                     }
                 },
@@ -73,7 +73,7 @@ impl App {
                 }) => {
                     for pkg in std::iter::once(primary).chain(linked.iter()) {
                         if path.starts_with(pkg.path()) {
-                            return Some(pkg.path().to_path_buf());
+                            return Some(pkg.path().clone());
                         }
                     }
                 },
@@ -85,13 +85,12 @@ impl App {
 
     /// Insert CI runs from the initial scan for a CI owner path.
     pub(super) fn insert_ci_runs(&mut self, path: &Path, runs: Vec<CiRun>, github_total: u32) {
-        let abs = path.to_path_buf();
-        if !self.is_cargo_active_path(&abs) {
-            self.ci_state.remove(&abs);
+        if !self.is_cargo_active_path(path) {
+            self.ci_state.remove(path);
             return;
         }
         let exhausted = self
-            .git_info_for(&abs)
+            .git_info_for(path)
             .and_then(|git| {
                 git.url.as_ref().and_then(|url| {
                     ci::parse_owner_repo(url)
@@ -100,7 +99,7 @@ impl App {
             })
             .unwrap_or(false);
         self.ci_state.insert(
-            abs,
+            AbsolutePath::from(path),
             CiState::Loaded {
                 runs,
                 exhausted,
@@ -116,7 +115,7 @@ impl App {
         result: CiFetchResult,
         kind: CiFetchKind,
     ) {
-        let abs = PathBuf::from(path);
+        let abs = AbsolutePath::from(Path::new(path));
 
         let owner_paths = self
             .owner_repo_for_path_inner(&abs)
@@ -277,7 +276,8 @@ impl App {
             CiRunDisplayMode::BranchOnly => CiRunDisplayMode::All,
             CiRunDisplayMode::All => CiRunDisplayMode::BranchOnly,
         };
-        self.ci_display_modes.insert(path.to_path_buf(), new_mode);
+        self.ci_display_modes
+            .insert(AbsolutePath::from(path), new_mode);
         self.ci_pane.home();
         self.data_generation += 1;
         self.detail_generation += 1;

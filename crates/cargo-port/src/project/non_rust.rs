@@ -1,6 +1,5 @@
 use std::ops::Deref;
 use std::ops::DerefMut;
-use std::path::Path;
 use std::path::PathBuf;
 
 use super::git::GitInfo;
@@ -33,7 +32,7 @@ impl NonRustProject {
 }
 
 impl ProjectFields for NonRustProject {
-    fn path(&self) -> &Path { self.path.as_path() }
+    fn path(&self) -> &AbsolutePath { &self.path }
 
     fn name(&self) -> Option<&str> { self.name.as_deref() }
 

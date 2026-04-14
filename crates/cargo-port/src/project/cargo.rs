@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::path::Path;
-use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -12,6 +11,7 @@ use toml::Value;
 use super::git;
 use super::non_rust::NonRustProject;
 use super::package::PackageProject;
+use super::paths::AbsolutePath;
 use super::project_fields::ProjectFields;
 use super::rust_info::Cargo;
 use super::workspace::WorkspaceProject;
@@ -73,7 +73,7 @@ pub(crate) fn from_cargo_toml(
     let table: Table = contents.parse().map_err(ProjectParseError::ParseError)?;
 
     let project_dir = cargo_toml_path.parent().unwrap_or(cargo_toml_path);
-    let abs_path = project_dir.to_path_buf();
+    let abs_path = AbsolutePath::from(project_dir);
 
     let name = table
         .get("package")
@@ -104,7 +104,8 @@ pub(crate) fn from_cargo_toml(
         .map(|s| (*s).to_string());
 
     let worktree_name = git::detect_worktree_name(project_dir);
-    let worktree_primary_abs_path = git::detect_worktree_primary(project_dir).map(PathBuf::from);
+    let worktree_primary_abs_path =
+        git::detect_worktree_primary(project_dir).map(AbsolutePath::from);
     let worktree_health = git::detect_worktree_health(project_dir);
 
     let types = detect_types(&table, project_dir);

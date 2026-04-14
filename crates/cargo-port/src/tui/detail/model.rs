@@ -12,6 +12,7 @@ use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project;
+use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::ExampleGroup;
 use crate::project::GitPathState;
@@ -552,7 +553,7 @@ struct GitDetailFields {
 fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let owner_path = app
         .ci_owner_path_for(abs_path)
-        .unwrap_or_else(|| abs_path.to_path_buf());
+        .unwrap_or_else(|| AbsolutePath::from(abs_path));
     let git = app
         .git_info_for(abs_path)
         .or_else(|| app.git_info_for(owner_path.as_path()));
@@ -930,18 +931,18 @@ fn lint_run_count_for(app: &App, abs_path: &Path, is_worktree_group: bool) -> Op
             return app.lint_at_path(abs_path).map(|lr| lr.runs().len());
         };
         let mut total = 0usize;
-        let paths: Vec<std::path::PathBuf> = match g {
+        let paths: Vec<AbsolutePath> = match g {
             WorktreeGroup::Workspaces {
                 primary, linked, ..
             } => std::iter::once(primary.path())
                 .chain(linked.iter().map(ProjectFields::path))
-                .map(std::path::Path::to_path_buf)
+                .map(AbsolutePath::clone)
                 .collect(),
             WorktreeGroup::Packages {
                 primary, linked, ..
             } => std::iter::once(primary.path())
                 .chain(linked.iter().map(ProjectFields::path))
-                .map(std::path::Path::to_path_buf)
+                .map(AbsolutePath::clone)
                 .collect(),
         };
         let mut any = false;

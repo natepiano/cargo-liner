@@ -268,7 +268,7 @@ fn add_vendored_items_typed(
 ) {
     let project_name = project.package_name().into_string();
     let dir = project.display_path().into_string();
-    let project_path: AbsolutePath = project.path().into();
+    let project_path: AbsolutePath = project.path().clone();
     let branch = String::new();
     let display_name = format!("{project_name} (vendored)");
 
@@ -863,16 +863,17 @@ mod tests {
     use crate::project::RustProject;
     use crate::project::WorkspaceProject;
 
-    fn test_path(path: &str) -> PathBuf {
-        if path == "~" {
-            return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
-        }
-        if let Some(rest) = path.strip_prefix("~/") {
-            return dirs::home_dir()
+    fn test_path(path: &str) -> AbsolutePath {
+        let pb = if path == "~" {
+            dirs::home_dir().unwrap_or_else(|| PathBuf::from(path))
+        } else if let Some(rest) = path.strip_prefix("~/") {
+            dirs::home_dir()
                 .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join(rest);
-        }
-        PathBuf::from(path)
+                .join(rest)
+        } else {
+            PathBuf::from(path)
+        };
+        AbsolutePath::from(pb)
     }
 
     #[test]
@@ -896,7 +897,7 @@ mod tests {
         let list_items = vec![RootItem::Rust(RustProject::Workspace(ws))];
         let (items, _widths) = build_finder_index(&list_items);
         assert!(items.iter().any(|item| {
-            item.project_path == AbsolutePath::from(test_path("~/rust/hana/crates/clay-layout"))
+            item.project_path == test_path("~/rust/hana/crates/clay-layout")
                 && item.display_name == "clay-layout (vendored)"
                 && item.branch.is_empty()
         }));
@@ -915,7 +916,7 @@ mod tests {
                 FinderKind::Project.label(),
             ]),
             kind:          FinderKind::Project,
-            project_path:  AbsolutePath::from(test_path("~/rust/bevy_diegetic/clay-layout")),
+            project_path:  test_path("~/rust/bevy_diegetic/clay-layout"),
             target_name:   None,
             parent_label:  "clay-layout".to_string(),
             branch:        String::new(),
@@ -939,7 +940,7 @@ mod tests {
                 FinderKind::Example.label(),
             ]),
             kind:          FinderKind::Example,
-            project_path:  AbsolutePath::from(test_path("~/rust/bevy_diegetic/clay-layout")),
+            project_path:  test_path("~/rust/bevy_diegetic/clay-layout"),
             target_name:   Some("raylib_renderer".to_string()),
             parent_label:  "clay-layout".to_string(),
             branch:        String::new(),
@@ -963,9 +964,7 @@ mod tests {
                 FinderKind::Binary.label(),
             ]),
             kind:          FinderKind::Binary,
-            project_path:  AbsolutePath::from(test_path(
-                "~/rust/bevy/tools/build-easefunction-graphs",
-            )),
+            project_path:  test_path("~/rust/bevy/tools/build-easefunction-graphs"),
             target_name:   Some("build-easefunction-graphs".to_string()),
             parent_label:  "build-easefunction-graphs".to_string(),
             branch:        "fix/position-before-size-v0.19".to_string(),

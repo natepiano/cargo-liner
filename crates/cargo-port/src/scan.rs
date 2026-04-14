@@ -401,10 +401,10 @@ pub(crate) fn dir_size(path: &Path) -> u64 {
 /// 2. Detects vendored crates nested inside other projects
 /// 3. Merges worktree checkouts into `WorktreeGroup` variants
 pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<RootItem> {
-    let workspace_paths: Vec<PathBuf> = items
+    let workspace_paths: Vec<&AbsolutePath> = items
         .iter()
         .filter(|item| matches!(item, RootItem::Rust(RustProject::Workspace(_))))
-        .map(|item| item.path().to_path_buf())
+        .map(RootItem::path)
         .collect();
 
     let mut result: Vec<RootItem> = Vec::new();
@@ -418,7 +418,7 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
             matches!(item, RootItem::Rust(RustProject::Workspace(_)))
                 && !workspace_paths
                     .iter()
-                    .any(|ws| *ws != item.path() && item.path().starts_with(ws))
+                    .any(|ws| *ws != item.path() && item.path().starts_with(ws.as_path()))
         })
         .map(|(i, _)| i)
         .collect();
@@ -448,12 +448,12 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
                 } else if let RootItem::Rust(RustProject::Workspace(nested_ws)) = candidate {
                     // Nested workspace treated as a package member
                     Some(PackageProject::new(
-                        nested_ws.path().to_path_buf(),
+                        nested_ws.path().clone(),
                         nested_ws.name().map(str::to_string),
                         nested_ws.cargo().clone(),
                         Vec::new(),
                         nested_ws.worktree_name().map(str::to_string),
-                        nested_ws.worktree_primary_abs_path().map(Path::to_path_buf),
+                        nested_ws.worktree_primary_abs_path().cloned(),
                     ))
                 } else {
                     None
@@ -610,7 +610,7 @@ fn workspace_pattern_matches_segment(pattern: &str, value: &str) -> bool {
 /// into `Worktrees(WorktreeGroup::Workspaces { .. })` or
 /// `Worktrees(WorktreeGroup::Packages { .. })`.
 /// `NonRust` projects are not grouped into worktree variants.
-fn item_worktree_identity(item: &RootItem) -> Option<&Path> {
+fn item_worktree_identity(item: &RootItem) -> Option<&AbsolutePath> {
     match item {
         RootItem::Rust(p) => p.worktree_primary_abs_path(),
         _ => None,
@@ -640,12 +640,12 @@ fn merge_worktrees_new(items: &mut Vec<RootItem>) {
         }
     }
 
-    let identities_with_worktrees: HashSet<PathBuf> = worktree_indices
+    let identities_with_worktrees: HashSet<AbsolutePath> = worktree_indices
         .iter()
         .filter_map(|&wi| {
             item_worktree_identity(&items[wi])
-                .filter(|id| primary_indices.contains_key(*id))
-                .map(Path::to_path_buf)
+                .filter(|id| primary_indices.contains_key(id.as_path()))
+                .cloned()
         })
         .collect();
 
@@ -654,35 +654,35 @@ fn merge_worktrees_new(items: &mut Vec<RootItem>) {
     }
 
     // Extract worktree items (highest index first to preserve lower indices)
-    let mut moves: Vec<(usize, PathBuf)> = worktree_indices
+    let mut moves: Vec<(usize, AbsolutePath)> = worktree_indices
         .iter()
         .filter_map(|&wi| {
-            let id = item_worktree_identity(&items[wi])?.to_path_buf();
-            primary_indices.get(&id)?;
+            let id = item_worktree_identity(&items[wi])?.clone();
+            primary_indices.get(id.as_path())?;
             Some((wi, id))
         })
         .collect();
     moves.sort_by(|a, b| b.0.cmp(&a.0));
 
-    let mut extracted: Vec<(RootItem, PathBuf)> = Vec::new();
+    let mut extracted: Vec<(RootItem, AbsolutePath)> = Vec::new();
     for (wi, id) in moves {
         let item = items.remove(wi);
         extracted.push((item, id));
     }
 
     // Rebuild primary_indices after removals
-    let mut primary_map: HashMap<PathBuf, usize> = HashMap::new();
+    let mut primary_map: HashMap<AbsolutePath, usize> = HashMap::new();
     for (i, item) in items.iter().enumerate() {
         if let Some(id) = item_worktree_identity(item)
             .filter(|id| identities_with_worktrees.contains(*id))
             .filter(|_| !item_is_linked(item))
         {
-            primary_map.insert(id.to_path_buf(), i);
+            primary_map.insert(id.clone(), i);
         }
     }
 
     // Group linked worktrees by identity, preserving order
-    let mut linked_by_id: HashMap<PathBuf, Vec<RootItem>> = HashMap::new();
+    let mut linked_by_id: HashMap<AbsolutePath, Vec<RootItem>> = HashMap::new();
     for (item, id) in extracted {
         linked_by_id.entry(id).or_default().push(item);
     }
@@ -777,15 +777,15 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
         let pkg = match &items[vi] {
             RootItem::Rust(RustProject::Package(p)) => p.clone(),
             RootItem::Rust(RustProject::Workspace(ws)) => PackageProject::new(
-                ws.path().to_path_buf(),
+                ws.path().clone(),
                 ws.name().map(str::to_string),
                 ws.cargo().clone(),
                 Vec::new(),
                 ws.worktree_name().map(str::to_string),
-                ws.worktree_primary_abs_path().map(Path::to_path_buf),
+                ws.worktree_primary_abs_path().cloned(),
             ),
             RootItem::NonRust(nr) => PackageProject::new(
-                nr.path().to_path_buf(),
+                nr.path().clone(),
                 nr.name().map(str::to_string),
                 Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
                 Vec::new(),
@@ -1051,9 +1051,12 @@ pub(crate) fn store_cached_repo_data(
 /// Resolve include-dir entries to absolute paths. Relative entries are
 /// joined to `scan_root`; absolute entries are used as-is. An empty
 /// list falls back to `[scan_root]` so the whole tree is walked.
-pub(crate) fn resolve_include_dirs(scan_root: &Path, include_dirs: &[String]) -> Vec<PathBuf> {
+pub(crate) fn resolve_include_dirs(
+    scan_root: AbsolutePath,
+    include_dirs: &[String],
+) -> Vec<AbsolutePath> {
     if include_dirs.is_empty() {
-        return vec![scan_root.to_path_buf()];
+        return vec![scan_root];
     }
     include_dirs
         .iter()
@@ -1061,9 +1064,9 @@ pub(crate) fn resolve_include_dirs(scan_root: &Path, include_dirs: &[String]) ->
             let expanded = expand_home_path(dir);
             let path = expanded.as_path();
             if path.is_absolute() {
-                path.to_path_buf()
+                AbsolutePath::from(path)
             } else {
-                scan_root.join(path)
+                AbsolutePath::from(scan_root.join(path))
             }
         })
         .collect()
@@ -1107,8 +1110,7 @@ pub(crate) fn spawn_streaming_scan(
     client: HttpClient,
 ) -> (mpsc::Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
     let (tx, rx) = mpsc::channel();
-    let root = scan_root.to_path_buf();
-    let scan_dirs = resolve_include_dirs(&root, include_dirs);
+    let scan_dirs = resolve_include_dirs(AbsolutePath::from(scan_root), include_dirs);
     let inline_dirs = inline_dirs.to_vec();
 
     let scan_tx = tx.clone();
@@ -1183,7 +1185,7 @@ fn discover_non_rust_project(
     disk_entries.push((disk_path, abs_path));
 }
 
-fn phase1_discover(scan_dirs: &[PathBuf], non_rust: NonRustInclusion) -> Phase1DiscoverResult {
+fn phase1_discover(scan_dirs: &[AbsolutePath], non_rust: NonRustInclusion) -> Phase1DiscoverResult {
     let mut items = Vec::new();
     let mut disk_entries = Vec::new();
     let mut stats = Phase1DiscoverStats {
@@ -1391,6 +1393,7 @@ pub(crate) fn disk_usage_batch_for_item(item: &RootItem) -> Vec<(AbsolutePath, u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::AbsolutePath;
     use crate::project::Cargo;
 
     fn make_workspace(
@@ -1400,13 +1403,13 @@ mod tests {
         primary_abs: Option<&str>,
     ) -> RootItem {
         RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
-            PathBuf::from(abs_path),
+            AbsolutePath::from(PathBuf::from(abs_path)),
             name.map(String::from),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
             Vec::new(),
             Vec::new(),
             worktree_name.map(String::from),
-            primary_abs.map(PathBuf::from),
+            primary_abs.map(|s| AbsolutePath::from(PathBuf::from(s))),
         )))
     }
 
@@ -1417,12 +1420,12 @@ mod tests {
         primary_abs: Option<&str>,
     ) -> RootItem {
         RootItem::Rust(RustProject::Package(PackageProject::new(
-            PathBuf::from(abs_path),
+            AbsolutePath::from(PathBuf::from(abs_path)),
             name.map(String::from),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
             Vec::new(),
             worktree_name.map(String::from),
-            primary_abs.map(PathBuf::from),
+            primary_abs.map(|s| AbsolutePath::from(PathBuf::from(s))),
         )))
     }
 

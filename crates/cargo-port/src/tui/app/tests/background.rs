@@ -1,4 +1,5 @@
 use super::*;
+use crate::project::AbsolutePath;
 use crate::watcher::WatcherMsg;
 
 #[test]
@@ -47,7 +48,7 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
     );
 
     let messages: Vec<_> = watch_rx.try_iter().collect();
-    let watched_paths: HashSet<PathBuf> = messages
+    let watched_paths: HashSet<AbsolutePath> = messages
         .iter()
         .filter_map(|msg| match msg {
             WatcherMsg::Register(req) => Some(req.abs_path.clone()),
@@ -60,11 +61,11 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
         .count();
 
     assert!(
-        watched_paths.contains(primary.path()),
+        watched_paths.contains(primary.path().as_path()),
         "primary worktree root should be registered with watcher"
     );
     assert!(
-        watched_paths.contains(linked.path()),
+        watched_paths.contains(linked.path().as_path()),
         "linked worktree root should be registered with watcher"
     );
     assert_eq!(
@@ -111,7 +112,7 @@ fn external_config_reload_applies_valid_changes() {
     )
     .unwrap_or_else(|_| std::process::abort());
 
-    app.config_path = Some(path);
+    app.config_path = Some(AbsolutePath::from(path));
     app.config_last_seen = None;
     app.maybe_reload_config_from_disk();
 
@@ -136,7 +137,7 @@ fn external_config_reload_keeps_last_good_config_on_parse_error() {
     )
     .unwrap_or_else(|_| std::process::abort());
 
-    app.config_path = Some(path.clone());
+    app.config_path = Some(AbsolutePath::from(path.clone()));
     app.config_last_seen = None;
     app.maybe_reload_config_from_disk();
 

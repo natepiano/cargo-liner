@@ -1,9 +1,8 @@
-use std::path::Path;
-
 use super::git::GitInfo;
 use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
+use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
 
@@ -13,7 +12,7 @@ use super::paths::RootDirectoryName;
 /// Enables generic iteration and ensures all project types expose the same
 /// identity and metadata surface.
 pub(crate) trait ProjectFields {
-    fn path(&self) -> &Path;
+    fn path(&self) -> &AbsolutePath;
     fn name(&self) -> Option<&str>;
     fn visibility(&self) -> Visibility;
     fn worktree_health(&self) -> WorktreeHealth;

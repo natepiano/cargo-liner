@@ -382,14 +382,12 @@ impl ProjectList {
     pub(crate) fn regroup_top_level_worktrees(&mut self) {
         let mut index = 0;
         while index < self.root_items.len() {
-            let Some(identity) =
-                linked_worktree_identity(&self.root_items[index]).map(Path::to_path_buf)
-            else {
+            let Some(identity) = linked_worktree_identity(&self.root_items[index]).cloned() else {
                 index += 1;
                 continue;
             };
             let Some(mut target_index) =
-                find_matching_worktree_container(&self.root_items, index, identity.as_path())
+                find_matching_worktree_container(&self.root_items, index, &identity)
             else {
                 index += 1;
                 continue;
@@ -468,14 +466,14 @@ fn join_suffix(segments: &[&str], suffix_len: usize) -> String {
 }
 
 fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
-    let existing_identity = item_worktree_identity(existing).map(Path::to_path_buf);
+    let existing_identity = item_worktree_identity(existing).cloned();
 
     if let RootItem::Rust(RustProject::Workspace(linked)) = item
         && linked.worktree_name().is_some()
     {
         match existing {
             RootItem::Rust(RustProject::Workspace(primary))
-                if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
+                if linked.worktree_primary_abs_path() == existing_identity.as_ref() =>
             {
                 let primary = primary.clone();
                 *existing = RootItem::Worktrees(WorktreeGroup::new_workspaces(
@@ -487,7 +485,7 @@ fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
             RootItem::Worktrees(WorktreeGroup::Workspaces {
                 linked: group_linked,
                 ..
-            }) if linked.worktree_primary_abs_path() == existing_identity.as_deref() => {
+            }) if linked.worktree_primary_abs_path() == existing_identity.as_ref() => {
                 group_linked.push(linked.clone());
                 return true;
             },
@@ -500,7 +498,7 @@ fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
     {
         match existing {
             RootItem::Rust(RustProject::Package(primary))
-                if linked.worktree_primary_abs_path() == existing_identity.as_deref() =>
+                if linked.worktree_primary_abs_path() == existing_identity.as_ref() =>
             {
                 let primary = primary.clone();
                 *existing =
@@ -510,7 +508,7 @@ fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
             RootItem::Worktrees(WorktreeGroup::Packages {
                 linked: group_linked,
                 ..
-            }) if linked.worktree_primary_abs_path() == existing_identity.as_deref() => {
+            }) if linked.worktree_primary_abs_path() == existing_identity.as_ref() => {
                 group_linked.push(linked.clone());
                 return true;
             },
@@ -521,7 +519,7 @@ fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
     false
 }
 
-fn item_worktree_identity(item: &RootItem) -> Option<&Path> {
+fn item_worktree_identity(item: &RootItem) -> Option<&AbsolutePath> {
     match item {
         RootItem::Rust(p) => p.worktree_primary_abs_path(),
         RootItem::Worktrees(WorktreeGroup::Workspaces { primary, .. }) => {
@@ -534,7 +532,7 @@ fn item_worktree_identity(item: &RootItem) -> Option<&Path> {
     }
 }
 
-fn linked_worktree_identity(item: &RootItem) -> Option<&Path> {
+fn linked_worktree_identity(item: &RootItem) -> Option<&AbsolutePath> {
     match item {
         RootItem::Rust(p) if p.worktree_name().is_some() => p.worktree_primary_abs_path(),
         _ => None,
@@ -544,7 +542,7 @@ fn linked_worktree_identity(item: &RootItem) -> Option<&Path> {
 fn find_matching_worktree_container(
     items: &[RootItem],
     linked_index: usize,
-    identity: &Path,
+    identity: &AbsolutePath,
 ) -> Option<usize> {
     items.iter().enumerate().find_map(|(index, item)| {
         if index == linked_index {

@@ -246,7 +246,7 @@ fn handle_ci_fetch_more(app: &mut App) {
     let task_id = app.start_task_toast("Fetching CI", &project_name);
     let item = crate::tui::toasts::TrackedItem {
         label:        project_name,
-        key:          crate::project::AbsolutePath::from(ci_path).into(),
+        key:          ci_path.into(),
         started_at:   Some(std::time::Instant::now()),
         completed_at: None,
     };
@@ -288,7 +288,7 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
             app.owner_paths_for_repo(&repo)
         })
         .filter(|paths| !paths.is_empty())
-        .unwrap_or_else(|| vec![abs.to_path_buf()]);
+        .unwrap_or_else(|| vec![crate::project::AbsolutePath::from(abs)]);
 
     let prev_totals: Vec<_> = owner_paths
         .iter()

@@ -1,8 +1,8 @@
 use std::path::Path;
-use std::path::PathBuf;
 
 use super::App;
 use super::types::VisibleRow;
+use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
 use crate::project::Visibility::Dismissed;
 use crate::tui::types::PaneId;
@@ -13,7 +13,7 @@ use crate::tui::types::PaneId;
 #[derive(Clone, Debug)]
 pub enum DismissTarget {
     Toast(u64),
-    DeletedProject(PathBuf),
+    DeletedProject(AbsolutePath),
 }
 
 // ── Resolution + dispatch ───────────────────────────────────────
@@ -27,13 +27,13 @@ impl App {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => self
                 .projects
                 .get(node_index)
-                .map(|item| item.path().to_path_buf()),
+                .map(|item| item.path().clone()),
             VisibleRow::Member { node_index, .. }
             | VisibleRow::Vendored { node_index, .. }
             | VisibleRow::Submodule { node_index, .. } => self
                 .projects
                 .get(node_index)
-                .map(|item| item.path().to_path_buf()),
+                .map(|item| item.path().clone()),
             VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
@@ -59,11 +59,9 @@ impl App {
                     },
                 ) => {
                     if worktree_index == 0 {
-                        Some(primary.path().to_path_buf())
+                        Some(primary.path().clone())
                     } else {
-                        linked
-                            .get(worktree_index - 1)
-                            .map(|ws| ws.path().to_path_buf())
+                        linked.get(worktree_index - 1).map(|ws| ws.path().clone())
                     }
                 },
                 crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
@@ -72,11 +70,9 @@ impl App {
                     ..
                 }) => {
                     if worktree_index == 0 {
-                        Some(primary.path().to_path_buf())
+                        Some(primary.path().clone())
                     } else {
-                        linked
-                            .get(worktree_index - 1)
-                            .map(|pkg| pkg.path().to_path_buf())
+                        linked.get(worktree_index - 1).map(|pkg| pkg.path().clone())
                     }
                 },
                 _ => None,

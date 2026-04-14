@@ -39,6 +39,7 @@ use super::project::GitRepoPresence;
 use super::project::ProjectFields;
 use super::scan;
 use super::scan::BackgroundMsg;
+use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project::RootItem::NonRust;
 
@@ -47,9 +48,9 @@ pub(crate) struct WatchRequest {
     /// Display path (e.g. `~/foo/bar`).
     pub project_label: String,
     /// Absolute filesystem path to the project root.
-    pub abs_path:      PathBuf,
+    pub abs_path:      AbsolutePath,
     /// Absolute path of the containing git repo root when known.
-    pub repo_root:     Option<PathBuf>,
+    pub repo_root:     Option<AbsolutePath>,
 }
 
 pub(crate) enum WatcherMsg {
@@ -69,7 +70,8 @@ pub(crate) fn spawn_watcher(
     client: HttpClient,
 ) -> mpsc::Sender<WatcherMsg> {
     let (watch_tx, watch_rx) = mpsc::channel();
-    let watch_dirs = scan::resolve_include_dirs(&scan_root, include_dirs);
+    let watch_dirs =
+        scan::resolve_include_dirs(AbsolutePath::from(scan_root.clone()), include_dirs);
     let (notify_tx, notify_rx) = mpsc::channel();
     let handler = move |res| {
         let _ = notify_tx.send(res);
@@ -110,15 +112,15 @@ struct WatcherLoopContext {
 /// Per-project tracking state.
 struct ProjectEntry {
     project_label:  String,
-    abs_path:       PathBuf,
-    repo_root:      Option<PathBuf>,
+    abs_path:       AbsolutePath,
+    repo_root:      Option<AbsolutePath>,
     /// The resolved on-disk git directory. For normal repos this is
     /// `repo_root/.git`; for worktrees it follows the `.git` file to the
     /// real directory (e.g. `<main-repo>/.git/worktrees/<name>`).
-    git_dir:        Option<PathBuf>,
+    git_dir:        Option<AbsolutePath>,
     /// The shared git directory that holds branch refs. For linked worktrees
     /// this points at the primary repo's `.git` directory.
-    common_git_dir: Option<PathBuf>,
+    common_git_dir: Option<AbsolutePath>,
 }
 
 enum DiskState {
@@ -154,13 +156,13 @@ impl GitRefreshKind {
 }
 
 struct WatcherLoopState {
-    projects:             HashMap<PathBuf, ProjectEntry>,
-    project_parents:      HashSet<PathBuf>,
+    projects:             HashMap<AbsolutePath, ProjectEntry>,
+    project_parents:      HashSet<AbsolutePath>,
     pending_disk:         HashMap<String, DiskState>,
-    pending_git:          HashMap<PathBuf, GitState>,
-    pending_new:          HashMap<PathBuf, Instant>,
-    discovered:           HashSet<PathBuf>,
-    watched_git_metadata: HashSet<PathBuf>,
+    pending_git:          HashMap<AbsolutePath, GitState>,
+    pending_new:          HashMap<AbsolutePath, Instant>,
+    discovered:           HashSet<AbsolutePath>,
+    watched_git_metadata: HashSet<AbsolutePath>,
     initializing:         bool,
     buffered_events:      Vec<notify::Event>,
 }
@@ -196,7 +198,7 @@ fn watcher_loop(
     } = ctx;
     let mut state = WatcherLoopState::new();
     let (disk_done_tx, disk_done_rx) = mpsc::channel::<String>();
-    let (git_done_tx, git_done_rx) = mpsc::channel::<PathBuf>();
+    let (git_done_tx, git_done_rx) = mpsc::channel::<AbsolutePath>();
     let disk_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_DISK_CONCURRENCY));
     let git_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_GIT_CONCURRENCY));
 
@@ -266,7 +268,7 @@ fn watcher_loop(
     }
 }
 
-fn register_watch_roots(watcher: &mut impl Watcher, watch_dirs: &[PathBuf]) {
+fn register_watch_roots(watcher: &mut impl Watcher, watch_dirs: &[AbsolutePath]) {
     for dir in watch_dirs {
         if dir.is_dir() {
             let _ = watcher.watch(dir, RecursiveMode::Recursive);
@@ -282,9 +284,9 @@ struct WatchDrainResult {
 fn drain_watch_messages(
     watcher: &mut impl Watcher,
     watch_rx: &mpsc::Receiver<WatcherMsg>,
-    projects: &mut HashMap<PathBuf, ProjectEntry>,
-    project_parents: &mut HashSet<PathBuf>,
-    watched_git_metadata: &mut HashSet<PathBuf>,
+    projects: &mut HashMap<AbsolutePath, ProjectEntry>,
+    project_parents: &mut HashSet<AbsolutePath>,
+    watched_git_metadata: &mut HashSet<AbsolutePath>,
     initializing: &mut bool,
 ) -> WatchDrainResult {
     let mut result = WatchDrainResult {
@@ -318,18 +320,23 @@ fn drain_watch_messages(
 fn apply_watch_request(
     watcher: &mut impl Watcher,
     req: WatchRequest,
-    projects: &mut HashMap<PathBuf, ProjectEntry>,
-    project_parents: &mut HashSet<PathBuf>,
-    watched_git_metadata: &mut HashSet<PathBuf>,
+    projects: &mut HashMap<AbsolutePath, ProjectEntry>,
+    project_parents: &mut HashSet<AbsolutePath>,
+    watched_git_metadata: &mut HashSet<AbsolutePath>,
 ) {
     if let Some(parent) = req.abs_path.parent() {
-        project_parents.insert(parent.to_path_buf());
+        project_parents.insert(AbsolutePath::from(parent));
     }
-    let git_dir = req.repo_root.as_deref().and_then(project::resolve_git_dir);
+    let git_dir = req
+        .repo_root
+        .as_deref()
+        .and_then(project::resolve_git_dir)
+        .map(AbsolutePath::from);
     let common_git_dir = req
         .repo_root
         .as_deref()
-        .and_then(project::resolve_common_git_dir);
+        .and_then(project::resolve_common_git_dir)
+        .map(AbsolutePath::from);
     watch_git_metadata_paths(
         watcher,
         &req,
@@ -435,8 +442,8 @@ fn replay_buffered_events(
     events: &[notify::Event],
     ctx: &WatcherDispatchContext<'_>,
     pending_disk: &mut HashMap<String, DiskState>,
-    pending_git: &mut HashMap<PathBuf, GitState>,
-    pending_new: &mut HashMap<PathBuf, Instant>,
+    pending_git: &mut HashMap<AbsolutePath, GitState>,
+    pending_new: &mut HashMap<AbsolutePath, Instant>,
 ) {
     for event in events {
         for event_path in &event.paths {
@@ -454,9 +461,9 @@ fn replay_buffered_events(
 
 fn drain_completed_refreshes(
     disk_done_rx: &mpsc::Receiver<String>,
-    git_done_rx: &mpsc::Receiver<PathBuf>,
+    git_done_rx: &mpsc::Receiver<AbsolutePath>,
     pending_disk: &mut HashMap<String, DiskState>,
-    pending_git: &mut HashMap<PathBuf, GitState>,
+    pending_git: &mut HashMap<AbsolutePath, GitState>,
 ) {
     while let Ok(project_path) = disk_done_rx.try_recv() {
         handle_disk_completion(pending_disk, &project_path);
@@ -472,7 +479,7 @@ fn watch_git_metadata_paths(
     req: &WatchRequest,
     git_dir: Option<&Path>,
     common_git_dir: Option<&Path>,
-    watched_git_metadata: &mut HashSet<PathBuf>,
+    watched_git_metadata: &mut HashSet<AbsolutePath>,
 ) {
     let started = Instant::now();
     let Some(repo_root) = req.repo_root.as_deref() else {
@@ -500,26 +507,38 @@ fn git_metadata_watch_paths(
     repo_root: &Path,
     git_dir: Option<&Path>,
     common_git_dir: Option<&Path>,
-) -> Vec<(PathBuf, RecursiveMode)> {
-    let mut paths = vec![(repo_root.join(".gitignore"), RecursiveMode::NonRecursive)];
+) -> Vec<(AbsolutePath, RecursiveMode)> {
+    let mut paths = vec![(
+        AbsolutePath::from(repo_root.join(".gitignore")),
+        RecursiveMode::NonRecursive,
+    )];
     if let Some(git_dir) = git_dir {
-        paths.push((git_dir.join("HEAD"), RecursiveMode::NonRecursive));
-        paths.push((git_dir.join("index"), RecursiveMode::NonRecursive));
-        let info = git_dir.join("info");
-        paths.push((info.join("exclude"), RecursiveMode::NonRecursive));
-        paths.push((info, RecursiveMode::NonRecursive));
-    }
-    if let Some(common_git_dir) = common_git_dir {
         paths.push((
-            common_git_dir.join("packed-refs"),
+            AbsolutePath::from(git_dir.join("HEAD")),
             RecursiveMode::NonRecursive,
         ));
         paths.push((
-            common_git_dir.join("refs").join("heads"),
+            AbsolutePath::from(git_dir.join("index")),
+            RecursiveMode::NonRecursive,
+        ));
+        let info = git_dir.join("info");
+        paths.push((
+            AbsolutePath::from(info.join("exclude")),
+            RecursiveMode::NonRecursive,
+        ));
+        paths.push((AbsolutePath::from(info), RecursiveMode::NonRecursive));
+    }
+    if let Some(common_git_dir) = common_git_dir {
+        paths.push((
+            AbsolutePath::from(common_git_dir.join("packed-refs")),
+            RecursiveMode::NonRecursive,
+        ));
+        paths.push((
+            AbsolutePath::from(common_git_dir.join("refs").join("heads")),
             RecursiveMode::Recursive,
         ));
         paths.push((
-            common_git_dir.join("refs").join("remotes"),
+            AbsolutePath::from(common_git_dir.join("refs").join("remotes")),
             RecursiveMode::Recursive,
         ));
     }
@@ -529,9 +548,9 @@ fn git_metadata_watch_paths(
 /// Immutable state needed to classify a filesystem event.
 struct EventContext<'a> {
     scan_root:       &'a Path,
-    projects:        &'a HashMap<PathBuf, ProjectEntry>,
-    project_parents: &'a HashSet<PathBuf>,
-    discovered:      &'a HashSet<PathBuf>,
+    projects:        &'a HashMap<AbsolutePath, ProjectEntry>,
+    project_parents: &'a HashSet<AbsolutePath>,
+    discovered:      &'a HashSet<AbsolutePath>,
 }
 
 struct WatcherDispatchContext<'a> {
@@ -544,8 +563,8 @@ fn handle_event(
     ctx: &EventContext<'_>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     pending_disk: &mut HashMap<String, DiskState>,
-    pending_git: &mut HashMap<PathBuf, GitState>,
-    pending_new: &mut HashMap<PathBuf, Instant>,
+    pending_git: &mut HashMap<AbsolutePath, GitState>,
+    pending_new: &mut HashMap<AbsolutePath, Instant>,
 ) {
     let now = Instant::now();
 
@@ -630,6 +649,7 @@ fn handle_event(
     let Some(candidate) = project_level_dir(event_path, ctx.scan_root, ctx.project_parents) else {
         return;
     };
+    let candidate = AbsolutePath::from(candidate);
     // Always enqueue removals (dir gone); for creations, skip already-discovered.
     if !candidate.is_dir() || !ctx.discovered.contains(&candidate) {
         pending_new
@@ -682,7 +702,10 @@ fn handle_disk_completion(pending_disk: &mut HashMap<String, DiskState>, project
     }
 }
 
-fn handle_git_completion(pending_git: &mut HashMap<PathBuf, GitState>, repo_root: PathBuf) {
+fn handle_git_completion(
+    pending_git: &mut HashMap<AbsolutePath, GitState>,
+    repo_root: AbsolutePath,
+) {
     let now = Instant::now();
     let Some(state) = pending_git.remove(&repo_root) else {
         return;
@@ -782,7 +805,7 @@ fn is_target_metadata_event(event_path: &Path, project_root: &Path) -> bool {
         || event_path.starts_with(tests)
 }
 
-fn spawn_project_refresh(bg_tx: mpsc::Sender<BackgroundMsg>, project_root: PathBuf) {
+fn spawn_project_refresh(bg_tx: mpsc::Sender<BackgroundMsg>, project_root: AbsolutePath) {
     rayon::spawn(move || {
         let Some(item) = scan::discover_project_item(&project_root).or_else(|| {
             let cargo_toml = project_root.join("Cargo.toml");
@@ -793,18 +816,18 @@ fn spawn_project_refresh(bg_tx: mpsc::Sender<BackgroundMsg>, project_root: PathB
             return;
         };
         let disk_entries = scan::disk_usage_batch_for_item(&item);
-        let root_path = item.path().to_path_buf();
+        let root_path = AbsolutePath::from(item.path().to_path_buf());
         let _ = bg_tx.send(BackgroundMsg::ProjectRefreshed { item });
         let _ = bg_tx.send(BackgroundMsg::DiskUsageBatch {
-            root_path: root_path.into(),
-            entries:   disk_entries,
+            root_path,
+            entries: disk_entries,
         });
     });
 }
 
 fn spawn_project_refresh_after(
     bg_tx: mpsc::Sender<BackgroundMsg>,
-    project_root: PathBuf,
+    project_root: AbsolutePath,
     delay: Duration,
 ) {
     rayon::spawn(move || {
@@ -816,8 +839,8 @@ fn spawn_project_refresh_after(
 }
 
 fn enqueue_git_refresh(
-    pending_git: &mut HashMap<PathBuf, GitState>,
-    repo_root: PathBuf,
+    pending_git: &mut HashMap<AbsolutePath, GitState>,
+    repo_root: AbsolutePath,
     now: Instant,
     immediate: bool,
     refresh_info: bool,
@@ -879,7 +902,7 @@ fn enqueue_git_refresh(
 
 fn emit_root_git_path_refresh(
     bg_tx: &mpsc::Sender<BackgroundMsg>,
-    projects: &HashMap<PathBuf, ProjectEntry>,
+    projects: &HashMap<AbsolutePath, ProjectEntry>,
     repo_root: &Path,
 ) {
     let started = Instant::now();
@@ -898,7 +921,7 @@ fn emit_root_git_path_refresh(
         "watcher_root_git_path_refresh"
     );
     let _ = bg_tx.send(BackgroundMsg::GitPathState {
-        path: root_entry.abs_path.clone().into(),
+        path: root_entry.abs_path.clone(),
         state,
     });
 }
@@ -906,13 +929,13 @@ fn emit_root_git_path_refresh(
 fn fire_git_updates(
     handle: &tokio::runtime::Handle,
     git_limit: &Arc<tokio::sync::Semaphore>,
-    git_done_tx: &mpsc::Sender<PathBuf>,
+    git_done_tx: &mpsc::Sender<AbsolutePath>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
-    projects: &HashMap<PathBuf, ProjectEntry>,
-    pending_git: &mut HashMap<PathBuf, GitState>,
+    projects: &HashMap<AbsolutePath, ProjectEntry>,
+    pending_git: &mut HashMap<AbsolutePath, GitState>,
 ) {
     let now = Instant::now();
-    let ready: Vec<(PathBuf, bool)> = pending_git
+    let ready: Vec<(AbsolutePath, bool)> = pending_git
         .iter()
         .filter_map(|(repo_root, state)| match state {
             GitState::Pending {
@@ -961,9 +984,9 @@ fn fire_git_updates(
 fn spawn_git_refresh(
     handle: &tokio::runtime::Handle,
     git_limit: &Arc<tokio::sync::Semaphore>,
-    git_done_tx: mpsc::Sender<PathBuf>,
+    git_done_tx: mpsc::Sender<AbsolutePath>,
     bg_tx: mpsc::Sender<BackgroundMsg>,
-    repo_root: PathBuf,
+    repo_root: AbsolutePath,
     affected: Vec<(String, String)>,
     refresh_info: bool,
 ) {
@@ -1001,7 +1024,7 @@ fn spawn_git_refresh(
             if let Some(info) = git_info {
                 for (path, _) in &affected {
                     let _ = bg_tx.send(BackgroundMsg::GitInfo {
-                        path: PathBuf::from(path).into(),
+                        path: AbsolutePath::from(PathBuf::from(path)),
                         info: info.clone(),
                     });
                 }
@@ -1022,7 +1045,7 @@ fn spawn_git_refresh(
         if let Some(git_path_states) = git_path_states {
             for (path, state) in git_path_states {
                 let _ = bg_tx.send(BackgroundMsg::GitPathState {
-                    path: PathBuf::from(path).into(),
+                    path: AbsolutePath::from(PathBuf::from(path)),
                     state,
                 });
             }
@@ -1045,7 +1068,7 @@ fn fire_disk_updates(
     disk_limit: &Arc<tokio::sync::Semaphore>,
     disk_done_tx: &mpsc::Sender<String>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
-    projects: &HashMap<PathBuf, ProjectEntry>,
+    projects: &HashMap<AbsolutePath, ProjectEntry>,
     pending_disk: &mut HashMap<String, DiskState>,
 ) {
     let now = Instant::now();
@@ -1087,7 +1110,7 @@ fn spawn_disk_update(
     disk_done_tx: mpsc::Sender<String>,
     bg_tx: mpsc::Sender<BackgroundMsg>,
     project_label: String,
-    abs_path: PathBuf,
+    abs_path: AbsolutePath,
 ) {
     let handle = handle.clone();
     let disk_limit = Arc::clone(disk_limit);
@@ -1104,7 +1127,7 @@ fn spawn_disk_update(
         );
 
         let started = Instant::now();
-        let abs_for_msg = abs_path.clone().into();
+        let abs_for_msg = abs_path.clone();
         let bytes = tokio::task::spawn_blocking(move || scan::dir_size(&abs_path))
             .await
             .ok()
@@ -1125,14 +1148,14 @@ fn spawn_disk_update(
 
 fn probe_new_projects(
     bg_tx: &mpsc::Sender<BackgroundMsg>,
-    pending_new: &mut HashMap<PathBuf, Instant>,
-    discovered: &mut HashSet<PathBuf>,
+    pending_new: &mut HashMap<AbsolutePath, Instant>,
+    discovered: &mut HashSet<AbsolutePath>,
     _ci_run_count: u32,
     non_rust: NonRustInclusion,
     client: &HttpClient,
 ) {
     let now = Instant::now();
-    let ready: Vec<PathBuf> = pending_new
+    let ready: Vec<AbsolutePath> = pending_new
         .iter()
         .filter(|(_, deadline)| now >= **deadline)
         .map(|(path, _)| path.clone())
@@ -1146,7 +1169,7 @@ fn probe_new_projects(
             // can mark it as deleted if it was a tracked project.
             discovered.remove(&dir);
             let _ = bg_tx.send(BackgroundMsg::DiskUsage {
-                path:  dir.into(),
+                path:  dir,
                 bytes: 0,
             });
             continue;
@@ -1157,7 +1180,7 @@ fn probe_new_projects(
         }
         if let Some(item) = probe_project(&dir, non_rust) {
             discovered.insert(dir.clone());
-            let abs_path = item.path().to_path_buf();
+            let abs_path = AbsolutePath::from(item.path().to_path_buf());
             let display_path = item.display_path();
             let project_name = item.name().map(str::to_string);
             let repo_presence = if project::git_repo_root(&abs_path).is_some() {
@@ -1168,7 +1191,7 @@ fn probe_new_projects(
             let disk_entries = scan::disk_usage_batch_for_item(&item);
             let _ = bg_tx.send(BackgroundMsg::ProjectDiscovered { item });
             let _ = bg_tx.send(BackgroundMsg::DiskUsageBatch {
-                root_path: abs_path.clone().into(),
+                root_path: abs_path.clone(),
                 entries:   disk_entries,
             });
             if abs_path.join("Cargo.toml").exists() {
@@ -1208,7 +1231,7 @@ fn probe_new_projects(
 fn project_level_dir(
     event_path: &Path,
     scan_root: &Path,
-    project_parents: &HashSet<PathBuf>,
+    project_parents: &HashSet<AbsolutePath>,
 ) -> Option<PathBuf> {
     let mut path = event_path.to_path_buf();
     let mut marker_candidate: Option<PathBuf> = None;
@@ -1372,7 +1395,11 @@ mod tests {
 
         for case in cases {
             let scan_root = Path::new(case.scan_root);
-            let parents = case.parents.iter().map(PathBuf::from).collect();
+            let parents = case
+                .parents
+                .iter()
+                .map(|p| AbsolutePath::from(PathBuf::from(*p)))
+                .collect();
             let result = project_level_dir(Path::new(case.event), scan_root, &parents);
             assert_eq!(
                 result.as_deref(),
@@ -1389,7 +1416,7 @@ mod tests {
     fn project_level_dir_finds_filesystem_markers() {
         struct Case {
             name:     &'static str,
-            parents:  HashSet<PathBuf>,
+            parents:  HashSet<AbsolutePath>,
             event:    PathBuf,
             expected: PathBuf,
         }
@@ -1427,13 +1454,13 @@ mod tests {
             },
             Case {
                 name:     "finds project in unknown parent via filesystem",
-                parents:  HashSet::from([scan_root.join("rust")]),
+                parents:  HashSet::from([AbsolutePath::from(scan_root.join("rust"))]),
                 event:    unknown_parent_project.join("src/lib.rs"),
                 expected: unknown_parent_project.clone(),
             },
             Case {
                 name:     "nested workspace member resolves to workspace root",
-                parents:  HashSet::from([scan_root.join("rust")]),
+                parents:  HashSet::from([AbsolutePath::from(scan_root.join("rust"))]),
                 event:    member_dir.join("src/lib.rs"),
                 expected: workspace_root,
             },
@@ -1447,12 +1474,12 @@ mod tests {
 
     // ── handle_event ─────────────────────────────────────────────────
 
-    fn make_project_entry(project_label: &str, abs_path: &Path) -> (PathBuf, ProjectEntry) {
+    fn make_project_entry(project_label: &str, abs_path: &Path) -> (AbsolutePath, ProjectEntry) {
         (
-            abs_path.to_path_buf(),
+            AbsolutePath::from(abs_path),
             ProjectEntry {
                 project_label:  project_label.to_string(),
-                abs_path:       abs_path.to_path_buf(),
+                abs_path:       AbsolutePath::from(abs_path),
                 repo_root:      None,
                 git_dir:        None,
                 common_git_dir: None,
@@ -1480,10 +1507,10 @@ mod tests {
     ) -> (
         PathBuf,
         PathBuf,
-        HashMap<PathBuf, ProjectEntry>,
+        HashMap<AbsolutePath, ProjectEntry>,
         PathBuf,
-        HashSet<PathBuf>,
-        HashSet<PathBuf>,
+        HashSet<AbsolutePath>,
+        HashSet<AbsolutePath>,
     ) {
         let project_dir = tmp.path().join("my_project");
         std::fs::create_dir_all(&project_dir).expect("create project dir");
@@ -1493,28 +1520,28 @@ mod tests {
 
         let mut projects = HashMap::new();
         projects.insert(
-            project_dir.clone(),
+            AbsolutePath::from(project_dir.clone()),
             ProjectEntry {
                 project_label:  "~/my_project".to_string(),
-                abs_path:       project_dir.clone(),
-                repo_root:      Some(project_dir.clone()),
-                git_dir:        Some(project_dir.join(".git")),
-                common_git_dir: Some(project_dir.join(".git")),
+                abs_path:       AbsolutePath::from(project_dir.clone()),
+                repo_root:      Some(AbsolutePath::from(project_dir.clone())),
+                git_dir:        Some(AbsolutePath::from(project_dir.join(".git"))),
+                common_git_dir: Some(AbsolutePath::from(project_dir.join(".git"))),
             },
         );
         projects.insert(
-            member_dir.clone(),
+            AbsolutePath::from(member_dir.clone()),
             ProjectEntry {
                 project_label:  "~/my_project/crates/member".to_string(),
-                abs_path:       member_dir.clone(),
-                repo_root:      Some(project_dir.clone()),
-                git_dir:        Some(project_dir.join(".git")),
-                common_git_dir: Some(project_dir.join(".git")),
+                abs_path:       AbsolutePath::from(member_dir.clone()),
+                repo_root:      Some(AbsolutePath::from(project_dir.clone())),
+                git_dir:        Some(AbsolutePath::from(project_dir.join(".git"))),
+                common_git_dir: Some(AbsolutePath::from(project_dir.join(".git"))),
             },
         );
 
         let scan_root = tmp.path().to_path_buf();
-        let project_parents = HashSet::from([scan_root.clone()]);
+        let project_parents = HashSet::from([AbsolutePath::from(scan_root.clone())]);
         let discovered = HashSet::new();
         (
             project_dir,
@@ -1585,7 +1612,7 @@ mod tests {
         assert!(got_root_git_state, "{context}");
         assert!(!got_member_git_state, "{context}");
         assert!(pending_disk.is_empty(), "{context}");
-        assert!(pending_git.contains_key(&project_dir), "{context}");
+        assert!(pending_git.contains_key(project_dir.as_path()), "{context}");
         assert!(pending_new.is_empty(), "{context}");
     }
 
@@ -1594,10 +1621,10 @@ mod tests {
     ) -> (
         PathBuf,
         PathBuf,
-        HashMap<PathBuf, ProjectEntry>,
+        HashMap<AbsolutePath, ProjectEntry>,
         PathBuf,
-        HashSet<PathBuf>,
-        HashSet<PathBuf>,
+        HashSet<AbsolutePath>,
+        HashSet<AbsolutePath>,
     ) {
         let wt_git_dir = tmp
             .path()
@@ -1620,17 +1647,17 @@ mod tests {
 
         let mut projects = HashMap::new();
         projects.insert(
-            wt_root.clone(),
+            AbsolutePath::from(wt_root.clone()),
             ProjectEntry {
                 project_label:  "~/main_repo_style_fix".to_string(),
-                abs_path:       wt_root.clone(),
-                repo_root:      Some(wt_root.clone()),
-                git_dir:        Some(wt_git_dir.clone()),
-                common_git_dir: Some(common_git_dir),
+                abs_path:       AbsolutePath::from(wt_root.clone()),
+                repo_root:      Some(AbsolutePath::from(wt_root.clone())),
+                git_dir:        Some(AbsolutePath::from(wt_git_dir.clone())),
+                common_git_dir: Some(AbsolutePath::from(common_git_dir)),
             },
         );
         let scan_root = tmp.path().to_path_buf();
-        let project_parents = HashSet::from([scan_root.clone()]);
+        let project_parents = HashSet::from([AbsolutePath::from(scan_root.clone())]);
         let discovered = HashSet::new();
         (
             wt_root,
@@ -1648,7 +1675,7 @@ mod tests {
         let mut projects = HashMap::new();
         let (key, entry) = make_project_entry("~/rust/bevy", Path::new("/home/user/rust/bevy"));
         projects.insert(key, entry);
-        let project_parents = HashSet::from([PathBuf::from("/home/user/rust")]);
+        let project_parents = HashSet::from([AbsolutePath::from(PathBuf::from("/home/user/rust"))]);
         let discovered = HashSet::new();
         let ctx = EventContext {
             scan_root:       &scan_root,
@@ -1758,17 +1785,17 @@ edition = "2024"
 
         let mut projects = HashMap::new();
         projects.insert(
-            project_dir.clone(),
+            AbsolutePath::from(project_dir.clone()),
             ProjectEntry {
                 project_label:  "~/my_project".to_string(),
-                abs_path:       project_dir.clone(),
-                repo_root:      Some(project_dir.clone()),
-                git_dir:        Some(project_dir.join(".git")),
-                common_git_dir: Some(project_dir.join(".git")),
+                abs_path:       AbsolutePath::from(project_dir.clone()),
+                repo_root:      Some(AbsolutePath::from(project_dir.clone())),
+                git_dir:        Some(AbsolutePath::from(project_dir.join(".git"))),
+                common_git_dir: Some(AbsolutePath::from(project_dir.join(".git"))),
             },
         );
         let scan_root = tmp.path().to_path_buf();
-        let project_parents = HashSet::from([scan_root.clone()]);
+        let project_parents = HashSet::from([AbsolutePath::from(scan_root.clone())]);
         let discovered = HashSet::new();
         let ctx = EventContext {
             scan_root:       &scan_root,
@@ -1837,7 +1864,7 @@ edition = "2024"
         );
 
         assert!(
-            pending_git.contains_key(&wt_root),
+            pending_git.contains_key(wt_root.as_path()),
             "worktree index event should enqueue a git refresh for the worktree project"
         );
     }
@@ -1909,7 +1936,7 @@ edition = "2024"
 
         assert!(
             matches!(
-                pending_git.get(&wt_root),
+                pending_git.get(wt_root.as_path()),
                 Some(GitState::Pending {
                     refresh_info: true,
                     ..
@@ -1934,28 +1961,28 @@ edition = "2024"
 
         let mut projects = HashMap::new();
         projects.insert(
-            main_root.clone(),
+            AbsolutePath::from(main_root.clone()),
             ProjectEntry {
                 project_label:  "~/main_repo".to_string(),
-                abs_path:       main_root.clone(),
-                repo_root:      Some(main_root.clone()),
-                git_dir:        Some(common_git_dir.clone()),
-                common_git_dir: Some(common_git_dir.clone()),
+                abs_path:       AbsolutePath::from(main_root.clone()),
+                repo_root:      Some(AbsolutePath::from(main_root.clone())),
+                git_dir:        Some(AbsolutePath::from(common_git_dir.clone())),
+                common_git_dir: Some(AbsolutePath::from(common_git_dir.clone())),
             },
         );
         projects.insert(
-            wt_root.clone(),
+            AbsolutePath::from(wt_root.clone()),
             ProjectEntry {
                 project_label:  "~/main_repo_style_fix".to_string(),
-                abs_path:       wt_root.clone(),
-                repo_root:      Some(wt_root.clone()),
-                git_dir:        Some(wt_git_dir),
-                common_git_dir: Some(common_git_dir.clone()),
+                abs_path:       AbsolutePath::from(wt_root.clone()),
+                repo_root:      Some(AbsolutePath::from(wt_root.clone())),
+                git_dir:        Some(AbsolutePath::from(wt_git_dir)),
+                common_git_dir: Some(AbsolutePath::from(common_git_dir.clone())),
             },
         );
 
         let scan_root = tmp.path().to_path_buf();
-        let project_parents = HashSet::from([scan_root.clone()]);
+        let project_parents = HashSet::from([AbsolutePath::from(scan_root.clone())]);
         let discovered = HashSet::new();
         let ctx = EventContext {
             scan_root:       &scan_root,
@@ -1981,11 +2008,11 @@ edition = "2024"
         );
 
         assert!(
-            pending_git.contains_key(&main_root),
+            pending_git.contains_key(main_root.as_path()),
             "main repo should be enqueued for git refresh"
         );
         assert!(
-            pending_git.contains_key(&wt_root),
+            pending_git.contains_key(wt_root.as_path()),
             "worktree should also be enqueued for git refresh"
         );
     }
@@ -2020,7 +2047,7 @@ edition = "2024"
         );
 
         assert!(
-            pending_git.contains_key(&wt_root),
+            pending_git.contains_key(wt_root.as_path()),
             "buffered worktree git-dir events should replay through the normal classifier"
         );
         assert!(pending_new.is_empty());
@@ -2060,7 +2087,7 @@ edition = "2024"
 
         assert!(
             matches!(
-                pending_git.get(&wt_root),
+                pending_git.get(wt_root.as_path()),
                 Some(GitState::Pending {
                     refresh_info: true,
                     ..
@@ -2180,7 +2207,7 @@ edition = "2024"
         let mut projects = HashMap::new();
         let (key, entry) = make_project_entry("~/existing_project", &existing);
         projects.insert(key, entry);
-        let project_parents = HashSet::from([scan_root.clone()]);
+        let project_parents = HashSet::from([AbsolutePath::from(scan_root.clone())]);
         let discovered = HashSet::new();
         let ctx = EventContext {
             scan_root:       &scan_root,
@@ -2205,7 +2232,7 @@ edition = "2024"
 
         assert!(pending_disk.is_empty());
         assert!(pending_git.is_empty());
-        assert!(pending_new.contains_key(&new_project));
+        assert!(pending_new.contains_key(new_project.as_path()));
     }
 
     #[test]
@@ -2218,7 +2245,7 @@ edition = "2024"
         let mut projects = HashMap::new();
         let (key, entry) = make_project_entry("~/existing_project", &project_dir);
         projects.insert(key, entry);
-        let project_parents = HashSet::from([scan_root.clone()]);
+        let project_parents = HashSet::from([AbsolutePath::from(scan_root.clone())]);
         let discovered = HashSet::new();
         let ctx = EventContext {
             scan_root:       &scan_root,
@@ -2257,8 +2284,8 @@ edition = "2024"
         std::fs::create_dir_all(&project_dir).expect("failed to create project dir");
 
         let projects = HashMap::new();
-        let project_parents = HashSet::from([scan_root.clone()]);
-        let discovered = HashSet::from([project_dir.clone()]);
+        let project_parents = HashSet::from([AbsolutePath::from(scan_root.clone())]);
+        let discovered = HashSet::from([AbsolutePath::from(project_dir.clone())]);
         let ctx = EventContext {
             scan_root:       &scan_root,
             projects:        &projects,
@@ -2322,7 +2349,7 @@ edition = "2024"
 
         // Must enqueue the project dir, not its grandparent
         assert!(
-            pending_new.contains_key(&new_wt),
+            pending_new.contains_key(new_wt.as_path()),
             "expected pending_new to contain {}, got: {:?}",
             new_wt.display(),
             pending_new.keys().collect::<Vec<_>>()
@@ -2339,33 +2366,36 @@ edition = "2024"
                 "empty_uses_scan_root",
                 PathBuf::from("/home/user"),
                 Vec::<String>::new(),
-                vec![PathBuf::from("/home/user")],
+                vec![AbsolutePath::from(PathBuf::from("/home/user"))],
             ),
             (
                 "relative_under_scan_root",
                 PathBuf::from("/home/user"),
                 vec!["rust".to_string(), ".claude".to_string()],
                 vec![
-                    PathBuf::from("/home/user/rust"),
-                    PathBuf::from("/home/user/.claude"),
+                    AbsolutePath::from(PathBuf::from("/home/user/rust")),
+                    AbsolutePath::from(PathBuf::from("/home/user/.claude")),
                 ],
             ),
             (
                 "tilde_expands_to_home",
                 PathBuf::from("/home/user/rust"),
                 vec!["~/rust".to_string(), "~/.claude".to_string()],
-                vec![home.join("rust"), home.join(".claude")],
+                vec![
+                    AbsolutePath::from(home.join("rust")),
+                    AbsolutePath::from(home.join(".claude")),
+                ],
             ),
             (
                 "absolute_used_as_is",
                 PathBuf::from("/home/user"),
                 vec!["/opt/projects".to_string()],
-                vec![PathBuf::from("/opt/projects")],
+                vec![AbsolutePath::from(PathBuf::from("/opt/projects"))],
             ),
         ];
 
         for (name, scan_root, include_dirs, expected) in cases {
-            let dirs = scan::resolve_include_dirs(&scan_root, &include_dirs);
+            let dirs = scan::resolve_include_dirs(AbsolutePath::from(scan_root), &include_dirs);
             assert_eq!(dirs, expected, "{name}");
         }
     }
@@ -2377,7 +2407,10 @@ edition = "2024"
         let claude_root = tmp.path().join(".claude");
         std::fs::create_dir_all(&rust_root).expect("create rust root");
         std::fs::create_dir_all(&claude_root).expect("create claude root");
-        let watch_dirs = vec![rust_root, claude_root];
+        let watch_dirs = vec![
+            AbsolutePath::from(rust_root),
+            AbsolutePath::from(claude_root),
+        ];
         let (notify_tx, _notify_rx) = mpsc::channel();
         let handler = move |res| {
             let _ = notify_tx.send(res);
@@ -2478,13 +2511,13 @@ edition = "2024"
         let (tx, rx) = mpsc::channel();
         let mut projects = HashMap::new();
         projects.insert(
-            project_dir.clone(),
+            AbsolutePath::from(project_dir.clone()),
             ProjectEntry {
                 project_label:  "~/my_project".to_string(),
-                abs_path:       project_dir.clone(),
-                repo_root:      Some(project_dir.clone()),
-                git_dir:        Some(project_dir.join(".git")),
-                common_git_dir: Some(project_dir.join(".git")),
+                abs_path:       AbsolutePath::from(project_dir.clone()),
+                repo_root:      Some(AbsolutePath::from(project_dir.clone())),
+                git_dir:        Some(AbsolutePath::from(project_dir.join(".git"))),
+                common_git_dir: Some(AbsolutePath::from(project_dir.join(".git"))),
             },
         );
 
@@ -2541,12 +2574,11 @@ edition = "2024"
 
         let (tx, rx) = mpsc::channel();
         let mut projects = HashMap::new();
-        let dir_key = project_dir.clone();
         projects.insert(
-            dir_key,
+            AbsolutePath::from(project_dir.clone()),
             ProjectEntry {
                 project_label:  "~/no_git".to_string(),
-                abs_path:       project_dir.clone(),
+                abs_path:       AbsolutePath::from(project_dir.clone()),
                 repo_root:      None,
                 git_dir:        None,
                 common_git_dir: None,
@@ -2617,7 +2649,7 @@ edition = "2024"
         let past = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .expect("1s subtraction should not underflow");
-        let mut pending_new = HashMap::from([(linked_dir.clone(), past)]);
+        let mut pending_new = HashMap::from([(AbsolutePath::from(linked_dir.clone()), past)]);
         let mut discovered = HashSet::new();
 
         probe_new_projects(
@@ -2640,15 +2672,10 @@ edition = "2024"
         };
         assert_eq!(pkg.path(), linked_dir.as_path());
         assert_eq!(pkg.worktree_name(), Some("app_test"));
-        assert_eq!(
-            pkg.worktree_primary_abs_path(),
-            Some(
-                primary_dir
-                    .canonicalize()
-                    .expect("canonical primary")
-                    .as_path()
-            )
+        let canonical = crate::project::AbsolutePath::from(
+            primary_dir.canonicalize().expect("canonical primary"),
         );
+        assert_eq!(pkg.worktree_primary_abs_path(), Some(&canonical));
     }
 
     #[test]
@@ -2663,7 +2690,7 @@ edition = "2024"
         let past = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .expect("1s subtraction should not underflow");
-        let mut pending_new = HashMap::from([(linked_dir.clone(), past)]);
+        let mut pending_new = HashMap::from([(AbsolutePath::from(linked_dir.clone()), past)]);
         let mut discovered = HashSet::new();
 
         probe_new_projects(
@@ -2686,15 +2713,10 @@ edition = "2024"
         };
         assert_eq!(ws.path(), linked_dir.as_path());
         assert_eq!(ws.worktree_name(), Some("obsidian_knife_test"));
-        assert_eq!(
-            ws.worktree_primary_abs_path(),
-            Some(
-                primary_dir
-                    .canonicalize()
-                    .expect("canonical primary")
-                    .as_path()
-            )
+        let canonical = crate::project::AbsolutePath::from(
+            primary_dir.canonicalize().expect("canonical primary"),
         );
+        assert_eq!(ws.worktree_primary_abs_path(), Some(&canonical));
     }
 
     #[test]
@@ -2718,7 +2740,7 @@ edition = "2024"
             .expect("write member lib");
 
         let (bg_tx, bg_rx) = mpsc::channel();
-        spawn_project_refresh_after(bg_tx, project_dir, Duration::ZERO);
+        spawn_project_refresh_after(bg_tx, AbsolutePath::from(project_dir), Duration::ZERO);
 
         let BackgroundMsg::ProjectRefreshed { item } = bg_rx
             .recv_timeout(Duration::from_secs(1))
@@ -2757,7 +2779,7 @@ edition = "2024"
             .expect("write member lib");
 
         let (bg_tx, bg_rx) = mpsc::channel();
-        spawn_project_refresh_after(bg_tx, project_dir, Duration::ZERO);
+        spawn_project_refresh_after(bg_tx, AbsolutePath::from(project_dir), Duration::ZERO);
 
         let _ = bg_rx
             .recv_timeout(Duration::from_secs(1))
@@ -2790,17 +2812,17 @@ edition = "2024"
 
         let mut projects = HashMap::new();
         projects.insert(
-            linked_dir.clone(),
+            AbsolutePath::from(linked_dir.clone()),
             ProjectEntry {
                 project_label:  "~/app_test".to_string(),
-                abs_path:       linked_dir.clone(),
+                abs_path:       AbsolutePath::from(linked_dir.clone()),
                 repo_root:      None,
                 git_dir:        None,
                 common_git_dir: None,
             },
         );
         let scan_root = tmp.path().to_path_buf();
-        let project_parents = HashSet::from([scan_root.clone()]);
+        let project_parents = HashSet::from([AbsolutePath::from(scan_root.clone())]);
         let discovered = HashSet::new();
         let ctx = EventContext {
             scan_root:       &scan_root,
@@ -2870,17 +2892,17 @@ edition = "2024"
 
         let mut projects = HashMap::new();
         projects.insert(
-            linked_dir.clone(),
+            AbsolutePath::from(linked_dir.clone()),
             ProjectEntry {
                 project_label:  "~/obsidian_knife_test".to_string(),
-                abs_path:       linked_dir.clone(),
+                abs_path:       AbsolutePath::from(linked_dir.clone()),
                 repo_root:      None,
                 git_dir:        None,
                 common_git_dir: None,
             },
         );
         let scan_root = tmp.path().to_path_buf();
-        let project_parents = HashSet::from([scan_root.clone()]);
+        let project_parents = HashSet::from([AbsolutePath::from(scan_root.clone())]);
         let discovered = HashSet::new();
         let ctx = EventContext {
             scan_root:       &scan_root,

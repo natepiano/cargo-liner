@@ -42,7 +42,7 @@ impl RootItem {
     }
 
     /// Absolute path to the primary project root.
-    pub(crate) fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &AbsolutePath {
         match self {
             Self::Rust(p) => p.path(),
             Self::NonRust(p) => p.path(),

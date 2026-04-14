@@ -25,6 +25,7 @@ use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::enable_raw_mode;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use tracing;
 
 use super::app::App;
 use super::app::PendingClean;
@@ -106,14 +107,14 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 
 pub fn run(path: &Path) -> ExitCode {
     let Ok(scan_root) = path.canonicalize() else {
-        eprintln!("Error: cannot resolve path '{}'", path.display());
+        tracing::error!("Error: cannot resolve path '{}'", path.display());
         return ExitCode::FAILURE;
     };
 
     let cfg = match config::try_load() {
         Ok(cfg) => cfg,
         Err(err) => {
-            eprintln!("Error: {err}");
+            tracing::error!("Error: {err}");
             return ExitCode::FAILURE;
         },
     };
@@ -121,11 +122,11 @@ pub fn run(path: &Path) -> ExitCode {
     let perf_log_path = crate::perf_log::init();
 
     let Ok(rt) = tokio::runtime::Runtime::new() else {
-        eprintln!("Error: failed to create async runtime");
+        tracing::error!("Error: failed to create async runtime");
         return ExitCode::FAILURE;
     };
     let Some(http_client) = HttpClient::new(rt.handle().clone()) else {
-        eprintln!("Error: failed to create HTTP client");
+        tracing::error!("Error: failed to create HTTP client");
         return ExitCode::FAILURE;
     };
     let scan_started_at = std::time::Instant::now();
@@ -154,7 +155,7 @@ pub fn run(path: &Path) -> ExitCode {
     let mut terminal = match setup_terminal() {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("Error: failed to initialize terminal: {e}");
+            tracing::error!("Error: failed to initialize terminal: {e}");
             return ExitCode::FAILURE;
         },
     };
@@ -183,7 +184,7 @@ pub fn run(path: &Path) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("Error: {e}");
+            tracing::error!("Error: {e}");
             ExitCode::FAILURE
         },
     }
@@ -195,7 +196,7 @@ fn restart_self() {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cargo-port"));
     let args: Vec<String> = std::env::args().skip(1).collect();
     let err = std::process::Command::new(&exe).args(&args).exec();
-    eprintln!("Failed to restart: {err}");
+    tracing::error!("Failed to restart: {err}");
 }
 
 fn spawn_input_thread() -> mpsc::Receiver<Event> {
@@ -339,21 +340,21 @@ fn spawn_pending_background_tasks(app: &mut App) {
     }
 
     if let Some(fetch) = app.take_pending_ci_fetch() {
-        let abs = PathBuf::from(&fetch.project_path);
+        let abs_path = Path::new(&fetch.project_path);
         let prev_total = app
             .ci_state_mut()
-            .get(&abs)
+            .get(abs_path)
             .map_or(0, super::app::CiState::github_total);
         let existing_runs = app
             .ci_state_mut()
-            .remove(&abs)
+            .remove(abs_path)
             .map(|s| match s {
                 super::app::CiState::Fetching { runs, .. }
                 | super::app::CiState::Loaded { runs, .. } => runs,
             })
             .unwrap_or_default();
         app.ci_state_mut().insert(
-            abs,
+            AbsolutePath::from(abs_path),
             super::app::CiState::Fetching {
                 runs:         existing_runs,
                 github_total: prev_total,

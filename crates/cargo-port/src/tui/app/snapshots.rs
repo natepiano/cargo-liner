@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
-use std::path::PathBuf;
 
 use super::App;
 use super::types::ExpandKey;
@@ -10,6 +9,7 @@ use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
+use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitPathState;
@@ -271,7 +271,7 @@ fn formatted_disk(bytes: Option<u64>) -> String {
 
 pub(super) fn git_sync_snapshot(
     git_info: Option<&GitInfo>,
-    git_path_states: &HashMap<PathBuf, GitPathState>,
+    git_path_states: &HashMap<AbsolutePath, GitPathState>,
     path: &Path,
 ) -> String {
     if matches!(
@@ -298,7 +298,7 @@ pub(super) fn git_sync_snapshot(
 
 pub(super) fn git_main_snapshot(
     git_info: Option<&GitInfo>,
-    git_path_states: &HashMap<PathBuf, GitPathState>,
+    git_path_states: &HashMap<AbsolutePath, GitPathState>,
     path: &Path,
 ) -> String {
     if matches!(
@@ -324,7 +324,7 @@ pub(super) fn git_main_snapshot(
 
 /// Snapshot of project state needed for fit-width calculations.
 pub(super) struct FitWidthsState<'a> {
-    pub git_path_states: &'a HashMap<PathBuf, GitPathState>,
+    pub git_path_states: &'a HashMap<AbsolutePath, GitPathState>,
 }
 
 pub(super) fn build_fit_widths_snapshot(
@@ -621,7 +621,7 @@ fn collect_vendored_disk(vendored: &[PackageProject], values: &mut Vec<u64>) {
 }
 
 pub(super) fn initial_disk_batch_count(projects: &[RootItem]) -> usize {
-    let mut abs_paths: Vec<&Path> = projects.iter().map(RootItem::path).collect();
+    let mut abs_paths: Vec<&AbsolutePath> = projects.iter().map(RootItem::path).collect();
     abs_paths.sort_by(|left, right| {
         left.components()
             .count()

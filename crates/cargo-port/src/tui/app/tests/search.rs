@@ -68,6 +68,6 @@ fn search_finds_linked_worktree_children_and_confirms_selection() {
     );
     assert_eq!(
         app.selected_project_path().map(Path::to_path_buf),
-        Some(test_path(member_path))
+        Some(test_path(member_path).to_path_buf())
     );
 }

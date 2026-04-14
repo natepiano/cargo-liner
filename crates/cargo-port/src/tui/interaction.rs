@@ -103,9 +103,8 @@ pub(super) fn register_project_list_hitboxes(app: &mut App, list_area: Rect, row
 
         let dismiss_target = if app.is_searching() && !app.search_query().is_empty() {
             app.filtered().get(row_index).and_then(|hit| {
-                let path = hit.abs_path.as_path();
-                app.is_deleted(path)
-                    .then(|| DismissTarget::DeletedProject(path.to_path_buf()))
+                app.is_deleted(hit.abs_path.as_path())
+                    .then(|| DismissTarget::DeletedProject(hit.abs_path.clone()))
             })
         } else {
             app.visible_rows()
@@ -284,6 +283,7 @@ mod tests {
     use crate::lint::LintCommandStatus;
     use crate::lint::LintRun;
     use crate::lint::LintRunStatus;
+    use crate::project::AbsolutePath;
     use crate::project::Cargo;
     use crate::project::ExampleGroup;
     use crate::project::GitInfo;
@@ -328,7 +328,7 @@ mod tests {
 
     fn make_package_with_cargo(name: &str, path: &Path, cargo: Cargo) -> RootItem {
         RootItem::Rust(RustProject::Package(PackageProject::new(
-            path.to_path_buf(),
+            AbsolutePath::from(path),
             Some(name.to_string()),
             cargo,
             Vec::new(),
@@ -344,12 +344,12 @@ mod tests {
         primary_abs_path: Option<&Path>,
     ) -> PackageProject {
         PackageProject::new(
-            path.to_path_buf(),
+            AbsolutePath::from(path),
             Some(name.to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
             Vec::new(),
             worktree_name.map(str::to_string),
-            primary_abs_path.map(Path::to_path_buf),
+            primary_abs_path.map(|p| AbsolutePath::from(p)),
         )
     }
 

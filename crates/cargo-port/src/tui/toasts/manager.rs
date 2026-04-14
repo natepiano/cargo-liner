@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::path::Path;
-use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -42,7 +41,7 @@ struct Toast {
     exit_started_at:    Option<Instant>,
     persistence:        ToastPersistence,
     style:              ToastStyle,
-    action_path:        Option<PathBuf>,
+    action_path:        Option<AbsolutePath>,
     target_height:      u16,
     min_interior_lines: u16,
     /// Per-item linger duration (used while toast is still active).
@@ -300,7 +299,7 @@ impl ToastManager {
         title: impl Into<String>,
         body: impl Into<String>,
         style: ToastStyle,
-        action_path: Option<PathBuf>,
+        action_path: Option<AbsolutePath>,
         min_interior_lines: u16,
     ) -> u64 {
         let id = self.alloc_id();
@@ -739,7 +738,7 @@ mod tests {
     #[test]
     fn toast_view_exposes_action_path() {
         let mut manager = ToastManager::default();
-        let path = PathBuf::from("/tmp/keymap.toml");
+        let path = AbsolutePath::from(std::path::PathBuf::from("/tmp/keymap.toml"));
         manager.push_persistent("error", "bad", ToastStyle::Error, Some(path.clone()), 1);
         let active = manager.active(Instant::now());
         assert_eq!(active[0].action_path(), Some(path.as_path()));

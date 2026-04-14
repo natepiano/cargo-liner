@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -33,6 +32,7 @@ use crate::config::LintCommandConfig;
 use crate::config::LintConfig;
 use crate::constants::LINTS_HISTORY_JSONL;
 use crate::constants::LINTS_LATEST_JSON;
+use crate::project::AbsolutePath;
 use crate::scan::BackgroundMsg;
 
 const LINT_DEBOUNCE: Duration = Duration::from_millis(750);
@@ -41,7 +41,7 @@ const STOP_POLL: Duration = Duration::from_millis(250);
 
 pub struct RegisterProjectRequest {
     pub project_label: String,
-    pub abs_path:      PathBuf,
+    pub abs_path:      AbsolutePath,
     pub is_rust:       bool,
 }
 
@@ -55,7 +55,7 @@ pub fn project_is_eligible(
         lint,
         &RegisterProjectRequest {
             project_label: project_label.to_string(),
-            abs_path: abs_path.to_path_buf(),
+            abs_path: AbsolutePath::from(abs_path),
             is_rust,
         },
     )
@@ -74,7 +74,7 @@ impl RuntimeHandle {
         let _ = self.tx.send(SupervisorMsg::RegisterProject { project });
     }
 
-    pub fn unregister_project(&self, abs_path: PathBuf) {
+    pub fn unregister_project(&self, abs_path: AbsolutePath) {
         let _ = self.tx.send(SupervisorMsg::UnregisterProject { abs_path });
     }
 }
@@ -96,7 +96,7 @@ enum SupervisorMsg {
         project: RegisterProjectRequest,
     },
     UnregisterProject {
-        abs_path: PathBuf,
+        abs_path: AbsolutePath,
     },
     Shutdown,
 }
@@ -114,7 +114,7 @@ pub fn spawn(config: &CargoPortConfig, bg_tx: mpsc::Sender<BackgroundMsg>) -> Sp
         };
     }
 
-    let cache_root = cache_paths::lint_runs_root_for(config);
+    let cache_root = AbsolutePath::from(cache_paths::lint_runs_root_for(config));
     let cache_size_bytes = config.lint.cache_size_bytes().unwrap_or(None);
     let lint = config.lint.clone();
     let (tx, rx) = mpsc::channel();
@@ -131,12 +131,12 @@ pub fn spawn(config: &CargoPortConfig, bg_tx: mpsc::Sender<BackgroundMsg>) -> Sp
 )]
 fn supervisor_loop(
     rx: mpsc::Receiver<SupervisorMsg>,
-    cache_root: PathBuf,
+    cache_root: AbsolutePath,
     lint: LintConfig,
     cache_size_bytes: Option<u64>,
     bg_tx: mpsc::Sender<BackgroundMsg>,
 ) {
-    let mut workers: HashMap<PathBuf, ProjectWorker> = HashMap::new();
+    let mut workers: HashMap<AbsolutePath, ProjectWorker> = HashMap::new();
     let _ = read_write::clear_running_latest_files_under(&cache_root);
     let status_cache = Arc::new(Mutex::new(hydrate_status_cache(&cache_root)));
     let worker_config = WorkerConfig {
@@ -166,7 +166,7 @@ fn supervisor_loop(
                         )
                     });
                     let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                        path:   abs_path.clone().into(),
+                        path:   abs_path.clone(),
                         status: cached_status_for_project(&status_cache, &abs_path),
                     });
                 }
@@ -175,7 +175,7 @@ fn supervisor_loop(
                 if let Some(worker) = workers.remove(&abs_path) {
                     stop_worker(worker);
                     let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                        path:   abs_path.into(),
+                        path:   abs_path,
                         status: LintStatus::NoLog,
                     });
                 }
@@ -218,13 +218,13 @@ fn hydrate_status_cache(cache_root: &Path) -> HashMap<String, LintStatus> {
 }
 
 fn emit_current_statuses(
-    desired: &HashMap<PathBuf, RegisterProjectRequest>,
+    desired: &HashMap<AbsolutePath, RegisterProjectRequest>,
     status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
 ) {
     for request in desired.values() {
         let _ = bg_tx.send(BackgroundMsg::LintStatus {
-            path:   request.abs_path.clone().into(),
+            path:   request.abs_path.clone(),
             status: cached_status_for_project(status_cache, &request.abs_path),
         });
     }
@@ -244,7 +244,7 @@ fn cached_status_for_project(
 fn desired_projects(
     lint: &LintConfig,
     projects: Vec<RegisterProjectRequest>,
-) -> HashMap<PathBuf, RegisterProjectRequest> {
+) -> HashMap<AbsolutePath, RegisterProjectRequest> {
     projects
         .into_iter()
         .filter(|request| should_watch_project(lint, request))
@@ -254,7 +254,7 @@ fn desired_projects(
 
 /// Shared configuration for spawning lint workers.
 struct WorkerConfig {
-    cache_root:       PathBuf,
+    cache_root:       AbsolutePath,
     commands:         Vec<LintCommandConfig>,
     cache_size_bytes: Option<u64>,
     on_discovery:     DiscoveryLint,
@@ -262,12 +262,12 @@ struct WorkerConfig {
 }
 
 fn reconcile_workers(
-    workers: &mut HashMap<PathBuf, ProjectWorker>,
-    desired: HashMap<PathBuf, RegisterProjectRequest>,
+    workers: &mut HashMap<AbsolutePath, ProjectWorker>,
+    desired: HashMap<AbsolutePath, RegisterProjectRequest>,
     config: &WorkerConfig,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
 ) {
-    let stale: Vec<PathBuf> = workers
+    let stale: Vec<AbsolutePath> = workers
         .keys()
         .filter(|path| !desired.contains_key(*path))
         .cloned()
@@ -276,7 +276,7 @@ fn reconcile_workers(
         if let Some(worker) = workers.remove(&path) {
             stop_worker(worker);
             let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                path:   path.into(),
+                path,
                 status: LintStatus::NoLog,
             });
         }
@@ -300,7 +300,7 @@ fn stop_worker(worker: ProjectWorker) {
 
 fn spawn_project_worker(
     project_label: String,
-    project_root: PathBuf,
+    project_root: AbsolutePath,
     config: &WorkerConfig,
     bg_tx: mpsc::Sender<BackgroundMsg>,
 ) -> ProjectWorker {
@@ -627,7 +627,7 @@ fn publish_status(
         }
     }
     let _ = bg_tx.send(BackgroundMsg::LintStatus {
-        path: project_root.to_path_buf().into(),
+        path: AbsolutePath::from(project_root),
         status,
     });
 }
@@ -714,13 +714,15 @@ fn sanitize_name(name: &str) -> String {
 )]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::config::CargoPortConfig;
 
     fn request(path: &str, abs_path: &Path, is_rust: bool) -> RegisterProjectRequest {
         RegisterProjectRequest {
             project_label: path.to_string(),
-            abs_path: abs_path.to_path_buf(),
+            abs_path: AbsolutePath::from(abs_path),
             is_rust,
         }
     }
@@ -943,13 +945,13 @@ mod tests {
 
     #[test]
     fn reconcile_workers_stops_stale_threads() {
-        let path = PathBuf::from("/tmp/demo");
+        let path = AbsolutePath::from(PathBuf::from("/tmp/demo"));
         let mut workers = HashMap::new();
         let (worker, exited) = dummy_worker();
         workers.insert(path, worker);
         let (bg_tx, bg_rx) = mpsc::channel();
         let config = WorkerConfig {
-            cache_root:       PathBuf::from("/tmp/cache"),
+            cache_root:       AbsolutePath::from(PathBuf::from("/tmp/cache")),
             commands:         Vec::new(),
             cache_size_bytes: None,
             on_discovery:     DiscoveryLint::Deferred,
@@ -978,12 +980,12 @@ mod tests {
         )
         .expect("write manifest");
         let request = request("~/rust/demo", project_dir.path(), true);
-        let desired = HashMap::from([(project_dir.path().to_path_buf(), request)]);
+        let desired = HashMap::from([(AbsolutePath::from(project_dir.path()), request)]);
 
         let mut workers = HashMap::new();
         let (bg_tx, _bg_rx) = mpsc::channel();
         let config = WorkerConfig {
-            cache_root:       PathBuf::from("/tmp/cache"),
+            cache_root:       AbsolutePath::from(PathBuf::from("/tmp/cache")),
             commands:         Vec::new(),
             cache_size_bytes: None,
             on_discovery:     DiscoveryLint::Immediate,
