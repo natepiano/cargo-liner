@@ -199,11 +199,12 @@ pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyE
             app.close_keymap();
             app.close_overlay();
         },
-        KeyCode::Up => app.keymap_pane_mut().up(),
-        KeyCode::Down => app.keymap_pane_mut().down(),
-        KeyCode::Home => app.keymap_pane_mut().home(),
+        KeyCode::Up => app.pane_manager_mut().keymap.up(),
+        KeyCode::Down => app.pane_manager_mut().keymap.down(),
+        KeyCode::Home => app.pane_manager_mut().keymap.home(),
         KeyCode::End => app
-            .keymap_pane_mut()
+            .pane_manager_mut()
+            .keymap
             .set_pos(selectable_row_count().saturating_sub(1)),
         KeyCode::Enter => app.keymap_begin_awaiting(),
         _ => {},
@@ -225,7 +226,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     let bind = KeyBind::new(event.code, event.modifiers);
     let rows = build_rows(app.current_keymap());
     let selectable: Vec<&KeymapRow> = rows.iter().filter(|r| !r.is_header).collect();
-    let Some(row) = selectable.get(app.keymap_pane().pos()) else {
+    let Some(row) = selectable.get(app.pane_manager().keymap.pos()) else {
         return;
     };
 
@@ -498,7 +499,8 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
         }
 
         let selection = app
-            .keymap_pane()
+            .pane_manager()
+            .keymap
             .selection_state(selectable_index, app.pane_focus_state(PaneId::Keymap));
         let key_text = if selection != PaneSelectionState::Unselected && is_awaiting {
             app.inline_error()
@@ -582,7 +584,7 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     }
     .render(frame);
 
-    let selected_pos = app.keymap_pane().pos();
+    let selected_pos = app.pane_manager().keymap.pos();
     let is_awaiting = app.ui_modes().keymap.is_awaiting_key();
     let lines = build_lines(&rows, app, is_awaiting);
 

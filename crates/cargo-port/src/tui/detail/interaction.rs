@@ -114,7 +114,7 @@ fn request_clean(app: &mut App) {
 fn active_detail_pane(app: &mut App) -> &mut Pane {
     match app.base_focus() {
         PaneId::Targets => &mut app.pane_manager_mut().targets,
-        PaneId::Git => app.git_pane_mut(),
+        PaneId::Git => &mut app.pane_manager_mut().git,
         PaneId::Package
         | PaneId::ProjectList
         | PaneId::Lints
@@ -124,7 +124,7 @@ fn active_detail_pane(app: &mut App) -> &mut Pane {
         | PaneId::Search
         | PaneId::Settings
         | PaneId::Finder
-        | PaneId::Keymap => app.package_pane_mut(),
+        | PaneId::Keymap => &mut app.pane_manager_mut().package,
     }
 }
 
@@ -136,7 +136,7 @@ fn handle_detail_enter(app: &mut App) {
         let info = app.cached_detail().map(|c| c.info.clone());
         let fields = info.as_ref().map(package_fields).unwrap_or_default();
         if matches!(
-            fields.get(app.package_pane().pos()),
+            fields.get(app.pane_manager().package.pos()),
             Some(DetailField::CratesIo)
         ) && let Some(info) = info.as_ref()
         {
@@ -144,7 +144,7 @@ fn handle_detail_enter(app: &mut App) {
         }
     } else if let Some(info) = app.cached_detail().map(|c| &c.info)
         && matches!(
-            git_fields(info).get(app.git_pane().pos()),
+            git_fields(info).get(app.pane_manager().git.pos()),
             Some(DetailField::Repo)
         )
         && let Some(url) = info.git_url.as_deref()
@@ -170,10 +170,10 @@ fn open_url(url: &str) {
 pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.ci_pane_mut().up(),
-        KeyCode::Down => return app.ci_pane_mut().down(),
-        KeyCode::Home => return app.ci_pane_mut().home(),
-        KeyCode::End => return app.ci_pane_mut().end(),
+        KeyCode::Up => return app.pane_manager_mut().ci.up(),
+        KeyCode::Down => return app.pane_manager_mut().ci.down(),
+        KeyCode::Home => return app.pane_manager_mut().ci.home(),
+        KeyCode::End => return app.pane_manager_mut().ci.end(),
         _ => {},
     }
 
@@ -202,7 +202,7 @@ fn handle_ci_enter(app: &App) {
     let visible_runs = app
         .selected_project_path()
         .map_or_else(Vec::new, |path| app.ci_runs_for_display(path));
-    let cursor_pos = app.ci_pane().pos();
+    let cursor_pos = app.pane_manager().ci.pos();
     if let Some(run) = visible_runs.get(cursor_pos) {
         open_url(&run.url);
     }
@@ -257,10 +257,10 @@ fn handle_ci_fetch_more(app: &mut App) {
 pub fn handle_lints_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.lint_pane_mut().up(),
-        KeyCode::Down => return app.lint_pane_mut().down(),
-        KeyCode::Home => return app.lint_pane_mut().home(),
-        KeyCode::End => return app.lint_pane_mut().end(),
+        KeyCode::Up => return app.pane_manager_mut().lints.up(),
+        KeyCode::Down => return app.pane_manager_mut().lints.down(),
+        KeyCode::Home => return app.pane_manager_mut().lints.home(),
+        KeyCode::End => return app.pane_manager_mut().lints.end(),
         _ => {},
     }
 
@@ -308,7 +308,7 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
             },
         );
     }
-    app.ci_pane_mut().home();
+    app.pane_manager_mut().ci.home();
     app.increment_data_generation();
 }
 
@@ -325,7 +325,7 @@ fn clear_lint_history(app: &mut App) {
     if let Some(lr) = app.lint_at_path_mut(&abs_path) {
         lr.clear_runs();
     }
-    app.lint_pane_mut().home();
+    app.pane_manager_mut().lints.home();
     app.focus_pane(PaneId::ProjectList);
     app.refresh_lint_cache_usage_from_disk();
     app.increment_data_generation();
@@ -345,7 +345,7 @@ fn open_lint_run_output(app: &App) {
     if runs.is_empty() {
         return;
     }
-    let Some(run) = runs.get(app.lint_pane().pos()) else {
+    let Some(run) = runs.get(app.pane_manager().lints.pos()) else {
         return;
     };
 

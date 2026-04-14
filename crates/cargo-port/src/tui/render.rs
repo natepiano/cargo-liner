@@ -350,13 +350,13 @@ fn sync_detail_pane_hitboxes(app: &mut App, detail_info: Option<&DetailInfo>) {
         return;
     }
 
-    reset_pane(app.package_pane_mut());
-    reset_pane(app.git_pane_mut());
+    reset_pane(&mut app.pane_manager_mut().package);
+    reset_pane(&mut app.pane_manager_mut().git);
     reset_pane(&mut app.pane_manager_mut().targets);
 }
 
 fn register_detail_pane_hitboxes(app: &mut App) {
-    let package_pane = app.package_pane().clone();
+    let package_pane = app.pane_manager().package.clone();
     super::interaction::register_pane_row_hitboxes(app, PaneId::Package, &package_pane, Content);
 
     if app
@@ -364,10 +364,10 @@ fn register_detail_pane_hitboxes(app: &mut App) {
         .and_then(|path| app.git_info_for(path))
         .is_some()
     {
-        let git_pane = app.git_pane().clone();
+        let git_pane = app.pane_manager().git.clone();
         super::interaction::register_pane_row_hitboxes(app, PaneId::Git, &git_pane, Content);
     } else {
-        reset_pane(app.git_pane_mut());
+        reset_pane(&mut app.pane_manager_mut().git);
     }
 
     if app.cached_detail().is_some_and(|cached| {
@@ -411,7 +411,7 @@ fn render_bottom_right_panel(
             selected_has_ci_owner,
             bottom_split[1],
         );
-        reset_pane(app.ci_pane_mut());
+        reset_pane(&mut app.pane_manager_mut().ci);
     }
 
     if let Some(message) = app.unreachable_service_message() {

@@ -451,7 +451,7 @@ pub fn render_detail_panel(
                     .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
                 frame.render_widget(empty_git, columns[col]);
             } else {
-                app.git_pane_mut().set_len(git.len());
+                app.pane_manager_mut().git.set_len(git.len());
                 let focus = app.pane_focus_state(PaneId::Git);
                 let git_block = Block::default()
                     .borders(Borders::ALL)
@@ -463,18 +463,18 @@ pub fn render_detail_panel(
                         styles.inactive_border
                     });
                 let git_inner = git_block.inner(columns[col]);
-                app.git_pane_mut().set_content_area(git_inner);
+                app.pane_manager_mut().git.set_content_area(git_inner);
                 frame.render_widget(git_block, columns[col]);
                 let git_ctx = ColumnRenderCtx {
                     app,
                     info,
                     fields: &git,
-                    pane: app.git_pane(),
+                    pane: &app.pane_manager().git,
                     focus,
                     styles: &styles,
                 };
                 let scroll_offset = render_git_column_inner(frame, &git_ctx, git_inner);
-                app.git_pane_mut().set_scroll_offset(scroll_offset);
+                app.pane_manager_mut().git.set_scroll_offset(scroll_offset);
             }
         }
 
@@ -509,7 +509,7 @@ fn render_project_panel(
     area: Rect,
 ) {
     let fields = model::package_fields(info);
-    app.package_pane_mut().set_len(fields.len());
+    app.pane_manager_mut().package.set_len(fields.len());
     let focus = app.pane_focus_state(PaneId::Package);
     let border_style = if matches!(focus, PaneFocusState::Active) {
         styles.active_border
@@ -532,11 +532,18 @@ fn render_project_panel(
         border_style,
     };
     let areas = render_project_description_section(frame, &context, area, project_inner);
-    app.package_pane_mut().set_content_area(areas.lower);
+    app.pane_manager_mut().package.set_content_area(areas.lower);
 
-    let scroll_offset =
-        render_project_metadata(frame, app, app.package_pane(), &context, areas.lower);
-    app.package_pane_mut().set_scroll_offset(scroll_offset);
+    let scroll_offset = render_project_metadata(
+        frame,
+        app,
+        &app.pane_manager().package,
+        &context,
+        areas.lower,
+    );
+    app.pane_manager_mut()
+        .package
+        .set_scroll_offset(scroll_offset);
 }
 
 fn render_project_description_section(

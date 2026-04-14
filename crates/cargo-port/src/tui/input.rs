@@ -232,9 +232,9 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
         let pane = if Some(col_idx) == detail_targets_col {
             &mut app.pane_manager_mut().targets
         } else if col_idx == 0 {
-            app.package_pane_mut()
+            &mut app.pane_manager_mut().package
         } else {
-            app.git_pane_mut()
+            &mut app.pane_manager_mut().git
         };
         if up {
             pane.up();
@@ -244,17 +244,17 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
         return;
     }
 
-    if app.lint_pane().content_area().contains(pos) {
+    if app.pane_manager().lints.content_area().contains(pos) {
         if up {
-            app.lint_pane_mut().up();
+            app.pane_manager_mut().lints.up();
         } else {
-            app.lint_pane_mut().down();
+            app.pane_manager_mut().lints.down();
         }
-    } else if app.ci_pane().content_area().contains(pos) {
+    } else if app.pane_manager().ci.content_area().contains(pos) {
         if up {
-            app.ci_pane_mut().up();
+            app.pane_manager_mut().ci.up();
         } else {
-            app.ci_pane_mut().down();
+            app.pane_manager_mut().ci.down();
         }
     }
 }
@@ -326,9 +326,10 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    if app.lint_pane().content_area().contains(pos) && app.is_pane_tabbable(PaneId::Lints) {
+    if app.pane_manager().lints.content_area().contains(pos) && app.is_pane_tabbable(PaneId::Lints)
+    {
         app.focus_pane(PaneId::Lints);
-    } else if app.ci_pane().content_area().contains(pos) {
+    } else if app.pane_manager().ci.content_area().contains(pos) {
         app.focus_pane(PaneId::CiRuns);
     }
 }
@@ -509,7 +510,8 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
         GlobalAction::OpenKeymap => {
             app.open_overlay(PaneId::Keymap);
             app.open_keymap();
-            app.keymap_pane_mut()
+            app.pane_manager_mut()
+                .keymap
                 .set_len(super::keymap_ui::selectable_row_count());
         },
         GlobalAction::Rescan => app.rescan(),
@@ -566,16 +568,19 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
 
 fn handle_toast_key(app: &mut App, event: &KeyEvent) {
     match event.code {
-        KeyCode::Up => app.toast_pane_mut().up(),
-        KeyCode::Down => app.toast_pane_mut().down(),
-        KeyCode::Home => app.toast_pane_mut().home(),
+        KeyCode::Up => app.pane_manager_mut().toasts.up(),
+        KeyCode::Down => app.pane_manager_mut().toasts.down(),
+        KeyCode::Home => app.pane_manager_mut().toasts.home(),
         KeyCode::End => {
             let last_index = app.active_toasts().len().saturating_sub(1);
-            app.toast_pane_mut().set_pos(last_index);
+            app.pane_manager_mut().toasts.set_pos(last_index);
         },
         KeyCode::Enter => {
             // Open action_path if the focused toast has one.
-            if let Some(toast) = app.active_toasts().into_iter().nth(app.toast_pane().pos())
+            if let Some(toast) = app
+                .active_toasts()
+                .into_iter()
+                .nth(app.pane_manager().toasts.pos())
                 && let Some(path) = toast.action_path()
             {
                 let editor = app.editor().to_string();

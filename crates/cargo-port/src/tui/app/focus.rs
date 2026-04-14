@@ -94,7 +94,7 @@ impl App {
         self.open_overlay(Settings);
         self.open_settings();
         if let Some(idx) = SettingOption::iter().position(|s| s == IncludeDirs) {
-            self.settings_pane_mut().set_pos(idx);
+            self.pane_manager.settings.set_pos(idx);
         }
         self.set_inline_error("Configure at least one include directory before continuing");
     }

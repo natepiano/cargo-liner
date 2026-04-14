@@ -230,12 +230,12 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
             app.focus_pane(pane);
             match pane {
                 PaneId::Finder => app.finder_mut().pane.set_pos(row),
-                PaneId::Settings => app.settings_pane_mut().set_pos(row),
-                PaneId::Package => app.package_pane_mut().set_pos(row),
-                PaneId::Git => app.git_pane_mut().set_pos(row),
+                PaneId::Settings => app.pane_manager_mut().settings.set_pos(row),
+                PaneId::Package => app.pane_manager_mut().package.set_pos(row),
+                PaneId::Git => app.pane_manager_mut().git.set_pos(row),
                 PaneId::Targets => app.pane_manager_mut().targets.set_pos(row),
-                PaneId::Lints => app.lint_pane_mut().set_pos(row),
-                PaneId::CiRuns => app.ci_pane_mut().set_pos(row),
+                PaneId::Lints => app.pane_manager_mut().lints.set_pos(row),
+                PaneId::CiRuns => app.pane_manager_mut().ci.set_pos(row),
                 _ => return false,
             }
             true
@@ -247,7 +247,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
         UiTarget::ToastCard(id) => {
             let active = app.active_toasts();
             if let Some(index) = active.iter().position(|toast| toast.id() == id) {
-                app.toast_pane_mut().set_pos(index);
+                app.pane_manager_mut().toasts.set_pos(index);
                 app.focus_pane(PaneId::Toasts);
             }
             true
@@ -503,7 +503,7 @@ mod tests {
     }
 
     fn lint_run_point(app: &App, run_index: usize) -> (u16, u16) {
-        let area = app.lint_pane().content_area();
+        let area = app.pane_manager().lints.content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -513,7 +513,7 @@ mod tests {
     }
 
     fn ci_run_point(app: &App, run_index: usize) -> (u16, u16) {
-        let area = app.ci_pane().content_area();
+        let area = app.pane_manager().ci.content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -714,11 +714,11 @@ mod tests {
         app.open_settings();
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.settings_pane(), 5);
+        let (x, y) = pane_row_point(&app.pane_manager().settings, 5);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.settings_pane().pos(),
+            app.pane_manager().settings.pos(),
             SettingOption::CiRunCount as usize,
             "clicking a rendered settings option should select the logical setting, not the visual line index including spacer/header rows"
         );
@@ -741,7 +741,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.lint_pane().pos(),
+            app.pane_manager().lints.pos(),
             1,
             "clicking the second rendered lint run should select run index 1, not the header-offset visual row"
         );
@@ -779,7 +779,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.ci_pane().pos(),
+            app.pane_manager().ci.pos(),
             1,
             "clicking the second rendered CI run should select run index 1, not the header-offset visual row"
         );
@@ -870,7 +870,7 @@ mod tests {
             app.toasts_mut()
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
         let toast_len = app.active_toasts().len();
-        app.toast_pane_mut().set_len(toast_len);
+        app.pane_manager_mut().toasts.set_len(toast_len);
         render_ui(&mut app);
 
         let (x, y) = toast_close_point(&app, toast_id);
@@ -898,7 +898,7 @@ mod tests {
             app.toasts_mut()
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
         let toast_len = app.active_toasts().len();
-        app.toast_pane_mut().set_len(toast_len);
+        app.pane_manager_mut().toasts.set_len(toast_len);
         render_ui(&mut app);
 
         let (x, y) = toast_body_point(&app, toast_id);
@@ -944,11 +944,11 @@ mod tests {
         app.open_settings();
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.settings_pane(), 2);
+        let (x, y) = pane_row_point(&app.pane_manager().settings, 2);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.settings_pane().pos(),
+            app.pane_manager().settings.pos(),
             SettingOption::InvertScroll as usize
         );
     }
@@ -962,11 +962,11 @@ mod tests {
         let mut app = make_app(&[make_package("demo", &project_dir)]);
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.package_pane(), 1);
+        let (x, y) = pane_row_point(&app.pane_manager().package, 1);
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::Package);
-        assert_eq!(app.package_pane().pos(), 1);
+        assert_eq!(app.pane_manager().package.pos(), 1);
     }
 
     #[test]
@@ -1012,10 +1012,10 @@ mod tests {
         ))));
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.git_pane(), 1);
+        let (x, y) = pane_row_point(&app.pane_manager().git, 1);
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::Git);
-        assert_eq!(app.git_pane().pos(), 1);
+        assert_eq!(app.pane_manager().git.pos(), 1);
     }
 }

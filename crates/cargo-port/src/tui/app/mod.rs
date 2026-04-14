@@ -70,7 +70,6 @@ use super::terminal::ExampleMsg;
 use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
 use super::types::LayoutCache;
-use super::types::Pane;
 use super::types::PaneId;
 
 pub(super) struct App {
@@ -238,36 +237,6 @@ impl App {
     pub(super) const fn pane_manager_mut(&mut self) -> &mut super::panes::PaneManager {
         &mut self.pane_manager
     }
-
-    pub(super) const fn settings_pane(&self) -> &Pane { &self.pane_manager.settings }
-
-    pub(super) const fn settings_pane_mut(&mut self) -> &mut Pane {
-        &mut self.pane_manager.settings
-    }
-
-    pub(super) const fn package_pane(&self) -> &Pane { &self.pane_manager.package }
-
-    pub(super) const fn package_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.package }
-
-    pub(super) const fn git_pane(&self) -> &Pane { &self.pane_manager.git }
-
-    pub(super) const fn git_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.git }
-
-    pub(super) const fn ci_pane(&self) -> &Pane { &self.pane_manager.ci }
-
-    pub(super) const fn ci_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.ci }
-
-    pub(super) const fn toast_pane(&self) -> &Pane { &self.pane_manager.toasts }
-
-    pub(super) const fn toast_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.toasts }
-
-    pub(super) const fn lint_pane(&self) -> &Pane { &self.pane_manager.lints }
-
-    pub(super) const fn lint_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.lints }
-
-    pub(super) const fn keymap_pane(&self) -> &Pane { &self.pane_manager.keymap }
-
-    pub(super) const fn keymap_pane_mut(&mut self) -> &mut Pane { &mut self.pane_manager.keymap }
 
     pub(super) const fn finder(&self) -> &types::FinderState { &self.finder }
 

@@ -37,7 +37,6 @@ use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
 use crate::tui::toasts::ToastManager;
 use crate::tui::types::LayoutCache;
-use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
 use crate::watcher;
 use crate::watcher::WatcherMsg;

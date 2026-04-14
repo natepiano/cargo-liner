@@ -507,7 +507,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     lines.push(Line::from(""));
     line_targets.push(None);
     let nav_keys_index = SettingOption::iter().position(|s| s == SettingOption::NavigationKeys);
-    if !app.is_settings_editing() && Some(app.settings_pane().pos()) == nav_keys_index {
+    if !app.is_settings_editing() && Some(app.pane_manager().settings.pos()) == nav_keys_index {
         lines.push(Line::from(vec![
             Span::styled("  Note: ", label_style),
             Span::styled("maps h/j/k/l to arrow navigation", label_style),
@@ -520,7 +520,9 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
         .saturating_add(2)
         .saturating_add(1);
 
-    app.settings_pane_mut().set_len(SettingOption::COUNT);
+    app.pane_manager_mut()
+        .settings
+        .set_len(SettingOption::COUNT);
 
     let inner = super::popup::PopupFrame {
         title:        Some(" Settings ".to_string()),
@@ -530,7 +532,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     }
     .render(frame);
 
-    app.settings_pane_mut().set_content_area(inner);
+    app.pane_manager_mut().settings.set_content_area(inner);
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
@@ -615,13 +617,14 @@ pub(super) fn build_settings_lines(
             continue;
         }
 
-        let cursor = if app.settings_pane().pos() == selection_index {
+        let cursor = if app.pane_manager().settings.pos() == selection_index {
             "▶ "
         } else {
             "  "
         };
         let selection = app
-            .settings_pane()
+            .pane_manager()
+            .settings
             .selection_state(selection_index, app.pane_focus_state(PaneId::Settings));
         let setting = *setting;
         let label = format!("{SECTION_ITEM_INDENT}{cursor}{name:<max_label$}  ");
@@ -731,7 +734,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         return;
     }
 
-    let setting = SettingOption::from_index(app.settings_pane().pos());
+    let setting = SettingOption::from_index(app.pane_manager().settings.pos());
 
     match key {
         KeyCode::Esc | KeyCode::Char('s') => {
@@ -744,11 +747,11 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         },
         KeyCode::Up => {
             app.clear_inline_error();
-            app.settings_pane_mut().up();
+            app.pane_manager_mut().settings.up();
         },
         KeyCode::Down => {
             app.clear_inline_error();
-            app.settings_pane_mut().down();
+            app.pane_manager_mut().settings.down();
         },
         KeyCode::Left | KeyCode::Right => {
             app.clear_inline_error();
@@ -894,7 +897,7 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
 }
 
 fn apply_settings_edit(app: &mut App) {
-    let setting = SettingOption::from_index(app.settings_pane().pos());
+    let setting = SettingOption::from_index(app.pane_manager().settings.pos());
     let value = app.settings_edit_buf().to_string();
     let result = setting.map_or(Ok(()), |setting| {
         apply_settings_edit_for(app, setting, &value)
@@ -1086,7 +1089,7 @@ pub(super) fn focus_terminal_command(app: &mut App) {
     if let Some(index) =
         SettingOption::iter().position(|setting| setting == SettingOption::TerminalCommand)
     {
-        app.settings_pane_mut().set_pos(index);
+        app.pane_manager_mut().settings.set_pos(index);
     }
 }
 

@@ -96,7 +96,8 @@ fn lints_panel_title(app: &App, runs: &[LintRun], focused: bool) -> String {
         return format!(" {msg} ");
     }
     if focused {
-        let indicator = crate::tui::types::scroll_indicator(app.lint_pane().pos(), runs.len());
+        let indicator =
+            crate::tui::types::scroll_indicator(app.pane_manager().lints.pos(), runs.len());
         return format!(" Lint Runs ({indicator}) ");
     }
     " Lint Runs ".to_string()
@@ -135,8 +136,8 @@ pub fn render_lints_panel(
     let block = lints_panel_block(title, focused, !runs.is_empty());
 
     let inner = block.inner(area);
-    app.lint_pane_mut().set_len(runs.len());
-    app.lint_pane_mut().set_content_area(inner);
+    app.pane_manager_mut().lints.set_len(runs.len());
+    app.pane_manager_mut().lints.set_content_area(inner);
 
     if runs.is_empty() {
         frame.render_widget(block, area);
@@ -208,9 +209,11 @@ pub fn render_lints_panel(
     .column_spacing(1)
     .row_highlight_style(Pane::selection_style(app.pane_focus_state(PaneId::Lints)));
 
-    let mut table_state = TableState::default().with_selected(Some(app.lint_pane().pos()));
+    let mut table_state = TableState::default().with_selected(Some(app.pane_manager().lints.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.lint_pane_mut().set_scroll_offset(table_state.offset());
+    app.pane_manager_mut()
+        .lints
+        .set_scroll_offset(table_state.offset());
 
     let visible_height = usize::from(inner.height.saturating_sub(1));
     let visible_start = table_state.offset();
