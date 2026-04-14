@@ -23,6 +23,7 @@ use ratatui::widgets::TableState;
 use super::app::App;
 use super::constants::ACCENT_COLOR;
 use super::constants::ACTIVE_FOCUS_COLOR;
+use super::constants::FINDER_MATCH_BG;
 use super::constants::FINDER_POPUP_HEIGHT;
 use super::constants::LABEL_COLOR;
 use super::constants::MAX_FINDER_RESULTS;
@@ -757,6 +758,79 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     render_finder_results(frame, app, col_widths, results_area);
 }
 
+/// Build a `Line` where characters matching the fuzzy query get a tinted
+/// background, similar to Zed's finder highlighting.
+fn highlighted_spans(text: &str, query: &str, fg: Color) -> Line<'static> {
+    let base = Style::default().fg(fg);
+    let highlight = base.bg(FINDER_MATCH_BG);
+
+    if text.is_empty() || query.is_empty() {
+        return Line::from(Span::styled(text.to_owned(), base));
+    }
+
+    let words: Vec<&str> = query.split_whitespace().collect();
+    if words.is_empty() {
+        return Line::from(Span::styled(text.to_owned(), base));
+    }
+
+    let atoms: Vec<Atom> = words
+        .iter()
+        .map(|word| {
+            Atom::new(
+                word,
+                CaseMatching::Smart,
+                Normalization::Smart,
+                AtomKind::Fuzzy,
+                false,
+            )
+        })
+        .collect();
+
+    let mut matcher = Matcher::default();
+    let mut buf = Vec::new();
+    let haystack = Utf32Str::new(text, &mut buf);
+
+    // Pre-build char-index → byte-range lookup
+    let char_byte_ranges: Vec<(usize, usize)> = text
+        .char_indices()
+        .map(|(pos, ch)| (pos, pos + ch.len_utf8()))
+        .collect();
+
+    let mut highlight_mask: Vec<bool> = vec![false; text.len()];
+    let mut indices = Vec::new();
+    for atom in &atoms {
+        indices.clear();
+        if atom.indices(haystack, &mut matcher, &mut indices).is_some() {
+            for &char_idx in &indices {
+                if let Some(&(start, end)) = char_byte_ranges.get(char_idx as usize) {
+                    for flag in &mut highlight_mask[start..end] {
+                        *flag = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Merge runs of same-highlight state into spans
+    let mut spans = Vec::new();
+    let mut chars = text.char_indices().peekable();
+    while let Some(&(start, _)) = chars.peek() {
+        let is_match = highlight_mask[start];
+        let mut end = start;
+        while let Some(&(pos, ch)) = chars.peek() {
+            if highlight_mask[pos] != is_match {
+                break;
+            }
+            end = pos + ch.len_utf8();
+            chars.next();
+        }
+        let style = if is_match { highlight } else { base };
+        spans.push(Span::styled(text[start..end].to_owned(), style));
+    }
+
+    Line::from(spans)
+}
+
 fn render_finder_results(
     frame: &mut Frame,
     app: &mut App,
@@ -777,29 +851,28 @@ fn render_finder_results(
         return;
     }
 
-    let branch_style = Style::default().fg(Color::Blue);
-    let parent_style = Style::default().fg(LABEL_COLOR);
-    let dir_style = Style::default().fg(LABEL_COLOR);
+    let query = app.finder().query.clone();
     let rows: Vec<Row> = app
         .finder()
         .results
         .iter()
         .map(|&idx| {
             let item = &app.finder().index[idx];
-            let kind_style = Style::default()
-                .fg(item.kind.color())
-                .add_modifier(Modifier::BOLD);
             let parent = if item.kind == FinderKind::Project {
                 String::new()
             } else {
                 item.parent_label.clone()
             };
             Row::new(vec![
-                Cell::from(item.display_name.clone()),
-                Cell::from(Span::styled(parent, parent_style)),
-                Cell::from(Span::styled(item.branch.clone(), branch_style)),
-                Cell::from(Span::styled(item.dir.clone(), dir_style)),
-                Cell::from(Span::styled(item.kind.label(), kind_style)),
+                Cell::from(highlighted_spans(&item.display_name, &query, Color::White)),
+                Cell::from(highlighted_spans(&parent, &query, Color::White)),
+                Cell::from(highlighted_spans(&item.branch, &query, Color::White)),
+                Cell::from(highlighted_spans(&item.dir, &query, Color::White)),
+                Cell::from(highlighted_spans(
+                    item.kind.label(),
+                    &query,
+                    item.kind.color(),
+                )),
             ])
         })
         .collect();

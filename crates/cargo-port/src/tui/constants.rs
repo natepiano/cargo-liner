@@ -33,7 +33,7 @@ pub(super) const SECTION_ITEM_INDENT: &str = "    ";
 /// query input cursor.
 pub(super) const ACCENT_COLOR: Color = Color::Cyan;
 /// Background highlight for the currently focused pane row.
-pub(super) const ACTIVE_FOCUS_COLOR: Color = Color::Rgb(0, 156, 156);
+pub(super) const ACTIVE_FOCUS_COLOR: Color = Color::Rgb(70, 70, 70);
 /// Project list column headers ("Name", "Disk", "Sync", etc.).
 pub(super) const COLUMN_HEADER_COLOR: Color = Color::Rgb(150, 190, 180);
 /// Shimmer animation on newly discovered projects.
@@ -51,7 +51,7 @@ pub(super) const INACTIVE_BORDER_COLOR: Color = Color::DarkGray;
 pub(super) const LABEL_COLOR: Color = COLUMN_HEADER_COLOR;
 /// Background highlight showing the previously focused row when a pane
 /// loses focus.
-pub(super) const REMEMBERED_FOCUS_COLOR: Color = Color::DarkGray;
+pub(super) const REMEMBERED_FOCUS_COLOR: Color = Color::Rgb(40, 40, 40);
 /// Dimmed secondary text: shortcut descriptions, scan progress, ignored
 /// git paths in the shimmer view.
 pub(super) const SECONDARY_TEXT_COLOR: Color = Color::Gray;
@@ -65,3 +65,5 @@ pub(super) const TARGET_BENCH_COLOR: Color = Color::Magenta;
 /// Active pane titles, section headers, group header labels, stat
 /// numbers, confirm dialog prompts, popup titles, summary row.
 pub(super) const TITLE_COLOR: Color = Color::Yellow;
+/// Background tint on fuzzy-matched characters in finder results.
+pub(super) const FINDER_MATCH_BG: Color = Color::Rgb(0, 90, 100);
