@@ -2991,7 +2991,7 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
         // Mark the real (canonical) path as already discovered.
         let canonical = real_dir.canonicalize().expect("canonicalize");
-        let discovered = HashSet::from([AbsolutePath::from(canonical.clone())]);
+        let discovered = HashSet::from([AbsolutePath::from(canonical)]);
         let projects = HashMap::new();
         let ctx = EventContext {
             watch_roots:     &watch_roots,
