@@ -24,11 +24,10 @@ pub(crate) use git::GitInfo;
 pub(crate) use git::GitOrigin;
 pub(crate) use git::GitPathState;
 pub(crate) use git::GitRepoPresence;
+pub(crate) use git::GitState;
 #[cfg(test)]
 pub(crate) use git::WorkflowPresence;
 pub(crate) use git::detect_first_commit;
-pub(crate) use git::detect_git_path_state;
-pub(crate) use git::detect_git_path_states_batch;
 pub(crate) use git::git_repo_root;
 pub(crate) use git::resolve_common_git_dir;
 pub(crate) use git::resolve_git_dir;

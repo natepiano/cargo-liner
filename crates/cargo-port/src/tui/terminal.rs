@@ -378,7 +378,6 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         bg_msgs = bg_stats.bg_msgs,
         disk_usage_msgs = bg_stats.disk_usage_msgs,
         git_info_msgs = bg_stats.git_info_msgs,
-        git_path_state_msgs = bg_stats.git_path_state_msgs,
         lint_status_msgs = bg_stats.lint_status_msgs,
         ci_msgs = bg_stats.ci_msgs,
         example_msgs = bg_stats.example_msgs,
@@ -595,10 +594,12 @@ pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name:
 
     thread::spawn(move || {
         let path: AbsolutePath = abs.clone();
-        let _ = tx.send(BackgroundMsg::GitPathState {
-            path:  path.clone(),
-            state: crate::project::detect_git_path_state(&abs),
-        });
+        if let Some(info) = crate::project::GitInfo::detect_fast(&abs) {
+            let _ = tx.send(BackgroundMsg::GitInfo {
+                path: path.clone(),
+                info,
+            });
+        }
 
         let bytes = scan::dir_size(&abs);
         let _ = tx.send(BackgroundMsg::DiskUsage {

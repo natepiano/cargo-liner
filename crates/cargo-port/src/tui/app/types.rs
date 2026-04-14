@@ -91,22 +91,26 @@ pub enum DiscoveryRowKind {
 
 #[derive(Debug, Default)]
 pub(in super::super) struct StartupPhaseTracker {
-    pub scan_complete_at:    Option<Instant>,
-    pub disk_expected:       Option<usize>,
-    pub disk_seen:           HashSet<AbsolutePath>,
-    pub disk_complete_at:    Option<Instant>,
-    pub git_expected:        HashSet<AbsolutePath>,
-    pub git_seen:            HashSet<AbsolutePath>,
-    pub git_complete_at:     Option<Instant>,
-    pub repo_expected:       HashSet<OwnerRepo>,
-    pub repo_seen:           HashSet<OwnerRepo>,
-    pub repo_complete_at:    Option<Instant>,
-    pub git_toast:           Option<ToastTaskId>,
-    pub repo_toast:          Option<ToastTaskId>,
-    pub lint_expected:       Option<HashSet<AbsolutePath>>,
-    pub lint_seen_terminal:  HashSet<AbsolutePath>,
-    pub lint_complete_at:    Option<Instant>,
-    pub startup_complete_at: Option<Instant>,
+    pub scan_complete_at:         Option<Instant>,
+    pub disk_expected:            Option<usize>,
+    pub disk_seen:                HashSet<AbsolutePath>,
+    pub disk_complete_at:         Option<Instant>,
+    pub git_expected:             HashSet<AbsolutePath>,
+    pub git_seen:                 HashSet<AbsolutePath>,
+    pub git_complete_at:          Option<Instant>,
+    pub repo_expected:            HashSet<OwnerRepo>,
+    pub repo_seen:                HashSet<OwnerRepo>,
+    pub repo_complete_at:         Option<Instant>,
+    pub git_toast:                Option<ToastTaskId>,
+    pub repo_toast:               Option<ToastTaskId>,
+    pub startup_toast:            Option<ToastTaskId>,
+    pub lint_expected:            Option<HashSet<AbsolutePath>>,
+    pub lint_seen_terminal:       HashSet<AbsolutePath>,
+    pub lint_complete_at:         Option<Instant>,
+    pub lint_startup_expected:    Option<usize>,
+    pub lint_startup_seen:        usize,
+    pub lint_startup_complete_at: Option<Instant>,
+    pub startup_complete_at:      Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -369,17 +373,16 @@ impl BuildChannels {
 
 #[derive(Default)]
 pub struct PollBackgroundStats {
-    pub bg_msgs:             usize,
-    pub disk_usage_msgs:     usize,
-    pub git_path_state_msgs: usize,
-    pub git_info_msgs:       usize,
-    pub lint_status_msgs:    usize,
-    pub ci_msgs:             usize,
-    pub example_msgs:        usize,
-    pub tree_results:        usize,
-    pub fit_results:         usize,
-    pub disk_results:        usize,
-    pub needs_rebuild:       bool,
+    pub bg_msgs:          usize,
+    pub disk_usage_msgs:  usize,
+    pub git_info_msgs:    usize,
+    pub lint_status_msgs: usize,
+    pub ci_msgs:          usize,
+    pub example_msgs:     usize,
+    pub tree_results:     usize,
+    pub fit_results:      usize,
+    pub disk_results:     usize,
+    pub needs_rebuild:    bool,
 }
 
 /// What a visible row represents.

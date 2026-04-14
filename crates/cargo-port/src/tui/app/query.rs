@@ -243,7 +243,7 @@ impl App {
     pub(in super::super) fn git_info_for(&self, path: &Path) -> Option<&GitInfo> {
         self.projects
             .at_path(path)
-            .and_then(|project| project.git_info.as_ref())
+            .and_then(|project| project.git_state.info())
     }
 
     pub(in super::super) fn is_rust_at_path(&self, path: &Path) -> bool {
@@ -526,10 +526,8 @@ impl App {
     }
 
     pub(in super::super) fn git_path_state_for(&self, path: &Path) -> GitPathState {
-        self.git_path_states
-            .get(path)
-            .copied()
-            .unwrap_or(GitPathState::OutsideRepo)
+        self.git_info_for(path)
+            .map_or(GitPathState::OutsideRepo, |info| info.path_state)
     }
 
     /// Roll up the worst git path state across all children of a `RootItem`.
@@ -558,18 +556,11 @@ impl App {
         }
     }
 
-    pub(in super::super) fn refresh_git_path_state(&mut self, path: &Path) {
-        let state = crate::project::detect_git_path_state(path);
-        self.git_path_states.insert(AbsolutePath::from(path), state);
-    }
-
     pub(in super::super) fn prune_inactive_project_state(&mut self) {
         let mut all_paths: HashSet<AbsolutePath> = HashSet::new();
         self.projects.for_each_leaf_path(|path, _| {
             all_paths.insert(AbsolutePath::from(path));
         });
-        self.git_path_states
-            .retain(|path, _| all_paths.contains(path));
         self.pending_git_first_commit
             .retain(|path, _| all_paths.contains(path));
         for path in &all_paths {
@@ -584,15 +575,15 @@ impl App {
 
     /// Formatted ahead/behind sync status for the project list columns.
     pub(in super::super) fn git_sync(&self, path: &Path) -> String {
+        let Some(info) = self.git_info_for(path) else {
+            return String::new();
+        };
         if matches!(
-            self.git_path_state_for(path),
+            info.path_state,
             GitPathState::Untracked | GitPathState::Ignored
         ) {
             return String::new();
         }
-        let Some(info) = self.git_info_for(path) else {
-            return String::new();
-        };
         match info.ahead_behind {
             Some((0, 0)) => IN_SYNC.to_string(),
             Some((a, 0)) => format!("{SYNC_UP}{a}"),
@@ -604,15 +595,15 @@ impl App {
     }
 
     pub(in super::super) fn git_main(&self, path: &Path) -> String {
+        let Some(info) = self.git_info_for(path) else {
+            return String::new();
+        };
         if matches!(
-            self.git_path_state_for(path),
+            info.path_state,
             GitPathState::Untracked | GitPathState::Ignored
         ) {
             return String::new();
         }
-        let Some(info) = self.git_info_for(path) else {
-            return String::new();
-        };
         match info.ahead_behind_local {
             Some((0, 0)) => IN_SYNC.to_string(),
             Some((a, 0)) => format!("{SYNC_UP}{a}"),

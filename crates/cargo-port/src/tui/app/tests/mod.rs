@@ -124,9 +124,6 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
         &app.projects,
         &app.projects
             .resolved_root_labels(app.include_non_rust().includes_non_rust()),
-        &snapshots::FitWidthsState {
-            git_path_states: &app.git_path_states,
-        },
         app.lint_enabled(),
         0,
     );
@@ -157,9 +154,6 @@ fn render_tree_buffer(app: &mut App) -> (ratatui::buffer::Buffer, ResolvedWidths
         &app.projects,
         &app.projects
             .resolved_root_labels(app.include_non_rust().includes_non_rust()),
-        &snapshots::FitWidthsState {
-            git_path_states: &app.git_path_states,
-        },
         app.lint_enabled(),
         0,
     );
@@ -500,6 +494,7 @@ fn make_ci_run(run_id: u64, conclusion: Conclusion) -> CiRun {
 
 fn make_git_info(url: Option<&str>) -> GitInfo {
     GitInfo {
+        path_state:          GitPathState::default(),
         origin:              GitOrigin::Clone,
         branch:              Some("main".to_string()),
         owner:               Some("natepiano".to_string()),

@@ -30,8 +30,8 @@ use crate::lint::LintStatus;
 use crate::lint::RegisterProjectRequest;
 use crate::project::AbsolutePath;
 use crate::project::GitInfo;
-use crate::project::GitPathState;
 use crate::project::GitRepoPresence;
+use crate::project::GitState;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::Visibility::Deleted;
@@ -116,13 +116,13 @@ impl App {
             if let Some(info) = self
                 .projects
                 .at_path(root_path)
-                .and_then(|project| project.git_info.clone())
+                .and_then(|project| project.git_state.info().cloned())
             {
                 for member_path in &member_paths {
                     if self
                         .projects
                         .at_path(member_path)
-                        .is_none_or(|project| project.git_info.is_none())
+                        .is_none_or(|project| project.git_state.info().is_none())
                     {
                         inherited_git_info.push((member_path.clone(), info.clone()));
                     }
@@ -136,7 +136,7 @@ impl App {
         }
         for (member_path, info) in inherited_git_info {
             if let Some(project) = self.projects.at_path_mut(&member_path) {
-                project.git_info = Some(info);
+                project.git_state = GitState::Detected(Box::new(info));
             }
         }
 
@@ -428,7 +428,6 @@ impl App {
         if let Some(lr) = self.projects.lint_at_path_mut(project_path) {
             lr.set_runs(runs);
         }
-        self.refresh_lint_cache_usage_from_disk();
     }
 
     pub(in super::super) fn refresh_lint_cache_usage_from_disk(&mut self) {
@@ -500,24 +499,6 @@ impl App {
                 };
                 crate::scan::fetch_project_details(&request);
             });
-        });
-    }
-
-    pub(in super::super) fn schedule_git_path_state_refreshes(&self) {
-        let tx = self.bg_tx.clone();
-        let mut projects: Vec<(String, String)> = Vec::new();
-        self.projects.for_each_leaf_path(|path, _| {
-            let abs = path.to_string_lossy().to_string();
-            projects.push((abs.clone(), abs));
-        });
-        std::thread::spawn(move || {
-            let states = crate::project::detect_git_path_states_batch(&projects);
-            for (path, state) in states {
-                let _ = tx.send(BackgroundMsg::GitPathState {
-                    path: AbsolutePath::from(path),
-                    state,
-                });
-            }
         });
     }
 
@@ -613,9 +594,9 @@ impl App {
         runtime.sync_projects(self.lint_runtime_projects_snapshot());
     }
 
-    fn register_lint_for_root_items(&self) {
+    fn register_lint_for_root_items(&self) -> usize {
         let Some(runtime) = &self.lint_runtime else {
-            return;
+            return 0;
         };
         let mut count = 0;
         for item in &self.projects {
@@ -668,6 +649,7 @@ impl App {
             }
         }
         tracing::info!(count, "lint_register_root_items");
+        count
     }
 
     fn register_lint_project_if_eligible(&self, item: &RootItem) {
@@ -734,10 +716,43 @@ impl App {
         self.scan.startup_phases.repo_complete_at = None;
         self.scan.startup_phases.git_toast = None;
         self.scan.startup_phases.repo_toast = None;
+        self.scan.startup_phases.startup_toast = None;
         self.scan.startup_phases.lint_expected = Some(HashSet::new());
         self.scan.startup_phases.lint_seen_terminal.clear();
         self.scan.startup_phases.lint_complete_at = None;
         self.scan.startup_phases.startup_complete_at = None;
+        // High-level startup activity toast — one line per phase.
+        // Created first so it appears above the detail toasts.
+        let startup_items = vec![
+            TrackedItem {
+                label:        "Disk usage".to_string(),
+                key:          "disk".into(),
+                started_at:   Some(Instant::now()),
+                completed_at: None,
+            },
+            TrackedItem {
+                label:        "Local git repos".to_string(),
+                key:          "git".into(),
+                started_at:   Some(Instant::now()),
+                completed_at: None,
+            },
+            TrackedItem {
+                label:        "GitHub repos".to_string(),
+                key:          "github".into(),
+                started_at:   Some(Instant::now()),
+                completed_at: None,
+            },
+            TrackedItem {
+                label:        "Lint runs".to_string(),
+                key:          "lints".into(),
+                started_at:   Some(Instant::now()),
+                completed_at: None,
+            },
+        ];
+        let task_id = self.start_task_toast("Startup", "");
+        self.set_task_tracked_items(task_id, &startup_items);
+        self.scan.startup_phases.startup_toast = Some(task_id);
+
         let git_items = Self::tracked_items_for_startup(
             &self.scan.startup_phases.git_expected,
             &self.scan.startup_phases.git_seen,
@@ -758,6 +773,7 @@ impl App {
             self.set_task_tracked_items(task_id, &repo_items);
             self.scan.startup_phases.repo_toast = Some(task_id);
         }
+
         tracing::info!(
             disk_expected = self.scan.startup_phases.disk_expected.unwrap_or(0),
             git_expected = self.scan.startup_phases.git_expected.len(),
@@ -798,6 +814,9 @@ impl App {
                 .is_some_and(|expected| self.scan.startup_phases.disk_seen.len() >= expected)
         {
             self.scan.startup_phases.disk_complete_at = Some(now);
+            if let Some(toast) = self.scan.startup_phases.startup_toast {
+                self.mark_tracked_item_completed(toast, "Disk usage");
+            }
             tracing::info!(
                 phase = "disk_applied",
                 since_scan_complete_ms =
@@ -822,6 +841,9 @@ impl App {
             if let Some(git_toast) = self.scan.startup_phases.git_toast.take() {
                 self.finish_task_toast(git_toast);
             }
+            if let Some(toast) = self.scan.startup_phases.startup_toast {
+                self.mark_tracked_item_completed(toast, "Local git repos");
+            }
             tracing::info!(
                 phase = "git_local_applied",
                 since_scan_complete_ms =
@@ -845,6 +867,9 @@ impl App {
             self.scan.startup_phases.repo_complete_at = Some(now);
             if let Some(repo_toast) = self.scan.startup_phases.repo_toast.take() {
                 self.finish_task_toast(repo_toast);
+            }
+            if let Some(toast) = self.scan.startup_phases.startup_toast {
+                self.mark_tracked_item_completed(toast, "GitHub repos");
             }
             tracing::info!(
                 phase = "repo_fetch_applied",
@@ -901,10 +926,14 @@ impl App {
             let repo_ready = self.scan.startup_phases.repo_complete_at.is_some();
             if disk_ready && git_ready && repo_ready {
                 self.scan.startup_phases.startup_complete_at = Some(now);
-                self.show_timed_toast(
-                    "Startup complete",
-                    "Disk, local Git, and GitHub startup activity complete.".to_string(),
-                );
+                // Finish the startup toast only when lint startup cache
+                // check is also done, so "Lint runs" doesn't spin while
+                // the toast exits.
+                if self.scan.startup_phases.lint_startup_complete_at.is_some() {
+                    if let Some(toast) = self.scan.startup_phases.startup_toast.take() {
+                        self.finish_task_toast(toast);
+                    }
+                }
                 tracing::info!(
                     since_scan_complete_ms =
                         crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
@@ -1180,18 +1209,13 @@ impl App {
         let root_labels = self
             .projects
             .resolved_root_labels(self.include_non_rust().includes_non_rust());
-        let git_path_states = self.git_path_states.clone();
         let lint_enabled = self.lint_enabled();
         self.builds.fit.active = Some(build_id);
         std::thread::spawn(move || {
             let started = Instant::now();
-            let state = super::snapshots::FitWidthsState {
-                git_path_states: &git_path_states,
-            };
             let widths = super::snapshots::build_fit_widths_snapshot(
                 &items,
                 &root_labels,
-                &state,
                 lint_enabled,
                 build_id,
             );
@@ -1403,7 +1427,6 @@ impl App {
         self.ci_display_modes.clear();
         self.clear_all_lint_state();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
-        self.git_path_states.clear();
         self.cargo_active_paths.clear();
         self.crates_versions.clear();
         self.crates_downloads.clear();
@@ -1416,7 +1439,6 @@ impl App {
         self.scan.run_count += 1;
         self.scan.startup_phases = StartupPhaseTracker::default();
         tracing::info!(kind = "rescan", run = self.scan.run_count, "scan_start");
-        self.fully_loaded.clear();
         self.priority_fetch_path = None;
         self.focus_pane(PaneId::ProjectList);
         self.close_settings();
@@ -1511,8 +1533,9 @@ impl App {
             BackgroundMsg::GitInfo { .. } | BackgroundMsg::GitFirstCommit { .. } => {
                 stats.git_info_msgs += 1;
             },
-            BackgroundMsg::GitPathState { .. } => stats.git_path_state_msgs += 1,
-            BackgroundMsg::LintStatus { .. } => stats.lint_status_msgs += 1,
+            BackgroundMsg::LintStatus { .. } | BackgroundMsg::LintStartupStatus { .. } => {
+                stats.lint_status_msgs += 1;
+            },
             BackgroundMsg::CiRuns { .. }
             | BackgroundMsg::RepoFetchQueued { .. }
             | BackgroundMsg::RepoFetchComplete { .. }
@@ -1539,7 +1562,6 @@ impl App {
             bg_msgs = stats.bg_msgs,
             disk_usage_msgs = stats.disk_usage_msgs,
             git_info_msgs = stats.git_info_msgs,
-            git_path_state_msgs = stats.git_path_state_msgs,
             lint_status_msgs = stats.lint_status_msgs,
             "poll_background_saturated"
         );
@@ -1639,25 +1661,16 @@ impl App {
         if self.running_clean_paths.remove(path) {
             self.sync_running_clean_toast();
         }
-        self.apply_disk_usage(path, bytes, self.is_scan_complete());
+        self.apply_disk_usage(path, bytes);
     }
 
     pub(in super::super) fn handle_disk_usage_batch(&mut self, entries: Vec<(AbsolutePath, u64)>) {
         for (path, bytes) in entries {
-            self.apply_disk_usage(path.as_path(), bytes, false);
+            self.apply_disk_usage(path.as_path(), bytes);
         }
     }
 
-    pub(in super::super) fn apply_disk_usage(
-        &mut self,
-        path: &Path,
-        bytes: u64,
-        refresh_git_path_state: bool,
-    ) {
-        self.fully_loaded.insert(AbsolutePath::from(path));
-        if refresh_git_path_state {
-            self.refresh_git_path_state(path);
-        }
+    pub(in super::super) fn apply_disk_usage(&mut self, path: &Path, bytes: u64) {
         self.dirty.disk_cache.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
 
@@ -1799,6 +1812,11 @@ impl App {
 
     pub(in super::super) fn handle_git_info(&mut self, path: &Path, info: GitInfo) {
         self.dirty.fit_widths.mark_dirty();
+        tracing::info!(
+            path = %path.display(),
+            path_state = %info.path_state.label(),
+            "git_info_applied"
+        );
         let preserved_first_commit = self
             .git_info_for(path)
             .and_then(|existing| existing.first_commit.clone());
@@ -1809,16 +1827,16 @@ impl App {
         }
         let (member_paths, fallback_worktree_paths) = self.inherited_git_info_paths(path);
         if let Some(project) = self.projects.at_path_mut(path) {
-            project.git_info = Some(info.clone());
+            project.git_state = GitState::Detected(Box::new(info.clone()));
         }
         for member_path in member_paths {
             if let Some(project) = self.projects.at_path_mut(&member_path) {
-                project.git_info = Some(info.clone());
+                project.git_state = GitState::Detected(Box::new(info.clone()));
             }
         }
         for linked_path in fallback_worktree_paths {
             if let Some(project) = self.projects.at_path_mut(&linked_path) {
-                project.git_info = Some(info.clone());
+                project.git_state = GitState::Detected(Box::new(info.clone()));
             }
         }
         if self.is_scan_complete() {
@@ -1853,20 +1871,20 @@ impl App {
             }
             return;
         };
-        if let Some(info) = project.git_info.as_mut() {
+        if let Some(info) = project.git_state.info_mut() {
             info.first_commit.clone_from(&first_commit);
             applied = true;
         }
         for member_path in member_paths {
             if let Some(project) = self.projects.at_path_mut(&member_path)
-                && let Some(info) = project.git_info.as_mut()
+                && let Some(info) = project.git_state.info_mut()
             {
                 info.first_commit.clone_from(&first_commit);
             }
         }
         for linked_path in fallback_worktree_paths {
             if let Some(project) = self.projects.at_path_mut(&linked_path)
-                && let Some(info) = project.git_info.as_mut()
+                && let Some(info) = project.git_state.info_mut()
             {
                 info.first_commit.clone_from(&first_commit);
             }
@@ -2073,19 +2091,6 @@ impl App {
         self.maybe_log_startup_phase_completions();
     }
 
-    fn handle_git_path_state_msg(&mut self, path: &AbsolutePath, state: GitPathState) {
-        let changed = self
-            .git_path_states
-            .get(path.as_path())
-            .is_none_or(|old| *old != state);
-        tracing::info!(path = %path, state = %state.label(), changed, "app_git_path_state_applied");
-        self.git_path_states.insert(path.clone(), state);
-        if changed {
-            self.dirty.rows.mark_dirty();
-            self.dirty.fit_widths.mark_dirty();
-        }
-    }
-
     fn handle_crates_io_version_msg(&mut self, path: &Path, version: String, downloads: u64) {
         if self.is_cargo_active_path(path) {
             let abs = AbsolutePath::from(path);
@@ -2095,6 +2100,51 @@ impl App {
             self.crates_versions.remove(path);
             self.crates_downloads.remove(path);
         }
+    }
+
+    fn handle_lint_startup_status_msg(&mut self, path: &AbsolutePath, status: LintStatus) {
+        // Apply the cached status to the project (same as a live status).
+        if let Some(lr) = self.projects.lint_at_path_mut(path) {
+            lr.set_status(status);
+        }
+        self.scan.startup_phases.lint_startup_seen += 1;
+        self.maybe_complete_startup_lint_cache();
+    }
+
+    fn maybe_complete_startup_lint_cache(&mut self) {
+        if self.scan.startup_phases.lint_startup_complete_at.is_some() {
+            return;
+        }
+        let Some(expected) = self.scan.startup_phases.lint_startup_expected else {
+            return;
+        };
+        if self.scan.startup_phases.lint_startup_seen < expected {
+            return;
+        }
+        let now = Instant::now();
+        self.scan.startup_phases.lint_startup_complete_at = Some(now);
+        // All startup lint statuses collected — compute cache size once.
+        self.refresh_lint_cache_usage_from_disk();
+        if let Some(toast) = self.scan.startup_phases.startup_toast {
+            self.mark_tracked_item_completed(toast, "Lint runs");
+        }
+        // If core startup already finished, now finish the startup toast.
+        if self.scan.startup_phases.startup_complete_at.is_some() {
+            if let Some(toast) = self.scan.startup_phases.startup_toast.take() {
+                self.finish_task_toast(toast);
+            }
+        }
+        if let Some(scan_complete_at) = self.scan.startup_phases.scan_complete_at {
+            tracing::info!(
+                phase = "lint_startup_applied",
+                since_scan_complete_ms =
+                    crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+                seen = self.scan.startup_phases.lint_startup_seen,
+                expected,
+                "startup_phase_complete"
+            );
+        }
+        self.maybe_log_startup_phase_completions();
     }
 
     fn handle_lint_status_msg(&mut self, path: &Path, status: LintStatus) {
@@ -2204,7 +2254,10 @@ impl App {
         self.dirty.fit_widths.mark_dirty();
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
-        self.register_lint_for_root_items();
+        let lint_registered = self.register_lint_for_root_items();
+        self.scan.startup_phases.lint_startup_expected = Some(lint_registered);
+        self.scan.startup_phases.lint_startup_seen = 0;
+        self.scan.startup_phases.lint_startup_complete_at = None;
         self.refresh_lint_runs_from_disk();
         self.data_generation += 1;
         self.detail_generation += 1;
@@ -2245,13 +2298,13 @@ impl App {
             if let Some(info) = self
                 .projects
                 .at_path(root_path)
-                .and_then(|project| project.git_info.clone())
+                .and_then(|project| project.git_state.info().cloned())
             {
                 for member_path in &member_paths {
                     if self
                         .projects
                         .at_path(member_path)
-                        .is_none_or(|project| project.git_info.is_none())
+                        .is_none_or(|project| project.git_state.info().is_none())
                     {
                         inherited_git_info.push((member_path.clone(), info.clone()));
                     }
@@ -2265,7 +2318,7 @@ impl App {
         }
         for (member_path, info) in inherited_git_info {
             if let Some(project) = self.projects.at_path_mut(&member_path) {
-                project.git_info = Some(info);
+                project.git_state = GitState::Detected(Box::new(info));
             }
         }
 
@@ -2285,7 +2338,6 @@ impl App {
         self.scan.phase = ScanPhase::Complete;
         self.initialize_startup_phase_tracker();
         self.schedule_startup_project_details();
-        self.schedule_git_path_state_refreshes();
         self.schedule_git_first_commit_refreshes();
     }
 
@@ -2318,9 +2370,6 @@ impl App {
             },
             BackgroundMsg::GitFirstCommit { path, first_commit } => {
                 self.handle_git_first_commit(path.as_path(), first_commit.as_deref());
-            },
-            BackgroundMsg::GitPathState { path, state } => {
-                self.handle_git_path_state_msg(&path, state);
             },
             BackgroundMsg::Submodules { path, submodules } => {
                 if let Some(info) = self.projects.at_path_mut(path.as_path()) {
@@ -2371,6 +2420,9 @@ impl App {
             BackgroundMsg::LintStatus { path, status } => {
                 self.handle_lint_status_msg(path.as_path(), status);
             },
+            BackgroundMsg::LintStartupStatus { path, status } => {
+                self.handle_lint_startup_status_msg(&path, status);
+            },
             BackgroundMsg::ServiceReachable { service } => {
                 self.apply_service_signal(ServiceSignal::Reachable(service));
             },
@@ -2414,7 +2466,10 @@ impl App {
             .as_ref()
             .map(|c| c.info.name.clone())
             .filter(|n| n != "-");
-        if !self.fully_loaded.contains(&abs_key)
+        if self
+            .projects
+            .at_path(abs_key.as_path())
+            .is_none_or(|p| p.disk_usage_bytes.is_none())
             && self.priority_fetch_path.as_ref() != Some(&abs_key)
         {
             self.priority_fetch_path = Some(abs_key);

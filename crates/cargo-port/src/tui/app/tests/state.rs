@@ -157,6 +157,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
     app.handle_git_info(
         project.path(),
         GitInfo {
+            path_state:          GitPathState::default(),
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),
             owner:               Some("acme".to_string()),
@@ -200,6 +201,7 @@ fn ci_for_default_branch_uses_full_repo_run_list() {
     app.handle_git_info(
         project.path(),
         GitInfo {
+            path_state:          GitPathState::default(),
             origin:              GitOrigin::Clone,
             branch:              Some("main".to_string()),
             owner:               Some("acme".to_string()),
@@ -243,6 +245,7 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
     app.handle_git_info(
         project.path(),
         GitInfo {
+            path_state:          GitPathState::default(),
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),
             owner:               Some("acme".to_string()),
@@ -574,31 +577,37 @@ fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
 
-    app.handle_git_info(
-        project.path(),
-        GitInfo {
-            origin:              GitOrigin::Clone,
-            branch:              Some("feat/demo".to_string()),
-            owner:               None,
-            url:                 Some("https://github.com/acme/demo".to_string()),
-            first_commit:        None,
-            last_commit:         None,
-            ahead_behind:        Some((2, 0)),
-            upstream_branch:     Some("origin/main".to_string()),
-            default_branch:      Some("main".to_string()),
-            ahead_behind_origin: None,
-            local_main_branch:   Some("main".to_string()),
-            ahead_behind_local:  None,
-            workflows:           WorkflowPresence::Present,
-        },
-    );
+    let base_info = || GitInfo {
+        path_state:          GitPathState::default(),
+        origin:              GitOrigin::Clone,
+        branch:              Some("feat/demo".to_string()),
+        owner:               None,
+        url:                 Some("https://github.com/acme/demo".to_string()),
+        first_commit:        None,
+        last_commit:         None,
+        ahead_behind:        Some((2, 0)),
+        upstream_branch:     Some("origin/main".to_string()),
+        default_branch:      Some("main".to_string()),
+        ahead_behind_origin: None,
+        local_main_branch:   Some("main".to_string()),
+        ahead_behind_local:  None,
+        workflows:           WorkflowPresence::Present,
+    };
 
-    app.git_path_states
-        .insert(project.path().clone(), GitPathState::Untracked);
+    app.handle_git_info(project.path(), base_info());
+
+    app.handle_git_info(project.path(), {
+        let mut info = base_info();
+        info.path_state = GitPathState::Untracked;
+        info
+    });
     assert!(app.git_sync(project.path()).is_empty());
 
-    app.git_path_states
-        .insert(project.path().clone(), GitPathState::Ignored);
+    app.handle_git_info(project.path(), {
+        let mut info = base_info();
+        info.path_state = GitPathState::Ignored;
+        info
+    });
     assert!(app.git_sync(project.path()).is_empty());
 }
 
@@ -610,6 +619,7 @@ fn git_sync_shows_ascii_fill_for_local_only_branch() {
     app.handle_git_info(
         project.path(),
         GitInfo {
+            path_state:          GitPathState::default(),
             origin:              GitOrigin::Local,
             branch:              Some("feat/demo".to_string()),
             owner:               None,
@@ -637,6 +647,7 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
     app.handle_git_info(
         project.path(),
         GitInfo {
+            path_state:          GitPathState::default(),
             origin:              GitOrigin::Clone,
             branch:              Some("feature/demo".to_string()),
             owner:               Some("natepiano".to_string()),
@@ -664,6 +675,7 @@ fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
     app.handle_git_info(
         project.path(),
         GitInfo {
+            path_state:          GitPathState::default(),
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),
             owner:               None,

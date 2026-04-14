@@ -28,7 +28,6 @@ use super::project::AbsolutePath;
 use super::project::Cargo;
 use super::project::CargoParseResult;
 use super::project::GitInfo;
-use super::project::GitPathState;
 use super::project::GitRepoPresence;
 use super::project::MemberGroup;
 use super::project::PackageProject;
@@ -39,73 +38,103 @@ use super::project::SubmoduleInfo;
 use super::project::WorkspaceProject;
 use super::project::WorktreeGroup;
 
+/// Messages sent from background threads to the main event loop.
 pub(crate) enum BackgroundMsg {
+    /// Disk usage (bytes) computed for a single project path.
     DiskUsage {
         path:  AbsolutePath,
         bytes: u64,
     },
+    /// Batch of disk usage results for projects under a common root.
     DiskUsageBatch {
         root_path: AbsolutePath,
         entries:   Vec<(AbsolutePath, u64)>,
     },
+    /// GitHub Actions CI runs fetched for a project.
     CiRuns {
         path:         AbsolutePath,
         runs:         Vec<CiRun>,
         github_total: u32,
     },
+    /// A GitHub repo fetch has been queued (for startup tracking).
     RepoFetchQueued {
         repo: OwnerRepo,
     },
+    /// A GitHub repo fetch completed (stars, description arrived).
     RepoFetchComplete {
         repo: OwnerRepo,
     },
+    /// Git metadata detected for a project (branch, origin, ahead/behind,
+    /// path state). Sent by `detect_fast()` during startup and watcher
+    /// refreshes.
     GitInfo {
         path: AbsolutePath,
         info: GitInfo,
     },
+    /// First commit date detected for a project (deferred post-scan,
+    /// batched by repo root to avoid redundant `git log` calls).
     GitFirstCommit {
         path:         AbsolutePath,
         first_commit: Option<String>,
     },
-    GitPathState {
-        path:  AbsolutePath,
-        state: GitPathState,
-    },
+    /// Crates.io version and download count fetched for a project.
     CratesIoVersion {
         path:      AbsolutePath,
         version:   String,
         downloads: u64,
     },
+    /// GitHub repo metadata (stars, description) fetched.
     RepoMeta {
         path:        AbsolutePath,
         stars:       u64,
         description: Option<String>,
     },
+    /// Complete project tree from the streaming scan, plus disk entry
+    /// paths for background disk usage computation.
     ScanResult {
         projects:     Vec<RootItem>,
         disk_entries: Vec<(String, AbsolutePath)>,
     },
+    /// A new project discovered by the watcher after the initial scan.
     ProjectDiscovered {
         item: RootItem,
     },
+    /// An existing project re-scanned by the watcher (e.g. after a
+    /// Cargo.toml change adds/removes workspace members).
     ProjectRefreshed {
         item: RootItem,
     },
+    /// Git submodules detected for a project.
     Submodules {
         path:       AbsolutePath,
         submodules: Vec<SubmoduleInfo>,
     },
+    /// Live lint status update from the lint runtime (a lint run started,
+    /// passed, failed, etc.). Sent during normal operation when files
+    /// change and the lint runtime re-checks a project.
     LintStatus {
         path:   AbsolutePath,
         status: LintStatus,
     },
+    /// Startup lint cache check result. Sent once per registered project
+    /// when the lint runtime reads cached lint results from disk during
+    /// initialization. Distinct from `LintStatus` so the app can track
+    /// when all startup cache checks are complete.
+    LintStartupStatus {
+        path:   AbsolutePath,
+        status: LintStatus,
+    },
+    /// Lint cache pruned — old runs evicted to stay within the configured
+    /// cache size limit.
     LintCachePruned {
         runs_evicted:    usize,
         bytes_reclaimed: u64,
     },
+    /// An external service (GitHub, crates.io) is reachable.
     ServiceReachable {
         service: ServiceKind,
     },
+    /// An external service recovered after being unreachable.
     ServiceRecovered {
         service: ServiceKind,
     },
@@ -122,11 +151,11 @@ impl BackgroundMsg {
             | Self::CiRuns { path, .. }
             | Self::GitInfo { path, .. }
             | Self::GitFirstCommit { path, .. }
-            | Self::GitPathState { path, .. }
             | Self::CratesIoVersion { path, .. }
             | Self::RepoMeta { path, .. }
             | Self::Submodules { path, .. }
-            | Self::LintStatus { path, .. } => Some(path.as_path()),
+            | Self::LintStatus { path, .. }
+            | Self::LintStartupStatus { path, .. } => Some(path.as_path()),
             Self::ProjectDiscovered { item } | Self::ProjectRefreshed { item } => Some(item.path()),
             Self::ScanResult { .. }
             | Self::DiskUsageBatch { .. }
@@ -943,13 +972,11 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let project_name = req.project_name;
     let repo_presence = req.repo_presence;
     let client = &ctx.client;
-    let _ = tx.send(BackgroundMsg::GitPathState {
-        path:  abs.clone(),
-        state: super::project::detect_git_path_state(abs_path),
-    });
-    // Git info first (local, instant) — also provides the repo URL for CI cache lookup
+    // Git info (local, fast) — includes path_state detection but skips
+    // first_commit, which is handled separately by
+    // `schedule_git_first_commit_refreshes` (batched by repo root).
     let git_info = if repo_presence.is_in_repo() {
-        GitInfo::detect(abs_path)
+        GitInfo::detect_fast(abs_path)
     } else {
         None
     };
@@ -975,7 +1002,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
 
     // Submodules (local, fast — reads .gitmodules + one git ls-tree).
     // Send the Submodules message first so `at_path_mut` can find them,
-    // then send standard GitInfo/GitPathState/DiskUsage messages that the
+    // then send standard GitInfo/DiskUsage messages that the
     // existing handlers route through the normal lookup machinery.
     if repo_presence.is_in_repo() {
         let submodules = super::project::detect_submodules(abs_path);
@@ -987,11 +1014,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
             });
             for sub_path in &sub_paths {
                 let sub_abs: AbsolutePath = sub_path.clone();
-                let _ = tx.send(BackgroundMsg::GitPathState {
-                    path:  sub_abs.clone(),
-                    state: super::project::detect_git_path_state(sub_path),
-                });
-                if let Some(info) = GitInfo::detect(sub_path) {
+                if let Some(info) = GitInfo::detect_fast(sub_path) {
                     let _ = tx.send(BackgroundMsg::GitInfo {
                         path: sub_abs.clone(),
                         info,

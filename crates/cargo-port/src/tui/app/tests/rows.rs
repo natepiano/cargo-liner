@@ -710,14 +710,10 @@ fn workspace_worktree_fit_widths_use_display_name_for_primary_entry() {
             Some("obsidian_knife_test"),
         )],
     );
-    let git_path_states = std::collections::HashMap::new();
     let root_label = resolved_root_label(&item);
     let widths = snapshots::build_fit_widths_snapshot(
         std::slice::from_ref(&item),
         std::slice::from_ref(&root_label),
-        &snapshots::FitWidthsState {
-            git_path_states: &git_path_states,
-        },
         true,
         0,
     );
@@ -750,14 +746,10 @@ fn package_worktree_fit_widths_use_display_name_for_primary_entry() {
             Some("cargo-port_test"),
         )],
     );
-    let git_path_states = std::collections::HashMap::new();
     let root_label = resolved_root_label(&item);
     let widths = snapshots::build_fit_widths_snapshot(
         std::slice::from_ref(&item),
         std::slice::from_ref(&root_label),
-        &snapshots::FitWidthsState {
-            git_path_states: &git_path_states,
-        },
         true,
         0,
     );

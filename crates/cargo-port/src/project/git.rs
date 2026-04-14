@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
 use std::io;
 use std::path::Path;
 use std::process::Command;
@@ -62,6 +60,8 @@ impl WorkflowPresence {
 /// Git metadata for a project: origin type, owner, repo URL, and current branch.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct GitInfo {
+    /// Git path state (clean, modified, untracked, etc.) for this project path.
+    pub path_state:          GitPathState,
     /// Whether this is a clone or a fork.
     pub origin:              GitOrigin,
     /// The current branch name.
@@ -91,15 +91,8 @@ pub(crate) struct GitInfo {
 }
 
 impl GitInfo {
-    /// Detect git info for a project directory.
-    pub(crate) fn detect(project_dir: &Path) -> Option<Self> {
-        let repo_root = git_repo_root(project_dir)?;
-        let mut info = Self::detect_fast(&repo_root)?;
-        info.first_commit = detect_first_commit(&repo_root);
-        Some(info)
-    }
-
-    /// Detect the subset of git info needed on the startup critical path.
+    /// Detect git info for a project directory (excludes `first_commit`, which
+    /// is handled by `schedule_git_first_commit_refreshes` batched by repo root).
     pub(crate) fn detect_fast(project_dir: &Path) -> Option<Self> {
         let repo_root = git_repo_root(project_dir)?;
 
@@ -184,7 +177,10 @@ impl GitInfo {
                     if s.is_empty() { None } else { Some(s) }
                 });
 
+        let path_state = detect_git_path_state_with_root(project_dir, &repo_root);
+
         Some(Self {
+            path_state,
             origin,
             branch,
             owner,
@@ -347,20 +343,42 @@ impl GitPathState {
     }
 }
 
-type ProjectPathEntry = (String, String);
-type GitPathStatesByProject = HashMap<String, GitPathState>;
-type ProjectsByRepoRoot = HashMap<AbsolutePath, Vec<ProjectPathEntry>>;
+/// Wrapper for `GitInfo` that distinguishes "not yet detected" from
+/// "detected with full metadata."
+#[derive(Clone, Debug, Default)]
+pub(crate) enum GitState {
+    /// Not yet detected (during startup/scan).
+    #[default]
+    Pending,
+    /// Full git metadata detected for this project.
+    Detected(Box<GitInfo>),
+}
 
-pub(crate) fn detect_git_path_state(project_dir: &Path) -> GitPathState {
+impl GitState {
+    pub(crate) fn info(&self) -> Option<&GitInfo> {
+        match self {
+            Self::Detected(info) => Some(info),
+            Self::Pending => None,
+        }
+    }
+
+    pub(crate) fn info_mut(&mut self) -> Option<&mut GitInfo> {
+        match self {
+            Self::Detected(info) => Some(info),
+            Self::Pending => None,
+        }
+    }
+}
+
+/// Detect git path state when the repo root is already known, avoiding a
+/// redundant `git_repo_root()` call.
+fn detect_git_path_state_with_root(project_dir: &Path, repo_root: &Path) -> GitPathState {
     let started = std::time::Instant::now();
-    let Some(repo_root) = git_repo_root(project_dir) else {
-        return GitPathState::OutsideRepo;
-    };
-    let relative_path = relative_git_path(&repo_root, project_dir);
+    let relative_path = relative_git_path(repo_root, project_dir);
     if relative_path != "." {
         let ignored = Command::new("git")
             .args(["check-ignore", "-q", "--", &relative_path])
-            .current_dir(&repo_root)
+            .current_dir(repo_root)
             .status()
             .ok()
             .is_some_and(|status| status.success());
@@ -385,7 +403,7 @@ pub(crate) fn detect_git_path_state(project_dir: &Path) -> GitPathState {
             "--",
             &relative_path,
         ])
-        .current_dir(&repo_root)
+        .current_dir(repo_root)
         .output();
     let Ok(status_output) = status_output else {
         return GitPathState::Clean;
@@ -465,166 +483,6 @@ pub(crate) fn resolve_common_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
     Some(AbsolutePath::resolve(target, &git_dir))
 }
 
-pub(crate) fn detect_git_path_states_batch(
-    projects: &[ProjectPathEntry],
-) -> GitPathStatesByProject {
-    let started = std::time::Instant::now();
-    let (mut states, repos) = partition_projects_by_repo(projects);
-
-    let repo_count = repos.len();
-    for (repo_root, entries) in repos {
-        states.extend(detect_repo_git_path_states(&repo_root, &entries));
-    }
-
-    tracing::info!(
-        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
-        repos = repo_count,
-        rows = projects.len(),
-        "git_path_states_batch"
-    );
-    states
-}
-
-fn partition_projects_by_repo(
-    projects: &[ProjectPathEntry],
-) -> (GitPathStatesByProject, ProjectsByRepoRoot) {
-    let mut states = HashMap::new();
-    let mut repos: ProjectsByRepoRoot = HashMap::new();
-
-    for (path, abs_path) in projects {
-        let abs = AbsolutePath::from(abs_path.clone());
-        if let Some(repo_root) = git_repo_root(&abs) {
-            repos
-                .entry(repo_root)
-                .or_default()
-                .push((path.clone(), abs.to_string_lossy().to_string()));
-        } else {
-            states.insert(path.clone(), GitPathState::OutsideRepo);
-        }
-    }
-
-    (states, repos)
-}
-
-fn detect_repo_git_path_states(
-    repo_root: &Path,
-    entries: &[ProjectPathEntry],
-) -> GitPathStatesByProject {
-    let prefixes: Vec<ProjectPathEntry> = entries
-        .iter()
-        .map(|(path, abs_path)| {
-            (
-                path.clone(),
-                normalize_git_relative_path(&relative_git_path(repo_root, Path::new(abs_path))),
-            )
-        })
-        .collect();
-    let mut repo_states: GitPathStatesByProject = prefixes
-        .iter()
-        .map(|(path, _)| (path.clone(), GitPathState::Clean))
-        .collect();
-
-    let status_started = std::time::Instant::now();
-    let status_output = Command::new("git")
-        .args(["status", "--porcelain=v1", "--untracked-files=normal"])
-        .current_dir(repo_root)
-        .output();
-    let status_elapsed_ms = status_started.elapsed().as_millis();
-    apply_repo_status_output(&mut repo_states, &prefixes, status_output);
-
-    let ignored_elapsed_ms = update_ignored_repo_states(repo_root, &prefixes, &mut repo_states);
-
-    tracing::info!(
-        repo_root = %repo_root.display(),
-        rows = prefixes.len(),
-        status_ms = status_elapsed_ms,
-        ignored_ms = ignored_elapsed_ms,
-        "git_path_states_repo"
-    );
-
-    repo_states
-}
-
-fn apply_repo_status_output(
-    repo_states: &mut GitPathStatesByProject,
-    prefixes: &[ProjectPathEntry],
-    status_output: io::Result<std::process::Output>,
-) {
-    let Ok(output) = status_output else {
-        return;
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines().filter(|line| line.len() >= 3) {
-        let state = if &line[..2] == "??" {
-            GitPathState::Untracked
-        } else {
-            GitPathState::Modified
-        };
-        let changed_path = normalize_git_relative_path(parse_status_path(line));
-        if changed_path.is_empty() {
-            continue;
-        }
-        for (path, prefix) in prefixes {
-            if path_contains_git_entry(prefix, &changed_path) {
-                apply_git_path_state(
-                    repo_states
-                        .entry(path.clone())
-                        .or_insert(GitPathState::Clean),
-                    state,
-                );
-            }
-        }
-    }
-}
-
-fn update_ignored_repo_states(
-    repo_root: &Path,
-    prefixes: &[ProjectPathEntry],
-    repo_states: &mut GitPathStatesByProject,
-) -> u128 {
-    let remaining_clean: HashSet<String> = repo_states
-        .iter()
-        .filter(|(_, state)| matches!(state, GitPathState::Clean))
-        .map(|(path, _)| path.clone())
-        .collect();
-    if remaining_clean.is_empty() {
-        return 0;
-    }
-
-    let ignored_started = std::time::Instant::now();
-    let ignored_output = Command::new("git")
-        .args([
-            "ls-files",
-            "--others",
-            "-i",
-            "--exclude-standard",
-            "--directory",
-        ])
-        .current_dir(repo_root)
-        .output();
-    let ignored_elapsed_ms = ignored_started.elapsed().as_millis();
-    let Ok(output) = ignored_output else {
-        return ignored_elapsed_ms;
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for ignored in stdout.lines() {
-        let ignored = normalize_git_relative_path(ignored);
-        if ignored.is_empty() {
-            continue;
-        }
-        for (path, prefix) in prefixes {
-            if !remaining_clean.contains(path) {
-                continue;
-            }
-            if git_entry_contains_path(&ignored, prefix) {
-                repo_states.insert(path.clone(), GitPathState::Ignored);
-            }
-        }
-    }
-
-    ignored_elapsed_ms
-}
-
 fn relative_git_path(repo_root: &Path, project_dir: &Path) -> String {
     project_dir.strip_prefix(repo_root).ok().map_or_else(
         || ".".to_string(),
@@ -646,39 +504,6 @@ fn relative_git_path(repo_root: &Path, project_dir: &Path) -> String {
             }
         },
     )
-}
-
-fn parse_status_path(line: &str) -> &str {
-    let path = &line[3..];
-    path.rsplit_once(" -> ").map_or(path, |(_, after)| after)
-}
-
-fn normalize_git_relative_path(path: &str) -> String {
-    let normalized = path.trim().trim_matches('"').trim_end_matches('/');
-    if normalized == "." {
-        String::new()
-    } else {
-        normalized.to_string()
-    }
-}
-
-fn path_contains_git_entry(prefix: &str, entry: &str) -> bool {
-    prefix.is_empty() || entry == prefix || entry.starts_with(&format!("{prefix}/"))
-}
-
-fn git_entry_contains_path(entry: &str, path: &str) -> bool {
-    entry == path || path.starts_with(&format!("{entry}/"))
-}
-
-const fn apply_git_path_state(current: &mut GitPathState, candidate: GitPathState) {
-    *current = match (*current, candidate) {
-        (_, GitPathState::Modified) => GitPathState::Modified,
-        (GitPathState::Clean | GitPathState::Ignored, GitPathState::Untracked) => {
-            GitPathState::Untracked
-        },
-        (GitPathState::Clean, GitPathState::Ignored) => GitPathState::Ignored,
-        (state, _) => state,
-    };
 }
 
 /// Parse `git rev-list --left-right --count` output into `(ahead, behind)`.

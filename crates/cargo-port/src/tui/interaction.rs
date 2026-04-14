@@ -287,6 +287,8 @@ mod tests {
     use crate::project::ExampleGroup;
     use crate::project::GitInfo;
     use crate::project::GitOrigin;
+    use crate::project::GitPathState;
+    use crate::project::GitState;
     use crate::project::PackageProject;
     use crate::project::ProjectType;
     use crate::project::RootItem;
@@ -354,6 +356,7 @@ mod tests {
 
     fn make_git_info(url: Option<&str>) -> GitInfo {
         GitInfo {
+            path_state:          GitPathState::default(),
             origin:              GitOrigin::Clone,
             branch:              Some("main".to_string()),
             owner:               Some("natepiano".to_string()),
@@ -1002,7 +1005,9 @@ mod tests {
         app.projects_mut()
             .at_path_mut(&project_dir)
             .unwrap_or_else(|| std::process::abort())
-            .git_info = Some(make_git_info(Some("https://github.com/natepiano/demo")));
+            .git_state = GitState::Detected(Box::new(make_git_info(Some(
+            "https://github.com/natepiano/demo",
+        ))));
         render_ui(&mut app);
 
         let (x, y) = pane_row_point(app.git_pane(), 1);

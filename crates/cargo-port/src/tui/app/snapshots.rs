@@ -269,23 +269,16 @@ fn formatted_disk(bytes: Option<u64>) -> String {
     bytes.map_or_else(|| render::format_bytes(0), render::format_bytes)
 }
 
-pub(super) fn git_sync_snapshot(
-    git_info: Option<&GitInfo>,
-    git_path_states: &HashMap<AbsolutePath, GitPathState>,
-    path: &Path,
-) -> String {
+pub(super) fn git_sync_snapshot(git_info: Option<&GitInfo>) -> String {
+    let Some(info) = git_info else {
+        return String::new();
+    };
     if matches!(
-        git_path_states
-            .get(path)
-            .copied()
-            .unwrap_or(GitPathState::OutsideRepo),
+        info.path_state,
         GitPathState::Untracked | GitPathState::Ignored
     ) {
         return String::new();
     }
-    let Some(info) = git_info else {
-        return String::new();
-    };
     match info.ahead_behind {
         Some((0, 0)) => IN_SYNC.to_string(),
         Some((a, 0)) => format!("{SYNC_UP}{a}"),
@@ -296,23 +289,16 @@ pub(super) fn git_sync_snapshot(
     }
 }
 
-pub(super) fn git_main_snapshot(
-    git_info: Option<&GitInfo>,
-    git_path_states: &HashMap<AbsolutePath, GitPathState>,
-    path: &Path,
-) -> String {
+pub(super) fn git_main_snapshot(git_info: Option<&GitInfo>) -> String {
+    let Some(info) = git_info else {
+        return String::new();
+    };
     if matches!(
-        git_path_states
-            .get(path)
-            .copied()
-            .unwrap_or(GitPathState::OutsideRepo),
+        info.path_state,
         GitPathState::Untracked | GitPathState::Ignored
     ) {
         return String::new();
     }
-    let Some(info) = git_info else {
-        return String::new();
-    };
     match info.ahead_behind_local {
         Some((0, 0)) => IN_SYNC.to_string(),
         Some((a, 0)) => format!("{SYNC_UP}{a}"),
@@ -322,55 +308,29 @@ pub(super) fn git_main_snapshot(
     }
 }
 
-/// Snapshot of project state needed for fit-width calculations.
-pub(super) struct FitWidthsState<'a> {
-    pub git_path_states: &'a HashMap<AbsolutePath, GitPathState>,
-}
-
 pub(super) fn build_fit_widths_snapshot(
     items: &[RootItem],
     root_labels: &[String],
-    state: &FitWidthsState<'_>,
     lint_enabled: bool,
     generation: u64,
 ) -> ResolvedWidths {
     let mut widths = ResolvedWidths::new(lint_enabled);
 
     for (index, item) in items.iter().enumerate() {
-        observe_item_fit_widths(&mut widths, item, &root_labels[index], state);
+        observe_item_fit_widths(&mut widths, item, &root_labels[index]);
     }
 
     widths.generation = generation;
     widths
 }
 
-fn observe_item_fit_widths(
-    widths: &mut ResolvedWidths,
-    item: &RootItem,
-    root_label: &str,
-    state: &FitWidthsState<'_>,
-) {
+fn observe_item_fit_widths(widths: &mut ResolvedWidths, item: &RootItem, root_label: &str) {
     let dw = columns::display_width;
-    let root_path = item.path();
 
     App::observe_name_width(widths, dw(render::PREFIX_ROOT_COLLAPSED) + dw(root_label));
     widths.observe(COL_DISK, dw(&formatted_disk(item.disk_usage_bytes())));
-    widths.observe(
-        COL_SYNC,
-        dw(&git_sync_snapshot(
-            item.git_info(),
-            state.git_path_states,
-            root_path,
-        )),
-    );
-    widths.observe(
-        COL_MAIN,
-        dw(&git_main_snapshot(
-            item.git_info(),
-            state.git_path_states,
-            root_path,
-        )),
-    );
+    widths.observe(COL_SYNC, dw(&git_sync_snapshot(item.git_info())));
+    widths.observe(COL_MAIN, dw(&git_main_snapshot(item.git_info())));
 
     match item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
@@ -382,10 +342,10 @@ fn observe_item_fit_widths(
         },
         RootItem::NonRust(_) => {},
         RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) => {
-            observe_workspace_worktree_group_fit_widths(widths, wtg, state);
+            observe_workspace_worktree_group_fit_widths(widths, wtg);
         },
         RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. }) => {
-            observe_package_worktree_group_fit_widths(widths, wtg, state);
+            observe_package_worktree_group_fit_widths(widths, wtg);
         },
     }
     for submodule in item.submodules() {
@@ -443,11 +403,7 @@ fn observe_typed_vendored_fit_widths(
     }
 }
 
-fn observe_workspace_worktree_entry_fit_widths(
-    widths: &mut ResolvedWidths,
-    ws: &WorkspaceProject,
-    state: &FitWidthsState<'_>,
-) {
+fn observe_workspace_worktree_entry_fit_widths(widths: &mut ResolvedWidths, ws: &WorkspaceProject) {
     let dw = columns::display_width;
     let wt_name = ws
         .worktree_name()
@@ -459,87 +415,47 @@ fn observe_workspace_worktree_entry_fit_widths(
     };
     App::observe_name_width(widths, dw(prefix) + dw(&wt_name));
     widths.observe(COL_DISK, dw(&formatted_disk(ws.disk_usage_bytes())));
-    widths.observe(
-        COL_SYNC,
-        dw(&git_sync_snapshot(
-            ws.git_info(),
-            state.git_path_states,
-            ws.path(),
-        )),
-    );
-    widths.observe(
-        COL_MAIN,
-        dw(&git_main_snapshot(
-            ws.git_info(),
-            state.git_path_states,
-            ws.path(),
-        )),
-    );
+    widths.observe(COL_SYNC, dw(&git_sync_snapshot(ws.git_info())));
+    widths.observe(COL_MAIN, dw(&git_main_snapshot(ws.git_info())));
     observe_new_member_group_fit_widths(widths, ws.groups(), true);
     observe_typed_vendored_fit_widths(widths, ws.vendored(), PREFIX_WT_VENDORED);
 }
 
-fn observe_package_worktree_entry_fit_widths(
-    widths: &mut ResolvedWidths,
-    pkg: &PackageProject,
-    state: &FitWidthsState<'_>,
-) {
+fn observe_package_worktree_entry_fit_widths(widths: &mut ResolvedWidths, pkg: &PackageProject) {
     let dw = columns::display_width;
     let wt_name = pkg
         .worktree_name()
         .map_or_else(|| pkg.root_directory_name().into_string(), String::from);
     App::observe_name_width(widths, dw(PREFIX_WT_FLAT) + dw(&wt_name));
     widths.observe(COL_DISK, dw(&formatted_disk(pkg.disk_usage_bytes())));
-    widths.observe(
-        COL_SYNC,
-        dw(&git_sync_snapshot(
-            pkg.git_info(),
-            state.git_path_states,
-            pkg.path(),
-        )),
-    );
-    widths.observe(
-        COL_MAIN,
-        dw(&git_main_snapshot(
-            pkg.git_info(),
-            state.git_path_states,
-            pkg.path(),
-        )),
-    );
+    widths.observe(COL_SYNC, dw(&git_sync_snapshot(pkg.git_info())));
+    widths.observe(COL_MAIN, dw(&git_main_snapshot(pkg.git_info())));
     observe_typed_vendored_fit_widths(widths, pkg.vendored(), PREFIX_WT_VENDORED);
 }
 
-fn observe_workspace_worktree_group_fit_widths(
-    widths: &mut ResolvedWidths,
-    wtg: &WorktreeGroup,
-    state: &FitWidthsState<'_>,
-) {
+fn observe_workspace_worktree_group_fit_widths(widths: &mut ResolvedWidths, wtg: &WorktreeGroup) {
     let WorktreeGroup::Workspaces {
         primary, linked, ..
     } = wtg
     else {
         return;
     };
-    observe_workspace_worktree_entry_fit_widths(widths, primary, state);
+    observe_workspace_worktree_entry_fit_widths(widths, primary);
     for ws in linked {
-        observe_workspace_worktree_entry_fit_widths(widths, ws, state);
+        observe_workspace_worktree_entry_fit_widths(widths, ws);
     }
 }
 
-fn observe_package_worktree_group_fit_widths(
-    widths: &mut ResolvedWidths,
-    wtg: &WorktreeGroup,
-    state: &FitWidthsState<'_>,
-) {
+fn observe_package_worktree_group_fit_widths(widths: &mut ResolvedWidths, wtg: &WorktreeGroup) {
     let WorktreeGroup::Packages {
         primary, linked, ..
     } = wtg
     else {
         return;
     };
-    observe_package_worktree_entry_fit_widths(widths, primary, state);
+    observe_package_worktree_entry_fit_widths(widths, primary);
     for pkg in linked {
-        observe_package_worktree_entry_fit_widths(widths, pkg, state);
+        observe_package_worktree_entry_fit_widths(widths, pkg);
     }
 }
 

@@ -77,6 +77,10 @@ impl From<&OwnerRepo> for TrackedItemKey {
     fn from(value: &OwnerRepo) -> Self { Self(value.to_string()) }
 }
 
+impl From<&str> for TrackedItemKey {
+    fn from(value: &str) -> Self { Self(String::from(value)) }
+}
+
 #[derive(Clone, Debug)]
 pub struct TrackedItem {
     pub label:        String,

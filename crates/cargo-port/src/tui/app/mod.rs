@@ -30,7 +30,6 @@ use crate::lint::CacheUsage;
 use crate::lint::LintRuns;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
-use crate::project::GitPathState;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -82,7 +81,6 @@ pub(super) struct App {
     ci_state:                 HashMap<AbsolutePath, CiState>,
     ci_display_modes:         HashMap<AbsolutePath, types::CiRunDisplayMode>,
     lint_cache_usage:         CacheUsage,
-    git_path_states:          HashMap<AbsolutePath, GitPathState>,
     cargo_active_paths:       HashSet<AbsolutePath>,
     crates_versions:          HashMap<AbsolutePath, String>,
     crates_downloads:         HashMap<AbsolutePath, u64>,
@@ -92,7 +90,6 @@ pub(super) struct App {
     pending_git_first_commit: HashMap<AbsolutePath, String>,
     bg_tx:                    mpsc::Sender<BackgroundMsg>,
     bg_rx:                    mpsc::Receiver<BackgroundMsg>,
-    fully_loaded:             HashSet<AbsolutePath>,
     priority_fetch_path:      Option<AbsolutePath>,
     expanded:                 HashSet<ExpandKey>,
     list_state:               ListState,

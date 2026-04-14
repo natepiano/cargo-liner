@@ -1,4 +1,4 @@
-use super::git::GitInfo;
+use super::git::GitState;
 use super::submodule::SubmoduleInfo;
 
 /// Visibility state for projects and worktree groups.
@@ -29,7 +29,7 @@ pub(crate) enum WorktreeHealth {
 #[derive(Clone, Default)]
 pub(crate) struct ProjectInfo {
     pub disk_usage_bytes: Option<u64>,
-    pub git_info:         Option<GitInfo>,
+    pub git_state:        GitState,
     pub visibility:       Visibility,
     pub worktree_health:  WorktreeHealth,
     pub submodules:       Vec<SubmoduleInfo>,

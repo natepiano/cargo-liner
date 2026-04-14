@@ -155,8 +155,8 @@ fn supervisor_loop(
                 reconcile_workers(&mut workers, desired, &worker_config, &bg_tx);
             },
             Ok(SupervisorMsg::RegisterProject { project }) => {
+                let abs_path = project.abs_path.clone();
                 if should_watch_project(&lint, &project) {
-                    let abs_path = project.abs_path.clone();
                     workers.entry(abs_path.clone()).or_insert_with(|| {
                         spawn_project_worker(
                             project.project_label.clone(),
@@ -165,11 +165,11 @@ fn supervisor_loop(
                             bg_tx.clone(),
                         )
                     });
-                    let _ = bg_tx.send(BackgroundMsg::LintStatus {
-                        path:   abs_path.clone(),
-                        status: cached_status_for_project(&status_cache, &abs_path),
-                    });
                 }
+                let _ = bg_tx.send(BackgroundMsg::LintStartupStatus {
+                    path:   abs_path.clone(),
+                    status: cached_status_for_project(&status_cache, &abs_path),
+                });
             },
             Ok(SupervisorMsg::UnregisterProject { abs_path }) => {
                 if let Some(worker) = workers.remove(&abs_path) {
@@ -223,7 +223,7 @@ fn emit_current_statuses(
     bg_tx: &mpsc::Sender<BackgroundMsg>,
 ) {
     for request in desired.values() {
-        let _ = bg_tx.send(BackgroundMsg::LintStatus {
+        let _ = bg_tx.send(BackgroundMsg::LintStartupStatus {
             path:   request.abs_path.clone(),
             status: cached_status_for_project(status_cache, &request.abs_path),
         });

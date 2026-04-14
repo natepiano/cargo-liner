@@ -87,6 +87,7 @@ fn tabbable_panes_follow_canonical_order() {
     app.handle_git_info(
         project.path(),
         GitInfo {
+            path_state:          GitPathState::default(),
             origin:              GitOrigin::Clone,
             branch:              None,
             owner:               None,
@@ -487,33 +488,5 @@ fn top_level_deleted_project_can_be_dismissed_and_stops_rendering() {
             .expect("top-level project should remain in hierarchy after dismiss")
             .visibility,
         Dismissed
-    );
-}
-
-#[test]
-fn disk_updates_skip_git_path_refresh_during_scan() {
-    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
-    let abs_path = tmp.path().join("demo");
-    std::fs::create_dir_all(&abs_path).unwrap_or_else(|_| std::process::abort());
-
-    let abs_str = abs_path.to_string_lossy().to_string();
-    let project = RootItem::Rust(RustProject::Package(PackageProject::new(
-        AbsolutePath::from(abs_path),
-        Some("demo".to_string()),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
-        Vec::new(),
-        None,
-        None,
-    )));
-    let mut app = make_app(&[project]);
-
-    app.handle_disk_usage(Path::new(&abs_str), 123);
-    assert!(!app.git_path_states.contains_key(Path::new(&abs_str)));
-
-    app.scan.phase = ScanPhase::Complete;
-    app.handle_disk_usage(Path::new(&abs_str), 123);
-    assert_eq!(
-        app.git_path_states.get(Path::new(&abs_str)),
-        Some(&GitPathState::OutsideRepo)
     );
 }
