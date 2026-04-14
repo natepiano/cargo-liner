@@ -21,7 +21,6 @@ use crate::lint::LintCommand;
 use crate::lint::LintCommandStatus;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
-use crate::project::AbsolutePath;
 use crate::project::ExampleGroup;
 use crate::project::GitPathState;
 use crate::project::WorktreeHealth::Normal;
