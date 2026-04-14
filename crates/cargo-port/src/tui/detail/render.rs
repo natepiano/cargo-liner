@@ -36,20 +36,36 @@ use crate::tui::types::Pane;
 use crate::tui::types::PaneFocusState;
 use crate::tui::types::PaneId;
 
-/// Compute the fixed stats column width from the stat rows.
+/// Compute the fixed stats column width from the stat rows and language stats.
 /// Returns `(total_width, digit_width)`.
 ///
 /// The column is sized to always fit 3-digit counts alongside "proc-macro"
 /// (the longest possible label) with a trailing space. It only widens when a
 /// count reaches 4+ digits.
-pub(super) fn stats_column_width(stats_rows: &[(&str, usize)]) -> (u16, u16) {
-    let max_count = stats_rows
+pub(super) fn stats_column_width(info: &DetailInfo) -> (u16, u16) {
+    let stats_max = info
+        .stats_rows
         .iter()
         .map(|(_, count)| *count)
         .max()
         .unwrap_or(0);
-    let digit_width: u16 = if max_count >= 1000 { 4 } else { 3 };
-    let total = 1 + 1 + digit_width + 1 + 10 + 1;
+    let lang_max = info
+        .lang_stats_rows
+        .iter()
+        .map(|e| e.file_count.max(e.line_count))
+        .max()
+        .unwrap_or(0);
+    let max_count = stats_max.max(lang_max);
+    let digit_width: u16 = match max_count {
+        0..1000 => 3,
+        1000..10_000 => 4,
+        10_000..100_000 => 5,
+        _ => 6,
+    };
+    // label width: max of "proc-macro" (10), icon+lang name (e.g. "🦀 Rust" ~6),
+    // or "LOC" (3). "proc-macro" dominates at 10 chars.
+    let label_width: u16 = 10;
+    let total = 1 + 1 + digit_width + 1 + label_width + 1;
     (total, digit_width)
 }
 
@@ -529,7 +545,17 @@ fn render_project_description_section(
     area: Rect,
     project_inner: Rect,
 ) -> ProjectPanelAreas {
-    let lower_metadata_height = context.fields.len().max(context.info.stats_rows.len());
+    let lang_rows = if context.info.lang_stats_rows.is_empty() {
+        0
+    } else {
+        // Each lang entry takes 2 rows (files + LOC), plus separator if stats_rows present.
+        let separator = usize::from(!context.info.stats_rows.is_empty());
+        separator + context.info.lang_stats_rows.len() * 2
+    };
+    let lower_metadata_height = context
+        .fields
+        .len()
+        .max(context.info.stats_rows.len() + lang_rows);
     let reserved_lower_height = u16::try_from(lower_metadata_height).unwrap_or(u16::MAX);
     let reserved_separator_height = u16::from(project_inner.height > reserved_lower_height);
     let description_max_height = project_inner
@@ -600,10 +626,9 @@ fn render_project_metadata(
         focus: context.focus,
         styles: context.styles,
     };
-    if context.info.stats_rows.is_empty() {
-        render_column_inner(frame, &col_ctx, lower_area)
-    } else {
-        let (stats_width, digit_width) = stats_column_width(&context.info.stats_rows);
+    let has_stats = !context.info.stats_rows.is_empty() || !context.info.lang_stats_rows.is_empty();
+    if has_stats {
+        let (stats_width, digit_width) = stats_column_width(context.info);
 
         let sub_cols = Layout::default()
             .direction(Direction::Horizontal)
@@ -619,15 +644,17 @@ fn render_project_metadata(
             context.border_style,
         );
         scroll_offset
+    } else {
+        render_column_inner(frame, &col_ctx, lower_area)
     }
 }
 
 fn project_stats_connector_x(info: &DetailInfo, lower_area: Rect) -> Option<u16> {
-    if info.stats_rows.is_empty() {
+    if info.stats_rows.is_empty() && info.lang_stats_rows.is_empty() {
         return None;
     }
 
-    let (stats_width, _) = stats_column_width(&info.stats_rows);
+    let (stats_width, _) = stats_column_width(info);
     let sub_cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(20), Constraint::Length(stats_width)])
@@ -651,7 +678,7 @@ fn render_stats_column(
     let stat_label_style = Style::default().fg(LABEL_COLOR);
     let stat_num_style = Style::default().fg(TITLE_COLOR);
     let dw = digit_width as usize;
-    let stat_lines = info
+    let mut stat_lines: Vec<Line<'_>> = info
         .stats_rows
         .iter()
         .map(|(label, count)| {
@@ -660,7 +687,24 @@ fn render_stats_column(
                 Span::styled(*label, stat_label_style),
             ])
         })
-        .collect::<Vec<_>>();
+        .collect();
+    if !info.lang_stats_rows.is_empty() {
+        if !stat_lines.is_empty() {
+            stat_lines.push(Line::raw(""));
+        }
+        for entry in &info.lang_stats_rows {
+            let icon = crate::project::language_icon(&entry.language);
+            let label = format!("{icon} {}", entry.language);
+            stat_lines.push(Line::from(vec![
+                Span::styled(format!(" {:>dw$} ", entry.file_count), stat_num_style),
+                Span::styled(label, stat_label_style),
+            ]));
+            stat_lines.push(Line::from(vec![
+                Span::styled(format!(" {:>dw$} ", entry.line_count), stat_num_style),
+                Span::styled("LOC", stat_label_style),
+            ]));
+        }
+    }
     frame.render_widget(Paragraph::new(stat_lines), stats_inner);
 }
 

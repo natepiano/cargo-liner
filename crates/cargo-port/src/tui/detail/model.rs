@@ -466,6 +466,8 @@ pub struct DetailInfo {
     pub benches:           Vec<String>,
     /// Whether this project declares `[package]` (has version/description fields).
     pub has_package:       bool,
+    /// Top 2 languages by LOC from tokei scan.
+    pub lang_stats_rows:   Vec<crate::project::LangEntry>,
 }
 
 /// Resolve the title shown in the `Package` column header.
@@ -717,6 +719,7 @@ pub fn build_detail_info_for_submodule(app: &App, submodule: &SubmoduleInfo) -> 
         examples: Vec::new(),
         benches: Vec::new(),
         has_package: false,
+        lang_stats_rows: Vec::new(),
     }
 }
 
@@ -910,6 +913,11 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
         examples: cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
         benches: cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
         has_package: src.has_cargo,
+        lang_stats_rows: app
+            .projects()
+            .at_path(abs_path)
+            .and_then(|p| p.language_stats.as_ref())
+            .map_or_else(Vec::new, |ls| ls.entries.iter().take(2).cloned().collect()),
     }
 }
 

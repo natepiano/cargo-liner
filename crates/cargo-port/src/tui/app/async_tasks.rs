@@ -1551,7 +1551,8 @@ impl App {
             | BackgroundMsg::LintCachePruned { .. }
             | BackgroundMsg::ServiceReachable { .. }
             | BackgroundMsg::ServiceRecovered { .. }
-            | BackgroundMsg::ServiceUnreachable { .. } => {},
+            | BackgroundMsg::ServiceUnreachable { .. }
+            | BackgroundMsg::LanguageStatsBatch { .. } => {},
         }
     }
 
@@ -2295,8 +2296,24 @@ impl App {
             BackgroundMsg::ServiceUnreachable { service } => {
                 self.apply_service_signal(ServiceSignal::Unreachable(service));
             },
+            BackgroundMsg::LanguageStatsBatch { entries } => {
+                self.handle_language_stats_batch(entries);
+            },
         }
         false
+    }
+
+    fn handle_language_stats_batch(
+        &mut self,
+        entries: Vec<(AbsolutePath, crate::project::LanguageStats)>,
+    ) {
+        for (path, stats) in entries {
+            if let Some(project) = self.projects.at_path_mut(path.as_path()) {
+                project.language_stats = Some(stats);
+            }
+        }
+        self.detail_generation += 1;
+        self.dirty.rows.mark_dirty();
     }
 
     pub(in super::super) fn detail_path_is_affected(&self, path: &Path) -> bool {

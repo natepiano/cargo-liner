@@ -29,6 +29,8 @@ use super::project::Cargo;
 use super::project::CargoParseResult;
 use super::project::GitInfo;
 use super::project::GitRepoPresence;
+use super::project::LangEntry;
+use super::project::LanguageStats;
 use super::project::MemberGroup;
 use super::project::PackageProject;
 use super::project::ProjectFields;
@@ -141,6 +143,10 @@ pub(crate) enum BackgroundMsg {
     ServiceUnreachable {
         service: ServiceKind,
     },
+    /// Language statistics (file counts + LOC by language) computed by tokei.
+    LanguageStatsBatch {
+        entries: Vec<(AbsolutePath, LanguageStats)>,
+    },
 }
 
 impl BackgroundMsg {
@@ -159,6 +165,7 @@ impl BackgroundMsg {
             Self::ProjectDiscovered { item } | Self::ProjectRefreshed { item } => Some(item.path()),
             Self::ScanResult { .. }
             | Self::DiskUsageBatch { .. }
+            | Self::LanguageStatsBatch { .. }
             | Self::RepoFetchQueued { .. }
             | Self::RepoFetchComplete { .. }
             | Self::LintCachePruned { .. }
@@ -1170,6 +1177,7 @@ pub(crate) fn spawn_streaming_scan(
             disk_entries: phase1.disk_entries.clone(),
         });
         spawn_initial_disk_usage(&scan_context, &phase1.disk_entries);
+        spawn_initial_language_stats(&scan_context, &phase1.disk_entries);
     });
 
     (tx, rx)
@@ -1282,6 +1290,92 @@ fn phase1_discover(scan_dirs: &[AbsolutePath], non_rust: NonRustInclusion) -> Ph
         stats,
     }
 }
+
+// ── Language statistics (tokei) ─────────────────────────────────────
+
+fn spawn_initial_language_stats(
+    scan_context: &StreamingScanContext,
+    disk_entries: &[(String, AbsolutePath)],
+) {
+    for tree in group_disk_usage_trees(disk_entries) {
+        spawn_language_stats_tree(scan_context, tree);
+    }
+}
+
+fn spawn_language_stats_tree(scan_context: &StreamingScanContext, tree: DiskUsageTree) {
+    let handle = scan_context.client.handle.clone();
+    let tx = scan_context.tx.clone();
+
+    handle.spawn(async move {
+        let Ok(results) =
+            tokio::task::spawn_blocking(move || collect_language_stats_for_tree(&tree)).await
+        else {
+            return;
+        };
+        if !results.is_empty() {
+            let _ = tx.send(BackgroundMsg::LanguageStatsBatch { entries: results });
+        }
+    });
+}
+
+fn collect_language_stats_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, LanguageStats)> {
+    let config = tokei::Config {
+        hidden: Some(false),
+        ..tokei::Config::default()
+    };
+    let mut languages = tokei::Languages::new();
+    languages.get_statistics(&[&tree.root_abs_path], &[], &config);
+
+    // Build a single LanguageStats from all results — this covers the root.
+    let stats = build_language_stats(&languages);
+
+    // For each entry in the tree, run tokei on that specific subtree if it
+    // differs from the root. For simple single-project trees, just reuse
+    // the root stats.
+    if tree.entries.len() == 1 {
+        return vec![(tree.entries[0].clone(), stats)];
+    }
+
+    // Multi-entry tree: root gets the full stats, members get their own.
+    let mut results = Vec::with_capacity(tree.entries.len());
+    for entry in &tree.entries {
+        if entry.as_path() == tree.root_abs_path.as_path() {
+            results.push((entry.clone(), stats.clone()));
+        } else {
+            let mut member_langs = tokei::Languages::new();
+            member_langs.get_statistics(&[entry.as_path()], &[], &config);
+            results.push((entry.clone(), build_language_stats(&member_langs)));
+        }
+    }
+    results
+}
+
+fn build_language_stats(languages: &tokei::Languages) -> LanguageStats {
+    let mut entries: Vec<LangEntry> = languages
+        .iter()
+        .filter(|(_, lang)| lang.code > 0 || !lang.reports.is_empty())
+        .map(|(lang_type, lang)| LangEntry {
+            language:   lang_type.to_string(),
+            file_count: lang.reports.len(),
+            line_count: lang.code,
+        })
+        .collect();
+    entries.sort_by(|a, b| b.line_count.cmp(&a.line_count));
+    LanguageStats { entries }
+}
+
+/// Collect language stats for a single project path (watcher discovery).
+pub(crate) fn collect_language_stats_single(path: &Path) -> LanguageStats {
+    let config = tokei::Config {
+        hidden: Some(false),
+        ..tokei::Config::default()
+    };
+    let mut languages = tokei::Languages::new();
+    languages.get_statistics(&[path], &[], &config);
+    build_language_stats(&languages)
+}
+
+// ── Disk usage ─────────────────────────────────────────────────────
 
 fn spawn_initial_disk_usage(
     scan_context: &StreamingScanContext,

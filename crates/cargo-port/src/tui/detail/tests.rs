@@ -85,6 +85,7 @@ fn detail_info(is_rust_project: bool) -> DetailInfo {
         examples:          Vec::<ExampleGroup>::new(),
         benches:           Vec::new(),
         has_package:       true,
+        lang_stats_rows:   Vec::new(),
     }
 }
 
@@ -141,7 +142,9 @@ fn stats_width_cases() {
     ];
 
     for (name, rows, expected_total, expected_digits) in cases {
-        let (total, digits) = render::stats_column_width(&rows);
+        let mut info = detail_info(true);
+        info.stats_rows = rows;
+        let (total, digits) = render::stats_column_width(&info);
         assert_eq!(total, expected_total, "{name}");
         assert_eq!(digits, expected_digits, "{name}");
     }

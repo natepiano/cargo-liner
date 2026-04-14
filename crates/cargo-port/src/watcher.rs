@@ -1185,6 +1185,8 @@ fn probe_new_projects(
             let task_ctx = scan::FetchContext {
                 client: client.clone(),
             };
+            let lang_tx = bg_tx.clone();
+            let lang_path = abs_path.clone();
             rayon::spawn(move || {
                 let request = scan::ProjectDetailRequest {
                     tx: &tx,
@@ -1195,6 +1197,14 @@ fn probe_new_projects(
                     repo_presence,
                 };
                 scan::fetch_project_details(&request);
+            });
+            rayon::spawn(move || {
+                let stats = scan::collect_language_stats_single(&lang_path);
+                if !stats.entries.is_empty() {
+                    let _ = lang_tx.send(scan::BackgroundMsg::LanguageStatsBatch {
+                        entries: vec![(lang_path, stats)],
+                    });
+                }
             });
         }
     }

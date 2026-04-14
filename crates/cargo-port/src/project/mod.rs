@@ -1,6 +1,7 @@
 mod cargo;
 mod git;
 mod info;
+mod language;
 mod member_group;
 mod non_rust;
 mod package;
@@ -33,9 +34,13 @@ pub(crate) use git::resolve_common_git_dir;
 pub(crate) use git::resolve_git_dir;
 // ── Info types ───────────────────────────────────────────────────────
 pub(crate) use info::GitHubInfo;
+pub(crate) use info::LangEntry;
+pub(crate) use info::LanguageStats;
 pub(crate) use info::ProjectInfo;
 pub(crate) use info::Visibility;
 pub(crate) use info::WorktreeHealth;
+// ── Language helpers ────────────────────────────────────────────────
+pub(crate) use language::language_icon;
 // ── Project types ────────────────────────────────────────────────────
 pub(crate) use member_group::MemberGroup;
 pub(crate) use non_rust::NonRustProject;

@@ -31,6 +31,25 @@ pub(crate) struct GitHubInfo {
     pub description: Option<String>,
 }
 
+/// A single language entry in the language statistics breakdown.
+#[derive(Clone, Debug)]
+pub(crate) struct LangEntry {
+    /// Tokei language name (e.g., "Rust", "C++", "Python").
+    pub language:   String,
+    pub file_count: usize,
+    /// Code lines (tokei's "code" count, excludes comments and blanks).
+    pub line_count: usize,
+}
+
+/// Per-project language statistics collected by tokei.
+///
+/// `None` on `ProjectInfo` means the scan hasn't completed yet.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LanguageStats {
+    /// Sorted by `line_count` descending (dominant language first).
+    pub entries: Vec<LangEntry>,
+}
+
 /// Shared metadata for all project types (Rust and non-Rust).
 ///
 /// Identity fields (`path`, `name`) live on each project struct directly —
@@ -41,6 +60,7 @@ pub(crate) struct ProjectInfo {
     pub disk_usage_bytes: Option<u64>,
     pub local_git_state:  LocalGitState,
     pub github_info:      Option<GitHubInfo>,
+    pub language_stats:   Option<LanguageStats>,
     pub visibility:       Visibility,
     pub worktree_health:  WorktreeHealth,
     pub submodules:       Vec<SubmoduleInfo>,

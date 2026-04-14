@@ -905,7 +905,15 @@ fn render_root_item(
     let disk_bytes = item.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
     let ci = app.ci_for_item(item);
-    let lang = item.lang_icon();
+    let lang = if item.is_rust() {
+        item.lang_icon()
+    } else {
+        app.projects()
+            .at_path(item.path())
+            .and_then(|p| p.language_stats.as_ref())
+            .and_then(|ls| ls.entries.first())
+            .map_or("  ", |e| crate::project::language_icon(&e.language))
+    };
     let lint = app.lint_icon_for_root(node_index);
     let origin_sync = app.git_sync(item.path());
     let main_sync = app.git_main(item.path());
@@ -1650,7 +1658,11 @@ pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<L
             let lang = if metadata.as_ref().is_some_and(|item| item.is_rust) || hit.is_rust {
                 crate::project::PackageProject::lang_icon()
             } else {
-                "  "
+                app.projects()
+                    .at_path(abs)
+                    .and_then(|p| p.language_stats.as_ref())
+                    .and_then(|ls| ls.entries.first())
+                    .map_or("  ", |e| crate::project::language_icon(&e.language))
             };
             let lint = if cargo_active {
                 app.lint_icon(abs)

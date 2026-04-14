@@ -1,0 +1,14 @@
+/// Map a tokei language name to a 2-char icon for the Lang column.
+pub(crate) fn language_icon(language: &str) -> &'static str {
+    match language {
+        "Rust" => "\u{1f980}",                                  // 🦀
+        "C" | "C++" | "C Header" | "C++ Header" => "\u{1f30a}", // 🌊
+        "Go" => "Go",
+        "Python" => "\u{1f40d}", // 🐍
+        "JavaScript" | "JSX" => "JS",
+        "TypeScript" | "TSX" => "TS",
+        "Markdown" => "M\u{2193}", // M↓
+        "Shell" | "Bash" | "Zsh" | "Fish" => "$_",
+        _ => "  ",
+    }
+}
