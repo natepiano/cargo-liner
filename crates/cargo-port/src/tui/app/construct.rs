@@ -96,7 +96,7 @@ impl AppInit {
         http_client: &HttpClient,
     ) -> Self {
         crate::config::set_active_config(cfg);
-        let config_path = crate::config::config_path().map(AbsolutePath::from);
+        let config_path = crate::config::config_path();
         let config_last_seen = config_path.as_deref().and_then(App::config_file_stamp);
         let lint_spawn = lint::spawn(cfg, bg_tx.clone());
         let watch_tx = watcher::spawn_watcher(
@@ -258,7 +258,7 @@ impl App {
             config_path: init.config_path,
             config_last_seen: init.config_last_seen,
             current_keymap: keymap::ResolvedKeymap::defaults(),
-            keymap_path: keymap::keymap_path().map(AbsolutePath::from),
+            keymap_path: keymap::keymap_path(),
             keymap_last_seen: None,
             keymap_diagnostics_id: None,
             keymap_pane: Pane::new(),

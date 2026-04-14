@@ -258,7 +258,6 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::path::PathBuf;
     use std::sync::OnceLock;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -349,7 +348,7 @@ mod tests {
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
             Vec::new(),
             worktree_name.map(str::to_string),
-            primary_abs_path.map(|p| AbsolutePath::from(p)),
+            primary_abs_path.map(AbsolutePath::from),
         )
     }
 
@@ -788,8 +787,8 @@ mod tests {
 
     #[test]
     fn expanded_tree_reshape_rebuilds_clickable_rows() {
-        let primary = PathBuf::from("/abs/app");
-        let linked = PathBuf::from("/abs/app_feat");
+        let primary: AbsolutePath = "/abs/app".into();
+        let linked: AbsolutePath = "/abs/app_feat".into();
         let mut app = make_app(&[RootItem::Rust(RustProject::Package(make_package_worktree(
             "app",
             &primary,
@@ -819,8 +818,8 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.selected_project_path().map(Path::to_path_buf),
-            Some(linked),
+            app.selected_project_path(),
+            Some(linked.as_path()),
             "clicking the linked worktree row after regroup should select it"
         );
     }

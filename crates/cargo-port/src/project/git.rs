@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::Command;
 
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::paths::AbsolutePath;
 use crate::config;
 use crate::constants::GIT_CLONE;
 use crate::constants::GIT_FORK;
@@ -349,7 +349,7 @@ impl GitPathState {
 
 type ProjectPathEntry = (String, String);
 type GitPathStatesByProject = HashMap<String, GitPathState>;
-type ProjectsByRepoRoot = HashMap<PathBuf, Vec<ProjectPathEntry>>;
+type ProjectsByRepoRoot = HashMap<AbsolutePath, Vec<ProjectPathEntry>>;
 
 pub(crate) fn detect_git_path_state(project_dir: &Path) -> GitPathState {
     let started = std::time::Instant::now();
@@ -420,14 +420,14 @@ pub(crate) fn detect_git_path_state(project_dir: &Path) -> GitPathState {
     state
 }
 
-pub(crate) fn git_repo_root(project_dir: &Path) -> Option<PathBuf> {
+pub(crate) fn git_repo_root(project_dir: &Path) -> Option<AbsolutePath> {
     project_dir
         .ancestors()
         .find(|dir| {
             let git_path = dir.join(".git");
             git_path.is_dir() || git_path.is_file()
         })
-        .map(Path::to_path_buf)
+        .map(AbsolutePath::from)
 }
 
 /// Resolve the on-disk git directory for a repo root.
@@ -435,20 +435,15 @@ pub(crate) fn git_repo_root(project_dir: &Path) -> Option<PathBuf> {
 /// For normal repos, returns `repo_root/.git`.
 /// For worktrees, `.git` is a file containing `gitdir: <path>` — this
 /// function reads that file and returns the resolved path.
-pub(crate) fn resolve_git_dir(repo_root: &Path) -> Option<PathBuf> {
+pub(crate) fn resolve_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
     let git_path = repo_root.join(".git");
     if git_path.is_dir() {
-        return Some(git_path);
+        return Some(git_path.into());
     }
     if git_path.is_file() {
         let contents = std::fs::read_to_string(&git_path).ok()?;
         let target = contents.strip_prefix("gitdir: ")?.trim();
-        let resolved = if Path::new(target).is_absolute() {
-            PathBuf::from(target)
-        } else {
-            repo_root.join(target)
-        };
-        return Some(resolved.canonicalize().ok().unwrap_or(resolved));
+        return Some(AbsolutePath::resolve(target, repo_root));
     }
     None
 }
@@ -458,7 +453,7 @@ pub(crate) fn resolve_git_dir(repo_root: &Path) -> Option<PathBuf> {
 /// For normal repos this is the same path as [`resolve_git_dir`]. For linked
 /// worktrees, the resolved git dir may contain a `commondir` file pointing back
 /// to the shared `<primary>/.git` directory where branch refs are updated.
-pub(crate) fn resolve_common_git_dir(repo_root: &Path) -> Option<PathBuf> {
+pub(crate) fn resolve_common_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
     let git_dir = resolve_git_dir(repo_root)?;
     let commondir_path = git_dir.join("commondir");
     if !commondir_path.is_file() {
@@ -467,12 +462,7 @@ pub(crate) fn resolve_common_git_dir(repo_root: &Path) -> Option<PathBuf> {
 
     let contents = std::fs::read_to_string(&commondir_path).ok()?;
     let target = contents.trim();
-    let resolved = if Path::new(target).is_absolute() {
-        PathBuf::from(target)
-    } else {
-        git_dir.join(target)
-    };
-    Some(resolved.canonicalize().ok().unwrap_or(resolved))
+    Some(AbsolutePath::resolve(target, &git_dir))
 }
 
 pub(crate) fn detect_git_path_states_batch(
@@ -502,12 +492,12 @@ fn partition_projects_by_repo(
     let mut repos: ProjectsByRepoRoot = HashMap::new();
 
     for (path, abs_path) in projects {
-        let abs_path = PathBuf::from(abs_path);
-        if let Some(repo_root) = git_repo_root(&abs_path) {
+        let abs = AbsolutePath::from(abs_path.clone());
+        if let Some(repo_root) = git_repo_root(&abs) {
             repos
                 .entry(repo_root)
                 .or_default()
-                .push((path.clone(), abs_path.to_string_lossy().to_string()));
+                .push((path.clone(), abs.to_string_lossy().to_string()));
         } else {
             states.insert(path.clone(), GitPathState::OutsideRepo);
         }
@@ -763,11 +753,7 @@ pub(crate) fn detect_worktree_health(project_dir: &Path) -> WorktreeHealth {
     let Some(gitdir_str) = contents.strip_prefix("gitdir: ") else {
         return WorktreeHealth::Broken;
     };
-    let gitdir = if Path::new(gitdir_str.trim()).is_absolute() {
-        PathBuf::from(gitdir_str.trim())
-    } else {
-        project_dir.join(gitdir_str.trim())
-    };
+    let gitdir = AbsolutePath::resolve_no_canonicalize(gitdir_str.trim(), project_dir);
     if gitdir.exists() {
         WorktreeHealth::Normal
     } else {
@@ -802,13 +788,9 @@ pub(super) fn detect_worktree_primary(project_dir: &Path) -> Option<String> {
         if git_path.is_file() {
             let contents = std::fs::read_to_string(&git_path).ok()?;
             let gitdir_str = contents.strip_prefix("gitdir: ")?.trim();
-            let gitdir = if Path::new(gitdir_str).is_absolute() {
-                PathBuf::from(gitdir_str)
-            } else {
-                dir.join(gitdir_str)
-            };
+            let gitdir = AbsolutePath::resolve(gitdir_str, dir);
             // gitdir is `<primary>/.git/worktrees/<name>` — go up 3 levels
-            let canonical = gitdir.canonicalize().ok()?;
+            let canonical = gitdir;
             let primary_root = canonical.parent()?.parent()?.parent()?;
             return Some(primary_root.to_string_lossy().to_string());
         }

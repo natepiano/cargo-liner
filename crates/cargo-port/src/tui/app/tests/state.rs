@@ -115,8 +115,8 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
         Some("ws_feat"),
     );
     let root = make_workspace_worktrees_item(primary_ws, vec![linked_ws]);
-    let root_path: crate::project::AbsolutePath = test_path("~/ws").into();
-    let feature_path: crate::project::AbsolutePath = test_path("~/ws_feat").into();
+    let root_path = test_path("~/ws");
+    let feature_path = test_path("~/ws_feat");
 
     let mut app = make_app(&[make_workspace_project(Some("ws"), "~/ws"), member.clone()]);
     apply_items(&mut app, &[root]);
@@ -350,13 +350,13 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
 #[test]
 fn startup_lint_toast_body_shows_paths_then_others() {
     let expected = HashSet::from([
-        AbsolutePath::from(test_path("~/a")),
-        AbsolutePath::from(test_path("~/b")),
-        AbsolutePath::from(test_path("~/c")),
-        AbsolutePath::from(test_path("~/d")),
-        AbsolutePath::from(test_path("~/e")),
+        test_path("~/a"),
+        test_path("~/b"),
+        test_path("~/c"),
+        test_path("~/d"),
+        test_path("~/e"),
     ]);
-    let seen = HashSet::from([AbsolutePath::from(test_path("~/e"))]);
+    let seen = HashSet::from([test_path("~/e")]);
 
     let body = App::startup_lint_toast_body_for(&expected, &seen);
     let lines: Vec<&str> = body.lines().collect();
@@ -383,7 +383,7 @@ fn startup_git_expected_uses_top_level_git_directories() {
     std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
 
     let non_rust = RootItem::NonRust(NonRustProject::new(
-        non_rust_dir.clone(),
+        AbsolutePath::from(non_rust_dir.clone()),
         Some(".claude".to_string()),
     ));
     let workspace = RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
@@ -693,14 +693,14 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
     apply_bg_msg(
         &mut app,
         BackgroundMsg::GitFirstCommit {
-            path:         test_path("~/demo").into(),
+            path:         test_path("~/demo"),
             first_commit: Some("2026-03-12T21:18:54-04:00".to_string()),
         },
     );
     apply_bg_msg(
         &mut app,
         BackgroundMsg::GitInfo {
-            path: test_path("~/demo").into(),
+            path: test_path("~/demo"),
             info: make_git_info(Some("https://github.com/natepiano/demo")),
         },
     );

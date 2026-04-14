@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::path::PathBuf;
 
 use super::timestamp;
 use crate::ci::Conclusion;
@@ -431,7 +430,7 @@ pub struct DetailInfo {
     /// Primary name for the detail title bar. For Rust projects this is the
     /// Cargo package name; for non-Rust projects this is the directory leaf.
     pub title_name:        String,
-    pub abs_path:          PathBuf,
+    pub abs_path:          AbsolutePath,
     pub path:              String,
     pub version:           String,
     pub description:       Option<String>,
@@ -884,7 +883,7 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
         package_title: src.package_title,
         name: src.title_name.clone(),
         title_name: src.title_name,
-        abs_path: abs_path.to_path_buf(),
+        abs_path: AbsolutePath::from(abs_path),
         path: src.display_path.to_string(),
         version: cargo.and_then(Cargo::version).unwrap_or("-").to_string(),
         description: cargo.and_then(Cargo::description).map(str::to_string),

@@ -1,48 +1,45 @@
-use std::path::PathBuf;
-
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::constants::APP_NAME;
 use crate::constants::CI_CACHE_DIR;
 use crate::constants::LINTS_CACHE_DIR;
+use crate::project::AbsolutePath;
 
 /// Default app-owned cache root under the platform cache directory.
-pub(crate) fn default_app_cache_root() -> PathBuf {
+pub(crate) fn default_app_cache_root() -> AbsolutePath {
     dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(APP_NAME)
+        .into()
 }
 
 /// Resolve the configured cache root for a given `CargoPortConfig`.
-pub(crate) fn configured_app_cache_root_for(cfg: &CargoPortConfig) -> PathBuf {
+fn configured_app_cache_root_for(cfg: &CargoPortConfig) -> AbsolutePath {
     if cfg.cache.root.is_empty() {
         return default_app_cache_root();
     }
 
-    let configured = PathBuf::from(&cfg.cache.root);
-    if configured.is_absolute() {
-        configured
-    } else {
-        default_app_cache_root().join(configured)
-    }
+    AbsolutePath::resolve_no_canonicalize(&cfg.cache.root, &default_app_cache_root())
 }
 
 /// Resolve the active app cache root from the process' last good config.
-pub(crate) fn app_cache_root() -> PathBuf {
+pub(crate) fn app_cache_root() -> AbsolutePath {
     let cfg = config::active_config();
     configured_app_cache_root_for(&cfg)
 }
 
 /// Cache root for repo-keyed CI data.
-pub(crate) fn ci_cache_root() -> PathBuf { app_cache_root().join(CI_CACHE_DIR) }
+pub(crate) fn ci_cache_root() -> AbsolutePath { app_cache_root().join(CI_CACHE_DIR).into() }
 
 /// Cache root for project-keyed lint runs under a specific config.
-pub(crate) fn lint_runs_root_for(cfg: &CargoPortConfig) -> PathBuf {
-    configured_app_cache_root_for(cfg).join(LINTS_CACHE_DIR)
+pub(crate) fn lint_runs_root_for(cfg: &CargoPortConfig) -> AbsolutePath {
+    configured_app_cache_root_for(cfg)
+        .join(LINTS_CACHE_DIR)
+        .into()
 }
 
 /// Cache root for project-keyed lint runs.
-pub(crate) fn lint_runs_root() -> PathBuf { app_cache_root().join(LINTS_CACHE_DIR) }
+pub(crate) fn lint_runs_root() -> AbsolutePath { app_cache_root().join(LINTS_CACHE_DIR).into() }
 
 #[cfg(test)]
 #[allow(
@@ -85,7 +82,7 @@ mod tests {
 
         assert_eq!(
             configured_app_cache_root_for(&cfg),
-            PathBuf::from("/tmp/cargo-port-cache")
+            AbsolutePath::from("/tmp/cargo-port-cache")
         );
     }
 }

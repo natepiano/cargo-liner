@@ -195,10 +195,7 @@ fn resolved_root_label(item: &RootItem) -> String {
 }
 
 fn make_non_rust_project(name: Option<&str>, path: &str) -> RootItem {
-    RootItem::NonRust(NonRustProject::new(
-        test_path(path).to_path_buf(),
-        name.map(String::from),
-    ))
+    RootItem::NonRust(NonRustProject::new(test_path(path), name.map(String::from)))
 }
 
 fn make_workspace_project(name: Option<&str>, path: &str) -> RootItem {

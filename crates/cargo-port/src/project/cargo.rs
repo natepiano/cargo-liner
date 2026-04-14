@@ -147,7 +147,7 @@ pub(crate) fn from_git_dir(project_dir: &Path) -> NonRustProject {
         .file_name()
         .map(|n| n.to_string_lossy().to_string());
 
-    let mut project = NonRustProject::new(project_dir.to_path_buf(), name);
+    let mut project = NonRustProject::new(AbsolutePath::from(project_dir), name);
     project.info_mut().worktree_health = git::detect_worktree_health(project_dir);
     project
 }

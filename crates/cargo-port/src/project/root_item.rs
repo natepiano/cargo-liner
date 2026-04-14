@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::path::PathBuf;
 
 use super::git::GitInfo;
 use super::info::ProjectInfo;
@@ -73,7 +72,7 @@ impl RootItem {
     }
 
     pub(crate) fn git_directory(&self) -> Option<AbsolutePath> {
-        super::git::resolve_git_dir(self.path()).map(AbsolutePath::from)
+        super::git::resolve_git_dir(self.path())
     }
 
     /// Directory leaf name for top-level root labels and disambiguation.
@@ -320,12 +319,12 @@ impl RootItem {
         }
     }
 
-    pub(crate) fn collect_project_info(&self) -> Vec<(PathBuf, ProjectInfo)> {
+    pub(crate) fn collect_project_info(&self) -> Vec<(AbsolutePath, ProjectInfo)> {
         let mut out = Vec::new();
         match self {
             Self::Rust(p) => p.collect_project_info(&mut out),
             Self::NonRust(p) => {
-                out.push((p.path().to_path_buf(), p.info().clone()));
+                out.push((p.path().clone(), p.info().clone()));
             },
             Self::Worktrees(g) => match g {
                 WorktreeGroup::Workspaces {

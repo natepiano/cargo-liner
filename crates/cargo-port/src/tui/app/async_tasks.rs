@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
-use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -455,7 +454,7 @@ impl App {
     pub(in super::super) fn register_item_background_services(&self, item: &RootItem) {
         let started = Instant::now();
         let abs_path = AbsolutePath::from(item.path().to_path_buf());
-        let repo_root = crate::project::git_repo_root(&abs_path).map(AbsolutePath::from);
+        let repo_root = crate::project::git_repo_root(&abs_path);
         let has_repo_root = repo_root.is_some();
         let _ = self.watch_tx.send(WatcherMsg::Register(WatchRequest {
             project_label: abs_path.to_string_lossy().to_string(),
@@ -514,7 +513,7 @@ impl App {
             let states = crate::project::detect_git_path_states_batch(&projects);
             for (path, state) in states {
                 let _ = tx.send(BackgroundMsg::GitPathState {
-                    path: PathBuf::from(path).into(),
+                    path: AbsolutePath::from(path),
                     state,
                 });
             }
@@ -530,7 +529,7 @@ impl App {
                 return;
             };
             projects_by_repo
-                .entry(AbsolutePath::from(repo_root))
+                .entry(repo_root)
                 .or_default()
                 .push(abs_path);
         });
@@ -547,7 +546,7 @@ impl App {
                 );
                 for path in paths {
                     let _ = tx.send(BackgroundMsg::GitFirstCommit {
-                        path:         path.into(),
+                        path,
                         first_commit: first_commit.clone(),
                     });
                 }
@@ -721,7 +720,7 @@ impl App {
             .projects
             .iter()
             .filter(|item| item.git_info().is_some())
-            .filter_map(|item| item.git_directory())
+            .filter_map(RootItem::git_directory)
             .collect::<HashSet<_>>();
         self.scan.startup_phases.disk_complete_at = None;
         self.scan.startup_phases.scan_complete_at = Some(Instant::now());
@@ -2136,7 +2135,7 @@ impl App {
             self.running_lint_paths.remove(path);
         }
         if status_started {
-            self.running_lint_paths.insert(abs.clone(), Instant::now());
+            self.running_lint_paths.insert(abs, Instant::now());
         }
         if status_is_terminal {
             self.running_lint_paths.remove(path);
@@ -2171,7 +2170,11 @@ impl App {
         self.maybe_log_startup_phase_completions();
     }
 
-    fn handle_scan_result(&mut self, projects: Vec<RootItem>, disk_entries: &[(String, PathBuf)]) {
+    fn handle_scan_result(
+        &mut self,
+        projects: Vec<RootItem>,
+        disk_entries: &[(String, AbsolutePath)],
+    ) {
         let kind = if self.scan.run_count == 1 {
             "initial"
         } else {

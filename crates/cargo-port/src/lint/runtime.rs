@@ -114,7 +114,7 @@ pub fn spawn(config: &CargoPortConfig, bg_tx: mpsc::Sender<BackgroundMsg>) -> Sp
         };
     }
 
-    let cache_root = AbsolutePath::from(cache_paths::lint_runs_root_for(config));
+    let cache_root = cache_paths::lint_runs_root_for(config);
     let cache_size_bytes = config.lint.cache_size_bytes().unwrap_or(None);
     let lint = config.lint.clone();
     let (tx, rx) = mpsc::channel();
@@ -714,8 +714,6 @@ fn sanitize_name(name: &str) -> String {
 )]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
     use crate::config::CargoPortConfig;
 
@@ -945,13 +943,13 @@ mod tests {
 
     #[test]
     fn reconcile_workers_stops_stale_threads() {
-        let path = AbsolutePath::from(PathBuf::from("/tmp/demo"));
+        let path = "/tmp/demo".into();
         let mut workers = HashMap::new();
         let (worker, exited) = dummy_worker();
         workers.insert(path, worker);
         let (bg_tx, bg_rx) = mpsc::channel();
         let config = WorkerConfig {
-            cache_root:       AbsolutePath::from(PathBuf::from("/tmp/cache")),
+            cache_root:       "/tmp/cache".into(),
             commands:         Vec::new(),
             cache_size_bytes: None,
             on_discovery:     DiscoveryLint::Deferred,
@@ -985,7 +983,7 @@ mod tests {
         let mut workers = HashMap::new();
         let (bg_tx, _bg_rx) = mpsc::channel();
         let config = WorkerConfig {
-            cache_root:       AbsolutePath::from(PathBuf::from("/tmp/cache")),
+            cache_root:       "/tmp/cache".into(),
             commands:         Vec::new(),
             cache_size_bytes: None,
             on_discovery:     DiscoveryLint::Immediate,

@@ -17,6 +17,30 @@ impl AbsolutePath {
     pub(crate) fn display_path(&self) -> DisplayPath {
         DisplayPath::new(home_relative_path(&self.0))
     }
+
+    /// Resolve a raw path string that may be relative to a base directory.
+    /// If the raw path is absolute, use it directly. Otherwise, join it with
+    /// `base`. Canonicalizes the result when possible.
+    pub(crate) fn resolve(raw: &str, base: &Path) -> Self {
+        let raw_path = Path::new(raw);
+        let resolved = if raw_path.is_absolute() {
+            PathBuf::from(raw)
+        } else {
+            base.join(raw)
+        };
+        Self::from(resolved.canonicalize().unwrap_or(resolved))
+    }
+
+    /// Resolve a raw path string that may be relative to a base directory.
+    /// Does not canonicalize.
+    pub(crate) fn resolve_no_canonicalize(raw: &str, base: &Path) -> Self {
+        let raw_path = Path::new(raw);
+        if raw_path.is_absolute() {
+            Self::from(raw)
+        } else {
+            Self::from(base.join(raw))
+        }
+    }
 }
 
 impl PartialEq<Path> for AbsolutePath {
@@ -71,6 +95,17 @@ impl From<String> for AbsolutePath {
             pb.is_absolute(),
             "AbsolutePath requires an absolute path: {}",
             pb.display()
+        );
+        Self(pb)
+    }
+}
+
+impl From<&str> for AbsolutePath {
+    fn from(path: &str) -> Self {
+        let pb = PathBuf::from(path);
+        debug_assert!(
+            pb.is_absolute(),
+            "AbsolutePath requires an absolute path: {path}"
         );
         Self(pb)
     }

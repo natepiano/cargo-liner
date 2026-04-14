@@ -1,12 +1,12 @@
 use std::path::Path;
-use std::path::PathBuf;
 
 use crate::cache_paths;
 use crate::constants::LINTS_HISTORY_JSONL;
 use crate::constants::LINTS_LATEST_JSON;
+use crate::project::AbsolutePath;
 
 /// Canonical cache directory for all per-project lint status files.
-pub fn cache_root() -> PathBuf { cache_paths::lint_runs_root() }
+pub fn cache_root() -> AbsolutePath { cache_paths::lint_runs_root() }
 
 /// Stable per-project cache key: `{name}-{sha256_prefix}` where name is the
 /// last path component and the suffix is the first 16 hex chars of the SHA-256
@@ -40,27 +40,33 @@ pub fn project_key(project_root: &Path) -> String {
 }
 
 /// Cache-rooted directory for the project's lint watcher protocol files.
-pub fn project_dir(project_root: &Path) -> PathBuf { cache_root().join(project_key(project_root)) }
+pub fn project_dir(project_root: &Path) -> AbsolutePath {
+    cache_root().join(project_key(project_root)).into()
+}
 
 /// Cache-rooted directory for the project's lint watcher protocol files under
 /// an explicit cache root.
-pub fn project_dir_under(cache_root: &Path, project_root: &Path) -> PathBuf {
-    cache_root.join(project_key(project_root))
+pub fn project_dir_under(cache_root: &Path, project_root: &Path) -> AbsolutePath {
+    cache_root.join(project_key(project_root)).into()
 }
 
 /// Cache-rooted raw command output directory for the project under an explicit
 /// cache root. This is the same as the project directory — command logs live
 /// directly alongside `latest.json` and `history.jsonl`.
-pub fn output_dir_under(cache_root: &Path, project_root: &Path) -> PathBuf {
+pub fn output_dir_under(cache_root: &Path, project_root: &Path) -> AbsolutePath {
     project_dir_under(cache_root, project_root)
 }
 
-pub fn latest_path_under(cache_root: &Path, project_root: &Path) -> PathBuf {
-    project_dir_under(cache_root, project_root).join(LINTS_LATEST_JSON)
+pub fn latest_path_under(cache_root: &Path, project_root: &Path) -> AbsolutePath {
+    project_dir_under(cache_root, project_root)
+        .join(LINTS_LATEST_JSON)
+        .into()
 }
 
-pub fn history_path_under(cache_root: &Path, project_root: &Path) -> PathBuf {
-    project_dir_under(cache_root, project_root).join(LINTS_HISTORY_JSONL)
+pub fn history_path_under(cache_root: &Path, project_root: &Path) -> AbsolutePath {
+    project_dir_under(cache_root, project_root)
+        .join(LINTS_HISTORY_JSONL)
+        .into()
 }
 
 #[cfg(test)]

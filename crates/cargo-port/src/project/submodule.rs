@@ -1,7 +1,7 @@
 use std::path::Path;
-use std::path::PathBuf;
 
 use super::info::ProjectInfo;
+use super::paths::AbsolutePath;
 
 /// Metadata for a git submodule nested inside a project.
 #[derive(Clone)]
@@ -9,7 +9,7 @@ pub(crate) struct SubmoduleInfo {
     /// The submodule name from `.gitmodules` (e.g. `glTF-IBL-Sampler`).
     pub name:          String,
     /// Absolute path on disk.
-    pub path:          PathBuf,
+    pub path:          AbsolutePath,
     /// Relative path within the parent repo (the `path =` value).
     pub relative_path: String,
     /// Remote URL from `.gitmodules`.
@@ -38,7 +38,7 @@ pub(crate) fn detect_submodules(project_root: &Path) -> Vec<SubmoduleInfo> {
     // Resolve absolute paths and pinned commits.
     let commits = ls_tree_submodule_commits(project_root);
     for entry in &mut entries {
-        entry.path = project_root.join(&entry.relative_path);
+        entry.path = AbsolutePath::from(project_root.join(&entry.relative_path));
         if let Some(sha) = commits.get(&entry.relative_path) {
             entry.commit = Some(sha.clone());
         }
@@ -63,7 +63,7 @@ fn parse_gitmodules(content: &str) -> Vec<SubmoduleInfo> {
             }
             current = Some(SubmoduleInfo {
                 name:          header.to_string(),
-                path:          PathBuf::new(),
+                path:          "/".into(),
                 relative_path: String::new(),
                 url:           None,
                 branch:        None,

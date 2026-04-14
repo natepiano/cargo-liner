@@ -270,7 +270,7 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
     std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
     app.handle_disk_usage(Path::new(&linked_path), 0);
 
-    let linked_abs = PathBuf::from(&linked_path);
+    let linked_abs = AbsolutePath::from(linked_path.clone());
     assert!(
         app.is_deleted(&linked_abs),
         "linked worktree should be deleted"
@@ -352,12 +352,12 @@ fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() 
     apply_bg_msg(
         &mut app,
         BackgroundMsg::DiskUsage {
-            path:  PathBuf::from(&linked_path).into(),
+            path:  AbsolutePath::from(linked_path.clone()),
             bytes: 0,
         },
     );
 
-    let linked_abs = PathBuf::from(&linked_path);
+    let linked_abs = AbsolutePath::from(linked_path);
     assert!(
         app.is_deleted(&linked_abs),
         "linked workspace should be deleted"
@@ -431,7 +431,7 @@ fn dismissing_deleted_linked_workspace_worktree_keeps_primary_member_rows_render
     apply_bg_msg(
         &mut app,
         BackgroundMsg::DiskUsage {
-            path:  PathBuf::from(&linked_path).into(),
+            path:  AbsolutePath::from(linked_path),
             bytes: 0,
         },
     );
@@ -509,7 +509,7 @@ fn dismissing_deleted_linked_workspace_worktree_preserves_primary_member_disk_si
     apply_bg_msg(
         &mut app,
         BackgroundMsg::DiskUsage {
-            path:  PathBuf::from(&linked_path).into(),
+            path:  AbsolutePath::from(linked_path),
             bytes: 0,
         },
     );
@@ -580,7 +580,7 @@ fn deleted_linked_workspace_children_render_crossed_out_before_dismiss() {
     apply_bg_msg(
         &mut app,
         BackgroundMsg::DiskUsage {
-            path:  PathBuf::from(&linked_path).into(),
+            path:  AbsolutePath::from(linked_path.clone()),
             bytes: 0,
         },
     );
@@ -647,7 +647,7 @@ fn dismissing_deleted_linked_workspace_member_dismisses_whole_worktree() {
     apply_bg_msg(
         &mut app,
         BackgroundMsg::DiskUsage {
-            path:  PathBuf::from(&linked_path).into(),
+            path:  AbsolutePath::from(linked_path.clone()),
             bytes: 0,
         },
     );

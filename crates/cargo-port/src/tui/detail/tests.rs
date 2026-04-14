@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::time::Instant;
@@ -22,6 +21,7 @@ use crate::lint::LintCommand;
 use crate::lint::LintCommandStatus;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
+use crate::project::AbsolutePath;
 use crate::project::ExampleGroup;
 use crate::project::GitPathState;
 use crate::project::WorktreeHealth::Normal;
@@ -63,7 +63,7 @@ fn detail_info(is_rust_project: bool) -> DetailInfo {
         },
         name:              "demo".to_string(),
         title_name:        "demo".to_string(),
-        abs_path:          PathBuf::from("/tmp/demo"),
+        abs_path:          "/tmp/demo".into(),
         path:              "~/demo".to_string(),
         version:           "0.1.0".to_string(),
         description:       None,

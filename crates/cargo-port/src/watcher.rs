@@ -327,16 +327,11 @@ fn apply_watch_request(
     if let Some(parent) = req.abs_path.parent() {
         project_parents.insert(AbsolutePath::from(parent));
     }
-    let git_dir = req
-        .repo_root
-        .as_deref()
-        .and_then(project::resolve_git_dir)
-        .map(AbsolutePath::from);
+    let git_dir = req.repo_root.as_deref().and_then(project::resolve_git_dir);
     let common_git_dir = req
         .repo_root
         .as_deref()
-        .and_then(project::resolve_common_git_dir)
-        .map(AbsolutePath::from);
+        .and_then(project::resolve_common_git_dir);
     watch_git_metadata_paths(
         watcher,
         &req,
@@ -649,7 +644,6 @@ fn handle_event(
     let Some(candidate) = project_level_dir(event_path, ctx.scan_root, ctx.project_parents) else {
         return;
     };
-    let candidate = AbsolutePath::from(candidate);
     // Always enqueue removals (dir gone); for creations, skip already-discovered.
     if !candidate.is_dir() || !ctx.discovered.contains(&candidate) {
         pending_new
@@ -1024,7 +1018,7 @@ fn spawn_git_refresh(
             if let Some(info) = git_info {
                 for (path, _) in &affected {
                     let _ = bg_tx.send(BackgroundMsg::GitInfo {
-                        path: AbsolutePath::from(PathBuf::from(path)),
+                        path: AbsolutePath::from(path.clone()),
                         info: info.clone(),
                     });
                 }
@@ -1045,7 +1039,7 @@ fn spawn_git_refresh(
         if let Some(git_path_states) = git_path_states {
             for (path, state) in git_path_states {
                 let _ = bg_tx.send(BackgroundMsg::GitPathState {
-                    path: AbsolutePath::from(PathBuf::from(path)),
+                    path: AbsolutePath::from(path),
                     state,
                 });
             }
@@ -1232,20 +1226,20 @@ fn project_level_dir(
     event_path: &Path,
     scan_root: &Path,
     project_parents: &HashSet<AbsolutePath>,
-) -> Option<PathBuf> {
+) -> Option<AbsolutePath> {
     let mut path = event_path.to_path_buf();
-    let mut marker_candidate: Option<PathBuf> = None;
+    let mut marker_candidate: Option<AbsolutePath> = None;
     loop {
         let parent = path.parent()?;
         if path.join("Cargo.toml").exists() || path.join(".git").exists() {
-            marker_candidate = Some(path.clone());
+            marker_candidate = Some(AbsolutePath::from(path.clone()));
         }
         if parent == scan_root || project_parents.contains(parent) {
             // Prefer the outermost directory under the known project-parent
             // boundary that carries project markers. This avoids discovering
             // workspace members as standalone projects when a new workspace
             // worktree is still emitting nested file events.
-            return Some(marker_candidate.unwrap_or(path));
+            return Some(marker_candidate.unwrap_or_else(|| AbsolutePath::from(path)));
         }
         if !path.starts_with(scan_root) {
             return None;
@@ -1398,7 +1392,7 @@ mod tests {
             let parents = case
                 .parents
                 .iter()
-                .map(|p| AbsolutePath::from(PathBuf::from(*p)))
+                .map(|p| AbsolutePath::from((*p).to_string()))
                 .collect();
             let result = project_level_dir(Path::new(case.event), scan_root, &parents);
             assert_eq!(
@@ -1417,8 +1411,8 @@ mod tests {
         struct Case {
             name:     &'static str,
             parents:  HashSet<AbsolutePath>,
-            event:    PathBuf,
-            expected: PathBuf,
+            event:    AbsolutePath,
+            expected: AbsolutePath,
         }
 
         let tmp = tempfile::tempdir().expect("failed to create tempdir");
@@ -1449,20 +1443,20 @@ mod tests {
             Case {
                 name:     "finds cargo toml under empty parents",
                 parents:  HashSet::new(),
-                event:    project_dir.join("src/main.rs"),
-                expected: project_dir.clone(),
+                event:    AbsolutePath::from(project_dir.join("src/main.rs")),
+                expected: AbsolutePath::from(project_dir.clone()),
             },
             Case {
                 name:     "finds project in unknown parent via filesystem",
                 parents:  HashSet::from([AbsolutePath::from(scan_root.join("rust"))]),
-                event:    unknown_parent_project.join("src/lib.rs"),
-                expected: unknown_parent_project.clone(),
+                event:    AbsolutePath::from(unknown_parent_project.join("src/lib.rs")),
+                expected: AbsolutePath::from(unknown_parent_project.clone()),
             },
             Case {
                 name:     "nested workspace member resolves to workspace root",
                 parents:  HashSet::from([AbsolutePath::from(scan_root.join("rust"))]),
-                event:    member_dir.join("src/lib.rs"),
-                expected: workspace_root,
+                event:    AbsolutePath::from(member_dir.join("src/lib.rs")),
+                expected: AbsolutePath::from(workspace_root),
             },
         ];
 
@@ -1494,10 +1488,10 @@ mod tests {
         ));
     }
 
-    fn event_with_path(path: PathBuf) -> notify::Event {
+    fn event_with_path(path: &AbsolutePath) -> notify::Event {
         notify::Event {
             kind:  notify::event::EventKind::Any,
-            paths: vec![path],
+            paths: vec![path.to_path_buf()],
             attrs: notify::event::EventAttributes::default(),
         }
     }
@@ -1505,8 +1499,8 @@ mod tests {
     fn repo_with_member_event_context(
         tmp: &tempfile::TempDir,
     ) -> (
-        PathBuf,
-        PathBuf,
+        AbsolutePath,
+        AbsolutePath,
         HashMap<AbsolutePath, ProjectEntry>,
         PathBuf,
         HashSet<AbsolutePath>,
@@ -1544,8 +1538,8 @@ mod tests {
         let project_parents = HashSet::from([AbsolutePath::from(scan_root.clone())]);
         let discovered = HashSet::new();
         (
-            project_dir,
-            member_dir,
+            AbsolutePath::from(project_dir),
+            AbsolutePath::from(member_dir),
             projects,
             scan_root,
             project_parents,
@@ -1589,7 +1583,7 @@ mod tests {
         );
         let messages = collect_messages_until(
             &bg_rx,
-            |msg| matches!(msg, BackgroundMsg::GitPathState { path, .. } if path.as_path() == project_dir),
+            |msg| matches!(msg, BackgroundMsg::GitPathState { path, .. } if *path == *project_dir),
         );
 
         let mut got_git_info = false;
@@ -1598,10 +1592,10 @@ mod tests {
         for msg in messages {
             match msg {
                 BackgroundMsg::GitInfo { .. } => got_git_info = true,
-                BackgroundMsg::GitPathState { path, .. } if path.as_path() == project_dir => {
+                BackgroundMsg::GitPathState { path, .. } if *path == *project_dir => {
                     got_root_git_state = true;
                 },
-                BackgroundMsg::GitPathState { path, .. } if path.as_path() == member_dir => {
+                BackgroundMsg::GitPathState { path, .. } if *path == *member_dir => {
                     got_member_git_state = true;
                 },
                 _ => {},
@@ -1619,8 +1613,8 @@ mod tests {
     fn worktree_git_event_context(
         tmp: &tempfile::TempDir,
     ) -> (
-        PathBuf,
-        PathBuf,
+        AbsolutePath,
+        AbsolutePath,
         HashMap<AbsolutePath, ProjectEntry>,
         PathBuf,
         HashSet<AbsolutePath>,
@@ -1660,8 +1654,8 @@ mod tests {
         let project_parents = HashSet::from([AbsolutePath::from(scan_root.clone())]);
         let discovered = HashSet::new();
         (
-            wt_root,
-            wt_git_dir,
+            AbsolutePath::from(wt_root),
+            AbsolutePath::from(wt_git_dir),
             projects,
             scan_root,
             project_parents,
@@ -1675,7 +1669,7 @@ mod tests {
         let mut projects = HashMap::new();
         let (key, entry) = make_project_entry("~/rust/bevy", Path::new("/home/user/rust/bevy"));
         projects.insert(key, entry);
-        let project_parents = HashSet::from([AbsolutePath::from(PathBuf::from("/home/user/rust"))]);
+        let project_parents = HashSet::from(["/home/user/rust".into()]);
         let discovered = HashSet::new();
         let ctx = EventContext {
             scan_root:       &scan_root,
@@ -2036,7 +2030,9 @@ edition = "2024"
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
-        let buffered = vec![event_with_path(wt_git_dir.join("index"))];
+        let buffered = vec![event_with_path(&AbsolutePath::from(
+            wt_git_dir.join("index"),
+        ))];
 
         replay_buffered_events(
             &buffered,
@@ -2075,7 +2071,7 @@ edition = "2024"
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
-        let buffered = vec![event_with_path(branch_ref)];
+        let buffered = vec![event_with_path(&AbsolutePath::from(branch_ref))];
 
         replay_buffered_events(
             &buffered,
@@ -2261,7 +2257,9 @@ edition = "2024"
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
-        let buffered = vec![event_with_path(project_dir.join("src").join("lib.rs"))];
+        let buffered = vec![event_with_path(&AbsolutePath::from(
+            project_dir.join("src").join("lib.rs"),
+        ))];
 
         replay_buffered_events(
             &buffered,
@@ -2364,22 +2362,19 @@ edition = "2024"
         let cases = [
             (
                 "empty_uses_scan_root",
-                PathBuf::from("/home/user"),
+                "/home/user".into(),
                 Vec::<String>::new(),
-                vec![AbsolutePath::from(PathBuf::from("/home/user"))],
+                vec!["/home/user".into()],
             ),
             (
                 "relative_under_scan_root",
-                PathBuf::from("/home/user"),
+                "/home/user".into(),
                 vec!["rust".to_string(), ".claude".to_string()],
-                vec![
-                    AbsolutePath::from(PathBuf::from("/home/user/rust")),
-                    AbsolutePath::from(PathBuf::from("/home/user/.claude")),
-                ],
+                vec!["/home/user/rust".into(), "/home/user/.claude".into()],
             ),
             (
                 "tilde_expands_to_home",
-                PathBuf::from("/home/user/rust"),
+                "/home/user/rust".into(),
                 vec!["~/rust".to_string(), "~/.claude".to_string()],
                 vec![
                     AbsolutePath::from(home.join("rust")),
@@ -2388,14 +2383,14 @@ edition = "2024"
             ),
             (
                 "absolute_used_as_is",
-                PathBuf::from("/home/user"),
+                "/home/user".into(),
                 vec!["/opt/projects".to_string()],
-                vec![AbsolutePath::from(PathBuf::from("/opt/projects"))],
+                vec!["/opt/projects".into()],
             ),
         ];
 
         for (name, scan_root, include_dirs, expected) in cases {
-            let dirs = scan::resolve_include_dirs(AbsolutePath::from(scan_root), &include_dirs);
+            let dirs = scan::resolve_include_dirs(scan_root, &include_dirs);
             assert_eq!(dirs, expected, "{name}");
         }
     }
@@ -2549,10 +2544,10 @@ edition = "2024"
         let mut got_git = false;
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                BackgroundMsg::DiskUsage { path, .. } if path.as_path() == project_dir => {
+                BackgroundMsg::DiskUsage { path, .. } if *path == *project_dir => {
                     got_disk = true;
                 },
-                BackgroundMsg::GitInfo { path, .. } if path.as_path() == project_dir => {
+                BackgroundMsg::GitInfo { path, .. } if *path == *project_dir => {
                     got_git = true;
                 },
                 _ => {},
@@ -2612,7 +2607,7 @@ edition = "2024"
         let mut got_git = false;
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                BackgroundMsg::DiskUsage { path, .. } if path.as_path() == project_dir => {
+                BackgroundMsg::DiskUsage { path, .. } if *path == *project_dir => {
                     got_disk = true;
                 },
                 BackgroundMsg::GitInfo { .. } => got_git = true,
@@ -2793,7 +2788,7 @@ edition = "2024"
 
         let member_bytes = entries
             .iter()
-            .find(|(path, _)| path.as_path() == member_dir.as_path())
+            .find(|(path, _)| **path == *member_dir)
             .map(|(_, bytes)| *bytes)
             .expect("member disk usage entry");
         assert!(

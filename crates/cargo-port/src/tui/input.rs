@@ -368,10 +368,10 @@ fn overlay_editor_target_path(
     context: InputContext,
     config_path: Option<&Path>,
     keymap_path: Option<&Path>,
-) -> Option<std::path::PathBuf> {
+) -> Option<AbsolutePath> {
     match context {
-        InputContext::Settings => config_path.map(Path::to_path_buf),
-        InputContext::Keymap => keymap_path.map(Path::to_path_buf),
+        InputContext::Settings => config_path.map(AbsolutePath::from),
+        InputContext::Keymap => keymap_path.map(AbsolutePath::from),
         _ => None,
     }
 }
@@ -644,7 +644,7 @@ mod tests {
 
         assert_eq!(
             overlay_editor_target_path(InputContext::Settings, Some(config_path), None),
-            Some(config_path.to_path_buf())
+            Some(AbsolutePath::from(config_path))
         );
     }
 
@@ -654,7 +654,7 @@ mod tests {
 
         assert_eq!(
             overlay_editor_target_path(InputContext::Keymap, None, Some(keymap_path)),
-            Some(keymap_path.to_path_buf())
+            Some(AbsolutePath::from(keymap_path))
         );
     }
 

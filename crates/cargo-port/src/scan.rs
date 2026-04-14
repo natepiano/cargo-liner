@@ -83,7 +83,7 @@ pub(crate) enum BackgroundMsg {
     },
     ScanResult {
         projects:     Vec<RootItem>,
-        disk_entries: Vec<(String, PathBuf)>,
+        disk_entries: Vec<(String, AbsolutePath)>,
     },
     ProjectDiscovered {
         item: RootItem,
@@ -190,14 +190,18 @@ impl CiFetchResult {
 }
 
 /// Base cache directory for CI metadata.
-pub(crate) fn cache_dir() -> PathBuf { cache_paths::ci_cache_root() }
+pub(crate) fn cache_dir() -> AbsolutePath { cache_paths::ci_cache_root() }
 
 /// Repo-keyed cache directory: `{cache_dir}/{owner}/{repo}`.
-fn repo_cache_dir(owner: &str, repo: &str) -> PathBuf { cache_dir().join(owner).join(repo) }
+fn repo_cache_dir(owner: &str, repo: &str) -> AbsolutePath {
+    cache_dir().join(owner).join(repo).into()
+}
 
-fn ci_cache_dir(owner: &str, repo: &str) -> PathBuf { repo_cache_dir(owner, repo) }
+fn ci_cache_dir(owner: &str, repo: &str) -> AbsolutePath { repo_cache_dir(owner, repo) }
 
-pub(crate) fn ci_cache_dir_pub(owner: &str, repo: &str) -> PathBuf { ci_cache_dir(owner, repo) }
+pub(crate) fn ci_cache_dir_pub(owner: &str, repo: &str) -> AbsolutePath {
+    ci_cache_dir(owner, repo)
+}
 
 /// Check if the "no more runs" marker exists for a repo.
 pub(crate) fn is_exhausted(owner: &str, repo: &str) -> bool {
@@ -439,7 +443,7 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
             .filter(|(j, candidate)| {
                 *j != i
                     && !top_level_workspaces.contains(j)
-                    && member_paths.contains(&candidate.path().to_path_buf())
+                    && member_paths.contains(candidate.path())
             })
             .filter_map(|(j, candidate)| {
                 consumed.insert(j);
@@ -486,13 +490,13 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
     result
 }
 
-fn workspace_member_paths_new(ws_path: &Path, items: &[RootItem]) -> HashSet<PathBuf> {
+fn workspace_member_paths_new(ws_path: &Path, items: &[RootItem]) -> HashSet<AbsolutePath> {
     let manifest = ws_path.join("Cargo.toml");
     let Some((members, excludes)) = workspace_member_patterns(&manifest) else {
         return items
             .iter()
             .filter(|item| item.path().starts_with(ws_path) && item.path() != ws_path)
-            .map(|item| item.path().to_path_buf())
+            .map(|item| item.path().clone())
             .collect();
     };
 
@@ -509,7 +513,7 @@ fn workspace_member_paths_new(ws_path: &Path, items: &[RootItem]) -> HashSet<Pat
                     .iter()
                     .any(|pattern| workspace_pattern_matches(pattern, &relative_str));
                 if included && !is_excluded {
-                    Some(item.path().to_path_buf())
+                    Some(item.path().clone())
                 } else {
                     None
                 }
@@ -625,7 +629,7 @@ fn item_is_linked(item: &RootItem) -> bool {
 }
 
 fn merge_worktrees_new(items: &mut Vec<RootItem>) {
-    let mut primary_indices: HashMap<PathBuf, usize> = HashMap::new();
+    let mut primary_indices: HashMap<AbsolutePath, usize> = HashMap::new();
     let mut worktree_indices: Vec<usize> = Vec::new();
 
     for (i, item) in items.iter().enumerate() {
@@ -636,7 +640,7 @@ fn merge_worktrees_new(items: &mut Vec<RootItem>) {
         if is_linked {
             worktree_indices.push(i);
         } else {
-            primary_indices.insert(identity.to_path_buf(), i);
+            primary_indices.insert(identity.clone(), i);
         }
     }
 
@@ -733,10 +737,10 @@ fn merge_worktrees_new(items: &mut Vec<RootItem>) {
 /// Find standalone items whose path lives inside another item's directory
 /// and move them into that item's `vendored` list.
 fn extract_vendored_new(items: &mut Vec<RootItem>) {
-    let parent_paths: Vec<(usize, PathBuf)> = items
+    let parent_paths: Vec<(usize, AbsolutePath)> = items
         .iter()
         .enumerate()
-        .map(|(i, item)| (i, item.path().to_path_buf()))
+        .map(|(i, item)| (i, item.path().clone()))
         .collect();
 
     let mut vendored_map: Vec<(usize, usize)> = Vec::new();
@@ -976,13 +980,13 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     if repo_presence.is_in_repo() {
         let submodules = super::project::detect_submodules(abs_path);
         if !submodules.is_empty() {
-            let sub_paths: Vec<PathBuf> = submodules.iter().map(|s| s.path.clone()).collect();
+            let sub_paths: Vec<AbsolutePath> = submodules.iter().map(|s| s.path.clone()).collect();
             let _ = tx.send(BackgroundMsg::Submodules {
                 path: abs.clone(),
                 submodules,
             });
             for sub_path in &sub_paths {
-                let sub_abs: AbsolutePath = sub_path.clone().into();
+                let sub_abs: AbsolutePath = sub_path.clone();
                 let _ = tx.send(BackgroundMsg::GitPathState {
                     path:  sub_abs.clone(),
                     state: super::project::detect_git_path_state(sub_path),
@@ -1062,12 +1066,12 @@ pub(crate) fn resolve_include_dirs(
         .iter()
         .map(|dir| {
             let expanded = expand_home_path(dir);
-            let path = expanded.as_path();
-            if path.is_absolute() {
-                AbsolutePath::from(path)
+            let resolved = if expanded.is_absolute() {
+                expanded
             } else {
-                AbsolutePath::from(scan_root.join(path))
-            }
+                scan_root.join(&expanded)
+            };
+            AbsolutePath::from(resolved.canonicalize().unwrap_or(resolved))
         })
         .collect()
 }
@@ -1165,18 +1169,18 @@ struct Phase1DiscoverStats {
 
 struct Phase1DiscoverResult {
     items:        Vec<RootItem>,
-    disk_entries: Vec<(String, PathBuf)>,
+    disk_entries: Vec<(String, AbsolutePath)>,
     stats:        Phase1DiscoverStats,
 }
 
 fn discover_non_rust_project(
     entry_path: &Path,
     items: &mut Vec<RootItem>,
-    disk_entries: &mut Vec<(String, PathBuf)>,
+    disk_entries: &mut Vec<(String, AbsolutePath)>,
     stats: &mut Phase1DiscoverStats,
 ) {
     let project = super::project::from_git_dir(entry_path);
-    let abs_path = project.path().to_path_buf();
+    let abs_path = project.path().clone();
     stats.projects += 1;
     stats.non_rust_projects += 1;
 
@@ -1235,8 +1239,7 @@ fn phase1_discover(scan_dirs: &[AbsolutePath], non_rust: NonRustInclusion) -> Ph
                 );
                 stats.projects += 1;
                 let item = cargo_project_to_item(cargo_project);
-                let abs_path = item.path().to_path_buf();
-                let abs: AbsolutePath = abs_path.clone().into();
+                let abs_path = item.path().clone();
                 let repo_presence_started = std::time::Instant::now();
                 let repo_presence = if super::project::git_repo_root(&abs_path).is_some() {
                     GitRepoPresence::InRepo
@@ -1245,7 +1248,7 @@ fn phase1_discover(scan_dirs: &[AbsolutePath], non_rust: NonRustInclusion) -> Ph
                 };
                 tracing::info!(
                     elapsed_ms = crate::perf_log::ms(repo_presence_started.elapsed().as_millis()),
-                    path = %abs,
+                    path = %abs_path,
                     in_repo = repo_presence.is_in_repo(),
                     "phase1_repo_presence"
                 );
@@ -1264,7 +1267,7 @@ fn phase1_discover(scan_dirs: &[AbsolutePath], non_rust: NonRustInclusion) -> Ph
 
 fn spawn_initial_disk_usage(
     scan_context: &StreamingScanContext,
-    disk_entries: &[(String, PathBuf)],
+    disk_entries: &[(String, AbsolutePath)],
 ) {
     for tree in group_disk_usage_trees(disk_entries) {
         spawn_disk_usage_tree(scan_context, tree);
@@ -1273,12 +1276,12 @@ fn spawn_initial_disk_usage(
 
 #[derive(Clone)]
 struct DiskUsageTree {
-    root_abs_path: PathBuf,
-    entries:       Vec<PathBuf>,
+    root_abs_path: AbsolutePath,
+    entries:       Vec<AbsolutePath>,
 }
 
-fn group_disk_usage_trees(disk_entries: &[(String, PathBuf)]) -> Vec<DiskUsageTree> {
-    let mut sorted: Vec<PathBuf> = disk_entries.iter().map(|(_, p)| p.clone()).collect();
+fn group_disk_usage_trees(disk_entries: &[(String, AbsolutePath)]) -> Vec<DiskUsageTree> {
+    let mut sorted: Vec<AbsolutePath> = disk_entries.iter().map(|(_, p)| p.clone()).collect();
     sorted.sort_by(|left, right| {
         left.components()
             .count()
@@ -1335,14 +1338,14 @@ fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTre
             "tokio_disk_usage"
         );
         let _ = tx.send(BackgroundMsg::DiskUsageBatch {
-            root_path: tree.root_abs_path.into(),
+            root_path: tree.root_abs_path,
             entries:   results,
         });
     });
 }
 
 fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, u64)> {
-    let mut totals: HashMap<PathBuf, u64> = tree
+    let mut totals: HashMap<AbsolutePath, u64> = tree
         .entries
         .iter()
         .map(|abs_path| (abs_path.clone(), 0))
@@ -1361,7 +1364,7 @@ fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, u64)> {
             if let Some(total) = totals.get_mut(dir) {
                 *total += bytes;
             }
-            if dir == tree.root_abs_path {
+            if dir == tree.root_abs_path.as_path() {
                 break;
             }
             current = dir.parent();
@@ -1371,8 +1374,8 @@ fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, u64)> {
     tree.entries
         .iter()
         .map(|abs_path| {
-            let bytes = totals.get(abs_path).copied().unwrap_or(0);
-            (abs_path.clone().into(), bytes)
+            let bytes = totals.get(abs_path.as_path()).copied().unwrap_or(0);
+            (abs_path.clone(), bytes)
         })
         .collect()
 }
@@ -1384,7 +1387,7 @@ pub(crate) fn disk_usage_batch_for_item(item: &RootItem) -> Vec<(AbsolutePath, u
         .map(|(path, _)| path)
         .collect();
     let tree = DiskUsageTree {
-        root_abs_path: item.path().to_path_buf(),
+        root_abs_path: item.path().clone(),
         entries,
     };
     dir_sizes_for_tree(&tree)
@@ -1403,13 +1406,13 @@ mod tests {
         primary_abs: Option<&str>,
     ) -> RootItem {
         RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
-            AbsolutePath::from(PathBuf::from(abs_path)),
+            AbsolutePath::from(abs_path),
             name.map(String::from),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
             Vec::new(),
             Vec::new(),
             worktree_name.map(String::from),
-            primary_abs.map(|s| AbsolutePath::from(PathBuf::from(s))),
+            primary_abs.map(|s| AbsolutePath::from(s.to_string())),
         )))
     }
 
@@ -1420,12 +1423,12 @@ mod tests {
         primary_abs: Option<&str>,
     ) -> RootItem {
         RootItem::Rust(RustProject::Package(PackageProject::new(
-            AbsolutePath::from(PathBuf::from(abs_path)),
+            AbsolutePath::from(abs_path),
             name.map(String::from),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
             Vec::new(),
             worktree_name.map(String::from),
-            primary_abs.map(|s| AbsolutePath::from(PathBuf::from(s))),
+            primary_abs.map(|s| AbsolutePath::from(s.to_string())),
         )))
     }
 
@@ -1569,43 +1572,31 @@ mod tests {
     #[test]
     fn group_disk_usage_trees_merges_nested_projects_under_one_root() {
         let trees = group_disk_usage_trees(&[
-            (
-                "~/rust/bevy".to_string(),
-                PathBuf::from("/home/user/rust/bevy"),
-            ),
+            ("~/rust/bevy".to_string(), "/home/user/rust/bevy".into()),
             (
                 "~/rust/bevy/crates/bevy_ecs".to_string(),
-                PathBuf::from("/home/user/rust/bevy/crates/bevy_ecs"),
+                "/home/user/rust/bevy/crates/bevy_ecs".into(),
             ),
             (
                 "~/rust/bevy/tools/ci".to_string(),
-                PathBuf::from("/home/user/rust/bevy/tools/ci"),
+                "/home/user/rust/bevy/tools/ci".into(),
             ),
-            (
-                "~/rust/hana".to_string(),
-                PathBuf::from("/home/user/rust/hana"),
-            ),
+            ("~/rust/hana".to_string(), "/home/user/rust/hana".into()),
         ]);
 
         assert_eq!(trees.len(), 2);
-        assert_eq!(
-            trees[0].root_abs_path,
-            PathBuf::from("/home/user/rust/bevy")
-        );
+        assert_eq!(trees[0].root_abs_path, *Path::new("/home/user/rust/bevy"));
         assert_eq!(trees[0].entries.len(), 3);
-        assert_eq!(
-            trees[1].root_abs_path,
-            PathBuf::from("/home/user/rust/hana")
-        );
+        assert_eq!(trees[1].root_abs_path, *Path::new("/home/user/rust/hana"));
         assert_eq!(trees[1].entries.len(), 1);
     }
 
     #[test]
     fn dir_sizes_for_tree_accumulates_root_and_child_sizes_from_one_walk() {
         let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
-        let root = tmp.path().join("bevy");
-        let child = root.join("crates").join("bevy_ecs");
-        std::fs::create_dir_all(&child).unwrap_or_else(|_| std::process::abort());
+        let root: AbsolutePath = tmp.path().join("bevy").into();
+        let child: AbsolutePath = root.join("crates").join("bevy_ecs").into();
+        std::fs::create_dir_all(&*child).unwrap_or_else(|_| std::process::abort());
         std::fs::write(root.join("root.txt"), vec![0_u8; 5])
             .unwrap_or_else(|_| std::process::abort());
         std::fs::write(child.join("child.txt"), vec![0_u8; 7])
@@ -1615,12 +1606,9 @@ mod tests {
             root_abs_path: root.clone(),
             entries:       vec![root.clone(), child.clone()],
         });
-        let sizes: HashMap<PathBuf, u64> = sizes
-            .into_iter()
-            .map(|(abs, bytes)| (abs.to_path_buf(), bytes))
-            .collect();
+        let sizes: HashMap<AbsolutePath, u64> = sizes.into_iter().collect();
 
-        assert_eq!(sizes.get(&root), Some(&12));
-        assert_eq!(sizes.get(&child), Some(&7));
+        assert_eq!(sizes.get(root.as_path()), Some(&12));
+        assert_eq!(sizes.get(child.as_path()), Some(&7));
     }
 }

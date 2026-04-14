@@ -1,6 +1,5 @@
 use std::ops::Deref;
 use std::ops::DerefMut;
-use std::path::PathBuf;
 
 use super::git::GitInfo;
 use super::info::ProjectInfo;
@@ -22,9 +21,9 @@ pub(crate) struct NonRustProject {
 }
 
 impl NonRustProject {
-    pub(crate) fn new(path: PathBuf, name: Option<String>) -> Self {
+    pub(crate) fn new(path: AbsolutePath, name: Option<String>) -> Self {
         Self {
-            path: path.into(),
+            path,
             name,
             info: ProjectInfo::default(),
         }

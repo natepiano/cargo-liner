@@ -679,7 +679,7 @@ impl App {
                 let item = self.projects.get(node_index)?;
                 item.submodules()
                     .get(submodule_index)
-                    .map(|s| AbsolutePath::from(s.path.clone()))
+                    .map(|s| s.path.clone())
             },
         }
     }

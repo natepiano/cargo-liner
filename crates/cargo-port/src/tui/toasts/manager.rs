@@ -738,7 +738,7 @@ mod tests {
     #[test]
     fn toast_view_exposes_action_path() {
         let mut manager = ToastManager::default();
-        let path = AbsolutePath::from(std::path::PathBuf::from("/tmp/keymap.toml"));
+        let path: AbsolutePath = "/tmp/keymap.toml".into();
         manager.push_persistent("error", "bad", ToastStyle::Error, Some(path.clone()), 1);
         let active = manager.active(Instant::now());
         assert_eq!(active[0].action_path(), Some(path.as_path()));

@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::path::PathBuf;
 
 use super::git::GitInfo;
 use super::info::ProjectInfo;
@@ -126,7 +125,7 @@ impl RustProject {
         }
     }
 
-    pub(crate) fn collect_project_info(&self, out: &mut Vec<(PathBuf, ProjectInfo)>) {
+    pub(crate) fn collect_project_info(&self, out: &mut Vec<(AbsolutePath, ProjectInfo)>) {
         match self {
             Self::Workspace(ws) => collect_project_info_from_workspace(ws, out),
             Self::Package(pkg) => collect_project_info_from_package(pkg, out),
@@ -273,22 +272,25 @@ pub(super) fn lint_in_package_mut<'a>(
 
 fn collect_project_info_from_workspace(
     ws: &WorkspaceProject,
-    out: &mut Vec<(PathBuf, ProjectInfo)>,
+    out: &mut Vec<(AbsolutePath, ProjectInfo)>,
 ) {
-    out.push((ws.path().to_path_buf(), ws.rust.info().clone()));
+    out.push((ws.path().clone(), ws.rust.info().clone()));
     for group in ws.groups() {
         for member in group.members() {
-            out.push((member.path().to_path_buf(), member.rust.info().clone()));
+            out.push((member.path().clone(), member.rust.info().clone()));
         }
     }
     for vendored in ws.vendored() {
-        out.push((vendored.path().to_path_buf(), vendored.rust.info().clone()));
+        out.push((vendored.path().clone(), vendored.rust.info().clone()));
     }
 }
 
-fn collect_project_info_from_package(pkg: &PackageProject, out: &mut Vec<(PathBuf, ProjectInfo)>) {
-    out.push((pkg.path().to_path_buf(), pkg.rust.info().clone()));
+fn collect_project_info_from_package(
+    pkg: &PackageProject,
+    out: &mut Vec<(AbsolutePath, ProjectInfo)>,
+) {
+    out.push((pkg.path().clone(), pkg.rust.info().clone()));
     for vendored in pkg.vendored() {
-        out.push((vendored.path().to_path_buf(), vendored.rust.info().clone()));
+        out.push((vendored.path().clone(), vendored.rust.info().clone()));
     }
 }

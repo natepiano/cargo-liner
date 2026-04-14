@@ -3,7 +3,6 @@ use std::io::BufReader;
 use std::io::Read;
 use std::io::Stdout;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::process::Stdio;
 use std::sync::mpsc;
@@ -25,7 +24,6 @@ use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::enable_raw_mode;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use tracing;
 
 use super::app::App;
 use super::app::PendingClean;
@@ -193,9 +191,11 @@ pub fn run(path: &Path) -> ExitCode {
 /// Replace the current process with a fresh instance of the same binary.
 fn restart_self() {
     use std::os::unix::process::CommandExt;
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cargo-port"));
+    let exe = AbsolutePath::from(
+        std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("cargo-port")),
+    );
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let err = std::process::Command::new(&exe).args(&args).exec();
+    let err = std::process::Command::new(exe.as_path()).args(&args).exec();
     tracing::error!("Failed to restart: {err}");
 }
 
@@ -586,13 +586,13 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     });
 }
 
-fn last_selected_path_file() -> PathBuf { scan::cache_dir().join("last_selected.txt") }
+fn last_selected_path_file() -> AbsolutePath { scan::cache_dir().join("last_selected.txt").into() }
 
 pub(super) fn load_last_selected() -> Option<AbsolutePath> {
     let path = last_selected_path_file();
-    let raw = std::fs::read_to_string(path).ok()?;
+    let raw = std::fs::read_to_string(&*path).ok()?;
     let trimmed = raw.trim();
-    (!trimmed.is_empty() && Path::new(trimmed).is_absolute()).then(|| PathBuf::from(trimmed).into())
+    (!trimmed.is_empty() && Path::new(trimmed).is_absolute()).then(|| AbsolutePath::from(trimmed))
 }
 
 fn save_last_selected(project_path: &AbsolutePath) {
@@ -603,11 +603,11 @@ fn save_last_selected(project_path: &AbsolutePath) {
 pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name: Option<&String>) {
     let tx = app.bg_tx();
     let client = app.http_client();
-    let abs = PathBuf::from(abs_path);
+    let abs = AbsolutePath::from(abs_path);
     let project_name = name.cloned();
 
     thread::spawn(move || {
-        let path: AbsolutePath = abs.clone().into();
+        let path: AbsolutePath = abs.clone();
         let _ = tx.send(BackgroundMsg::GitPathState {
             path:  path.clone(),
             state: crate::project::detect_git_path_state(&abs),

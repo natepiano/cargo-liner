@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::path::Path;
-use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -263,13 +262,13 @@ impl App {
     // ── RootItem query methods ─────────────────────────────────────
 
     /// All absolute paths for a `RootItem` (root + worktrees).
-    fn unique_item_paths(item: &RootItem) -> Vec<PathBuf> {
+    fn unique_item_paths(item: &RootItem) -> Vec<AbsolutePath> {
         let mut paths = Vec::new();
-        paths.push(item.path().to_path_buf());
+        paths.push(item.path().clone());
         match item {
             RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) => {
                 for l in linked {
-                    let p = l.path().to_path_buf();
+                    let p = l.path().clone();
                     if !paths.contains(&p) {
                         paths.push(p);
                     }
@@ -277,7 +276,7 @@ impl App {
             },
             RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }) => {
                 for l in linked {
-                    let p = l.path().to_path_buf();
+                    let p = l.path().clone();
                     if !paths.contains(&p) {
                         paths.push(p);
                     }
@@ -704,7 +703,7 @@ fn discovery_shimmer_phase_offset(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DiscoveryParentRow {
-    path: PathBuf,
+    path: AbsolutePath,
     kind: DiscoveryRowKind,
 }
 
@@ -824,7 +823,7 @@ fn root_item_parent_row(item: &RootItem, session_path: &Path) -> Option<Discover
             }
             if linked.iter().any(|l| l.path() == session_path) {
                 return Some(DiscoveryParentRow {
-                    path: primary.path().to_path_buf(),
+                    path: primary.path().clone(),
                     kind: DiscoveryRowKind::Root,
                 });
             }
@@ -844,7 +843,7 @@ fn root_item_parent_row(item: &RootItem, session_path: &Path) -> Option<Discover
             }
             if linked.iter().any(|l| l.path() == session_path) {
                 return Some(DiscoveryParentRow {
-                    path: primary.path().to_path_buf(),
+                    path: primary.path().clone(),
                     kind: DiscoveryRowKind::Root,
                 });
             }
@@ -873,7 +872,7 @@ fn workspace_parent_row(
         .any(|vendored| vendored.path() == session_path)
     {
         return Some(DiscoveryParentRow {
-            path: ws.path().to_path_buf(),
+            path: ws.path().clone(),
             kind: parent_kind,
         });
     }
@@ -881,7 +880,7 @@ fn workspace_parent_row(
         for member in group.members() {
             if member.path() == session_path {
                 return Some(DiscoveryParentRow {
-                    path: ws.path().to_path_buf(),
+                    path: ws.path().clone(),
                     kind: parent_kind,
                 });
             }
@@ -907,7 +906,7 @@ fn package_parent_row(
         .iter()
         .any(|vendored| vendored.path() == session_path)
         .then(|| DiscoveryParentRow {
-            path: pkg.path().to_path_buf(),
+            path: pkg.path().clone(),
             kind: parent_kind,
         })
 }

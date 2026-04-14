@@ -5,7 +5,6 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Write;
 use std::path::Path;
-use std::path::PathBuf;
 
 use walkdir::WalkDir;
 
@@ -14,6 +13,7 @@ use super::read_write;
 use super::status;
 use super::types::LintRun;
 use crate::constants::LINTS_HISTORY_JSONL;
+use crate::project::AbsolutePath;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheUsage {
@@ -156,12 +156,12 @@ fn history_line_sort_key(run: &LintRun) -> i64 {
 /// and its archived output directory.
 #[derive(Debug)]
 struct PrunableRun {
-    history_path:      PathBuf,
+    history_path:      AbsolutePath,
     line_index:        usize,
     sort_key:          i64,
     run_id:            String,
     /// Project cache directory containing `runs/{run_id}/` archives.
-    project_cache_dir: PathBuf,
+    project_cache_dir: AbsolutePath,
 }
 
 /// Collect all runs across all history files, paired with their archive
@@ -169,16 +169,19 @@ struct PrunableRun {
 fn collect_prunable_runs(cache_root: &Path) -> io::Result<Vec<PrunableRun>> {
     let mut runs = Vec::new();
 
-    for history_path in WalkDir::new(cache_root)
+    for history_pb in WalkDir::new(cache_root)
         .into_iter()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file())
         .filter(|entry| entry.file_name() == LINTS_HISTORY_JSONL)
         .map(walkdir::DirEntry::into_path)
     {
-        let project_cache_dir = history_path.parent().unwrap_or_else(|| Path::new(""));
+        let history_path = AbsolutePath::from(history_pb);
+        let project_cache_dir = history_path
+            .parent()
+            .map_or_else(|| "/".into(), AbsolutePath::from);
 
-        let file = File::open(&history_path)?;
+        let file = File::open(&*history_path)?;
         let reader = BufReader::new(file);
         for (line_index, line) in reader.lines().enumerate() {
             let line = line?;
@@ -190,7 +193,7 @@ fn collect_prunable_runs(cache_root: &Path) -> io::Result<Vec<PrunableRun>> {
                 line_index,
                 sort_key: history_line_sort_key(&run),
                 run_id: run.run_id,
-                project_cache_dir: project_cache_dir.to_path_buf(),
+                project_cache_dir: project_cache_dir.clone(),
             });
         }
     }
@@ -242,7 +245,7 @@ fn prune_runs_under(cache_root: &Path, cache_size: u64) -> io::Result<PruneStats
     });
 
     // Track which runs to remove, keyed by history file path.
-    let mut removed: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+    let mut removed: HashMap<AbsolutePath, Vec<usize>> = HashMap::new();
     let mut runs_evicted: usize = 0;
 
     for run in &runs {

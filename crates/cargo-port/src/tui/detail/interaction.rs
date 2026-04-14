@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -17,6 +16,7 @@ use crate::keymap::KeyBind;
 use crate::keymap::LintsAction;
 use crate::keymap::PackageAction;
 use crate::keymap::TargetsAction;
+use crate::project::AbsolutePath;
 use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::CiState;
@@ -350,10 +350,10 @@ fn open_lint_run_output(app: &App) {
     };
 
     let project_cache_dir = crate::lint::project_dir(abs_path);
-    let log_paths: Vec<PathBuf> = run
+    let log_paths: Vec<AbsolutePath> = run
         .commands
         .iter()
-        .map(|command| project_cache_dir.join(&command.log_file))
+        .map(|command| AbsolutePath::from(project_cache_dir.join(&command.log_file)))
         .filter(|path| path.exists())
         .collect();
 
@@ -364,7 +364,7 @@ fn open_lint_run_output(app: &App) {
     let mut cmd = std::process::Command::new(app.editor());
     cmd.arg(abs_path);
     for path in &log_paths {
-        cmd.arg(path);
+        cmd.arg(&**path);
     }
     let _ = cmd
         .stdout(std::process::Stdio::null())

@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 
@@ -9,6 +8,7 @@ use serde::Serialize;
 
 use super::constants::APP_NAME;
 use super::constants::CONFIG_FILE;
+use crate::project::AbsolutePath;
 
 /// Whether non-Rust projects (git repos without `Cargo.toml`) are included in scans.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -634,8 +634,8 @@ impl Default for MouseConfig {
     }
 }
 
-pub(crate) fn config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join(APP_NAME).join(CONFIG_FILE))
+pub(crate) fn config_path() -> Option<AbsolutePath> {
+    dirs::config_dir().map(|d| d.join(APP_NAME).join(CONFIG_FILE).into())
 }
 
 fn active_config_cell() -> &'static RwLock<CargoPortConfig> {

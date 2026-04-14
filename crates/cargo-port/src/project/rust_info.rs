@@ -29,7 +29,7 @@ impl RustInfo {
 
     pub(crate) fn worktree_name(&self) -> Option<&str> { self.worktree_name.as_deref() }
 
-    pub(crate) fn worktree_primary_abs_path(&self) -> Option<&AbsolutePath> {
+    pub(crate) const fn worktree_primary_abs_path(&self) -> Option<&AbsolutePath> {
         self.worktree_primary_abs_path.as_ref()
     }
 

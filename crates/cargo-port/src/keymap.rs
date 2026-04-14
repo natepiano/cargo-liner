@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Write as _;
-use std::path::PathBuf;
 use std::str::FromStr;
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
 
 use crate::config::NavigationKeys;
+use crate::project::AbsolutePath;
 
 // ── Key representation ───────────────────────────────────────────────
 
@@ -608,10 +608,11 @@ impl fmt::Display for KeymapErrorReason {
 }
 
 /// Path to the keymap config file.
-pub(crate) fn keymap_path() -> Option<PathBuf> {
+pub(crate) fn keymap_path() -> Option<AbsolutePath> {
     dirs::config_dir().map(|d| {
         d.join(crate::constants::APP_NAME)
             .join(crate::constants::KEYMAP_FILE)
+            .into()
     })
 }
 
