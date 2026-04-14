@@ -69,7 +69,7 @@ impl ProjectFields for PackageProject {
 
     fn disk_usage_bytes(&self) -> Option<u64> { self.rust.info.disk_usage_bytes }
 
-    fn git_info(&self) -> Option<&GitInfo> { self.rust.info.git_state.info() }
+    fn git_info(&self) -> Option<&GitInfo> { self.rust.info.local_git_state.info() }
 
     fn info(&self) -> &ProjectInfo { &self.rust.info }
 

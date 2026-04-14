@@ -288,7 +288,7 @@ mod tests {
     use crate::project::GitInfo;
     use crate::project::GitOrigin;
     use crate::project::GitPathState;
-    use crate::project::GitState;
+    use crate::project::LocalGitState;
     use crate::project::PackageProject;
     use crate::project::ProjectType;
     use crate::project::RootItem;
@@ -1005,7 +1005,7 @@ mod tests {
         app.projects_mut()
             .at_path_mut(&project_dir)
             .unwrap_or_else(|| std::process::abort())
-            .git_state = GitState::Detected(Box::new(make_git_info(Some(
+            .local_git_state = LocalGitState::Detected(Box::new(make_git_info(Some(
             "https://github.com/natepiano/demo",
         ))));
         render_ui(&mut app);

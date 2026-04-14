@@ -31,7 +31,7 @@ use crate::lint::RegisterProjectRequest;
 use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::GitRepoPresence;
-use crate::project::GitState;
+use crate::project::LocalGitState;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::Visibility::Deleted;
@@ -1753,7 +1753,7 @@ impl App {
                 preserved_first_commit.or_else(|| self.pending_git_first_commit.remove(path));
         }
         if let Some(project) = self.projects.at_path_mut(path) {
-            project.git_state = GitState::Detected(Box::new(info.clone()));
+            project.local_git_state = LocalGitState::Detected(Box::new(info.clone()));
         }
         if self.is_scan_complete() {
             let git_dir = self
@@ -1785,7 +1785,7 @@ impl App {
             }
             return;
         };
-        if let Some(info) = project.git_state.info_mut() {
+        if let Some(info) = project.local_git_state.info_mut() {
             info.first_commit.clone_from(&first_commit);
             applied = true;
         }

@@ -243,7 +243,7 @@ impl App {
     pub(in super::super) fn git_info_for(&self, path: &Path) -> Option<&GitInfo> {
         self.projects
             .at_path(path)
-            .and_then(|project| project.git_state.info())
+            .and_then(|project| project.local_git_state.info())
     }
 
     pub(in super::super) fn is_rust_at_path(&self, path: &Path) -> bool {

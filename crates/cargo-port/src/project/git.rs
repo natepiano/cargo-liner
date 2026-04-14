@@ -346,7 +346,7 @@ impl GitPathState {
 /// Wrapper for `GitInfo` that distinguishes "not yet detected" from
 /// "detected with full metadata."
 #[derive(Clone, Debug, Default)]
-pub(crate) enum GitState {
+pub(crate) enum LocalGitState {
     /// Not yet detected (during startup/scan).
     #[default]
     Pending,
@@ -354,7 +354,7 @@ pub(crate) enum GitState {
     Detected(Box<GitInfo>),
 }
 
-impl GitState {
+impl LocalGitState {
     pub(crate) fn info(&self) -> Option<&GitInfo> {
         match self {
             Self::Detected(info) => Some(info),
