@@ -925,12 +925,12 @@ impl App {
             if disk_ready && git_ready && repo_ready {
                 self.scan.startup_phases.startup_complete_at = Some(now);
                 // Finish the startup toast only when lint startup cache
-                // check is also done, so "Lint runs" doesn't spin while
+                // check is also done, so "Lint cache" doesn't spin while
                 // the toast exits.
-                if self.scan.startup_phases.lint_startup_complete_at.is_some() {
-                    if let Some(toast) = self.scan.startup_phases.startup_toast.take() {
-                        self.finish_task_toast(toast);
-                    }
+                if self.scan.startup_phases.lint_startup_complete_at.is_some()
+                    && let Some(toast) = self.scan.startup_phases.startup_toast.take()
+                {
+                    self.finish_task_toast(toast);
                 }
                 tracing::info!(
                     since_scan_complete_ms =
@@ -1896,6 +1896,35 @@ impl App {
         }
     }
 
+    fn handle_repo_fetch_queued(&mut self, repo: OwnerRepo) {
+        let first_repo = self.scan.startup_phases.repo_expected.is_empty();
+        self.scan.startup_phases.repo_expected.insert(repo);
+        if first_repo {
+            // First repo queued — add the "GitHub repos" tracked item
+            // to the startup toast and reset completion so the phase
+            // is re-evaluated now that there's actual work to track.
+            self.scan.startup_phases.repo_complete_at = None;
+            self.scan.startup_phases.startup_complete_at = None;
+            if let Some(toast) = self.scan.startup_phases.startup_toast {
+                let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+                self.toasts.add_new_tracked_items(
+                    toast,
+                    &[TrackedItem {
+                        label:        STARTUP_PHASE_GITHUB.to_string(),
+                        key:          STARTUP_PHASE_GITHUB.into(),
+                        started_at:   Some(Instant::now()),
+                        completed_at: None,
+                    }],
+                    linger,
+                );
+                self.toast_pane.set_len(self.active_toasts().len());
+            }
+        }
+        if self.is_scan_complete() {
+            self.sync_startup_repo_toast();
+        }
+    }
+
     pub(in super::super) fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
         if let Some(repo_toast) = self.scan.startup_phases.repo_toast {
             let label = repo.to_string();
@@ -2126,10 +2155,10 @@ impl App {
             self.mark_tracked_item_completed(toast, STARTUP_PHASE_LINT);
         }
         // If core startup already finished, now finish the startup toast.
-        if self.scan.startup_phases.startup_complete_at.is_some() {
-            if let Some(toast) = self.scan.startup_phases.startup_toast.take() {
-                self.finish_task_toast(toast);
-            }
+        if self.scan.startup_phases.startup_complete_at.is_some()
+            && let Some(toast) = self.scan.startup_phases.startup_toast.take()
+        {
+            self.finish_task_toast(toast);
         }
         if let Some(scan_complete_at) = self.scan.startup_phases.scan_complete_at {
             tracing::info!(
@@ -2356,33 +2385,7 @@ impl App {
                 self.insert_ci_runs(path.as_path(), runs, github_total);
             },
             BackgroundMsg::RepoFetchQueued { repo } => {
-                let first_repo = self.scan.startup_phases.repo_expected.is_empty();
-                self.scan.startup_phases.repo_expected.insert(repo);
-                if first_repo {
-                    // First repo queued — add the "GitHub repos" tracked item
-                    // to the startup toast and reset completion so the phase
-                    // is re-evaluated now that there's actual work to track.
-                    self.scan.startup_phases.repo_complete_at = None;
-                    self.scan.startup_phases.startup_complete_at = None;
-                    if let Some(toast) = self.scan.startup_phases.startup_toast {
-                        let linger =
-                            Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
-                        self.toasts.add_new_tracked_items(
-                            toast,
-                            &[TrackedItem {
-                                label:        STARTUP_PHASE_GITHUB.to_string(),
-                                key:          STARTUP_PHASE_GITHUB.into(),
-                                started_at:   Some(Instant::now()),
-                                completed_at: None,
-                            }],
-                            linger,
-                        );
-                        self.toast_pane.set_len(self.active_toasts().len());
-                    }
-                }
-                if self.is_scan_complete() {
-                    self.sync_startup_repo_toast();
-                }
+                self.handle_repo_fetch_queued(repo);
             },
             BackgroundMsg::RepoFetchComplete { repo } => self.handle_repo_fetch_complete(repo),
             BackgroundMsg::GitInfo { path, info } => {
