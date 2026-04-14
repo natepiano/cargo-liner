@@ -88,7 +88,7 @@ fn make_project(name: Option<&str>, path: &str) -> RootItem {
     RootItem::Rust(RustProject::Package(PackageProject::new(
         test_path(path),
         name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
         None,
         None,
@@ -196,7 +196,7 @@ fn make_workspace_project(name: Option<&str>, path: &str) -> RootItem {
     RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
         test_path(path),
         name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
         Vec::new(),
         None,
@@ -212,7 +212,7 @@ fn make_workspace_with_members(
     RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
         test_path(path),
         name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         groups,
         Vec::new(),
         None,
@@ -224,7 +224,7 @@ fn make_member(name: Option<&str>, path: &str) -> PackageProject {
     PackageProject::new(
         test_path(path),
         name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
         None,
         None,
@@ -255,7 +255,7 @@ fn make_package_raw_with_primary(
     PackageProject::new(
         test_path(path),
         name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
         worktree_name.map(String::from),
         primary_abs_path.map(test_path),
@@ -281,7 +281,7 @@ fn make_workspace_raw_with_primary(
     WorkspaceProject::new(
         test_path(path),
         name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         groups,
         Vec::new(),
         worktree_name.map(String::from),
@@ -308,7 +308,7 @@ fn make_package_with_vendored(
     PackageProject::new(
         test_path(path),
         name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         vendored,
         None,
         None,
@@ -325,7 +325,7 @@ fn make_workspace_raw_with_vendored(
     WorkspaceProject::new(
         test_path(path),
         name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         groups,
         vendored,
         worktree_name.map(String::from),

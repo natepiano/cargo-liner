@@ -392,11 +392,11 @@ fn startup_git_expected_uses_top_level_git_directories() {
     let workspace = RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
         AbsolutePath::from(workspace_dir.clone()),
         Some("bevy".to_string()),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         vec![inline_group(vec![PackageProject::new(
             AbsolutePath::from(member_dir),
             Some("core".to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
             None,
             None,
@@ -408,7 +408,7 @@ fn startup_git_expected_uses_top_level_git_directories() {
     let primary = PackageProject::new(
         AbsolutePath::from(primary_dir.clone()),
         Some("cargo-port".to_string()),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
         None,
         None,
@@ -416,7 +416,7 @@ fn startup_git_expected_uses_top_level_git_directories() {
     let linked = PackageProject::new(
         AbsolutePath::from(linked_dir),
         Some("cargo-port_feat".to_string()),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
         Some("cargo-port_feat".to_string()),
         Some(AbsolutePath::from(primary_dir.clone())),
@@ -450,11 +450,11 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
     let workspace = RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
         AbsolutePath::from(workspace_dir.clone()),
         Some("bevy".to_string()),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         vec![inline_group(vec![PackageProject::new(
             AbsolutePath::from(member_dir.clone()),
             Some("core".to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
             None,
             None,
@@ -556,7 +556,7 @@ fn vendored_path_dependency_becomes_cargo_active() {
         let pkg = PackageProject::new(
             test_path("~/app"),
             Some("app".to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             vec![make_member(Some("helper"), "~/app/vendor/helper")],
             None,
             None,

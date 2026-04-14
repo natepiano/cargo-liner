@@ -18,6 +18,8 @@ pub(crate) struct RustInfo {
     pub(super) worktree_name:             Option<String>,
     pub(super) worktree_primary_abs_path: Option<AbsolutePath>,
     pub(super) lint_runs:                 LintRuns,
+    pub(super) crates_version:            Option<String>,
+    pub(super) crates_downloads:          Option<u64>,
 }
 
 impl RustInfo {
@@ -40,6 +42,15 @@ impl RustInfo {
     pub(crate) const fn lint_runs(&self) -> &LintRuns { &self.lint_runs }
 
     pub(crate) const fn lint_runs_mut(&mut self) -> &mut LintRuns { &mut self.lint_runs }
+
+    pub(crate) fn crates_version(&self) -> Option<&str> { self.crates_version.as_deref() }
+
+    pub(crate) const fn crates_downloads(&self) -> Option<u64> { self.crates_downloads }
+
+    pub(crate) fn set_crates_io(&mut self, version: String, downloads: u64) {
+        self.crates_version = Some(version);
+        self.crates_downloads = Some(downloads);
+    }
 }
 
 impl Deref for RustInfo {
@@ -61,6 +72,7 @@ pub(crate) struct Cargo {
     examples:    Vec<ExampleGroup>,
     benches:     Vec<String>,
     test_count:  usize,
+    publishable: bool,
 }
 
 impl Cargo {
@@ -71,6 +83,7 @@ impl Cargo {
         examples: Vec<ExampleGroup>,
         benches: Vec<String>,
         test_count: usize,
+        publishable: bool,
     ) -> Self {
         Self {
             version,
@@ -79,6 +92,7 @@ impl Cargo {
             examples,
             benches,
             test_count,
+            publishable,
         }
     }
 
@@ -101,4 +115,6 @@ impl Cargo {
     pub(crate) fn is_binary(&self) -> bool {
         self.types.iter().any(|t| matches!(t, ProjectType::Binary))
     }
+
+    pub(crate) const fn publishable(&self) -> bool { self.publishable }
 }

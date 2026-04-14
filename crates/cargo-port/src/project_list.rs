@@ -241,6 +241,21 @@ impl ProjectList {
             .find_map(|item| item.at_path_mut(target))
     }
 
+    pub(crate) fn rust_info_at_path(&self, target: &Path) -> Option<&crate::project::RustInfo> {
+        self.root_items
+            .iter()
+            .find_map(|item| item.rust_info_at_path(target))
+    }
+
+    pub(crate) fn rust_info_at_path_mut(
+        &mut self,
+        target: &Path,
+    ) -> Option<&mut crate::project::RustInfo> {
+        self.root_items
+            .iter_mut()
+            .find_map(|item| item.rust_info_at_path_mut(target))
+    }
+
     pub(crate) fn lint_at_path(&self, target: &Path) -> Option<&LintRuns> {
         self.root_items
             .iter()

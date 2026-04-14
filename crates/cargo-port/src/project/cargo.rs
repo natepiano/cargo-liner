@@ -108,12 +108,26 @@ pub(crate) fn from_cargo_toml(
         git::detect_worktree_primary(project_dir).map(AbsolutePath::from);
     let worktree_health = git::detect_worktree_health(project_dir);
 
+    let publishable = match table.get("package").and_then(|p| p.get("publish")) {
+        None => true,
+        Some(v) if v.as_bool() == Some(false) => false,
+        Some(v) => v.as_array().is_none_or(|arr| !arr.is_empty()),
+    };
+
     let types = detect_types(&table, project_dir);
     let examples = collect_examples(&table, project_dir);
     let benches = collect_target_names(&table, project_dir, "bench", "benches");
     let test_count = count_targets(&table, project_dir, "test", "tests");
 
-    let cargo = Cargo::new(version, description, types, examples, benches, test_count);
+    let cargo = Cargo::new(
+        version,
+        description,
+        types,
+        examples,
+        benches,
+        test_count,
+        publishable,
+    );
 
     if table.get("workspace").is_some() {
         let mut project = WorkspaceProject::new(

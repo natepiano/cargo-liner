@@ -820,7 +820,7 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
             RootItem::NonRust(nr) => PackageProject::new(
                 nr.path().clone(),
                 nr.name().map(str::to_string),
-                Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+                Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
                 Vec::new(),
                 None,
                 None,
@@ -1426,7 +1426,7 @@ mod tests {
         RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
             AbsolutePath::from(abs_path),
             name.map(String::from),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
             Vec::new(),
             worktree_name.map(String::from),
@@ -1443,7 +1443,7 @@ mod tests {
         RootItem::Rust(RustProject::Package(PackageProject::new(
             AbsolutePath::from(abs_path),
             name.map(String::from),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
             worktree_name.map(String::from),
             primary_abs.map(|s| AbsolutePath::from(s.to_string())),

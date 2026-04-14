@@ -433,7 +433,12 @@ impl App {
             let project_name = item
                 .is_rust()
                 .then(|| item.name().map(str::to_string))
-                .flatten();
+                .flatten()
+                .filter(|_| {
+                    self.projects
+                        .rust_info_at_path(item.path())
+                        .is_some_and(|r| r.cargo().publishable())
+                });
             let repo_presence = if crate::project::git_repo_root(&abs_path).is_some() {
                 GitRepoPresence::InRepo
             } else {
@@ -452,6 +457,61 @@ impl App {
                 };
                 crate::scan::fetch_project_details(&request);
             });
+        });
+        self.schedule_member_crates_io_fetches();
+    }
+
+    /// Fire crates.io fetches for publishable workspace members.
+    ///
+    /// `schedule_startup_project_details` only iterates leaf-level projects
+    /// (workspace roots), not individual workspace members. This method
+    /// supplements it by iterating all members and fetching crates.io data
+    /// for each publishable one.
+    fn schedule_member_crates_io_fetches(&self) {
+        let tx = self.bg_tx.clone();
+        let client = self.http_client.clone();
+        let mut members: Vec<(AbsolutePath, String)> = Vec::new();
+        for item in &self.projects {
+            let groups: Vec<&crate::project::MemberGroup> = match item {
+                crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
+                    ws.groups().iter().collect()
+                },
+                crate::project::RootItem::Worktrees(
+                    crate::project::WorktreeGroup::Workspaces {
+                        primary, linked, ..
+                    },
+                ) => std::iter::once(primary)
+                    .chain(linked.iter())
+                    .flat_map(|ws| ws.groups().iter())
+                    .collect(),
+                _ => continue,
+            };
+            for group in groups {
+                for member in group.members() {
+                    if !member.cargo().publishable() {
+                        continue;
+                    }
+                    if let Some(name) = member.name() {
+                        members.push((member.path().clone(), name.to_string()));
+                    }
+                }
+            }
+        }
+        if members.is_empty() {
+            return;
+        }
+        rayon::spawn(move || {
+            for (path, name) in members {
+                let (info, signal) = client.fetch_crates_io_info(&name);
+                crate::scan::emit_service_signal(&tx, signal);
+                if let Some(info) = info {
+                    let _ = tx.send(crate::scan::BackgroundMsg::CratesIoVersion {
+                        path,
+                        version: info.version,
+                        downloads: info.downloads,
+                    });
+                }
+            }
         });
     }
 
@@ -1375,8 +1435,6 @@ impl App {
         self.clear_all_lint_state();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
         self.cargo_active_paths.clear();
-        self.crates_versions.clear();
-        self.crates_downloads.clear();
         self.repo_fetch_cache = crate::scan::new_repo_cache();
         self.discovery_shimmers.clear();
         self.scan.phase = ScanPhase::Running;
@@ -1956,13 +2014,8 @@ impl App {
     }
 
     fn handle_crates_io_version_msg(&mut self, path: &Path, version: String, downloads: u64) {
-        if self.is_cargo_active_path(path) {
-            let abs = AbsolutePath::from(path);
-            self.crates_versions.insert(abs.clone(), version);
-            self.crates_downloads.insert(abs, downloads);
-        } else {
-            self.crates_versions.remove(path);
-            self.crates_downloads.remove(path);
+        if let Some(rust_info) = self.projects.rust_info_at_path_mut(path) {
+            rust_info.set_crates_io(version, downloads);
         }
     }
 

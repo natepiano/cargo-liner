@@ -577,8 +577,6 @@ impl App {
                 continue;
             }
             self.ci_state.remove(path.as_path());
-            self.crates_versions.remove(path.as_path());
-            self.crates_downloads.remove(path.as_path());
         }
     }
 

@@ -323,7 +323,7 @@ mod tests {
         make_package_with_cargo(
             name,
             path,
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         )
     }
 
@@ -347,7 +347,7 @@ mod tests {
         PackageProject::new(
             AbsolutePath::from(path),
             Some(name.to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
             worktree_name.map(str::to_string),
             primary_abs_path.map(AbsolutePath::from),
@@ -766,6 +766,7 @@ mod tests {
                 }],
                 Vec::new(),
                 0,
+                false,
             ),
         )]);
         let runs = vec![
@@ -984,6 +985,7 @@ mod tests {
             }],
             Vec::new(),
             0,
+            false,
         );
         let mut app = make_app(&[make_package_with_cargo("demo", &project_dir, cargo)]);
         render_ui(&mut app);

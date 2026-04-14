@@ -82,8 +82,6 @@ pub(super) struct App {
     ci_display_modes:         HashMap<AbsolutePath, types::CiRunDisplayMode>,
     lint_cache_usage:         CacheUsage,
     cargo_active_paths:       HashSet<AbsolutePath>,
-    crates_versions:          HashMap<AbsolutePath, String>,
-    crates_downloads:         HashMap<AbsolutePath, u64>,
     discovery_shimmers:       HashMap<AbsolutePath, types::DiscoveryShimmer>,
     pending_git_first_commit: HashMap<AbsolutePath, String>,
     bg_tx:                    mpsc::Sender<BackgroundMsg>,
@@ -203,14 +201,6 @@ impl App {
                 lr.clear_runs();
             }
         }
-    }
-
-    pub(super) const fn crates_versions(&self) -> &HashMap<AbsolutePath, String> {
-        &self.crates_versions
-    }
-
-    pub(super) const fn crates_downloads(&self) -> &HashMap<AbsolutePath, u64> {
-        &self.crates_downloads
     }
 
     pub(super) const fn cached_detail(&self) -> Option<&types::DetailCache> {

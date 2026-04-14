@@ -48,6 +48,7 @@ pub(crate) use project_fields::ProjectFields;
 pub(crate) use root_item::RootItem;
 // ── Rust info ────────────────────────────────────────────────────────
 pub(crate) use rust_info::Cargo;
+pub(crate) use rust_info::RustInfo;
 pub(crate) use rust_project::RustProject;
 // ── Submodule types ─────────────────────────────────────────────────
 pub(crate) use submodule::SubmoduleInfo;

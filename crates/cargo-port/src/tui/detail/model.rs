@@ -841,8 +841,9 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
     let cargo = src.cargo;
     let wt_item = src.wt_item;
     let git_detail = build_git_detail_fields(app, abs_path);
-    let crates_version = app.crates_versions().get(abs_path).cloned();
-    let crates_downloads = app.crates_downloads().get(abs_path).copied();
+    let rust_info = app.projects().rust_info_at_path(abs_path);
+    let crates_version = rust_info.and_then(|r| r.crates_version().map(str::to_string));
+    let crates_downloads = rust_info.and_then(crate::project::RustInfo::crates_downloads);
 
     let (disk, ci) = wt_item.map_or_else(
         || {

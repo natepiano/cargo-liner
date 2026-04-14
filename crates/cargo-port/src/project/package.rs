@@ -42,6 +42,8 @@ impl PackageProject {
                 worktree_name,
                 worktree_primary_abs_path,
                 lint_runs: LintRuns::default(),
+                crates_version: None,
+                crates_downloads: None,
             },
         }
     }

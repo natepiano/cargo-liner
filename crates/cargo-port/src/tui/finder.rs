@@ -954,12 +954,12 @@ mod tests {
         let ws = WorkspaceProject::new(
             test_path("~/rust/hana"),
             Some("hana".to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
             vec![PackageProject::new(
                 test_path("~/rust/hana/crates/clay-layout"),
                 Some("clay-layout".to_string()),
-                Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+                Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
                 Vec::new(),
                 None,
                 None,
@@ -1064,6 +1064,7 @@ mod tests {
                 }],
                 Vec::new(),
                 0,
+                false,
             ),
             Vec::new(),
             None,

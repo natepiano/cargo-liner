@@ -872,7 +872,7 @@ fn visible_rows_include_vendored_children() {
     let ws = WorkspaceProject::new(
         test_path("~/ws"),
         None,
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         vec![inline_group(vec![make_member(
             Some("member"),
             "~/ws/member",

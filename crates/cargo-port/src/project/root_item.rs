@@ -213,6 +213,29 @@ impl RootItem {
         })
     }
 
+    pub(crate) fn rust_info_at_path(&self, path: &Path) -> Option<&super::rust_info::RustInfo> {
+        match self {
+            Self::Rust(p) => p.rust_info_at_path(path),
+            Self::NonRust(_) => None,
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                } => super::rust_project::rust_info_in_workspace(primary, path).or_else(|| {
+                    linked
+                        .iter()
+                        .find_map(|l| super::rust_project::rust_info_in_workspace(l, path))
+                }),
+                WorktreeGroup::Packages {
+                    primary, linked, ..
+                } => super::rust_project::rust_info_in_package(primary, path).or_else(|| {
+                    linked
+                        .iter()
+                        .find_map(|l| super::rust_project::rust_info_in_package(l, path))
+                }),
+            },
+        }
+    }
+
     pub(crate) fn at_path_mut(&mut self, path: &Path) -> Option<&mut ProjectInfo> {
         // Check submodules first to avoid double-borrowing through the main
         // hierarchy and then falling back to submodules on the same `&mut self`.
@@ -244,6 +267,40 @@ impl RootItem {
                         .iter()
                         .position(|l| super::rust_project::info_in_package(l, path).is_some())?;
                     super::rust_project::info_in_package_mut(&mut linked[idx], path)
+                },
+            },
+        }
+    }
+
+    pub(crate) fn rust_info_at_path_mut(
+        &mut self,
+        path: &Path,
+    ) -> Option<&mut super::rust_info::RustInfo> {
+        match self {
+            Self::Rust(p) => p.rust_info_at_path_mut(path),
+            Self::NonRust(_) => None,
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                } => {
+                    if super::rust_project::info_in_workspace(primary, path).is_some() {
+                        return super::rust_project::rust_info_in_workspace_mut(primary, path);
+                    }
+                    let idx = linked
+                        .iter()
+                        .position(|l| super::rust_project::info_in_workspace(l, path).is_some())?;
+                    super::rust_project::rust_info_in_workspace_mut(&mut linked[idx], path)
+                },
+                WorktreeGroup::Packages {
+                    primary, linked, ..
+                } => {
+                    if super::rust_project::info_in_package(primary, path).is_some() {
+                        return super::rust_project::rust_info_in_package_mut(primary, path);
+                    }
+                    let idx = linked
+                        .iter()
+                        .position(|l| super::rust_project::info_in_package(l, path).is_some())?;
+                    super::rust_project::rust_info_in_package_mut(&mut linked[idx], path)
                 },
             },
         }

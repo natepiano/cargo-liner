@@ -183,8 +183,6 @@ impl App {
             ci_display_modes: HashMap::new(),
             lint_cache_usage: crate::lint::CacheUsage::default(),
             cargo_active_paths: HashSet::new(),
-            crates_versions: HashMap::new(),
-            crates_downloads: HashMap::new(),
             discovery_shimmers: HashMap::new(),
             pending_git_first_commit: HashMap::new(),
             bg_tx: inputs.bg_tx,

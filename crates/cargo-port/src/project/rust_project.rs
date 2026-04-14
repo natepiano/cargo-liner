@@ -9,6 +9,7 @@ use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
+use super::rust_info::RustInfo;
 use super::workspace::WorkspaceProject;
 use crate::lint::LintRuns;
 
@@ -100,10 +101,24 @@ impl RustProject {
         }
     }
 
+    pub(crate) fn rust_info_at_path(&self, path: &Path) -> Option<&RustInfo> {
+        match self {
+            Self::Workspace(ws) => rust_info_in_workspace(ws, path),
+            Self::Package(pkg) => rust_info_in_package(pkg, path),
+        }
+    }
+
     pub(crate) fn at_path_mut(&mut self, path: &Path) -> Option<&mut ProjectInfo> {
         match self {
             Self::Workspace(ws) => info_in_workspace_mut(ws, path),
             Self::Package(pkg) => info_in_package_mut(pkg, path),
+        }
+    }
+
+    pub(crate) fn rust_info_at_path_mut(&mut self, path: &Path) -> Option<&mut RustInfo> {
+        match self {
+            Self::Workspace(ws) => rust_info_in_workspace_mut(ws, path),
+            Self::Package(pkg) => rust_info_in_package_mut(pkg, path),
         }
     }
 
@@ -214,6 +229,91 @@ pub(super) fn info_in_package_mut<'a>(
     for vendored in pkg.vendored_mut() {
         if vendored.path() == path {
             return Some(vendored.rust.info_mut());
+        }
+    }
+    None
+}
+
+// ── RustInfo traversal helpers ──────────────────────────────────────
+
+pub(super) fn rust_info_in_workspace<'a>(
+    ws: &'a WorkspaceProject,
+    path: &Path,
+) -> Option<&'a RustInfo> {
+    if ws.path() == path {
+        return Some(&ws.rust);
+    }
+    for group in ws.groups() {
+        for member in group.members() {
+            if member.path() == path {
+                return Some(&member.rust);
+            }
+        }
+    }
+    for vendored in ws.vendored() {
+        if vendored.path() == path {
+            return Some(&vendored.rust);
+        }
+    }
+    None
+}
+
+pub(super) fn rust_info_in_package<'a>(
+    pkg: &'a PackageProject,
+    path: &Path,
+) -> Option<&'a RustInfo> {
+    if pkg.path() == path {
+        return Some(&pkg.rust);
+    }
+    for vendored in pkg.vendored() {
+        if vendored.path() == path {
+            return Some(&vendored.rust);
+        }
+    }
+    None
+}
+
+pub(super) fn rust_info_in_workspace_mut<'a>(
+    ws: &'a mut WorkspaceProject,
+    path: &Path,
+) -> Option<&'a mut RustInfo> {
+    if ws.path() == path {
+        return Some(&mut ws.rust);
+    }
+    let member_index = ws
+        .groups()
+        .iter()
+        .enumerate()
+        .find_map(|(group_index, group)| {
+            group
+                .members()
+                .iter()
+                .position(|member| member.path() == path)
+                .map(|member_index| (group_index, member_index))
+        });
+    if let Some((group_index, member_index)) = member_index {
+        return Some(&mut ws.groups_mut()[group_index].members_mut()[member_index].rust);
+    }
+    let vendored_index = ws
+        .vendored()
+        .iter()
+        .position(|vendored| vendored.path() == path);
+    if let Some(vendored_index) = vendored_index {
+        return Some(&mut ws.vendored_mut()[vendored_index].rust);
+    }
+    None
+}
+
+pub(super) fn rust_info_in_package_mut<'a>(
+    pkg: &'a mut PackageProject,
+    path: &Path,
+) -> Option<&'a mut RustInfo> {
+    if pkg.path() == path {
+        return Some(&mut pkg.rust);
+    }
+    for vendored in pkg.vendored_mut() {
+        if vendored.path() == path {
+            return Some(&mut vendored.rust);
         }
     }
     None

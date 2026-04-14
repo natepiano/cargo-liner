@@ -10,7 +10,7 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
         vec![inline_group(vec![PackageProject::new(
             test_path("~/rust/bevy_window_manager/crates/bevy_window_manager"),
             Some("bevy_window_manager".to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
             None,
             None,
@@ -24,7 +24,7 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
         vec![inline_group(vec![PackageProject::new(
             test_path("~/rust/bevy_window_manager_style_fix/crates/bevy_window_manager"),
             Some("bevy_window_manager".to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
             None,
             None,
