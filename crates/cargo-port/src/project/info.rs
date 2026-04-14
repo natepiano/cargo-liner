@@ -21,6 +21,16 @@ pub(crate) enum WorktreeHealth {
     Broken,
 }
 
+/// GitHub repository metadata fetched from the GitHub API.
+///
+/// `None` on `ProjectInfo` means the fetch hasn't completed yet.
+/// `Some(...)` means the API responded — stars of 0 is a valid value.
+#[derive(Clone, Debug)]
+pub(crate) struct GitHubInfo {
+    pub stars:       u64,
+    pub description: Option<String>,
+}
+
 /// Shared metadata for all project types (Rust and non-Rust).
 ///
 /// Identity fields (`path`, `name`) live on each project struct directly —
@@ -30,6 +40,7 @@ pub(crate) enum WorktreeHealth {
 pub(crate) struct ProjectInfo {
     pub disk_usage_bytes: Option<u64>,
     pub local_git_state:  LocalGitState,
+    pub github_info:      Option<GitHubInfo>,
     pub visibility:       Visibility,
     pub worktree_health:  WorktreeHealth,
     pub submodules:       Vec<SubmoduleInfo>,

@@ -84,8 +84,6 @@ pub(super) struct App {
     cargo_active_paths:       HashSet<AbsolutePath>,
     crates_versions:          HashMap<AbsolutePath, String>,
     crates_downloads:         HashMap<AbsolutePath, u64>,
-    stars:                    HashMap<AbsolutePath, u64>,
-    repo_descriptions:        HashMap<AbsolutePath, String>,
     discovery_shimmers:       HashMap<AbsolutePath, types::DiscoveryShimmer>,
     pending_git_first_commit: HashMap<AbsolutePath, String>,
     bg_tx:                    mpsc::Sender<BackgroundMsg>,
@@ -213,12 +211,6 @@ impl App {
 
     pub(super) const fn crates_downloads(&self) -> &HashMap<AbsolutePath, u64> {
         &self.crates_downloads
-    }
-
-    pub(super) const fn stars(&self) -> &HashMap<AbsolutePath, u64> { &self.stars }
-
-    pub(super) const fn repo_descriptions(&self) -> &HashMap<AbsolutePath, String> {
-        &self.repo_descriptions
     }
 
     pub(super) const fn cached_detail(&self) -> Option<&types::DetailCache> {

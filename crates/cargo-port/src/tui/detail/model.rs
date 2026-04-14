@@ -570,16 +570,12 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let origin = git.map(|info| format!("{} {}", info.origin.icon(), info.origin.label()));
     let owner = git.and_then(|info| info.owner.clone());
     let url = git.and_then(|info| info.url.clone());
-    let stars = app
-        .stars()
-        .get(abs_path)
-        .copied()
-        .or_else(|| app.stars().get(owner_path.as_path()).copied());
-    let description = app
-        .repo_descriptions()
-        .get(abs_path)
-        .cloned()
-        .or_else(|| app.repo_descriptions().get(owner_path.as_path()).cloned());
+    let github = app
+        .projects()
+        .at_path(owner_path.as_path())
+        .and_then(|p| p.github_info.as_ref());
+    let stars = github.map(|g| g.stars);
+    let description = github.and_then(|g| g.description.clone());
     let inception = git
         .and_then(|info| info.first_commit.as_deref())
         .map(timestamp::format_timestamp);

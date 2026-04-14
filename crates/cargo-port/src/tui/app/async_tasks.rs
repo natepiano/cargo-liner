@@ -93,37 +93,6 @@ impl App {
             self.filtered.clear();
         }
 
-        // Propagate stars from workspace roots to their members.
-        for item in &self.projects {
-            let root_path = item.path();
-            if let Some(&stars) = self.stars.get::<Path>(root_path) {
-                let member_paths: Vec<AbsolutePath> = match item {
-                    crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
-                        ws.groups()
-                            .iter()
-                            .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
-                            .collect()
-                    },
-                    crate::project::RootItem::Worktrees(
-                        crate::project::WorktreeGroup::Workspaces {
-                            primary, linked, ..
-                        },
-                    ) => std::iter::once(primary)
-                        .chain(linked.iter())
-                        .flat_map(|ws| {
-                            ws.groups()
-                                .iter()
-                                .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                for member_path in &member_paths {
-                    self.stars.entry(member_path.clone()).or_insert(stars);
-                }
-            }
-        }
-
         // Try to restore selection
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
@@ -1408,8 +1377,6 @@ impl App {
         self.cargo_active_paths.clear();
         self.crates_versions.clear();
         self.crates_downloads.clear();
-        self.stars.clear();
-        self.repo_descriptions.clear();
         self.repo_fetch_cache = crate::scan::new_repo_cache();
         self.discovery_shimmers.clear();
         self.scan.phase = ScanPhase::Running;
@@ -1843,40 +1810,8 @@ impl App {
         stars: u64,
         description: Option<String>,
     ) {
-        // Propagate stars to workspace members.
-        for item in &self.projects {
-            match item {
-                crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws))
-                    if ws.path() == path =>
-                {
-                    for group in ws.groups() {
-                        for member in group.members() {
-                            self.stars.entry(member.path().clone()).or_insert(stars);
-                        }
-                    }
-                },
-                crate::project::RootItem::Worktrees(
-                    crate::project::WorktreeGroup::Workspaces {
-                        primary, linked, ..
-                    },
-                ) => {
-                    for ws in std::iter::once(primary).chain(linked.iter()) {
-                        if ws.path() == path {
-                            for group in ws.groups() {
-                                for member in group.members() {
-                                    self.stars.entry(member.path().clone()).or_insert(stars);
-                                }
-                            }
-                        }
-                    }
-                },
-                _ => {},
-            }
-        }
-        self.stars.insert(AbsolutePath::from(path), stars);
-        if let Some(desc) = description {
-            self.repo_descriptions
-                .insert(AbsolutePath::from(path), desc);
+        if let Some(project) = self.projects.at_path_mut(path) {
+            project.github_info = Some(crate::project::GitHubInfo { stars, description });
         }
     }
 
@@ -2198,36 +2133,6 @@ impl App {
             self.update_search(&query);
         } else {
             self.filtered.clear();
-        }
-
-        // Propagate stars from workspace roots to members.
-        for item in &self.projects {
-            let root_path = item.path();
-            if let Some(&stars) = self.stars.get::<Path>(root_path) {
-                let member_paths: Vec<AbsolutePath> = match item {
-                    RootItem::Rust(crate::project::RustProject::Workspace(ws)) => ws
-                        .groups()
-                        .iter()
-                        .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
-                        .collect(),
-                    RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
-                        primary,
-                        linked,
-                        ..
-                    }) => std::iter::once(primary)
-                        .chain(linked.iter())
-                        .flat_map(|ws| {
-                            ws.groups()
-                                .iter()
-                                .flat_map(|g| g.members().iter().map(|m| m.path().clone()))
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                for member_path in &member_paths {
-                    self.stars.entry(member_path.clone()).or_insert(stars);
-                }
-            }
         }
 
         // Restore selection.

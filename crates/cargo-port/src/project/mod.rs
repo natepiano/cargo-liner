@@ -32,6 +32,7 @@ pub(crate) use git::git_repo_root;
 pub(crate) use git::resolve_common_git_dir;
 pub(crate) use git::resolve_git_dir;
 // ── Info types ───────────────────────────────────────────────────────
+pub(crate) use info::GitHubInfo;
 pub(crate) use info::ProjectInfo;
 pub(crate) use info::Visibility;
 pub(crate) use info::WorktreeHealth;

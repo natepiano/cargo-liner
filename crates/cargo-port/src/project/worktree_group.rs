@@ -111,13 +111,23 @@ impl WorktreeGroup {
             Self::Workspaces {
                 primary, linked, ..
             } => std::iter::once(primary.lint_runs().status())
-                .chain(linked.iter().map(|l| l.lint_runs().status()))
+                .chain(
+                    linked
+                        .iter()
+                        .filter(|l| l.visibility() == Visibility::Visible)
+                        .map(|l| l.lint_runs().status()),
+                )
                 .cloned()
                 .collect(),
             Self::Packages {
                 primary, linked, ..
             } => std::iter::once(primary.lint_runs().status())
-                .chain(linked.iter().map(|l| l.lint_runs().status()))
+                .chain(
+                    linked
+                        .iter()
+                        .filter(|l| l.visibility() == Visibility::Visible)
+                        .map(|l| l.lint_runs().status()),
+                )
                 .cloned()
                 .collect(),
         };

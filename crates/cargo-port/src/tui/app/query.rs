@@ -23,6 +23,7 @@ use crate::project::PackageProject;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
+use crate::project::Visibility;
 use crate::project::WorkspaceProject;
 use crate::project::WorktreeGroup;
 use crate::tui::columns;
@@ -530,9 +531,9 @@ impl App {
             .map_or(GitPathState::OutsideRepo, |info| info.path_state)
     }
 
-    /// Roll up the worst git path state across all children of a `RootItem`.
-    /// For worktree groups, checks primary + all linked entries.
-    /// For everything else, returns the state for the single path.
+    /// Roll up the worst git path state across all **visible** children of a
+    /// `RootItem`.  For worktree groups, checks primary + non-dismissed linked
+    /// entries.  For everything else, returns the state for the single path.
     pub(in super::super) fn git_path_state_for_item(&self, item: &RootItem) -> GitPathState {
         match item {
             RootItem::Worktrees(g) => {
@@ -540,14 +541,22 @@ impl App {
                     WorktreeGroup::Workspaces {
                         primary, linked, ..
                     } => Box::new(
-                        std::iter::once(self.git_path_state_for(primary.path()))
-                            .chain(linked.iter().map(|l| self.git_path_state_for(l.path()))),
+                        std::iter::once(self.git_path_state_for(primary.path())).chain(
+                            linked
+                                .iter()
+                                .filter(|l| l.visibility() == Visibility::Visible)
+                                .map(|l| self.git_path_state_for(l.path())),
+                        ),
                     ),
                     WorktreeGroup::Packages {
                         primary, linked, ..
                     } => Box::new(
-                        std::iter::once(self.git_path_state_for(primary.path()))
-                            .chain(linked.iter().map(|l| self.git_path_state_for(l.path()))),
+                        std::iter::once(self.git_path_state_for(primary.path())).chain(
+                            linked
+                                .iter()
+                                .filter(|l| l.visibility() == Visibility::Visible)
+                                .map(|l| self.git_path_state_for(l.path())),
+                        ),
                     ),
                 };
                 worst_git_path_state(states)
