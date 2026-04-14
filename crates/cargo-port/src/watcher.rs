@@ -1017,42 +1017,26 @@ fn spawn_git_refresh(
         );
 
         let started = Instant::now();
-        let detect_repo_metadata = matches!(refresh_scope, GitRefreshKind::FullMetadata);
-        let git_info_elapsed_ms = if detect_repo_metadata {
-            let repo_root_for_git_info = repo_root.clone();
-            let git_info_started = Instant::now();
-            let git_info =
-                tokio::task::spawn_blocking(move || GitInfo::detect_fast(&repo_root_for_git_info))
-                    .await
-                    .ok()
-                    .flatten();
-            let git_info_elapsed_ms = git_info_started.elapsed().as_millis();
-            tracing::info!(
-                elapsed_ms = crate::perf_log::ms(git_info_started.elapsed().as_millis()),
-                repo_root = %repo_root.display(),
-                affected_rows = affected.len(),
-                refresh_scope = ?refresh_scope,
-                "watcher_git_repo_metadata_detect"
-            );
-            if let Some(info) = git_info {
-                for (path, _) in &affected {
-                    let _ = bg_tx.send(BackgroundMsg::GitInfo {
-                        path: AbsolutePath::from(path.clone()),
-                        info: info.clone(),
-                    });
-                }
+        let repo_root_for_detect = repo_root.clone();
+        let git_info =
+            tokio::task::spawn_blocking(move || GitInfo::detect_fast(&repo_root_for_detect))
+                .await
+                .ok()
+                .flatten();
+        if let Some(info) = git_info {
+            for (path, _) in &affected {
+                let _ = bg_tx.send(BackgroundMsg::GitInfo {
+                    path: AbsolutePath::from(path.clone()),
+                    info: info.clone(),
+                });
             }
-            git_info_elapsed_ms
-        } else {
-            0
-        };
+        }
 
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
             repo_root = %repo_root.display(),
             affected_rows = affected.len(),
             refresh_scope = ?refresh_scope,
-            git_info_ms = git_info_elapsed_ms,
             "watcher_git_refresh"
         );
         let _ = git_done_tx.send(repo_root);
