@@ -130,9 +130,9 @@ impl App {
     pub(in super::super) fn mark_tracked_item_completed(
         &mut self,
         task_id: ToastTaskId,
-        label: &str,
+        key: &str,
     ) {
-        self.toasts.mark_item_completed(task_id, label);
+        self.toasts.mark_item_completed(task_id, key);
         self.toast_pane.set_len(self.active_toasts().len());
     }
 

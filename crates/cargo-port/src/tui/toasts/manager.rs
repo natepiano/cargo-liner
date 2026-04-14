@@ -494,13 +494,13 @@ impl ToastManager {
         }
     }
 
-    /// Mark a tracked item as completed by label.
-    pub fn mark_item_completed(&mut self, task_id: ToastTaskId, label: &str) {
+    /// Mark a tracked item as completed by key.
+    pub fn mark_item_completed(&mut self, task_id: ToastTaskId, key: &str) {
         let now = Instant::now();
         for toast in &mut self.toasts {
             if toast.task_id == Some(task_id) {
                 for item in &mut toast.tracked_items {
-                    if item.label == label && item.completed_at.is_none() {
+                    if item.key.as_str() == key && item.completed_at.is_none() {
                         item.completed_at = Some(now);
                         break;
                     }

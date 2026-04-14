@@ -41,6 +41,10 @@ use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::tui::columns::ResolvedWidths;
 use crate::tui::config_reload;
+use crate::tui::constants::STARTUP_PHASE_DISK;
+use crate::tui::constants::STARTUP_PHASE_GIT;
+use crate::tui::constants::STARTUP_PHASE_GITHUB;
+use crate::tui::constants::STARTUP_PHASE_LINT;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -725,26 +729,20 @@ impl App {
         // Created first so it appears above the detail toasts.
         let startup_items = vec![
             TrackedItem {
-                label:        "Disk usage".to_string(),
-                key:          "disk".into(),
+                label:        STARTUP_PHASE_DISK.to_string(),
+                key:          STARTUP_PHASE_DISK.into(),
                 started_at:   Some(Instant::now()),
                 completed_at: None,
             },
             TrackedItem {
-                label:        "Local git repos".to_string(),
-                key:          "git".into(),
+                label:        STARTUP_PHASE_GIT.to_string(),
+                key:          STARTUP_PHASE_GIT.into(),
                 started_at:   Some(Instant::now()),
                 completed_at: None,
             },
             TrackedItem {
-                label:        "GitHub repos".to_string(),
-                key:          "github".into(),
-                started_at:   Some(Instant::now()),
-                completed_at: None,
-            },
-            TrackedItem {
-                label:        "Lint runs".to_string(),
-                key:          "lints".into(),
+                label:        STARTUP_PHASE_LINT.to_string(),
+                key:          STARTUP_PHASE_LINT.into(),
                 started_at:   Some(Instant::now()),
                 completed_at: None,
             },
@@ -815,7 +813,7 @@ impl App {
         {
             self.scan.startup_phases.disk_complete_at = Some(now);
             if let Some(toast) = self.scan.startup_phases.startup_toast {
-                self.mark_tracked_item_completed(toast, "Disk usage");
+                self.mark_tracked_item_completed(toast, STARTUP_PHASE_DISK);
             }
             tracing::info!(
                 phase = "disk_applied",
@@ -842,7 +840,7 @@ impl App {
                 self.finish_task_toast(git_toast);
             }
             if let Some(toast) = self.scan.startup_phases.startup_toast {
-                self.mark_tracked_item_completed(toast, "Local git repos");
+                self.mark_tracked_item_completed(toast, STARTUP_PHASE_GIT);
             }
             tracing::info!(
                 phase = "git_local_applied",
@@ -869,7 +867,7 @@ impl App {
                 self.finish_task_toast(repo_toast);
             }
             if let Some(toast) = self.scan.startup_phases.startup_toast {
-                self.mark_tracked_item_completed(toast, "GitHub repos");
+                self.mark_tracked_item_completed(toast, STARTUP_PHASE_GITHUB);
             }
             tracing::info!(
                 phase = "repo_fetch_applied",
@@ -1845,8 +1843,7 @@ impl App {
                 .unwrap_or_else(|| AbsolutePath::from(path));
             self.scan.startup_phases.git_seen.insert(git_dir.clone());
             if let Some(git_toast) = self.scan.startup_phases.git_toast {
-                let label = crate::project::home_relative_path(&git_dir);
-                self.mark_tracked_item_completed(git_toast, &label);
+                self.mark_tracked_item_completed(git_toast, &git_dir.to_string());
             }
             self.maybe_log_startup_phase_completions();
         }
@@ -2126,7 +2123,7 @@ impl App {
         // All startup lint statuses collected — compute cache size once.
         self.refresh_lint_cache_usage_from_disk();
         if let Some(toast) = self.scan.startup_phases.startup_toast {
-            self.mark_tracked_item_completed(toast, "Lint runs");
+            self.mark_tracked_item_completed(toast, STARTUP_PHASE_LINT);
         }
         // If core startup already finished, now finish the startup toast.
         if self.scan.startup_phases.startup_complete_at.is_some() {
@@ -2359,7 +2356,30 @@ impl App {
                 self.insert_ci_runs(path.as_path(), runs, github_total);
             },
             BackgroundMsg::RepoFetchQueued { repo } => {
+                let first_repo = self.scan.startup_phases.repo_expected.is_empty();
                 self.scan.startup_phases.repo_expected.insert(repo);
+                if first_repo {
+                    // First repo queued — add the "GitHub repos" tracked item
+                    // to the startup toast and reset completion so the phase
+                    // is re-evaluated now that there's actual work to track.
+                    self.scan.startup_phases.repo_complete_at = None;
+                    self.scan.startup_phases.startup_complete_at = None;
+                    if let Some(toast) = self.scan.startup_phases.startup_toast {
+                        let linger =
+                            Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+                        self.toasts.add_new_tracked_items(
+                            toast,
+                            &[TrackedItem {
+                                label:        STARTUP_PHASE_GITHUB.to_string(),
+                                key:          STARTUP_PHASE_GITHUB.into(),
+                                started_at:   Some(Instant::now()),
+                                completed_at: None,
+                            }],
+                            linger,
+                        );
+                        self.toast_pane.set_len(self.active_toasts().len());
+                    }
+                }
                 if self.is_scan_complete() {
                     self.sync_startup_repo_toast();
                 }
