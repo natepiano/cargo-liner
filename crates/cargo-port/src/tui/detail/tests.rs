@@ -85,7 +85,6 @@ fn detail_info(is_rust_project: bool) -> DetailInfo {
         examples:          Vec::<ExampleGroup>::new(),
         benches:           Vec::new(),
         has_package:       true,
-        lang_stats_rows:   Vec::new(),
     }
 }
 
@@ -158,7 +157,7 @@ fn package_fields_place_lint_and_ci_before_disk_for_rust_projects() {
             .into_iter()
             .map(DetailField::label)
             .collect::<Vec<_>>(),
-        vec!["Path", "Targets", "Lint", "CI", "Disk", "Version"]
+        vec!["Path", "Type", "Lint", "CI", "Disk", "Version"]
     );
 }
 

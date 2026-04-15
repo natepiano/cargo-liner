@@ -35,10 +35,11 @@ pub(crate) struct GitHubInfo {
 #[derive(Clone, Debug)]
 pub(crate) struct LangEntry {
     /// Tokei language name (e.g., "Rust", "C++", "Python").
-    pub language:   String,
-    pub file_count: usize,
-    /// Code lines (tokei's "code" count, excludes comments and blanks).
-    pub line_count: usize,
+    pub language: String,
+    pub files:    usize,
+    pub code:     usize,
+    pub comments: usize,
+    pub blanks:   usize,
 }
 
 /// Per-project language statistics collected by tokei.

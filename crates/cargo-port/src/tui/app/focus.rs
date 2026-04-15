@@ -15,9 +15,10 @@ use crate::tui::types::PaneId;
 use crate::tui::types::PaneId::Settings;
 
 impl App {
-    const TAB_ORDER: [PaneId; 8] = [
+    const TAB_ORDER: [PaneId; 9] = [
         PaneId::ProjectList,
         PaneId::Package,
+        PaneId::Lang,
         PaneId::Git,
         PaneId::Lints,
         PaneId::CiRuns,
@@ -162,7 +163,7 @@ impl App {
             InputContext::Searching
         } else {
             match self.focused_pane {
-                PaneId::Package | PaneId::Git => InputContext::DetailFields,
+                PaneId::Package | PaneId::Lang | PaneId::Git => InputContext::DetailFields,
                 PaneId::Targets => InputContext::DetailTargets,
                 PaneId::Lints => InputContext::Lints,
                 PaneId::CiRuns => InputContext::CiRuns,
@@ -222,6 +223,12 @@ impl App {
         match pane {
             PaneId::ProjectList => true,
             PaneId::Package => self.selected_project_path().is_some(),
+            PaneId::Lang => self.selected_project_path().is_some_and(|path| {
+                self.projects
+                    .at_path(path)
+                    .and_then(|p| p.language_stats.as_ref())
+                    .is_some_and(|ls| !ls.entries.is_empty())
+            }),
             PaneId::Git => self.selected_project_path().is_some_and(|path| {
                 self.git_info_for(path)
                     .is_some_and(|info| info.url.is_some())

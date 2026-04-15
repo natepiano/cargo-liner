@@ -155,6 +155,7 @@ pub(super) enum PaneId {
     #[default]
     ProjectList,
     Package,
+    Lang,
     Git,
     Targets,
     Lints,

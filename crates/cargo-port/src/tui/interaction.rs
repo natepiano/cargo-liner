@@ -232,6 +232,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
                 PaneId::Finder => app.finder_mut().pane.set_pos(row),
                 PaneId::Settings => app.pane_manager_mut().settings.set_pos(row),
                 PaneId::Package => app.pane_manager_mut().package.set_pos(row),
+                PaneId::Lang => app.pane_manager_mut().lang.set_pos(row),
                 PaneId::Git => app.pane_manager_mut().git.set_pos(row),
                 PaneId::Targets => app.pane_manager_mut().targets.set_pos(row),
                 PaneId::Lints => app.pane_manager_mut().lints.set_pos(row),

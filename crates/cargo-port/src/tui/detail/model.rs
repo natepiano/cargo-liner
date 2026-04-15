@@ -15,7 +15,6 @@ use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::ExampleGroup;
 use crate::project::GitPathState;
-use crate::project::LangEntry;
 use crate::project::NonRustProject;
 use crate::project::PackageProject;
 use crate::project::ProjectFields;
@@ -50,10 +49,10 @@ impl ProjectCounts {
     fn add_cargo(&mut self, cargo: &Cargo) {
         for t in cargo.types() {
             match t {
+                ProjectType::Workspace => {},
                 ProjectType::Library => self.libs += 1,
                 ProjectType::Binary => self.bins += 1,
                 ProjectType::ProcMacro => self.proc_macros += 1,
-                ProjectType::BuildScript => {},
             }
         }
         self.examples += cargo.example_count();
@@ -253,7 +252,7 @@ impl DetailField {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Path => "Path",
-            Self::Targets => "Targets",
+            Self::Targets => "Type",
             Self::Disk => "Disk",
             Self::Lint => "Lint",
             Self::Ci => "CI",
@@ -467,8 +466,6 @@ pub struct DetailInfo {
     pub benches:           Vec<String>,
     /// Whether this project declares `[package]` (has version/description fields).
     pub has_package:       bool,
-    /// Top 2 languages by LOC from tokei scan.
-    pub lang_stats_rows:   Vec<LangEntry>,
 }
 
 /// Resolve the title shown in the `Package` column header.
@@ -720,7 +717,6 @@ pub fn build_detail_info_for_submodule(app: &App, submodule: &SubmoduleInfo) -> 
         examples: Vec::new(),
         benches: Vec::new(),
         has_package: false,
-        lang_stats_rows: Vec::new(),
     }
 }
 
@@ -914,11 +910,6 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
         examples: cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
         benches: cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
         has_package: src.has_cargo,
-        lang_stats_rows: app
-            .projects()
-            .at_path(abs_path)
-            .and_then(|p| p.language_stats.as_ref())
-            .map_or_else(Vec::new, |ls| ls.entries.iter().take(2).cloned().collect()),
     }
 }
 

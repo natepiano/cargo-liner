@@ -19,19 +19,19 @@ use super::workspace::WorkspaceProject;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ProjectType {
+    Workspace,
     Binary,
     Library,
     ProcMacro,
-    BuildScript,
 }
 
 impl fmt::Display for ProjectType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Workspace => write!(f, "workspace"),
             Self::Binary => write!(f, "binary"),
             Self::Library => write!(f, "library"),
             Self::ProcMacro => write!(f, "proc-macro"),
-            Self::BuildScript => write!(f, "build-script"),
         }
     }
 }
@@ -169,6 +169,10 @@ pub(crate) fn from_git_dir(project_dir: &Path) -> NonRustProject {
 fn detect_types(table: &Table, project_dir: &Path) -> Vec<ProjectType> {
     let mut types = Vec::new();
 
+    if table.get("workspace").is_some() {
+        types.push(ProjectType::Workspace);
+    }
+
     let is_proc_macro = table
         .get("lib")
         .and_then(|lib| lib.get("proc-macro"))
@@ -189,10 +193,6 @@ fn detect_types(table: &Table, project_dir: &Path) -> Vec<ProjectType> {
     let has_main_rs = project_dir.join("src/main.rs").exists();
     if has_bin_section || has_main_rs {
         types.push(ProjectType::Binary);
-    }
-
-    if project_dir.join("build.rs").exists() {
-        types.push(ProjectType::BuildScript);
     }
 
     types

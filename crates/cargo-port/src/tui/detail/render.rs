@@ -12,6 +12,9 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Cell;
+use ratatui::widgets::List;
+use ratatui::widgets::ListItem;
+use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
@@ -26,6 +29,7 @@ use crate::constants::NO_LINT_RUNS;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
 use crate::tui::constants::ACTIVE_BORDER_COLOR;
+use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::INACTIVE_BORDER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
@@ -43,19 +47,12 @@ use crate::tui::types::PaneId;
 /// (the longest possible label) with a trailing space. It only widens when a
 /// count reaches 4+ digits.
 pub(super) fn stats_column_width(info: &DetailInfo) -> (u16, u16) {
-    let stats_max = info
+    let max_count = info
         .stats_rows
         .iter()
         .map(|(_, count)| *count)
         .max()
         .unwrap_or(0);
-    let lang_max = info
-        .lang_stats_rows
-        .iter()
-        .map(|e| e.file_count.max(e.line_count))
-        .max()
-        .unwrap_or(0);
-    let max_count = stats_max.max(lang_max);
     let digit_width: u16 = match max_count {
         0..1000 => 3,
         1000..10_000 => 4,
@@ -85,14 +82,28 @@ enum GitPresence {
 
 struct DetailLayoutSpec {
     constraints: Vec<Constraint>,
+    lang_col:    usize,
     git_col:     Option<usize>,
 }
 
 fn detail_layout_spec(git: GitPresence) -> DetailLayoutSpec {
     let has_git = matches!(git, GitPresence::Available);
-    DetailLayoutSpec {
-        constraints: vec![Constraint::Percentage(50), Constraint::Percentage(50)],
-        git_col:     if has_git { Some(1) } else { None },
+    if has_git {
+        DetailLayoutSpec {
+            constraints: vec![
+                Constraint::Percentage(35),
+                Constraint::Percentage(35),
+                Constraint::Percentage(30),
+            ],
+            lang_col:    1,
+            git_col:     Some(2),
+        }
+    } else {
+        DetailLayoutSpec {
+            constraints: vec![Constraint::Percentage(50), Constraint::Percentage(50)],
+            lang_col:    1,
+            git_col:     None,
+        }
     }
 }
 
@@ -347,15 +358,13 @@ fn append_worktree_lines(lines: &mut Vec<Line<'static>>, info: &DetailInfo) {
     if info.worktree_names.is_empty() {
         return;
     }
-    lines.push(Line::from(""));
-    let wt_title_style = Style::default()
-        .fg(TITLE_COLOR)
-        .add_modifier(Modifier::BOLD);
-    lines.push(Line::from(Span::styled("  Worktrees", wt_title_style)));
-    let wt_style = Style::default().fg(LABEL_COLOR);
-    for name in &info.worktree_names {
-        lines.push(Line::from(Span::styled(format!("    {name}"), wt_style)));
-    }
+    let count = info.worktree_names.len();
+    let label_style = Style::default().fg(LABEL_COLOR);
+    let value_style = Style::default().fg(TITLE_COLOR);
+    lines.push(Line::from(vec![
+        Span::styled("  Worktrees  ", label_style),
+        Span::styled(count.to_string(), value_style),
+    ]));
 }
 
 const NO_DESCRIPTION_AVAILABLE: &str = "No description available";
@@ -411,6 +420,7 @@ pub fn render_detail_panel(
         };
 
         render_project_panel(frame, app, info, &styles, columns[0]);
+        render_lang_panel(frame, app, info, &styles, columns[spec.lang_col]);
 
         if let Some(col) = spec.git_col {
             if git.is_empty() {
@@ -509,17 +519,7 @@ fn render_project_description_section(
     area: Rect,
     project_inner: Rect,
 ) -> ProjectPanelAreas {
-    let lang_rows = if context.info.lang_stats_rows.is_empty() {
-        0
-    } else {
-        // Each lang entry takes 2 rows (files + LOC), plus separator if stats_rows present.
-        let separator = usize::from(!context.info.stats_rows.is_empty());
-        separator + context.info.lang_stats_rows.len() * 2
-    };
-    let lower_metadata_height = context
-        .fields
-        .len()
-        .max(context.info.stats_rows.len() + lang_rows);
+    let lower_metadata_height = context.fields.len().max(context.info.stats_rows.len());
     let reserved_lower_height = u16::try_from(lower_metadata_height).unwrap_or(u16::MAX);
     let reserved_separator_height = u16::from(project_inner.height > reserved_lower_height);
     let description_max_height = project_inner
@@ -590,7 +590,7 @@ fn render_project_metadata(
         focus: context.focus,
         styles: context.styles,
     };
-    let has_stats = !context.info.stats_rows.is_empty() || !context.info.lang_stats_rows.is_empty();
+    let has_stats = !context.info.stats_rows.is_empty();
     if has_stats {
         let (stats_width, digit_width) = stats_column_width(context.info);
 
@@ -614,7 +614,7 @@ fn render_project_metadata(
 }
 
 fn project_stats_connector_x(info: &DetailInfo, lower_area: Rect) -> Option<u16> {
-    if info.stats_rows.is_empty() && info.lang_stats_rows.is_empty() {
+    if info.stats_rows.is_empty() {
         return None;
     }
 
@@ -652,23 +652,6 @@ fn render_stats_column(
             ])
         })
         .collect();
-    if !info.lang_stats_rows.is_empty() {
-        if !stat_lines.is_empty() {
-            stat_lines.push(Line::raw(""));
-        }
-        for entry in &info.lang_stats_rows {
-            let icon = crate::project::language_icon(&entry.language);
-            let label = format!("{icon} {}", entry.language);
-            stat_lines.push(Line::from(vec![
-                Span::styled(format!(" {:>dw$} ", entry.file_count), stat_num_style),
-                Span::styled(label, stat_label_style),
-            ]));
-            stat_lines.push(Line::from(vec![
-                Span::styled(format!(" {:>dw$} ", entry.line_count), stat_num_style),
-                Span::styled("LOC", stat_label_style),
-            ]));
-        }
-    }
     frame.render_widget(Paragraph::new(stat_lines), stats_inner);
 }
 
@@ -851,6 +834,212 @@ pub fn render_targets_panel(
     app.pane_manager_mut()
         .targets
         .set_scroll_offset(table_state.offset());
+}
+
+struct LangWidths {
+    fw: usize,
+    cw: usize,
+    mw: usize,
+    bw: usize,
+    tw: usize,
+    nw: usize,
+}
+
+impl LangWidths {
+    fn from_stats(stats: &crate::project::LanguageStats) -> Self {
+        let total_files: usize = stats.entries.iter().map(|e| e.files).sum();
+        let total_code: usize = stats.entries.iter().map(|e| e.code).sum();
+        let total_comments: usize = stats.entries.iter().map(|e| e.comments).sum();
+        let total_blanks: usize = stats.entries.iter().map(|e| e.blanks).sum();
+        let grand_total = total_code + total_comments + total_blanks;
+        let nw = stats
+            .entries
+            .iter()
+            .map(|e| e.language.len())
+            .max()
+            .unwrap_or(0)
+            .min(15);
+        Self {
+            fw: 8,
+            cw: 8,
+            mw: 8,
+            bw: 8,
+            tw: 8,
+            nw,
+        }
+    }
+
+    fn header_line(&self, style: Style) -> Line<'static> {
+        let Self {
+            fw,
+            cw,
+            mw,
+            bw,
+            tw,
+            nw,
+        } = *self;
+        Line::from(vec![
+            Span::styled(format!("  {:<nw$}  ", ""), Style::default()),
+            Span::styled(format!("{:>fw$}", "files"), style),
+            Span::styled(" ", Style::default()),
+            Span::styled(format!("{:>cw$}", "code"), style),
+            Span::styled(" ", Style::default()),
+            Span::styled(format!("{:>mw$}", "comments"), style),
+            Span::styled(" ", Style::default()),
+            Span::styled(format!("{:>bw$}", "blanks"), style),
+            Span::styled(" ", Style::default()),
+            Span::styled(format!("{:>tw$}", "total"), style),
+        ])
+    }
+
+    fn footer_line(&self, stats: &crate::project::LanguageStats, style: Style) -> Line<'static> {
+        let Self {
+            fw,
+            cw,
+            mw,
+            bw,
+            tw,
+            nw,
+        } = *self;
+        let total_files: usize = stats.entries.iter().map(|e| e.files).sum();
+        let total_code: usize = stats.entries.iter().map(|e| e.code).sum();
+        let total_comments: usize = stats.entries.iter().map(|e| e.comments).sum();
+        let total_blanks: usize = stats.entries.iter().map(|e| e.blanks).sum();
+        let grand_total = total_code + total_comments + total_blanks;
+        Line::from(vec![
+            Span::styled(format!("  {:<nw$}  ", ""), Style::default()),
+            Span::styled(format!("{total_files:>fw$}"), style),
+            Span::styled(" ", Style::default()),
+            Span::styled(format!("{total_code:>cw$}"), style),
+            Span::styled(" ", Style::default()),
+            Span::styled(format!("{total_comments:>mw$}"), style),
+            Span::styled(" ", Style::default()),
+            Span::styled(format!("{total_blanks:>bw$}"), style),
+            Span::styled(" ", Style::default()),
+            Span::styled(format!("{grand_total:>tw$}"), style),
+        ])
+    }
+
+    fn entry_item<'a>(
+        &self,
+        entry: &crate::project::LangEntry,
+        label_style: Style,
+        num_style: Style,
+    ) -> ListItem<'a> {
+        let Self {
+            fw,
+            cw,
+            mw,
+            bw,
+            tw,
+            nw,
+        } = *self;
+        let icon = crate::project::language_icon(&entry.language);
+        let name: String = entry.language.chars().take(nw).collect();
+        let total = entry.code + entry.comments + entry.blanks;
+        ListItem::new(Line::from(vec![
+            Span::styled(format!("{icon} {name:<nw$} "), label_style),
+            Span::styled(format!("{:>fw$}", entry.files), num_style),
+            Span::styled(" ", Style::default()),
+            Span::styled(format!("{:>cw$}", entry.code), num_style),
+            Span::styled(" ", Style::default()),
+            Span::styled(format!("{:>mw$}", entry.comments), label_style),
+            Span::styled(" ", Style::default()),
+            Span::styled(format!("{:>bw$}", entry.blanks), label_style),
+            Span::styled(" ", Style::default()),
+            Span::styled(format!("{total:>tw$}"), num_style),
+        ]))
+    }
+}
+
+fn render_lang_panel(
+    frame: &mut Frame,
+    app: &mut App,
+    _info: &DetailInfo,
+    styles: &RenderStyles,
+    area: Rect,
+) {
+    let lang_stats = app
+        .projects()
+        .at_path(
+            app.selected_project_path()
+                .unwrap_or_else(|| std::path::Path::new("")),
+        )
+        .and_then(|p| p.language_stats.as_ref())
+        .cloned();
+
+    let lang_count = lang_stats.as_ref().map_or(0, |s| s.entries.len());
+    let title = format!(" Languages ({lang_count}) ");
+    let lang_focus = app.pane_focus_state(PaneId::Lang);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_style(styles.title)
+        .border_style(if matches!(lang_focus, PaneFocusState::Active) {
+            styles.active_border
+        } else {
+            styles.inactive_border
+        });
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(stats) = lang_stats else {
+        let pending = Paragraph::new("  Scanning...");
+        frame.render_widget(pending, inner);
+        return;
+    };
+
+    if stats.entries.is_empty() {
+        let empty = Paragraph::new("  No source files detected");
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    let lw = LangWidths::from_stats(&stats);
+
+    if inner.height < 3 {
+        return;
+    }
+
+    let header_style = Style::default()
+        .fg(COLUMN_HEADER_COLOR)
+        .add_modifier(Modifier::BOLD);
+
+    // Fixed header (1 row).
+    let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
+    frame.render_widget(Paragraph::new(lw.header_line(header_style)), header_area);
+
+    // Fixed footer (1 row) — totals pinned at bottom.
+    let footer_y = inner.y + inner.height.saturating_sub(1);
+    let footer_area = Rect::new(inner.x, footer_y, inner.width, 1);
+    frame.render_widget(
+        Paragraph::new(lw.footer_line(&stats, header_style)),
+        footer_area,
+    );
+
+    // Scrollable body (middle).
+    let body_height = inner.height.saturating_sub(2);
+    let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
+
+    let label_style = Style::default().fg(LABEL_COLOR);
+    let num_style = Style::default().fg(TITLE_COLOR);
+    let items: Vec<ListItem> = stats
+        .entries
+        .iter()
+        .map(|entry| lw.entry_item(entry, label_style, num_style))
+        .collect();
+
+    app.pane_manager_mut().lang.set_len(items.len());
+    app.pane_manager_mut().lang.set_content_area(body_area);
+    let focus = app.pane_focus_state(PaneId::Lang);
+    let highlight_style = Pane::selection_style(focus);
+    let list = List::new(items).highlight_style(highlight_style);
+    let cursor = app.pane_manager().lang.pos();
+    let mut list_state = ListState::default().with_selected(Some(cursor));
+    frame.render_stateful_widget(list, body_area, &mut list_state);
+    app.pane_manager_mut()
+        .lang
+        .set_scroll_offset(list_state.offset());
 }
 
 /// Returns the appropriate style for the lint detail field value based on

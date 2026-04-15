@@ -7,6 +7,7 @@ use super::types::Pane;
 /// immutably for project data.
 pub(in super::super) struct PaneManager {
     pub package:  Pane,
+    pub lang:     Pane,
     pub git:      Pane,
     pub targets:  Pane,
     pub ci:       Pane,
@@ -20,6 +21,7 @@ impl PaneManager {
     pub const fn new() -> Self {
         Self {
             package:  Pane::new(),
+            lang:     Pane::new(),
             git:      Pane::new(),
             targets:  Pane::new(),
             ci:       Pane::new(),

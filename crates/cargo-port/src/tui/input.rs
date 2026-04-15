@@ -120,7 +120,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     }
 
     match app.focused_pane() {
-        PaneId::Package | PaneId::Git | PaneId::Targets => {
+        PaneId::Package | PaneId::Lang | PaneId::Git | PaneId::Targets => {
             detail::handle_detail_key(app, &normalized);
         },
         PaneId::Lints => detail::handle_lints_key(app, &normalized),
@@ -228,10 +228,10 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
         if !col_rect.contains(pos) {
             continue;
         }
-        let pane = if col_idx == 0 {
-            &mut app.pane_manager_mut().package
-        } else {
-            &mut app.pane_manager_mut().git
+        let pane = match col_idx {
+            0 => &mut app.pane_manager_mut().package,
+            1 => &mut app.pane_manager_mut().lang,
+            _ => &mut app.pane_manager_mut().git,
         };
         if up {
             pane.up();
@@ -269,6 +269,7 @@ const fn pane_label(pane: PaneId) -> &'static str {
     match pane {
         PaneId::ProjectList => "project_list",
         PaneId::Package => "package",
+        PaneId::Lang => "lang",
         PaneId::Git => "git",
         PaneId::Targets => "targets",
         PaneId::Lints => "lints",
@@ -325,10 +326,10 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         if !col_rect.contains(pos) {
             continue;
         }
-        let pane_id = if col_idx == 0 {
-            PaneId::Package
-        } else {
-            PaneId::Git
+        let pane_id = match col_idx {
+            0 => PaneId::Package,
+            1 => PaneId::Lang,
+            _ => PaneId::Git,
         };
         app.focus_pane(pane_id);
         return;

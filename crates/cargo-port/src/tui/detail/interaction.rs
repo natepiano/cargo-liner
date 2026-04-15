@@ -114,6 +114,7 @@ fn request_clean(app: &mut App) {
 fn active_detail_pane(app: &mut App) -> &mut Pane {
     match app.base_focus() {
         PaneId::Targets => &mut app.pane_manager_mut().targets,
+        PaneId::Lang => &mut app.pane_manager_mut().lang,
         PaneId::Git => &mut app.pane_manager_mut().git,
         PaneId::Package
         | PaneId::ProjectList

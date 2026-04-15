@@ -1354,13 +1354,30 @@ fn build_language_stats(languages: &tokei::Languages) -> LanguageStats {
     let mut entries: Vec<LangEntry> = languages
         .iter()
         .filter(|(_, lang)| lang.code > 0 || !lang.reports.is_empty())
-        .map(|(lang_type, lang)| LangEntry {
-            language:   lang_type.to_string(),
-            file_count: lang.reports.len(),
-            line_count: lang.code,
+        .map(|(lang_type, lang)| {
+            // Merge children (e.g., doc comments classified as embedded
+            // Markdown) back into the parent language's counts.
+            let (child_code, child_comments, child_blanks) = lang
+                .children
+                .values()
+                .flat_map(|reports| reports.iter())
+                .fold((0, 0, 0), |(c, m, b), report| {
+                    (
+                        c + report.stats.code,
+                        m + report.stats.comments,
+                        b + report.stats.blanks,
+                    )
+                });
+            LangEntry {
+                language: lang_type.to_string(),
+                files:    lang.reports.len(),
+                code:     lang.code + child_code,
+                comments: lang.comments + child_comments,
+                blanks:   lang.blanks + child_blanks,
+            }
         })
         .collect();
-    entries.sort_by(|a, b| b.line_count.cmp(&a.line_count));
+    entries.sort_by(|a, b| b.code.cmp(&a.code));
     LanguageStats { entries }
 }
 

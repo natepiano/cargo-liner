@@ -400,6 +400,9 @@ fn register_detail_pane_hitboxes(app: &mut App) {
     let package_pane = app.pane_manager().package.clone();
     super::interaction::register_pane_row_hitboxes(app, PaneId::Package, &package_pane, Content);
 
+    let lang_pane = app.pane_manager().lang.clone();
+    super::interaction::register_pane_row_hitboxes(app, PaneId::Lang, &lang_pane, Content);
+
     if app
         .selected_project_path()
         .and_then(|path| app.git_info_for(path))
