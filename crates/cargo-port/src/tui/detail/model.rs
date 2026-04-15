@@ -429,6 +429,115 @@ pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
     fields
 }
 
+/// Per-pane data for the Package detail panel.
+#[derive(Clone)]
+pub struct PackageData {
+    pub package_title:    String,
+    pub title_name:       String,
+    pub abs_path:         AbsolutePath,
+    pub path:             String,
+    pub version:          String,
+    pub description:      Option<String>,
+    pub crates_version:   Option<String>,
+    pub crates_downloads: Option<u64>,
+    pub types:            String,
+    pub disk:             String,
+    pub ci:               Option<Conclusion>,
+    pub stats_rows:       Vec<(&'static str, usize)>,
+    pub has_package:      bool,
+    pub worktree_label:   Option<String>,
+    pub worktree_health:  WorktreeHealth,
+}
+
+/// Per-pane data for the Git detail panel.
+#[derive(Clone)]
+pub struct GitData {
+    pub abs_path:          AbsolutePath,
+    pub branch:            Option<String>,
+    pub path_state:        GitPathState,
+    pub sync:              Option<String>,
+    pub vs_origin:         Option<String>,
+    pub vs_local:          Option<String>,
+    pub local_main_branch: Option<String>,
+    pub main_branch_label: String,
+    pub origin:            Option<String>,
+    pub owner:             Option<String>,
+    pub url:               Option<String>,
+    pub stars:             Option<u64>,
+    pub description:       Option<String>,
+    pub inception:         Option<String>,
+    pub last_commit:       Option<String>,
+    pub worktree_names:    Vec<String>,
+}
+
+/// Per-pane data for the Targets panel.
+#[derive(Clone)]
+pub struct TargetsData {
+    pub is_binary:   bool,
+    pub binary_name: Option<String>,
+    pub examples:    Vec<ExampleGroup>,
+    pub benches:     Vec<String>,
+}
+
+impl TargetsData {
+    pub const fn has_targets(&self) -> bool {
+        self.is_binary || !self.examples.is_empty() || !self.benches.is_empty()
+    }
+}
+
+/// Convert a `DetailInfo` into per-pane data structs.
+impl DetailInfo {
+    pub fn package_data(&self) -> PackageData {
+        PackageData {
+            package_title:    self.package_title.clone(),
+            title_name:       self.title_name.clone(),
+            abs_path:         self.abs_path.clone(),
+            path:             self.path.clone(),
+            version:          self.version.clone(),
+            description:      self.description.clone(),
+            crates_version:   self.crates_version.clone(),
+            crates_downloads: self.crates_downloads,
+            types:            self.types.clone(),
+            disk:             self.disk.clone(),
+            ci:               self.ci,
+            stats_rows:       self.stats_rows.clone(),
+            has_package:      self.has_package,
+            worktree_label:   self.worktree_label.clone(),
+            worktree_health:  self.worktree_health,
+        }
+    }
+
+    pub fn git_data(&self) -> GitData {
+        GitData {
+            abs_path:          self.abs_path.clone(),
+            branch:            self.git_branch.clone(),
+            path_state:        self.git_path,
+            sync:              self.git_sync.clone(),
+            vs_origin:         self.git_vs_origin.clone(),
+            vs_local:          self.git_vs_local.clone(),
+            local_main_branch: self.local_main_branch.clone(),
+            main_branch_label: self.main_branch_label.clone(),
+            origin:            self.git_origin.clone(),
+            owner:             self.git_owner.clone(),
+            url:               self.git_url.clone(),
+            stars:             self.git_stars,
+            description:       self.repo_description.clone(),
+            inception:         self.git_inception.clone(),
+            last_commit:       self.git_last_commit.clone(),
+            worktree_names:    self.worktree_names.clone(),
+        }
+    }
+
+    pub fn targets_data(&self) -> TargetsData {
+        TargetsData {
+            is_binary:   self.is_binary,
+            binary_name: self.binary_name.clone(),
+            examples:    self.examples.clone(),
+            benches:     self.benches.clone(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct DetailInfo {
     pub package_title:     String,

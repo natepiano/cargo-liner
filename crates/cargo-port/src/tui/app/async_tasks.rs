@@ -1923,6 +1923,7 @@ impl App {
         self.migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
         self.cached_detail = None;
+        self.pane_manager.clear_detail_data();
         // Signal that derived state needs refresh (batched by caller).
         true
     }

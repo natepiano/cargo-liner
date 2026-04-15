@@ -70,11 +70,17 @@ impl App {
             return;
         }
 
-        self.cached_detail = self.build_selected_detail_info().map(|info| DetailCache {
-            generation: self.detail_generation,
-            selection: current_selection,
-            info,
+        self.cached_detail = self.build_selected_detail_info().map(|info| {
+            self.pane_manager.set_detail_data(&info);
+            DetailCache {
+                generation: self.detail_generation,
+                selection: current_selection,
+                info,
+            }
         });
+        if self.cached_detail.is_none() {
+            self.pane_manager.clear_detail_data();
+        }
     }
 
     /// Build `DetailInfo` for the currently selected row, resolving through
