@@ -645,15 +645,15 @@ fn confirm_finder(app: &mut App) {
 /// to the matching target entry.
 fn navigate_to_target(app: &mut App, item: &FinderItem) {
     // Focus the targets pane (now in the left panel below the project list).
-    let has_targets = app.cached_detail().is_some_and(|c| {
-        c.info.is_binary || !c.info.examples.is_empty() || !c.info.benches.is_empty()
-    });
-    if has_targets {
+    let Some(targets_data) = app.pane_manager().targets_data.clone() else {
+        return;
+    };
+    if targets_data.has_targets() {
         app.focus_pane(PaneId::Targets);
 
         // Build target list and find the matching entry index
-        if let Some(info) = app.cached_detail().map(|c| c.info.clone()) {
-            let entries = super::detail::build_target_list(&info);
+        {
+            let entries = super::detail::build_target_list_from_data(&targets_data);
             let target_kind = match item.kind {
                 FinderKind::Binary => RunTargetKind::Binary,
                 FinderKind::Example => RunTargetKind::Example,

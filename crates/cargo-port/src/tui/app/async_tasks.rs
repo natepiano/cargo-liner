@@ -2328,9 +2328,10 @@ impl App {
             .selected_display_path()
             .unwrap_or_else(|| abs_key.display_path());
         let name = self
-            .cached_detail
+            .pane_manager
+            .package_data
             .as_ref()
-            .map(|c| c.info.name.clone())
+            .map(|d| d.title_name.clone())
             .filter(|n| n != "-");
         if self
             .projects

@@ -45,8 +45,8 @@ use crate::tui::types::PaneId;
 /// The column is sized to always fit 3-digit counts alongside "proc-macro"
 /// (the longest possible label) with a trailing space. It only widens when a
 /// count reaches 4+ digits.
-pub(super) fn stats_column_width(info: &DetailInfo) -> (u16, u16) {
-    let max_count = info
+pub(super) fn stats_column_width(data: &model::PackageData) -> (u16, u16) {
+    let max_count = data
         .stats_rows
         .iter()
         .map(|(_, count)| *count)
@@ -97,7 +97,6 @@ struct PackageRenderCtx<'a> {
 struct GitRenderCtx<'a> {
     app:    &'a App,
     data:   &'a model::GitData,
-    info:   &'a DetailInfo,
     fields: &'a [DetailField],
     pane:   &'a Pane,
     focus:  PaneFocusState,
@@ -242,7 +241,6 @@ pub(super) fn git_label_width(data: &model::GitData, fields: &[DetailField]) -> 
 fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect) -> usize {
     let app = ctx.app;
     let data = ctx.data;
-    let info = ctx.info;
     let fields = ctx.fields;
     let pane = ctx.pane;
     let focus = ctx.focus;
@@ -336,18 +334,18 @@ fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect
         }
     }
 
-    append_worktree_lines(&mut lines, info);
+    append_worktree_lines(&mut lines, &ctx.data.worktree_names);
 
     let scroll_y = detail_column_scroll_offset(focus, focused_output_line, area.height);
     frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
     usize::from(scroll_y)
 }
 
-fn append_worktree_lines(lines: &mut Vec<Line<'static>>, info: &DetailInfo) {
-    if info.worktree_names.is_empty() {
+fn append_worktree_lines(lines: &mut Vec<Line<'static>>, worktree_names: &[String]) {
+    if worktree_names.is_empty() {
         return;
     }
-    let count = info.worktree_names.len();
+    let count = worktree_names.len();
     let label_style = Style::default().fg(LABEL_COLOR);
     let value_style = Style::default().fg(TITLE_COLOR);
     lines.push(Line::from(vec![
@@ -358,12 +356,7 @@ fn append_worktree_lines(lines: &mut Vec<Line<'static>>, info: &DetailInfo) {
 
 const NO_DESCRIPTION_AVAILABLE: &str = "No description available";
 
-pub(super) fn project_panel_title(info: &DetailInfo) -> String {
-    format!(" {} - {} ", info.package_title, info.title_name)
-}
-
 struct ProjectPanelRender<'a> {
-    info:         &'a DetailInfo,
     pkg_data:     &'a model::PackageData,
     fields:       &'a [DetailField],
     focus:        PaneFocusState,
@@ -376,17 +369,12 @@ struct ProjectPanelAreas {
     lower: Rect,
 }
 
-pub fn render_detail_panel(
-    frame: &mut Frame,
-    app: &mut App,
-    detail_info: Option<&DetailInfo>,
-    area: Rect,
-) {
+pub fn render_detail_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let title_style = Style::default()
         .fg(TITLE_COLOR)
         .add_modifier(Modifier::BOLD);
 
-    if let Some(info) = detail_info {
+    if let Some(pkg_data) = app.pane_manager().package_data.clone() {
         let spec = detail_layout_spec();
 
         let columns = Layout::default()
@@ -406,7 +394,7 @@ pub fn render_detail_panel(
             title:           title_style,
         };
 
-        render_project_panel(frame, app, info, &styles, columns[0]);
+        render_project_panel(frame, app, &pkg_data, &styles, columns[0]);
 
         if let Some(targets_data) = app.pane_manager().targets_data.clone() {
             if targets_data.has_targets() {
@@ -447,11 +435,11 @@ pub fn render_detail_panel(
 fn render_project_panel(
     frame: &mut Frame,
     app: &mut App,
-    info: &DetailInfo,
+    pkg_data: &model::PackageData,
     styles: &RenderStyles,
     area: Rect,
 ) {
-    let fields = model::package_fields(info);
+    let fields = model::package_fields_from_data(pkg_data);
     app.pane_manager_mut().package.set_len(fields.len());
     let focus = app.pane_focus_state(PaneId::Package);
     let border_style = if matches!(focus, PaneFocusState::Active) {
@@ -459,22 +447,17 @@ fn render_project_panel(
     } else {
         styles.inactive_border
     };
+    let title = format!(" {} - {} ", pkg_data.package_title, pkg_data.title_name);
     let project_block = Block::default()
         .borders(Borders::ALL)
-        .title(project_panel_title(info))
+        .title(title)
         .title_style(styles.title)
         .border_style(border_style);
     let project_inner = project_block.inner(area);
     frame.render_widget(project_block, area);
 
-    let pkg_data = app
-        .pane_manager()
-        .package_data
-        .clone()
-        .unwrap_or_else(|| info.package_data());
     let context = ProjectPanelRender {
-        info,
-        pkg_data: &pkg_data,
+        pkg_data,
         fields: &fields,
         focus,
         styles,
@@ -501,7 +484,7 @@ fn render_project_description_section(
     area: Rect,
     project_inner: Rect,
 ) -> ProjectPanelAreas {
-    let lower_metadata_height = context.fields.len().max(context.info.stats_rows.len());
+    let lower_metadata_height = context.fields.len().max(context.pkg_data.stats_rows.len());
     let reserved_lower_height = u16::try_from(lower_metadata_height).unwrap_or(u16::MAX);
     let reserved_separator_height = u16::from(project_inner.height > reserved_lower_height);
     let description_max_height = project_inner
@@ -512,7 +495,7 @@ fn render_project_description_section(
         .width
         .saturating_sub(description_padding.saturating_mul(2));
     let description_lines =
-        description_lines(context.info, description_width, description_max_height);
+        description_lines(context.pkg_data, description_width, description_max_height);
     let description_height = u16::try_from(description_lines.len()).unwrap_or(u16::MAX);
     let description_area = Rect {
         x: project_inner.x.saturating_add(description_padding),
@@ -536,7 +519,7 @@ fn render_project_description_section(
         width:  project_inner.width,
         height: project_inner.bottom().saturating_sub(lower_y),
     };
-    let stats_connector_x = project_stats_connector_x(context.info, lower_area);
+    let stats_connector_x = project_stats_connector_x(context.pkg_data, lower_area);
     if separator_height > 0 {
         render_separator(
             frame,
@@ -572,9 +555,9 @@ fn render_project_metadata(
         focus: context.focus,
         styles: context.styles,
     };
-    let has_stats = !context.info.stats_rows.is_empty();
+    let has_stats = !context.pkg_data.stats_rows.is_empty();
     if has_stats {
-        let (stats_width, digit_width) = stats_column_width(context.info);
+        let (stats_width, digit_width) = stats_column_width(context.pkg_data);
 
         let sub_cols = Layout::default()
             .direction(Direction::Horizontal)
@@ -584,7 +567,7 @@ fn render_project_metadata(
         let scroll_offset = render_column_inner(frame, &col_ctx, sub_cols[0]);
         render_stats_column(
             frame,
-            context.info,
+            context.pkg_data,
             sub_cols[1],
             digit_width,
             context.border_style,
@@ -595,12 +578,12 @@ fn render_project_metadata(
     }
 }
 
-fn project_stats_connector_x(info: &DetailInfo, lower_area: Rect) -> Option<u16> {
-    if info.stats_rows.is_empty() {
+fn project_stats_connector_x(data: &model::PackageData, lower_area: Rect) -> Option<u16> {
+    if data.stats_rows.is_empty() {
         return None;
     }
 
-    let (stats_width, _) = stats_column_width(info);
+    let (stats_width, _) = stats_column_width(data);
     let sub_cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(20), Constraint::Length(stats_width)])
@@ -610,7 +593,7 @@ fn project_stats_connector_x(info: &DetailInfo, lower_area: Rect) -> Option<u16>
 
 fn render_stats_column(
     frame: &mut Frame,
-    info: &DetailInfo,
+    data: &model::PackageData,
     area: Rect,
     digit_width: u16,
     border_style: Style,
@@ -624,7 +607,7 @@ fn render_stats_column(
     let stat_label_style = Style::default().fg(LABEL_COLOR);
     let stat_num_style = Style::default().fg(TITLE_COLOR);
     let dw = digit_width as usize;
-    let stat_lines: Vec<Line<'_>> = info
+    let stat_lines: Vec<Line<'_>> = data
         .stats_rows
         .iter()
         .map(|(label, count)| {
@@ -638,7 +621,7 @@ fn render_stats_column(
 }
 
 pub(super) fn description_lines(
-    info: &DetailInfo,
+    data: &model::PackageData,
     width: u16,
     max_height: u16,
 ) -> Vec<Line<'static>> {
@@ -648,7 +631,7 @@ pub(super) fn description_lines(
         return Vec::new();
     }
 
-    let (description, style) = info
+    let (description, style) = data
         .description
         .as_deref()
         .map(str::trim)
@@ -823,12 +806,7 @@ fn render_targets_panel(
 /// Reads from `pane_manager.git_data` if available; falls back to
 /// `detail_info` for field rendering (until `DetailField` is fully
 /// migrated to per-pane data).
-pub fn render_git_panel(
-    frame: &mut Frame,
-    app: &mut App,
-    detail_info: Option<&DetailInfo>,
-    area: Rect,
-) {
+pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let title_style = Style::default()
         .fg(TITLE_COLOR)
         .add_modifier(Modifier::BOLD);
@@ -846,7 +824,7 @@ pub fn render_git_panel(
         .as_ref()
         .is_some_and(|g| g.branch.is_some() || g.url.is_some());
 
-    let Some(info) = detail_info else {
+    let Some(git_data) = app.pane_manager().git_data.clone() else {
         let empty = Block::default()
             .borders(Borders::ALL)
             .title(" Git ")
@@ -856,7 +834,7 @@ pub fn render_git_panel(
         return;
     };
 
-    let git = model::git_fields(info);
+    let git = model::git_fields_from_data(&git_data);
     if git.is_empty() {
         let empty_git = Block::default()
             .borders(Borders::ALL)
@@ -881,15 +859,9 @@ pub fn render_git_panel(
     let git_inner = git_block.inner(area);
     app.pane_manager_mut().git.set_content_area(git_inner);
     frame.render_widget(git_block, area);
-    let git_data = app
-        .pane_manager()
-        .git_data
-        .clone()
-        .unwrap_or_else(|| info.git_data());
     let git_ctx = GitRenderCtx {
         app,
         data: &git_data,
-        info,
         fields: &git,
         pane: &app.pane_manager().git,
         focus,
@@ -980,20 +952,13 @@ fn lang_entry_row(entry: &LangEntry, name_width: usize) -> Row<'static> {
 pub fn render_lang_panel_standalone(
     frame: &mut Frame,
     app: &mut App,
-    info: &DetailInfo,
     styles: &RenderStyles,
     area: Rect,
 ) {
-    render_lang_panel(frame, app, info, styles, area);
+    render_lang_panel(frame, app, styles, area);
 }
 
-fn render_lang_panel(
-    frame: &mut Frame,
-    app: &mut App,
-    _info: &DetailInfo,
-    styles: &RenderStyles,
-    area: Rect,
-) {
+fn render_lang_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles, area: Rect) {
     let lang_stats = app
         .projects()
         .at_path(

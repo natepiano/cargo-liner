@@ -629,20 +629,20 @@ impl App {
         match self.input_context() {
             InputContext::DetailTargets => Some("run"),
             InputContext::DetailFields => {
-                let info = &self.cached_detail.as_ref()?.info;
                 if self.base_focus() == PaneId::Package {
-                    let fields = crate::tui::detail::package_fields(info);
+                    let pkg = self.pane_manager.package_data.as_ref()?;
+                    let fields = crate::tui::detail::package_fields_from_data(pkg);
                     let field = *fields.get(self.pane_manager.package.pos())?;
-                    if field == DetailField::CratesIo && info.crates_version.is_some() {
+                    if field == DetailField::CratesIo && pkg.crates_version.is_some() {
                         Some("open")
                     } else {
                         None
                     }
                 } else {
-                    // Git column — Repo field opens URL
-                    let fields = crate::tui::detail::git_fields(info);
+                    let git = self.pane_manager.git_data.as_ref()?;
+                    let fields = crate::tui::detail::git_fields_from_data(git);
                     match fields.get(self.pane_manager.git.pos()) {
-                        Some(DetailField::Repo) if info.git_url.is_some() => Some("open"),
+                        Some(DetailField::Repo) if git.url.is_some() => Some("open"),
                         _ => None,
                     }
                 }

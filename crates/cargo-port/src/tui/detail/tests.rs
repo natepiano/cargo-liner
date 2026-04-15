@@ -127,7 +127,7 @@ fn stats_width_cases() {
     for (name, rows, expected_total, expected_digits) in cases {
         let mut info = detail_info(true);
         info.stats_rows = rows;
-        let (total, digits) = render::stats_column_width(&info);
+        let (total, digits) = render::stats_column_width(&info.package_data());
         assert_eq!(total, expected_total, "{name}");
         assert_eq!(digits, expected_digits, "{name}");
     }
@@ -169,22 +169,10 @@ fn package_label_width_expands_for_crates_io() {
 }
 
 #[test]
-fn project_panel_title_uses_title_name() {
-    let info = DetailInfo {
-        package_title: "Workspace".to_string(),
-        name: "-".to_string(),
-        title_name: "hana".to_string(),
-        ..detail_info(true)
-    };
-
-    assert_eq!(render::project_panel_title(&info), " Workspace - hana ");
-}
-
-#[test]
 fn description_lines_use_muted_fallback_when_missing() {
     let info = detail_info(true);
 
-    let lines = render::description_lines(&info, 80, 3);
+    let lines = render::description_lines(&info.package_data(), 80, 3);
 
     assert_eq!(lines.len(), 1);
     assert_eq!(line_text(&lines[0]), "No description available");
@@ -198,7 +186,7 @@ fn description_lines_render_real_description_with_default_style() {
         ..detail_info(true)
     };
 
-    let lines = render::description_lines(&info, 80, 3);
+    let lines = render::description_lines(&info.package_data(), 80, 3);
 
     assert_eq!(lines.len(), 1);
     assert_eq!(line_text(&lines[0]), "Real package description");
@@ -212,7 +200,7 @@ fn description_lines_truncate_overflow_with_ellipsis() {
         ..detail_info(true)
     };
 
-    let lines = render::description_lines(&info, 13, 2);
+    let lines = render::description_lines(&info.package_data(), 13, 2);
 
     assert_eq!(lines.len(), 2);
     assert_eq!(line_text(&lines[0]), "one two three");

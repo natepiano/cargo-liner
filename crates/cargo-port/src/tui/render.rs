@@ -252,8 +252,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     render_detail_row2(frame, app, right_row2);
 
     // Register hitboxes after all panes have their content_area set.
-    let detail_info = app.cached_detail().map(|c| c.info.clone());
-    sync_detail_pane_hitboxes(app, detail_info.as_ref());
+    sync_detail_pane_hitboxes(app);
 
     // Row 3: output covers full width, or Lint Runs (PL width) | CI Runs (rest).
     if app.example_output().is_empty() {
@@ -336,36 +335,30 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// Right column row 1: Package Details | Targets.
 fn render_detail_row1(frame: &mut Frame, app: &mut App, area: Rect) {
-    let detail_info = app.cached_detail().map(|cache| cache.info.clone());
-    // render_detail_panel renders Package + Targets (was Package + Lang).
-    super::detail::render_detail_panel(frame, app, detail_info.as_ref(), area);
+    super::detail::render_detail_panel(frame, app, area);
 }
 
 /// Right column row 2: Languages | Git.
 fn render_detail_row2(frame: &mut Frame, app: &mut App, area: Rect) {
-    let detail_info = app.cached_detail().map(|cache| cache.info.clone());
-
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
     // Languages (left half of row 2).
-    if let Some(info) = detail_info.as_ref() {
-        let title_style = Style::default()
-            .fg(TITLE_COLOR)
-            .add_modifier(Modifier::BOLD);
-        let styles = super::detail::RenderStyles {
-            readonly_label:  Style::default().fg(LABEL_COLOR),
-            active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
-            inactive_border: Style::default(),
-            title:           title_style,
-        };
-        super::detail::render_lang_panel_standalone(frame, app, info, &styles, cols[0]);
-    }
+    let title_style = Style::default()
+        .fg(TITLE_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let styles = super::detail::RenderStyles {
+        readonly_label:  Style::default().fg(LABEL_COLOR),
+        active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
+        inactive_border: Style::default(),
+        title:           title_style,
+    };
+    super::detail::render_lang_panel_standalone(frame, app, &styles, cols[0]);
 
     // Git (right half of row 2).
-    super::detail::render_git_panel(frame, app, detail_info.as_ref(), cols[1]);
+    super::detail::render_git_panel(frame, app, cols[1]);
 }
 
 /// Bottom row: Lint Runs (left) | CI Runs (right).
@@ -400,8 +393,8 @@ fn render_bottom_panel(frame: &mut Frame, app: &mut App, lint_area: Rect, ci_are
     }
 }
 
-fn sync_detail_pane_hitboxes(app: &mut App, detail_info: Option<&DetailInfo>) {
-    if detail_info.is_some() {
+fn sync_detail_pane_hitboxes(app: &mut App) {
+    if app.pane_manager().package_data.is_some() {
         register_detail_pane_hitboxes(app);
         return;
     }
@@ -439,11 +432,12 @@ fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
             }
         },
         PaneId::Targets => {
-            if app.cached_detail().is_some_and(|cached| {
-                cached.info.is_binary
-                    || !cached.info.examples.is_empty()
-                    || !cached.info.benches.is_empty()
-            }) {
+            if app
+                .pane_manager()
+                .targets_data
+                .as_ref()
+                .is_some_and(|d| d.has_targets())
+            {
                 let pane = app.pane_manager().targets.clone();
                 super::interaction::register_pane_row_hitboxes(app, id, &pane, Content);
             } else {

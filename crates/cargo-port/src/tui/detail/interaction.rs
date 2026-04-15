@@ -7,7 +7,7 @@ use super::CiFetchKind;
 use super::DetailField;
 use super::PendingCiFetch;
 use super::PendingExampleRun;
-use super::build_target_list;
+use super::build_target_list_from_data;
 use super::git_fields;
 use super::package_fields;
 use crate::keymap::CiRunsAction;
@@ -32,18 +32,20 @@ enum BuildMode {
 }
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
-    let Some(info) = app.cached_detail().map(|c| c.info.clone()) else {
+    let Some(targets_data) = app.pane_manager().targets_data.clone() else {
         return;
     };
-    let entries = build_target_list(&info);
+    let entries = build_target_list_from_data(&targets_data);
     if let Some(entry) = entries.get(app.pane_manager().targets.pos())
         && let Some(abs_path) = app.selected_project_path()
     {
-        let package_name = if info.name == "-" {
-            None
-        } else {
-            Some(info.name)
-        };
+        let package_name = app.pane_manager().package_data.as_ref().and_then(|d| {
+            if d.title_name == "-" {
+                None
+            } else {
+                Some(d.title_name.clone())
+            }
+        });
         app.set_pending_example_run(PendingExampleRun {
             abs_path: abs_path.display().to_string(),
             target_name: entry.name.clone(),
@@ -134,23 +136,25 @@ fn handle_detail_enter(app: &mut App) {
     if app.is_focused(PaneId::Targets) {
         handle_target_action(app, BuildMode::Debug);
     } else if app.base_focus() == PaneId::Package {
-        let info = app.cached_detail().map(|c| c.info.clone());
-        let fields = info.as_ref().map(package_fields).unwrap_or_default();
-        if matches!(
-            fields.get(app.pane_manager().package.pos()),
-            Some(DetailField::CratesIo)
-        ) && let Some(info) = info.as_ref()
-        {
-            open_url(&format!("https://crates.io/crates/{}", info.name));
+        if let Some(pkg) = app.pane_manager().package_data.as_ref() {
+            let fields = super::package_fields_from_data(pkg);
+            if matches!(
+                fields.get(app.pane_manager().package.pos()),
+                Some(DetailField::CratesIo)
+            ) {
+                open_url(&format!("https://crates.io/crates/{}", pkg.title_name));
+            }
         }
-    } else if let Some(info) = app.cached_detail().map(|c| &c.info)
-        && matches!(
-            git_fields(info).get(app.pane_manager().git.pos()),
+    } else if let Some(git) = app.pane_manager().git_data.as_ref() {
+        let fields = super::git_fields_from_data(git);
+        if matches!(
+            fields.get(app.pane_manager().git.pos()),
             Some(DetailField::Repo)
-        )
-        && let Some(url) = info.git_url.as_deref()
-    {
-        open_url(url);
+        ) {
+            if let Some(url) = git.url.as_deref() {
+                open_url(url);
+            }
+        }
     }
 }
 
