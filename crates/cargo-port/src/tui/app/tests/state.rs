@@ -725,9 +725,10 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
         Some("2026-03-12T21:18:54-04:00")
     );
     assert!(
-        app.cached_detail
+        app.pane_manager
+            .git_data
             .as_ref()
-            .and_then(|cache| cache.info.git_inception.as_ref())
+            .and_then(|g| g.inception.as_ref())
             .is_some(),
         "detail panel should show Incept once git info arrives"
     );

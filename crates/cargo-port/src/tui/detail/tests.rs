@@ -1,7 +1,3 @@
-use std::sync::OnceLock;
-use std::sync::mpsc;
-use std::time::Instant;
-
 use ratatui::text::Line;
 
 use super::ci_panel;
@@ -14,30 +10,11 @@ use crate::ci::CiJob;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::ci::FetchStatus::Fetched;
-use crate::config::CargoPortConfig;
-use crate::http::HttpClient;
 use crate::project::ExampleGroup;
 use crate::project::GitPathState;
-use crate::project::WorktreeHealth::Normal;
-use crate::scan::BackgroundMsg;
-use crate::tui::app::App;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::render::CiColumn;
 use crate::tui::types::PaneFocusState;
-
-fn test_http_client() -> HttpClient {
-    static TEST_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    let rt = TEST_RT
-        .get_or_init(|| tokio::runtime::Runtime::new().unwrap_or_else(|_| std::process::abort()));
-    HttpClient::new(rt.handle().clone()).unwrap_or_else(|| std::process::abort())
-}
-
-fn test_app() -> App {
-    let mut cfg = CargoPortConfig::default();
-    cfg.tui.include_dirs = vec!["/tmp/test".to_string()];
-    let (bg_tx, bg_rx) = mpsc::channel::<BackgroundMsg>();
-    App::new(&[], bg_tx, bg_rx, &cfg, test_http_client(), Instant::now())
-}
 
 fn detail_info(is_rust_project: bool) -> DetailInfo {
     DetailInfo {
@@ -46,7 +23,6 @@ fn detail_info(is_rust_project: bool) -> DetailInfo {
         } else {
             "Project".to_string()
         },
-        name:              "demo".to_string(),
         title_name:        "demo".to_string(),
         abs_path:          "/tmp/demo".into(),
         path:              "~/demo".to_string(),
@@ -72,8 +48,6 @@ fn detail_info(is_rust_project: bool) -> DetailInfo {
         repo_description:  None,
         git_inception:     None,
         git_last_commit:   None,
-        worktree_label:    None,
-        worktree_health:   Normal,
         worktree_names:    Vec::new(),
         is_binary:         false,
         binary_name:       None,
@@ -137,7 +111,7 @@ fn stats_width_cases() {
 fn package_fields_place_lint_and_ci_before_disk_for_rust_projects() {
     let info = detail_info(true);
     assert_eq!(
-        model::package_fields(&info)
+        model::package_fields_from_data(&info.package_data())
             .into_iter()
             .map(DetailField::label)
             .collect::<Vec<_>>(),
@@ -149,7 +123,7 @@ fn package_fields_place_lint_and_ci_before_disk_for_rust_projects() {
 fn package_fields_place_lint_and_ci_before_disk_for_non_rust_projects() {
     let info = detail_info(false);
     assert_eq!(
-        model::package_fields(&info)
+        model::package_fields_from_data(&info.package_data())
             .into_iter()
             .map(DetailField::label)
             .collect::<Vec<_>>(),
@@ -164,7 +138,7 @@ fn package_label_width_expands_for_crates_io() {
         crates_downloads: Some(74),
         ..detail_info(true)
     };
-    let fields = model::package_fields(&info);
+    let fields = model::package_fields_from_data(&info.package_data());
     assert_eq!(render::package_label_width(&fields), "crates.io".len());
 }
 
@@ -231,13 +205,15 @@ fn detail_column_scroll_stays_at_top_when_not_active() {
 
 #[test]
 fn git_path_value_appends_status_icon() {
-    let app = test_app();
     let info = DetailInfo {
         git_path: GitPathState::Modified,
         ..detail_info(true)
     };
 
-    assert_eq!(DetailField::GitPath.value(&info, &app), "🟠 modified");
+    assert_eq!(
+        DetailField::GitPath.git_value(&info.git_data()),
+        "🟠 modified"
+    );
 }
 
 #[test]
@@ -271,7 +247,7 @@ fn git_fields_show_explicit_remote_and_local_rows_for_unpublished_branch() {
     };
 
     assert_eq!(
-        model::git_fields(&info),
+        model::git_fields_from_data(&info.git_data()),
         vec![
             DetailField::VsOrigin,
             DetailField::Sync,

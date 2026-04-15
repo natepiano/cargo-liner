@@ -176,9 +176,10 @@ fn project_refresh_updates_selected_tree_project_targets() {
 
     app.ensure_detail_cached();
     let example_count = app
-        .cached_detail
+        .pane_manager
+        .targets_data
         .as_ref()
-        .map(|c| c.info.examples.iter().map(|g| g.names.len()).sum::<usize>());
+        .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
     assert_eq!(example_count, Some(0));
     assert!(!app.tabbable_panes().contains(&PaneId::Targets));
 
@@ -207,9 +208,10 @@ fn project_refresh_updates_selected_tree_project_targets() {
 
     app.ensure_detail_cached();
     let example_count = app
-        .cached_detail
+        .pane_manager
+        .targets_data
         .as_ref()
-        .map(|c| c.info.examples.iter().map(|g| g.names.len()).sum::<usize>());
+        .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
     assert_eq!(example_count, Some(1));
     assert!(app.tabbable_panes().contains(&PaneId::Targets));
 }

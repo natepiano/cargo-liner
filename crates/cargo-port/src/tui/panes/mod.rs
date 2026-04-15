@@ -66,7 +66,7 @@ impl PaneManager {
         }
     }
 
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             package:      Pane::new(),
             lang:         Pane::new(),

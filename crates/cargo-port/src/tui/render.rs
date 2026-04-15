@@ -40,7 +40,7 @@ use super::constants::SECONDARY_TEXT_COLOR;
 use super::constants::STATUS_BAR_COLOR;
 use super::constants::SUCCESS_COLOR;
 use super::constants::TITLE_COLOR;
-use super::detail::DetailInfo;
+use super::detail::TargetsData;
 use super::interaction::UiSurface::Content;
 use super::shortcuts::Shortcut;
 use super::shortcuts::ShortcutState;
@@ -436,7 +436,7 @@ fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
                 .pane_manager()
                 .targets_data
                 .as_ref()
-                .is_some_and(|d| d.has_targets())
+                .is_some_and(TargetsData::has_targets)
             {
                 let pane = app.pane_manager().targets.clone();
                 super::interaction::register_pane_row_hitboxes(app, id, &pane, Content);

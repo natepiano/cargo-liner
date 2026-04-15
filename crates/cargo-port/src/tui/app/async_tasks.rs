@@ -1922,7 +1922,7 @@ impl App {
         self.reload_lint_history(&path);
         self.migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
-        self.cached_detail = None;
+        self.detail_cache_key = None;
         self.pane_manager.clear_detail_data();
         // Signal that derived state needs refresh (batched by caller).
         true

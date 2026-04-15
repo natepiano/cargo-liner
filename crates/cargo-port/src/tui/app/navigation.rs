@@ -9,7 +9,6 @@ use nucleo_matcher::pattern::Normalization;
 
 use super::App;
 use super::snapshots;
-use super::types::DetailCache;
 use super::types::ExpandKey;
 use super::types::SearchHit;
 use super::types::SearchMode;
@@ -58,28 +57,28 @@ impl App {
     /// Keep disk sort caches rebuilding in the background, never inline on the UI thread.
     pub(in super::super) fn ensure_disk_cache(&mut self) { self.request_disk_cache_build(); }
 
-    /// Ensure the cached `DetailInfo` is up to date for the selected project.
-    /// The cache is valid only when the generation AND path both match.
+    /// Ensure per-pane data on `PaneManager` is up to date for the selected
+    /// project. The cache key tracks generation + selection to avoid
+    /// redundant rebuilds.
     pub(in super::super) fn ensure_detail_cached(&mut self) {
         let current_selection = self.current_detail_selection_key();
 
-        if let Some(ref cache) = self.cached_detail
-            && cache.generation == self.detail_generation
-            && cache.selection == current_selection
+        if let Some(ref key) = self.detail_cache_key
+            && key.generation == self.detail_generation
+            && key.selection == current_selection
         {
             return;
         }
 
-        self.cached_detail = self.build_selected_detail_info().map(|info| {
+        if let Some(info) = self.build_selected_detail_info() {
             self.pane_manager.set_detail_data(&info);
-            DetailCache {
+            self.detail_cache_key = Some(super::types::DetailCacheKey {
                 generation: self.detail_generation,
-                selection: current_selection,
-                info,
-            }
-        });
-        if self.cached_detail.is_none() {
+                selection:  current_selection,
+            });
+        } else {
             self.pane_manager.clear_detail_data();
+            self.detail_cache_key = None;
         }
     }
 

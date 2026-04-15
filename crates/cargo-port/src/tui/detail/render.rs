@@ -20,7 +20,6 @@ use unicode_width::UnicodeWidthStr;
 
 use super::model;
 use super::model::DetailField;
-use super::model::DetailInfo;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_LINT_RUNS;
 use crate::project::LangEntry;
@@ -95,7 +94,6 @@ struct PackageRenderCtx<'a> {
 }
 
 struct GitRenderCtx<'a> {
-    app:    &'a App,
     data:   &'a model::GitData,
     fields: &'a [DetailField],
     pane:   &'a Pane,
@@ -239,7 +237,6 @@ pub(super) fn git_label_width(data: &model::GitData, fields: &[DetailField]) -> 
 }
 
 fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect) -> usize {
-    let app = ctx.app;
     let data = ctx.data;
     let fields = ctx.fields;
     let pane = ctx.pane;
@@ -817,13 +814,6 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         title:           title_style,
     };
 
-    // Use git_data presence to determine if Git info is available.
-    let has_git = app
-        .pane_manager()
-        .git_data
-        .as_ref()
-        .is_some_and(|g| g.branch.is_some() || g.url.is_some());
-
     let Some(git_data) = app.pane_manager().git_data.clone() else {
         let empty = Block::default()
             .borders(Borders::ALL)
@@ -860,7 +850,6 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     app.pane_manager_mut().git.set_content_area(git_inner);
     frame.render_widget(git_block, area);
     let git_ctx = GitRenderCtx {
-        app,
         data: &git_data,
         fields: &git,
         pane: &app.pane_manager().git,

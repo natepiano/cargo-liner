@@ -129,7 +129,7 @@ pub(super) struct App {
     builds:                   types::AsyncBuildState,
     data_generation:          u64,
     detail_generation:        u64,
-    cached_detail:            Option<types::DetailCache>,
+    detail_cache_key:         Option<types::DetailCacheKey>,
     layout_cache:             LayoutCache,
     status_flash:             Option<(String, std::time::Instant)>,
     toasts:                   ToastManager,
@@ -194,10 +194,6 @@ impl App {
                 lr.clear_runs();
             }
         }
-    }
-
-    pub(super) const fn cached_detail(&self) -> Option<&types::DetailCache> {
-        self.cached_detail.as_ref()
     }
 
     pub(super) const fn layout_cache(&self) -> &LayoutCache { &self.layout_cache }

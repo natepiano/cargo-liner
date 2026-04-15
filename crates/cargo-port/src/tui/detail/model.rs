@@ -24,7 +24,6 @@ use crate::project::RustProject;
 use crate::project::SubmoduleInfo;
 use crate::project::WorkspaceProject;
 use crate::project::WorktreeGroup;
-use crate::project::WorktreeHealth;
 use crate::tui::app::App;
 
 #[derive(Default)]
@@ -139,10 +138,6 @@ pub struct TargetEntry {
 
 /// Build a flat list of all runnable targets: binaries first, then examples alphabetically,
 /// then benches alphabetically.
-pub fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
-    build_target_list_from_data(&info.targets_data())
-}
-
 pub fn build_target_list_from_data(data: &TargetsData) -> Vec<TargetEntry> {
     let mut entries = Vec::new();
 
@@ -246,7 +241,6 @@ pub enum DetailField {
     RepoDesc,
     Inception,
     LastCommit,
-    Worktree,
     WorktreeError,
     CratesIo,
     Downloads,
@@ -272,88 +266,10 @@ impl DetailField {
             Self::RepoDesc => "About",
             Self::Inception => "Incept",
             Self::LastCommit => "Latest",
-            Self::Worktree => "Worktree",
             Self::WorktreeError => "Error",
             Self::CratesIo => "crates.io",
             Self::Downloads => "Downloads",
             Self::Version => "Version",
-        }
-    }
-
-    pub fn value(self, info: &DetailInfo, app: &App) -> String {
-        match self {
-            Self::Path => info.path.clone(),
-            Self::Targets => info.types.clone(),
-            Self::Disk => info.disk.clone(),
-            Self::Lint => {
-                if !app.is_rust_at_path(info.abs_path.as_path()) {
-                    return NO_LINT_RUNS_NOT_RUST.to_string();
-                }
-                let abs_path = info.abs_path.as_path();
-                let is_worktree_group = app
-                    .projects()
-                    .iter()
-                    .any(|item| item.path() == abs_path && matches!(item, RootItem::Worktrees(_)));
-                let lint_icon = if is_worktree_group {
-                    app.selected_lint_icon(abs_path)
-                        .unwrap_or_else(|| app.lint_icon(abs_path))
-                } else {
-                    app.lint_icon(abs_path)
-                };
-                match lint_run_count_for(app, abs_path, is_worktree_group) {
-                    Some(0) | None => NO_LINT_RUNS.to_string(),
-                    Some(n) => format!("{lint_icon} {n}"),
-                }
-            },
-            Self::Ci => {
-                let has_workflows = app
-                    .git_info_for(info.abs_path.as_path())
-                    .is_some_and(|git| git.workflows.is_present());
-                if !has_workflows {
-                    return NO_CI_WORKFLOW.to_string();
-                }
-                let icon = info.ci.map_or_else(String::new, |c| c.icon().to_string());
-                let ci_runs_label = build_ci_runs_label(app, info.abs_path.as_path());
-                if !ci_runs_label.is_empty() {
-                    format!("{icon} {ci_runs_label}")
-                } else if icon.is_empty() {
-                    NO_CI_RUNS.to_string()
-                } else {
-                    icon
-                }
-            },
-            Self::Branch => {
-                let branch = info.git_branch.as_deref().unwrap_or("");
-                let is_default = info
-                    .local_main_branch
-                    .as_deref()
-                    .is_some_and(|db| db == branch);
-                if is_default {
-                    format!("{branch} (HEAD)")
-                } else {
-                    branch.to_string()
-                }
-            },
-            Self::GitPath => info.git_path.label_with_icon(),
-            Self::Sync => info.git_sync.as_deref().unwrap_or("").to_string(),
-            Self::VsOrigin => info.git_vs_origin.as_deref().unwrap_or("").to_string(),
-            Self::VsLocal => info.git_vs_local.as_deref().unwrap_or("").to_string(),
-            Self::Origin => info.git_origin.as_deref().unwrap_or("").to_string(),
-            Self::Owner => info.git_owner.as_deref().unwrap_or("").to_string(),
-            Self::Repo => info.git_url.as_deref().unwrap_or("").to_string(),
-            Self::Stars => info
-                .git_stars
-                .map_or_else(String::new, |count| format!("⭐ {count}")),
-            Self::RepoDesc => info.repo_description.as_deref().unwrap_or("").to_string(),
-            Self::Inception => info.git_inception.as_deref().unwrap_or("").to_string(),
-            Self::LastCommit => info.git_last_commit.as_deref().unwrap_or("").to_string(),
-            Self::Worktree => info.worktree_label.as_deref().unwrap_or("").to_string(),
-            Self::WorktreeError => "broken .git — gitdir target missing".to_string(),
-            Self::CratesIo => info.crates_version.as_deref().unwrap_or("").to_string(),
-            Self::Downloads => info
-                .crates_downloads
-                .map_or_else(String::new, format_downloads),
-            Self::Version => info.version.clone(),
         }
     }
 
@@ -405,7 +321,6 @@ impl DetailField {
                 .crates_downloads
                 .map_or_else(String::new, format_downloads),
             Self::Version => data.version.clone(),
-            Self::Worktree => data.worktree_label.as_deref().unwrap_or("").to_string(),
             Self::WorktreeError => "broken .git — gitdir target missing".to_string(),
             // Git fields — should not be called with package_value.
             Self::Branch
@@ -460,7 +375,6 @@ impl DetailField {
             | Self::CratesIo
             | Self::Downloads
             | Self::Version
-            | Self::Worktree
             | Self::WorktreeError => String::new(),
         }
     }
@@ -468,34 +382,6 @@ impl DetailField {
 
 /// All fields for the `Package` column.
 /// Non-Rust projects show only name, path, disk, and CI.
-pub fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
-    if info.package_title == "Project" {
-        return vec![
-            DetailField::Path,
-            DetailField::Disk,
-            DetailField::Lint,
-            DetailField::Ci,
-        ];
-    }
-    let mut fields = vec![
-        DetailField::Path,
-        DetailField::Disk,
-        DetailField::Targets,
-        DetailField::Lint,
-        DetailField::Ci,
-    ];
-    if info.has_package {
-        fields.push(DetailField::Version);
-    }
-    if info.crates_version.is_some() {
-        fields.push(DetailField::CratesIo);
-    }
-    if info.crates_downloads.is_some() {
-        fields.push(DetailField::Downloads);
-    }
-    fields
-}
-
 pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
     if data.package_title == "Project" {
         return vec![
@@ -565,51 +451,6 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     fields
 }
 
-/// Git fields (right column). Only includes fields that have data.
-pub fn git_fields(info: &DetailInfo) -> Vec<DetailField> {
-    let mut fields = Vec::new();
-    if info.git_url.is_some() {
-        fields.push(DetailField::Repo);
-    }
-    if info.git_owner.is_some() {
-        fields.push(DetailField::Owner);
-    }
-    if info.git_branch.is_some() {
-        fields.push(DetailField::Branch);
-    }
-    if info.git_path != GitPathState::OutsideRepo {
-        fields.push(DetailField::GitPath);
-    }
-    if info.git_vs_origin.is_some() {
-        fields.push(DetailField::VsOrigin);
-    }
-    if info.git_sync.is_some() {
-        fields.push(DetailField::Sync);
-    }
-    if info.git_vs_local.is_some() {
-        fields.push(DetailField::VsLocal);
-    }
-    if info.worktree_label.is_some() {
-        fields.push(DetailField::Worktree);
-    }
-    if matches!(info.worktree_health, WorktreeHealth::Broken) {
-        fields.push(DetailField::WorktreeError);
-    }
-    if info.git_stars.is_some() {
-        fields.push(DetailField::Stars);
-    }
-    if info.repo_description.is_some() {
-        fields.push(DetailField::RepoDesc);
-    }
-    if info.git_inception.is_some() {
-        fields.push(DetailField::Inception);
-    }
-    if info.git_last_commit.is_some() {
-        fields.push(DetailField::LastCommit);
-    }
-    fields
-}
-
 /// Per-pane data for the Package detail panel.
 #[derive(Clone)]
 pub struct PackageData {
@@ -626,14 +467,11 @@ pub struct PackageData {
     pub ci:               Option<Conclusion>,
     pub stats_rows:       Vec<(&'static str, usize)>,
     pub has_package:      bool,
-    pub worktree_label:   Option<String>,
-    pub worktree_health:  WorktreeHealth,
 }
 
 /// Per-pane data for the Git detail panel.
 #[derive(Clone)]
 pub struct GitData {
-    pub abs_path:          AbsolutePath,
     pub branch:            Option<String>,
     pub path_state:        GitPathState,
     pub sync:              Option<String>,
@@ -683,14 +521,11 @@ impl DetailInfo {
             ci:               self.ci,
             stats_rows:       self.stats_rows.clone(),
             has_package:      self.has_package,
-            worktree_label:   self.worktree_label.clone(),
-            worktree_health:  self.worktree_health,
         }
     }
 
     pub fn git_data(&self) -> GitData {
         GitData {
-            abs_path:          self.abs_path.clone(),
             branch:            self.git_branch.clone(),
             path_state:        self.git_path,
             sync:              self.git_sync.clone(),
@@ -722,7 +557,6 @@ impl DetailInfo {
 #[derive(Clone)]
 pub struct DetailInfo {
     pub package_title:     String,
-    pub name:              String,
     /// Primary name for the detail title bar. For Rust projects this is the
     /// Cargo package name; for non-Rust projects this is the directory leaf.
     pub title_name:        String,
@@ -753,8 +587,6 @@ pub struct DetailInfo {
     pub repo_description:  Option<String>,
     pub git_inception:     Option<String>,
     pub git_last_commit:   Option<String>,
-    pub worktree_label:    Option<String>,
-    pub worktree_health:   WorktreeHealth,
     pub worktree_names:    Vec<String>,
     pub is_binary:         bool,
     pub binary_name:       Option<String>,
@@ -979,7 +811,6 @@ pub fn build_detail_info_for_submodule(app: &App, submodule: &SubmoduleInfo) -> 
 
     DetailInfo {
         package_title: "Submodule".to_string(),
-        name: submodule.name.clone(),
         title_name: submodule.name.clone(),
         abs_path: abs_path.clone(),
         path: display_path,
@@ -1005,8 +836,6 @@ pub fn build_detail_info_for_submodule(app: &App, submodule: &SubmoduleInfo) -> 
         repo_description: git_detail.description,
         git_inception: git_detail.inception,
         git_last_commit: git_detail.last_commit,
-        worktree_label: None,
-        worktree_health: WorktreeHealth::Normal,
         worktree_names: Vec::new(),
         is_binary: false,
         binary_name: None,
@@ -1046,8 +875,6 @@ fn build_detail_info_for_workspace(
             title_name: ws.package_name().into_string(),
             has_cargo: ws.name().is_some(),
             cargo: Some(cargo),
-            worktree_name: ws.worktree_name(),
-            worktree_health: ws.worktree_health(),
             wt_item: wt_item_ref,
             stats_rows,
             package_title: "Workspace".to_string(),
@@ -1083,8 +910,6 @@ fn build_detail_info_for_package(
             title_name: pkg.package_name().into_string(),
             has_cargo: true,
             cargo: Some(cargo),
-            worktree_name: pkg.worktree_name(),
-            worktree_health: pkg.worktree_health(),
             wt_item: wt_item_ref,
             stats_rows,
             package_title,
@@ -1110,8 +935,6 @@ fn build_detail_info_non_rust(
             title_name: nr.root_directory_name().into_string(),
             has_cargo: false,
             cargo: None,
-            worktree_name: None,
-            worktree_health: nr.worktree_health(),
             wt_item: wt_item_ref,
             stats_rows: Vec::new(),
             package_title: "Project".to_string(),
@@ -1120,16 +943,14 @@ fn build_detail_info_non_rust(
 }
 
 struct DetailSource<'a> {
-    abs_path:        &'a Path,
-    display_path:    &'a str,
-    title_name:      String,
-    has_cargo:       bool,
-    cargo:           Option<&'a Cargo>,
-    worktree_name:   Option<&'a str>,
-    worktree_health: WorktreeHealth,
-    wt_item:         Option<&'a RootItem>,
-    stats_rows:      Vec<(&'static str, usize)>,
-    package_title:   String,
+    abs_path:      &'a Path,
+    display_path:  &'a str,
+    title_name:    String,
+    has_cargo:     bool,
+    cargo:         Option<&'a Cargo>,
+    wt_item:       Option<&'a RootItem>,
+    stats_rows:    Vec<(&'static str, usize)>,
+    package_title: String,
 }
 
 fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
@@ -1172,7 +993,6 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
 
     DetailInfo {
         package_title: src.package_title,
-        name: src.title_name.clone(),
         title_name: src.title_name,
         abs_path: AbsolutePath::from(abs_path),
         path: src.display_path.to_string(),
@@ -1198,8 +1018,6 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
         repo_description: git_detail.description,
         git_inception: git_detail.inception,
         git_last_commit: git_detail.last_commit,
-        worktree_label: src.worktree_name.map(str::to_string),
-        worktree_health: src.worktree_health,
         worktree_names,
         is_binary,
         binary_name,

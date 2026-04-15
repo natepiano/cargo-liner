@@ -231,7 +231,7 @@ impl App {
             builds: inputs.builds,
             data_generation: 0,
             detail_generation: 0,
-            cached_detail: None,
+            detail_cache_key: None,
             layout_cache: LayoutCache::default(),
             status_flash: inputs.status_flash,
             toasts: ToastManager::default(),

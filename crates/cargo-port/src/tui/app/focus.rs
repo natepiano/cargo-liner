@@ -7,6 +7,7 @@ use super::types::KeymapMode;
 use super::types::SearchMode;
 use super::types::SelectionSync;
 use super::types::SettingsMode;
+use crate::tui::detail::TargetsData;
 use crate::tui::settings::SettingOption;
 use crate::tui::settings::SettingOption::IncludeDirs;
 use crate::tui::shortcuts::InputContext;
@@ -238,7 +239,7 @@ impl App {
                 .pane_manager
                 .targets_data
                 .as_ref()
-                .is_some_and(|d| d.has_targets()),
+                .is_some_and(TargetsData::has_targets),
             PaneId::Lints => {
                 self.example_output.is_empty()
                     && self.selected_project_path().is_some_and(|path| {

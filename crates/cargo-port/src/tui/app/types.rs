@@ -10,7 +10,6 @@ use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 use crate::tui::columns::ResolvedWidths;
-use crate::tui::detail::DetailInfo;
 use crate::tui::finder::FINDER_COLUMN_COUNT;
 use crate::tui::finder::FinderItem;
 use crate::tui::toasts::ToastTaskId;
@@ -495,8 +494,9 @@ pub(in super::super) enum CiRunDisplayMode {
 
 /// Generation-stamped detail cache. Automatically stale when `detail_generation`
 /// on `App` has advanced past the generation stored here.
-pub(in super::super) struct DetailCache {
+/// Cache key for per-pane detail data. When generation and selection
+/// match, the pane data on `PaneManager` is still valid.
+pub(in super::super) struct DetailCacheKey {
     pub generation: u64,
     pub selection:  String,
-    pub info:       DetailInfo,
 }

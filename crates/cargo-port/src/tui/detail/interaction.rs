@@ -8,8 +8,6 @@ use super::DetailField;
 use super::PendingCiFetch;
 use super::PendingExampleRun;
 use super::build_target_list_from_data;
-use super::git_fields;
-use super::package_fields;
 use crate::keymap::CiRunsAction;
 use crate::keymap::GitAction;
 use crate::keymap::KeyBind;
@@ -150,10 +148,9 @@ fn handle_detail_enter(app: &mut App) {
         if matches!(
             fields.get(app.pane_manager().git.pos()),
             Some(DetailField::Repo)
-        ) {
-            if let Some(url) = git.url.as_deref() {
-                open_url(url);
-            }
+        ) && let Some(url) = git.url.as_deref()
+        {
+            open_url(url);
         }
     }
 }
