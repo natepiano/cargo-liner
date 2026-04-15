@@ -38,6 +38,60 @@ const fn days_in_month(year: i64, month: i64) -> i64 {
     }
 }
 
+/// Extract the local date portion from a UTC ISO 8601 timestamp as `yyyy-mm-dd`.
+pub(super) fn format_date(iso: &str) -> String {
+    let full = format_timestamp(iso);
+    full.split(' ').next().unwrap_or(&full).to_string()
+}
+
+/// Extract the local time portion from a UTC ISO 8601 timestamp as `hh:mm:ss`.
+pub(super) fn format_time(iso: &str) -> String {
+    let utc_offset_secs = local_utc_offset_secs();
+    let stripped = iso.trim_end_matches('Z');
+    let Some((_, time)) = stripped.split_once('T') else {
+        return "—".to_string();
+    };
+    let time_parts: Vec<&str> = time.split(':').collect();
+    if time_parts.len() < 3 {
+        return time.to_string();
+    }
+    let (Ok(hour), Ok(minute), Ok(second)) = (
+        time_parts[0].parse::<i64>(),
+        time_parts[1].parse::<i64>(),
+        time_parts[2]
+            .split('.')
+            .next()
+            .unwrap_or("0")
+            .parse::<i64>(),
+    ) else {
+        return time.to_string();
+    };
+    let total_secs = hour * 3600 + minute * 60 + second + utc_offset_secs;
+    let mut adj = total_secs % (24 * 3600);
+    if adj < 0 {
+        adj += 24 * 3600;
+    }
+    let h = adj / 3600;
+    let m = (adj % 3600) / 60;
+    let s = adj % 60;
+    format!("{h:02}:{m:02}:{s:02}")
+}
+
+/// Format a duration in milliseconds as a compact string.
+pub(super) fn format_duration(duration_ms: Option<u64>) -> String {
+    let Some(ms) = duration_ms else {
+        return "—".to_string();
+    };
+    let total_secs = ms / 1000;
+    let minutes = total_secs / 60;
+    let seconds = total_secs % 60;
+    if minutes > 0 {
+        format!("{minutes}m {seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
 /// Convert a UTC ISO 8601 timestamp to local time, formatted as `yyyy-mm-dd hh:mm`.
 pub(super) fn format_timestamp(iso: &str) -> String {
     let utc_offset_secs = local_utc_offset_secs();
