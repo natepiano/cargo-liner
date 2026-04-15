@@ -410,7 +410,12 @@ pub fn render_detail_panel(
             .constraints(spec.constraints)
             .split(area);
 
-        app.layout_cache_mut().detail_columns = columns.to_vec();
+        let mut detail_cols = vec![(PaneId::Package, columns[0])];
+        detail_cols.push((PaneId::Lang, columns[spec.lang_col]));
+        if let Some(git_col) = spec.git_col {
+            detail_cols.push((PaneId::Git, columns[git_col]));
+        }
+        app.layout_cache_mut().detail_columns = detail_cols;
 
         let styles = RenderStyles {
             readonly_label:  Style::default().fg(LABEL_COLOR),

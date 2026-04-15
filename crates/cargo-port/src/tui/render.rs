@@ -396,37 +396,57 @@ fn sync_detail_pane_hitboxes(app: &mut App, detail_info: Option<&DetailInfo>) {
     reset_pane(&mut app.pane_manager_mut().git);
 }
 
+/// Register row hitboxes for panes with row-based content.
 fn register_detail_pane_hitboxes(app: &mut App) {
-    let package_pane = app.pane_manager().package.clone();
-    super::interaction::register_pane_row_hitboxes(app, PaneId::Package, &package_pane, Content);
+    register_hitbox_for_pane(app, PaneId::Package);
+    register_hitbox_for_pane(app, PaneId::Lang);
+    register_hitbox_for_pane(app, PaneId::Git);
+    register_hitbox_for_pane(app, PaneId::Targets);
+}
 
-    let lang_pane = app.pane_manager().lang.clone();
-    super::interaction::register_pane_row_hitboxes(app, PaneId::Lang, &lang_pane, Content);
-
-    if app
-        .selected_project_path()
-        .and_then(|path| app.git_info_for(path))
-        .is_some()
-    {
-        let git_pane = app.pane_manager().git.clone();
-        super::interaction::register_pane_row_hitboxes(app, PaneId::Git, &git_pane, Content);
-    } else {
-        reset_pane(&mut app.pane_manager_mut().git);
-    }
-
-    // Targets hitbox is registered in render_targets_panel via its content_area.
-    if app.cached_detail().is_some_and(|cached| {
-        cached.info.is_binary || !cached.info.examples.is_empty() || !cached.info.benches.is_empty()
-    }) {
-        let targets_pane = app.pane_manager().targets.clone();
-        super::interaction::register_pane_row_hitboxes(
-            app,
-            PaneId::Targets,
-            &targets_pane,
-            Content,
-        );
-    } else {
-        reset_pane(&mut app.pane_manager_mut().targets);
+/// Exhaustive match on `PaneId` — adding a variant forces you to decide
+/// whether the pane gets hitboxes.
+fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
+    match id {
+        PaneId::Package | PaneId::Lang => {
+            let pane = app.pane_manager().by_id(id).clone();
+            super::interaction::register_pane_row_hitboxes(app, id, &pane, Content);
+        },
+        PaneId::Git => {
+            if app
+                .selected_project_path()
+                .and_then(|path| app.git_info_for(path))
+                .is_some()
+            {
+                let pane = app.pane_manager().git.clone();
+                super::interaction::register_pane_row_hitboxes(app, id, &pane, Content);
+            } else {
+                reset_pane(&mut app.pane_manager_mut().git);
+            }
+        },
+        PaneId::Targets => {
+            if app.cached_detail().is_some_and(|cached| {
+                cached.info.is_binary
+                    || !cached.info.examples.is_empty()
+                    || !cached.info.benches.is_empty()
+            }) {
+                let pane = app.pane_manager().targets.clone();
+                super::interaction::register_pane_row_hitboxes(app, id, &pane, Content);
+            } else {
+                reset_pane(&mut app.pane_manager_mut().targets);
+            }
+        },
+        // These panes register their own hitboxes during rendering
+        // or don't have row-based hitboxes.
+        PaneId::ProjectList
+        | PaneId::Lints
+        | PaneId::CiRuns
+        | PaneId::Output
+        | PaneId::Toasts
+        | PaneId::Search
+        | PaneId::Settings
+        | PaneId::Finder
+        | PaneId::Keymap => {},
     }
 }
 

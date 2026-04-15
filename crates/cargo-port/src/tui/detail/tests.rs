@@ -355,7 +355,6 @@ fn lint_commands_summary_cases() {
         clippy_duration_ms: Option<u64>,
         clippy_exit_code:   Option<i32>,
         expected_pending:   &'static str,
-        expected_slowest:   &'static str,
     }
 
     let cases = [
@@ -366,7 +365,6 @@ fn lint_commands_summary_cases() {
             clippy_duration_ms: Some(2_000),
             clippy_exit_code:   Some(0),
             expected_pending:   "0",
-            expected_slowest:   "clippy 0:02",
         },
         Case {
             name:               "failed",
@@ -375,7 +373,6 @@ fn lint_commands_summary_cases() {
             clippy_duration_ms: Some(2_000),
             clippy_exit_code:   Some(101),
             expected_pending:   "0",
-            expected_slowest:   "clippy 0:02",
         },
         Case {
             name:               "running",
@@ -384,7 +381,6 @@ fn lint_commands_summary_cases() {
             clippy_duration_ms: None,
             clippy_exit_code:   None,
             expected_pending:   "1",
-            expected_slowest:   "mend 0:01",
         },
     ];
 
@@ -412,20 +408,8 @@ fn lint_commands_summary_cases() {
         );
 
         assert_eq!(
-            lints_panel::format_lints_commands(&run),
-            "mend, clippy",
-            "{}",
-            case.name
-        );
-        assert_eq!(
             lints_panel::format_lints_pending(&run),
             case.expected_pending,
-            "{}",
-            case.name
-        );
-        assert_eq!(
-            lints_panel::format_lints_slowest(&run),
-            case.expected_slowest,
             "{}",
             case.name
         );

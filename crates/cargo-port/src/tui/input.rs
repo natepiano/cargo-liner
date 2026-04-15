@@ -126,7 +126,12 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         PaneId::Lints => detail::handle_lints_key(app, &normalized),
         PaneId::CiRuns => detail::handle_ci_runs_key(app, &normalized),
         PaneId::Toasts => handle_toast_key(app, &normalized),
-        _ => handle_normal_key(app, &normalized),
+        PaneId::ProjectList
+        | PaneId::Output
+        | PaneId::Search
+        | PaneId::Settings
+        | PaneId::Finder
+        | PaneId::Keymap => handle_normal_key(app, &normalized),
     }
 }
 
@@ -224,15 +229,11 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
     }
 
     let detail_columns = app.layout_cache().detail_columns.clone();
-    for (col_idx, col_rect) in detail_columns.iter().enumerate() {
+    for &(pane_id, col_rect) in &detail_columns {
         if !col_rect.contains(pos) {
             continue;
         }
-        let pane = match col_idx {
-            0 => &mut app.pane_manager_mut().package,
-            1 => &mut app.pane_manager_mut().lang,
-            _ => &mut app.pane_manager_mut().git,
-        };
+        let pane = app.pane_manager_mut().by_id_mut(pane_id);
         if up {
             pane.up();
         } else {
@@ -241,26 +242,21 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
         return;
     }
 
-    if app.pane_manager().targets.content_area().contains(pos) {
-        if up {
-            app.pane_manager_mut().targets.up();
-        } else {
-            app.pane_manager_mut().targets.down();
-        }
-        return;
-    }
-
-    if app.pane_manager().lints.content_area().contains(pos) {
-        if up {
-            app.pane_manager_mut().lints.up();
-        } else {
-            app.pane_manager_mut().lints.down();
-        }
-    } else if app.pane_manager().ci.content_area().contains(pos) {
-        if up {
-            app.pane_manager_mut().ci.up();
-        } else {
-            app.pane_manager_mut().ci.down();
+    // Panes outside the detail column layout — check content_area.
+    for pane_id in [PaneId::Targets, PaneId::Lints, PaneId::CiRuns] {
+        if app
+            .pane_manager()
+            .by_id(pane_id)
+            .content_area()
+            .contains(pos)
+        {
+            let pane = app.pane_manager_mut().by_id_mut(pane_id);
+            if up {
+                pane.up();
+            } else {
+                pane.down();
+            }
+            return;
         }
     }
 }
@@ -322,24 +318,24 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    for (col_idx, col_rect) in detail_columns.iter().enumerate() {
-        if !col_rect.contains(pos) {
-            continue;
+    for &(pane_id, col_rect) in &detail_columns {
+        if col_rect.contains(pos) {
+            app.focus_pane(pane_id);
+            return;
         }
-        let pane_id = match col_idx {
-            0 => PaneId::Package,
-            1 => PaneId::Lang,
-            _ => PaneId::Git,
-        };
-        app.focus_pane(pane_id);
-        return;
     }
 
-    if app.pane_manager().lints.content_area().contains(pos) && app.is_pane_tabbable(PaneId::Lints)
-    {
-        app.focus_pane(PaneId::Lints);
-    } else if app.pane_manager().ci.content_area().contains(pos) {
-        app.focus_pane(PaneId::CiRuns);
+    // Panes outside the detail column layout — check content_area.
+    for pane_id in [PaneId::Targets, PaneId::Lints, PaneId::CiRuns] {
+        if app
+            .pane_manager()
+            .by_id(pane_id)
+            .content_area()
+            .contains(pos)
+        {
+            app.focus_pane(pane_id);
+            return;
+        }
     }
 }
 

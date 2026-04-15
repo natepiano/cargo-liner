@@ -237,7 +237,10 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
                 PaneId::Targets => app.pane_manager_mut().targets.set_pos(row),
                 PaneId::Lints => app.pane_manager_mut().lints.set_pos(row),
                 PaneId::CiRuns => app.pane_manager_mut().ci.set_pos(row),
-                _ => return false,
+                PaneId::Keymap => app.pane_manager_mut().keymap.set_pos(row),
+                PaneId::ProjectList | PaneId::Output | PaneId::Toasts | PaneId::Search => {
+                    return false;
+                },
             }
             true
         },

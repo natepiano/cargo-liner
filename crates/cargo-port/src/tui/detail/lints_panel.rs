@@ -31,56 +31,12 @@ fn format_lints_finished(run: &LintRun) -> String {
         .map_or_else(|| "—".to_string(), super::timestamp::format_timestamp)
 }
 
-fn format_duration_ms(duration_ms: Option<u64>) -> String {
-    let Some(duration_ms) = duration_ms else {
-        return "—".to_string();
-    };
-    let total_seconds = duration_ms / 1000;
-    let minutes = total_seconds / 60;
-    let seconds = total_seconds % 60;
-    format!("{minutes}:{seconds:02}")
-}
-
-pub(super) fn format_lints_commands(run: &LintRun) -> String {
-    if run.commands.is_empty() {
-        return "-".to_string();
-    }
-
-    let names = run
-        .commands
-        .iter()
-        .map(|command| command.name.trim())
-        .filter(|name| !name.is_empty())
-        .collect::<Vec<_>>()
-        .join(", ");
-    if names.is_empty() {
-        "-".to_string()
-    } else {
-        names
-    }
-}
-
 pub(super) fn format_lints_pending(run: &LintRun) -> String {
     run.commands
         .iter()
         .filter(|command| matches!(command.status, LintCommandStatus::Pending))
         .count()
         .to_string()
-}
-
-pub(super) fn format_lints_slowest(run: &LintRun) -> String {
-    run.commands
-        .iter()
-        .filter_map(|command| {
-            command
-                .duration_ms
-                .map(|duration_ms| (command.name.trim(), duration_ms))
-        })
-        .max_by_key(|(_, duration_ms)| *duration_ms)
-        .map_or_else(
-            || "—".to_string(),
-            |(name, duration_ms)| format!("{name} {}", format_duration_ms(Some(duration_ms))),
-        )
 }
 
 fn lints_panel_title(app: &App, runs: &[LintRun], focused: bool) -> String {
@@ -159,30 +115,11 @@ pub fn render_lints_panel(
                 )),
                 Cell::from(format_lints_finished(run)),
                 Cell::from(run.status.label()),
-                Cell::from(format_lints_commands(run)),
                 Cell::from(format_lints_pending(run)),
-                Cell::from(format_lints_slowest(run)),
             ])
             .style(style)
         })
         .collect();
-
-    let cmds_width = u16::try_from(
-        runs.iter()
-            .map(|run| format_lints_commands(run).len())
-            .max()
-            .unwrap_or("Cmds".len())
-            .max("Cmds".len()),
-    )
-    .unwrap_or(u16::MAX);
-    let slowest_width = u16::try_from(
-        runs.iter()
-            .map(|run| format_lints_slowest(run).len())
-            .max()
-            .unwrap_or("Slowest".len())
-            .max("Slowest".len()),
-    )
-    .unwrap_or(u16::MAX);
 
     let table = Table::new(
         rows,
@@ -190,16 +127,11 @@ pub fn render_lints_panel(
             Constraint::Length(16),
             Constraint::Length(16),
             Constraint::Length(8),
-            Constraint::Length(cmds_width),
             Constraint::Length(7),
-            Constraint::Length(slowest_width),
         ],
     )
     .header(
-        Row::new(vec![
-            " Started", "Finished", "Result", "Cmds", "Pending", "Slowest",
-        ])
-        .style(
+        Row::new(vec![" Started", "Finished", "Result", "Pending"]).style(
             Style::default()
                 .fg(COLUMN_HEADER_COLOR)
                 .add_modifier(Modifier::BOLD),
