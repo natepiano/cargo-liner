@@ -215,7 +215,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     let left_width = u16::try_from(app.cached_fit_widths().total_width() + BLOCK_BORDER_WIDTH)
         .unwrap_or(u16::MAX);
 
-    // Split into 3 rows: top (detail row 1), middle (detail row 2), bottom (lint + CI).
+    // Split into 3 logical rows for the tiled pane grid.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -224,44 +224,32 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
             Constraint::Percentage(25),
         ])
         .split(outer_layout[0]);
-
-    // Row 1: Project List (left, spans row 1+2) | Package + Git (right)
-    // Row 2: (PL continues)                     | Languages + Targets (right)
-    let top_two_rows = Rect::new(
-        rows[0].x,
-        rows[0].y,
-        rows[0].width,
-        rows[0].height + rows[1].height,
-    );
-    let top_cols = Layout::default()
+    let main_cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(left_width), Constraint::Min(20)])
-        .split(top_two_rows);
+        .split(outer_layout[0]);
+    let right_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(main_cols[1]);
 
-    // Left column (rows 1+2): Project List with search bar
-    render_left_panel(frame, app, top_cols[0]);
-
-    // Right column row 1: Package | Git
-    let right_row1 = Rect::new(top_cols[1].x, rows[0].y, top_cols[1].width, rows[0].height);
-    // Right column row 2: Languages | Targets
-    let right_row2 = Rect::new(top_cols[1].x, rows[1].y, top_cols[1].width, rows[1].height);
-
-    render_detail_row1(frame, app, right_row1);
-    render_detail_row2(frame, app, right_row2);
-
-    // Register hitboxes after all panes have their content_area set.
-    sync_detail_pane_hitboxes(app);
-
-    // Row 3: output covers full width, or Lint Runs (PL width) | CI Runs (rest).
-    if app.example_output().is_empty() {
-        let bottom_cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(left_width), Constraint::Min(20)])
-            .split(rows[2]);
-        render_bottom_panel(frame, app, bottom_cols[0], bottom_cols[1]);
-    } else {
-        render_example_output(frame, app, rows[2]);
+    app.layout_cache_mut().pane_regions.clear();
+    let output_visible = !app.example_output().is_empty();
+    for placement in panes::PaneManager::layout(output_visible).placements {
+        let area = pane_area(
+            rows.as_ref(),
+            [main_cols[0], right_cols[0], right_cols[1]],
+            *placement,
+        );
+        render_tiled_pane(frame, app, placement.pane, area);
+        if placement.pane != PaneId::ProjectList {
+            app.layout_cache_mut()
+                .pane_regions
+                .push((placement.pane, area));
+        }
     }
+    sync_layout_pane_hitboxes(app, output_visible);
+
     render_status_bar(frame, app, outer_layout[1]);
     let toast_result = super::toasts::render_toasts(
         frame,
@@ -314,7 +302,6 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
     frame.render_widget(Paragraph::new(line), inner);
 }
 
-/// Left column: Project List (spans rows 1+2).
 fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let search_height = if app.is_searching() {
         SEARCH_BAR_HEIGHT
@@ -331,73 +318,73 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     render_project_list(frame, app, left_layout[1]);
 }
 
-/// Right column row 1: Package Details | Git.
-fn render_detail_row1(frame: &mut Frame, app: &mut App, area: Rect) {
-    panes::render_detail_panel(frame, app, area);
-}
-
-/// Right column row 2: Languages | Targets.
-fn render_detail_row2(frame: &mut Frame, app: &mut App, area: Rect) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-
-    // Languages (left half of row 2).
+fn pane_render_styles() -> panes::RenderStyles {
     let title_style = Style::default()
         .fg(TITLE_COLOR)
         .add_modifier(Modifier::BOLD);
-    let styles = super::panes::RenderStyles {
+
+    panes::RenderStyles {
         readonly_label:  Style::default().fg(LABEL_COLOR),
         active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
         inactive_border: Style::default(),
         title:           title_style,
-    };
-    panes::render_lang_panel_standalone(frame, app, &styles, cols[0]);
-
-    // Targets (right half of row 2).
-    let title_style = Style::default()
-        .fg(TITLE_COLOR)
-        .add_modifier(Modifier::BOLD);
-    let styles = super::panes::RenderStyles {
-        readonly_label:  Style::default().fg(LABEL_COLOR),
-        active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
-        inactive_border: Style::default(),
-        title:           title_style,
-    };
-    if let Some(targets_data) = app.pane_manager().targets_data.clone() {
-        if targets_data.has_targets() {
-            panes::render_targets_panel(frame, app, &targets_data, &styles, cols[1]);
-        } else {
-            panes::render_empty_targets_panel(frame, cols[1]);
-        }
-    } else {
-        panes::render_empty_targets_panel(frame, cols[1]);
     }
 }
 
-/// Bottom row: Lint Runs (left) | CI Runs (right).
-fn render_bottom_panel(frame: &mut Frame, app: &mut App, lint_area: Rect, ci_area: Rect) {
-    panes::render_lints_panel(frame, app, lint_area);
-    panes::render_ci_panel(frame, app, ci_area);
-}
-
-fn sync_detail_pane_hitboxes(app: &mut App) {
-    if app.pane_manager().package_data.is_some() {
-        register_detail_pane_hitboxes(app);
-        return;
+fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect) {
+    match pane {
+        PaneId::ProjectList => render_left_panel(frame, app, area),
+        PaneId::Package => panes::render_package_panel(frame, app, area),
+        PaneId::Git => panes::render_git_panel(frame, app, area),
+        PaneId::Lang => {
+            panes::render_lang_panel_standalone(frame, app, &pane_render_styles(), area);
+        },
+        PaneId::Targets => {
+            if let Some(targets_data) = app.pane_manager().targets_data.clone() {
+                if targets_data.has_targets() {
+                    panes::render_targets_panel(
+                        frame,
+                        app,
+                        &targets_data,
+                        &pane_render_styles(),
+                        area,
+                    );
+                } else {
+                    panes::render_empty_targets_panel(frame, area);
+                }
+            } else {
+                panes::render_empty_targets_panel(frame, area);
+            }
+        },
+        PaneId::Lints => panes::render_lints_panel(frame, app, area),
+        PaneId::CiRuns => panes::render_ci_panel(frame, app, area),
+        PaneId::Output => render_example_output(frame, app, area),
+        PaneId::Toasts | PaneId::Search | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {},
     }
-
-    reset_pane(&mut app.pane_manager_mut().package);
-    reset_pane(&mut app.pane_manager_mut().git);
 }
 
-/// Register row hitboxes for panes with row-based content.
-fn register_detail_pane_hitboxes(app: &mut App) {
-    register_hitbox_for_pane(app, PaneId::Package);
-    register_hitbox_for_pane(app, PaneId::Git);
-    register_hitbox_for_pane(app, PaneId::Lang);
-    register_hitbox_for_pane(app, PaneId::Targets);
+fn pane_area(rows: &[Rect], cols: [Rect; 3], placement: panes::PanePlacement) -> Rect {
+    let right = placement.col + placement.col_span - 1;
+    let bottom = placement.row + placement.row_span - 1;
+
+    Rect::new(
+        cols[placement.col].x,
+        rows[placement.row].y,
+        cols[right]
+            .x
+            .saturating_add(cols[right].width)
+            .saturating_sub(cols[placement.col].x),
+        rows[bottom]
+            .y
+            .saturating_add(rows[bottom].height)
+            .saturating_sub(rows[placement.row].y),
+    )
+}
+
+fn sync_layout_pane_hitboxes(app: &mut App, output_visible: bool) {
+    for placement in panes::PaneManager::layout(output_visible).placements {
+        register_hitbox_for_pane(app, placement.pane);
+    }
 }
 
 /// Exhaustive match on `PaneId` — adding a variant forces you to decide

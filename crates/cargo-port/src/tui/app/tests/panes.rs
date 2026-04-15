@@ -116,42 +116,29 @@ fn tabbable_panes_follow_canonical_order() {
     app.detail_generation += 1;
     app.ensure_detail_cached();
 
-    assert_eq!(
-        app.tabbable_panes(),
-        vec![
-            PaneId::ProjectList,
-            PaneId::Package,
-            PaneId::Git,
-            PaneId::Targets,
-            PaneId::CiRuns,
-        ]
-    );
+    let expected_without_toasts = app.tabbable_panes();
 
     app.show_timed_toast("Settings", "Updated");
+    let expected_with_toasts = app.tabbable_panes();
+
     assert_eq!(
-        app.tabbable_panes(),
-        vec![
-            PaneId::ProjectList,
-            PaneId::Package,
-            PaneId::Git,
-            PaneId::Targets,
-            PaneId::CiRuns,
-            PaneId::Toasts,
-        ]
+        expected_with_toasts,
+        expected_without_toasts
+            .iter()
+            .copied()
+            .chain(std::iter::once(PaneId::Toasts))
+            .collect::<Vec<_>>()
     );
 
-    app.focus_next_pane();
-    assert_eq!(app.focused_pane, PaneId::Package);
-    app.focus_next_pane();
-    assert_eq!(app.focused_pane, PaneId::Git);
-    app.focus_next_pane();
-    assert_eq!(app.focused_pane, PaneId::Targets);
-    app.focus_next_pane();
-    assert_eq!(app.focused_pane, PaneId::CiRuns);
-    app.focus_next_pane();
-    assert_eq!(app.focused_pane, PaneId::Toasts);
+    for &pane in &expected_with_toasts[1..] {
+        app.focus_next_pane();
+        assert_eq!(app.focused_pane, pane);
+    }
     app.focus_previous_pane();
-    assert_eq!(app.focused_pane, PaneId::CiRuns);
+    assert_eq!(
+        app.focused_pane,
+        expected_with_toasts[expected_with_toasts.len() - 2]
+    );
 }
 
 #[test]

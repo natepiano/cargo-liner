@@ -228,9 +228,9 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
         return;
     }
 
-    let detail_columns = app.layout_cache().detail_columns.clone();
-    for &(pane_id, col_rect) in &detail_columns {
-        if !col_rect.contains(pos) {
+    let pane_regions = app.layout_cache().pane_regions.clone();
+    for &(pane_id, pane_rect) in &pane_regions {
+        if pane_id == PaneId::ProjectList || !pane_rect.contains(pos) {
             continue;
         }
         let pane = app.pane_manager_mut().by_id_mut(pane_id);
@@ -240,24 +240,6 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
             pane.down();
         }
         return;
-    }
-
-    // Panes outside the detail column layout — check content_area.
-    for pane_id in [PaneId::Targets, PaneId::Lints, PaneId::CiRuns] {
-        if app
-            .pane_manager()
-            .by_id(pane_id)
-            .content_area()
-            .contains(pos)
-        {
-            let pane = app.pane_manager_mut().by_id_mut(pane_id);
-            if up {
-                pane.up();
-            } else {
-                pane.down();
-            }
-            return;
-        }
     }
 }
 
@@ -306,33 +288,15 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     }
 
     let project_list = app.layout_cache().project_list;
-    let detail_columns = app.layout_cache().detail_columns.clone();
+    let pane_regions = app.layout_cache().pane_regions.clone();
 
     if project_list.contains(pos) {
         app.focus_pane(PaneId::ProjectList);
         return;
     }
 
-    if app.pane_manager().targets.content_area().contains(pos) {
-        app.focus_pane(PaneId::Targets);
-        return;
-    }
-
-    for &(pane_id, col_rect) in &detail_columns {
-        if col_rect.contains(pos) {
-            app.focus_pane(pane_id);
-            return;
-        }
-    }
-
-    // Panes outside the detail column layout — check content_area.
-    for pane_id in [PaneId::Targets, PaneId::Lints, PaneId::CiRuns] {
-        if app
-            .pane_manager()
-            .by_id(pane_id)
-            .content_area()
-            .contains(pos)
-        {
+    for &(pane_id, pane_rect) in &pane_regions {
+        if pane_id != PaneId::ProjectList && pane_rect.contains(pos) {
             app.focus_pane(pane_id);
             return;
         }

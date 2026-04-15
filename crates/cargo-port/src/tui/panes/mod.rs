@@ -23,8 +23,8 @@ pub(super) use package::description_lines;
 pub(super) use package::detail_column_scroll_offset;
 #[cfg(test)]
 pub(super) use package::package_label_width;
-pub(super) use package::render_detail_panel;
 pub(super) use package::render_empty_targets_panel;
+pub(super) use package::render_package_panel;
 pub(super) use package::render_targets_panel;
 #[cfg(test)]
 pub(super) use package::stats_column_width;
@@ -36,6 +36,132 @@ use super::detail::PackageData;
 use super::detail::TargetsData;
 use super::types::Pane;
 use super::types::PaneId;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PanePlacement {
+    pub pane:     PaneId,
+    pub row:      usize,
+    pub col:      usize,
+    pub row_span: usize,
+    pub col_span: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PaneGridLayout {
+    pub placements: &'static [PanePlacement],
+}
+
+const TILED_LAYOUT: PaneGridLayout = PaneGridLayout {
+    placements: &[
+        PanePlacement {
+            pane:     PaneId::ProjectList,
+            row:      0,
+            col:      0,
+            row_span: 2,
+            col_span: 1,
+        },
+        PanePlacement {
+            pane:     PaneId::Package,
+            row:      0,
+            col:      1,
+            row_span: 1,
+            col_span: 1,
+        },
+        PanePlacement {
+            pane:     PaneId::Git,
+            row:      0,
+            col:      2,
+            row_span: 1,
+            col_span: 1,
+        },
+        PanePlacement {
+            pane:     PaneId::Lang,
+            row:      1,
+            col:      1,
+            row_span: 1,
+            col_span: 1,
+        },
+        PanePlacement {
+            pane:     PaneId::Targets,
+            row:      1,
+            col:      2,
+            row_span: 1,
+            col_span: 1,
+        },
+        PanePlacement {
+            pane:     PaneId::Lints,
+            row:      2,
+            col:      0,
+            row_span: 1,
+            col_span: 1,
+        },
+        PanePlacement {
+            pane:     PaneId::CiRuns,
+            row:      2,
+            col:      1,
+            row_span: 1,
+            col_span: 2,
+        },
+    ],
+};
+
+const OUTPUT_LAYOUT: PaneGridLayout = PaneGridLayout {
+    placements: &[
+        PanePlacement {
+            pane:     PaneId::ProjectList,
+            row:      0,
+            col:      0,
+            row_span: 2,
+            col_span: 1,
+        },
+        PanePlacement {
+            pane:     PaneId::Package,
+            row:      0,
+            col:      1,
+            row_span: 1,
+            col_span: 1,
+        },
+        PanePlacement {
+            pane:     PaneId::Git,
+            row:      0,
+            col:      2,
+            row_span: 1,
+            col_span: 1,
+        },
+        PanePlacement {
+            pane:     PaneId::Lang,
+            row:      1,
+            col:      1,
+            row_span: 1,
+            col_span: 1,
+        },
+        PanePlacement {
+            pane:     PaneId::Targets,
+            row:      1,
+            col:      2,
+            row_span: 1,
+            col_span: 1,
+        },
+        PanePlacement {
+            pane:     PaneId::Output,
+            row:      2,
+            col:      0,
+            row_span: 1,
+            col_span: 3,
+        },
+    ],
+};
+
+impl PaneGridLayout {
+    pub(super) fn tab_order(self) -> Vec<PaneId> {
+        let mut placements = self.placements.to_vec();
+        placements.sort_by_key(|placement| (placement.row, placement.col));
+        placements
+            .into_iter()
+            .map(|placement| placement.pane)
+            .collect()
+    }
+}
 
 // ── PaneManager ────────────────────────────────────────────────────
 
@@ -120,6 +246,18 @@ impl PaneManager {
         }
     }
 
+    pub(super) const fn layout(output_visible: bool) -> PaneGridLayout {
+        if output_visible {
+            OUTPUT_LAYOUT
+        } else {
+            TILED_LAYOUT
+        }
+    }
+
+    pub(super) fn tab_order(output_visible: bool) -> Vec<PaneId> {
+        Self::layout(output_visible).tab_order()
+    }
+
     /// Populate per-pane data for the selected row. Called when the
     /// selected project changes or detail cache is rebuilt.
     pub fn set_detail_data(
@@ -144,5 +282,81 @@ impl PaneManager {
         self.targets_data = None;
         self.ci_data = None;
         self.lints_data = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::OUTPUT_LAYOUT;
+    use super::PaneGridLayout;
+    use super::TILED_LAYOUT;
+
+    #[test]
+    fn tiled_layout_has_no_overlapping_cells() { assert_layout_has_no_overlaps(TILED_LAYOUT); }
+
+    #[test]
+    fn output_layout_has_no_overlapping_cells() { assert_layout_has_no_overlaps(OUTPUT_LAYOUT); }
+
+    #[test]
+    fn tab_order_is_derived_from_grid_position() {
+        let layout = PaneGridLayout {
+            placements: &[
+                super::PanePlacement {
+                    pane:     super::PaneId::Targets,
+                    row:      1,
+                    col:      2,
+                    row_span: 1,
+                    col_span: 1,
+                },
+                super::PanePlacement {
+                    pane:     super::PaneId::ProjectList,
+                    row:      0,
+                    col:      0,
+                    row_span: 2,
+                    col_span: 1,
+                },
+                super::PanePlacement {
+                    pane:     super::PaneId::Git,
+                    row:      0,
+                    col:      2,
+                    row_span: 1,
+                    col_span: 1,
+                },
+                super::PanePlacement {
+                    pane:     super::PaneId::Package,
+                    row:      0,
+                    col:      1,
+                    row_span: 1,
+                    col_span: 1,
+                },
+            ],
+        };
+
+        assert_eq!(
+            layout.tab_order(),
+            vec![
+                super::PaneId::ProjectList,
+                super::PaneId::Package,
+                super::PaneId::Git,
+                super::PaneId::Targets,
+            ]
+        );
+    }
+
+    fn assert_layout_has_no_overlaps(layout: PaneGridLayout) {
+        let mut occupied = HashSet::new();
+        for placement in layout.placements {
+            for row in placement.row..placement.row + placement.row_span {
+                for col in placement.col..placement.col + placement.col_span {
+                    assert!(
+                        occupied.insert((row, col)),
+                        "pane {:?} overlaps cell ({row}, {col})",
+                        placement.pane
+                    );
+                }
+            }
+        }
     }
 }

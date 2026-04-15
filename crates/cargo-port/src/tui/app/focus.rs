@@ -16,18 +16,6 @@ use crate::tui::types::PaneId;
 use crate::tui::types::PaneId::Settings;
 
 impl App {
-    const TAB_ORDER: [PaneId; 9] = [
-        PaneId::ProjectList,
-        PaneId::Package,
-        PaneId::Git,
-        PaneId::Lang,
-        PaneId::Targets,
-        PaneId::Lints,
-        PaneId::CiRuns,
-        PaneId::Output,
-        PaneId::Toasts,
-    ];
-
     pub(in super::super) const fn is_searching(&self) -> bool { self.ui_modes.search.is_active() }
 
     pub(in super::super) const fn is_finder_open(&self) -> bool {
@@ -263,9 +251,13 @@ impl App {
     }
 
     pub(in super::super) fn tabbable_panes(&self) -> Vec<PaneId> {
-        Self::TAB_ORDER
+        super::super::panes::PaneManager::tab_order(!self.example_output.is_empty())
             .into_iter()
             .filter(|pane| self.is_pane_tabbable(*pane))
+            .chain(
+                self.is_pane_tabbable(PaneId::Toasts)
+                    .then_some(PaneId::Toasts),
+            )
             .collect()
     }
 

@@ -43,18 +43,6 @@ pub struct RenderStyles {
     pub title:           Style,
 }
 
-struct DetailLayoutSpec {
-    constraints: Vec<Constraint>,
-    git_col:     usize,
-}
-
-fn detail_layout_spec() -> DetailLayoutSpec {
-    DetailLayoutSpec {
-        constraints: vec![Constraint::Percentage(50), Constraint::Percentage(50)],
-        git_col:     1,
-    }
-}
-
 struct PackageRenderCtx<'a> {
     app:    &'a App,
     data:   &'a PackageData,
@@ -221,24 +209,12 @@ struct ProjectPanelAreas {
     lower: Rect,
 }
 
-pub fn render_detail_panel(frame: &mut Frame, app: &mut App, area: Rect) {
+pub fn render_package_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let title_style = Style::default()
         .fg(TITLE_COLOR)
         .add_modifier(Modifier::BOLD);
 
     if let Some(pkg_data) = app.pane_manager().package_data.clone() {
-        let spec = detail_layout_spec();
-
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(spec.constraints)
-            .split(area);
-
-        app.layout_cache_mut().detail_columns = vec![
-            (PaneId::Package, columns[0]),
-            (PaneId::Git, columns[spec.git_col]),
-        ];
-
         let styles = RenderStyles {
             readonly_label:  Style::default().fg(LABEL_COLOR),
             active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
@@ -246,9 +222,7 @@ pub fn render_detail_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             title:           title_style,
         };
 
-        render_project_panel(frame, app, &pkg_data, &styles, columns[0]);
-
-        super::render_git_panel(frame, app, columns[spec.git_col]);
+        render_project_panel(frame, app, &pkg_data, &styles, area);
     } else {
         let empty_block = Block::default()
             .borders(Borders::ALL)

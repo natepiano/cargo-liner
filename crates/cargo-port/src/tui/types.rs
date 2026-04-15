@@ -180,7 +180,7 @@ impl PaneId {
 pub(super) struct LayoutCache {
     pub project_list:        Rect,
     pub project_list_offset: usize,
-    pub detail_columns:      Vec<(PaneId, Rect)>,
+    pub pane_regions:        Vec<(PaneId, Rect)>,
     pub ui_hitboxes:         Vec<UiHitbox>,
 }
 
