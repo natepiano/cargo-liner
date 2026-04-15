@@ -165,6 +165,13 @@ fn append_worktree_lines(lines: &mut Vec<Line<'static>>, worktree_names: &[Strin
     ]));
 }
 
+fn git_panel_title(data: &GitData) -> String {
+    match data.branch.as_deref() {
+        Some(branch) if !branch.is_empty() => format!(" Git - {branch} "),
+        _ => pane_title("Git", &PaneTitleCount::None),
+    }
+}
+
 /// Render the Git info panel as a standalone pane.
 pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let title_style = Style::default()
@@ -202,7 +209,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let focus = app.pane_focus_state(PaneId::Git);
     let git_block = Block::default()
         .borders(Borders::ALL)
-        .title(pane_title("Git", &PaneTitleCount::None))
+        .title(git_panel_title(&git_data))
         .title_style(styles.title)
         .border_style(if matches!(focus, PaneFocusState::Active) {
             styles.active_border
