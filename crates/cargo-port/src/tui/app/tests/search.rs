@@ -18,14 +18,14 @@ fn search_finds_workspace_members_and_vendored_crates() {
     assert!(
         app.filtered
             .iter()
-            .any(|hit| hit.display_path == member_path && hit.name == "member")
+            .any(|hit| hit.abs_path == test_path(member_path) && hit.name == "member")
     );
 
     app.update_search("helper");
     assert!(
         app.filtered
             .iter()
-            .any(|hit| hit.display_path == vendored_path && hit.name == "helper (vendored)")
+            .any(|hit| hit.abs_path == test_path(vendored_path) && hit.name == "helper (vendored)")
     );
 }
 
@@ -51,21 +51,13 @@ fn search_finds_linked_worktree_children_and_confirms_selection() {
     apply_items(&mut app, &[item]);
 
     app.update_search("helper_feat");
-    assert!(
-        app.filtered
-            .iter()
-            .any(|hit| hit.display_path == vendored_path && hit.name == "helper_feat (vendored)")
-    );
+    assert!(app.filtered.iter().any(
+        |hit| hit.abs_path == test_path(vendored_path) && hit.name == "helper_feat (vendored)"
+    ));
 
     app.update_search("member_feat");
     app.confirm_search();
 
-    assert_eq!(
-        app.selected_display_path()
-            .as_ref()
-            .map(crate::project::DisplayPath::as_str),
-        Some(member_path)
-    );
     assert_eq!(
         app.selected_project_path().map(Path::to_path_buf),
         Some(test_path(member_path).to_path_buf())

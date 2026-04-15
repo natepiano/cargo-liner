@@ -28,7 +28,7 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.visibility(),
             Self::NonRust(p) => p.visibility(),
-            Self::Worktrees(g) => g.visibility(),
+            Self::Worktrees(g) => g.derived_visibility(),
         }
     }
 

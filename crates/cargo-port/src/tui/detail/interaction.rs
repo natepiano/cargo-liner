@@ -308,13 +308,14 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
         })
         .collect();
     for (owner_path, prev_total) in owner_paths.iter().zip(prev_totals) {
-        if let Some(project) = app.project_info_at_path_mut(owner_path.as_path()) {
-            project.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
+        app.replace_ci_data_for_path(
+            owner_path.as_path(),
+            ProjectCiData::Loaded(ProjectCiInfo {
                 runs:         Vec::new(),
                 github_total: prev_total,
                 exhausted:    false,
-            });
-        }
+            }),
+        );
     }
     app.complete_ci_fetch_for(abs);
     app.pane_manager_mut().ci.home();

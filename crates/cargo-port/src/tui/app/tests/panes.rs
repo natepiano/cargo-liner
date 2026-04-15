@@ -45,12 +45,7 @@ fn expand_all_preserves_selected_project_path() {
 
     app.expand_all();
 
-    assert_eq!(
-        app.selected_display_path()
-            .as_ref()
-            .map(crate::project::DisplayPath::as_str),
-        Some(member.display_path().as_str())
-    );
+    assert_eq!(app.selected_project_path(), Some(member.path().as_path()));
 }
 
 #[test]

@@ -13,32 +13,25 @@ use crate::lint::LintStatus;
 #[derive(Clone)]
 pub(crate) enum WorktreeGroup {
     Workspaces {
-        primary:    WorkspaceProject,
-        linked:     Vec<WorkspaceProject>,
-        visibility: Visibility,
+        primary: WorkspaceProject,
+        linked:  Vec<WorkspaceProject>,
     },
     Packages {
-        primary:    PackageProject,
-        linked:     Vec<PackageProject>,
-        visibility: Visibility,
+        primary: PackageProject,
+        linked:  Vec<PackageProject>,
     },
 }
 
 impl WorktreeGroup {
-    pub(crate) fn new_workspaces(primary: WorkspaceProject, linked: Vec<WorkspaceProject>) -> Self {
-        Self::Workspaces {
-            primary,
-            linked,
-            visibility: Visibility::default(),
-        }
+    pub(crate) const fn new_workspaces(
+        primary: WorkspaceProject,
+        linked: Vec<WorkspaceProject>,
+    ) -> Self {
+        Self::Workspaces { primary, linked }
     }
 
-    pub(crate) fn new_packages(primary: PackageProject, linked: Vec<PackageProject>) -> Self {
-        Self::Packages {
-            primary,
-            linked,
-            visibility: Visibility::default(),
-        }
+    pub(crate) const fn new_packages(primary: PackageProject, linked: Vec<PackageProject>) -> Self {
+        Self::Packages { primary, linked }
     }
 
     // ── Shared delegation ────────────────────────────────────────────
@@ -50,10 +43,15 @@ impl WorktreeGroup {
         }
     }
 
-    pub(crate) const fn visibility(&self) -> Visibility {
-        match self {
-            Self::Workspaces { visibility, .. } | Self::Packages { visibility, .. } => *visibility,
+    pub(crate) fn derived_visibility(&self) -> Visibility {
+        let visible_entries = self.visible_entry_count();
+        if visible_entries > 0 {
+            return Visibility::Visible;
         }
+        if self.has_deleted_entry() {
+            return Visibility::Deleted;
+        }
+        Visibility::Dismissed
     }
 
     pub(crate) fn primary_worktree_health(&self) -> WorktreeHealth {
@@ -69,13 +67,45 @@ impl WorktreeGroup {
                 primary, linked, ..
             } => std::iter::once(primary.visibility())
                 .chain(linked.iter().map(WorkspaceProject::visibility))
-                .filter(|v| matches!(v, Visibility::Visible))
+                .filter(|v| !matches!(v, Visibility::Dismissed))
                 .count(),
             Self::Packages {
                 primary, linked, ..
             } => std::iter::once(primary.visibility())
                 .chain(linked.iter().map(PackageProject::visibility))
-                .filter(|v| matches!(v, Visibility::Visible))
+                .filter(|v| !matches!(v, Visibility::Dismissed))
+                .count(),
+        }
+    }
+
+    fn has_deleted_entry(&self) -> bool {
+        match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => std::iter::once(primary.visibility())
+                .chain(linked.iter().map(WorkspaceProject::visibility))
+                .any(|visibility| visibility == Visibility::Deleted),
+            Self::Packages {
+                primary, linked, ..
+            } => std::iter::once(primary.visibility())
+                .chain(linked.iter().map(PackageProject::visibility))
+                .any(|visibility| visibility == Visibility::Deleted),
+        }
+    }
+
+    fn visible_entry_count(&self) -> usize {
+        match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => std::iter::once(primary.visibility())
+                .chain(linked.iter().map(WorkspaceProject::visibility))
+                .filter(|visibility| *visibility == Visibility::Visible)
+                .count(),
+            Self::Packages {
+                primary, linked, ..
+            } => std::iter::once(primary.visibility())
+                .chain(linked.iter().map(PackageProject::visibility))
+                .filter(|visibility| *visibility == Visibility::Visible)
                 .count(),
         }
     }

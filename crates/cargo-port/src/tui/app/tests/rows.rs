@@ -695,6 +695,90 @@ fn worktree_count_uses_visibility() {
 }
 
 #[test]
+fn mixed_visible_and_deleted_worktree_group_stays_visible() {
+    let root = make_package_worktrees_item(
+        make_package_raw(Some("app"), "~/app", None),
+        vec![make_package_raw(
+            Some("app"),
+            "~/app_feat",
+            Some("app_feat"),
+        )],
+    );
+    let mut items = vec![root];
+    items[0]
+        .at_path_mut(test_path("~/app_feat").as_path())
+        .expect("linked worktree should exist")
+        .visibility = Deleted;
+
+    let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
+    let rows = snapshots::build_visible_rows(&items, &expanded, true);
+
+    assert_eq!(items[0].visibility(), crate::project::Visibility::Visible);
+    assert_eq!(rows.len(), 3, "deleted linked worktree should still render");
+}
+
+#[test]
+fn all_deleted_worktree_group_derives_deleted_visibility() {
+    let root = make_package_worktrees_item(
+        make_package_raw(Some("app"), "~/app", None),
+        vec![make_package_raw(
+            Some("app"),
+            "~/app_feat",
+            Some("app_feat"),
+        )],
+    );
+    let mut items = vec![root];
+    items[0]
+        .at_path_mut(test_path("~/app").as_path())
+        .expect("primary worktree should exist")
+        .visibility = Deleted;
+    items[0]
+        .at_path_mut(test_path("~/app_feat").as_path())
+        .expect("linked worktree should exist")
+        .visibility = Deleted;
+
+    let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
+    let rows = snapshots::build_visible_rows(&items, &expanded, true);
+
+    assert_eq!(items[0].visibility(), Deleted);
+    assert_eq!(
+        rows.len(),
+        3,
+        "deleted worktrees should still render until dismissed"
+    );
+}
+
+#[test]
+fn all_dismissed_worktree_group_is_hidden() {
+    let root = make_package_worktrees_item(
+        make_package_raw(Some("app"), "~/app", None),
+        vec![make_package_raw(
+            Some("app"),
+            "~/app_feat",
+            Some("app_feat"),
+        )],
+    );
+    let mut items = vec![root];
+    items[0]
+        .at_path_mut(test_path("~/app").as_path())
+        .expect("primary worktree should exist")
+        .visibility = Dismissed;
+    items[0]
+        .at_path_mut(test_path("~/app_feat").as_path())
+        .expect("linked worktree should exist")
+        .visibility = Dismissed;
+
+    let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
+    let rows = snapshots::build_visible_rows(&items, &expanded, true);
+
+    assert_eq!(items[0].visibility(), Dismissed);
+    assert!(
+        rows.is_empty(),
+        "all-dismissed worktree groups should not render"
+    );
+}
+
+#[test]
 fn workspace_worktree_fit_widths_use_display_name_for_primary_entry() {
     let item = make_workspace_worktrees_item(
         make_workspace_raw(

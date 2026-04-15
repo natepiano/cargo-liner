@@ -7,7 +7,7 @@ use crate::project::WorktreeGroup;
 #[test]
 fn lint_runtime_waits_for_scan_completion() {
     let project = make_project(Some("demo"), "~/demo");
-    let path = project.display_path();
+    let abs_path = test_path("~/demo");
     let mut app = make_app(&[project]);
 
     assert!(app.lint_runtime_projects_snapshot().is_empty());
@@ -15,7 +15,11 @@ fn lint_runtime_waits_for_scan_completion() {
     app.scan.phase = ScanPhase::Complete;
     let projects = app.lint_runtime_projects_snapshot();
     assert_eq!(projects.len(), 1);
-    assert_eq!(projects[0].project_label, path.to_string());
+    assert_eq!(projects[0].abs_path, abs_path);
+    assert_eq!(
+        projects[0].project_label,
+        crate::project::home_relative_path(&abs_path)
+    );
 }
 
 #[test]
@@ -535,7 +539,11 @@ fn lint_runtime_snapshot_uses_workspace_root_not_members() {
 
     let projects = app.lint_runtime_projects_snapshot();
     assert_eq!(projects.len(), 1);
-    assert_eq!(projects[0].project_label, "~/rust/hana");
+    assert_eq!(projects[0].abs_path, test_path("~/rust/hana"));
+    assert_eq!(
+        projects[0].project_label,
+        crate::project::home_relative_path(test_path("~/rust/hana").as_path())
+    );
 }
 
 #[test]
@@ -556,8 +564,16 @@ fn lint_runtime_snapshot_deduplicates_primary_worktree_path() {
 
     let projects = app.lint_runtime_projects_snapshot();
     assert_eq!(projects.len(), 2);
-    assert_eq!(projects[0].project_label, "~/ws");
-    assert_eq!(projects[1].project_label, "~/ws_feat");
+    assert_eq!(projects[0].abs_path, test_path("~/ws"));
+    assert_eq!(projects[1].abs_path, test_path("~/ws_feat"));
+    assert_eq!(
+        projects[0].project_label,
+        crate::project::home_relative_path(test_path("~/ws").as_path())
+    );
+    assert_eq!(
+        projects[1].project_label,
+        crate::project::home_relative_path(test_path("~/ws_feat").as_path())
+    );
 }
 
 #[test]

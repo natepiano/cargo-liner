@@ -1,5 +1,5 @@
 mod async_tasks;
-mod ci_state;
+mod ci;
 mod construct;
 mod dismiss;
 mod focus;
@@ -30,7 +30,7 @@ use crate::lint::CacheUsage;
 use crate::lint::LintRuns;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
-use crate::project::ProjectInfo;
+use crate::project::ProjectCiData;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -169,12 +169,18 @@ impl App {
 
     pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { &self.repo_fetch_cache }
 
-    pub(super) fn project_info_at_path_mut(&mut self, path: &Path) -> Option<&mut ProjectInfo> {
-        self.projects.at_path_mut(path)
-    }
-
     pub(in super::super) fn complete_ci_fetch_for(&mut self, path: &Path) -> bool {
         self.ci_fetch_tracker.complete(path)
+    }
+
+    pub(in super::super) fn replace_ci_data_for_path(
+        &mut self,
+        path: &Path,
+        ci_data: ProjectCiData,
+    ) {
+        if let Some(project) = self.projects.at_path_mut(path) {
+            project.ci_data = ci_data;
+        }
     }
 
     pub(in super::super) fn start_ci_fetch_for(&mut self, path: AbsolutePath) {

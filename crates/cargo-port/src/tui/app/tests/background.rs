@@ -177,12 +177,12 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
         .visible_rows()
         .iter()
         .filter_map(|row| match row {
-            VisibleRow::Root { node_index } => Some(app.projects[*node_index].display_path()),
+            VisibleRow::Root { node_index } => Some(app.projects[*node_index].path().clone()),
             _ => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(visible.len(), 1);
-    assert_eq!(visible[0].as_str(), "~/rust");
+    assert_eq!(visible[0], test_path("~/rust"));
 
     app.apply_config(&cfg);
     wait_for_tree_build(&mut app);
@@ -192,7 +192,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     assert!(
         app.projects
             .iter()
-            .any(|item: &RootItem| item.display_path().as_str() == "~/js")
+            .any(|item: &RootItem| item.path() == test_path("~/js").as_path())
     );
 }
 
