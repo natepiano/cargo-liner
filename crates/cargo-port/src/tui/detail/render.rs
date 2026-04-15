@@ -70,21 +70,15 @@ pub(super) fn stats_column_width(info: &DetailInfo) -> (u16, u16) {
 }
 
 /// Shared style constants for detail panel rendering.
-struct RenderStyles {
-    readonly_label:  Style,
-    active_border:   Style,
-    inactive_border: Style,
-    title:           Style,
+pub(in crate::tui) struct RenderStyles {
+    pub readonly_label:  Style,
+    pub active_border:   Style,
+    pub inactive_border: Style,
+    pub title:           Style,
 }
 
 #[derive(Clone, Copy)]
 enum GitPresence {
-    Available,
-    Missing,
-}
-
-#[derive(Clone, Copy)]
-enum TargetPresence {
     Available,
     Missing,
 }
@@ -96,28 +90,15 @@ struct DetailLayoutSpec {
     max_col:     usize,
 }
 
-fn detail_layout_spec(git: GitPresence, targets: TargetPresence) -> DetailLayoutSpec {
+fn detail_layout_spec(git: GitPresence) -> DetailLayoutSpec {
     let has_git = matches!(git, GitPresence::Available);
-    let has_targets = matches!(targets, TargetPresence::Available);
-    let max_col = match (has_git, has_targets) {
-        (false, false) => 0,
-        (true, false) | (false, true) => 1,
-        (true, true) => 2,
-    };
+    let max_col = usize::from(has_git);
     DetailLayoutSpec {
-        constraints: vec![
-            Constraint::Percentage(39),
-            Constraint::Percentage(39),
-            Constraint::Percentage(22),
-        ],
-        git_col: Some(1),
-        targets_col: Some(2),
+        constraints: vec![Constraint::Percentage(50), Constraint::Percentage(50)],
+        git_col: if has_git { Some(1) } else { None },
+        targets_col: None,
         max_col,
     }
-}
-
-const fn has_targets(info: &DetailInfo) -> bool {
-    info.is_binary || !info.examples.is_empty() || !info.benches.is_empty()
 }
 
 struct ColumnRenderCtx<'a> {
@@ -418,12 +399,7 @@ pub fn render_detail_panel(
         } else {
             GitPresence::Available
         };
-        let target_presence = if has_targets(info) {
-            TargetPresence::Available
-        } else {
-            TargetPresence::Missing
-        };
-        let spec = detail_layout_spec(git_presence, target_presence);
+        let spec = detail_layout_spec(git_presence);
 
         let columns = Layout::default()
             .direction(Direction::Horizontal)
@@ -431,7 +407,6 @@ pub fn render_detail_panel(
             .split(area);
 
         app.layout_cache_mut().detail_columns = columns.to_vec();
-        app.layout_cache_mut().detail_targets_col = spec.targets_col;
 
         let styles = RenderStyles {
             readonly_label:  Style::default().fg(LABEL_COLOR),
@@ -475,19 +450,6 @@ pub fn render_detail_panel(
                 };
                 let scroll_offset = render_git_column_inner(frame, &git_ctx, git_inner);
                 app.pane_manager_mut().git.set_scroll_offset(scroll_offset);
-            }
-        }
-
-        if let Some(col) = spec.targets_col {
-            if has_targets(info) {
-                render_targets_panel(frame, app, info, &styles, columns[col]);
-            } else {
-                let empty_targets = Block::default()
-                    .borders(Borders::ALL)
-                    .title(" No Targets ")
-                    .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
-                    .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
-                frame.render_widget(empty_targets, columns[col]);
             }
         }
     } else {
@@ -793,7 +755,7 @@ fn render_bottom_connector(frame: &mut Frame, area: Rect, connector_x: u16, styl
     );
 }
 
-fn render_targets_panel(
+pub(in crate::tui) fn render_targets_panel(
     frame: &mut Frame,
     app: &mut App,
     info: &DetailInfo,
@@ -894,29 +856,6 @@ fn render_targets_panel(
     app.pane_manager_mut()
         .targets
         .set_scroll_offset(table_state.offset());
-}
-
-/// Returns (`max_column_index`, `targets_column_index` or `None`).
-pub fn detail_layout_pub(app: &App) -> (usize, Option<usize>) {
-    let spec = detail_layout(app);
-    (spec.max_col, spec.targets_col)
-}
-
-fn detail_layout(app: &App) -> DetailLayoutSpec {
-    let Some(info) = app.cached_detail().map(|c| &c.info) else {
-        return detail_layout_spec(GitPresence::Missing, TargetPresence::Missing);
-    };
-    let git = if model::git_fields(info).is_empty() {
-        GitPresence::Missing
-    } else {
-        GitPresence::Available
-    };
-    let targets = if has_targets(info) {
-        TargetPresence::Available
-    } else {
-        TargetPresence::Missing
-    };
-    detail_layout_spec(git, targets)
 }
 
 /// Returns the appropriate style for the lint detail field value based on

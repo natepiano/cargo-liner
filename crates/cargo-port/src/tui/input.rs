@@ -224,14 +224,11 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
     }
 
     let detail_columns = app.layout_cache().detail_columns.clone();
-    let detail_targets_col = app.layout_cache().detail_targets_col;
     for (col_idx, col_rect) in detail_columns.iter().enumerate() {
         if !col_rect.contains(pos) {
             continue;
         }
-        let pane = if Some(col_idx) == detail_targets_col {
-            &mut app.pane_manager_mut().targets
-        } else if col_idx == 0 {
+        let pane = if col_idx == 0 {
             &mut app.pane_manager_mut().package
         } else {
             &mut app.pane_manager_mut().git
@@ -240,6 +237,15 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
             pane.up();
         } else {
             pane.down();
+        }
+        return;
+    }
+
+    if app.pane_manager().targets.content_area().contains(pos) {
+        if up {
+            app.pane_manager_mut().targets.up();
+        } else {
+            app.pane_manager_mut().targets.down();
         }
         return;
     }
@@ -304,10 +310,14 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
 
     let project_list = app.layout_cache().project_list;
     let detail_columns = app.layout_cache().detail_columns.clone();
-    let detail_targets_col = app.layout_cache().detail_targets_col;
 
     if project_list.contains(pos) {
         app.focus_pane(PaneId::ProjectList);
+        return;
+    }
+
+    if app.pane_manager().targets.content_area().contains(pos) {
+        app.focus_pane(PaneId::Targets);
         return;
     }
 
@@ -315,9 +325,7 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         if !col_rect.contains(pos) {
             continue;
         }
-        let pane_id = if Some(col_idx) == detail_targets_col {
-            PaneId::Targets
-        } else if col_idx == 0 {
+        let pane_id = if col_idx == 0 {
             PaneId::Package
         } else {
             PaneId::Git

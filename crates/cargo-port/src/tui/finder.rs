@@ -644,9 +644,11 @@ fn confirm_finder(app: &mut App) {
 /// After selecting the parent project, focus the targets column and scroll
 /// to the matching target entry.
 fn navigate_to_target(app: &mut App, item: &FinderItem) {
-    // Focus the detail panel targets column
-    let (_, targets_col) = super::detail::detail_layout_pub(app);
-    if targets_col.is_some() {
+    // Focus the targets pane (now in the left panel below the project list).
+    let has_targets = app.cached_detail().is_some_and(|c| {
+        c.info.is_binary || !c.info.examples.is_empty() || !c.info.benches.is_empty()
+    });
+    if has_targets {
         app.focus_pane(PaneId::Targets);
 
         // Build target list and find the matching entry index

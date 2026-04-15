@@ -285,10 +285,27 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         0
     };
-    let left_constraints = vec![Constraint::Length(search_height), Constraint::Min(1)];
+
+    let has_selected_project = app.cached_detail().is_some();
+    if !has_selected_project {
+        let left_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(search_height), Constraint::Min(1)])
+            .split(area);
+        if app.is_searching() {
+            render_search_bar(frame, app, left_layout[0]);
+        }
+        render_project_list(frame, app, left_layout[1]);
+        return;
+    }
+
     let left_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(left_constraints)
+        .constraints([
+            Constraint::Length(search_height),
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ])
         .split(area);
 
     if app.is_searching() {
@@ -296,6 +313,31 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     render_project_list(frame, app, left_layout[1]);
+
+    let has_targets = app.cached_detail().is_some_and(|c| {
+        c.info.is_binary || !c.info.examples.is_empty() || !c.info.benches.is_empty()
+    });
+    if has_targets {
+        if let Some(info) = app.cached_detail().map(|c| c.info.clone()) {
+            let title_style = Style::default()
+                .fg(TITLE_COLOR)
+                .add_modifier(Modifier::BOLD);
+            let styles = super::detail::RenderStyles {
+                readonly_label:  Style::default().fg(LABEL_COLOR),
+                active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
+                inactive_border: Style::default(),
+                title:           title_style,
+            };
+            super::detail::render_targets_panel(frame, app, &info, &styles, left_layout[2]);
+        }
+    } else {
+        let empty_targets = Block::default()
+            .borders(Borders::ALL)
+            .title(" No Targets ")
+            .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
+            .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
+        frame.render_widget(empty_targets, left_layout[2]);
+    }
 }
 
 fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -352,7 +394,6 @@ fn sync_detail_pane_hitboxes(app: &mut App, detail_info: Option<&DetailInfo>) {
 
     reset_pane(&mut app.pane_manager_mut().package);
     reset_pane(&mut app.pane_manager_mut().git);
-    reset_pane(&mut app.pane_manager_mut().targets);
 }
 
 fn register_detail_pane_hitboxes(app: &mut App) {
@@ -370,6 +411,7 @@ fn register_detail_pane_hitboxes(app: &mut App) {
         reset_pane(&mut app.pane_manager_mut().git);
     }
 
+    // Targets hitbox is registered in render_targets_panel via its content_area.
     if app.cached_detail().is_some_and(|cached| {
         cached.info.is_binary || !cached.info.examples.is_empty() || !cached.info.benches.is_empty()
     }) {

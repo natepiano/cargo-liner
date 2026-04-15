@@ -182,7 +182,6 @@ pub(super) struct LayoutCache {
     pub project_list:        Rect,
     pub project_list_offset: usize,
     pub detail_columns:      Vec<Rect>,
-    pub detail_targets_col:  Option<usize>,
     pub ui_hitboxes:         Vec<UiHitbox>,
 }
 

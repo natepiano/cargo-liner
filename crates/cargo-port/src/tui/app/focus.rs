@@ -19,9 +19,9 @@ impl App {
         PaneId::ProjectList,
         PaneId::Package,
         PaneId::Git,
-        PaneId::Targets,
         PaneId::Lints,
         PaneId::CiRuns,
+        PaneId::Targets,
         PaneId::Output,
         PaneId::Toasts,
     ];
