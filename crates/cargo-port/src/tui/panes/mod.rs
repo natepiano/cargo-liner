@@ -358,6 +358,8 @@ mod tests {
 
     use super::OUTPUT_LAYOUT;
     use super::PaneGridLayout;
+    use super::PaneId;
+    use super::PanePlacement;
     use super::PaneTitleCount;
     use super::PaneTitleGroup;
     use super::TILED_LAYOUT;
@@ -374,29 +376,29 @@ mod tests {
     fn tab_order_is_derived_from_grid_position() {
         let layout = PaneGridLayout {
             placements: &[
-                super::PanePlacement {
-                    pane:     super::PaneId::Targets,
+                PanePlacement {
+                    pane:     PaneId::Targets,
                     row:      1,
                     col:      2,
                     row_span: 1,
                     col_span: 1,
                 },
-                super::PanePlacement {
-                    pane:     super::PaneId::ProjectList,
+                PanePlacement {
+                    pane:     PaneId::ProjectList,
                     row:      0,
                     col:      0,
                     row_span: 2,
                     col_span: 1,
                 },
-                super::PanePlacement {
-                    pane:     super::PaneId::Git,
+                PanePlacement {
+                    pane:     PaneId::Git,
                     row:      0,
                     col:      2,
                     row_span: 1,
                     col_span: 1,
                 },
-                super::PanePlacement {
-                    pane:     super::PaneId::Package,
+                PanePlacement {
+                    pane:     PaneId::Package,
                     row:      0,
                     col:      1,
                     row_span: 1,

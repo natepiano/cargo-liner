@@ -1764,6 +1764,7 @@ impl App {
     }
 
     pub(in super::super) fn handle_git_info(&mut self, path: &Path, info: GitInfo) {
+        self.detail_generation += 1;
         self.dirty.fit_widths.mark_dirty();
         tracing::info!(
             path = %path.display(),

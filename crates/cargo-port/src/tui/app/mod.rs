@@ -30,6 +30,7 @@ use crate::lint::CacheUsage;
 use crate::lint::LintRuns;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
+use crate::project::ProjectInfo;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -168,15 +169,16 @@ impl App {
 
     pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { &self.repo_fetch_cache }
 
-    pub(super) fn project_info_at_path_mut(
-        &mut self,
-        path: &Path,
-    ) -> Option<&mut crate::project::ProjectInfo> {
+    pub(super) fn project_info_at_path_mut(&mut self, path: &Path) -> Option<&mut ProjectInfo> {
         self.projects.at_path_mut(path)
     }
 
-    pub(super) const fn ci_fetch_tracker_mut(&mut self) -> &mut CiFetchTracker {
-        &mut self.ci_fetch_tracker
+    pub(in super::super) fn complete_ci_fetch_for(&mut self, path: &Path) -> bool {
+        self.ci_fetch_tracker.complete(path)
+    }
+
+    pub(in super::super) fn start_ci_fetch_for(&mut self, path: AbsolutePath) {
+        self.ci_fetch_tracker.start(path);
     }
 
     pub(super) const fn lint_cache_usage(&self) -> &CacheUsage { &self.lint_cache_usage }

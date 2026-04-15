@@ -316,7 +316,7 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
             });
         }
     }
-    app.ci_fetch_tracker_mut().complete(abs);
+    app.complete_ci_fetch_for(abs);
     app.pane_manager_mut().ci.home();
     app.increment_data_generation();
     app.increment_detail_generation();

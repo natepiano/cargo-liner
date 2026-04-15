@@ -753,7 +753,7 @@ fn classify_fast_git_event(event_path: &Path, entry: &ProjectEntry) -> Option<Gi
     {
         Some(GitRefreshKind::FullMetadata)
     } else {
-        None
+        classify_worktree_git_fallback(event_path, git_dir)
     }
 }
 
@@ -792,6 +792,15 @@ fn classify_internal_git_event(event_path: &Path, entry: &ProjectEntry) -> Optio
         || event_path.starts_with(common_git_dir.join("refs").join("remotes"))
     {
         Some(GitRefreshKind::FullMetadata)
+    } else {
+        classify_worktree_git_fallback(event_path, git_dir)
+    }
+}
+
+fn classify_worktree_git_fallback(event_path: &Path, git_dir: &Path) -> Option<GitRefreshKind> {
+    let logs_dir = git_dir.join("logs");
+    if event_path == git_dir || event_path == logs_dir || event_path.starts_with(&logs_dir) {
+        Some(GitRefreshKind::PathStateOnly)
     } else {
         None
     }
@@ -1858,6 +1867,40 @@ edition = "2024"
         assert!(
             pending_git.contains_key(wt_root.as_path()),
             "worktree index event should enqueue a git refresh for the worktree project"
+        );
+    }
+
+    #[test]
+    fn worktree_logs_head_event_enqueues_git_refresh() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (wt_root, wt_git_dir, projects, watch_roots, project_parents, discovered) =
+            worktree_git_event_context(&tmp);
+        let logs_head = wt_git_dir.join("logs").join("HEAD");
+        std::fs::create_dir_all(logs_head.parent().expect("logs dir")).expect("create logs dir");
+        std::fs::write(&logs_head, "old..new commit message\n").expect("write logs/HEAD");
+        let ctx = EventContext {
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, _bg_rx) = mpsc::channel();
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        handle_event(
+            &logs_head,
+            &ctx,
+            &bg_tx,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        assert!(
+            pending_git.contains_key(wt_root.as_path()),
+            "worktree logs/HEAD updates should enqueue a git refresh for the worktree project"
         );
     }
 

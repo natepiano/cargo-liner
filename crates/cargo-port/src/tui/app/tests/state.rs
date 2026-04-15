@@ -745,6 +745,37 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
 }
 
 #[test]
+fn git_info_invalidates_selected_git_pane_cache() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    app.list_state.select(Some(0));
+    app.sync_selected_project();
+    app.ensure_detail_cached();
+
+    assert_eq!(
+        app.pane_manager
+            .git_data
+            .as_ref()
+            .and_then(|data| data.url.as_deref()),
+        None
+    );
+
+    app.handle_git_info(
+        test_path("~/demo").as_path(),
+        make_git_info(Some("https://github.com/natepiano/demo")),
+    );
+    app.ensure_detail_cached();
+
+    assert_eq!(
+        app.pane_manager
+            .git_data
+            .as_ref()
+            .and_then(|data| data.url.as_deref()),
+        Some("https://github.com/natepiano/demo")
+    );
+}
+
+#[test]
 fn lints_and_ci_panes_have_distinct_input_contexts() {
     let mut app = make_app(&[make_project(Some("demo"), "~/demo")]);
     app.focus_pane(PaneId::CiRuns);

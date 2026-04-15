@@ -20,6 +20,7 @@ use crate::project::GitInfo;
 use crate::project::GitPathState;
 use crate::project::PackageProject;
 use crate::project::ProjectCiData;
+use crate::project::ProjectCiInfo;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
@@ -240,10 +241,7 @@ impl App {
             .map(|project| &project.ci_data)
     }
 
-    pub(in super::super) fn ci_info_for(
-        &self,
-        path: &Path,
-    ) -> Option<&crate::project::ProjectCiInfo> {
+    pub(in super::super) fn ci_info_for(&self, path: &Path) -> Option<&ProjectCiInfo> {
         self.ci_data_for(path).and_then(ProjectCiData::info)
     }
 

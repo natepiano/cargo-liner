@@ -444,15 +444,15 @@ pub struct CiFetchTracker {
 }
 
 impl CiFetchTracker {
-    pub fn start(&mut self, path: AbsolutePath) { self.inner.insert(path); }
+    pub(super) fn start(&mut self, path: AbsolutePath) { self.inner.insert(path); }
 
-    pub fn complete(&mut self, path: &std::path::Path) -> bool { self.inner.remove(path) }
+    pub(super) fn complete(&mut self, path: &std::path::Path) -> bool { self.inner.remove(path) }
 
-    pub fn is_fetching(&self, path: &std::path::Path) -> bool { self.inner.contains(path) }
+    pub(super) fn is_fetching(&self, path: &std::path::Path) -> bool { self.inner.contains(path) }
 
-    pub fn clear(&mut self) { self.inner.clear(); }
+    pub(super) fn clear(&mut self) { self.inner.clear(); }
 
-    pub fn retain(&mut self, mut keep: impl FnMut(&AbsolutePath) -> bool) {
+    pub(super) fn retain(&mut self, mut keep: impl FnMut(&AbsolutePath) -> bool) {
         self.inner.retain(|path| keep(path));
     }
 }
