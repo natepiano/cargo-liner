@@ -91,8 +91,8 @@ fn detail_layout_spec(git: GitPresence) -> DetailLayoutSpec {
     if has_git {
         DetailLayoutSpec {
             constraints: vec![
-                Constraint::Percentage(35),
-                Constraint::Percentage(35),
+                Constraint::Percentage(30),
+                Constraint::Percentage(40),
                 Constraint::Percentage(30),
             ],
             lang_col:    1,
@@ -836,120 +836,81 @@ pub fn render_targets_panel(
         .set_scroll_offset(table_state.offset());
 }
 
-struct LangWidths {
-    fw: usize,
-    cw: usize,
-    mw: usize,
-    bw: usize,
-    tw: usize,
-    nw: usize,
+/// Fixed numeric column width for language stats.
+const LANG_NUM_COL: u16 = 8;
+
+/// Column constraints for the language stats table.
+/// Icon (3) + name (fill) + files + code + comments + blanks + total.
+const fn lang_table_widths() -> [Constraint; 7] {
+    [
+        Constraint::Length(3),            // icon
+        Constraint::Fill(1),              // name (expandable, truncated with ellipsis)
+        Constraint::Length(LANG_NUM_COL), // files
+        Constraint::Length(LANG_NUM_COL), // code
+        Constraint::Length(LANG_NUM_COL), // comments
+        Constraint::Length(LANG_NUM_COL), // blanks
+        Constraint::Length(LANG_NUM_COL), // total
+    ]
 }
 
-impl LangWidths {
-    fn from_stats(stats: &crate::project::LanguageStats) -> Self {
-        let total_files: usize = stats.entries.iter().map(|e| e.files).sum();
-        let total_code: usize = stats.entries.iter().map(|e| e.code).sum();
-        let total_comments: usize = stats.entries.iter().map(|e| e.comments).sum();
-        let total_blanks: usize = stats.entries.iter().map(|e| e.blanks).sum();
-        let grand_total = total_code + total_comments + total_blanks;
-        let nw = stats
-            .entries
-            .iter()
-            .map(|e| e.language.len())
-            .max()
-            .unwrap_or(0)
-            .min(15);
-        Self {
-            fw: 8,
-            cw: 8,
-            mw: 8,
-            bw: 8,
-            tw: 8,
-            nw,
-        }
-    }
+fn lang_header_row() -> Row<'static> {
+    let style = Style::default()
+        .fg(COLUMN_HEADER_COLOR)
+        .add_modifier(Modifier::BOLD);
+    Row::new(vec![
+        Cell::from(""),
+        Cell::from(""),
+        Cell::from(Line::from("files").alignment(Alignment::Right)).style(style),
+        Cell::from(Line::from("code").alignment(Alignment::Right)).style(style),
+        Cell::from(Line::from("comments").alignment(Alignment::Right)).style(style),
+        Cell::from(Line::from("blanks").alignment(Alignment::Right)).style(style),
+        Cell::from(Line::from("total").alignment(Alignment::Right)).style(style),
+    ])
+}
 
-    fn header_line(&self, style: Style) -> Line<'static> {
-        let Self {
-            fw,
-            cw,
-            mw,
-            bw,
-            tw,
-            nw,
-        } = *self;
-        Line::from(vec![
-            Span::styled(format!("  {:<nw$}  ", ""), Style::default()),
-            Span::styled(format!("{:>fw$}", "files"), style),
-            Span::styled(" ", Style::default()),
-            Span::styled(format!("{:>cw$}", "code"), style),
-            Span::styled(" ", Style::default()),
-            Span::styled(format!("{:>mw$}", "comments"), style),
-            Span::styled(" ", Style::default()),
-            Span::styled(format!("{:>bw$}", "blanks"), style),
-            Span::styled(" ", Style::default()),
-            Span::styled(format!("{:>tw$}", "total"), style),
-        ])
-    }
+fn lang_footer_row(stats: &crate::project::LanguageStats) -> Row<'static> {
+    let num_bold = Style::default()
+        .fg(TITLE_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let dim_bold = Style::default()
+        .fg(LABEL_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let total_files: usize = stats.entries.iter().map(|e| e.files).sum();
+    let total_code: usize = stats.entries.iter().map(|e| e.code).sum();
+    let total_comments: usize = stats.entries.iter().map(|e| e.comments).sum();
+    let total_blanks: usize = stats.entries.iter().map(|e| e.blanks).sum();
+    let grand_total = total_code + total_comments + total_blanks;
+    Row::new(vec![
+        Cell::from(""),
+        Cell::from(""),
+        Cell::from(Line::from(total_files.to_string()).alignment(Alignment::Right)).style(num_bold),
+        Cell::from(Line::from(total_code.to_string()).alignment(Alignment::Right)).style(num_bold),
+        Cell::from(Line::from(total_comments.to_string()).alignment(Alignment::Right))
+            .style(dim_bold),
+        Cell::from(Line::from(total_blanks.to_string()).alignment(Alignment::Right))
+            .style(dim_bold),
+        Cell::from(Line::from(grand_total.to_string()).alignment(Alignment::Right)).style(num_bold),
+    ])
+}
 
-    fn footer_line(&self, stats: &crate::project::LanguageStats, style: Style) -> Line<'static> {
-        let Self {
-            fw,
-            cw,
-            mw,
-            bw,
-            tw,
-            nw,
-        } = *self;
-        let total_files: usize = stats.entries.iter().map(|e| e.files).sum();
-        let total_code: usize = stats.entries.iter().map(|e| e.code).sum();
-        let total_comments: usize = stats.entries.iter().map(|e| e.comments).sum();
-        let total_blanks: usize = stats.entries.iter().map(|e| e.blanks).sum();
-        let grand_total = total_code + total_comments + total_blanks;
-        Line::from(vec![
-            Span::styled(format!("  {:<nw$}  ", ""), Style::default()),
-            Span::styled(format!("{total_files:>fw$}"), style),
-            Span::styled(" ", Style::default()),
-            Span::styled(format!("{total_code:>cw$}"), style),
-            Span::styled(" ", Style::default()),
-            Span::styled(format!("{total_comments:>mw$}"), style),
-            Span::styled(" ", Style::default()),
-            Span::styled(format!("{total_blanks:>bw$}"), style),
-            Span::styled(" ", Style::default()),
-            Span::styled(format!("{grand_total:>tw$}"), style),
-        ])
-    }
-
-    fn entry_item<'a>(
-        &self,
-        entry: &crate::project::LangEntry,
-        label_style: Style,
-        num_style: Style,
-    ) -> ListItem<'a> {
-        let Self {
-            fw,
-            cw,
-            mw,
-            bw,
-            tw,
-            nw,
-        } = *self;
-        let icon = crate::project::language_icon(&entry.language);
-        let name: String = entry.language.chars().take(nw).collect();
-        let total = entry.code + entry.comments + entry.blanks;
-        ListItem::new(Line::from(vec![
-            Span::styled(format!("{icon} {name:<nw$} "), label_style),
-            Span::styled(format!("{:>fw$}", entry.files), num_style),
-            Span::styled(" ", Style::default()),
-            Span::styled(format!("{:>cw$}", entry.code), num_style),
-            Span::styled(" ", Style::default()),
-            Span::styled(format!("{:>mw$}", entry.comments), label_style),
-            Span::styled(" ", Style::default()),
-            Span::styled(format!("{:>bw$}", entry.blanks), label_style),
-            Span::styled(" ", Style::default()),
-            Span::styled(format!("{total:>tw$}"), num_style),
-        ]))
-    }
+fn lang_entry_row(entry: &crate::project::LangEntry, name_width: usize) -> Row<'static> {
+    let icon = crate::project::language_icon(&entry.language);
+    let name = render::truncate_with_ellipsis(&entry.language, name_width, "\u{2026}");
+    let total = entry.code + entry.comments + entry.blanks;
+    let num_style = Style::default().fg(TITLE_COLOR);
+    let dim_style = Style::default().fg(LABEL_COLOR);
+    Row::new(vec![
+        Cell::from(format!(" {icon}")),
+        Cell::from(name).style(dim_style),
+        Cell::from(Line::from(entry.files.to_string()).alignment(Alignment::Right))
+            .style(num_style),
+        Cell::from(Line::from(entry.code.to_string()).alignment(Alignment::Right)).style(num_style),
+        Cell::from(Line::from(entry.comments.to_string()).alignment(Alignment::Right))
+            .style(dim_style),
+        Cell::from(Line::from(entry.blanks.to_string()).alignment(Alignment::Right))
+            .style(dim_style),
+        Cell::from(Line::from(total.to_string()).alignment(Alignment::Right)).style(num_style),
+    ])
 }
 
 fn render_lang_panel(
@@ -984,62 +945,88 @@ fn render_lang_panel(
     frame.render_widget(block, area);
 
     let Some(stats) = lang_stats else {
-        let pending = Paragraph::new("  Scanning...");
-        frame.render_widget(pending, inner);
+        frame.render_widget(Paragraph::new("  Scanning..."), inner);
         return;
     };
 
     if stats.entries.is_empty() {
-        let empty = Paragraph::new("  No source files detected");
-        frame.render_widget(empty, inner);
+        frame.render_widget(Paragraph::new("  No source files detected"), inner);
         return;
     }
 
-    let lw = LangWidths::from_stats(&stats);
-
-    if inner.height < 3 {
+    if inner.height < 2 {
         return;
     }
 
-    let header_style = Style::default()
-        .fg(COLUMN_HEADER_COLOR)
-        .add_modifier(Modifier::BOLD);
+    let widths = lang_table_widths();
+    let entry_count = stats.entries.len();
+
+    // Compute available width for the name column: total inner width minus
+    // icon (3) + 5 numeric columns (8 each) + 6 column spacings (1 each).
+    let fixed_cols = 3 + 5 * usize::from(LANG_NUM_COL) + 6;
+    let name_width = usize::from(inner.width).saturating_sub(fixed_cols);
 
     // Fixed header (1 row).
     let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
-    frame.render_widget(Paragraph::new(lw.header_line(header_style)), header_area);
-
-    // Fixed footer (1 row) — totals pinned at bottom.
-    let footer_y = inner.y + inner.height.saturating_sub(1);
-    let footer_area = Rect::new(inner.x, footer_y, inner.width, 1);
     frame.render_widget(
-        Paragraph::new(lw.footer_line(&stats, header_style)),
-        footer_area,
+        Table::new([lang_header_row()], widths).column_spacing(1),
+        header_area,
     );
 
-    // Scrollable body (middle).
-    let body_height = inner.height.saturating_sub(2);
-    let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
+    // Determine if footer needs pinning: entries + footer row (1) must
+    // exceed the space below the header.
+    let content_below_header = inner.height.saturating_sub(1);
+    let rows_needed = u16::try_from(entry_count + 1).unwrap_or(u16::MAX);
+    let pin_footer = rows_needed > content_below_header;
 
-    let label_style = Style::default().fg(LABEL_COLOR);
-    let num_style = Style::default().fg(TITLE_COLOR);
-    let items: Vec<ListItem> = stats
+    let mut rows: Vec<Row> = stats
         .entries
         .iter()
-        .map(|entry| lw.entry_item(entry, label_style, num_style))
+        .map(|e| lang_entry_row(e, name_width))
         .collect();
 
-    app.pane_manager_mut().lang.set_len(items.len());
-    app.pane_manager_mut().lang.set_content_area(body_area);
-    let focus = app.pane_focus_state(PaneId::Lang);
-    let highlight_style = Pane::selection_style(focus);
-    let list = List::new(items).highlight_style(highlight_style);
-    let cursor = app.pane_manager().lang.pos();
-    let mut list_state = ListState::default().with_selected(Some(cursor));
-    frame.render_stateful_widget(list, body_area, &mut list_state);
-    app.pane_manager_mut()
-        .lang
-        .set_scroll_offset(list_state.offset());
+    if pin_footer {
+        // Footer pinned at bottom, body scrolls between header and footer.
+        let footer_y = inner.y + inner.height.saturating_sub(1);
+        let footer_area = Rect::new(inner.x, footer_y, inner.width, 1);
+        frame.render_widget(
+            Table::new([lang_footer_row(&stats)], widths).column_spacing(1),
+            footer_area,
+        );
+        let body_height = inner.height.saturating_sub(2);
+        let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
+
+        app.pane_manager_mut().lang.set_len(rows.len());
+        app.pane_manager_mut().lang.set_content_area(body_area);
+        let focus = app.pane_focus_state(PaneId::Lang);
+        let table = Table::new(rows, widths)
+            .column_spacing(1)
+            .row_highlight_style(Pane::selection_style(focus));
+        let cursor = app.pane_manager().lang.pos();
+        let mut table_state = TableState::default().with_selected(Some(cursor));
+        frame.render_stateful_widget(table, body_area, &mut table_state);
+        app.pane_manager_mut()
+            .lang
+            .set_scroll_offset(table_state.offset());
+    } else {
+        // Footer inline — append as last row, no pinning needed.
+        rows.push(lang_footer_row(&stats));
+        let body_height = inner.height.saturating_sub(1);
+        let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
+
+        app.pane_manager_mut().lang.set_len(entry_count);
+        app.pane_manager_mut().lang.set_content_area(body_area);
+        let focus = app.pane_focus_state(PaneId::Lang);
+        let table = Table::new(rows, widths)
+            .column_spacing(1)
+            .row_highlight_style(Pane::selection_style(focus));
+        let cursor = app.pane_manager().lang.pos();
+        let mut table_state = TableState::default().with_selected(Some(cursor));
+        frame.render_stateful_widget(table, body_area, &mut table_state);
+        app.pane_manager_mut()
+            .lang
+            .set_scroll_offset(table_state.offset());
+    }
 }
 
 /// Returns the appropriate style for the lint detail field value based on

@@ -359,16 +359,20 @@ impl DetailField {
 /// Non-Rust projects show only name, path, disk, and CI.
 pub fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
     if info.package_title == "Project" {
-        let mut fields = vec![DetailField::Path];
-        fields.push(DetailField::Lint);
-        fields.push(DetailField::Ci);
-        fields.push(DetailField::Disk);
-        return fields;
+        return vec![
+            DetailField::Path,
+            DetailField::Disk,
+            DetailField::Lint,
+            DetailField::Ci,
+        ];
     }
-    let mut fields = vec![DetailField::Path, DetailField::Targets];
-    fields.push(DetailField::Lint);
-    fields.push(DetailField::Ci);
-    fields.push(DetailField::Disk);
+    let mut fields = vec![
+        DetailField::Path,
+        DetailField::Disk,
+        DetailField::Targets,
+        DetailField::Lint,
+        DetailField::Ci,
+    ];
     if info.crates_version.is_some() {
         fields.push(DetailField::CratesIo);
     }

@@ -157,7 +157,7 @@ fn package_fields_place_lint_and_ci_before_disk_for_rust_projects() {
             .into_iter()
             .map(DetailField::label)
             .collect::<Vec<_>>(),
-        vec!["Path", "Type", "Lint", "CI", "Disk", "Version"]
+        vec!["Path", "Disk", "Type", "Lint", "CI", "Version"]
     );
 }
 
@@ -169,7 +169,7 @@ fn package_fields_place_lint_and_ci_before_disk_for_non_rust_projects() {
             .into_iter()
             .map(DetailField::label)
             .collect::<Vec<_>>(),
-        vec!["Path", "Lint", "CI", "Disk"]
+        vec!["Path", "Disk", "Lint", "CI"]
     );
 }
 
