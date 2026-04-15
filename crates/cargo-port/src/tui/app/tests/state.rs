@@ -41,13 +41,23 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
         app.ci_for(test_path("~/ws").as_path()),
         Some(Conclusion::Success)
     );
-    assert!(app.ci_state.contains_key(test_path("~/ws").as_path()));
+    assert!(matches!(
+        app.projects
+            .at_path(test_path("~/ws").as_path())
+            .map(|project| &project.ci_data),
+        Some(crate::project::ProjectCiData::Loaded(_))
+    ));
     assert_eq!(
         app.ci_for(test_path("~/ws/core").as_path()),
         Some(Conclusion::Success)
     );
-    assert!(app.ci_state_for(test_path("~/ws/core").as_path()).is_some());
-    assert!(!app.ci_state.contains_key(test_path("~/ws/core").as_path()));
+    assert!(app.ci_info_for(test_path("~/ws/core").as_path()).is_some());
+    assert!(matches!(
+        app.projects
+            .at_path(test_path("~/ws/core").as_path())
+            .map(|project| &project.ci_data),
+        Some(crate::project::ProjectCiData::Unfetched)
+    ));
 }
 
 #[test]
@@ -67,20 +77,19 @@ fn non_owner_member_ignores_stale_member_state_and_fetches_via_owner() {
     app.ensure_visible_rows_cached();
     app.select_project_in_tree(member.path());
 
-    app.ci_state.insert(
-        member.path().clone(),
-        CiState::Loaded {
-            runs:         vec![make_ci_run(2, Conclusion::Failure)],
-            exhausted:    false,
-            github_total: 0,
-        },
+    set_loaded_ci(
+        &mut app,
+        member.path(),
+        vec![make_ci_run(2, Conclusion::Failure)],
+        false,
+        0,
     );
     app.handle_git_info(
         test_path("~/ws").as_path(),
         make_git_info(Some("https://github.com/natepiano/demo")),
     );
 
-    assert!(app.ci_state_for(member.path()).is_none());
+    assert!(app.ci_info_for(member.path()).is_none());
     assert_eq!(app.ci_for(member.path()), None);
 
     crate::tui::detail::handle_ci_runs_key(
@@ -121,33 +130,30 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
     let mut app = make_app(&[make_workspace_project(Some("ws"), "~/ws"), member.clone()]);
     apply_items(&mut app, &[root]);
 
-    app.ci_state.insert(
-        root_path,
-        CiState::Loaded {
-            runs:         vec![make_ci_run(3, Conclusion::Success)],
-            exhausted:    false,
-            github_total: 0,
-        },
+    set_loaded_ci(
+        &mut app,
+        root_path.as_path(),
+        vec![make_ci_run(3, Conclusion::Success)],
+        false,
+        0,
     );
-    app.ci_state.insert(
-        feature_path,
-        CiState::Loaded {
-            runs:         vec![make_ci_run(4, Conclusion::Failure)],
-            exhausted:    false,
-            github_total: 0,
-        },
+    set_loaded_ci(
+        &mut app,
+        feature_path.as_path(),
+        vec![make_ci_run(4, Conclusion::Failure)],
+        false,
+        0,
     );
-    app.ci_state.insert(
-        member.path().clone(),
-        CiState::Loaded {
-            runs:         vec![make_ci_run(5, Conclusion::Success)],
-            exhausted:    false,
-            github_total: 0,
-        },
+    set_loaded_ci(
+        &mut app,
+        member.path(),
+        vec![make_ci_run(5, Conclusion::Success)],
+        false,
+        0,
     );
 
     assert_eq!(app.ci_for_item(&app.projects[0]), Some(Conclusion::Failure));
-    assert!(app.ci_state_for(member.path()).is_some());
+    assert!(app.ci_info_for(member.path()).is_some());
 }
 
 #[test]
@@ -173,29 +179,28 @@ fn ci_for_prefers_runs_matching_local_branch() {
             workflows:           WorkflowPresence::Present,
         },
     );
-    app.ci_state.insert(
-        project.path().clone(),
-        CiState::Loaded {
-            runs:         vec![
-                CiRun {
-                    branch: "main".to_string(),
-                    ..make_ci_run(9, Conclusion::Success)
-                },
-                CiRun {
-                    branch: "feat/demo".to_string(),
-                    ..make_ci_run(8, Conclusion::Failure)
-                },
-            ],
-            exhausted:    false,
-            github_total: 0,
-        },
+    set_loaded_ci(
+        &mut app,
+        project.path(),
+        vec![
+            CiRun {
+                branch: "main".to_string(),
+                ..make_ci_run(9, Conclusion::Success)
+            },
+            CiRun {
+                branch: "feat/demo".to_string(),
+                ..make_ci_run(8, Conclusion::Failure)
+            },
+        ],
+        false,
+        0,
     );
 
     assert_eq!(app.ci_for(project.path()), Some(Conclusion::Failure));
 }
 
 #[test]
-fn ci_for_default_branch_uses_full_repo_run_list() {
+fn ci_for_default_branch_prefers_matching_branch_runs() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
     app.handle_git_info(
@@ -217,25 +222,31 @@ fn ci_for_default_branch_uses_full_repo_run_list() {
             workflows:           WorkflowPresence::Present,
         },
     );
-    app.ci_state.insert(
-        project.path().clone(),
-        CiState::Loaded {
-            runs:         vec![
-                CiRun {
-                    branch: "release".to_string(),
-                    ..make_ci_run(9, Conclusion::Failure)
-                },
-                CiRun {
-                    branch: "main".to_string(),
-                    ..make_ci_run(8, Conclusion::Success)
-                },
-            ],
-            exhausted:    false,
-            github_total: 0,
-        },
+    set_loaded_ci(
+        &mut app,
+        project.path(),
+        vec![
+            CiRun {
+                branch: "release".to_string(),
+                ..make_ci_run(9, Conclusion::Failure)
+            },
+            CiRun {
+                branch: "main".to_string(),
+                ..make_ci_run(8, Conclusion::Success)
+            },
+        ],
+        false,
+        0,
     );
 
-    assert_eq!(app.ci_for(project.path()), Some(Conclusion::Failure));
+    assert_eq!(app.ci_for(project.path()), Some(Conclusion::Success));
+    assert_eq!(
+        app.ci_runs_for_display(project.path())
+            .iter()
+            .map(|run| run.branch.as_str())
+            .collect::<Vec<_>>(),
+        vec!["main"]
+    );
 }
 
 #[test]
@@ -261,22 +272,21 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
             workflows:           WorkflowPresence::Present,
         },
     );
-    app.ci_state.insert(
-        project.path().clone(),
-        CiState::Loaded {
-            runs:         vec![
-                CiRun {
-                    branch: "main".to_string(),
-                    ..make_ci_run(9, Conclusion::Success)
-                },
-                CiRun {
-                    branch: "feat/demo".to_string(),
-                    ..make_ci_run(8, Conclusion::Failure)
-                },
-            ],
-            exhausted:    false,
-            github_total: 0,
-        },
+    set_loaded_ci(
+        &mut app,
+        project.path(),
+        vec![
+            CiRun {
+                branch: "main".to_string(),
+                ..make_ci_run(9, Conclusion::Success)
+            },
+            CiRun {
+                branch: "feat/demo".to_string(),
+                ..make_ci_run(8, Conclusion::Failure)
+            },
+        ],
+        false,
+        0,
     );
 
     assert_eq!(app.ci_for(project.path()), Some(Conclusion::Failure));
@@ -838,13 +848,12 @@ fn sync_does_not_mark_exhausted_when_no_new_runs() {
     let mut app = make_app(std::slice::from_ref(&project));
     let path = project.path().display().to_string();
 
-    app.ci_state.insert(
-        project.path().clone(),
-        CiState::Loaded {
-            runs:         vec![make_ci_run(5, Conclusion::Success)],
-            exhausted:    false,
-            github_total: 10,
-        },
+    set_loaded_ci(
+        &mut app,
+        project.path(),
+        vec![make_ci_run(5, Conclusion::Success)],
+        false,
+        10,
     );
 
     // Sync returns the same run — no new runs found.
@@ -857,9 +866,9 @@ fn sync_does_not_mark_exhausted_when_no_new_runs() {
         CiFetchKind::Sync,
     );
 
-    let state = app.ci_state.get(project.path()).expect("ci state exists");
+    let state = loaded_ci(&app, project.path());
     assert!(
-        !state.is_exhausted(),
+        !state.exhausted,
         "Sync should not mark exhausted when no new runs found"
     );
 }
@@ -870,13 +879,12 @@ fn fetch_older_marks_exhausted_when_no_new_runs() {
     let mut app = make_app(std::slice::from_ref(&project));
     let path = project.path().display().to_string();
 
-    app.ci_state.insert(
-        project.path().clone(),
-        CiState::Loaded {
-            runs:         vec![make_ci_run(5, Conclusion::Success)],
-            exhausted:    false,
-            github_total: 10,
-        },
+    set_loaded_ci(
+        &mut app,
+        project.path(),
+        vec![make_ci_run(5, Conclusion::Success)],
+        false,
+        10,
     );
 
     // FetchOlder returns the same run — no new runs found.
@@ -889,9 +897,9 @@ fn fetch_older_marks_exhausted_when_no_new_runs() {
         CiFetchKind::FetchOlder,
     );
 
-    let state = app.ci_state.get(project.path()).expect("ci state exists");
+    let state = loaded_ci(&app, project.path());
     assert!(
-        state.is_exhausted(),
+        state.exhausted,
         "FetchOlder should mark exhausted when no new runs found"
     );
 }
@@ -902,13 +910,12 @@ fn cache_only_preserves_github_total() {
     let mut app = make_app(std::slice::from_ref(&project));
     let path = project.path().display().to_string();
 
-    app.ci_state.insert(
-        project.path().clone(),
-        CiState::Loaded {
-            runs:         vec![make_ci_run(5, Conclusion::Success)],
-            exhausted:    false,
-            github_total: 57,
-        },
+    set_loaded_ci(
+        &mut app,
+        project.path(),
+        vec![make_ci_run(5, Conclusion::Success)],
+        false,
+        57,
     );
 
     // CacheOnly (network failed) should preserve the previous github_total.
@@ -918,10 +925,9 @@ fn cache_only_preserves_github_total() {
         CiFetchKind::Sync,
     );
 
-    let state = app.ci_state.get(project.path()).expect("ci state exists");
+    let state = loaded_ci(&app, project.path());
     assert_eq!(
-        state.github_total(),
-        57,
+        state.github_total, 57,
         "CacheOnly should preserve previous github_total"
     );
 }
@@ -932,13 +938,12 @@ fn sync_clears_exhaustion_when_new_runs_found() {
     let mut app = make_app(std::slice::from_ref(&project));
     let path = project.path().display().to_string();
 
-    app.ci_state.insert(
-        project.path().clone(),
-        CiState::Loaded {
-            runs:         vec![make_ci_run(5, Conclusion::Success)],
-            exhausted:    true,
-            github_total: 10,
-        },
+    set_loaded_ci(
+        &mut app,
+        project.path(),
+        vec![make_ci_run(5, Conclusion::Success)],
+        true,
+        10,
     );
 
     // Sync finds a new run — should clear exhaustion.
@@ -954,12 +959,12 @@ fn sync_clears_exhaustion_when_new_runs_found() {
         CiFetchKind::Sync,
     );
 
-    let state = app.ci_state.get(project.path()).expect("ci state exists");
+    let state = loaded_ci(&app, project.path());
     assert!(
-        !state.is_exhausted(),
+        !state.exhausted,
         "Sync should clear exhaustion when new runs found"
     );
-    assert_eq!(state.runs().len(), 2);
+    assert_eq!(state.runs.len(), 2);
 }
 
 #[test]
@@ -972,14 +977,7 @@ fn fetch_more_uses_sync_when_no_cached_runs() {
     );
 
     // Empty CI state — no cached runs.
-    app.ci_state.insert(
-        project.path().clone(),
-        CiState::Loaded {
-            runs:         Vec::new(),
-            exhausted:    false,
-            github_total: 57,
-        },
-    );
+    set_loaded_ci(&mut app, project.path(), Vec::new(), false, 57);
 
     app.select_project_in_tree(project.path());
 

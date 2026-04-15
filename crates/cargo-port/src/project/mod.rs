@@ -36,6 +36,8 @@ pub(crate) use git::resolve_git_dir;
 pub(crate) use info::GitHubInfo;
 pub(crate) use info::LangEntry;
 pub(crate) use info::LanguageStats;
+pub(crate) use info::ProjectCiData;
+pub(crate) use info::ProjectCiInfo;
 pub(crate) use info::ProjectInfo;
 pub(crate) use info::Visibility;
 pub(crate) use info::WorktreeHealth;

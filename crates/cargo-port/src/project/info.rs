@@ -1,5 +1,6 @@
 use super::git::LocalGitState;
 use super::submodule::SubmoduleInfo;
+use crate::ci::CiRun;
 
 /// Visibility state for projects and worktree groups.
 /// Progression: `Visible -> Deleted -> Dismissed`.
@@ -29,6 +30,48 @@ pub(crate) enum WorktreeHealth {
 pub(crate) struct GitHubInfo {
     pub stars:       u64,
     pub description: Option<String>,
+}
+
+/// Persisted CI metadata for a single project hierarchy node.
+#[derive(Clone)]
+pub(crate) struct ProjectCiInfo {
+    pub runs:         Vec<CiRun>,
+    pub github_total: u32,
+    pub exhausted:    bool,
+}
+
+/// Hierarchy-backed CI ownership. `Unfetched` means we have not resolved CI
+/// data for this project yet.
+#[derive(Clone, Default)]
+pub(crate) enum ProjectCiData {
+    #[default]
+    Unfetched,
+    Loaded(ProjectCiInfo),
+}
+
+impl ProjectCiData {
+    pub(crate) const fn info(&self) -> Option<&ProjectCiInfo> {
+        match self {
+            Self::Unfetched => None,
+            Self::Loaded(info) => Some(info),
+        }
+    }
+
+    pub(crate) fn runs(&self) -> &[CiRun] { self.info().map_or(&[], |info| &info.runs) }
+
+    pub(crate) const fn github_total(&self) -> u32 {
+        match self {
+            Self::Unfetched => 0,
+            Self::Loaded(info) => info.github_total,
+        }
+    }
+
+    pub(crate) const fn is_exhausted(&self) -> bool {
+        match self {
+            Self::Unfetched => false,
+            Self::Loaded(info) => info.exhausted,
+        }
+    }
 }
 
 /// A single language entry in the language statistics breakdown.
@@ -61,6 +104,7 @@ pub(crate) struct ProjectInfo {
     pub disk_usage_bytes: Option<u64>,
     pub local_git_state:  LocalGitState,
     pub github_info:      Option<GitHubInfo>,
+    pub ci_data:          ProjectCiData,
     pub language_stats:   Option<LanguageStats>,
     pub visibility:       Visibility,
     pub worktree_health:  WorktreeHealth,

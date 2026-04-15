@@ -6,7 +6,6 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
-use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 use crate::tui::columns::ResolvedWidths;
@@ -436,52 +435,25 @@ pub enum VisibleRow {
     },
 }
 
-/// Per-project CI state. Replaces the scattered `(ci_runs, ci_fetching,
-/// ci_no_more_runs, ci_fetch_count)` fields with a single enum so invalid
-/// combinations are unrepresentable.
-pub enum CiState {
-    /// A fetch-more request is in progress. Keeps existing runs and
-    /// totals visible so the UI never flashes empty during pagination.
-    Fetching {
-        runs:         Vec<CiRun>,
-        github_total: u32,
-    },
-    /// Runs are available (possibly empty when the repo genuinely has no CI).
-    Loaded {
-        runs:         Vec<CiRun>,
-        exhausted:    bool,
-        /// Total completed workflow runs reported by the GitHub API.
-        github_total: u32,
-    },
+/// Runtime-only CI fetch tracking. Persistent CI data lives on the project
+/// hierarchy; this only records which owner paths currently have a request
+/// in flight.
+#[derive(Default)]
+pub struct CiFetchTracker {
+    inner: HashSet<AbsolutePath>,
 }
 
-impl CiState {
-    /// Access the runs regardless of which variant we are in.
-    pub fn runs(&self) -> &[CiRun] {
-        match self {
-            Self::Fetching { runs, .. } | Self::Loaded { runs, .. } => runs,
-        }
-    }
+impl CiFetchTracker {
+    pub fn start(&mut self, path: AbsolutePath) { self.inner.insert(path); }
 
-    pub const fn is_fetching(&self) -> bool { matches!(self, Self::Fetching { .. }) }
+    pub fn complete(&mut self, path: &std::path::Path) -> bool { self.inner.remove(path) }
 
-    pub const fn is_exhausted(&self) -> bool {
-        matches!(
-            self,
-            Self::Loaded {
-                exhausted: true,
-                ..
-            }
-        )
-    }
+    pub fn is_fetching(&self, path: &std::path::Path) -> bool { self.inner.contains(path) }
 
-    /// Total completed runs reported by GitHub, or 0 if not yet fetched.
-    pub const fn github_total(&self) -> u32 {
-        match self {
-            Self::Loaded { github_total, .. } | Self::Fetching { github_total, .. } => {
-                *github_total
-            },
-        }
+    pub fn clear(&mut self) { self.inner.clear(); }
+
+    pub fn retain(&mut self, mut keep: impl FnMut(&AbsolutePath) -> bool) {
+        self.inner.retain(|path| keep(path));
     }
 }
 

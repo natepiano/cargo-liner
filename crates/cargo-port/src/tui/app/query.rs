@@ -4,7 +4,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::App;
-use super::types::CiState;
 use super::types::DiscoveryRowKind;
 use super::types::DiscoveryShimmer;
 use crate::ci::CiRun;
@@ -20,6 +19,7 @@ use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::GitPathState;
 use crate::project::PackageProject;
+use crate::project::ProjectCiData;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
@@ -214,11 +214,6 @@ impl App {
             .and_then(|path| self.ci_owner_path_for(path))
     }
 
-    pub(in super::super) fn selected_ci_state(&self) -> Option<&CiState> {
-        let path = self.selected_ci_path()?;
-        self.ci_state_for(path.as_path())
-    }
-
     pub(in super::super) fn selected_ci_runs(&self) -> Vec<CiRun> {
         self.selected_project_path()
             .map_or_else(Vec::new, |path| self.ci_runs_for_display(path))
@@ -233,14 +228,33 @@ impl App {
         {
             return None;
         }
-        self.ci_state_for(path)
+        self.ci_info_for(path)
             .and_then(|_| self.latest_ci_run_for_path(path))
             .map(|run| run.conclusion)
     }
 
-    pub(in super::super) fn ci_state_for(&self, path: &Path) -> Option<&CiState> {
+    pub(in super::super) fn ci_data_for(&self, path: &Path) -> Option<&ProjectCiData> {
         let owner_path = self.ci_owner_path_for(path)?;
-        self.ci_state.get(owner_path.as_path())
+        self.projects
+            .at_path(owner_path.as_path())
+            .map(|project| &project.ci_data)
+    }
+
+    pub(in super::super) fn ci_info_for(
+        &self,
+        path: &Path,
+    ) -> Option<&crate::project::ProjectCiInfo> {
+        self.ci_data_for(path).and_then(ProjectCiData::info)
+    }
+
+    pub(in super::super) fn ci_is_fetching(&self, path: &Path) -> bool {
+        self.ci_owner_path_for(path)
+            .is_some_and(|owner_path| self.ci_fetch_tracker.is_fetching(owner_path.as_path()))
+    }
+
+    pub(in super::super) fn ci_is_exhausted(&self, path: &Path) -> bool {
+        self.ci_data_for(path)
+            .is_some_and(ProjectCiData::is_exhausted)
     }
 
     pub(in super::super) fn git_info_for(&self, path: &Path) -> Option<&GitInfo> {
@@ -574,11 +588,16 @@ impl App {
         });
         self.pending_git_first_commit
             .retain(|path, _| all_paths.contains(path));
+        self.ci_fetch_tracker
+            .retain(|path| all_paths.contains(path));
         for path in &all_paths {
             if self.is_cargo_active_path(path) {
                 continue;
             }
-            self.ci_state.remove(path.as_path());
+            self.ci_fetch_tracker.complete(path.as_path());
+            if let Some(project) = self.projects.at_path_mut(path.as_path()) {
+                project.ci_data = ProjectCiData::Unfetched;
+            }
         }
     }
 
@@ -648,13 +667,14 @@ impl App {
                 }
             },
             InputContext::CiRuns => {
-                let ci_state = self
+                let ci_info = self
                     .selected_project_path()
-                    .and_then(|path| self.ci_state_for(path));
-                let run_count = ci_state.map_or(0, |s| s.runs().len());
+                    .and_then(|path| self.ci_info_for(path));
+                let run_count = ci_info.map_or(0, |info| info.runs.len());
+                let selected_path = self.selected_project_path();
                 if self.pane_manager.ci.pos() == run_count
-                    && !ci_state.is_some_and(CiState::is_fetching)
-                    && !ci_state.is_some_and(CiState::is_exhausted)
+                    && !selected_path.is_some_and(|path| self.ci_is_fetching(path))
+                    && !selected_path.is_some_and(|path| self.ci_is_exhausted(path))
                 {
                     Some("fetch")
                 } else {

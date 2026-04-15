@@ -240,7 +240,7 @@ fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
     }
 }
 
-const fn empty_ci_title(data: &CiData) -> &'static str { data.empty_state.title() }
+fn empty_ci_title(data: &CiData) -> String { data.empty_state.title() }
 
 pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(ci_data) = app.pane_manager().ci_data.clone() else {
@@ -251,7 +251,7 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     if !ci_data.has_runs() {
         app.pane_manager_mut().ci.set_len(0);
         app.pane_manager_mut().ci.set_content_area(Rect::ZERO);
-        render_empty_ci_block(frame, empty_ci_title(&ci_data), area);
+        render_empty_ci_block(frame, &empty_ci_title(&ci_data), area);
         return;
     }
 

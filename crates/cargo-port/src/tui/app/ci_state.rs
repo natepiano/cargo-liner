@@ -3,10 +3,11 @@ use std::path::Path;
 
 use super::App;
 use super::types::CiRunDisplayMode;
-use super::types::CiState;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::project::AbsolutePath;
+use crate::project::ProjectCiData;
+use crate::project::ProjectCiInfo;
 use crate::project::ProjectFields;
 use crate::scan;
 use crate::scan::CiFetchResult;
@@ -86,7 +87,10 @@ impl App {
     /// Insert CI runs from the initial scan for a CI owner path.
     pub(super) fn insert_ci_runs(&mut self, path: &Path, runs: Vec<CiRun>, github_total: u32) {
         if !self.is_cargo_active_path(path) {
-            self.ci_state.remove(path);
+            if let Some(project) = self.projects.at_path_mut(path) {
+                project.ci_data = ProjectCiData::Unfetched;
+            }
+            self.ci_fetch_tracker.complete(path);
             return;
         }
         let exhausted = self
@@ -98,14 +102,14 @@ impl App {
                 })
             })
             .unwrap_or(false);
-        self.ci_state.insert(
-            AbsolutePath::from(path),
-            CiState::Loaded {
+        if let Some(project) = self.projects.at_path_mut(path) {
+            project.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                 runs,
-                exhausted,
                 github_total,
-            },
-        );
+                exhausted,
+            });
+        }
+        self.detail_generation += 1;
     }
 
     /// Process a completed CI fetch: merge runs and detect exhaustion.
@@ -123,10 +127,10 @@ impl App {
             .filter(|paths| !paths.is_empty())
             .unwrap_or_else(|| vec![abs.clone()]);
 
-        let prev_state = self.ci_state.get(&owner_paths[0]);
-        let prev_count = prev_state.map_or(0, |state| state.runs().len());
-        let prev_exhausted = prev_state.is_some_and(CiState::is_exhausted);
-        let prev_github_total = prev_state.map_or(0, CiState::github_total);
+        let prev_info = self.ci_info_for(owner_paths[0].as_path());
+        let prev_count = prev_info.map_or(0, |info| info.runs.len());
+        let prev_exhausted = prev_info.is_some_and(|info| info.exhausted);
+        let prev_github_total = prev_info.map_or(0, |info| info.github_total);
 
         // Only Sync returns an unfiltered total_count from GitHub.
         // FetchOlder uses created=<{date} which returns a filtered count,
@@ -137,14 +141,7 @@ impl App {
             _ => prev_github_total,
         };
         let new_runs = result.into_runs();
-
-        let existing = self
-            .ci_state
-            .remove(&owner_paths[0])
-            .map(|state| match state {
-                CiState::Fetching { runs, .. } | CiState::Loaded { runs, .. } => runs,
-            })
-            .unwrap_or_default();
+        let existing = prev_info.map_or_else(Vec::new, |info| info.runs.clone());
 
         let mut seen = HashSet::new();
         let mut merged = Vec::new();
@@ -217,17 +214,18 @@ impl App {
                 },
             );
         }
+        self.ci_fetch_tracker.complete(abs.as_path());
         for owner_path in owner_paths {
-            self.ci_state.insert(
-                owner_path,
-                CiState::Loaded {
+            if let Some(project) = self.projects.at_path_mut(owner_path.as_path()) {
+                project.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                     runs: merged.clone(),
-                    exhausted,
                     github_total,
-                },
-            );
+                    exhausted,
+                });
+            }
         }
         self.data_generation += 1;
+        self.detail_generation += 1;
     }
 
     pub(super) fn is_ci_owner_path(&self, path: &Path) -> bool {
@@ -256,15 +254,12 @@ impl App {
         }
     }
 
-    fn branch_only_ci_filter(&self, path: &Path) -> Option<&str> {
-        let git = self.git_info_for(path)?;
-        let branch = git.branch.as_deref()?;
-        let default_branch = git.default_branch.as_deref()?;
-        (branch != default_branch).then_some(branch)
+    fn current_branch_for(&self, path: &Path) -> Option<&str> {
+        self.git_info_for(path)?.branch.as_deref()
     }
 
     pub(super) fn ci_toggle_available_for_inner(&self, path: &Path) -> bool {
-        self.branch_only_ci_filter(path).is_some()
+        self.current_branch_for(path).is_some()
     }
 
     pub(super) fn toggle_ci_display_mode_for_inner(&mut self, path: &Path) {
@@ -284,39 +279,31 @@ impl App {
     }
 
     pub(super) fn ci_runs_for_display_inner(&self, path: &Path) -> Vec<CiRun> {
-        let Some(state) = self.ci_state_for(path) else {
+        let Some(info) = self.ci_info_for(path) else {
             return Vec::new();
         };
-        let runs = state.runs();
-        let Some(branch) = self.branch_only_ci_filter(path) else {
-            return runs.to_vec();
+        let Some(branch) = self.current_branch_for(path) else {
+            return info.runs.clone();
         };
         if self.ci_display_mode_for(path) == CiRunDisplayMode::All {
-            return runs.to_vec();
+            return info.runs.clone();
         }
-        let filtered: Vec<CiRun> = runs
+        info.runs
             .iter()
             .filter(|run| run.branch == branch)
             .cloned()
-            .collect();
-        if filtered.is_empty() {
-            runs.to_vec()
-        } else {
-            filtered
-        }
+            .collect()
     }
 
     pub(super) fn latest_ci_run_for_path(&self, path: &Path) -> Option<&CiRun> {
-        let state = self.ci_state_for(path)?;
-        let runs = state.runs();
-        let Some(branch) = self.branch_only_ci_filter(path) else {
+        let info = self.ci_info_for(path)?;
+        let runs = info.runs.as_slice();
+        let Some(branch) = self.current_branch_for(path) else {
             return runs.first();
         };
         if self.ci_display_mode_for(path) == CiRunDisplayMode::All {
             return runs.first();
         }
-        runs.iter()
-            .find(|run| run.branch == branch)
-            .or_else(|| runs.first())
+        runs.iter().find(|run| run.branch == branch)
     }
 }

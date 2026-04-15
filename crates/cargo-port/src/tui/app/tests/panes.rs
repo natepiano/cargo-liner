@@ -106,13 +106,12 @@ fn tabbable_panes_follow_canonical_order() {
     );
     app.detail_generation += 1;
     app.ensure_detail_cached();
-    app.ci_state.insert(
-        project.path().clone(),
-        CiState::Loaded {
-            runs:         vec![make_ci_run(1, Conclusion::Success)],
-            exhausted:    false,
-            github_total: 0,
-        },
+    set_loaded_ci(
+        &mut app,
+        project.path(),
+        vec![make_ci_run(1, Conclusion::Success)],
+        false,
+        0,
     );
     app.detail_generation += 1;
     app.ensure_detail_cached();

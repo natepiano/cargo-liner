@@ -328,26 +328,10 @@ fn spawn_pending_background_tasks(app: &mut App) {
 
     if let Some(fetch) = app.take_pending_ci_fetch() {
         let abs_path = Path::new(&fetch.project_path);
-        let prev_total = app
-            .ci_state_mut()
-            .get(abs_path)
-            .map_or(0, super::app::CiState::github_total);
-        let existing_runs = app
-            .ci_state_mut()
-            .remove(abs_path)
-            .map(|s| match s {
-                super::app::CiState::Fetching { runs, .. }
-                | super::app::CiState::Loaded { runs, .. } => runs,
-            })
-            .unwrap_or_default();
-        app.ci_state_mut().insert(
-            AbsolutePath::from(abs_path),
-            super::app::CiState::Fetching {
-                runs:         existing_runs,
-                github_total: prev_total,
-            },
-        );
+        app.ci_fetch_tracker_mut()
+            .start(AbsolutePath::from(abs_path));
         app.increment_data_generation();
+        app.increment_detail_generation();
         spawn_ci_fetch(app, &fetch);
     }
 }

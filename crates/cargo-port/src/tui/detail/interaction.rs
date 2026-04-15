@@ -15,9 +15,10 @@ use crate::keymap::LintsAction;
 use crate::keymap::PackageAction;
 use crate::keymap::TargetsAction;
 use crate::project::AbsolutePath;
+use crate::project::ProjectCiData;
+use crate::project::ProjectCiInfo;
 use crate::scan;
 use crate::tui::app::App;
-use crate::tui::app::CiState;
 use crate::tui::app::ConfirmAction;
 use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
@@ -214,8 +215,10 @@ fn handle_ci_enter(app: &App) {
 }
 
 fn handle_ci_fetch_more(app: &mut App) {
-    let ci_state = app.selected_ci_state();
-    if ci_state.is_some_and(CiState::is_fetching) {
+    let is_fetching = app
+        .selected_project_path()
+        .is_some_and(|path| app.ci_is_fetching(path));
+    if is_fetching {
         return;
     }
     let Some(ci_path) = app.selected_ci_path() else {
@@ -230,7 +233,9 @@ fn handle_ci_fetch_more(app: &mut App) {
                 .and_then(|item| item.name().map(str::to_string))
         })
         .unwrap_or_else(|| crate::project::home_relative_path(&ci_path));
-    let is_exhausted = ci_state.is_some_and(CiState::is_exhausted);
+    let is_exhausted = app
+        .selected_project_path()
+        .is_some_and(|path| app.ci_is_exhausted(path));
     let oldest_created_at = app
         .selected_project_path()
         .map(|path| app.ci_runs_for_display(path))
@@ -298,21 +303,20 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
     let prev_totals: Vec<_> = owner_paths
         .iter()
         .map(|p| {
-            app.ci_state_mut()
-                .get(p.as_path())
-                .map_or(0, CiState::github_total)
+            app.ci_data_for(p.as_path())
+                .map_or(0, ProjectCiData::github_total)
         })
         .collect();
     for (owner_path, prev_total) in owner_paths.iter().zip(prev_totals) {
-        app.ci_state_mut().insert(
-            owner_path.clone(),
-            CiState::Loaded {
+        if let Some(project) = app.project_info_at_path_mut(owner_path.as_path()) {
+            project.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                 runs:         Vec::new(),
-                exhausted:    false,
                 github_total: prev_total,
-            },
-        );
+                exhausted:    false,
+            });
+        }
     }
+    app.ci_fetch_tracker_mut().complete(abs);
     app.pane_manager_mut().ci.home();
     app.increment_data_generation();
     app.increment_detail_generation();

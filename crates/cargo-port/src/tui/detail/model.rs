@@ -510,22 +510,25 @@ impl TargetsData {
 #[derive(Clone)]
 pub enum CiEmptyState {
     BranchScopedOnly,
+    Fetching,
     Loading,
     NoRuns,
+    NoRunsForBranch(String),
     NoWorkflowConfigured,
     NotGitRepo,
     RequiresGithubRemote,
 }
 
 impl CiEmptyState {
-    pub const fn title(&self) -> &'static str {
+    pub fn title(&self) -> String {
         match self {
-            Self::BranchScopedOnly => " CI Runs — shown on branch/worktree rows ",
-            Self::Loading => " CI Runs — loading… ",
-            Self::NoRuns => " No CI Runs ",
-            Self::NoWorkflowConfigured => " No CI workflow configured ",
-            Self::NotGitRepo => " CI Runs — not a git repository ",
-            Self::RequiresGithubRemote => " CI Runs — requires a GitHub origin remote ",
+            Self::BranchScopedOnly => " CI Runs — shown on branch/worktree rows ".to_string(),
+            Self::Fetching | Self::Loading => " CI Runs — loading… ".to_string(),
+            Self::NoRuns => " No CI Runs ".to_string(),
+            Self::NoRunsForBranch(branch) => format!(" No CI runs for branch {branch} "),
+            Self::NoWorkflowConfigured => " No CI workflow configured ".to_string(),
+            Self::NotGitRepo => " CI Runs — not a git repository ".to_string(),
+            Self::RequiresGithubRemote => " CI Runs — requires a GitHub origin remote ".to_string(),
         }
     }
 }
@@ -1000,6 +1003,16 @@ pub fn build_ci_data(app: &App) -> CiData {
     let selected_path = app.selected_project_path();
     let has_ci_owner = app.selected_ci_path().is_some();
     let git_info = selected_path.and_then(|path| app.git_info_for(path));
+    let ci_info = selected_path.and_then(|path| app.ci_info_for(path));
+    let current_branch =
+        selected_path.and_then(|path| app.git_info_for(path).and_then(|git| git.branch.clone()));
+    let runs = app.selected_ci_runs();
+    let is_fetching = selected_path.is_some_and(|path| app.ci_is_fetching(path));
+    let branch_filtered_empty = selected_path.is_some_and(|path| {
+        app.ci_toggle_available_for(path) && app.ci_display_mode_label_for(path) == "branch"
+    }) && ci_info.is_some_and(|info| !info.runs.is_empty())
+        && runs.is_empty();
+
     let empty_state = if selected_path.is_some() && !has_ci_owner {
         CiEmptyState::BranchScopedOnly
     } else if git_info.is_none() {
@@ -1010,14 +1023,18 @@ pub fn build_ci_data(app: &App) -> CiData {
         CiEmptyState::RequiresGithubRemote
     } else if git_info.is_some_and(|g| !g.workflows.is_present()) {
         CiEmptyState::NoWorkflowConfigured
-    } else if !app.is_scan_complete() {
+    } else if is_fetching {
+        CiEmptyState::Fetching
+    } else if ci_info.is_none() || !app.is_scan_complete() {
         CiEmptyState::Loading
+    } else if branch_filtered_empty {
+        CiEmptyState::NoRunsForBranch(current_branch.unwrap_or_else(|| "current".to_string()))
     } else {
         CiEmptyState::NoRuns
     };
 
     CiData {
-        runs: app.selected_ci_runs(),
+        runs,
         mode_label: selected_path.and_then(|path| {
             app.ci_toggle_available_for(path)
                 .then(|| app.ci_display_mode_label_for(path).to_string())
@@ -1076,12 +1093,11 @@ fn lint_run_count_for(app: &App, abs_path: &Path, is_worktree_group: bool) -> Op
 }
 
 fn build_ci_runs_label(app: &App, abs_path: &Path) -> String {
-    let ci_state = app.ci_state_for(abs_path);
-    let Some(state) = ci_state else {
+    let Some(ci_data) = app.ci_data_for(abs_path) else {
         return String::new();
     };
-    let local = state.runs().len();
-    let github_total = state.github_total();
+    let local = ci_data.runs().len();
+    let github_total = ci_data.github_total();
     if github_total > 0 {
         format!("local {local} / github {github_total}")
     } else if local > 0 {

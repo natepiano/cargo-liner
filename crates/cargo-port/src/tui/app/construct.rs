@@ -10,6 +10,7 @@ use std::time::Instant;
 use ratatui::widgets::ListState;
 
 use super::App;
+use super::CiFetchTracker;
 use super::types::AsyncBuildState;
 use super::types::BuildChannels;
 use super::types::ConfigFileStamp;
@@ -178,7 +179,7 @@ impl App {
             http_client: inputs.http_client,
             repo_fetch_cache: crate::scan::new_repo_cache(),
             projects: init.projects,
-            ci_state: HashMap::new(),
+            ci_fetch_tracker: CiFetchTracker::default(),
             ci_display_modes: HashMap::new(),
             lint_cache_usage: crate::lint::CacheUsage::default(),
             cargo_active_paths: HashSet::new(),

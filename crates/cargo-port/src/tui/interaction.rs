@@ -262,8 +262,8 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::sync::mpsc;
     use std::sync::OnceLock;
+    use std::sync::mpsc;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -272,8 +272,8 @@ mod tests {
     use crossterm::event::MouseButton;
     use crossterm::event::MouseEvent;
     use crossterm::event::MouseEventKind;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     use super::UiTarget;
     use crate::ci::CiJob;

@@ -1432,7 +1432,7 @@ impl App {
     pub(in super::super) fn rescan(&mut self) {
         self.projects.clear();
         // disk_usage lives on project items — cleared with projects above
-        self.ci_state.clear();
+        self.ci_fetch_tracker.clear();
         self.ci_display_modes.clear();
         self.clear_all_lint_state();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
@@ -1579,14 +1579,12 @@ impl App {
             match msg {
                 CiFetchMsg::Complete { path, result, kind } => {
                     let before = self
-                        .ci_state
-                        .get(Path::new(&path))
-                        .map_or(0, |s| s.runs().len());
+                        .ci_info_for(Path::new(&path))
+                        .map_or(0, |info| info.runs.len());
                     self.handle_ci_fetch_complete(&path, result, kind);
                     let after = self
-                        .ci_state
-                        .get(Path::new(&path))
-                        .map_or(0, |s| s.runs().len());
+                        .ci_info_for(Path::new(&path))
+                        .map_or(0, |info| info.runs.len());
                     let new_runs = after.saturating_sub(before);
                     if let Some(task_id) = self.ci_fetch_toast.take() {
                         let empty: std::collections::HashSet<String> =

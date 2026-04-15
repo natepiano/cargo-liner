@@ -19,7 +19,6 @@ use ratatui::widgets::Widget;
 pub(super) use super::App;
 use super::DismissTarget;
 use super::snapshots;
-use super::types::CiState;
 use super::types::*;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
@@ -39,6 +38,8 @@ use crate::project::GitPathState;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
 use crate::project::PackageProject;
+use crate::project::ProjectCiData;
+use crate::project::ProjectCiInfo;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
@@ -116,6 +117,30 @@ fn make_app_with_config(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
     app.retry_spawn_mode = RetrySpawnMode::Disabled;
     app.sync_selected_project();
     app
+}
+
+fn set_loaded_ci(app: &mut App, path: &Path, runs: Vec<CiRun>, exhausted: bool, github_total: u32) {
+    let project = app
+        .projects
+        .at_path_mut(path)
+        .unwrap_or_else(|| std::process::abort());
+    project.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
+        runs,
+        github_total,
+        exhausted,
+    });
+}
+
+fn loaded_ci<'a>(app: &'a App, path: &Path) -> &'a ProjectCiInfo {
+    match &app
+        .projects
+        .at_path(path)
+        .unwrap_or_else(|| std::process::abort())
+        .ci_data
+    {
+        ProjectCiData::Loaded(info) => info,
+        ProjectCiData::Unfetched => std::process::abort(),
+    }
 }
 
 fn rendered_root_name_cells(app: &mut App) -> Vec<String> {

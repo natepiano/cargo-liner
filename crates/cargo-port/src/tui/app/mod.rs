@@ -49,7 +49,7 @@ use crate::watcher::WatcherMsg;
 mod tests;
 
 pub(super) use dismiss::DismissTarget;
-pub(super) use types::CiState;
+pub(super) use types::CiFetchTracker;
 pub(super) use types::ConfirmAction;
 pub(super) use types::DiscoveryRowKind;
 pub(super) use types::ExpandKey;
@@ -78,7 +78,7 @@ pub(super) struct App {
     http_client:              HttpClient,
     repo_fetch_cache:         RepoCache,
     projects:                 ProjectList,
-    ci_state:                 HashMap<AbsolutePath, CiState>,
+    ci_fetch_tracker:         CiFetchTracker,
     ci_display_modes:         HashMap<AbsolutePath, types::CiRunDisplayMode>,
     lint_cache_usage:         CacheUsage,
     cargo_active_paths:       HashSet<AbsolutePath>,
@@ -168,8 +168,15 @@ impl App {
 
     pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { &self.repo_fetch_cache }
 
-    pub(super) const fn ci_state_mut(&mut self) -> &mut HashMap<AbsolutePath, CiState> {
-        &mut self.ci_state
+    pub(super) fn project_info_at_path_mut(
+        &mut self,
+        path: &Path,
+    ) -> Option<&mut crate::project::ProjectInfo> {
+        self.projects.at_path_mut(path)
+    }
+
+    pub(super) const fn ci_fetch_tracker_mut(&mut self) -> &mut CiFetchTracker {
+        &mut self.ci_fetch_tracker
     }
 
     pub(super) const fn lint_cache_usage(&self) -> &CacheUsage { &self.lint_cache_usage }
