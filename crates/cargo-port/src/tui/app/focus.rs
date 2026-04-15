@@ -229,13 +229,16 @@ impl App {
                     .and_then(|p| p.language_stats.as_ref())
                     .is_some_and(|ls| !ls.entries.is_empty())
             }),
-            PaneId::Git => self.selected_project_path().is_some_and(|path| {
-                self.git_info_for(path)
-                    .is_some_and(|info| info.url.is_some())
-            }),
-            PaneId::Targets => self.cached_detail.as_ref().is_some_and(|c| {
-                c.info.is_binary || !c.info.examples.is_empty() || !c.info.benches.is_empty()
-            }),
+            PaneId::Git => self
+                .pane_manager
+                .git_data
+                .as_ref()
+                .is_some_and(|g| g.url.is_some()),
+            PaneId::Targets => self
+                .pane_manager
+                .targets_data
+                .as_ref()
+                .is_some_and(|d| d.has_targets()),
             PaneId::Lints => {
                 self.example_output.is_empty()
                     && self.selected_project_path().is_some_and(|path| {

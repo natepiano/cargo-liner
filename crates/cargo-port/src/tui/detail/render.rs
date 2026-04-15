@@ -396,9 +396,23 @@ pub fn render_detail_panel(
 
         render_project_panel(frame, app, info, &styles, columns[0]);
 
-        let has_targets = info.is_binary || !info.examples.is_empty() || !info.benches.is_empty();
-        if has_targets {
-            render_targets_panel(frame, app, info, &styles, columns[spec.targets_col]);
+        if let Some(targets_data) = app.pane_manager().targets_data.clone() {
+            if targets_data.has_targets() {
+                render_targets_panel(
+                    frame,
+                    app,
+                    &targets_data,
+                    &styles,
+                    columns[spec.targets_col],
+                );
+            } else {
+                let empty_targets = Block::default()
+                    .borders(Borders::ALL)
+                    .title(" No Targets ")
+                    .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
+                    .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
+                frame.render_widget(empty_targets, columns[spec.targets_col]);
+            }
         } else {
             let empty_targets = Block::default()
                 .borders(Borders::ALL)
@@ -686,13 +700,13 @@ fn render_bottom_connector(frame: &mut Frame, area: Rect, connector_x: u16, styl
 fn render_targets_panel(
     frame: &mut Frame,
     app: &mut App,
-    info: &DetailInfo,
+    data: &model::TargetsData,
     styles: &RenderStyles,
     area: Rect,
 ) {
-    let bin_count: usize = usize::from(info.is_binary);
-    let ex_count: usize = info.examples.iter().map(|group| group.names.len()).sum();
-    let bench_count = info.benches.len();
+    let bin_count: usize = usize::from(data.is_binary);
+    let ex_count: usize = data.examples.iter().map(|group| group.names.len()).sum();
+    let bench_count = data.benches.len();
 
     let focus = app.pane_focus_state(PaneId::Targets);
     let cursor = app.pane_manager().targets.pos();
@@ -737,7 +751,7 @@ fn render_targets_panel(
             styles.inactive_border
         });
 
-    let entries = model::build_target_list(info);
+    let entries = model::build_target_list_from_data(data);
     app.pane_manager_mut().targets.set_len(entries.len());
     let content_inner = targets_block.inner(area);
     app.pane_manager_mut()
@@ -787,6 +801,10 @@ fn render_targets_panel(
 }
 
 /// Render the Git info panel as a standalone pane.
+///
+/// Reads from `pane_manager.git_data` if available; falls back to
+/// `detail_info` for field rendering (until `DetailField` is fully
+/// migrated to per-pane data).
 pub fn render_git_panel(
     frame: &mut Frame,
     app: &mut App,
@@ -802,6 +820,13 @@ pub fn render_git_panel(
         inactive_border: Style::default(),
         title:           title_style,
     };
+
+    // Use git_data presence to determine if Git info is available.
+    let has_git = app
+        .pane_manager()
+        .git_data
+        .as_ref()
+        .is_some_and(|g| g.branch.is_some() || g.url.is_some());
 
     let Some(info) = detail_info else {
         let empty = Block::default()

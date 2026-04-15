@@ -27,6 +27,7 @@ pub(super) use model::build_detail_info_for_member;
 pub(super) use model::build_detail_info_for_submodule;
 pub(super) use model::build_detail_info_for_workspace_ref;
 pub(super) use model::build_target_list;
+pub(super) use model::build_target_list_from_data;
 pub(super) use model::git_fields;
 pub(super) use model::package_fields;
 pub(super) use render::RenderStyles;

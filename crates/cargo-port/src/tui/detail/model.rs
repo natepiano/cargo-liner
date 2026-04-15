@@ -140,10 +140,14 @@ pub struct TargetEntry {
 /// Build a flat list of all runnable targets: binaries first, then examples alphabetically,
 /// then benches alphabetically.
 pub fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
+    build_target_list_from_data(&info.targets_data())
+}
+
+pub fn build_target_list_from_data(data: &TargetsData) -> Vec<TargetEntry> {
     let mut entries = Vec::new();
 
-    if info.is_binary
-        && let Some(name) = &info.binary_name
+    if data.is_binary
+        && let Some(name) = &data.binary_name
     {
         entries.push(TargetEntry {
             display_name: name.clone(),
@@ -154,7 +158,7 @@ pub fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
 
     // Collect examples with category prefix for display, sorted with
     // categorized (containing '/') before uncategorized, then alphabetically.
-    let mut examples: Vec<(String, String)> = info
+    let mut examples: Vec<(String, String)> = data
         .examples
         .iter()
         .flat_map(|g| {
@@ -185,7 +189,7 @@ pub fn build_target_list(info: &DetailInfo) -> Vec<TargetEntry> {
         });
     }
 
-    let mut bench_names = info.benches.clone();
+    let mut bench_names = data.benches.clone();
     bench_names.sort();
     for name in bench_names {
         entries.push(TargetEntry {
