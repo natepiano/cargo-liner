@@ -48,9 +48,7 @@ pub(super) fn format_date(iso: &str) -> String {
     let stripped = iso.trim_end_matches('Z');
     // If the timestamp has an embedded offset, the date before 'T' is local.
     if let Some((date, after_t)) = stripped.split_once('T') {
-        let has_offset = after_t
-            .rfind(|c: char| c == '+' || c == '-')
-            .is_some_and(|p| p > 0);
+        let has_offset = after_t.rfind(['+', '-']).is_some_and(|p| p > 0);
         if has_offset {
             return date.to_string();
         }
@@ -75,15 +73,15 @@ pub(super) fn format_time(iso: &str) -> String {
     // Separate time from embedded offset (e.g., "00:39:38.123-04:00").
     // Look for +/- after the seconds portion.
     let (time_str, has_embedded_offset) =
-        if let Some(pos) = time_and_offset.rfind(|c: char| c == '+' || c == '-') {
-            if pos > 0 {
-                (&time_and_offset[..pos], true)
-            } else {
-                (time_and_offset, false)
-            }
-        } else {
-            (time_and_offset, false)
-        };
+        time_and_offset
+            .rfind(['+', '-'])
+            .map_or((time_and_offset, false), |pos| {
+                if pos > 0 {
+                    (&time_and_offset[..pos], true)
+                } else {
+                    (time_and_offset, false)
+                }
+            });
 
     let time_parts: Vec<&str> = time_str.split(':').collect();
     if time_parts.len() < 3 {

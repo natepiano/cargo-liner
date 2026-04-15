@@ -237,7 +237,7 @@ fn ci_panel_title(local: usize, focused_pos: Option<usize>, mode_label: Option<&
         let indicator = crate::tui::types::scroll_indicator(pos, local);
         format!(" CI Runs{suffix} ({indicator}) ")
     } else {
-        format!(" CI Runs{suffix} ")
+        format!(" CI Runs{suffix} ({local}) ")
     }
 }
 

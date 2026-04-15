@@ -33,7 +33,6 @@ use super::constants::BYTES_PER_KIB;
 use super::constants::BYTES_PER_MIB;
 use super::constants::COLUMN_HEADER_COLOR;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
-use super::constants::DETAIL_PANEL_HEIGHT;
 use super::constants::ERROR_COLOR;
 use super::constants::INACTIVE_BORDER_COLOR;
 use super::constants::LABEL_COLOR;
@@ -600,7 +599,18 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
 
     let total_project_rows = items.len();
 
-    let title = project_panel_title(app, area.width.saturating_sub(2).into());
+    let count_suffix = if app.is_focused(PaneId::ProjectList) {
+        let pos = app.list_state().selected().unwrap_or(0);
+        format!(
+            " ({}) ",
+            crate::tui::types::scroll_indicator(pos, total_project_rows),
+        )
+    } else {
+        format!(" ({total_project_rows}) ")
+    };
+    let suffix_len = u16::try_from(count_suffix.len()).unwrap_or(u16::MAX);
+    let title =
+        project_panel_title(app, area.width.saturating_sub(2 + suffix_len).into()) + &count_suffix;
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)

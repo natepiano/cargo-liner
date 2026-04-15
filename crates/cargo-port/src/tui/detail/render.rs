@@ -12,9 +12,6 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Cell;
-use ratatui::widgets::List;
-use ratatui::widgets::ListItem;
-use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
@@ -26,6 +23,8 @@ use super::model::DetailField;
 use super::model::DetailInfo;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_LINT_RUNS;
+use crate::project::LangEntry;
+use crate::project::LanguageStats;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
 use crate::tui::constants::ACTIVE_BORDER_COLOR;
@@ -593,7 +592,7 @@ fn render_stats_column(
     let stat_label_style = Style::default().fg(LABEL_COLOR);
     let stat_num_style = Style::default().fg(TITLE_COLOR);
     let dw = digit_width as usize;
-    let mut stat_lines: Vec<Line<'_>> = info
+    let stat_lines: Vec<Line<'_>> = info
         .stats_rows
         .iter()
         .map(|(label, count)| {
@@ -725,7 +724,7 @@ pub fn render_targets_panel(
                 section_indicator(bin_count + ex_count, bench_count)
             ));
         }
-        format!(" {} ", parts.join(" / "))
+        format!(" {} ", parts.join(", "))
     };
 
     let targets_block = Block::default()
@@ -883,7 +882,7 @@ fn lang_header_row() -> Row<'static> {
     ])
 }
 
-fn lang_footer_row(stats: &crate::project::LanguageStats) -> Row<'static> {
+fn lang_footer_row(stats: &LanguageStats) -> Row<'static> {
     let num_bold = Style::default()
         .fg(TITLE_COLOR)
         .add_modifier(Modifier::BOLD);
@@ -908,7 +907,7 @@ fn lang_footer_row(stats: &crate::project::LanguageStats) -> Row<'static> {
     ])
 }
 
-fn lang_entry_row(entry: &crate::project::LangEntry, name_width: usize) -> Row<'static> {
+fn lang_entry_row(entry: &LangEntry, name_width: usize) -> Row<'static> {
     let icon = crate::project::language_icon(&entry.language);
     let name = render::truncate_with_ellipsis(&entry.language, name_width, "\u{2026}");
     let total = entry.code + entry.comments + entry.blanks;

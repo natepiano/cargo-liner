@@ -44,9 +44,10 @@ fn lints_panel_title(app: &App, runs: &[LintRun], focused: bool) -> String {
     if focused {
         let indicator =
             crate::tui::types::scroll_indicator(app.pane_manager().lints.pos(), runs.len());
-        return format!(" Lint Runs ({indicator}) ");
+        format!(" Lint Runs ({indicator}) ")
+    } else {
+        format!(" Lint Runs ({}) ", runs.len())
     }
-    " Lint Runs ".to_string()
 }
 
 fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'static> {
@@ -85,11 +86,11 @@ fn build_lint_rows(runs: &[LintRun], animation_elapsed: std::time::Duration) -> 
 
     for run in runs {
         let date = super::timestamp::format_date(&run.started_at);
-        let date_cell = if date != current_date {
+        let date_cell = if date == current_date {
+            Cell::from("")
+        } else {
             current_date.clone_from(&date);
             Cell::from(Span::styled(date, date_style))
-        } else {
-            Cell::from("")
         };
 
         let start_time = super::timestamp::format_time(&run.started_at);

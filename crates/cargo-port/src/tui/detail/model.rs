@@ -348,7 +348,7 @@ impl DetailField {
             Self::CratesIo => info.crates_version.as_deref().unwrap_or("").to_string(),
             Self::Downloads => info
                 .crates_downloads
-                .map_or_else(String::new, |d| format_downloads(d)),
+                .map_or_else(String::new, format_downloads),
             Self::Version => info.version.clone(),
         }
     }

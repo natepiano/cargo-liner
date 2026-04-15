@@ -18,7 +18,6 @@ use crate::ci::FetchStatus::Fetched;
 use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
 use crate::lint::LintCommand;
-use crate::lint::LintCommandStatus;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::project::ExampleGroup;
