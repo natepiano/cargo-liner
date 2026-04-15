@@ -356,6 +356,114 @@ impl DetailField {
             Self::Version => info.version.clone(),
         }
     }
+
+    /// Get the display value for a package field from `PackageData`.
+    pub fn package_value(self, data: &PackageData, app: &App) -> String {
+        match self {
+            Self::Path => data.path.clone(),
+            Self::Disk => data.disk.clone(),
+            Self::Targets => data.types.clone(),
+            Self::Lint => {
+                if !app.is_rust_at_path(data.abs_path.as_path()) {
+                    return NO_LINT_RUNS_NOT_RUST.to_string();
+                }
+                let abs_path = data.abs_path.as_path();
+                let is_worktree_group = app
+                    .projects()
+                    .iter()
+                    .any(|item| item.path() == abs_path && matches!(item, RootItem::Worktrees(_)));
+                let lint_icon = if is_worktree_group {
+                    app.selected_lint_icon(abs_path)
+                        .unwrap_or_else(|| app.lint_icon(abs_path))
+                } else {
+                    app.lint_icon(abs_path)
+                };
+                match lint_run_count_for(app, abs_path, is_worktree_group) {
+                    Some(0) | None => NO_LINT_RUNS.to_string(),
+                    Some(n) => format!("{lint_icon} {n}"),
+                }
+            },
+            Self::Ci => {
+                let has_workflows = app
+                    .git_info_for(data.abs_path.as_path())
+                    .is_some_and(|git| git.workflows.is_present());
+                if !has_workflows {
+                    return NO_CI_WORKFLOW.to_string();
+                }
+                let icon = data.ci.map_or_else(String::new, |c| c.icon().to_string());
+                let ci_runs_label = build_ci_runs_label(app, data.abs_path.as_path());
+                if !ci_runs_label.is_empty() {
+                    format!("{icon} {ci_runs_label}")
+                } else if icon.is_empty() {
+                    NO_CI_RUNS.to_string()
+                } else {
+                    icon
+                }
+            },
+            Self::CratesIo => data.crates_version.as_deref().unwrap_or("").to_string(),
+            Self::Downloads => data
+                .crates_downloads
+                .map_or_else(String::new, format_downloads),
+            Self::Version => data.version.clone(),
+            Self::Worktree => data.worktree_label.as_deref().unwrap_or("").to_string(),
+            Self::WorktreeError => "broken .git — gitdir target missing".to_string(),
+            // Git fields — should not be called with package_value.
+            Self::Branch
+            | Self::GitPath
+            | Self::Sync
+            | Self::VsOrigin
+            | Self::VsLocal
+            | Self::Origin
+            | Self::Owner
+            | Self::Repo
+            | Self::Stars
+            | Self::RepoDesc
+            | Self::Inception
+            | Self::LastCommit => String::new(),
+        }
+    }
+
+    /// Get the display value for a git field from `GitData`.
+    pub fn git_value(self, data: &GitData) -> String {
+        match self {
+            Self::Branch => {
+                let branch = data.branch.as_deref().unwrap_or("");
+                let is_default = data
+                    .local_main_branch
+                    .as_deref()
+                    .is_some_and(|db| db == branch);
+                if is_default {
+                    format!("{branch} (HEAD)")
+                } else {
+                    branch.to_string()
+                }
+            },
+            Self::GitPath => data.path_state.label_with_icon(),
+            Self::Sync => data.sync.as_deref().unwrap_or("").to_string(),
+            Self::VsOrigin => data.vs_origin.as_deref().unwrap_or("").to_string(),
+            Self::VsLocal => data.vs_local.as_deref().unwrap_or("").to_string(),
+            Self::Origin => data.origin.as_deref().unwrap_or("").to_string(),
+            Self::Owner => data.owner.as_deref().unwrap_or("").to_string(),
+            Self::Repo => data.url.as_deref().unwrap_or("").to_string(),
+            Self::Stars => data
+                .stars
+                .map_or_else(String::new, |count| format!("⭐ {count}")),
+            Self::RepoDesc => data.description.as_deref().unwrap_or("").to_string(),
+            Self::Inception => data.inception.as_deref().unwrap_or("").to_string(),
+            Self::LastCommit => data.last_commit.as_deref().unwrap_or("").to_string(),
+            // Package fields — should not be called with git_value.
+            Self::Path
+            | Self::Disk
+            | Self::Targets
+            | Self::Lint
+            | Self::Ci
+            | Self::CratesIo
+            | Self::Downloads
+            | Self::Version
+            | Self::Worktree
+            | Self::WorktreeError => String::new(),
+        }
+    }
 }
 
 /// All fields for the `Package` column.
@@ -384,6 +492,75 @@ pub fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
     }
     if info.crates_downloads.is_some() {
         fields.push(DetailField::Downloads);
+    }
+    fields
+}
+
+pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
+    if data.package_title == "Project" {
+        return vec![
+            DetailField::Path,
+            DetailField::Disk,
+            DetailField::Lint,
+            DetailField::Ci,
+        ];
+    }
+    let mut fields = vec![
+        DetailField::Path,
+        DetailField::Disk,
+        DetailField::Targets,
+        DetailField::Lint,
+        DetailField::Ci,
+    ];
+    if data.has_package {
+        fields.push(DetailField::Version);
+    }
+    if data.crates_version.is_some() {
+        fields.push(DetailField::CratesIo);
+    }
+    if data.crates_downloads.is_some() {
+        fields.push(DetailField::Downloads);
+    }
+    fields
+}
+
+pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
+    let mut fields = Vec::new();
+    if data.url.is_some() {
+        fields.push(DetailField::Repo);
+    }
+    if data.owner.is_some() {
+        fields.push(DetailField::Owner);
+    }
+    if data.branch.is_some() {
+        fields.push(DetailField::Branch);
+    }
+    if data.path_state != GitPathState::OutsideRepo {
+        fields.push(DetailField::GitPath);
+    }
+    if data.vs_origin.is_some() {
+        fields.push(DetailField::VsOrigin);
+    }
+    if data.sync.is_some() {
+        fields.push(DetailField::Sync);
+    }
+    if data.vs_local.is_some() {
+        fields.push(DetailField::VsLocal);
+    }
+    if data.stars.is_some() {
+        fields.push(DetailField::Stars);
+    }
+    if data.description.is_some() {
+        fields.push(DetailField::RepoDesc);
+    }
+    if data.inception.is_some() {
+        fields.push(DetailField::Inception);
+    }
+    if data.last_commit.is_some() {
+        fields.push(DetailField::LastCommit);
+    }
+    if !data.worktree_names.is_empty() {
+        // Worktree count is appended by the render function, not as a field.
     }
     fields
 }
