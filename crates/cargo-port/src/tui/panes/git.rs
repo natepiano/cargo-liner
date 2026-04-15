@@ -10,8 +10,10 @@ use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+use super::PaneTitleCount;
 use super::package;
 use super::package::RenderStyles;
+use super::pane_title;
 use crate::constants::IN_SYNC;
 use crate::tui::app::App;
 use crate::tui::constants::ACTIVE_BORDER_COLOR;
@@ -178,7 +180,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(git_data) = app.pane_manager().git_data.clone() else {
         let empty = Block::default()
             .borders(Borders::ALL)
-            .title(" Git ")
+            .title(pane_title("Git", &PaneTitleCount::None))
             .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
             .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
         frame.render_widget(empty, area);
@@ -200,7 +202,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let focus = app.pane_focus_state(PaneId::Git);
     let git_block = Block::default()
         .borders(Borders::ALL)
-        .title(" Git ")
+        .title(pane_title("Git", &PaneTitleCount::None))
         .title_style(styles.title)
         .border_style(if matches!(focus, PaneFocusState::Active) {
             styles.active_border

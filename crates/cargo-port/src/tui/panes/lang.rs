@@ -12,7 +12,9 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
+use super::PaneTitleCount;
 use super::package::RenderStyles;
+use super::pane_title;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
 use crate::tui::app::App;
@@ -125,8 +127,16 @@ pub fn render_lang_panel_standalone(
         .cloned();
 
     let lang_count = lang_stats.as_ref().map_or(0, |s| s.entries.len());
-    let title = format!(" Languages ({lang_count}) ");
     let lang_focus = app.pane_focus_state(PaneId::Lang);
+    let cursor = matches!(lang_focus, crate::tui::types::PaneFocusState::Active)
+        .then(|| app.pane_manager().lang.pos());
+    let title = pane_title(
+        "Languages",
+        &PaneTitleCount::Single {
+            len: lang_count,
+            cursor,
+        },
+    );
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)

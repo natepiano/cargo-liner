@@ -42,6 +42,8 @@ use super::constants::TITLE_COLOR;
 use super::detail::TargetsData;
 use super::interaction::UiSurface::Content;
 use super::panes;
+use super::panes::PaneTitleCount;
+use super::panes::PaneTitleGroup;
 use super::shortcuts::Shortcut;
 use super::shortcuts::ShortcutState;
 use super::types::LayoutCache;
@@ -601,20 +603,19 @@ fn project_panel_title_with_counts(app: &App, max_width: usize) -> String {
         return format!(" {prefix} ");
     }
 
-    let section_indicator = |section_start: usize, section_len: usize| -> String {
-        if focused && cursor >= section_start && cursor < section_start + section_len {
-            crate::tui::types::scroll_indicator(cursor - section_start, section_len)
-        } else {
-            section_len.to_string()
-        }
-    };
-
-    let parts: Vec<String> = root_counts
+    let groups = root_counts
         .iter()
-        .map(|(name, count, start)| format!("{name} ({})", section_indicator(*start, *count)))
+        .map(|(name, count, start)| PaneTitleGroup {
+            label:  name.clone().into(),
+            len:    *count,
+            cursor: focused
+                .then_some(cursor)
+                .filter(|cursor| *cursor >= *start && *cursor < *start + *count)
+                .map(|cursor| cursor - *start),
+        })
         .collect();
 
-    let body = parts.join(", ");
+    let body = PaneTitleCount::Grouped(groups).body();
     let full = format!(" {prefix}{body} ");
     if full.len() <= max_width + 2 {
         return full;

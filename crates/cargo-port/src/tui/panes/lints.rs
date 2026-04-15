@@ -13,6 +13,8 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
+use super::PaneTitleCount;
+use super::pane_title;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::tui::LINT_SPINNER;
@@ -41,12 +43,13 @@ fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
         };
         return format!(" {msg} ");
     }
-    if focused {
-        let indicator = crate::tui::types::scroll_indicator(cursor, data.runs.len());
-        format!(" Lint Runs ({indicator}) ")
-    } else {
-        format!(" Lint Runs ({}) ", data.runs.len())
-    }
+    pane_title(
+        "Lint Runs",
+        &PaneTitleCount::Single {
+            len:    data.runs.len(),
+            cursor: focused.then_some(cursor),
+        },
+    )
 }
 
 fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'static> {

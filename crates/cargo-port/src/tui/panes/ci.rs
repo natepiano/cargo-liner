@@ -11,6 +11,8 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
+use super::PaneTitleCount;
+use super::pane_title;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
@@ -229,15 +231,13 @@ fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
         .mode_label
         .as_deref()
         .map_or(String::new(), |label| format!(" [{label}]"));
-    let local = data.runs.len();
-    if let Some(pos) = focused_pos
-        && pos < local
-    {
-        let indicator = crate::tui::types::scroll_indicator(pos, local);
-        format!(" CI Runs{suffix} ({indicator}) ")
-    } else {
-        format!(" CI Runs{suffix} ({local}) ")
-    }
+    pane_title(
+        &format!("CI Runs{suffix}"),
+        &PaneTitleCount::Single {
+            len:    data.runs.len(),
+            cursor: focused_pos,
+        },
+    )
 }
 
 fn empty_ci_title(data: &CiData) -> String { data.empty_state.title() }

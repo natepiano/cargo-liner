@@ -17,6 +17,9 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
+use super::PaneTitleCount;
+use super::PaneTitleGroup;
+use super::prefixed_pane_title;
 use crate::constants::NO_LINT_RUNS;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
@@ -524,33 +527,35 @@ pub fn render_targets_panel(
     let cursor = app.pane_manager().targets.pos();
 
     let targets_title = {
-        let mut parts = Vec::new();
-        let section_indicator = |section_start: usize, section_len: usize| -> String {
-            if matches!(focus, PaneFocusState::Active)
-                && cursor >= section_start
-                && cursor < section_start + section_len
-            {
-                crate::tui::types::scroll_indicator(cursor - section_start, section_len)
-            } else {
-                section_len.to_string()
-            }
+        let focused_cursor = matches!(focus, PaneFocusState::Active).then_some(cursor);
+        let section_cursor = |section_start: usize, section_len: usize| {
+            focused_cursor
+                .filter(|cursor| *cursor >= section_start && *cursor < section_start + section_len)
+                .map(|cursor| cursor - section_start)
         };
+        let mut groups = Vec::new();
         if bin_count > 0 {
-            parts.push(format!("Binary ({})", section_indicator(0, bin_count)));
+            groups.push(PaneTitleGroup {
+                label:  "Binary".into(),
+                len:    bin_count,
+                cursor: section_cursor(0, bin_count),
+            });
         }
         if ex_count > 0 {
-            parts.push(format!(
-                "Examples ({})",
-                section_indicator(bin_count, ex_count)
-            ));
+            groups.push(PaneTitleGroup {
+                label:  "Examples".into(),
+                len:    ex_count,
+                cursor: section_cursor(bin_count, ex_count),
+            });
         }
         if bench_count > 0 {
-            parts.push(format!(
-                "Benches ({})",
-                section_indicator(bin_count + ex_count, bench_count)
-            ));
+            groups.push(PaneTitleGroup {
+                label:  "Benches".into(),
+                len:    bench_count,
+                cursor: section_cursor(bin_count + ex_count, bench_count),
+            });
         }
-        format!(" {} ", parts.join(", "))
+        prefixed_pane_title("Targets", &PaneTitleCount::Grouped(groups))
     };
 
     let targets_block = Block::default()
