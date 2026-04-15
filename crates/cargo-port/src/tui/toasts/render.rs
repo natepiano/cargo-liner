@@ -101,7 +101,21 @@ pub fn render_toasts(
             height: card_height,
         };
 
-        frame.render_widget(Clear, card);
+        // Clear one extra cell around the toast to overwrite wide emoji
+        // characters (e.g., 🟢) that straddle the toast boundary.
+        let clear_rect = Rect {
+            x:      card.x.saturating_sub(1),
+            y:      card.y.saturating_sub(1),
+            width:  card
+                .width
+                .saturating_add(2)
+                .min(area.x + area.width - card.x.saturating_sub(1)),
+            height: card
+                .height
+                .saturating_add(2)
+                .min(area.y + area.height - card.y.saturating_sub(1)),
+        };
+        frame.render_widget(Clear, clear_rect);
         let close_rect = render_toast_card(
             frame,
             card,

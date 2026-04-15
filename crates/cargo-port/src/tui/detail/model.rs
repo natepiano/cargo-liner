@@ -245,6 +245,7 @@ pub enum DetailField {
     Worktree,
     WorktreeError,
     CratesIo,
+    Downloads,
     Version,
 }
 
@@ -270,6 +271,7 @@ impl DetailField {
             Self::Worktree => "Worktree",
             Self::WorktreeError => "Error",
             Self::CratesIo => "crates.io",
+            Self::Downloads => "Downloads",
             Self::Version => "Version",
         }
     }
@@ -343,13 +345,10 @@ impl DetailField {
             Self::LastCommit => info.git_last_commit.as_deref().unwrap_or("").to_string(),
             Self::Worktree => info.worktree_label.as_deref().unwrap_or("").to_string(),
             Self::WorktreeError => "broken .git — gitdir target missing".to_string(),
-            Self::CratesIo => {
-                let version = info.crates_version.as_deref().unwrap_or("");
-                info.crates_downloads.map_or_else(
-                    || version.to_string(),
-                    |downloads| format!("{version} ({})", format_downloads(downloads)),
-                )
-            },
+            Self::CratesIo => info.crates_version.as_deref().unwrap_or("").to_string(),
+            Self::Downloads => info
+                .crates_downloads
+                .map_or_else(String::new, |d| format_downloads(d)),
             Self::Version => info.version.clone(),
         }
     }
@@ -373,11 +372,14 @@ pub fn package_fields(info: &DetailInfo) -> Vec<DetailField> {
         DetailField::Lint,
         DetailField::Ci,
     ];
+    if info.has_package {
+        fields.push(DetailField::Version);
+    }
     if info.crates_version.is_some() {
         fields.push(DetailField::CratesIo);
     }
-    if info.has_package {
-        fields.push(DetailField::Version);
+    if info.crates_downloads.is_some() {
+        fields.push(DetailField::Downloads);
     }
     fields
 }

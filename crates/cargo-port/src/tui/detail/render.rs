@@ -74,36 +74,15 @@ pub struct RenderStyles {
     pub title:           Style,
 }
 
-#[derive(Clone, Copy)]
-enum GitPresence {
-    Available,
-    Missing,
-}
-
 struct DetailLayoutSpec {
     constraints: Vec<Constraint>,
-    lang_col:    usize,
-    git_col:     Option<usize>,
+    targets_col: usize,
 }
 
-fn detail_layout_spec(git: GitPresence) -> DetailLayoutSpec {
-    let has_git = matches!(git, GitPresence::Available);
-    if has_git {
-        DetailLayoutSpec {
-            constraints: vec![
-                Constraint::Percentage(30),
-                Constraint::Percentage(40),
-                Constraint::Percentage(30),
-            ],
-            lang_col:    1,
-            git_col:     Some(2),
-        }
-    } else {
-        DetailLayoutSpec {
-            constraints: vec![Constraint::Percentage(50), Constraint::Percentage(50)],
-            lang_col:    1,
-            git_col:     None,
-        }
+fn detail_layout_spec() -> DetailLayoutSpec {
+    DetailLayoutSpec {
+        constraints: vec![Constraint::Percentage(50), Constraint::Percentage(50)],
+        targets_col: 1,
     }
 }
 
@@ -397,25 +376,17 @@ pub fn render_detail_panel(
         .add_modifier(Modifier::BOLD);
 
     if let Some(info) = detail_info {
-        let git = model::git_fields(info);
-        let git_presence = if git.is_empty() {
-            GitPresence::Missing
-        } else {
-            GitPresence::Available
-        };
-        let spec = detail_layout_spec(git_presence);
+        let spec = detail_layout_spec();
 
         let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(spec.constraints)
             .split(area);
 
-        let mut detail_cols = vec![(PaneId::Package, columns[0])];
-        detail_cols.push((PaneId::Lang, columns[spec.lang_col]));
-        if let Some(git_col) = spec.git_col {
-            detail_cols.push((PaneId::Git, columns[git_col]));
-        }
-        app.layout_cache_mut().detail_columns = detail_cols;
+        app.layout_cache_mut().detail_columns = vec![
+            (PaneId::Package, columns[0]),
+            (PaneId::Targets, columns[spec.targets_col]),
+        ];
 
         let styles = RenderStyles {
             readonly_label:  Style::default().fg(LABEL_COLOR),
@@ -425,42 +396,17 @@ pub fn render_detail_panel(
         };
 
         render_project_panel(frame, app, info, &styles, columns[0]);
-        render_lang_panel(frame, app, info, &styles, columns[spec.lang_col]);
 
-        if let Some(col) = spec.git_col {
-            if git.is_empty() {
-                let empty_git = Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Not a git repo ")
-                    .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
-                    .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
-                frame.render_widget(empty_git, columns[col]);
-            } else {
-                app.pane_manager_mut().git.set_len(git.len());
-                let focus = app.pane_focus_state(PaneId::Git);
-                let git_block = Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Git ")
-                    .title_style(styles.title)
-                    .border_style(if matches!(focus, PaneFocusState::Active) {
-                        styles.active_border
-                    } else {
-                        styles.inactive_border
-                    });
-                let git_inner = git_block.inner(columns[col]);
-                app.pane_manager_mut().git.set_content_area(git_inner);
-                frame.render_widget(git_block, columns[col]);
-                let git_ctx = ColumnRenderCtx {
-                    app,
-                    info,
-                    fields: &git,
-                    pane: &app.pane_manager().git,
-                    focus,
-                    styles: &styles,
-                };
-                let scroll_offset = render_git_column_inner(frame, &git_ctx, git_inner);
-                app.pane_manager_mut().git.set_scroll_offset(scroll_offset);
-            }
+        let has_targets = info.is_binary || !info.examples.is_empty() || !info.benches.is_empty();
+        if has_targets {
+            render_targets_panel(frame, app, info, &styles, columns[spec.targets_col]);
+        } else {
+            let empty_targets = Block::default()
+                .borders(Borders::ALL)
+                .title(" No Targets ")
+                .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
+                .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
+            frame.render_widget(empty_targets, columns[spec.targets_col]);
         }
     } else {
         let empty_block = Block::default()
@@ -841,6 +787,70 @@ pub fn render_targets_panel(
         .set_scroll_offset(table_state.offset());
 }
 
+/// Render the Git info panel as a standalone pane.
+pub fn render_git_panel(
+    frame: &mut Frame,
+    app: &mut App,
+    detail_info: Option<&DetailInfo>,
+    area: Rect,
+) {
+    let title_style = Style::default()
+        .fg(TITLE_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let styles = RenderStyles {
+        readonly_label:  Style::default().fg(LABEL_COLOR),
+        active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
+        inactive_border: Style::default(),
+        title:           title_style,
+    };
+
+    let Some(info) = detail_info else {
+        let empty = Block::default()
+            .borders(Borders::ALL)
+            .title(" Git ")
+            .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
+            .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
+        frame.render_widget(empty, area);
+        return;
+    };
+
+    let git = model::git_fields(info);
+    if git.is_empty() {
+        let empty_git = Block::default()
+            .borders(Borders::ALL)
+            .title(" Not a git repo ")
+            .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
+            .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
+        frame.render_widget(empty_git, area);
+        return;
+    }
+
+    app.pane_manager_mut().git.set_len(git.len());
+    let focus = app.pane_focus_state(PaneId::Git);
+    let git_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Git ")
+        .title_style(styles.title)
+        .border_style(if matches!(focus, PaneFocusState::Active) {
+            styles.active_border
+        } else {
+            styles.inactive_border
+        });
+    let git_inner = git_block.inner(area);
+    app.pane_manager_mut().git.set_content_area(git_inner);
+    frame.render_widget(git_block, area);
+    let git_ctx = ColumnRenderCtx {
+        app,
+        info,
+        fields: &git,
+        pane: &app.pane_manager().git,
+        focus,
+        styles: &styles,
+    };
+    let scroll_offset = render_git_column_inner(frame, &git_ctx, git_inner);
+    app.pane_manager_mut().git.set_scroll_offset(scroll_offset);
+}
+
 /// Fixed numeric column width for language stats.
 const LANG_NUM_COL: u16 = 8;
 
@@ -916,6 +926,17 @@ fn lang_entry_row(entry: &crate::project::LangEntry, name_width: usize) -> Row<'
             .style(dim_style),
         Cell::from(Line::from(total.to_string()).alignment(Alignment::Right)).style(num_style),
     ])
+}
+
+/// Render the Languages panel as a standalone pane (called from main layout).
+pub fn render_lang_panel_standalone(
+    frame: &mut Frame,
+    app: &mut App,
+    info: &DetailInfo,
+    styles: &RenderStyles,
+    area: Rect,
+) {
+    render_lang_panel(frame, app, info, styles, area);
 }
 
 fn render_lang_panel(

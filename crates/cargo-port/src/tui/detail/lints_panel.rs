@@ -75,19 +75,6 @@ fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'sta
 ///
 /// Returns `(rows, row_to_run_index)` where `row_to_run_index` maps each
 /// table row to its lint run index (date headers map to `None`).
-fn col_header_row() -> Row<'static> {
-    let style = Style::default()
-        .fg(COLUMN_HEADER_COLOR)
-        .add_modifier(Modifier::BOLD);
-    Row::new(vec![
-        Cell::from(" Start"),
-        Cell::from("End"),
-        Cell::from(Line::from("Duration").alignment(Alignment::Right)),
-        Cell::from("Result"),
-    ])
-    .style(style)
-}
-
 fn build_lint_rows(runs: &[LintRun], animation_elapsed: std::time::Duration) -> Vec<Row<'static>> {
     let date_style = Style::default()
         .fg(TITLE_COLOR)
@@ -98,14 +85,12 @@ fn build_lint_rows(runs: &[LintRun], animation_elapsed: std::time::Duration) -> 
 
     for run in runs {
         let date = super::timestamp::format_date(&run.started_at);
-        if date != current_date {
+        let date_cell = if date != current_date {
             current_date.clone_from(&date);
-            rows.push(Row::new(vec![Cell::from(Span::styled(
-                format!(" {date}"),
-                date_style,
-            ))]));
-            rows.push(col_header_row());
-        }
+            Cell::from(Span::styled(date, date_style))
+        } else {
+            Cell::from("")
+        };
 
         let start_time = super::timestamp::format_time(&run.started_at);
         let end_time = run
@@ -117,28 +102,23 @@ fn build_lint_rows(runs: &[LintRun], animation_elapsed: std::time::Duration) -> 
         let (result_cell, row_style) = match run.status {
             LintRunStatus::Running => {
                 let spinner = LINT_SPINNER.frame_at(animation_elapsed);
-                (
-                    Cell::from(Line::from(spinner).alignment(Alignment::Center)),
-                    Style::default().fg(ACCENT_COLOR),
-                )
+                (Cell::from(spinner), Style::default().fg(ACCENT_COLOR))
             },
-            LintRunStatus::Passed => (
-                Cell::from(Line::from("passed").alignment(Alignment::Center)),
-                Style::default().fg(SUCCESS_COLOR),
-            ),
-            LintRunStatus::Failed => (
-                Cell::from(Line::from("failed").alignment(Alignment::Center)),
-                Style::default().fg(ERROR_COLOR),
-            ),
+            LintRunStatus::Passed => (Cell::from("passed"), Style::default().fg(SUCCESS_COLOR)),
+            LintRunStatus::Failed => (Cell::from("failed"), Style::default().fg(ERROR_COLOR)),
         };
 
         rows.push(
             Row::new(vec![
-                Cell::from(Span::styled(
-                    format!("  {start_time}"),
-                    Style::default().fg(LABEL_COLOR),
-                )),
-                Cell::from(Span::styled(end_time, Style::default().fg(LABEL_COLOR))),
+                date_cell,
+                Cell::from(
+                    Line::from(Span::styled(start_time, Style::default().fg(LABEL_COLOR)))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(end_time, Style::default().fg(LABEL_COLOR)))
+                        .alignment(Alignment::Right),
+                ),
                 Cell::from(
                     Line::from(Span::styled(duration, Style::default().fg(LABEL_COLOR)))
                         .alignment(Alignment::Right),
@@ -174,17 +154,32 @@ pub fn render_lints_panel(
     let rows = build_lint_rows(runs, app.animation_elapsed());
     app.pane_manager_mut().lints.set_len(rows.len());
 
+    let col_header_style = Style::default()
+        .fg(COLUMN_HEADER_COLOR)
+        .add_modifier(Modifier::BOLD);
+
     let table = Table::new(
         rows,
         [
-            Constraint::Length(10), // start time
+            Constraint::Length(10), // date
+            Constraint::Length(8),  // start time
             Constraint::Length(8),  // end time
             Constraint::Length(8),  // duration
             Constraint::Length(8),  // result
         ],
     )
+    .header(
+        Row::new(vec![
+            Cell::from(""),
+            Cell::from(Line::from("Start").alignment(Alignment::Right)),
+            Cell::from(Line::from("End").alignment(Alignment::Right)),
+            Cell::from(Line::from("Duration").alignment(Alignment::Right)),
+            Cell::from("Result"),
+        ])
+        .style(col_header_style),
+    )
     .block(block)
-    .column_spacing(1)
+    .column_spacing(2)
     .row_highlight_style(Pane::selection_style(app.pane_focus_state(PaneId::Lints)));
 
     let mut table_state = TableState::default().with_selected(Some(app.pane_manager().lints.pos()));

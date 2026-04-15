@@ -28,4 +28,6 @@ pub(super) use model::git_fields;
 pub(super) use model::package_fields;
 pub(super) use render::RenderStyles;
 pub(super) use render::render_detail_panel;
+pub(super) use render::render_git_panel;
+pub(super) use render::render_lang_panel_standalone;
 pub(super) use render::render_targets_panel;

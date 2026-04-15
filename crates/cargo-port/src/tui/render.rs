@@ -220,13 +220,54 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     let left_width = u16::try_from(app.cached_fit_widths().total_width() + BLOCK_BORDER_WIDTH)
         .unwrap_or(u16::MAX);
 
-    let main_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(left_width), Constraint::Min(20)])
+    // Split into 3 rows: top (detail row 1), middle (detail row 2), bottom (lint + CI).
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(35),
+            Constraint::Percentage(40),
+            Constraint::Percentage(25),
+        ])
         .split(outer_layout[0]);
 
-    render_left_panel(frame, app, main_layout[0]);
-    render_right_panel(frame, app, main_layout[1]);
+    // Row 1: Project List (left, spans row 1+2) | Package + Languages (right)
+    // Row 2: (PL continues)                     | Targets + Git (right)
+    let top_two_rows = Rect::new(
+        rows[0].x,
+        rows[0].y,
+        rows[0].width,
+        rows[0].height + rows[1].height,
+    );
+    let top_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(left_width), Constraint::Min(20)])
+        .split(top_two_rows);
+
+    // Left column (rows 1+2): Project List with search bar
+    render_left_panel(frame, app, top_cols[0]);
+
+    // Right column row 1: Package | Languages (detail panel)
+    let right_row1 = Rect::new(top_cols[1].x, rows[0].y, top_cols[1].width, rows[0].height);
+    // Right column row 2: Targets | Git
+    let right_row2 = Rect::new(top_cols[1].x, rows[1].y, top_cols[1].width, rows[1].height);
+
+    render_detail_row1(frame, app, right_row1);
+    render_detail_row2(frame, app, right_row2);
+
+    // Register hitboxes after all panes have their content_area set.
+    let detail_info = app.cached_detail().map(|c| c.info.clone());
+    sync_detail_pane_hitboxes(app, detail_info.as_ref());
+
+    // Row 3: output covers full width, or Lint Runs (PL width) | CI Runs (rest).
+    if app.example_output().is_empty() {
+        let bottom_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(left_width), Constraint::Min(20)])
+            .split(rows[2]);
+        render_bottom_panel(frame, app, bottom_cols[0], bottom_cols[1]);
+    } else {
+        render_example_output(frame, app, rows[2]);
+    }
     render_status_bar(frame, app, outer_layout[1]);
     let toast_result = super::toasts::render_toasts(
         frame,
@@ -279,109 +320,85 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
     frame.render_widget(Paragraph::new(line), inner);
 }
 
+/// Left column: Project List (spans rows 1+2).
 fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let search_height = if app.is_searching() {
         SEARCH_BAR_HEIGHT
     } else {
         0
     };
-
-    let has_selected_project = app.cached_detail().is_some();
-    if !has_selected_project {
-        let left_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(search_height), Constraint::Min(1)])
-            .split(area);
-        if app.is_searching() {
-            render_search_bar(frame, app, left_layout[0]);
-        }
-        render_project_list(frame, app, left_layout[1]);
-        return;
-    }
-
     let left_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(search_height),
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
+        .constraints([Constraint::Length(search_height), Constraint::Min(1)])
         .split(area);
-
     if app.is_searching() {
         render_search_bar(frame, app, left_layout[0]);
     }
-
     render_project_list(frame, app, left_layout[1]);
-
-    let has_targets = app.cached_detail().is_some_and(|c| {
-        c.info.is_binary || !c.info.examples.is_empty() || !c.info.benches.is_empty()
-    });
-    if has_targets {
-        if let Some(info) = app.cached_detail().map(|c| c.info.clone()) {
-            let title_style = Style::default()
-                .fg(TITLE_COLOR)
-                .add_modifier(Modifier::BOLD);
-            let styles = super::detail::RenderStyles {
-                readonly_label:  Style::default().fg(LABEL_COLOR),
-                active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
-                inactive_border: Style::default(),
-                title:           title_style,
-            };
-            super::detail::render_targets_panel(frame, app, &info, &styles, left_layout[2]);
-        }
-    } else {
-        let empty_targets = Block::default()
-            .borders(Borders::ALL)
-            .title(" No Targets ")
-            .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
-            .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
-        frame.render_widget(empty_targets, left_layout[2]);
-    }
 }
 
-fn render_right_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    frame.render_widget(Clear, area);
-
+/// Right column row 1: Package Details | Targets.
+fn render_detail_row1(frame: &mut Frame, app: &mut App, area: Rect) {
     let detail_info = app.cached_detail().map(|cache| cache.info.clone());
-    let selected_ci_state = app.selected_ci_state();
-    let selected_has_ci_owner = app.selected_ci_path().is_some();
-    let has_workflows = app
-        .selected_project_path()
-        .and_then(|path| app.git_info_for(path))
-        .is_some_and(|g| g.workflows.is_present());
-    let has_ci = selected_ci_state.is_some() && has_workflows;
+    // render_detail_panel renders Package + Targets (was Package + Lang).
+    super::detail::render_detail_panel(frame, app, detail_info.as_ref(), area);
+}
+
+/// Right column row 2: Languages | Git.
+fn render_detail_row2(frame: &mut Frame, app: &mut App, area: Rect) {
+    let detail_info = app.cached_detail().map(|cache| cache.info.clone());
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    // Languages (left half of row 2).
+    if let Some(info) = detail_info.as_ref() {
+        let title_style = Style::default()
+            .fg(TITLE_COLOR)
+            .add_modifier(Modifier::BOLD);
+        let styles = super::detail::RenderStyles {
+            readonly_label:  Style::default().fg(LABEL_COLOR),
+            active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
+            inactive_border: Style::default(),
+            title:           title_style,
+        };
+        super::detail::render_lang_panel_standalone(frame, app, info, &styles, cols[0]);
+    }
+
+    // Git (right half of row 2).
+    super::detail::render_git_panel(frame, app, detail_info.as_ref(), cols[1]);
+}
+
+/// Bottom row: Lint Runs (left) | CI Runs (right).
+fn render_bottom_panel(frame: &mut Frame, app: &mut App, lint_area: Rect, ci_area: Rect) {
     let detail_lint_runs = app
         .selected_project_path()
         .and_then(|path| app.lint_at_path(path))
         .map(|lr| lr.runs().to_vec())
         .unwrap_or_default();
     let detail_ci_runs: Vec<CiRun> = app.selected_ci_runs();
-    let has_example_output = !app.example_output().is_empty();
 
-    let right_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(vec![
-            Constraint::Length(DETAIL_PANEL_HEIGHT),
-            Constraint::Min(3),
-        ])
-        .split(area);
+    super::detail::render_lints_panel(frame, app, &detail_lint_runs, lint_area);
 
-    super::detail::render_detail_panel(frame, app, detail_info.as_ref(), right_layout[0]);
-    sync_detail_pane_hitboxes(app, detail_info.as_ref());
+    let selected_has_ci_owner = app.selected_ci_path().is_some();
+    let has_workflows = app
+        .selected_project_path()
+        .and_then(|path| app.git_info_for(path))
+        .is_some_and(|g| g.workflows.is_present());
+    let selected_ci_state = app.selected_ci_state();
+    let has_ci = selected_ci_state.is_some() && has_workflows;
 
-    // Running output replaces the bottom panels; Esc restores them.
-    if has_example_output {
-        render_example_output(frame, app, right_layout[1]);
+    if has_ci {
+        super::detail::render_ci_panel(frame, app, &detail_ci_runs, ci_area);
     } else {
-        render_bottom_right_panel(
+        render_empty_ci_panel(
             frame,
             app,
-            &detail_lint_runs,
-            &detail_ci_runs,
-            right_layout[1],
-            has_ci,
+            app.selected_project_path(),
             selected_has_ci_owner,
+            ci_area,
         );
     }
 }
@@ -447,40 +464,6 @@ fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
         | PaneId::Settings
         | PaneId::Finder
         | PaneId::Keymap => {},
-    }
-}
-
-fn render_bottom_right_panel(
-    frame: &mut Frame,
-    app: &mut App,
-    detail_lint_runs: &[LintRun],
-    detail_ci_runs: &[CiRun],
-    area: Rect,
-    has_ci: bool,
-    selected_has_ci_owner: bool,
-) {
-    let bottom_split = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-
-    super::detail::render_lints_panel(frame, app, detail_lint_runs, bottom_split[0]);
-
-    if has_ci {
-        super::detail::render_ci_panel(frame, app, detail_ci_runs, bottom_split[1]);
-    } else {
-        render_empty_ci_panel(
-            frame,
-            app,
-            app.selected_project_path(),
-            selected_has_ci_owner,
-            bottom_split[1],
-        );
-        reset_pane(&mut app.pane_manager_mut().ci);
-    }
-
-    if let Some(message) = app.unreachable_service_message() {
-        render_unreachable_overlay(frame, bottom_split[1], &message);
     }
 }
 

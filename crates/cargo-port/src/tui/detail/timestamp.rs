@@ -39,21 +39,55 @@ const fn days_in_month(year: i64, month: i64) -> i64 {
 }
 
 /// Extract the local date portion from a UTC ISO 8601 timestamp as `yyyy-mm-dd`.
+/// Extract the local date from an ISO 8601 timestamp as `yyyy-mm-dd`.
+///
+/// If the timestamp has an embedded timezone offset, the date portion is
+/// already local and is returned directly. For UTC timestamps, the local
+/// offset is applied via `format_timestamp`.
 pub(super) fn format_date(iso: &str) -> String {
+    let stripped = iso.trim_end_matches('Z');
+    // If the timestamp has an embedded offset, the date before 'T' is local.
+    if let Some((date, after_t)) = stripped.split_once('T') {
+        let has_offset = after_t
+            .rfind(|c: char| c == '+' || c == '-')
+            .is_some_and(|p| p > 0);
+        if has_offset {
+            return date.to_string();
+        }
+    }
+    // UTC timestamp — apply local offset via format_timestamp.
     let full = format_timestamp(iso);
     full.split(' ').next().unwrap_or(&full).to_string()
 }
 
-/// Extract the local time portion from a UTC ISO 8601 timestamp as `hh:mm:ss`.
+/// Extract the local time portion from an ISO 8601 timestamp as `hh:mm:ss`.
+///
+/// If the timestamp has an embedded timezone offset (e.g., `-04:00`), the
+/// time is already local and no offset is applied. If it ends in `Z` or has
+/// no offset, the local UTC offset is applied.
 pub(super) fn format_time(iso: &str) -> String {
-    let utc_offset_secs = local_utc_offset_secs();
+    let is_utc = iso.ends_with('Z');
     let stripped = iso.trim_end_matches('Z');
-    let Some((_, time)) = stripped.split_once('T') else {
+    let Some((_, time_and_offset)) = stripped.split_once('T') else {
         return "—".to_string();
     };
-    let time_parts: Vec<&str> = time.split(':').collect();
+
+    // Separate time from embedded offset (e.g., "00:39:38.123-04:00").
+    // Look for +/- after the seconds portion.
+    let (time_str, has_embedded_offset) =
+        if let Some(pos) = time_and_offset.rfind(|c: char| c == '+' || c == '-') {
+            if pos > 0 {
+                (&time_and_offset[..pos], true)
+            } else {
+                (time_and_offset, false)
+            }
+        } else {
+            (time_and_offset, false)
+        };
+
+    let time_parts: Vec<&str> = time_str.split(':').collect();
     if time_parts.len() < 3 {
-        return time.to_string();
+        return time_str.to_string();
     }
     let (Ok(hour), Ok(minute), Ok(second)) = (
         time_parts[0].parse::<i64>(),
@@ -64,9 +98,17 @@ pub(super) fn format_time(iso: &str) -> String {
             .unwrap_or("0")
             .parse::<i64>(),
     ) else {
-        return time.to_string();
+        return time_str.to_string();
     };
-    let total_secs = hour * 3600 + minute * 60 + second + utc_offset_secs;
+
+    // Only apply UTC offset if the timestamp is UTC (no embedded offset).
+    let offset = if has_embedded_offset || !is_utc {
+        0
+    } else {
+        local_utc_offset_secs()
+    };
+
+    let total_secs = hour * 3600 + minute * 60 + second + offset;
     let mut adj = total_secs % (24 * 3600);
     if adj < 0 {
         adj += 24 * 3600;
