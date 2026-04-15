@@ -618,7 +618,11 @@ fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use super::collect_bare_refs_from_tokens;
     use super::is_snake_case_function_name;
+    use super::line_offsets;
 
     #[test]
     fn snake_case_detects_functions() {
@@ -648,11 +652,6 @@ mod tests {
 
     #[test]
     fn collect_bare_refs_finds_ident_in_macro_tokens() {
-        use std::collections::BTreeSet;
-
-        use super::collect_bare_refs_from_tokens;
-        use super::line_offsets;
-
         let src = r"matches!(do_thing(x), MyEnum::Variant)";
         let offsets = line_offsets(src);
         let mut names = BTreeSet::new();
@@ -667,11 +666,6 @@ mod tests {
 
     #[test]
     fn collect_bare_refs_skips_qualified_ident_in_macro_tokens() {
-        use std::collections::BTreeSet;
-
-        use super::collect_bare_refs_from_tokens;
-        use super::line_offsets;
-
         let src = r"matches!(module::do_thing(x), MyEnum::Variant)";
         let offsets = line_offsets(src);
         let mut names = BTreeSet::new();
@@ -684,11 +678,6 @@ mod tests {
 
     #[test]
     fn collect_bare_refs_finds_nested_in_group() {
-        use std::collections::BTreeSet;
-
-        use super::collect_bare_refs_from_tokens;
-        use super::line_offsets;
-
         let src = r"assert!(do_thing(foo(bar())))";
         let offsets = line_offsets(src);
         let mut names = BTreeSet::new();

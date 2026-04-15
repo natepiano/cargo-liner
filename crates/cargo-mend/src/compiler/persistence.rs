@@ -9,7 +9,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde::Serialize;
 
-use super::current_analysis_fingerprint;
+use super::settings;
 use crate::config::DiagnosticCode;
 use crate::constants::FINDINGS_SCHEMA_VERSION;
 use crate::diagnostics::CompilerWarningFacts;
@@ -176,7 +176,7 @@ fn stored_report_matches_selection(
     scope_fingerprint: &str,
 ) -> bool {
     stored.version == FINDINGS_SCHEMA_VERSION
-        && stored.analysis_fingerprint == current_analysis_fingerprint()
+        && stored.analysis_fingerprint == settings::current_analysis_fingerprint()
         && stored.config_fingerprint == config_fingerprint
         && stored.scope_fingerprint == scope_fingerprint
         && stored_crate_root_exists(stored)

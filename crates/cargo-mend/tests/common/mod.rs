@@ -21,17 +21,33 @@ pub(super) use std::fs;
 use serde::Deserialize;
 pub(super) use tempfile::tempdir;
 
-pub(super) use self::helpers::assert_summary_matches_findings;
-pub(super) use self::helpers::cargo_command;
-pub(super) use self::helpers::expected_summary_from_findings;
-pub(super) use self::helpers::expected_summary_text;
 pub(super) use self::helpers::fix_support_for;
 pub(super) use self::helpers::mend_command;
 pub(super) use self::helpers::parse_mend_json_output;
-pub(super) use self::helpers::run_mend_json;
-pub(super) use self::helpers::strip_ansi;
 pub(super) use self::types::ExpectedFinding;
 pub(super) use self::types::Report;
+
+pub(super) fn assert_summary_matches_findings(report: &Report) {
+    helpers::assert_summary_matches_findings(report);
+}
+
+pub(super) fn cargo_command() -> std::process::Command { helpers::cargo_command() }
+
+pub(super) fn expected_summary_from_findings(
+    expected_findings: &[ExpectedFinding],
+) -> self::types::Summary {
+    helpers::expected_summary_from_findings(expected_findings)
+}
+
+pub(super) fn expected_summary_text(report: &Report) -> String {
+    helpers::expected_summary_text(report)
+}
+
+pub(super) fn run_mend_json(manifest_path: &std::path::Path) -> Report {
+    helpers::run_mend_json(manifest_path)
+}
+
+pub(super) fn strip_ansi(input: &str) -> String { helpers::strip_ansi(input) }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -10,7 +10,7 @@ use rustc_driver::Callbacks;
 use rustc_driver::Compilation;
 use rustc_middle::ty::TyCtxt;
 
-use super::DriverSettings;
+use super::settings::DriverSettings;
 use super::visibility;
 use crate::constants::EXIT_CODE_ERROR;
 

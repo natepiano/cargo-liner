@@ -17,8 +17,6 @@ use rustc_span::Span;
 use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
 
-use super::DriverSettings;
-use super::config_relative_path_for_settings;
 use super::exposure;
 use super::facade;
 use super::facade::ParentFacadeExportStatus;
@@ -29,6 +27,8 @@ use super::persistence::FindingsSink;
 use super::persistence::StoredFinding;
 use super::persistence::StoredPubUseFixFact;
 use super::persistence::StoredReport;
+use super::settings;
+use super::settings::DriverSettings;
 use super::source_cache;
 use super::source_cache::SourceCache;
 use crate::config::DiagnosticCode;
@@ -50,6 +50,18 @@ pub(super) enum ModuleLocation {
     NestedModule,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ParentVisibility {
+    Public,
+    Private,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ItemCategory {
+    Module,
+    NonModule,
+}
+
 struct VisibilityContext<'a, 'tcx> {
     tcx:                    TyCtxt<'tcx>,
     settings:               &'a DriverSettings,
@@ -66,20 +78,20 @@ struct ItemInfo<'a> {
     kind_label:     Option<&'static str>,
     item_name:      Option<&'a str>,
     highlight_span: Span,
-    is_module_item: bool,
+    item_category:  ItemCategory,
     impl_self_name: Option<String>,
 }
 
 struct SuspiciousPubInput<'a> {
-    def_id:           LocalDefId,
-    file_path:        &'a Path,
-    config_rel_path:  Option<&'a str>,
-    parent_is_public: bool,
-    module_location:  ModuleLocation,
-    crate_kind:       CrateKind,
-    kind_label:       Option<&'static str>,
-    item_name:        Option<&'a str>,
-    highlight_span:   Span,
+    def_id:            LocalDefId,
+    file_path:         &'a Path,
+    config_rel_path:   Option<&'a str>,
+    parent_visibility: ParentVisibility,
+    module_location:   ModuleLocation,
+    crate_kind:        CrateKind,
+    kind_label:        Option<&'static str>,
+    item_name:         Option<&'a str>,
+    highlight_span:    Span,
 }
 
 struct FindingParams {
@@ -90,6 +102,13 @@ struct FindingParams {
     suggestion: Option<String>,
     fixability: FixSupport,
     related:    Option<String>,
+}
+
+struct VisibilityFindingContext {
+    crate_kind:        CrateKind,
+    config_rel_path:   Option<String>,
+    module_location:   ModuleLocation,
+    parent_visibility: ParentVisibility,
 }
 
 #[derive(Debug)]
@@ -258,7 +277,11 @@ fn analyze_item(
                 item.vis_span,
                 item.kind.ident().map(|ident| ident.span),
             ),
-            is_module_item: matches!(item.kind, ItemKind::Mod(..)),
+            item_category:  if matches!(item.kind, ItemKind::Mod(..)) {
+                ItemCategory::Module
+            } else {
+                ItemCategory::NonModule
+            },
             impl_self_name: None,
         },
         sink,
@@ -296,7 +319,7 @@ fn analyze_impl_item(
             kind_label: Some(impl_item_kind_label(item.kind)),
             item_name: Some(item_name.as_str()),
             highlight_span: highlight_span(vis_span, Some(item.ident.span)),
-            is_module_item: false,
+            item_category: ItemCategory::NonModule,
             impl_self_name,
         },
         sink,
@@ -329,7 +352,7 @@ fn analyze_foreign_item(
             kind_label:     Some(foreign_item_kind_label(item.kind)),
             item_name:      Some(item_name.as_str()),
             highlight_span: highlight_span(item.vis_span, Some(item.ident.span)),
-            is_module_item: false,
+            item_category:  ItemCategory::NonModule,
             impl_self_name: None,
         },
         sink,
@@ -341,22 +364,14 @@ fn record_visibility_findings(
     item: &ItemInfo<'_>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    let crate_kind = if ctx.root_module.file_name().and_then(|name| name.to_str()) == Some("lib.rs")
-    {
-        CrateKind::Library
-    } else {
-        CrateKind::Binary
-    };
-    let config_rel_path = config_relative_path_for_settings(item.file_path, ctx.settings);
-    let parent_module = ctx.tcx.parent_module_from_def_id(item.def_id);
-    let parent_is_public = ctx
-        .tcx
-        .local_visibility(parent_module.to_local_def_id())
-        .is_public();
-    let module_location = resolve_module_location(ctx.tcx, parent_module.to_local_def_id());
+    let finding_context = visibility_finding_context(ctx, item);
 
     if matches!(item.vis_text, "pub(crate)")
-        && !allow_pub_crate_by_policy(crate_kind, module_location, parent_is_public)
+        && !allow_pub_crate_by_policy(
+            finding_context.crate_kind,
+            finding_context.module_location,
+            finding_context.parent_visibility,
+        )
     {
         sink.findings.push(build_finding(
             ctx.tcx,
@@ -367,7 +382,9 @@ fn record_visibility_findings(
                 code:       DiagnosticCode::ForbiddenPubCrate,
                 item:       None,
                 message:    "use of `pub(crate)` is forbidden by policy".to_string(),
-                suggestion: Some(forbidden_pub_crate_help(module_location).to_string()),
+                suggestion: Some(
+                    forbidden_pub_crate_help(finding_context.module_location).to_string(),
+                ),
                 fixability: FixSupport::None,
                 related:    None,
             },
@@ -391,14 +408,17 @@ fn record_visibility_findings(
         )?);
     }
 
-    if item.is_module_item && item.vis_text.starts_with("pub") {
-        let allowlisted = config_rel_path.as_ref().is_some_and(|path| {
-            ctx.settings
-                .config
-                .allow_pub_mod
-                .iter()
-                .any(|allowed| allowed == path)
-        });
+    if item.item_category == ItemCategory::Module && item.vis_text.starts_with("pub") {
+        let allowlisted = finding_context
+            .config_rel_path
+            .as_ref()
+            .is_some_and(|path| {
+                ctx.settings
+                    .config
+                    .allow_pub_mod
+                    .iter()
+                    .any(|allowed| allowed == path)
+            });
         if !allowlisted {
             sink.findings.push(build_finding(
                 ctx.tcx,
@@ -418,7 +438,7 @@ fn record_visibility_findings(
     }
 
     if item.vis_text == "pub"
-        && !parent_is_public
+        && finding_context.parent_visibility == ParentVisibility::Private
         && is_top_level_module_file(ctx.src_root, ctx.root_module, item.file_path)
     {
         maybe_record_narrow_to_pub_crate(ctx, item, sink)?;
@@ -428,20 +448,51 @@ fn record_visibility_findings(
         maybe_record_suspicious_pub(
             ctx,
             &SuspiciousPubInput {
-                def_id: item.def_id,
-                file_path: item.file_path,
-                config_rel_path: config_rel_path.as_deref(),
-                parent_is_public,
-                module_location,
-                crate_kind,
-                kind_label: item.kind_label,
-                item_name: item.item_name,
-                highlight_span: item.highlight_span,
+                def_id:            item.def_id,
+                file_path:         item.file_path,
+                config_rel_path:   finding_context.config_rel_path.as_deref(),
+                parent_visibility: finding_context.parent_visibility,
+                module_location:   finding_context.module_location,
+                crate_kind:        finding_context.crate_kind,
+                kind_label:        item.kind_label,
+                item_name:         item.item_name,
+                highlight_span:    item.highlight_span,
             },
             sink,
         )?;
     }
     Ok(())
+}
+
+fn visibility_finding_context(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+) -> VisibilityFindingContext {
+    let crate_kind = if ctx.root_module.file_name().and_then(|name| name.to_str()) == Some("lib.rs")
+    {
+        CrateKind::Library
+    } else {
+        CrateKind::Binary
+    };
+    let config_rel_path = settings::config_relative_path_for_settings(item.file_path, ctx.settings);
+    let parent_module = ctx.tcx.parent_module_from_def_id(item.def_id);
+    let parent_visibility = if ctx
+        .tcx
+        .local_visibility(parent_module.to_local_def_id())
+        .is_public()
+    {
+        ParentVisibility::Public
+    } else {
+        ParentVisibility::Private
+    };
+    let module_location = resolve_module_location(ctx.tcx, parent_module.to_local_def_id());
+
+    VisibilityFindingContext {
+        crate_kind,
+        config_rel_path,
+        module_location,
+        parent_visibility,
+    }
 }
 
 fn maybe_record_narrow_to_pub_crate(
@@ -592,7 +643,7 @@ fn classify_suspicious_pub(
         ctx.effective_visibilities,
         input.def_id,
         input.config_rel_path,
-        input.parent_is_public,
+        input.parent_visibility,
         input.item_name,
     ) {
         return Ok(SuspiciousPubAssessment::Allowed(allowance));
@@ -676,7 +727,7 @@ fn basic_suspicious_pub_allowance(
     effective_visibilities: &rustc_middle::middle::privacy::EffectiveVisibilities,
     def_id: LocalDefId,
     config_rel_path: Option<&str>,
-    parent_is_public: bool,
+    parent_visibility: ParentVisibility,
     item_name: Option<&str>,
 ) -> Option<AllowanceReason> {
     let item_key = config_rel_path.and_then(|path| item_name.map(|name| format!("{path}::{name}")));
@@ -690,7 +741,7 @@ fn basic_suspicious_pub_allowance(
     if allowlisted {
         return Some(AllowanceReason::Allowlist);
     }
-    if parent_is_public {
+    if parent_visibility == ParentVisibility::Public {
         return Some(AllowanceReason::ParentIsPublic);
     }
     if effective_visibilities.is_public_at_level(def_id, Level::Reachable) {
@@ -854,11 +905,13 @@ fn use_item_contains_glob(tcx: TyCtxt<'_>, span: Span) -> Result<bool> {
 pub(super) const fn allow_pub_crate_by_policy(
     crate_kind: CrateKind,
     module_location: ModuleLocation,
-    parent_is_public: bool,
+    parent_visibility: ParentVisibility,
 ) -> bool {
     match (crate_kind, module_location) {
         (CrateKind::Library, ModuleLocation::CrateRoot) => true,
-        (_, ModuleLocation::TopLevelPrivateModule) => !parent_is_public,
+        (_, ModuleLocation::TopLevelPrivateModule) => {
+            matches!(parent_visibility, ParentVisibility::Private)
+        },
         _ => false,
     }
 }

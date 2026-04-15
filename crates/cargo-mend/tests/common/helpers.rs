@@ -20,7 +20,7 @@ pub fn clear_wrappers(command: &mut Command) -> &mut Command {
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
 }
 
-pub fn cargo_command() -> Command {
+pub(super) fn cargo_command() -> Command {
     let mut command = Command::new("cargo");
     clear_wrappers(&mut command);
     command
@@ -34,7 +34,7 @@ pub fn mend_command() -> Command {
 
 pub fn mend_bin() -> PathBuf { PathBuf::from(env!("CARGO_BIN_EXE_cargo-mend")) }
 
-pub fn strip_ansi(input: &str) -> String {
+pub(super) fn strip_ansi(input: &str) -> String {
     let ansi = Regex::new(r"\x1b\[[0-9;]*m").expect("compile ansi regex");
     ansi.replace_all(input, "").into_owned()
 }
@@ -77,7 +77,7 @@ pub fn expected_summary(report: &Report) -> Summary {
     summary
 }
 
-pub fn assert_summary_matches_findings(report: &Report) {
+pub(super) fn assert_summary_matches_findings(report: &Report) {
     let expected = expected_summary(report);
     assert_eq!(report.summary.errors, expected.errors);
     assert_eq!(report.summary.warnings, expected.warnings);
@@ -96,7 +96,7 @@ pub const fn fix_support_for(code: DiagnosticCode, fix_support: FixSupport) -> F
     }
 }
 
-pub fn expected_summary_from_findings(expected_findings: &[ExpectedFinding]) -> Summary {
+pub(super) fn expected_summary_from_findings(expected_findings: &[ExpectedFinding]) -> Summary {
     let mut summary = Summary {
         errors:                   0,
         warnings:                 0,
@@ -124,7 +124,7 @@ pub fn expected_summary_from_findings(expected_findings: &[ExpectedFinding]) -> 
 
 /// Returns a substring that must appear in the rendered summary.
 /// Checks the first summary row (mend errors/warnings).
-pub fn expected_summary_text(report: &Report) -> String {
+pub(super) fn expected_summary_text(report: &Report) -> String {
     if report.summary.errors > 0 {
         return format!(
             "{} {}",
@@ -150,7 +150,7 @@ pub fn expected_summary_text(report: &Report) -> String {
     "no issues found".to_string()
 }
 
-pub fn run_mend_json(manifest_path: &std::path::Path) -> Report {
+pub(super) fn run_mend_json(manifest_path: &std::path::Path) -> Report {
     let output = mend_command()
         .arg("--manifest-path")
         .arg(manifest_path)

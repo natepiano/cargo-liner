@@ -5,10 +5,10 @@ use anyhow::Result;
 use quote::ToTokens;
 use syn::visit::Visit;
 
-use super::DriverSettings;
 use super::facade;
 use super::facade::ParentFacadeReferenceUsage;
 use super::facade::ParentFacadeUsage;
+use super::settings::DriverSettings;
 use super::source_cache;
 use super::source_cache::SourceCache;
 

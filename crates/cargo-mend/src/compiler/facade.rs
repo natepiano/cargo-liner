@@ -5,7 +5,7 @@ use anyhow::Result;
 use syn::ItemUse;
 use syn::UseTree;
 
-use super::DriverSettings;
+use super::settings::DriverSettings;
 use super::source_cache;
 use super::source_cache::ExtractedPaths;
 use super::source_cache::PathOrigin;
