@@ -1,59 +1,59 @@
 use ratatui::text::Line;
 
-use super::ci_panel;
-use super::ci_panel::CI_COMPACT_DURATION_WIDTH;
 use super::model;
 use super::model::DetailField;
-use super::model::DetailInfo;
-use super::render;
 use crate::ci::CiJob;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::ci::FetchStatus::Fetched;
-use crate::project::ExampleGroup;
 use crate::project::GitPathState;
 use crate::tui::constants::LABEL_COLOR;
+use crate::tui::detail::GitData;
+use crate::tui::detail::PackageData;
+use crate::tui::panes;
+use crate::tui::panes::CI_COMPACT_DURATION_WIDTH;
 use crate::tui::render::CiColumn;
 use crate::tui::types::PaneFocusState;
 
-fn detail_info(is_rust_project: bool) -> DetailInfo {
-    DetailInfo {
-        package_title:     if is_rust_project {
+fn package_data(is_rust_project: bool) -> PackageData {
+    PackageData {
+        package_title:    if is_rust_project {
             "Package".to_string()
         } else {
             "Project".to_string()
         },
-        title_name:        "demo".to_string(),
-        abs_path:          "/tmp/demo".into(),
-        path:              "~/demo".to_string(),
-        version:           "0.1.0".to_string(),
-        description:       None,
-        crates_version:    None,
-        crates_downloads:  None,
-        types:             "lib".to_string(),
-        disk:              "36.3 GiB".to_string(),
-        ci:                None,
-        stats_rows:        Vec::new(),
-        git_branch:        None,
-        git_path:          GitPathState::OutsideRepo,
-        git_sync:          None,
-        git_vs_origin:     None,
-        git_vs_local:      None,
+        title_name:       "demo".to_string(),
+        abs_path:         "/tmp/demo".into(),
+        path:             "~/demo".to_string(),
+        version:          "0.1.0".to_string(),
+        description:      None,
+        crates_version:   None,
+        crates_downloads: None,
+        types:            "lib".to_string(),
+        disk:             "36.3 GiB".to_string(),
+        ci:               None,
+        stats_rows:       Vec::new(),
+        has_package:      true,
+    }
+}
+
+fn git_data() -> GitData {
+    GitData {
+        branch:            None,
+        path_state:        GitPathState::OutsideRepo,
+        sync:              None,
+        vs_origin:         None,
+        vs_local:          None,
         local_main_branch: None,
         main_branch_label: "main".to_string(),
-        git_origin:        None,
-        git_owner:         None,
-        git_url:           None,
-        git_stars:         None,
-        repo_description:  None,
-        git_inception:     None,
-        git_last_commit:   None,
+        origin:            None,
+        owner:             None,
+        url:               None,
+        stars:             None,
+        description:       None,
+        inception:         None,
+        last_commit:       None,
         worktree_names:    Vec::new(),
-        is_binary:         false,
-        binary_name:       None,
-        examples:          Vec::<ExampleGroup>::new(),
-        benches:           Vec::new(),
-        has_package:       true,
     }
 }
 
@@ -99,9 +99,9 @@ fn stats_width_cases() {
     ];
 
     for (name, rows, expected_total, expected_digits) in cases {
-        let mut info = detail_info(true);
-        info.stats_rows = rows;
-        let (total, digits) = render::stats_column_width(&info.package_data());
+        let mut data = package_data(true);
+        data.stats_rows = rows;
+        let (total, digits) = panes::stats_column_width(&data);
         assert_eq!(total, expected_total, "{name}");
         assert_eq!(digits, expected_digits, "{name}");
     }
@@ -109,9 +109,9 @@ fn stats_width_cases() {
 
 #[test]
 fn package_fields_place_lint_and_ci_before_disk_for_rust_projects() {
-    let info = detail_info(true);
+    let data = package_data(true);
     assert_eq!(
-        model::package_fields_from_data(&info.package_data())
+        model::package_fields_from_data(&data)
             .into_iter()
             .map(DetailField::label)
             .collect::<Vec<_>>(),
@@ -121,9 +121,9 @@ fn package_fields_place_lint_and_ci_before_disk_for_rust_projects() {
 
 #[test]
 fn package_fields_place_lint_and_ci_before_disk_for_non_rust_projects() {
-    let info = detail_info(false);
+    let data = package_data(false);
     assert_eq!(
-        model::package_fields_from_data(&info.package_data())
+        model::package_fields_from_data(&data)
             .into_iter()
             .map(DetailField::label)
             .collect::<Vec<_>>(),
@@ -133,20 +133,20 @@ fn package_fields_place_lint_and_ci_before_disk_for_non_rust_projects() {
 
 #[test]
 fn package_label_width_expands_for_crates_io() {
-    let info = DetailInfo {
+    let data = PackageData {
         crates_version: Some("0.0.3".to_string()),
         crates_downloads: Some(74),
-        ..detail_info(true)
+        ..package_data(true)
     };
-    let fields = model::package_fields_from_data(&info.package_data());
-    assert_eq!(render::package_label_width(&fields), "crates.io".len());
+    let fields = model::package_fields_from_data(&data);
+    assert_eq!(panes::package_label_width(&fields), "crates.io".len());
 }
 
 #[test]
 fn description_lines_use_muted_fallback_when_missing() {
-    let info = detail_info(true);
+    let data = package_data(true);
 
-    let lines = render::description_lines(&info.package_data(), 80, 3);
+    let lines = panes::description_lines(&data, 80, 3);
 
     assert_eq!(lines.len(), 1);
     assert_eq!(line_text(&lines[0]), "No description available");
@@ -155,12 +155,12 @@ fn description_lines_use_muted_fallback_when_missing() {
 
 #[test]
 fn description_lines_render_real_description_with_default_style() {
-    let info = DetailInfo {
+    let data = PackageData {
         description: Some("Real package description".to_string()),
-        ..detail_info(true)
+        ..package_data(true)
     };
 
-    let lines = render::description_lines(&info.package_data(), 80, 3);
+    let lines = panes::description_lines(&data, 80, 3);
 
     assert_eq!(lines.len(), 1);
     assert_eq!(line_text(&lines[0]), "Real package description");
@@ -169,12 +169,12 @@ fn description_lines_render_real_description_with_default_style() {
 
 #[test]
 fn description_lines_truncate_overflow_with_ellipsis() {
-    let info = DetailInfo {
+    let data = PackageData {
         description: Some("one two three four five six seven eight".to_string()),
-        ..detail_info(true)
+        ..package_data(true)
     };
 
-    let lines = render::description_lines(&info.package_data(), 13, 2);
+    let lines = panes::description_lines(&data, 13, 2);
 
     assert_eq!(lines.len(), 2);
     assert_eq!(line_text(&lines[0]), "one two three");
@@ -185,35 +185,32 @@ fn description_lines_truncate_overflow_with_ellipsis() {
 fn detail_column_scroll_waits_until_cursor_reaches_bottom() {
     let focus = PaneFocusState::Active;
 
-    assert_eq!(render::detail_column_scroll_offset(focus, 0, 4), 0);
-    assert_eq!(render::detail_column_scroll_offset(focus, 3, 4), 0);
-    assert_eq!(render::detail_column_scroll_offset(focus, 4, 4), 1);
-    assert_eq!(render::detail_column_scroll_offset(focus, 7, 4), 4);
+    assert_eq!(panes::detail_column_scroll_offset(focus, 0, 4), 0);
+    assert_eq!(panes::detail_column_scroll_offset(focus, 3, 4), 0);
+    assert_eq!(panes::detail_column_scroll_offset(focus, 4, 4), 1);
+    assert_eq!(panes::detail_column_scroll_offset(focus, 7, 4), 4);
 }
 
 #[test]
 fn detail_column_scroll_stays_at_top_when_not_active() {
     assert_eq!(
-        render::detail_column_scroll_offset(PaneFocusState::Remembered, 7, 4),
+        panes::detail_column_scroll_offset(PaneFocusState::Remembered, 7, 4),
         0
     );
     assert_eq!(
-        render::detail_column_scroll_offset(PaneFocusState::Inactive, 7, 4),
+        panes::detail_column_scroll_offset(PaneFocusState::Inactive, 7, 4),
         0
     );
 }
 
 #[test]
 fn git_path_value_appends_status_icon() {
-    let info = DetailInfo {
-        git_path: GitPathState::Modified,
-        ..detail_info(true)
+    let data = GitData {
+        path_state: GitPathState::Modified,
+        ..git_data()
     };
 
-    assert_eq!(
-        DetailField::GitPath.git_value(&info.git_data()),
-        "🟠 modified"
-    );
+    assert_eq!(DetailField::GitPath.git_value(&data), "🟠 modified");
 }
 
 #[test]
@@ -223,31 +220,31 @@ fn sync_value_uses_synced_label_when_in_sync() {
 
 #[test]
 fn git_label_width_uses_origin_and_configured_main_labels() {
-    let info = DetailInfo {
-        git_vs_origin: Some("origin/main (local cached ref)".to_string()),
-        git_vs_local: Some("↑11 ↓3".to_string()),
+    let data = GitData {
+        vs_origin: Some("origin/main (local cached ref)".to_string()),
+        vs_local: Some("↑11 ↓3".to_string()),
         main_branch_label: "primary".to_string(),
-        ..detail_info(true)
+        ..git_data()
     };
     let fields = vec![DetailField::VsOrigin, DetailField::VsLocal];
 
     assert_eq!(
-        render::git_label_width(&info.git_data(), &fields),
+        panes::git_label_width(&data, &fields),
         "vs local primary".len()
     );
 }
 
 #[test]
 fn git_fields_show_explicit_remote_and_local_rows_for_unpublished_branch() {
-    let info = DetailInfo {
-        git_sync: Some(crate::constants::NO_REMOTE_SYNC.to_string()),
-        git_vs_origin: Some("none".to_string()),
-        git_vs_local: Some("↑11 ↓3".to_string()),
-        ..detail_info(true)
+    let data = GitData {
+        sync: Some(crate::constants::NO_REMOTE_SYNC.to_string()),
+        vs_origin: Some("none".to_string()),
+        vs_local: Some("↑11 ↓3".to_string()),
+        ..git_data()
     };
 
     assert_eq!(
-        model::git_fields_from_data(&info.git_data()),
+        model::git_fields_from_data(&data),
         vec![
             DetailField::VsOrigin,
             DetailField::Sync,
@@ -274,9 +271,9 @@ fn ci_table_hides_durations_when_fixed_columns_overflow() {
     ])];
     let cols = vec![CiColumn::Fmt, CiColumn::Clippy];
 
-    assert!(!ci_panel::ci_table_shows_durations(&runs, &cols, 20));
+    assert!(!panes::ci_table_shows_durations(&runs, &cols, 20));
     assert_eq!(
-        ci_panel::ci_total_width(&runs, false),
+        panes::ci_total_width(&runs, false),
         CI_COMPACT_DURATION_WIDTH
     );
 }
@@ -291,5 +288,5 @@ fn ci_table_keeps_durations_when_fixed_columns_fit() {
     }])];
     let cols = vec![CiColumn::Fmt];
 
-    assert!(ci_panel::ci_table_shows_durations(&runs, &cols, 80));
+    assert!(panes::ci_table_shows_durations(&runs, &cols, 80));
 }

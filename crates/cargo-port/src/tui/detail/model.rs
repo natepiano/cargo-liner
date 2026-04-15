@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use super::timestamp;
+use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_CI_RUNS;
@@ -10,10 +11,12 @@ use crate::constants::NO_LINT_RUNS_NOT_RUST;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
+use crate::lint::LintRun;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::ExampleGroup;
+use crate::project::GitOrigin;
 use crate::project::GitPathState;
 use crate::project::NonRustProject;
 use crate::project::PackageProject;
@@ -504,96 +507,37 @@ impl TargetsData {
     }
 }
 
-/// Convert a `DetailInfo` into per-pane data structs.
-impl DetailInfo {
-    pub fn package_data(&self) -> PackageData {
-        PackageData {
-            package_title:    self.package_title.clone(),
-            title_name:       self.title_name.clone(),
-            abs_path:         self.abs_path.clone(),
-            path:             self.path.clone(),
-            version:          self.version.clone(),
-            description:      self.description.clone(),
-            crates_version:   self.crates_version.clone(),
-            crates_downloads: self.crates_downloads,
-            types:            self.types.clone(),
-            disk:             self.disk.clone(),
-            ci:               self.ci,
-            stats_rows:       self.stats_rows.clone(),
-            has_package:      self.has_package,
-        }
-    }
+#[derive(Clone)]
+pub struct CiData {
+    pub runs:            Vec<CiRun>,
+    pub mode_label:      Option<String>,
+    pub has_project:     bool,
+    pub has_ci_owner:    bool,
+    pub has_git:         bool,
+    pub has_url:         bool,
+    pub is_local_origin: bool,
+    pub has_workflows:   bool,
+    pub scan_complete:   bool,
+}
 
-    pub fn git_data(&self) -> GitData {
-        GitData {
-            branch:            self.git_branch.clone(),
-            path_state:        self.git_path,
-            sync:              self.git_sync.clone(),
-            vs_origin:         self.git_vs_origin.clone(),
-            vs_local:          self.git_vs_local.clone(),
-            local_main_branch: self.local_main_branch.clone(),
-            main_branch_label: self.main_branch_label.clone(),
-            origin:            self.git_origin.clone(),
-            owner:             self.git_owner.clone(),
-            url:               self.git_url.clone(),
-            stars:             self.git_stars,
-            description:       self.repo_description.clone(),
-            inception:         self.git_inception.clone(),
-            last_commit:       self.git_last_commit.clone(),
-            worktree_names:    self.worktree_names.clone(),
-        }
-    }
-
-    pub fn targets_data(&self) -> TargetsData {
-        TargetsData {
-            is_binary:   self.is_binary,
-            binary_name: self.binary_name.clone(),
-            examples:    self.examples.clone(),
-            benches:     self.benches.clone(),
-        }
-    }
+impl CiData {
+    pub fn has_runs(&self) -> bool { !self.runs.is_empty() }
 }
 
 #[derive(Clone)]
-pub struct DetailInfo {
-    pub package_title:     String,
-    /// Primary name for the detail title bar. For Rust projects this is the
-    /// Cargo package name; for non-Rust projects this is the directory leaf.
-    pub title_name:        String,
-    pub abs_path:          AbsolutePath,
-    pub path:              String,
-    pub version:           String,
-    pub description:       Option<String>,
-    pub crates_version:    Option<String>,
-    pub crates_downloads:  Option<u64>,
-    pub types:             String,
-    pub disk:              String,
-    pub ci:                Option<Conclusion>,
-    pub stats_rows:        Vec<(&'static str, usize)>,
-    pub git_branch:        Option<String>,
-    pub git_path:          GitPathState,
-    pub git_sync:          Option<String>,
-    pub git_vs_origin:     Option<String>,
-    /// Ahead/behind vs local `{local_main_branch}`.
-    pub git_vs_local:      Option<String>,
-    /// The actual local branch used for `M` comparisons.
-    pub local_main_branch: Option<String>,
-    /// The configured user-facing label for the local main branch.
-    pub main_branch_label: String,
-    pub git_origin:        Option<String>,
-    pub git_owner:         Option<String>,
-    pub git_url:           Option<String>,
-    pub git_stars:         Option<u64>,
-    pub repo_description:  Option<String>,
-    pub git_inception:     Option<String>,
-    pub git_last_commit:   Option<String>,
-    pub worktree_names:    Vec<String>,
-    pub is_binary:         bool,
-    pub binary_name:       Option<String>,
-    pub examples:          Vec<ExampleGroup>,
-    pub benches:           Vec<String>,
-    /// Whether this project declares `[package]` (has version/description fields).
-    pub has_package:       bool,
+pub struct LintsData {
+    pub runs:            Vec<LintRun>,
+    pub is_cargo_active: bool,
+}
+
+impl LintsData {
+    pub fn has_runs(&self) -> bool { !self.runs.is_empty() }
+}
+
+pub struct DetailPaneData {
+    pub package: PackageData,
+    pub git:     GitData,
+    pub targets: TargetsData,
 }
 
 /// Resolve the title shown in the `Package` column header.
@@ -758,47 +702,47 @@ fn worktree_names_from_item(item: &RootItem) -> Vec<String> {
     }
 }
 
-/// Build `DetailInfo` for a root `RootItem`.
-pub fn build_detail_info(app: &App, item: &RootItem) -> DetailInfo {
+/// Build pane data for a root `RootItem`.
+pub fn build_pane_data(app: &App, item: &RootItem) -> DetailPaneData {
     let display_path = item.display_path().into_string();
     let is_wt_group = is_worktree_group(item);
 
     match item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
-            build_detail_info_for_workspace(app, ws, &display_path, is_wt_group, Some(item))
+            build_pane_data_for_workspace(app, ws, &display_path, is_wt_group, Some(item))
         },
         RootItem::Rust(RustProject::Package(pkg)) => {
-            build_detail_info_for_package(app, pkg, &display_path, is_wt_group, Some(item))
+            build_pane_data_for_package(app, pkg, &display_path, is_wt_group, Some(item))
         },
         RootItem::NonRust(nr) => {
-            build_detail_info_non_rust(app, nr, &display_path, is_wt_group, Some(item))
+            build_pane_data_non_rust(app, nr, &display_path, is_wt_group, Some(item))
         },
         RootItem::Worktrees(WorktreeGroup::Workspaces { primary, .. }) => {
-            build_detail_info_for_workspace(app, primary, &display_path, true, Some(item))
+            build_pane_data_for_workspace(app, primary, &display_path, true, Some(item))
         },
         RootItem::Worktrees(WorktreeGroup::Packages { primary, .. }) => {
-            build_detail_info_for_package(app, primary, &display_path, true, Some(item))
+            build_pane_data_for_package(app, primary, &display_path, true, Some(item))
         },
     }
 }
 
-/// Build `DetailInfo` for a `Project<Package>` (member or vendored row).
-pub fn build_detail_info_for_member(app: &App, pkg: &PackageProject) -> DetailInfo {
+/// Build pane data for a `Project<Package>` (member or vendored row).
+pub fn build_pane_data_for_member(app: &App, pkg: &PackageProject) -> DetailPaneData {
     let display_path = pkg.display_path().into_string();
-    build_detail_info_for_package(app, pkg, &display_path, false, None)
+    build_pane_data_for_package(app, pkg, &display_path, false, None)
 }
 
-/// Build `DetailInfo` for a linked `Project<Workspace>` worktree entry.
-pub fn build_detail_info_for_workspace_ref(
+/// Build pane data for a linked `Project<Workspace>` worktree entry.
+pub fn build_pane_data_for_workspace_ref(
     app: &App,
     ws: &WorkspaceProject,
     display_path: &str,
-) -> DetailInfo {
-    build_detail_info_for_workspace(app, ws, display_path, false, None)
+) -> DetailPaneData {
+    build_pane_data_for_workspace(app, ws, display_path, false, None)
 }
 
-/// Build `DetailInfo` for a git submodule nested under a project.
-pub fn build_detail_info_for_submodule(app: &App, submodule: &SubmoduleInfo) -> DetailInfo {
+/// Build pane data for a git submodule nested under a project.
+pub fn build_pane_data_for_submodule(app: &App, submodule: &SubmoduleInfo) -> DetailPaneData {
     let abs_path = &submodule.path;
     let display_path = project::home_relative_path(abs_path);
     let git_detail = build_git_detail_fields(app, abs_path);
@@ -809,49 +753,55 @@ pub fn build_detail_info_for_submodule(app: &App, submodule: &SubmoduleInfo) -> 
         .disk_usage_bytes
         .map_or_else(String::new, crate::tui::render::format_bytes);
 
-    DetailInfo {
-        package_title: "Submodule".to_string(),
-        title_name: submodule.name.clone(),
-        abs_path: abs_path.clone(),
-        path: display_path,
-        version,
-        description: submodule.url.clone(),
-        crates_version: None,
-        crates_downloads: None,
-        types: String::new(),
-        disk,
-        ci: None,
-        stats_rows: Vec::new(),
-        git_branch: git_detail.branch,
-        git_path: git_detail.path,
-        git_sync: git_detail.sync,
-        git_vs_origin: git_detail.vs_origin,
-        git_vs_local: git_detail.vs_local,
-        local_main_branch: git_detail.local_main_branch,
-        main_branch_label: git_detail.main_branch_label,
-        git_origin: git_detail.origin,
-        git_owner: git_detail.owner,
-        git_url: git_detail.url,
-        git_stars: git_detail.stars,
-        repo_description: git_detail.description,
-        git_inception: git_detail.inception,
-        git_last_commit: git_detail.last_commit,
-        worktree_names: Vec::new(),
-        is_binary: false,
-        binary_name: None,
-        examples: Vec::new(),
-        benches: Vec::new(),
-        has_package: false,
+    DetailPaneData {
+        package: PackageData {
+            package_title: "Submodule".to_string(),
+            title_name: submodule.name.clone(),
+            abs_path: abs_path.clone(),
+            path: display_path,
+            version,
+            description: submodule.url.clone(),
+            crates_version: None,
+            crates_downloads: None,
+            types: String::new(),
+            disk,
+            ci: None,
+            stats_rows: Vec::new(),
+            has_package: false,
+        },
+        git:     GitData {
+            branch:            git_detail.branch,
+            path_state:        git_detail.path,
+            sync:              git_detail.sync,
+            vs_origin:         git_detail.vs_origin,
+            vs_local:          git_detail.vs_local,
+            local_main_branch: git_detail.local_main_branch,
+            main_branch_label: git_detail.main_branch_label,
+            origin:            git_detail.origin,
+            owner:             git_detail.owner,
+            url:               git_detail.url,
+            stars:             git_detail.stars,
+            description:       git_detail.description,
+            inception:         git_detail.inception,
+            last_commit:       git_detail.last_commit,
+            worktree_names:    Vec::new(),
+        },
+        targets: TargetsData {
+            is_binary:   false,
+            binary_name: None,
+            examples:    Vec::new(),
+            benches:     Vec::new(),
+        },
     }
 }
 
-fn build_detail_info_for_workspace(
+fn build_pane_data_for_workspace(
     app: &App,
     ws: &WorkspaceProject,
     display_path: &str,
     is_wt_group: bool,
     wt_item: Option<&RootItem>,
-) -> DetailInfo {
+) -> DetailPaneData {
     let abs_path = ws.path();
     let cargo = ws.cargo();
 
@@ -867,9 +817,9 @@ fn build_detail_info_for_workspace(
     let stats_rows = counts.to_rows();
 
     let wt_item_ref = wt_item.filter(|_| is_wt_group);
-    build_detail_info_common(
+    build_pane_data_common(
         app,
-        DetailSource {
+        PaneDataSource {
             abs_path,
             display_path,
             title_name: ws.package_name().into_string(),
@@ -882,13 +832,13 @@ fn build_detail_info_for_workspace(
     )
 }
 
-fn build_detail_info_for_package(
+fn build_pane_data_for_package(
     app: &App,
     pkg: &PackageProject,
     display_path: &str,
     is_wt_group: bool,
     wt_item: Option<&RootItem>,
-) -> DetailInfo {
+) -> DetailPaneData {
     let abs_path = pkg.path();
     let cargo = pkg.cargo();
 
@@ -902,9 +852,9 @@ fn build_detail_info_for_package(
         |item| resolve_package_title(app, item),
     );
 
-    build_detail_info_common(
+    build_pane_data_common(
         app,
-        DetailSource {
+        PaneDataSource {
             abs_path,
             display_path,
             title_name: pkg.package_name().into_string(),
@@ -917,19 +867,19 @@ fn build_detail_info_for_package(
     )
 }
 
-fn build_detail_info_non_rust(
+fn build_pane_data_non_rust(
     app: &App,
     nr: &NonRustProject,
     display_path: &str,
     is_wt_group: bool,
     wt_item: Option<&RootItem>,
-) -> DetailInfo {
+) -> DetailPaneData {
     let abs_path = nr.path();
     let wt_item_ref = wt_item.filter(|_| is_wt_group);
 
-    build_detail_info_common(
+    build_pane_data_common(
         app,
-        DetailSource {
+        PaneDataSource {
             abs_path,
             display_path,
             title_name: nr.root_directory_name().into_string(),
@@ -942,7 +892,7 @@ fn build_detail_info_non_rust(
     )
 }
 
-struct DetailSource<'a> {
+struct PaneDataSource<'a> {
     abs_path:      &'a Path,
     display_path:  &'a str,
     title_name:    String,
@@ -953,7 +903,7 @@ struct DetailSource<'a> {
     package_title: String,
 }
 
-fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
+fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData {
     let abs_path = src.abs_path;
     let cargo = src.cargo;
     let wt_item = src.wt_item;
@@ -985,45 +935,80 @@ fn build_detail_info_common(app: &App, src: DetailSource<'_>) -> DetailInfo {
     });
 
     let is_binary = cargo.is_some_and(Cargo::is_binary);
-    let binary_name = if is_binary {
-        Some(src.title_name.clone())
-    } else {
-        None
-    };
 
-    DetailInfo {
-        package_title: src.package_title,
-        title_name: src.title_name,
-        abs_path: AbsolutePath::from(abs_path),
-        path: src.display_path.to_string(),
-        version: cargo.and_then(Cargo::version).unwrap_or("-").to_string(),
-        description: cargo.and_then(Cargo::description).map(str::to_string),
-        crates_version,
-        crates_downloads,
-        types: types_str,
-        disk,
-        ci,
-        stats_rows: src.stats_rows,
-        git_branch: git_detail.branch,
-        git_path: git_detail.path,
-        git_sync: git_detail.sync,
-        git_vs_origin: git_detail.vs_origin,
-        git_vs_local: git_detail.vs_local,
-        local_main_branch: git_detail.local_main_branch,
-        main_branch_label: git_detail.main_branch_label,
-        git_origin: git_detail.origin,
-        git_owner: git_detail.owner,
-        git_url: git_detail.url,
-        git_stars: git_detail.stars,
-        repo_description: git_detail.description,
-        git_inception: git_detail.inception,
-        git_last_commit: git_detail.last_commit,
-        worktree_names,
-        is_binary,
-        binary_name,
-        examples: cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
-        benches: cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
-        has_package: src.has_cargo,
+    let title_name = src.title_name;
+    DetailPaneData {
+        package: PackageData {
+            package_title: src.package_title,
+            title_name: title_name.clone(),
+            abs_path: AbsolutePath::from(abs_path),
+            path: src.display_path.to_string(),
+            version: cargo.and_then(Cargo::version).unwrap_or("-").to_string(),
+            description: cargo.and_then(Cargo::description).map(str::to_string),
+            crates_version,
+            crates_downloads,
+            types: types_str,
+            disk,
+            ci,
+            stats_rows: src.stats_rows,
+            has_package: src.has_cargo,
+        },
+        git:     GitData {
+            branch: git_detail.branch,
+            path_state: git_detail.path,
+            sync: git_detail.sync,
+            vs_origin: git_detail.vs_origin,
+            vs_local: git_detail.vs_local,
+            local_main_branch: git_detail.local_main_branch,
+            main_branch_label: git_detail.main_branch_label,
+            origin: git_detail.origin,
+            owner: git_detail.owner,
+            url: git_detail.url,
+            stars: git_detail.stars,
+            description: git_detail.description,
+            inception: git_detail.inception,
+            last_commit: git_detail.last_commit,
+            worktree_names,
+        },
+        targets: TargetsData {
+            is_binary,
+            binary_name: if is_binary { Some(title_name) } else { None },
+            examples: cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
+            benches: cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
+        },
+    }
+}
+
+pub fn build_ci_data(app: &App) -> CiData {
+    let selected_path = app.selected_project_path();
+    let has_project = selected_path.is_some();
+    let has_ci_owner = app.selected_ci_path().is_some();
+    let git_info = selected_path.and_then(|path| app.git_info_for(path));
+
+    CiData {
+        runs: app.selected_ci_runs(),
+        mode_label: selected_path.and_then(|path| {
+            app.ci_toggle_available_for(path)
+                .then(|| app.ci_display_mode_label_for(path).to_string())
+        }),
+        has_project,
+        has_ci_owner,
+        has_git: git_info.is_some(),
+        has_url: has_ci_owner && git_info.is_some_and(|g| g.url.is_some()),
+        is_local_origin: has_ci_owner && git_info.is_some_and(|g| g.origin == GitOrigin::Local),
+        has_workflows: git_info.is_some_and(|g| g.workflows.is_present()),
+        scan_complete: app.is_scan_complete(),
+    }
+}
+
+pub fn build_lints_data(app: &App) -> LintsData {
+    let selected_path = app.selected_project_path();
+    LintsData {
+        runs:            selected_path
+            .and_then(|path| app.lint_at_path(path))
+            .map(|lr| lr.runs().to_vec())
+            .unwrap_or_default(),
+        is_cargo_active: selected_path.is_some_and(|path| app.is_cargo_active_path(path)),
     }
 }
 

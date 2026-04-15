@@ -1,5 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Constraint;
+use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::widgets::Block;
@@ -10,23 +11,25 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
-use super::timestamp;
+use super::super::app::App;
+use super::super::constants::ACTIVE_BORDER_COLOR;
+use super::super::constants::CI_TIMESTAMP_WIDTH;
+use super::super::constants::COLUMN_HEADER_COLOR;
+use super::super::constants::INACTIVE_BORDER_COLOR;
+use super::super::constants::LABEL_COLOR;
+use super::super::constants::TITLE_COLOR;
+use super::super::detail;
+use super::super::detail::CiData;
+use super::super::interaction;
+use super::super::interaction::UiSurface;
+use super::super::render;
+use super::super::render::CiColumn;
+use super::super::types::Pane;
+use super::super::types::PaneId;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
-use crate::tui::app::App;
-use crate::tui::constants::ACTIVE_BORDER_COLOR;
-use crate::tui::constants::CI_TIMESTAMP_WIDTH;
-use crate::tui::constants::COLUMN_HEADER_COLOR;
-use crate::tui::constants::LABEL_COLOR;
-use crate::tui::constants::TITLE_COLOR;
-use crate::tui::interaction;
-use crate::tui::interaction::UiSurface;
-use crate::tui::render::CiColumn;
-use crate::tui::types::Pane;
-use crate::tui::types::PaneId;
 
-/// Build the header `Row` for the CI table from the given columns.
 fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
     let right_aligned = Style::default()
         .add_modifier(Modifier::BOLD)
@@ -53,11 +56,10 @@ fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
     Row::new(header_cells).bottom_margin(0)
 }
 
-pub(super) const CI_COMPACT_DURATION_WIDTH: usize = 2;
+pub(in super::super) const CI_COMPACT_DURATION_WIDTH: usize = 2;
 
-/// Build one data `Row` for a single `CiRun`.
 fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn], show_durations: bool) -> Row<'static> {
-    let timestamp = timestamp::format_timestamp(&ci_run.created_at);
+    let timestamp = detail::format_timestamp(&ci_run.created_at);
     let total_dur = ci_run
         .wall_clock_secs
         .map_or_else(|| "—".to_string(), ci::format_secs);
@@ -73,7 +75,7 @@ fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn], show_durations: bool) ->
     for col in cols {
         let job = ci_run.jobs.iter().find(|job| col.matches(&job.name));
         if let Some(job) = job {
-            let style = super::super::render::conclusion_style(Some(job.conclusion));
+            let style = render::conclusion_style(Some(job.conclusion));
             cells.push(
                 Cell::from(
                     ratatui::text::Line::from(if show_durations {
@@ -97,7 +99,7 @@ fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn], show_durations: bool) ->
         }
     }
 
-    let total_style = super::super::render::conclusion_style(Some(ci_run.conclusion));
+    let total_style = render::conclusion_style(Some(ci_run.conclusion));
     cells.push(
         Cell::from(
             ratatui::text::Line::from(if show_durations {
@@ -114,10 +116,6 @@ fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn], show_durations: bool) ->
     Row::new(cells)
 }
 
-/// Build column width constraints for the CI table based on content.
-///
-/// Duration, timestamp, branch, and glyph columns use `Length` (exact
-/// fit-to-content). Commit uses `Fill` to absorb all remaining space.
 fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -> Vec<Constraint> {
     let branch_width = u16::try_from(
         ci_runs
@@ -169,8 +167,6 @@ fn ci_duration_width(ci_runs: &[CiRun], col: CiColumn, show_durations: bool) -> 
     }
 }
 
-/// Minimum width for a CI duration column: the wider of the header label
-/// and the widest duration value across all runs.
 fn ci_duration_min_width(ci_runs: &[CiRun], col: CiColumn) -> usize {
     let max_data = ci_runs
         .iter()
@@ -181,7 +177,7 @@ fn ci_duration_min_width(ci_runs: &[CiRun], col: CiColumn) -> usize {
     col.label().len().max(max_data)
 }
 
-pub(super) fn ci_total_width(ci_runs: &[CiRun], show_durations: bool) -> usize {
+pub(in super::super) fn ci_total_width(ci_runs: &[CiRun], show_durations: bool) -> usize {
     if show_durations {
         ci_total_min_width(ci_runs)
     } else {
@@ -189,7 +185,6 @@ pub(super) fn ci_total_width(ci_runs: &[CiRun], show_durations: bool) -> usize {
     }
 }
 
-/// Minimum width for the Total duration column.
 fn ci_total_min_width(ci_runs: &[CiRun]) -> usize {
     let max_data = ci_runs
         .iter()
@@ -221,7 +216,7 @@ fn ci_table_fixed_width(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bo
     base + job_columns + total + column_count.saturating_sub(1)
 }
 
-pub(super) fn ci_table_shows_durations(
+pub(in super::super) fn ci_table_shows_durations(
     ci_runs: &[CiRun],
     cols: &[CiColumn],
     inner_width: u16,
@@ -229,8 +224,12 @@ pub(super) fn ci_table_shows_durations(
     ci_table_fixed_width(ci_runs, cols, true) <= usize::from(inner_width)
 }
 
-fn ci_panel_title(local: usize, focused_pos: Option<usize>, mode_label: Option<&str>) -> String {
-    let suffix = mode_label.map_or(String::new(), |label| format!(" [{label}]"));
+fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
+    let suffix = data
+        .mode_label
+        .as_deref()
+        .map_or(String::new(), |label| format!(" [{label}]"));
+    let local = data.runs.len();
     if let Some(pos) = focused_pos
         && pos < local
     {
@@ -241,25 +240,38 @@ fn ci_panel_title(local: usize, focused_pos: Option<usize>, mode_label: Option<&
     }
 }
 
-pub fn render_ci_panel(
-    frame: &mut Frame,
-    app: &mut App,
-    ci_runs: &[CiRun],
-    area: ratatui::layout::Rect,
-) {
-    let ci_focused = app.is_focused(PaneId::CiRuns);
-
-    let local = ci_runs.len();
-    let focused_pos = if ci_focused {
-        Some(app.pane_manager().ci.pos())
+fn empty_ci_title(data: &CiData) -> &'static str {
+    if data.has_project && !data.has_ci_owner {
+        " CI Runs — shown on branch/worktree rows "
+    } else if !data.has_git {
+        " CI Runs — not a git repository "
+    } else if data.is_local_origin || !data.has_url {
+        " CI Runs — requires a GitHub origin remote "
+    } else if !data.has_workflows {
+        " No CI workflow configured "
+    } else if !data.scan_complete {
+        " CI Runs — loading… "
     } else {
-        None
+        " No CI Runs "
+    }
+}
+
+pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
+    let Some(ci_data) = app.pane_manager().ci_data.clone() else {
+        render_empty_ci_block(frame, " No CI Runs ", area);
+        return;
     };
-    let mode_label = app.selected_project_path().and_then(|path| {
-        app.ci_toggle_available_for(path)
-            .then(|| app.ci_display_mode_label_for(path))
-    });
-    let title = ci_panel_title(local, focused_pos, mode_label);
+
+    if !ci_data.has_runs() {
+        app.pane_manager_mut().ci.set_len(0);
+        app.pane_manager_mut().ci.set_content_area(Rect::ZERO);
+        render_empty_ci_block(frame, empty_ci_title(&ci_data), area);
+        return;
+    }
+
+    let ci_focused = app.is_focused(PaneId::CiRuns);
+    let focused_pos = ci_focused.then(|| app.pane_manager().ci.pos());
+    let title = ci_panel_title(&ci_data, focused_pos);
 
     let ci_block = Block::default()
         .borders(Borders::ALL)
@@ -276,7 +288,7 @@ pub fn render_ci_panel(
         });
 
     let inner = ci_block.inner(area);
-    app.pane_manager_mut().ci.set_len(ci_runs.len());
+    app.pane_manager_mut().ci.set_len(ci_data.runs.len());
     app.pane_manager_mut().ci.set_content_area(inner);
 
     let all_columns = [
@@ -291,21 +303,23 @@ pub fn render_ci_panel(
     let cols: Vec<CiColumn> = all_columns
         .into_iter()
         .filter(|col| {
-            ci_runs
+            ci_data
+                .runs
                 .iter()
                 .any(|run| run.jobs.iter().any(|job| col.matches(&job.name)))
         })
         .collect();
-    let show_durations = ci_table_shows_durations(ci_runs, &cols, inner.width);
+    let show_durations = ci_table_shows_durations(&ci_data.runs, &cols, inner.width);
 
     let header = build_ci_header_row(&cols);
 
-    let rows: Vec<Row> = ci_runs
+    let rows: Vec<Row> = ci_data
+        .runs
         .iter()
         .map(|ci_run| build_ci_data_row(ci_run, &cols, show_durations))
         .collect();
 
-    let widths = build_ci_widths(ci_runs, &cols, show_durations);
+    let widths = build_ci_widths(&ci_data.runs, &cols, show_durations);
 
     let highlight_style = Pane::selection_style(app.pane_focus_state(PaneId::CiRuns));
 
@@ -320,15 +334,19 @@ pub fn render_ci_panel(
     app.pane_manager_mut()
         .ci
         .set_scroll_offset(table_state.offset());
-    register_ci_row_hitboxes(app, ci_runs.len(), inner, table_state.offset());
+    register_ci_row_hitboxes(app, ci_data.runs.len(), inner, table_state.offset());
 }
 
-fn register_ci_row_hitboxes(
-    app: &mut App,
-    run_count: usize,
-    inner: ratatui::layout::Rect,
-    visible_start: usize,
-) {
+fn render_empty_ci_block(frame: &mut Frame, title: &str, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
+        .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
+    frame.render_widget(block, area);
+}
+
+fn register_ci_row_hitboxes(app: &mut App, run_count: usize, inner: Rect, visible_start: usize) {
     let visible_height = usize::from(inner.height.saturating_sub(1));
     let visible_end = run_count.min(visible_start.saturating_add(visible_height));
 
@@ -339,7 +357,7 @@ fn register_ci_row_hitboxes(
             .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
         interaction::register_pane_row_hitbox(
             app,
-            ratatui::layout::Rect::new(inner.x, row_y, inner.width, 1),
+            Rect::new(inner.x, row_y, inner.width, 1),
             PaneId::CiRuns,
             row_index,
             UiSurface::Content,

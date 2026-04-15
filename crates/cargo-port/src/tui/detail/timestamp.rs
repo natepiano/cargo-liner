@@ -44,7 +44,7 @@ const fn days_in_month(year: i64, month: i64) -> i64 {
 /// If the timestamp has an embedded timezone offset, the date portion is
 /// already local and is returned directly. For UTC timestamps, the local
 /// offset is applied via `format_timestamp`.
-pub(super) fn format_date(iso: &str) -> String {
+pub(in super::super) fn format_date(iso: &str) -> String {
     let stripped = iso.trim_end_matches('Z');
     // If the timestamp has an embedded offset, the date before 'T' is local.
     if let Some((date, after_t)) = stripped.split_once('T') {
@@ -63,7 +63,7 @@ pub(super) fn format_date(iso: &str) -> String {
 /// If the timestamp has an embedded timezone offset (e.g., `-04:00`), the
 /// time is already local and no offset is applied. If it ends in `Z` or has
 /// no offset, the local UTC offset is applied.
-pub(super) fn format_time(iso: &str) -> String {
+pub(in super::super) fn format_time(iso: &str) -> String {
     let is_utc = iso.ends_with('Z');
     let stripped = iso.trim_end_matches('Z');
     let Some((_, time_and_offset)) = stripped.split_once('T') else {
@@ -118,7 +118,7 @@ pub(super) fn format_time(iso: &str) -> String {
 }
 
 /// Format a duration in milliseconds as a compact string.
-pub(super) fn format_duration(duration_ms: Option<u64>) -> String {
+pub(in super::super) fn format_duration(duration_ms: Option<u64>) -> String {
     let Some(ms) = duration_ms else {
         return "—".to_string();
     };
@@ -133,7 +133,7 @@ pub(super) fn format_duration(duration_ms: Option<u64>) -> String {
 }
 
 /// Convert a UTC ISO 8601 timestamp to local time, formatted as `yyyy-mm-dd hh:mm`.
-pub(super) fn format_timestamp(iso: &str) -> String {
+pub(in super::super) fn format_timestamp(iso: &str) -> String {
     let utc_offset_secs = local_utc_offset_secs();
     let stripped = iso.trim_end_matches('Z');
     match stripped.split_once('T') {

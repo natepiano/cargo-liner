@@ -33,7 +33,6 @@ use super::constants::BYTES_PER_MIB;
 use super::constants::COLUMN_HEADER_COLOR;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::constants::ERROR_COLOR;
-use super::constants::INACTIVE_BORDER_COLOR;
 use super::constants::LABEL_COLOR;
 use super::constants::SEARCH_BAR_HEIGHT;
 use super::constants::SECONDARY_TEXT_COLOR;
@@ -42,15 +41,14 @@ use super::constants::SUCCESS_COLOR;
 use super::constants::TITLE_COLOR;
 use super::detail::TargetsData;
 use super::interaction::UiSurface::Content;
+use super::panes;
 use super::shortcuts::Shortcut;
 use super::shortcuts::ShortcutState;
 use super::types::LayoutCache;
 use super::types::Pane;
 use super::types::PaneId;
-use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::project;
-use crate::project::GitOrigin;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::Visibility;
@@ -335,7 +333,7 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// Right column row 1: Package Details | Targets.
 fn render_detail_row1(frame: &mut Frame, app: &mut App, area: Rect) {
-    super::detail::render_detail_panel(frame, app, area);
+    panes::render_detail_panel(frame, app, area);
 }
 
 /// Right column row 2: Languages | Git.
@@ -349,48 +347,22 @@ fn render_detail_row2(frame: &mut Frame, app: &mut App, area: Rect) {
     let title_style = Style::default()
         .fg(TITLE_COLOR)
         .add_modifier(Modifier::BOLD);
-    let styles = super::detail::RenderStyles {
+    let styles = super::panes::RenderStyles {
         readonly_label:  Style::default().fg(LABEL_COLOR),
         active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
         inactive_border: Style::default(),
         title:           title_style,
     };
-    super::detail::render_lang_panel_standalone(frame, app, &styles, cols[0]);
+    panes::render_lang_panel_standalone(frame, app, &styles, cols[0]);
 
     // Git (right half of row 2).
-    super::detail::render_git_panel(frame, app, cols[1]);
+    panes::render_git_panel(frame, app, cols[1]);
 }
 
 /// Bottom row: Lint Runs (left) | CI Runs (right).
 fn render_bottom_panel(frame: &mut Frame, app: &mut App, lint_area: Rect, ci_area: Rect) {
-    let detail_lint_runs = app
-        .selected_project_path()
-        .and_then(|path| app.lint_at_path(path))
-        .map(|lr| lr.runs().to_vec())
-        .unwrap_or_default();
-    let detail_ci_runs: Vec<CiRun> = app.selected_ci_runs();
-
-    super::detail::render_lints_panel(frame, app, &detail_lint_runs, lint_area);
-
-    let selected_has_ci_owner = app.selected_ci_path().is_some();
-    let has_workflows = app
-        .selected_project_path()
-        .and_then(|path| app.git_info_for(path))
-        .is_some_and(|g| g.workflows.is_present());
-    let selected_ci_state = app.selected_ci_state();
-    let has_ci = selected_ci_state.is_some() && has_workflows;
-
-    if has_ci {
-        super::detail::render_ci_panel(frame, app, &detail_ci_runs, ci_area);
-    } else {
-        render_empty_ci_panel(
-            frame,
-            app,
-            app.selected_project_path(),
-            selected_has_ci_owner,
-            ci_area,
-        );
-    }
+    panes::render_lints_panel(frame, app, lint_area);
+    panes::render_ci_panel(frame, app, ci_area);
 }
 
 fn sync_detail_pane_hitboxes(app: &mut App) {
@@ -462,48 +434,6 @@ const fn reset_pane(pane: &mut Pane) {
     pane.set_len(0);
     pane.set_content_area(Rect::ZERO);
     pane.set_scroll_offset(0);
-}
-
-fn render_empty_ci_panel(
-    frame: &mut Frame,
-    app: &App,
-    project_path: Option<&Path>,
-    selected_has_ci_owner: bool,
-    area: Rect,
-) {
-    let has_git = project_path.is_some_and(|path| app.git_info_for(path).is_some());
-    let has_url = project_path
-        .filter(|_| selected_has_ci_owner)
-        .and_then(|path| app.git_info_for(path))
-        .is_some_and(|g| g.url.is_some());
-    let is_local = project_path
-        .filter(|_| selected_has_ci_owner)
-        .and_then(|path| app.git_info_for(path))
-        .is_some_and(|g| g.origin == GitOrigin::Local);
-    let has_workflows = project_path
-        .and_then(|path| app.git_info_for(path))
-        .is_some_and(|g| g.workflows.is_present());
-
-    let title = if project_path.is_some() && !selected_has_ci_owner {
-        " CI Runs — shown on branch/worktree rows "
-    } else if !has_git {
-        " CI Runs — not a git repository "
-    } else if is_local || !has_url {
-        " CI Runs — requires a GitHub origin remote "
-    } else if !has_workflows {
-        " No CI workflow configured "
-    } else if !app.is_scan_complete() {
-        " CI Runs — loading… "
-    } else {
-        " No CI Runs "
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
-        .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
-    frame.render_widget(block, area);
 }
 
 pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {

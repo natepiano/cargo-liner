@@ -306,7 +306,6 @@ mod tests {
     use crate::tui::app::ExpandKey;
     use crate::tui::app::SearchHit;
     use crate::tui::app::SearchMode;
-    use crate::tui::detail;
     use crate::tui::finder;
     use crate::tui::input;
     use crate::tui::render;
@@ -442,18 +441,35 @@ mod tests {
     }
 
     fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
+        app.ensure_detail_cached();
+        app.pane_manager_mut().lints_data = Some(crate::tui::detail::LintsData {
+            runs:            runs.to_vec(),
+            is_cargo_active: true,
+        });
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
         terminal
-            .draw(|frame| detail::render_lints_panel(frame, app, runs, frame.area()))
+            .draw(|frame| crate::tui::panes::render_lints_panel(frame, app, frame.area()))
             .unwrap_or_else(|_| std::process::abort());
     }
 
     fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
+        app.ensure_detail_cached();
+        app.pane_manager_mut().ci_data = Some(crate::tui::detail::CiData {
+            runs:            runs.to_vec(),
+            mode_label:      None,
+            has_project:     true,
+            has_ci_owner:    true,
+            has_git:         true,
+            has_url:         true,
+            is_local_origin: false,
+            has_workflows:   true,
+            scan_complete:   true,
+        });
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
         terminal
-            .draw(|frame| detail::render_ci_panel(frame, app, runs, frame.area()))
+            .draw(|frame| crate::tui::panes::render_ci_panel(frame, app, frame.area()))
             .unwrap_or_else(|_| std::process::abort());
     }
 

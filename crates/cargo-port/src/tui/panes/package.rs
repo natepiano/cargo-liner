@@ -4,7 +4,6 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -18,53 +17,25 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
-use super::model;
-use super::model::DetailField;
-use crate::constants::IN_SYNC;
+use super::super::app::App;
+use super::super::constants::ACCENT_COLOR;
+use super::super::constants::ACTIVE_BORDER_COLOR;
+use super::super::constants::ERROR_COLOR;
+use super::super::constants::INACTIVE_BORDER_COLOR;
+use super::super::constants::LABEL_COLOR;
+use super::super::constants::SUCCESS_COLOR;
+use super::super::constants::TITLE_COLOR;
+use super::super::detail;
+use super::super::detail::DetailField;
+use super::super::detail::PackageData;
+use super::super::detail::TargetsData;
+use super::super::render;
+use super::super::types::Pane;
+use super::super::types::PaneFocusState;
+use super::super::types::PaneId;
 use crate::constants::NO_LINT_RUNS;
-use crate::project::LangEntry;
-use crate::project::LanguageStats;
-use crate::tui::app::App;
-use crate::tui::constants::ACCENT_COLOR;
-use crate::tui::constants::ACTIVE_BORDER_COLOR;
-use crate::tui::constants::COLUMN_HEADER_COLOR;
-use crate::tui::constants::ERROR_COLOR;
-use crate::tui::constants::INACTIVE_BORDER_COLOR;
-use crate::tui::constants::LABEL_COLOR;
-use crate::tui::constants::SUCCESS_COLOR;
-use crate::tui::constants::TITLE_COLOR;
-use crate::tui::render;
-use crate::tui::types::Pane;
-use crate::tui::types::PaneFocusState;
-use crate::tui::types::PaneId;
 
-/// Compute the fixed stats column width from the stat rows and language stats.
-/// Returns `(total_width, digit_width)`.
-///
-/// The column is sized to always fit 3-digit counts alongside "proc-macro"
-/// (the longest possible label) with a trailing space. It only widens when a
-/// count reaches 4+ digits.
-pub(super) fn stats_column_width(data: &model::PackageData) -> (u16, u16) {
-    let max_count = data
-        .stats_rows
-        .iter()
-        .map(|(_, count)| *count)
-        .max()
-        .unwrap_or(0);
-    let digit_width: u16 = match max_count {
-        0..1000 => 3,
-        1000..10_000 => 4,
-        10_000..100_000 => 5,
-        _ => 6,
-    };
-    // label width: max of "proc-macro" (10), icon+lang name (e.g. "🦀 Rust" ~6),
-    // or "LOC" (3). "proc-macro" dominates at 10 chars.
-    let label_width: u16 = 10;
-    let total = 1 + 1 + digit_width + 1 + label_width + 1;
-    (total, digit_width)
-}
-
-/// Shared style constants for detail panel rendering.
+/// Shared style constants for pane rendering.
 pub struct RenderStyles {
     pub readonly_label:  Style,
     pub active_border:   Style,
@@ -86,19 +57,56 @@ fn detail_layout_spec() -> DetailLayoutSpec {
 
 struct PackageRenderCtx<'a> {
     app:    &'a App,
-    data:   &'a model::PackageData,
+    data:   &'a PackageData,
     fields: &'a [DetailField],
     pane:   &'a Pane,
     focus:  PaneFocusState,
     styles: &'a RenderStyles,
 }
 
-struct GitRenderCtx<'a> {
-    data:   &'a model::GitData,
-    fields: &'a [DetailField],
-    pane:   &'a Pane,
-    focus:  PaneFocusState,
-    styles: &'a RenderStyles,
+/// Compute the fixed stats column width from the stat rows and language stats.
+/// Returns `(total_width, digit_width)`.
+pub(in super::super) fn stats_column_width(data: &PackageData) -> (u16, u16) {
+    let max_count = data
+        .stats_rows
+        .iter()
+        .map(|(_, count)| *count)
+        .max()
+        .unwrap_or(0);
+    let digit_width: u16 = match max_count {
+        0..1000 => 3,
+        1000..10_000 => 4,
+        10_000..100_000 => 5,
+        _ => 6,
+    };
+    let label_width: u16 = 10;
+    let total = 1 + 1 + digit_width + 1 + label_width + 1;
+    (total, digit_width)
+}
+
+pub(in super::super) fn detail_column_scroll_offset(
+    focus: PaneFocusState,
+    focused_output_line: usize,
+    visible_height: u16,
+) -> u16 {
+    if !matches!(focus, PaneFocusState::Active) || visible_height == 0 {
+        return 0;
+    }
+
+    let visible_height = usize::from(visible_height);
+    let offset = focused_output_line
+        .saturating_add(1)
+        .saturating_sub(visible_height);
+    u16::try_from(offset).unwrap_or(u16::MAX)
+}
+
+pub(in super::super) fn package_label_width(fields: &[DetailField]) -> usize {
+    fields
+        .iter()
+        .map(|field| field.label().width())
+        .max()
+        .unwrap_or(0)
+        .max(8)
 }
 
 fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect) -> usize {
@@ -198,163 +206,10 @@ fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect
     usize::from(scroll_y)
 }
 
-pub(super) fn detail_column_scroll_offset(
-    focus: PaneFocusState,
-    focused_output_line: usize,
-    visible_height: u16,
-) -> u16 {
-    if !matches!(focus, PaneFocusState::Active) || visible_height == 0 {
-        return 0;
-    }
-
-    let visible_height = usize::from(visible_height);
-    let offset = focused_output_line
-        .saturating_add(1)
-        .saturating_sub(visible_height);
-    u16::try_from(offset).unwrap_or(u16::MAX)
-}
-
-pub(super) fn package_label_width(fields: &[DetailField]) -> usize {
-    fields
-        .iter()
-        .map(|field| field.label().width())
-        .max()
-        .unwrap_or(0)
-        .max(8)
-}
-
-pub(super) fn git_label_width(data: &model::GitData, fields: &[DetailField]) -> usize {
-    fields
-        .iter()
-        .map(|field| match *field {
-            DetailField::VsOrigin => "Remote branch".width(),
-            DetailField::VsLocal => format!("vs local {}", data.main_branch_label).width(),
-            _ => field.label().width(),
-        })
-        .max()
-        .unwrap_or(0)
-        .max(8)
-}
-
-fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect) -> usize {
-    let data = ctx.data;
-    let fields = ctx.fields;
-    let pane = ctx.pane;
-    let focus = ctx.focus;
-    let styles = ctx.styles;
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut focused_output_line: usize = 0;
-    let label_width = git_label_width(data, fields);
-
-    for (i, field) in fields.iter().enumerate() {
-        if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
-            focused_output_line = lines.len();
-        }
-        let dynamic_label;
-        let label = match *field {
-            DetailField::VsOrigin => {
-                dynamic_label = "Remote branch".to_string();
-                &dynamic_label
-            },
-            DetailField::VsLocal => {
-                let branch = data.main_branch_label.as_str();
-                dynamic_label = format!("vs local {branch}");
-                &dynamic_label
-            },
-            _ => field.label(),
-        };
-        let value = field.git_value(data);
-        let selection = pane.selection_state(i, focus);
-        let base_value_style = if *field == DetailField::Origin && value.starts_with('⑂') {
-            Style::default()
-                .fg(TITLE_COLOR)
-                .add_modifier(Modifier::BOLD)
-        } else if matches!(
-            *field,
-            DetailField::Sync | DetailField::VsOrigin | DetailField::VsLocal
-        ) && value == IN_SYNC
-        {
-            Style::default().fg(SUCCESS_COLOR)
-        } else if *field == DetailField::Sync && value == crate::constants::NO_REMOTE_SYNC {
-            Style::default().fg(LABEL_COLOR)
-        } else if *field == DetailField::WorktreeError {
-            Style::default().fg(Color::White).bg(ERROR_COLOR)
-        } else {
-            Style::default()
-        };
-        let ls = selection.patch(styles.readonly_label);
-        let vs = selection.patch(base_value_style);
-        if matches!(
-            *field,
-            DetailField::Repo
-                | DetailField::Branch
-                | DetailField::RepoDesc
-                | DetailField::VsOrigin
-                | DetailField::WorktreeError
-        ) && !value.is_empty()
-        {
-            let prefix = format!(" {label:<label_width$} ");
-            let prefix_len = prefix.width();
-            let col_width = area.width as usize;
-            let avail = col_width.saturating_sub(prefix_len + 1);
-            if avail > 0 && value.width() > avail {
-                let wrapped =
-                    if matches!(*field, DetailField::RepoDesc | DetailField::WorktreeError) {
-                        word_wrap(&value, avail)
-                    } else {
-                        hard_wrap(&value, avail)
-                    };
-                for (wi, chunk) in wrapped.iter().enumerate() {
-                    if wi == 0 {
-                        lines.push(Line::from(vec![
-                            Span::styled(prefix.clone(), ls),
-                            Span::styled(chunk.clone(), vs),
-                        ]));
-                    } else {
-                        lines.push(Line::from(vec![
-                            Span::raw(" ".repeat(prefix_len)),
-                            Span::styled(chunk.clone(), vs),
-                        ]));
-                    }
-                }
-            } else {
-                lines.push(Line::from(vec![
-                    Span::styled(prefix, ls),
-                    Span::styled(value, vs),
-                ]));
-            }
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled(format!(" {label:<label_width$} "), ls),
-                Span::styled(value, vs),
-            ]));
-        }
-    }
-
-    append_worktree_lines(&mut lines, &ctx.data.worktree_names);
-
-    let scroll_y = detail_column_scroll_offset(focus, focused_output_line, area.height);
-    frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
-    usize::from(scroll_y)
-}
-
-fn append_worktree_lines(lines: &mut Vec<Line<'static>>, worktree_names: &[String]) {
-    if worktree_names.is_empty() {
-        return;
-    }
-    let count = worktree_names.len();
-    let label_style = Style::default().fg(LABEL_COLOR);
-    let value_style = Style::default().fg(TITLE_COLOR);
-    lines.push(Line::from(vec![
-        Span::styled("  Worktrees  ", label_style),
-        Span::styled(count.to_string(), value_style),
-    ]));
-}
-
 const NO_DESCRIPTION_AVAILABLE: &str = "No description available";
 
 struct ProjectPanelRender<'a> {
-    pkg_data:     &'a model::PackageData,
+    pkg_data:     &'a PackageData,
     fields:       &'a [DetailField],
     focus:        PaneFocusState,
     styles:       &'a RenderStyles,
@@ -403,20 +258,10 @@ pub fn render_detail_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                     columns[spec.targets_col],
                 );
             } else {
-                let empty_targets = Block::default()
-                    .borders(Borders::ALL)
-                    .title(" No Targets ")
-                    .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
-                    .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
-                frame.render_widget(empty_targets, columns[spec.targets_col]);
+                render_empty_targets_panel(frame, columns[spec.targets_col]);
             }
         } else {
-            let empty_targets = Block::default()
-                .borders(Borders::ALL)
-                .title(" No Targets ")
-                .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
-                .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
-            frame.render_widget(empty_targets, columns[spec.targets_col]);
+            render_empty_targets_panel(frame, columns[spec.targets_col]);
         }
     } else {
         let empty_block = Block::default()
@@ -429,14 +274,23 @@ pub fn render_detail_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+fn render_empty_targets_panel(frame: &mut Frame, area: Rect) {
+    let empty_targets = Block::default()
+        .borders(Borders::ALL)
+        .title(" No Targets ")
+        .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
+        .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
+    frame.render_widget(empty_targets, area);
+}
+
 fn render_project_panel(
     frame: &mut Frame,
     app: &mut App,
-    pkg_data: &model::PackageData,
+    pkg_data: &PackageData,
     styles: &RenderStyles,
     area: Rect,
 ) {
-    let fields = model::package_fields_from_data(pkg_data);
+    let fields = detail::package_fields_from_data(pkg_data);
     app.pane_manager_mut().package.set_len(fields.len());
     let focus = app.pane_focus_state(PaneId::Package);
     let border_style = if matches!(focus, PaneFocusState::Active) {
@@ -575,7 +429,7 @@ fn render_project_metadata(
     }
 }
 
-fn project_stats_connector_x(data: &model::PackageData, lower_area: Rect) -> Option<u16> {
+fn project_stats_connector_x(data: &PackageData, lower_area: Rect) -> Option<u16> {
     if data.stats_rows.is_empty() {
         return None;
     }
@@ -590,7 +444,7 @@ fn project_stats_connector_x(data: &model::PackageData, lower_area: Rect) -> Opt
 
 fn render_stats_column(
     frame: &mut Frame,
-    data: &model::PackageData,
+    data: &PackageData,
     area: Rect,
     digit_width: u16,
     border_style: Style,
@@ -617,8 +471,8 @@ fn render_stats_column(
     frame.render_widget(Paragraph::new(stat_lines), stats_inner);
 }
 
-pub(super) fn description_lines(
-    data: &model::PackageData,
+pub(in super::super) fn description_lines(
+    data: &PackageData,
     width: u16,
     max_height: u16,
 ) -> Vec<Line<'static>> {
@@ -698,7 +552,7 @@ fn render_bottom_connector(frame: &mut Frame, area: Rect, connector_x: u16, styl
 fn render_targets_panel(
     frame: &mut Frame,
     app: &mut App,
-    data: &model::TargetsData,
+    data: &TargetsData,
     styles: &RenderStyles,
     area: Rect,
 ) {
@@ -749,14 +603,14 @@ fn render_targets_panel(
             styles.inactive_border
         });
 
-    let entries = model::build_target_list_from_data(data);
+    let entries = detail::build_target_list_from_data(data);
     app.pane_manager_mut().targets.set_len(entries.len());
     let content_inner = targets_block.inner(area);
     app.pane_manager_mut()
         .targets
         .set_content_area(content_inner);
 
-    let kind_col_width = model::RunTargetKind::padded_label_width();
+    let kind_col_width = detail::RunTargetKind::padded_label_width();
     let col_spacing: usize = 1;
     let leading_pad: usize = 1;
     let name_max_width =
@@ -765,11 +619,8 @@ fn render_targets_panel(
     let rows: Vec<Row> = entries
         .iter()
         .map(|entry| {
-            let display = crate::tui::render::truncate_with_ellipsis(
-                &entry.display_name,
-                name_max_width,
-                "\u{2026}",
-            );
+            let display =
+                render::truncate_with_ellipsis(&entry.display_name, name_max_width, "\u{2026}");
             Row::new(vec![
                 Cell::from(format!(" {display}")),
                 Cell::from(
@@ -798,265 +649,6 @@ fn render_targets_panel(
         .set_scroll_offset(table_state.offset());
 }
 
-/// Render the Git info panel as a standalone pane.
-///
-/// Reads from `pane_manager.git_data` if available; falls back to
-/// `detail_info` for field rendering (until `DetailField` is fully
-/// migrated to per-pane data).
-pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let title_style = Style::default()
-        .fg(TITLE_COLOR)
-        .add_modifier(Modifier::BOLD);
-    let styles = RenderStyles {
-        readonly_label:  Style::default().fg(LABEL_COLOR),
-        active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
-        inactive_border: Style::default(),
-        title:           title_style,
-    };
-
-    let Some(git_data) = app.pane_manager().git_data.clone() else {
-        let empty = Block::default()
-            .borders(Borders::ALL)
-            .title(" Git ")
-            .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
-            .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
-        frame.render_widget(empty, area);
-        return;
-    };
-
-    let git = model::git_fields_from_data(&git_data);
-    if git.is_empty() {
-        let empty_git = Block::default()
-            .borders(Borders::ALL)
-            .title(" Not a git repo ")
-            .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
-            .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
-        frame.render_widget(empty_git, area);
-        return;
-    }
-
-    app.pane_manager_mut().git.set_len(git.len());
-    let focus = app.pane_focus_state(PaneId::Git);
-    let git_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Git ")
-        .title_style(styles.title)
-        .border_style(if matches!(focus, PaneFocusState::Active) {
-            styles.active_border
-        } else {
-            styles.inactive_border
-        });
-    let git_inner = git_block.inner(area);
-    app.pane_manager_mut().git.set_content_area(git_inner);
-    frame.render_widget(git_block, area);
-    let git_ctx = GitRenderCtx {
-        data: &git_data,
-        fields: &git,
-        pane: &app.pane_manager().git,
-        focus,
-        styles: &styles,
-    };
-    let scroll_offset = render_git_column_inner(frame, &git_ctx, git_inner);
-    app.pane_manager_mut().git.set_scroll_offset(scroll_offset);
-}
-
-/// Fixed numeric column width for language stats.
-const LANG_NUM_COL: u16 = 8;
-
-/// Column constraints for the language stats table.
-/// Icon (3) + name (fill) + files + code + comments + blanks + total.
-const fn lang_table_widths() -> [Constraint; 7] {
-    [
-        Constraint::Length(3),            // icon
-        Constraint::Fill(1),              // name (expandable, truncated with ellipsis)
-        Constraint::Length(LANG_NUM_COL), // files
-        Constraint::Length(LANG_NUM_COL), // code
-        Constraint::Length(LANG_NUM_COL), // comments
-        Constraint::Length(LANG_NUM_COL), // blanks
-        Constraint::Length(LANG_NUM_COL), // total
-    ]
-}
-
-fn lang_header_row() -> Row<'static> {
-    let style = Style::default()
-        .fg(COLUMN_HEADER_COLOR)
-        .add_modifier(Modifier::BOLD);
-    Row::new(vec![
-        Cell::from(""),
-        Cell::from(""),
-        Cell::from(Line::from("files").alignment(Alignment::Right)).style(style),
-        Cell::from(Line::from("code").alignment(Alignment::Right)).style(style),
-        Cell::from(Line::from("comments").alignment(Alignment::Right)).style(style),
-        Cell::from(Line::from("blanks").alignment(Alignment::Right)).style(style),
-        Cell::from(Line::from("total").alignment(Alignment::Right)).style(style),
-    ])
-}
-
-fn lang_footer_row(stats: &LanguageStats) -> Row<'static> {
-    let num_bold = Style::default()
-        .fg(TITLE_COLOR)
-        .add_modifier(Modifier::BOLD);
-    let dim_bold = Style::default()
-        .fg(LABEL_COLOR)
-        .add_modifier(Modifier::BOLD);
-    let total_files: usize = stats.entries.iter().map(|e| e.files).sum();
-    let total_code: usize = stats.entries.iter().map(|e| e.code).sum();
-    let total_comments: usize = stats.entries.iter().map(|e| e.comments).sum();
-    let total_blanks: usize = stats.entries.iter().map(|e| e.blanks).sum();
-    let grand_total = total_code + total_comments + total_blanks;
-    Row::new(vec![
-        Cell::from(""),
-        Cell::from(""),
-        Cell::from(Line::from(total_files.to_string()).alignment(Alignment::Right)).style(num_bold),
-        Cell::from(Line::from(total_code.to_string()).alignment(Alignment::Right)).style(num_bold),
-        Cell::from(Line::from(total_comments.to_string()).alignment(Alignment::Right))
-            .style(dim_bold),
-        Cell::from(Line::from(total_blanks.to_string()).alignment(Alignment::Right))
-            .style(dim_bold),
-        Cell::from(Line::from(grand_total.to_string()).alignment(Alignment::Right)).style(num_bold),
-    ])
-}
-
-fn lang_entry_row(entry: &LangEntry, name_width: usize) -> Row<'static> {
-    let icon = crate::project::language_icon(&entry.language);
-    let name = render::truncate_with_ellipsis(&entry.language, name_width, "\u{2026}");
-    let total = entry.code + entry.comments + entry.blanks;
-    let num_style = Style::default().fg(TITLE_COLOR);
-    let dim_style = Style::default().fg(LABEL_COLOR);
-    Row::new(vec![
-        Cell::from(format!(" {icon}")),
-        Cell::from(name).style(dim_style),
-        Cell::from(Line::from(entry.files.to_string()).alignment(Alignment::Right))
-            .style(num_style),
-        Cell::from(Line::from(entry.code.to_string()).alignment(Alignment::Right)).style(num_style),
-        Cell::from(Line::from(entry.comments.to_string()).alignment(Alignment::Right))
-            .style(dim_style),
-        Cell::from(Line::from(entry.blanks.to_string()).alignment(Alignment::Right))
-            .style(dim_style),
-        Cell::from(Line::from(total.to_string()).alignment(Alignment::Right)).style(num_style),
-    ])
-}
-
-/// Render the Languages panel as a standalone pane (called from main layout).
-pub fn render_lang_panel_standalone(
-    frame: &mut Frame,
-    app: &mut App,
-    styles: &RenderStyles,
-    area: Rect,
-) {
-    render_lang_panel(frame, app, styles, area);
-}
-
-fn render_lang_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles, area: Rect) {
-    let lang_stats = app
-        .projects()
-        .at_path(
-            app.selected_project_path()
-                .unwrap_or_else(|| std::path::Path::new("")),
-        )
-        .and_then(|p| p.language_stats.as_ref())
-        .cloned();
-
-    let lang_count = lang_stats.as_ref().map_or(0, |s| s.entries.len());
-    let title = format!(" Languages ({lang_count}) ");
-    let lang_focus = app.pane_focus_state(PaneId::Lang);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_style(styles.title)
-        .border_style(if matches!(lang_focus, PaneFocusState::Active) {
-            styles.active_border
-        } else {
-            styles.inactive_border
-        });
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let Some(stats) = lang_stats else {
-        frame.render_widget(Paragraph::new("  Scanning..."), inner);
-        return;
-    };
-
-    if stats.entries.is_empty() {
-        frame.render_widget(Paragraph::new("  No source files detected"), inner);
-        return;
-    }
-
-    if inner.height < 2 {
-        return;
-    }
-
-    let widths = lang_table_widths();
-    let entry_count = stats.entries.len();
-
-    // Compute available width for the name column: total inner width minus
-    // icon (3) + 5 numeric columns (8 each) + 6 column spacings (1 each).
-    let fixed_cols = 3 + 5 * usize::from(LANG_NUM_COL) + 6;
-    let name_width = usize::from(inner.width).saturating_sub(fixed_cols);
-
-    // Fixed header (1 row).
-    let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
-    frame.render_widget(
-        Table::new([lang_header_row()], widths).column_spacing(1),
-        header_area,
-    );
-
-    // Determine if footer needs pinning: entries + footer row (1) must
-    // exceed the space below the header.
-    let content_below_header = inner.height.saturating_sub(1);
-    let rows_needed = u16::try_from(entry_count + 1).unwrap_or(u16::MAX);
-    let pin_footer = rows_needed > content_below_header;
-
-    let mut rows: Vec<Row> = stats
-        .entries
-        .iter()
-        .map(|e| lang_entry_row(e, name_width))
-        .collect();
-
-    if pin_footer {
-        // Footer pinned at bottom, body scrolls between header and footer.
-        let footer_y = inner.y + inner.height.saturating_sub(1);
-        let footer_area = Rect::new(inner.x, footer_y, inner.width, 1);
-        frame.render_widget(
-            Table::new([lang_footer_row(&stats)], widths).column_spacing(1),
-            footer_area,
-        );
-        let body_height = inner.height.saturating_sub(2);
-        let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
-
-        app.pane_manager_mut().lang.set_len(rows.len());
-        app.pane_manager_mut().lang.set_content_area(body_area);
-        let focus = app.pane_focus_state(PaneId::Lang);
-        let table = Table::new(rows, widths)
-            .column_spacing(1)
-            .row_highlight_style(Pane::selection_style(focus));
-        let cursor = app.pane_manager().lang.pos();
-        let mut table_state = TableState::default().with_selected(Some(cursor));
-        frame.render_stateful_widget(table, body_area, &mut table_state);
-        app.pane_manager_mut()
-            .lang
-            .set_scroll_offset(table_state.offset());
-    } else {
-        // Footer inline — append as last row, no pinning needed.
-        rows.push(lang_footer_row(&stats));
-        let body_height = inner.height.saturating_sub(1);
-        let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
-
-        app.pane_manager_mut().lang.set_len(entry_count);
-        app.pane_manager_mut().lang.set_content_area(body_area);
-        let focus = app.pane_focus_state(PaneId::Lang);
-        let table = Table::new(rows, widths)
-            .column_spacing(1)
-            .row_highlight_style(Pane::selection_style(focus));
-        let cursor = app.pane_manager().lang.pos();
-        let mut table_state = TableState::default().with_selected(Some(cursor));
-        frame.render_stateful_widget(table, body_area, &mut table_state);
-        app.pane_manager_mut()
-            .lang
-            .set_scroll_offset(table_state.offset());
-    }
-}
-
 /// Returns the appropriate style for the lint detail field value based on
 /// the icon: green for passed, red for failed, accent for running spinner,
 /// inactive for "no lint runs".
@@ -1077,8 +669,7 @@ fn lint_value_style(value: &str) -> Style {
     }
 }
 
-/// Word-wrap text to fit within `max_width` characters, breaking at word boundaries.
-fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
+pub(super) fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     let mut result = Vec::new();
     let mut current_line = String::new();
 
@@ -1106,8 +697,7 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     result
 }
 
-/// Hard-wrap text at exactly `max_width` characters, ignoring word boundaries.
-fn hard_wrap(text: &str, max_width: usize) -> Vec<String> {
+pub(super) fn hard_wrap(text: &str, max_width: usize) -> Vec<String> {
     if max_width == 0 {
         return vec![text.to_string()];
     }

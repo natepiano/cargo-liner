@@ -114,6 +114,8 @@ fn tabbable_panes_follow_canonical_order() {
             github_total: 0,
         },
     );
+    app.detail_generation += 1;
+    app.ensure_detail_cached();
 
     assert_eq!(
         app.tabbable_panes(),

@@ -1,6 +1,7 @@
 use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
+use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -12,29 +13,28 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
+use super::super::app::App;
+use super::super::constants::ACCENT_COLOR;
+use super::super::constants::ACTIVE_BORDER_COLOR;
+use super::super::constants::COLUMN_HEADER_COLOR;
+use super::super::constants::ERROR_COLOR;
+use super::super::constants::INACTIVE_BORDER_COLOR;
+use super::super::constants::LABEL_COLOR;
+use super::super::constants::SUCCESS_COLOR;
+use super::super::constants::TITLE_COLOR;
+use super::super::detail;
+use super::super::detail::LintsData;
+use super::super::interaction;
+use super::super::interaction::UiSurface::Content;
+use super::super::types::Pane;
+use super::super::types::PaneId;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::tui::LINT_SPINNER;
-use crate::tui::app::App;
-use crate::tui::constants::ACCENT_COLOR;
-use crate::tui::constants::ACTIVE_BORDER_COLOR;
-use crate::tui::constants::COLUMN_HEADER_COLOR;
-use crate::tui::constants::ERROR_COLOR;
-use crate::tui::constants::INACTIVE_BORDER_COLOR;
-use crate::tui::constants::LABEL_COLOR;
-use crate::tui::constants::SUCCESS_COLOR;
-use crate::tui::constants::TITLE_COLOR;
-use crate::tui::interaction;
-use crate::tui::interaction::UiSurface::Content;
-use crate::tui::types::Pane;
-use crate::tui::types::PaneId;
 
-fn lints_panel_title(app: &App, runs: &[LintRun], focused: bool) -> String {
-    if runs.is_empty() {
-        let is_rust = app
-            .selected_project_path()
-            .is_some_and(|path| app.is_cargo_active_path(path));
-        let msg = if is_rust {
+fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
+    if data.runs.is_empty() {
+        let msg = if data.is_cargo_active {
             crate::constants::NO_LINT_RUNS
         } else {
             crate::constants::NO_LINT_RUNS_NOT_RUST
@@ -42,11 +42,10 @@ fn lints_panel_title(app: &App, runs: &[LintRun], focused: bool) -> String {
         return format!(" {msg} ");
     }
     if focused {
-        let indicator =
-            crate::tui::types::scroll_indicator(app.pane_manager().lints.pos(), runs.len());
+        let indicator = crate::tui::types::scroll_indicator(cursor, data.runs.len());
         format!(" Lint Runs ({indicator}) ")
     } else {
-        format!(" Lint Runs ({}) ", runs.len())
+        format!(" Lint Runs ({}) ", data.runs.len())
     }
 }
 
@@ -72,10 +71,6 @@ fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'sta
         .border_style(border_style)
 }
 
-/// Build display rows for lint runs, grouped by date.
-///
-/// Returns `(rows, row_to_run_index)` where `row_to_run_index` maps each
-/// table row to its lint run index (date headers map to `None`).
 fn build_lint_rows(runs: &[LintRun], animation_elapsed: std::time::Duration) -> Vec<Row<'static>> {
     let date_style = Style::default()
         .fg(TITLE_COLOR)
@@ -85,7 +80,7 @@ fn build_lint_rows(runs: &[LintRun], animation_elapsed: std::time::Duration) -> 
     let mut current_date = String::new();
 
     for run in runs {
-        let date = super::timestamp::format_date(&run.started_at);
+        let date = detail::format_date(&run.started_at);
         let date_cell = if date == current_date {
             Cell::from("")
         } else {
@@ -93,12 +88,12 @@ fn build_lint_rows(runs: &[LintRun], animation_elapsed: std::time::Duration) -> 
             Cell::from(Span::styled(date, date_style))
         };
 
-        let start_time = super::timestamp::format_time(&run.started_at);
+        let start_time = detail::format_time(&run.started_at);
         let end_time = run
             .finished_at
             .as_deref()
-            .map_or_else(|| "—".to_string(), super::timestamp::format_time);
-        let duration = super::timestamp::format_duration(run.duration_ms);
+            .map_or_else(|| "—".to_string(), detail::format_time);
+        let duration = detail::format_duration(run.duration_ms);
 
         let (result_cell, row_style) = match run.status {
             LintRunStatus::Running => {
@@ -133,26 +128,27 @@ fn build_lint_rows(runs: &[LintRun], animation_elapsed: std::time::Duration) -> 
     rows
 }
 
-pub fn render_lints_panel(
-    frame: &mut Frame,
-    app: &mut App,
-    runs: &[LintRun],
-    area: ratatui::layout::Rect,
-) {
+pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
+    let Some(lints_data) = app.pane_manager().lints_data.clone() else {
+        let block = lints_panel_block(" No Lint Runs ".to_string(), false, false);
+        frame.render_widget(block, area);
+        return;
+    };
+
     let focused = app.is_focused(PaneId::Lints);
-    let title = lints_panel_title(app, runs, focused);
-    let block = lints_panel_block(title, focused, !runs.is_empty());
+    let title = lints_panel_title(&lints_data, focused, app.pane_manager().lints.pos());
+    let block = lints_panel_block(title, focused, !lints_data.runs.is_empty());
 
     let inner = block.inner(area);
     app.pane_manager_mut().lints.set_content_area(inner);
 
-    if runs.is_empty() {
+    if lints_data.runs.is_empty() {
         frame.render_widget(block, area);
         app.pane_manager_mut().lints.set_len(0);
         return;
     }
 
-    let rows = build_lint_rows(runs, app.animation_elapsed());
+    let rows = build_lint_rows(&lints_data.runs, app.animation_elapsed());
     app.pane_manager_mut().lints.set_len(rows.len());
 
     let col_header_style = Style::default()
@@ -162,11 +158,11 @@ pub fn render_lints_panel(
     let table = Table::new(
         rows,
         [
-            Constraint::Length(10), // date
-            Constraint::Length(8),  // start time
-            Constraint::Length(8),  // end time
-            Constraint::Length(8),  // duration
-            Constraint::Length(8),  // result
+            Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
         ],
     )
     .header(
@@ -204,7 +200,7 @@ pub fn render_lints_panel(
             .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
         interaction::register_pane_row_hitbox(
             app,
-            ratatui::layout::Rect::new(inner.x, row_y, inner.width, 1),
+            Rect::new(inner.x, row_y, inner.width, 1),
             PaneId::Lints,
             row_index,
             Content,

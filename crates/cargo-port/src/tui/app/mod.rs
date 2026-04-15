@@ -326,6 +326,8 @@ impl App {
 
     pub(super) const fn increment_data_generation(&mut self) { self.data_generation += 1; }
 
+    pub(super) const fn increment_detail_generation(&mut self) { self.detail_generation += 1; }
+
     pub(super) fn search_query(&self) -> &str { &self.search_query }
 
     #[cfg(test)]

@@ -202,8 +202,11 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
 
 fn handle_ci_enter(app: &App) {
     let visible_runs = app
-        .selected_project_path()
-        .map_or_else(Vec::new, |path| app.ci_runs_for_display(path));
+        .pane_manager()
+        .ci_data
+        .as_ref()
+        .map(|data| data.runs.clone())
+        .unwrap_or_default();
     let cursor_pos = app.pane_manager().ci.pos();
     if let Some(run) = visible_runs.get(cursor_pos) {
         open_url(&run.url);
@@ -312,6 +315,7 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
     }
     app.pane_manager_mut().ci.home();
     app.increment_data_generation();
+    app.increment_detail_generation();
 }
 
 fn clear_lint_history(app: &mut App) {
@@ -331,6 +335,7 @@ fn clear_lint_history(app: &mut App) {
     app.focus_pane(PaneId::ProjectList);
     app.refresh_lint_cache_usage_from_disk();
     app.increment_data_generation();
+    app.increment_detail_generation();
 }
 
 fn open_lint_run_output(app: &App) {
@@ -340,10 +345,14 @@ fn open_lint_run_output(app: &App) {
     let Some(abs_path) = app.selected_project_path() else {
         return;
     };
-    let Some(lr) = app.lint_at_path(abs_path) else {
+    let Some(runs) = app
+        .pane_manager()
+        .lints_data
+        .as_ref()
+        .map(|data| data.runs.as_slice())
+    else {
         return;
     };
-    let runs = lr.runs();
     if runs.is_empty() {
         return;
     }

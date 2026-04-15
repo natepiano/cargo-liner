@@ -242,18 +242,19 @@ impl App {
                 .is_some_and(TargetsData::has_targets),
             PaneId::Lints => {
                 self.example_output.is_empty()
-                    && self.selected_project_path().is_some_and(|path| {
-                        self.projects
-                            .lint_at_path(path)
-                            .is_some_and(|lr| !lr.runs().is_empty())
-                    })
+                    && self
+                        .pane_manager
+                        .lints_data
+                        .as_ref()
+                        .is_some_and(crate::tui::detail::LintsData::has_runs)
             },
             PaneId::CiRuns => {
                 self.example_output.is_empty()
-                    && self.selected_project_path().is_some_and(|path| {
-                        self.ci_state_for(path)
-                            .is_some_and(|state| !state.runs().is_empty())
-                    })
+                    && self
+                        .pane_manager
+                        .ci_data
+                        .as_ref()
+                        .is_some_and(crate::tui::detail::CiData::has_runs)
             },
             PaneId::Output => !self.example_output.is_empty(),
             PaneId::Toasts => !self.active_toasts().is_empty(),

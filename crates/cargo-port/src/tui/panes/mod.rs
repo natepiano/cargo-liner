@@ -1,4 +1,35 @@
+mod ci;
+mod git;
+mod lang;
+mod lints;
+mod package;
+
+#[cfg(test)]
+pub(super) use ci::CI_COMPACT_DURATION_WIDTH;
+#[cfg(test)]
+pub(super) use ci::ci_table_shows_durations;
+#[cfg(test)]
+pub(super) use ci::ci_total_width;
+pub(super) use ci::render_ci_panel;
+#[cfg(test)]
+pub(super) use git::git_label_width;
+pub(super) use git::render_git_panel;
+pub(super) use lang::render_lang_panel_standalone;
+pub(super) use lints::render_lints_panel;
+pub(super) use package::RenderStyles;
+#[cfg(test)]
+pub(super) use package::description_lines;
+#[cfg(test)]
+pub(super) use package::detail_column_scroll_offset;
+#[cfg(test)]
+pub(super) use package::package_label_width;
+pub(super) use package::render_detail_panel;
+#[cfg(test)]
+pub(super) use package::stats_column_width;
+
+use super::detail::CiData;
 use super::detail::GitData;
+use super::detail::LintsData;
 use super::detail::PackageData;
 use super::detail::TargetsData;
 use super::types::Pane;
@@ -25,6 +56,8 @@ pub(in super::super) struct PaneManager {
     pub package_data: Option<PackageData>,
     pub git_data:     Option<GitData>,
     pub targets_data: Option<TargetsData>,
+    pub ci_data:      Option<CiData>,
+    pub lints_data:   Option<LintsData>,
 }
 
 impl PaneManager {
@@ -80,15 +113,26 @@ impl PaneManager {
             package_data: None,
             git_data:     None,
             targets_data: None,
+            ci_data:      None,
+            lints_data:   None,
         }
     }
 
-    /// Populate per-pane data from a `DetailInfo`. Called when the
+    /// Populate per-pane data for the selected row. Called when the
     /// selected project changes or detail cache is rebuilt.
-    pub fn set_detail_data(&mut self, info: &super::detail::DetailInfo) {
-        self.package_data = Some(info.package_data());
-        self.git_data = Some(info.git_data());
-        self.targets_data = Some(info.targets_data());
+    pub fn set_detail_data(
+        &mut self,
+        package_data: PackageData,
+        git_data: GitData,
+        targets_data: TargetsData,
+        ci_data: CiData,
+        lints_data: LintsData,
+    ) {
+        self.package_data = Some(package_data);
+        self.git_data = Some(git_data);
+        self.targets_data = Some(targets_data);
+        self.ci_data = Some(ci_data);
+        self.lints_data = Some(lints_data);
     }
 
     /// Clear per-pane data (e.g., when no project is selected).
@@ -96,5 +140,7 @@ impl PaneManager {
         self.package_data = None;
         self.git_data = None;
         self.targets_data = None;
+        self.ci_data = None;
+        self.lints_data = None;
     }
 }
