@@ -683,7 +683,7 @@ fn render_bottom_connector(frame: &mut Frame, area: Rect, connector_x: u16, styl
     );
 }
 
-pub fn render_targets_panel(
+fn render_targets_panel(
     frame: &mut Frame,
     app: &mut App,
     info: &DetailInfo,

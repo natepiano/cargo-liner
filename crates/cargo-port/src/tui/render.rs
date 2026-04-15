@@ -13,7 +13,6 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
-use ratatui::widgets::Clear;
 use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::Paragraph;
@@ -50,7 +49,6 @@ use super::types::Pane;
 use super::types::PaneId;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
-use crate::lint::LintRun;
 use crate::project;
 use crate::project::GitOrigin;
 use crate::project::ProjectFields;
@@ -472,33 +470,6 @@ const fn reset_pane(pane: &mut Pane) {
     pane.set_scroll_offset(0);
 }
 
-fn render_unreachable_overlay(frame: &mut Frame, area: Rect, msg: &str) {
-    if area.width < 4 || area.height < 3 {
-        return;
-    }
-
-    let width = u16::try_from(msg.len() + 4).unwrap_or(u16::MAX);
-    let overlay_area = centered_rect(width, 3, area);
-    frame.render_widget(Clear, overlay_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ERROR_COLOR));
-    let inner = block.inner(overlay_area);
-    frame.render_widget(block, overlay_area);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            msg,
-            Style::default()
-                .fg(ERROR_COLOR)
-                .add_modifier(Modifier::BOLD),
-        )))
-        .alignment(ratatui::layout::Alignment::Center),
-        inner,
-    );
-}
-
 fn render_empty_ci_panel(
     frame: &mut Frame,
     app: &App,
@@ -599,18 +570,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
 
     let total_project_rows = items.len();
 
-    let count_suffix = if app.is_focused(PaneId::ProjectList) {
-        let pos = app.list_state().selected().unwrap_or(0);
-        format!(
-            " ({}) ",
-            crate::tui::types::scroll_indicator(pos, total_project_rows),
-        )
-    } else {
-        format!(" ({total_project_rows}) ")
-    };
-    let suffix_len = u16::try_from(count_suffix.len()).unwrap_or(u16::MAX);
-    let title =
-        project_panel_title(app, area.width.saturating_sub(2 + suffix_len).into()) + &count_suffix;
+    let title = project_panel_title_with_counts(app, area.width.saturating_sub(2).into());
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
@@ -686,53 +646,56 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     }
 }
 
-fn project_panel_title(app: &App, max_width: usize) -> String {
-    let prefix = "Roots: ";
-    // Reserve 2 chars for the leading/trailing space around the title.
-    let inner_max = max_width.saturating_sub(2);
-    if inner_max <= prefix.width() {
-        return format!(" {} ", truncate_to_width(prefix, inner_max));
+fn project_panel_title_with_counts(app: &App, max_width: usize) -> String {
+    let focused = app.is_focused(PaneId::ProjectList);
+    let cursor = app.list_state().selected().unwrap_or(0);
+    let roots = app.resolved_dirs();
+
+    // Count visible rows per root directory and determine which root the
+    // cursor is in.
+    let mut root_counts: Vec<(String, usize, usize)> = Vec::new(); // (name, count, start_row)
+    for root_path in &roots {
+        let name = project::home_relative_path(root_path.as_path());
+        let count = app
+            .projects()
+            .iter()
+            .filter(|item| item.path().starts_with(root_path.as_path()))
+            .count();
+        let start_row = root_counts
+            .last()
+            .map_or(0, |(_, prev_count, prev_start)| prev_start + prev_count);
+        root_counts.push((name, count, start_row));
     }
-    let roots = app
-        .resolved_dirs()
-        .into_iter()
-        .map(|path| project::home_relative_path(path.as_path()))
-        .collect::<Vec<_>>();
+
+    let prefix = "Roots: ";
+    let inner_max = max_width.saturating_sub(2);
+    if inner_max <= prefix.len() {
+        return format!(" {prefix} ");
+    }
+
+    let section_indicator = |section_start: usize, section_len: usize| -> String {
+        if focused && cursor >= section_start && cursor < section_start + section_len {
+            crate::tui::types::scroll_indicator(cursor - section_start, section_len)
+        } else {
+            section_len.to_string()
+        }
+    };
+
+    let parts: Vec<String> = root_counts
+        .iter()
+        .map(|(name, count, start)| format!("{name} ({})", section_indicator(*start, *count)))
+        .collect();
+
+    let body = parts.join(", ");
+    let full = format!(" {prefix}{body} ");
+    if full.len() <= max_width + 2 {
+        return full;
+    }
+    // Truncate if too long.
     format!(
         " {prefix}{} ",
-        truncate_root_title(&roots, inner_max.saturating_sub(prefix.width()))
+        truncate_to_width(&body, inner_max.saturating_sub(prefix.len()))
     )
-}
-
-fn truncate_root_title(roots: &[String], max_width: usize) -> String {
-    if roots.is_empty() || max_width == 0 {
-        return String::new();
-    }
-
-    let ellipsis = "…";
-    let mut title = String::new();
-    for (index, root) in roots.iter().enumerate() {
-        let separator = if index == 0 { "" } else { ", " };
-        let candidate = format!("{title}{separator}{root}");
-        if candidate.width() <= max_width {
-            title = candidate;
-            continue;
-        }
-        if title.is_empty() {
-            return truncate_with_ellipsis(root, max_width, ellipsis);
-        }
-        let remaining = max_width.saturating_sub(title.width() + separator.width());
-        let truncated = truncate_with_ellipsis(root, remaining, ellipsis);
-        if !truncated.is_empty() {
-            return format!("{title}{separator}{truncated}");
-        }
-        let with_ellipsis = format!("{title}{separator}{ellipsis}");
-        if with_ellipsis.width() <= max_width {
-            return with_ellipsis;
-        }
-        return truncate_with_ellipsis(&title, max_width, ellipsis);
-    }
-    title
 }
 
 pub(super) fn truncate_to_width(text: &str, max_width: usize) -> String {

@@ -215,38 +215,25 @@ fn service_reachability_tracks_background_messages() {
     let mut app = make_app(&[]);
 
     assert!(app.unreachable_services.is_empty());
-    assert!(app.unreachable_service_message().is_none());
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
         service: ServiceKind::GitHub,
     }));
     assert!(app.unreachable_services.contains(&ServiceKind::GitHub));
-    assert_eq!(
-        app.unreachable_service_message().as_deref(),
-        Some(" GitHub unreachable ")
-    );
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
         service: ServiceKind::CratesIo,
     }));
     assert!(app.unreachable_services.contains(&ServiceKind::CratesIo));
-    assert_eq!(
-        app.unreachable_service_message().as_deref(),
-        Some(" GitHub and crates.io unreachable ")
-    );
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceReachable {
         service: ServiceKind::GitHub,
     }));
     assert!(!app.unreachable_services.contains(&ServiceKind::GitHub));
-    assert_eq!(
-        app.unreachable_service_message().as_deref(),
-        Some(" crates.io unreachable ")
-    );
+    assert!(app.unreachable_services.contains(&ServiceKind::CratesIo));
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceReachable {
         service: ServiceKind::CratesIo,
     }));
     assert!(app.unreachable_services.is_empty());
-    assert!(app.unreachable_service_message().is_none());
 }

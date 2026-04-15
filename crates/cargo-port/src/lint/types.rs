@@ -79,16 +79,6 @@ pub enum LintRunStatus {
     Failed,
 }
 
-impl LintRunStatus {
-    pub const fn label(&self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Passed => "passed",
-            Self::Failed => "failed",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LintCommandStatus {

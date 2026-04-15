@@ -1965,20 +1965,6 @@ impl App {
         self.service_retry_active.remove(&service);
     }
 
-    pub(in super::super) fn unreachable_service_message(&self) -> Option<String> {
-        let mut services = Vec::new();
-        for service in [ServiceKind::GitHub, ServiceKind::CratesIo] {
-            if self.unreachable_services.contains(&service) {
-                services.push(service.label());
-            }
-        }
-        match services.as_slice() {
-            [service] => Some(format!(" {service} unreachable ")),
-            [first, second] => Some(format!(" {first} and {second} unreachable ")),
-            _ => None,
-        }
-    }
-
     fn update_generations_for_msg(&mut self, msg: &BackgroundMsg) {
         if msg.path().is_some() {
             self.data_generation += 1;

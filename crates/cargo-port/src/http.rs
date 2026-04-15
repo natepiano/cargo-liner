@@ -30,13 +30,6 @@ pub(crate) enum ServiceKind {
 }
 
 impl ServiceKind {
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::GitHub => "GitHub",
-            Self::CratesIo => "crates.io",
-        }
-    }
-
     const fn probe_url(self) -> &'static str {
         match self {
             Self::GitHub => GITHUB_API_BASE,

@@ -30,6 +30,7 @@ pub use runtime::project_is_eligible;
 pub use runtime::spawn;
 #[cfg(test)]
 pub use types::LintCommand;
+#[cfg(test)]
 pub use types::LintCommandStatus;
 pub use types::LintRun;
 pub use types::LintRunStatus;

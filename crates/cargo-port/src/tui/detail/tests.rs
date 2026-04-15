@@ -6,7 +6,6 @@ use ratatui::text::Line;
 
 use super::ci_panel;
 use super::ci_panel::CI_COMPACT_DURATION_WIDTH;
-use super::lints_panel;
 use super::model;
 use super::model::DetailField;
 use super::model::DetailInfo;
@@ -17,9 +16,6 @@ use crate::ci::Conclusion;
 use crate::ci::FetchStatus::Fetched;
 use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
-use crate::lint::LintCommand;
-use crate::lint::LintRun;
-use crate::lint::LintRunStatus;
 use crate::project::ExampleGroup;
 use crate::project::GitPathState;
 use crate::project::WorktreeHealth::Normal;
@@ -99,17 +95,6 @@ fn ci_run_with_jobs(jobs: Vec<CiJob>) -> CiRun {
         commit_title: Some("feat: add box select".to_string()),
         updated_at: None,
         fetched: Fetched,
-    }
-}
-
-fn run_with_commands(status: LintRunStatus, commands: Vec<LintCommand>) -> LintRun {
-    LintRun {
-        run_id: "run-1".to_string(),
-        started_at: "2026-04-01T21:00:00-04:00".to_string(),
-        finished_at: Some("2026-04-01T21:00:10-04:00".to_string()),
-        duration_ms: Some(10_000),
-        status,
-        commands,
     }
 }
 
