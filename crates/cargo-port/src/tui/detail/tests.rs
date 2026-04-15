@@ -268,7 +268,7 @@ fn git_label_width_uses_origin_and_configured_main_labels() {
     let fields = vec![DetailField::VsOrigin, DetailField::VsLocal];
 
     assert_eq!(
-        render::git_label_width(&info, &fields),
+        render::git_label_width(&info.git_data(), &fields),
         "vs local primary".len()
     );
 }

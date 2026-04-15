@@ -85,8 +85,18 @@ fn detail_layout_spec() -> DetailLayoutSpec {
     }
 }
 
-struct ColumnRenderCtx<'a> {
+struct PackageRenderCtx<'a> {
     app:    &'a App,
+    data:   &'a model::PackageData,
+    fields: &'a [DetailField],
+    pane:   &'a Pane,
+    focus:  PaneFocusState,
+    styles: &'a RenderStyles,
+}
+
+struct GitRenderCtx<'a> {
+    app:    &'a App,
+    data:   &'a model::GitData,
     info:   &'a DetailInfo,
     fields: &'a [DetailField],
     pane:   &'a Pane,
@@ -94,9 +104,9 @@ struct ColumnRenderCtx<'a> {
     styles: &'a RenderStyles,
 }
 
-fn render_column_inner(frame: &mut Frame, ctx: &ColumnRenderCtx<'_>, area: Rect) -> usize {
+fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect) -> usize {
     let app = ctx.app;
-    let info = ctx.info;
+    let data = ctx.data;
     let fields = ctx.fields;
     let pane = ctx.pane;
     let focus = ctx.focus;
@@ -110,13 +120,13 @@ fn render_column_inner(frame: &mut Frame, ctx: &ColumnRenderCtx<'_>, area: Rect)
         }
         let label = field.label();
         let selection = pane.selection_state(i, focus);
-        let value = field.value(info, app);
+        let value = field.package_value(data, app);
         let base_label_style = styles.readonly_label;
         let base_value_style = if *field == DetailField::Ci {
             if value == crate::constants::NO_CI_WORKFLOW || value == crate::constants::NO_CI_RUNS {
                 Style::default().fg(INACTIVE_BORDER_COLOR)
             } else {
-                render::conclusion_style(info.ci)
+                render::conclusion_style(data.ci)
             }
         } else if *field == DetailField::Lint {
             lint_value_style(&value)
@@ -216,12 +226,12 @@ pub(super) fn package_label_width(fields: &[DetailField]) -> usize {
         .max(8)
 }
 
-pub(super) fn git_label_width(info: &DetailInfo, fields: &[DetailField]) -> usize {
+pub(super) fn git_label_width(data: &model::GitData, fields: &[DetailField]) -> usize {
     fields
         .iter()
         .map(|field| match *field {
             DetailField::VsOrigin => "Remote branch".width(),
-            DetailField::VsLocal => format!("vs local {}", info.main_branch_label).width(),
+            DetailField::VsLocal => format!("vs local {}", data.main_branch_label).width(),
             _ => field.label().width(),
         })
         .max()
@@ -229,8 +239,9 @@ pub(super) fn git_label_width(info: &DetailInfo, fields: &[DetailField]) -> usiz
         .max(8)
 }
 
-fn render_git_column_inner(frame: &mut Frame, ctx: &ColumnRenderCtx<'_>, area: Rect) -> usize {
+fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect) -> usize {
     let app = ctx.app;
+    let data = ctx.data;
     let info = ctx.info;
     let fields = ctx.fields;
     let pane = ctx.pane;
@@ -238,7 +249,7 @@ fn render_git_column_inner(frame: &mut Frame, ctx: &ColumnRenderCtx<'_>, area: R
     let styles = ctx.styles;
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut focused_output_line: usize = 0;
-    let label_width = git_label_width(info, fields);
+    let label_width = git_label_width(data, fields);
 
     for (i, field) in fields.iter().enumerate() {
         if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
@@ -251,13 +262,13 @@ fn render_git_column_inner(frame: &mut Frame, ctx: &ColumnRenderCtx<'_>, area: R
                 &dynamic_label
             },
             DetailField::VsLocal => {
-                let branch = info.main_branch_label.as_str();
+                let branch = data.main_branch_label.as_str();
                 dynamic_label = format!("vs local {branch}");
                 &dynamic_label
             },
             _ => field.label(),
         };
-        let value = field.value(info, app);
+        let value = field.git_value(data);
         let selection = pane.selection_state(i, focus);
         let base_value_style = if *field == DetailField::Origin && value.starts_with('⑂') {
             Style::default()
@@ -353,6 +364,7 @@ pub(super) fn project_panel_title(info: &DetailInfo) -> String {
 
 struct ProjectPanelRender<'a> {
     info:         &'a DetailInfo,
+    pkg_data:     &'a model::PackageData,
     fields:       &'a [DetailField],
     focus:        PaneFocusState,
     styles:       &'a RenderStyles,
@@ -455,8 +467,14 @@ fn render_project_panel(
     let project_inner = project_block.inner(area);
     frame.render_widget(project_block, area);
 
+    let pkg_data = app
+        .pane_manager()
+        .package_data
+        .clone()
+        .unwrap_or_else(|| info.package_data());
     let context = ProjectPanelRender {
         info,
+        pkg_data: &pkg_data,
         fields: &fields,
         focus,
         styles,
@@ -546,9 +564,9 @@ fn render_project_metadata(
     context: &ProjectPanelRender<'_>,
     lower_area: Rect,
 ) -> usize {
-    let col_ctx = ColumnRenderCtx {
+    let col_ctx = PackageRenderCtx {
         app,
-        info: context.info,
+        data: context.pkg_data,
         fields: context.fields,
         pane,
         focus: context.focus,
@@ -863,8 +881,14 @@ pub fn render_git_panel(
     let git_inner = git_block.inner(area);
     app.pane_manager_mut().git.set_content_area(git_inner);
     frame.render_widget(git_block, area);
-    let git_ctx = ColumnRenderCtx {
+    let git_data = app
+        .pane_manager()
+        .git_data
+        .clone()
+        .unwrap_or_else(|| info.git_data());
+    let git_ctx = GitRenderCtx {
         app,
+        data: &git_data,
         info,
         fields: &git,
         pane: &app.pane_manager().git,
