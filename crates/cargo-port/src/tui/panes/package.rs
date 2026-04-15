@@ -45,13 +45,13 @@ pub struct RenderStyles {
 
 struct DetailLayoutSpec {
     constraints: Vec<Constraint>,
-    targets_col: usize,
+    git_col:     usize,
 }
 
 fn detail_layout_spec() -> DetailLayoutSpec {
     DetailLayoutSpec {
         constraints: vec![Constraint::Percentage(50), Constraint::Percentage(50)],
-        targets_col: 1,
+        git_col:     1,
     }
 }
 
@@ -66,7 +66,7 @@ struct PackageRenderCtx<'a> {
 
 /// Compute the fixed stats column width from the stat rows and language stats.
 /// Returns `(total_width, digit_width)`.
-pub(in super::super) fn stats_column_width(data: &PackageData) -> (u16, u16) {
+pub fn stats_column_width(data: &PackageData) -> (u16, u16) {
     let max_count = data
         .stats_rows
         .iter()
@@ -84,7 +84,7 @@ pub(in super::super) fn stats_column_width(data: &PackageData) -> (u16, u16) {
     (total, digit_width)
 }
 
-pub(in super::super) fn detail_column_scroll_offset(
+pub fn detail_column_scroll_offset(
     focus: PaneFocusState,
     focused_output_line: usize,
     visible_height: u16,
@@ -100,7 +100,7 @@ pub(in super::super) fn detail_column_scroll_offset(
     u16::try_from(offset).unwrap_or(u16::MAX)
 }
 
-pub(in super::super) fn package_label_width(fields: &[DetailField]) -> usize {
+pub fn package_label_width(fields: &[DetailField]) -> usize {
     fields
         .iter()
         .map(|field| field.label().width())
@@ -236,7 +236,7 @@ pub fn render_detail_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
         app.layout_cache_mut().detail_columns = vec![
             (PaneId::Package, columns[0]),
-            (PaneId::Targets, columns[spec.targets_col]),
+            (PaneId::Git, columns[spec.git_col]),
         ];
 
         let styles = RenderStyles {
@@ -248,21 +248,7 @@ pub fn render_detail_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
         render_project_panel(frame, app, &pkg_data, &styles, columns[0]);
 
-        if let Some(targets_data) = app.pane_manager().targets_data.clone() {
-            if targets_data.has_targets() {
-                render_targets_panel(
-                    frame,
-                    app,
-                    &targets_data,
-                    &styles,
-                    columns[spec.targets_col],
-                );
-            } else {
-                render_empty_targets_panel(frame, columns[spec.targets_col]);
-            }
-        } else {
-            render_empty_targets_panel(frame, columns[spec.targets_col]);
-        }
+        super::render_git_panel(frame, app, columns[spec.git_col]);
     } else {
         let empty_block = Block::default()
             .borders(Borders::ALL)
@@ -274,7 +260,7 @@ pub fn render_detail_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn render_empty_targets_panel(frame: &mut Frame, area: Rect) {
+pub fn render_empty_targets_panel(frame: &mut Frame, area: Rect) {
     let empty_targets = Block::default()
         .borders(Borders::ALL)
         .title(" No Targets ")
@@ -549,7 +535,7 @@ fn render_bottom_connector(frame: &mut Frame, area: Rect, connector_x: u16, styl
     );
 }
 
-fn render_targets_panel(
+pub fn render_targets_panel(
     frame: &mut Frame,
     app: &mut App,
     data: &TargetsData,

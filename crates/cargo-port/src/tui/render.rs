@@ -225,8 +225,8 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         ])
         .split(outer_layout[0]);
 
-    // Row 1: Project List (left, spans row 1+2) | Package + Languages (right)
-    // Row 2: (PL continues)                     | Targets + Git (right)
+    // Row 1: Project List (left, spans row 1+2) | Package + Git (right)
+    // Row 2: (PL continues)                     | Languages + Targets (right)
     let top_two_rows = Rect::new(
         rows[0].x,
         rows[0].y,
@@ -241,9 +241,9 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     // Left column (rows 1+2): Project List with search bar
     render_left_panel(frame, app, top_cols[0]);
 
-    // Right column row 1: Package | Languages (detail panel)
+    // Right column row 1: Package | Git
     let right_row1 = Rect::new(top_cols[1].x, rows[0].y, top_cols[1].width, rows[0].height);
-    // Right column row 2: Targets | Git
+    // Right column row 2: Languages | Targets
     let right_row2 = Rect::new(top_cols[1].x, rows[1].y, top_cols[1].width, rows[1].height);
 
     render_detail_row1(frame, app, right_row1);
@@ -331,12 +331,12 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     render_project_list(frame, app, left_layout[1]);
 }
 
-/// Right column row 1: Package Details | Targets.
+/// Right column row 1: Package Details | Git.
 fn render_detail_row1(frame: &mut Frame, app: &mut App, area: Rect) {
     panes::render_detail_panel(frame, app, area);
 }
 
-/// Right column row 2: Languages | Git.
+/// Right column row 2: Languages | Targets.
 fn render_detail_row2(frame: &mut Frame, app: &mut App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -355,8 +355,25 @@ fn render_detail_row2(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     panes::render_lang_panel_standalone(frame, app, &styles, cols[0]);
 
-    // Git (right half of row 2).
-    panes::render_git_panel(frame, app, cols[1]);
+    // Targets (right half of row 2).
+    let title_style = Style::default()
+        .fg(TITLE_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let styles = super::panes::RenderStyles {
+        readonly_label:  Style::default().fg(LABEL_COLOR),
+        active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
+        inactive_border: Style::default(),
+        title:           title_style,
+    };
+    if let Some(targets_data) = app.pane_manager().targets_data.clone() {
+        if targets_data.has_targets() {
+            panes::render_targets_panel(frame, app, &targets_data, &styles, cols[1]);
+        } else {
+            panes::render_empty_targets_panel(frame, cols[1]);
+        }
+    } else {
+        panes::render_empty_targets_panel(frame, cols[1]);
+    }
 }
 
 /// Bottom row: Lint Runs (left) | CI Runs (right).
@@ -378,8 +395,8 @@ fn sync_detail_pane_hitboxes(app: &mut App) {
 /// Register row hitboxes for panes with row-based content.
 fn register_detail_pane_hitboxes(app: &mut App) {
     register_hitbox_for_pane(app, PaneId::Package);
-    register_hitbox_for_pane(app, PaneId::Lang);
     register_hitbox_for_pane(app, PaneId::Git);
+    register_hitbox_for_pane(app, PaneId::Lang);
     register_hitbox_for_pane(app, PaneId::Targets);
 }
 

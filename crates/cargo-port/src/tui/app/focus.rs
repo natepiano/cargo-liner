@@ -19,9 +19,9 @@ impl App {
     const TAB_ORDER: [PaneId; 9] = [
         PaneId::ProjectList,
         PaneId::Package,
-        PaneId::Targets,
-        PaneId::Lang,
         PaneId::Git,
+        PaneId::Lang,
+        PaneId::Targets,
         PaneId::Lints,
         PaneId::CiRuns,
         PaneId::Output,

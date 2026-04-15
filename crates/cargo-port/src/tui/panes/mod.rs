@@ -24,6 +24,8 @@ pub(super) use package::detail_column_scroll_offset;
 #[cfg(test)]
 pub(super) use package::package_label_width;
 pub(super) use package::render_detail_panel;
+pub(super) use package::render_empty_targets_panel;
+pub(super) use package::render_targets_panel;
 #[cfg(test)]
 pub(super) use package::stats_column_width;
 
@@ -42,7 +44,7 @@ use super::types::PaneId;
 /// Extracted from `App` so render functions can borrow `PaneManager`
 /// mutably while borrowing `App` immutably for project data. Each pane
 /// owns its display data — no shared monolithic struct.
-pub(in super::super) struct PaneManager {
+pub(super) struct PaneManager {
     pub package:      Pane,
     pub lang:         Pane,
     pub git:          Pane,

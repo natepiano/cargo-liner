@@ -121,8 +121,8 @@ fn tabbable_panes_follow_canonical_order() {
         vec![
             PaneId::ProjectList,
             PaneId::Package,
-            PaneId::Targets,
             PaneId::Git,
+            PaneId::Targets,
             PaneId::CiRuns,
         ]
     );
@@ -133,8 +133,8 @@ fn tabbable_panes_follow_canonical_order() {
         vec![
             PaneId::ProjectList,
             PaneId::Package,
-            PaneId::Targets,
             PaneId::Git,
+            PaneId::Targets,
             PaneId::CiRuns,
             PaneId::Toasts,
         ]
@@ -143,9 +143,9 @@ fn tabbable_panes_follow_canonical_order() {
     app.focus_next_pane();
     assert_eq!(app.focused_pane, PaneId::Package);
     app.focus_next_pane();
-    assert_eq!(app.focused_pane, PaneId::Targets);
-    app.focus_next_pane();
     assert_eq!(app.focused_pane, PaneId::Git);
+    app.focus_next_pane();
+    assert_eq!(app.focused_pane, PaneId::Targets);
     app.focus_next_pane();
     assert_eq!(app.focused_pane, PaneId::CiRuns);
     app.focus_next_pane();
