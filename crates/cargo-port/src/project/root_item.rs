@@ -213,7 +213,7 @@ impl RootItem {
         })
     }
 
-    pub(crate) fn rust_info_at_path(&self, path: &Path) -> Option<&super::rust_info::RustInfo> {
+    pub(crate) fn rust_info_at_path(&self, path: &Path) -> Option<&RustInfo> {
         match self {
             Self::Rust(p) => p.rust_info_at_path(path),
             Self::NonRust(_) => None,
@@ -272,10 +272,7 @@ impl RootItem {
         }
     }
 
-    pub(crate) fn rust_info_at_path_mut(
-        &mut self,
-        path: &Path,
-    ) -> Option<&mut super::rust_info::RustInfo> {
+    pub(crate) fn rust_info_at_path_mut(&mut self, path: &Path) -> Option<&mut RustInfo> {
         match self {
             Self::Rust(p) => p.rust_info_at_path_mut(path),
             Self::NonRust(_) => None,
@@ -460,6 +457,7 @@ fn sum_disk(primary: Option<u64>, linked: impl Iterator<Item = Option<u64>>) -> 
 }
 
 use super::package::PackageProject;
+use super::rust_info::RustInfo;
 use super::workspace::WorkspaceProject;
 
 pub(super) fn single_live_workspace<'a>(

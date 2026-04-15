@@ -31,7 +31,9 @@ use crate::lint::RegisterProjectRequest;
 use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::GitRepoPresence;
+use crate::project::LanguageStats;
 use crate::project::LocalGitState;
+use crate::project::MemberGroup;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::Visibility::Deleted;
@@ -472,7 +474,7 @@ impl App {
         let client = self.http_client.clone();
         let mut members: Vec<(AbsolutePath, String)> = Vec::new();
         for item in &self.projects {
-            let groups: Vec<&crate::project::MemberGroup> = match item {
+            let groups: Vec<&MemberGroup> = match item {
                 crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
                     ws.groups().iter().collect()
                 },
@@ -2303,10 +2305,7 @@ impl App {
         false
     }
 
-    fn handle_language_stats_batch(
-        &mut self,
-        entries: Vec<(AbsolutePath, crate::project::LanguageStats)>,
-    ) {
+    fn handle_language_stats_batch(&mut self, entries: Vec<(AbsolutePath, LanguageStats)>) {
         for (path, stats) in entries {
             if let Some(project) = self.projects.at_path_mut(path.as_path()) {
                 project.language_stats = Some(stats);

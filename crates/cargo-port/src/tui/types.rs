@@ -13,8 +13,6 @@ pub(super) struct ScrollState {
 }
 
 impl ScrollState {
-    pub const fn new() -> Self { Self { pos: 0 } }
-
     pub const fn pos(&self) -> usize { self.pos }
 
     pub const fn set(&mut self, pos: usize) { self.pos = pos; }

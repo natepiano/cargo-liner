@@ -64,6 +64,7 @@ pub(super) use types::VisibleRow;
 pub(super) use super::columns::ResolvedWidths;
 use super::detail::PendingCiFetch;
 use super::detail::PendingExampleRun;
+use super::panes::PaneManager;
 use super::terminal::CiFetchMsg;
 use super::terminal::CleanMsg;
 use super::terminal::ExampleMsg;
@@ -90,7 +91,7 @@ pub(super) struct App {
     list_state:               ListState,
     search_query:             String,
     filtered:                 Vec<types::SearchHit>,
-    pane_manager:             super::panes::PaneManager,
+    pane_manager:             PaneManager,
     settings_edit_buf:        String,
     settings_edit_cursor:     usize,
     focused_pane:             PaneId,
@@ -232,11 +233,9 @@ impl App {
     #[cfg(test)]
     pub(super) const fn ui_modes_mut(&mut self) -> &mut types::UiModes { &mut self.ui_modes }
 
-    pub(super) const fn pane_manager(&self) -> &super::panes::PaneManager { &self.pane_manager }
+    pub(super) const fn pane_manager(&self) -> &PaneManager { &self.pane_manager }
 
-    pub(super) const fn pane_manager_mut(&mut self) -> &mut super::panes::PaneManager {
-        &mut self.pane_manager
-    }
+    pub(super) const fn pane_manager_mut(&mut self) -> &mut PaneManager { &mut self.pane_manager }
 
     pub(super) const fn finder(&self) -> &types::FinderState { &self.finder }
 

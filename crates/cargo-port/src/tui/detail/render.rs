@@ -70,7 +70,7 @@ pub(super) fn stats_column_width(info: &DetailInfo) -> (u16, u16) {
 }
 
 /// Shared style constants for detail panel rendering.
-pub(in crate::tui) struct RenderStyles {
+pub struct RenderStyles {
     pub readonly_label:  Style,
     pub active_border:   Style,
     pub inactive_border: Style,
@@ -86,18 +86,13 @@ enum GitPresence {
 struct DetailLayoutSpec {
     constraints: Vec<Constraint>,
     git_col:     Option<usize>,
-    targets_col: Option<usize>,
-    max_col:     usize,
 }
 
 fn detail_layout_spec(git: GitPresence) -> DetailLayoutSpec {
     let has_git = matches!(git, GitPresence::Available);
-    let max_col = usize::from(has_git);
     DetailLayoutSpec {
         constraints: vec![Constraint::Percentage(50), Constraint::Percentage(50)],
-        git_col: if has_git { Some(1) } else { None },
-        targets_col: None,
-        max_col,
+        git_col:     if has_git { Some(1) } else { None },
     }
 }
 
@@ -755,7 +750,7 @@ fn render_bottom_connector(frame: &mut Frame, area: Rect, connector_x: u16, styl
     );
 }
 
-pub(in crate::tui) fn render_targets_panel(
+pub fn render_targets_panel(
     frame: &mut Frame,
     app: &mut App,
     info: &DetailInfo,

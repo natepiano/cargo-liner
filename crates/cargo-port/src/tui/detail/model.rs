@@ -15,6 +15,7 @@ use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::ExampleGroup;
 use crate::project::GitPathState;
+use crate::project::LangEntry;
 use crate::project::NonRustProject;
 use crate::project::PackageProject;
 use crate::project::ProjectFields;
@@ -467,7 +468,7 @@ pub struct DetailInfo {
     /// Whether this project declares `[package]` (has version/description fields).
     pub has_package:       bool,
     /// Top 2 languages by LOC from tokei scan.
-    pub lang_stats_rows:   Vec<crate::project::LangEntry>,
+    pub lang_stats_rows:   Vec<LangEntry>,
 }
 
 /// Resolve the title shown in the `Package` column header.

@@ -12,6 +12,7 @@ use crate::project::PackageProject;
 use crate::project::ProjectFields;
 use crate::project::ProjectInfo;
 use crate::project::RootItem;
+use crate::project::RustInfo;
 use crate::project::RustProject;
 use crate::project::Visibility;
 use crate::project::WorkspaceProject;
@@ -241,16 +242,13 @@ impl ProjectList {
             .find_map(|item| item.at_path_mut(target))
     }
 
-    pub(crate) fn rust_info_at_path(&self, target: &Path) -> Option<&crate::project::RustInfo> {
+    pub(crate) fn rust_info_at_path(&self, target: &Path) -> Option<&RustInfo> {
         self.root_items
             .iter()
             .find_map(|item| item.rust_info_at_path(target))
     }
 
-    pub(crate) fn rust_info_at_path_mut(
-        &mut self,
-        target: &Path,
-    ) -> Option<&mut crate::project::RustInfo> {
+    pub(crate) fn rust_info_at_path_mut(&mut self, target: &Path) -> Option<&mut RustInfo> {
         self.root_items
             .iter_mut()
             .find_map(|item| item.rust_info_at_path_mut(target))
