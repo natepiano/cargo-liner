@@ -262,8 +262,8 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::sync::OnceLock;
     use std::sync::mpsc;
+    use std::sync::OnceLock;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -272,8 +272,8 @@ mod tests {
     use crossterm::event::MouseButton;
     use crossterm::event::MouseEvent;
     use crossterm::event::MouseEventKind;
-    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
 
     use super::UiTarget;
     use crate::ci::CiJob;
@@ -455,17 +455,10 @@ mod tests {
 
     fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
         app.ensure_detail_cached();
-        app.pane_manager_mut().ci_data = Some(crate::tui::detail::CiData {
-            runs:            runs.to_vec(),
-            mode_label:      None,
-            has_project:     true,
-            has_ci_owner:    true,
-            has_git:         true,
-            has_url:         true,
-            is_local_origin: false,
-            has_workflows:   true,
-            scan_complete:   true,
-        });
+        if let Some(ci_data) = app.pane_manager_mut().ci_data.as_mut() {
+            ci_data.runs = runs.to_vec();
+            ci_data.mode_label = None;
+        }
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
         terminal

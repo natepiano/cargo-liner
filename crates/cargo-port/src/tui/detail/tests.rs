@@ -1,5 +1,7 @@
 use ratatui::text::Line;
 
+use super::GitData;
+use super::PackageData;
 use super::model;
 use super::model::DetailField;
 use crate::ci::CiJob;
@@ -8,8 +10,6 @@ use crate::ci::Conclusion;
 use crate::ci::FetchStatus::Fetched;
 use crate::project::GitPathState;
 use crate::tui::constants::LABEL_COLOR;
-use crate::tui::detail::GitData;
-use crate::tui::detail::PackageData;
 use crate::tui::panes;
 use crate::tui::panes::CI_COMPACT_DURATION_WIDTH;
 use crate::tui::render::CiColumn;

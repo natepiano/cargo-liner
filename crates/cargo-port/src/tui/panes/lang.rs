@@ -12,16 +12,16 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
-use super::super::app::App;
-use super::super::constants::COLUMN_HEADER_COLOR;
-use super::super::constants::LABEL_COLOR;
-use super::super::constants::TITLE_COLOR;
-use super::super::render;
-use super::super::types::Pane;
-use super::super::types::PaneId;
 use super::package::RenderStyles;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
+use crate::tui::app::App;
+use crate::tui::constants::COLUMN_HEADER_COLOR;
+use crate::tui::constants::LABEL_COLOR;
+use crate::tui::constants::TITLE_COLOR;
+use crate::tui::render;
+use crate::tui::types::Pane;
+use crate::tui::types::PaneId;
 
 /// Fixed numeric column width for language stats.
 const LANG_NUM_COL: u16 = 8;

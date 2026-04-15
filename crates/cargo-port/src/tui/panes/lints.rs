@@ -13,24 +13,24 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
-use super::super::app::App;
-use super::super::constants::ACCENT_COLOR;
-use super::super::constants::ACTIVE_BORDER_COLOR;
-use super::super::constants::COLUMN_HEADER_COLOR;
-use super::super::constants::ERROR_COLOR;
-use super::super::constants::INACTIVE_BORDER_COLOR;
-use super::super::constants::LABEL_COLOR;
-use super::super::constants::SUCCESS_COLOR;
-use super::super::constants::TITLE_COLOR;
-use super::super::detail;
-use super::super::detail::LintsData;
-use super::super::interaction;
-use super::super::interaction::UiSurface::Content;
-use super::super::types::Pane;
-use super::super::types::PaneId;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::tui::LINT_SPINNER;
+use crate::tui::app::App;
+use crate::tui::constants::ACCENT_COLOR;
+use crate::tui::constants::ACTIVE_BORDER_COLOR;
+use crate::tui::constants::COLUMN_HEADER_COLOR;
+use crate::tui::constants::ERROR_COLOR;
+use crate::tui::constants::INACTIVE_BORDER_COLOR;
+use crate::tui::constants::LABEL_COLOR;
+use crate::tui::constants::SUCCESS_COLOR;
+use crate::tui::constants::TITLE_COLOR;
+use crate::tui::detail;
+use crate::tui::detail::LintsData;
+use crate::tui::interaction;
+use crate::tui::interaction::UiSurface::Content;
+use crate::tui::types::Pane;
+use crate::tui::types::PaneId;
 
 fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
     if data.runs.is_empty() {

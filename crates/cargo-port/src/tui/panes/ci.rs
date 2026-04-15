@@ -11,24 +11,24 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
-use super::super::app::App;
-use super::super::constants::ACTIVE_BORDER_COLOR;
-use super::super::constants::CI_TIMESTAMP_WIDTH;
-use super::super::constants::COLUMN_HEADER_COLOR;
-use super::super::constants::INACTIVE_BORDER_COLOR;
-use super::super::constants::LABEL_COLOR;
-use super::super::constants::TITLE_COLOR;
-use super::super::detail;
-use super::super::detail::CiData;
-use super::super::interaction;
-use super::super::interaction::UiSurface;
-use super::super::render;
-use super::super::render::CiColumn;
-use super::super::types::Pane;
-use super::super::types::PaneId;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
+use crate::tui::app::App;
+use crate::tui::constants::ACTIVE_BORDER_COLOR;
+use crate::tui::constants::CI_TIMESTAMP_WIDTH;
+use crate::tui::constants::COLUMN_HEADER_COLOR;
+use crate::tui::constants::INACTIVE_BORDER_COLOR;
+use crate::tui::constants::LABEL_COLOR;
+use crate::tui::constants::TITLE_COLOR;
+use crate::tui::detail;
+use crate::tui::detail::CiData;
+use crate::tui::interaction;
+use crate::tui::interaction::UiSurface;
+use crate::tui::render;
+use crate::tui::render::CiColumn;
+use crate::tui::types::Pane;
+use crate::tui::types::PaneId;
 
 fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
     let right_aligned = Style::default()
@@ -240,21 +240,7 @@ fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
     }
 }
 
-fn empty_ci_title(data: &CiData) -> &'static str {
-    if data.has_project && !data.has_ci_owner {
-        " CI Runs — shown on branch/worktree rows "
-    } else if !data.has_git {
-        " CI Runs — not a git repository "
-    } else if data.is_local_origin || !data.has_url {
-        " CI Runs — requires a GitHub origin remote "
-    } else if !data.has_workflows {
-        " No CI workflow configured "
-    } else if !data.scan_complete {
-        " CI Runs — loading… "
-    } else {
-        " No CI Runs "
-    }
-}
+const fn empty_ci_title(data: &CiData) -> &'static str { data.empty_state.title() }
 
 pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(ci_data) = app.pane_manager().ci_data.clone() else {

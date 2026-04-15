@@ -17,23 +17,23 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
-use super::super::app::App;
-use super::super::constants::ACCENT_COLOR;
-use super::super::constants::ACTIVE_BORDER_COLOR;
-use super::super::constants::ERROR_COLOR;
-use super::super::constants::INACTIVE_BORDER_COLOR;
-use super::super::constants::LABEL_COLOR;
-use super::super::constants::SUCCESS_COLOR;
-use super::super::constants::TITLE_COLOR;
-use super::super::detail;
-use super::super::detail::DetailField;
-use super::super::detail::PackageData;
-use super::super::detail::TargetsData;
-use super::super::render;
-use super::super::types::Pane;
-use super::super::types::PaneFocusState;
-use super::super::types::PaneId;
 use crate::constants::NO_LINT_RUNS;
+use crate::tui::app::App;
+use crate::tui::constants::ACCENT_COLOR;
+use crate::tui::constants::ACTIVE_BORDER_COLOR;
+use crate::tui::constants::ERROR_COLOR;
+use crate::tui::constants::INACTIVE_BORDER_COLOR;
+use crate::tui::constants::LABEL_COLOR;
+use crate::tui::constants::SUCCESS_COLOR;
+use crate::tui::constants::TITLE_COLOR;
+use crate::tui::detail;
+use crate::tui::detail::DetailField;
+use crate::tui::detail::PackageData;
+use crate::tui::detail::TargetsData;
+use crate::tui::render;
+use crate::tui::types::Pane;
+use crate::tui::types::PaneFocusState;
+use crate::tui::types::PaneId;
 
 /// Shared style constants for pane rendering.
 pub struct RenderStyles {

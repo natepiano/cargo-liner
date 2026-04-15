@@ -10,24 +10,22 @@ use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use super::super::app::App;
-use super::super::constants::ACTIVE_BORDER_COLOR;
-use super::super::constants::ERROR_COLOR;
-use super::super::constants::INACTIVE_BORDER_COLOR;
-use super::super::constants::LABEL_COLOR;
-use super::super::constants::SUCCESS_COLOR;
-use super::super::constants::TITLE_COLOR;
-use super::super::detail;
-use super::super::detail::DetailField;
-use super::super::detail::GitData;
-use super::super::types::Pane;
-use super::super::types::PaneFocusState;
-use super::super::types::PaneId;
+use super::package;
 use super::package::RenderStyles;
-use super::package::detail_column_scroll_offset;
-use super::package::hard_wrap;
-use super::package::word_wrap;
 use crate::constants::IN_SYNC;
+use crate::tui::app::App;
+use crate::tui::constants::ACTIVE_BORDER_COLOR;
+use crate::tui::constants::ERROR_COLOR;
+use crate::tui::constants::INACTIVE_BORDER_COLOR;
+use crate::tui::constants::LABEL_COLOR;
+use crate::tui::constants::SUCCESS_COLOR;
+use crate::tui::constants::TITLE_COLOR;
+use crate::tui::detail;
+use crate::tui::detail::DetailField;
+use crate::tui::detail::GitData;
+use crate::tui::types::Pane;
+use crate::tui::types::PaneFocusState;
+use crate::tui::types::PaneId;
 
 struct GitRenderCtx<'a> {
     data:   &'a GitData,
@@ -114,9 +112,9 @@ fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect
             if avail > 0 && value.width() > avail {
                 let wrapped =
                     if matches!(*field, DetailField::RepoDesc | DetailField::WorktreeError) {
-                        word_wrap(&value, avail)
+                        package::word_wrap(&value, avail)
                     } else {
-                        hard_wrap(&value, avail)
+                        package::hard_wrap(&value, avail)
                     };
                 for (wi, chunk) in wrapped.iter().enumerate() {
                     if wi == 0 {
@@ -147,7 +145,7 @@ fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect
 
     append_worktree_lines(&mut lines, &ctx.data.worktree_names);
 
-    let scroll_y = detail_column_scroll_offset(focus, focused_output_line, area.height);
+    let scroll_y = package::detail_column_scroll_offset(focus, focused_output_line, area.height);
     frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
     usize::from(scroll_y)
 }

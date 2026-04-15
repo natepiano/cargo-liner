@@ -508,20 +508,37 @@ impl TargetsData {
 }
 
 #[derive(Clone)]
+pub enum CiEmptyState {
+    BranchScopedOnly,
+    Loading,
+    NoRuns,
+    NoWorkflowConfigured,
+    NotGitRepo,
+    RequiresGithubRemote,
+}
+
+impl CiEmptyState {
+    pub const fn title(&self) -> &'static str {
+        match self {
+            Self::BranchScopedOnly => " CI Runs — shown on branch/worktree rows ",
+            Self::Loading => " CI Runs — loading… ",
+            Self::NoRuns => " No CI Runs ",
+            Self::NoWorkflowConfigured => " No CI workflow configured ",
+            Self::NotGitRepo => " CI Runs — not a git repository ",
+            Self::RequiresGithubRemote => " CI Runs — requires a GitHub origin remote ",
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct CiData {
-    pub runs:            Vec<CiRun>,
-    pub mode_label:      Option<String>,
-    pub has_project:     bool,
-    pub has_ci_owner:    bool,
-    pub has_git:         bool,
-    pub has_url:         bool,
-    pub is_local_origin: bool,
-    pub has_workflows:   bool,
-    pub scan_complete:   bool,
+    pub runs:        Vec<CiRun>,
+    pub mode_label:  Option<String>,
+    pub empty_state: CiEmptyState,
 }
 
 impl CiData {
-    pub fn has_runs(&self) -> bool { !self.runs.is_empty() }
+    pub const fn has_runs(&self) -> bool { !self.runs.is_empty() }
 }
 
 #[derive(Clone)]
@@ -531,7 +548,7 @@ pub struct LintsData {
 }
 
 impl LintsData {
-    pub fn has_runs(&self) -> bool { !self.runs.is_empty() }
+    pub const fn has_runs(&self) -> bool { !self.runs.is_empty() }
 }
 
 pub struct DetailPaneData {
@@ -981,9 +998,23 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 
 pub fn build_ci_data(app: &App) -> CiData {
     let selected_path = app.selected_project_path();
-    let has_project = selected_path.is_some();
     let has_ci_owner = app.selected_ci_path().is_some();
     let git_info = selected_path.and_then(|path| app.git_info_for(path));
+    let empty_state = if selected_path.is_some() && !has_ci_owner {
+        CiEmptyState::BranchScopedOnly
+    } else if git_info.is_none() {
+        CiEmptyState::NotGitRepo
+    } else if has_ci_owner
+        && git_info.is_some_and(|g| g.origin == GitOrigin::Local || g.url.is_none())
+    {
+        CiEmptyState::RequiresGithubRemote
+    } else if git_info.is_some_and(|g| !g.workflows.is_present()) {
+        CiEmptyState::NoWorkflowConfigured
+    } else if !app.is_scan_complete() {
+        CiEmptyState::Loading
+    } else {
+        CiEmptyState::NoRuns
+    };
 
     CiData {
         runs: app.selected_ci_runs(),
@@ -991,13 +1022,7 @@ pub fn build_ci_data(app: &App) -> CiData {
             app.ci_toggle_available_for(path)
                 .then(|| app.ci_display_mode_label_for(path).to_string())
         }),
-        has_project,
-        has_ci_owner,
-        has_git: git_info.is_some(),
-        has_url: has_ci_owner && git_info.is_some_and(|g| g.url.is_some()),
-        is_local_origin: has_ci_owner && git_info.is_some_and(|g| g.origin == GitOrigin::Local),
-        has_workflows: git_info.is_some_and(|g| g.workflows.is_present()),
-        scan_complete: app.is_scan_complete(),
+        empty_state,
     }
 }
 
