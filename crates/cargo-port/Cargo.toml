@@ -28,7 +28,7 @@ serde              = { version = "1", features = ["derive"] }
 serde_json         = "1"
 sha2               = "0.11.0"
 strum              = { version = "0.28.0", features = ["derive"] }
-tokei = "14.0.0"
+tokei              = "14.0.0"
 tokio              = { version = "1", features = ["rt-multi-thread"] }
 toml               = "1.1.2"
 tracing            = "0.1.44"
