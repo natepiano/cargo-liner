@@ -1292,9 +1292,7 @@ mod tests {
         struct DropSignal(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
         impl Drop for DropSignal {
-            fn drop(&mut self) {
-                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
-            }
+            fn drop(&mut self) { self.0.store(true, std::sync::atomic::Ordering::SeqCst); }
         }
 
         let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1306,10 +1304,10 @@ mod tests {
 
         spawn_watcher_thread(
             WatcherLoopContext {
-                watch_roots:  Vec::new(),
+                watch_roots: Vec::new(),
                 bg_tx,
                 ci_run_count: 0,
-                non_rust:     NonRustInclusion::Exclude,
+                non_rust: NonRustInclusion::Exclude,
                 client,
             },
             watch_rx,
