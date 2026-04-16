@@ -638,6 +638,61 @@ fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
 }
 
 #[test]
+fn background_git_info_updates_rendered_git_path_state() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    app.scan.phase = ScanPhase::Complete;
+
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::GitInfo {
+            path: project.path().to_path_buf().into(),
+            info: GitInfo {
+                path_state:          GitPathState::Modified,
+                origin:              GitOrigin::Clone,
+                branch:              Some("feat/demo".to_string()),
+                owner:               None,
+                url:                 Some("https://github.com/acme/demo".to_string()),
+                first_commit:        None,
+                last_commit:         None,
+                ahead_behind:        Some((1, 0)),
+                upstream_branch:     Some("origin/main".to_string()),
+                default_branch:      Some("main".to_string()),
+                ahead_behind_origin: None,
+                local_main_branch:   Some("main".to_string()),
+                ahead_behind_local:  None,
+                workflows:           WorkflowPresence::Present,
+            },
+        },
+    );
+    assert_eq!(app.git_path_state_for(project.path()), GitPathState::Modified);
+
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::GitInfo {
+            path: project.path().to_path_buf().into(),
+            info: GitInfo {
+                path_state:          GitPathState::Clean,
+                origin:              GitOrigin::Clone,
+                branch:              Some("feat/demo".to_string()),
+                owner:               None,
+                url:                 Some("https://github.com/acme/demo".to_string()),
+                first_commit:        None,
+                last_commit:         None,
+                ahead_behind:        Some((1, 0)),
+                upstream_branch:     Some("origin/main".to_string()),
+                default_branch:      Some("main".to_string()),
+                ahead_behind_origin: None,
+                local_main_branch:   Some("main".to_string()),
+                ahead_behind_local:  None,
+                workflows:           WorkflowPresence::Present,
+            },
+        },
+    );
+    assert_eq!(app.git_path_state_for(project.path()), GitPathState::Clean);
+}
+
+#[test]
 fn git_sync_shows_ascii_fill_for_local_only_branch() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));

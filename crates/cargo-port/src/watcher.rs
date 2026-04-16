@@ -331,7 +331,7 @@ fn apply_watch_request(
     req: WatchRequest,
     projects: &mut HashMap<AbsolutePath, ProjectEntry>,
     project_parents: &mut HashSet<AbsolutePath>,
-    watched_git_metadata: &mut HashSet<AbsolutePath>,
+    _watched_git_metadata: &mut HashSet<AbsolutePath>,
 ) {
     if let Some(parent) = req.abs_path.parent() {
         project_parents.insert(AbsolutePath::from(parent));
@@ -341,13 +341,7 @@ fn apply_watch_request(
         .repo_root
         .as_deref()
         .and_then(project::resolve_common_git_dir);
-    watch_git_metadata_paths(
-        watcher,
-        &req,
-        git_dir.as_deref(),
-        common_git_dir.as_deref(),
-        watched_git_metadata,
-    );
+    let _ = watcher;
     projects.insert(
         req.abs_path.clone(),
         ProjectEntry {
@@ -476,77 +470,6 @@ fn drain_completed_refreshes(
     while let Ok(repo_root) = git_done_rx.try_recv() {
         handle_git_completion(pending_git, repo_root);
     }
-}
-
-fn watch_git_metadata_paths(
-    watcher: &mut impl Watcher,
-    req: &WatchRequest,
-    git_dir: Option<&Path>,
-    common_git_dir: Option<&Path>,
-    watched_git_metadata: &mut HashSet<AbsolutePath>,
-) {
-    let started = Instant::now();
-    let Some(repo_root) = req.repo_root.as_deref() else {
-        return;
-    };
-
-    let metadata_paths = git_metadata_watch_paths(repo_root, git_dir, common_git_dir);
-    let mut added = 0;
-    for (path, mode) in metadata_paths {
-        if watched_git_metadata.insert(path.clone()) {
-            let _ = watcher.watch(&path, mode);
-            added += 1;
-        }
-    }
-    tracing::info!(
-        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
-        repo_root = %repo_root.display(),
-        request_path = %req.project_label,
-        added,
-        "watcher_watch_git_metadata"
-    );
-}
-
-fn git_metadata_watch_paths(
-    repo_root: &Path,
-    git_dir: Option<&Path>,
-    common_git_dir: Option<&Path>,
-) -> Vec<(AbsolutePath, RecursiveMode)> {
-    let mut paths = vec![(
-        AbsolutePath::from(repo_root.join(".gitignore")),
-        RecursiveMode::NonRecursive,
-    )];
-    if let Some(git_dir) = git_dir {
-        paths.push((
-            AbsolutePath::from(git_dir.join("HEAD")),
-            RecursiveMode::NonRecursive,
-        ));
-        paths.push((
-            AbsolutePath::from(git_dir.join("index")),
-            RecursiveMode::NonRecursive,
-        ));
-        let info = git_dir.join("info");
-        paths.push((
-            AbsolutePath::from(info.join("exclude")),
-            RecursiveMode::NonRecursive,
-        ));
-        paths.push((AbsolutePath::from(info), RecursiveMode::NonRecursive));
-    }
-    if let Some(common_git_dir) = common_git_dir {
-        paths.push((
-            AbsolutePath::from(common_git_dir.join("packed-refs")),
-            RecursiveMode::NonRecursive,
-        ));
-        paths.push((
-            AbsolutePath::from(common_git_dir.join("refs").join("heads")),
-            RecursiveMode::Recursive,
-        ));
-        paths.push((
-            AbsolutePath::from(common_git_dir.join("refs").join("remotes")),
-            RecursiveMode::Recursive,
-        ));
-    }
-    paths
 }
 
 /// Immutable state needed to classify a filesystem event.
@@ -1277,20 +1200,177 @@ fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<RootItem> {
 )]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
+    use std::path::Path;
     use std::path::PathBuf;
     use std::process::Command;
+    use std::sync::Condvar;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::OnceLock;
     use std::time::Duration;
 
+    use notify::Config;
+
     use super::*;
     use crate::lint;
+
+    struct NoopWatcher;
+
+    impl Watcher for NoopWatcher {
+        fn kind() -> notify::WatcherKind { notify::WatcherKind::NullWatcher }
+
+        fn new<F: notify::EventHandler>(_: F, _: Config) -> notify::Result<Self>
+        where
+            Self: Sized,
+        {
+            Ok(Self)
+        }
+
+        fn watch(&mut self, _: &Path, _: RecursiveMode) -> notify::Result<()> { Ok(()) }
+
+        fn unwatch(&mut self, _: &Path) -> notify::Result<()> { Ok(()) }
+    }
+
+    struct BlockingWatcher {
+        state: Arc<(Mutex<BlockingWatcherState>, Condvar)>,
+    }
+
+    struct BlockingWatcherState {
+        watch_calls: usize,
+        block_on_call: Option<usize>,
+        release_block: bool,
+    }
+
+    impl BlockingWatcher {
+        fn new_with_state(
+            state: Arc<(Mutex<BlockingWatcherState>, Condvar)>,
+        ) -> Self {
+            Self { state }
+        }
+    }
+
+    impl Watcher for BlockingWatcher {
+        fn kind() -> notify::WatcherKind { notify::WatcherKind::NullWatcher }
+
+        fn new<F: notify::EventHandler>(_: F, _: Config) -> notify::Result<Self>
+        where
+            Self: Sized,
+        {
+            let state = BlockingWatcherState {
+                watch_calls:   0,
+                block_on_call: None,
+                release_block: false,
+            };
+            Ok(Self {
+                state: Arc::new((Mutex::new(state), Condvar::new())),
+            })
+        }
+
+        fn watch(&mut self, _: &Path, _: RecursiveMode) -> notify::Result<()> {
+            let (lock, cvar) = &*self.state;
+            let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.watch_calls += 1;
+            let should_block = state.block_on_call == Some(state.watch_calls);
+            if should_block {
+                while !state.release_block {
+                    state = cvar
+                        .wait(state)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+            }
+            Ok(())
+        }
+
+        fn unwatch(&mut self, _: &Path) -> notify::Result<()> { Ok(()) }
+    }
 
     fn test_runtime() -> &'static tokio::runtime::Runtime {
         static TEST_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
         TEST_RT.get_or_init(|| {
             tokio::runtime::Runtime::new().unwrap_or_else(|_| std::process::abort())
         })
+    }
+
+    #[test]
+    fn initial_registration_complete_transitions_watcher_out_of_initializing() {
+        let mut watcher = NoopWatcher;
+        let (watch_tx, watch_rx) = mpsc::channel();
+        let mut projects = HashMap::new();
+        let mut project_parents = HashSet::new();
+        let mut watched_git_metadata = HashSet::new();
+        let mut initializing = true;
+
+        watch_tx
+            .send(WatcherMsg::InitialRegistrationComplete)
+            .expect("send registration complete");
+
+        let drained = drain_watch_messages(
+            &mut watcher,
+            &watch_rx,
+            &mut projects,
+            &mut project_parents,
+            &mut watched_git_metadata,
+            &mut initializing,
+        );
+
+        assert!(drained.registration_completed);
+        assert!(!initializing);
+    }
+
+    #[test]
+    fn registration_batch_completes_without_metadata_watch_calls() {
+        let shared = Arc::new((
+            Mutex::new(BlockingWatcherState {
+                watch_calls:   0,
+                block_on_call: Some(1),
+                release_block: false,
+            }),
+            Condvar::new(),
+        ));
+        let mut watcher = BlockingWatcher::new_with_state(Arc::clone(&shared));
+        let (watch_tx, watch_rx) = mpsc::channel();
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        init_git_repo(project_dir.path());
+
+        watch_tx
+            .send(WatcherMsg::Register(WatchRequest {
+                project_label: project_dir.path().display().to_string(),
+                abs_path:      AbsolutePath::from(project_dir.path()),
+                repo_root:     Some(AbsolutePath::from(project_dir.path())),
+            }))
+            .expect("send register");
+        watch_tx
+            .send(WatcherMsg::InitialRegistrationComplete)
+            .expect("send registration complete");
+
+        let (result_tx, result_rx) = mpsc::channel();
+        let watch_thread = std::thread::spawn(move || {
+            let mut projects = HashMap::new();
+            let mut project_parents = HashSet::new();
+            let mut watched_git_metadata = HashSet::new();
+            let mut initializing = true;
+            let drained = drain_watch_messages(
+                &mut watcher,
+                &watch_rx,
+                &mut projects,
+                &mut project_parents,
+                &mut watched_git_metadata,
+                &mut initializing,
+            );
+            let _ = result_tx.send((drained, initializing));
+        });
+
+        let (drained, initializing) = result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("drain result without blocking");
+        watch_thread.join().expect("watch thread join");
+
+        assert!(drained.registration_completed);
+        assert!(!initializing);
+
+        let (lock, _) = &*shared;
+        let state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.watch_calls, 0);
     }
 
     fn wait_for_completion<T>(rx: &mpsc::Receiver<T>) {
@@ -1701,6 +1781,113 @@ mod tests {
         assert_pending_disk(&pending_disk, "~/rust/bevy");
         assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());
+    }
+
+    #[test]
+    fn tracked_file_edit_and_revert_refresh_git_path_state() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("demo");
+        std::fs::create_dir_all(project_dir.join("src")).expect("create src");
+        std::fs::write(project_dir.join("src").join("main.rs"), "fn main() {}\n").expect("write");
+        init_git_repo(&project_dir);
+
+        let mut projects = HashMap::new();
+        projects.insert(
+            AbsolutePath::from(project_dir.clone()),
+            ProjectEntry {
+                project_label:  "~/demo".to_string(),
+                abs_path:       AbsolutePath::from(project_dir.clone()),
+                repo_root:      Some(AbsolutePath::from(project_dir.clone())),
+                git_dir:        Some(AbsolutePath::from(project_dir.join(".git"))),
+                common_git_dir: Some(AbsolutePath::from(project_dir.join(".git"))),
+            },
+        );
+        let watch_roots = vec![AbsolutePath::from(tmp.path())];
+        let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let (git_done_tx, git_done_rx) = mpsc::channel();
+        let git_limit = Arc::new(tokio::sync::Semaphore::new(1));
+
+        let run_refresh = |event_path: &Path,
+                           expected: crate::project::GitPathState,
+                           pending_disk: &mut HashMap<String, DiskState>,
+                           pending_git: &mut HashMap<AbsolutePath, GitRefreshState>,
+                           pending_new: &mut HashMap<AbsolutePath, Instant>| {
+            handle_event(
+                event_path,
+                &ctx,
+                &bg_tx,
+                pending_disk,
+                pending_git,
+                pending_new,
+            );
+            let past = Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .expect("1s subtraction should not underflow");
+            let Some(GitRefreshState::Pending {
+                debounce_deadline,
+                max_deadline,
+                ..
+            }) = pending_git.get_mut(project_dir.as_path()) else {
+                panic!("expected pending git refresh for tracked file event");
+            };
+            *debounce_deadline = past;
+            *max_deadline = past;
+            fire_git_updates(
+                test_runtime().handle(),
+                &git_limit,
+                &git_done_tx,
+                &bg_tx,
+                &projects,
+                pending_git,
+            );
+            let messages = collect_messages_until(
+                &bg_rx,
+                |msg| matches!(msg, BackgroundMsg::GitInfo { path, .. } if *path == *project_dir),
+            );
+            let git_msg = messages
+                .into_iter()
+                .find_map(|msg| match msg {
+                    BackgroundMsg::GitInfo { path, info } if path == AbsolutePath::from(project_dir.clone()) => Some(info),
+                    _ => None,
+                })
+                .expect("git info message for project");
+            assert_eq!(git_msg.path_state, expected);
+            let repo_root = git_done_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("git refresh completion");
+            handle_git_completion(pending_git, repo_root);
+        };
+
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+
+        std::fs::write(project_dir.join("src").join("main.rs"), "fn main() { println!(\"changed\"); }\n")
+            .expect("modify file");
+        run_refresh(
+            &project_dir.join("src").join("main.rs"),
+            crate::project::GitPathState::Modified,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        std::fs::write(project_dir.join("src").join("main.rs"), "fn main() {}\n").expect("revert file");
+        run_refresh(
+            &project_dir.join("src").join("main.rs"),
+            crate::project::GitPathState::Clean,
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
     }
 
     #[test]
@@ -3047,4 +3234,5 @@ edition = "2024"
              but got: {pending_new:?}"
         );
     }
+
 }
