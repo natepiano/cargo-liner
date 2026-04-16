@@ -78,7 +78,7 @@ fn tabbable_panes_follow_canonical_order() {
 
     let mut app = make_app(std::slice::from_ref(&project));
     app.toasts = ToastManager::default();
-    app.pane_manager.toasts.set_len(0);
+    app.pane_manager.pane_mut(PaneId::Toasts).set_len(0);
     app.scan.phase = ScanPhase::Complete;
     app.handle_git_info(
         project.path(),
@@ -154,7 +154,7 @@ fn project_refresh_updates_selected_tree_project_targets() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
     app.scan.phase = ScanPhase::Complete;
-    app.list_state.select(Some(0));
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
     app.sync_selected_project();
 
     app.ensure_detail_cached();
@@ -206,7 +206,7 @@ fn first_non_empty_tree_build_focuses_project_list() {
     apply_items(&mut app, &[project]);
 
     assert_eq!(app.focused_pane, PaneId::ProjectList);
-    assert_eq!(app.list_state.selected(), Some(0));
+    assert_eq!(app.pane_manager.pane(PaneId::ProjectList).pos(), 0);
 }
 
 #[test]
@@ -265,18 +265,17 @@ fn project_change_resets_project_dependent_panes() {
     app.focus_pane(PaneId::Git);
     app.focus_pane(PaneId::Targets);
     app.focus_pane(PaneId::CiRuns);
-    app.pane_manager.package.set_pos(3);
-    app.pane_manager.git.set_pos(4);
-    app.pane_manager.targets.set_pos(5);
-    app.pane_manager.ci.set_pos(6);
-
-    app.list_state.select(Some(1));
+    app.pane_manager.pane_mut(PaneId::Package).set_pos(3);
+    app.pane_manager.pane_mut(PaneId::Git).set_pos(4);
+    app.pane_manager.pane_mut(PaneId::Targets).set_pos(5);
+    app.pane_manager.pane_mut(PaneId::CiRuns).set_pos(6);
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(1);
     app.sync_selected_project();
 
-    assert_eq!(app.pane_manager.package.pos(), 0);
-    assert_eq!(app.pane_manager.git.pos(), 0);
-    assert_eq!(app.pane_manager.targets.pos(), 0);
-    assert_eq!(app.pane_manager.ci.pos(), 0);
+    assert_eq!(app.pane_manager.pane(PaneId::Package).pos(), 0);
+    assert_eq!(app.pane_manager.pane(PaneId::Git).pos(), 0);
+    assert_eq!(app.pane_manager.pane(PaneId::Targets).pos(), 0);
+    assert_eq!(app.pane_manager.pane(PaneId::CiRuns).pos(), 0);
     assert!(!app.remembers_selection(PaneId::Package));
     assert!(!app.remembers_selection(PaneId::Git));
     assert!(!app.remembers_selection(PaneId::Targets));
@@ -374,7 +373,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         "deleted top-level project should still render before dismiss"
     );
 
-    app.list_state.select(Some(0));
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
     assert!(
         app.focused_dismiss_target().is_some(),
         "deleted top-level project should expose dismiss affordance"
@@ -457,7 +456,7 @@ fn top_level_deleted_project_can_be_dismissed_and_stops_rendering() {
         Deleted
     );
 
-    app.list_state.select(Some(0));
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
     let target = app
         .focused_dismiss_target()
         .expect("deleted top-level project should be dismissable");

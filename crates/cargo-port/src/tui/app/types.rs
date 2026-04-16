@@ -12,7 +12,6 @@ use crate::tui::columns::ResolvedWidths;
 use crate::tui::finder::FINDER_COLUMN_COUNT;
 use crate::tui::finder::FinderItem;
 use crate::tui::toasts::ToastTaskId;
-use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
 
 /// An expand key: a node, group, worktree entry, or group within a worktree.
@@ -58,15 +57,6 @@ pub(in super::super) struct DiskCacheBuildResult {
     pub child_sorted: HashMap<usize, Vec<u64>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SearchHit {
-    pub abs_path:     AbsolutePath,
-    pub display_path: String,
-    pub name:         String,
-    pub score:        u16,
-    pub is_rust:      bool,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in super::super) struct DiscoveryShimmer {
     pub started_at: Instant,
@@ -91,7 +81,6 @@ pub enum DiscoveryRowKind {
     Root,
     WorktreeEntry,
     PathOnly,
-    Search,
 }
 
 #[derive(Debug, Default)]
@@ -131,17 +120,6 @@ impl Dirtiness {
     pub(in super::super) const fn mark_dirty(&mut self) { *self = Self::Dirty; }
 
     pub(in super::super) const fn mark_clean(&mut self) { *self = Self::Clean; }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SearchMode {
-    #[default]
-    Inactive,
-    Active,
-}
-
-impl SearchMode {
-    pub const fn is_active(self) -> bool { matches!(self, Self::Active) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -259,7 +237,6 @@ impl DirtyState {
 
 #[derive(Debug, Default)]
 pub(in super::super) struct UiModes {
-    pub search:   SearchMode,
     pub finder:   FinderMode,
     pub settings: SettingsMode,
     pub keymap:   KeymapMode,
@@ -306,7 +283,6 @@ pub(in super::super) struct FinderState {
     pub query:      String,
     pub results:    Vec<usize>,
     pub total:      usize,
-    pub pane:       Pane,
     pub index:      Vec<FinderItem>,
     pub col_widths: [usize; FINDER_COLUMN_COUNT],
 }
@@ -317,7 +293,6 @@ impl FinderState {
             query:      String::new(),
             results:    Vec::new(),
             total:      0,
-            pane:       Pane::new(),
             index:      Vec::new(),
             col_widths: [0; FINDER_COLUMN_COUNT],
         }

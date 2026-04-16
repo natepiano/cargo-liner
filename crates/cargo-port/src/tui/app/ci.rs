@@ -12,6 +12,7 @@ use crate::project::ProjectFields;
 use crate::scan;
 use crate::scan::CiFetchResult;
 use crate::tui::detail::CiFetchKind;
+use crate::tui::types::PaneId;
 
 impl App {
     pub(super) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<ci::OwnerRepo> {
@@ -200,7 +201,9 @@ impl App {
             },
         };
 
-        self.pane_manager.ci.set_pos(merged.len());
+        self.pane_manager
+            .pane_mut(PaneId::CiRuns)
+            .set_pos(merged.len());
         if let Some(repo) = self.owner_repo_for_path_inner(&abs) {
             let meta = crate::scan::load_cached_repo_data(&self.repo_fetch_cache, &repo)
                 .and_then(|cached| cached.meta);
@@ -273,7 +276,7 @@ impl App {
         };
         self.ci_display_modes
             .insert(AbsolutePath::from(path), new_mode);
-        self.pane_manager.ci.home();
+        self.pane_manager.pane_mut(PaneId::CiRuns).home();
         self.data_generation += 1;
         self.detail_generation += 1;
     }

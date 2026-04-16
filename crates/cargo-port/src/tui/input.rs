@@ -113,10 +113,6 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         settings::handle_settings_key(app, code);
         return;
     }
-    if app.is_searching() {
-        handle_search_key(app, code);
-        return;
-    }
     if handle_global_key(app, &normalized) {
         return;
     }
@@ -130,7 +126,6 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         PaneId::Toasts => handle_toast_key(app, &normalized),
         PaneId::ProjectList
         | PaneId::Output
-        | PaneId::Search
         | PaneId::Settings
         | PaneId::Finder
         | PaneId::Keymap => handle_normal_key(app, &normalized),
@@ -145,7 +140,7 @@ fn bind_from(event: &KeyEvent) -> KeyBind { KeyBind::new(event.code, event.modif
 /// no modifiers are held (so `Ctrl+k` is never eaten by vim mode).
 /// Arrow remapping in list panes also only applies to bare arrows.
 fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
-    if app.is_searching() || app.is_finder_open() || app.is_settings_editing() {
+    if app.is_finder_open() || app.is_settings_editing() {
         return *raw;
     }
 
@@ -235,7 +230,7 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
         if pane_id == PaneId::ProjectList || !pane_rect.contains(pos) {
             continue;
         }
-        let pane = app.pane_manager_mut().by_id_mut(pane_id);
+        let pane = app.pane_manager_mut().pane_mut(pane_id);
         if up {
             pane.up();
         } else {
@@ -256,7 +251,6 @@ const fn pane_label(pane: PaneId) -> &'static str {
         PaneId::CiRuns => "ci_runs",
         PaneId::Output => "output",
         PaneId::Toasts => "toasts",
-        PaneId::Search => "search",
         PaneId::Settings => "settings",
         PaneId::Finder => "finder",
         PaneId::Keymap => "keymap",
@@ -423,7 +417,7 @@ fn open_finder(app: &mut App) {
     finder.query.clear();
     finder.results.clear();
     finder.total = 0;
-    finder.pane.home();
+    app.pane_manager_mut().pane_mut(PaneId::Finder).home();
 }
 
 fn shell_escape_path(path: &Path) -> String {
@@ -504,7 +498,7 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
             app.open_overlay(PaneId::Keymap);
             app.open_keymap();
             app.pane_manager_mut()
-                .keymap
+                .pane_mut(PaneId::Keymap)
                 .set_len(super::keymap_ui::selectable_row_count());
         },
         GlobalAction::Rescan => app.rescan(),
@@ -561,19 +555,21 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
 
 fn handle_toast_key(app: &mut App, event: &KeyEvent) {
     match event.code {
-        KeyCode::Up => app.pane_manager_mut().toasts.up(),
-        KeyCode::Down => app.pane_manager_mut().toasts.down(),
-        KeyCode::Home => app.pane_manager_mut().toasts.home(),
+        KeyCode::Up => app.pane_manager_mut().pane_mut(PaneId::Toasts).up(),
+        KeyCode::Down => app.pane_manager_mut().pane_mut(PaneId::Toasts).down(),
+        KeyCode::Home => app.pane_manager_mut().pane_mut(PaneId::Toasts).home(),
         KeyCode::End => {
             let last_index = app.active_toasts().len().saturating_sub(1);
-            app.pane_manager_mut().toasts.set_pos(last_index);
+            app.pane_manager_mut()
+                .pane_mut(PaneId::Toasts)
+                .set_pos(last_index);
         },
         KeyCode::Enter => {
             // Open action_path if the focused toast has one.
             if let Some(toast) = app
                 .active_toasts()
                 .into_iter()
-                .nth(app.pane_manager().toasts.pos())
+                .nth(app.pane_manager().pane(PaneId::Toasts).pos())
                 && let Some(path) = toast.action_path()
             {
                 let editor = app.editor().to_string();
@@ -582,25 +578,6 @@ fn handle_toast_key(app: &mut App, event: &KeyEvent) {
                     let _ = open_path_in_editor(&editor, &path);
                 });
             }
-        },
-        _ => {},
-    }
-}
-
-fn handle_search_key(app: &mut App, key: KeyCode) {
-    match key {
-        KeyCode::Esc => app.cancel_search(),
-        KeyCode::Enter => app.confirm_search(),
-        KeyCode::Up => app.move_up(),
-        KeyCode::Down => app.move_down(),
-        KeyCode::Backspace => {
-            let mut query = app.search_query().to_string();
-            query.pop();
-            app.update_search(&query);
-        },
-        KeyCode::Char(c) => {
-            let query = format!("{}{c}", app.search_query());
-            app.update_search(&query);
         },
         _ => {},
     }

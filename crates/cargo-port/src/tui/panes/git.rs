@@ -205,7 +205,9 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    app.pane_manager_mut().git.set_len(git.len());
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Git)
+        .set_len(git.len());
     let focus = app.pane_focus_state(PaneId::Git);
     let git_block = Block::default()
         .borders(Borders::ALL)
@@ -217,15 +219,19 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             styles.inactive_border
         });
     let git_inner = git_block.inner(area);
-    app.pane_manager_mut().git.set_content_area(git_inner);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Git)
+        .set_content_area(git_inner);
     frame.render_widget(git_block, area);
     let git_ctx = GitRenderCtx {
         data: &git_data,
         fields: &git,
-        pane: &app.pane_manager().git,
+        pane: app.pane_manager().pane(PaneId::Git),
         focus,
         styles: &styles,
     };
     let scroll_offset = render_git_column_inner(frame, &git_ctx, git_inner);
-    app.pane_manager_mut().git.set_scroll_offset(scroll_offset);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Git)
+        .set_scroll_offset(scroll_offset);
 }

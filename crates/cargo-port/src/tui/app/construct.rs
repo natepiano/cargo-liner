@@ -7,8 +7,6 @@ use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
-use ratatui::widgets::ListState;
-
 use super::App;
 use super::CiFetchTracker;
 use super::types::AsyncBuildState;
@@ -42,14 +40,6 @@ use crate::tui::types::PaneId;
 use crate::watcher;
 use crate::watcher::WatcherMsg;
 
-fn initial_list_state(items: &[RootItem]) -> ListState {
-    let mut state = ListState::default();
-    if !items.is_empty() {
-        state.select(Some(0));
-    }
-    state
-}
-
 pub(super) struct AppChannels {
     example_tx:  mpsc::Sender<ExampleMsg>,
     example_rx:  mpsc::Receiver<ExampleMsg>,
@@ -82,7 +72,6 @@ struct AppInit {
     lint_runtime:     Option<RuntimeHandle>,
     watch_tx:         mpsc::Sender<WatcherMsg>,
     projects:         ProjectList,
-    list_state:       ListState,
 }
 
 impl AppInit {
@@ -105,7 +94,6 @@ impl AppInit {
             http_client.clone(),
         );
         let built = scan::build_tree(projects, &cfg.tui.inline_dirs);
-        let list_state = initial_list_state(&built);
         let projects = crate::project_list::ProjectList::new(built);
 
         Self {
@@ -115,7 +103,6 @@ impl AppInit {
             lint_runtime: lint_spawn.handle,
             watch_tx,
             projects,
-            list_state,
         }
     }
 }
@@ -189,9 +176,6 @@ impl App {
             bg_rx: inputs.bg_rx,
             priority_fetch_path: None,
             expanded: HashSet::new(),
-            list_state: init.list_state,
-            search_query: String::new(),
-            filtered: Vec::new(),
             pane_manager: crate::tui::panes::PaneManager::new(),
             settings_edit_buf: String::new(),
             settings_edit_cursor: 0,

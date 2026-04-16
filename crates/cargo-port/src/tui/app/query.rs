@@ -75,7 +75,7 @@ impl App {
     pub(in super::super) fn focused_toast_id(&self) -> Option<u64> {
         let active = self.active_toasts();
         active
-            .get(self.pane_manager.toasts.pos())
+            .get(self.pane_manager.pane(PaneId::Toasts).pos())
             .map(ToastView::id)
     }
 
@@ -84,7 +84,10 @@ impl App {
         let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
         self.toasts.prune_tracked_items(now, linger);
         self.toasts.prune(now);
-        self.pane_manager.toasts.set_len(self.active_toasts().len());
+        let toast_len = self.active_toasts().len();
+        self.pane_manager
+            .pane_mut(PaneId::Toasts)
+            .set_len(toast_len);
         if self.base_focus() == PaneId::Toasts && self.active_toasts().is_empty() {
             self.focus_pane(PaneId::ProjectList);
         }
@@ -96,7 +99,10 @@ impl App {
         body: impl Into<String>,
     ) {
         self.toasts.push_timed(title, body, self.toast_timeout(), 1);
-        self.pane_manager.toasts.set_len(self.active_toasts().len());
+        let toast_len = self.active_toasts().len();
+        self.pane_manager
+            .pane_mut(PaneId::Toasts)
+            .set_len(toast_len);
     }
 
     pub(in super::super) fn start_task_toast(
@@ -105,7 +111,10 @@ impl App {
         body: impl Into<String>,
     ) -> ToastTaskId {
         let task_id = self.toasts.push_task(title, body, 1);
-        self.pane_manager.toasts.set_len(self.active_toasts().len());
+        let toast_len = self.active_toasts().len();
+        self.pane_manager
+            .pane_mut(PaneId::Toasts)
+            .set_len(toast_len);
         task_id
     }
 
@@ -128,7 +137,10 @@ impl App {
     ) {
         let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
         self.toasts.set_tracked_items(task_id, items, linger);
-        self.pane_manager.toasts.set_len(self.active_toasts().len());
+        let toast_len = self.active_toasts().len();
+        self.pane_manager
+            .pane_mut(PaneId::Toasts)
+            .set_len(toast_len);
     }
 
     pub(in super::super) fn mark_tracked_item_completed(
@@ -137,7 +149,10 @@ impl App {
         key: &str,
     ) {
         self.toasts.mark_item_completed(task_id, key);
-        self.pane_manager.toasts.set_len(self.active_toasts().len());
+        let toast_len = self.active_toasts().len();
+        self.pane_manager
+            .pane_mut(PaneId::Toasts)
+            .set_len(toast_len);
     }
 
     pub(in super::super) fn start_clean(&mut self, project_path: &AbsolutePath) {
@@ -649,7 +664,7 @@ impl App {
                 if self.base_focus() == PaneId::Package {
                     let pkg = self.pane_manager.package_data.as_ref()?;
                     let fields = crate::tui::detail::package_fields_from_data(pkg);
-                    let field = *fields.get(self.pane_manager.package.pos())?;
+                    let field = *fields.get(self.pane_manager.pane(PaneId::Package).pos())?;
                     if field == DetailField::CratesIo && pkg.crates_version.is_some() {
                         Some("open")
                     } else {
@@ -658,7 +673,7 @@ impl App {
                 } else {
                     let git = self.pane_manager.git_data.as_ref()?;
                     let fields = crate::tui::detail::git_fields_from_data(git);
-                    match fields.get(self.pane_manager.git.pos()) {
+                    match fields.get(self.pane_manager.pane(PaneId::Git).pos()) {
                         Some(DetailField::Repo) if git.url.is_some() => Some("open"),
                         _ => None,
                     }
@@ -670,7 +685,7 @@ impl App {
                     .and_then(|path| self.ci_info_for(path));
                 let run_count = ci_info.map_or(0, |info| info.runs.len());
                 let selected_path = self.selected_project_path();
-                if self.pane_manager.ci.pos() == run_count
+                if self.pane_manager.pane(PaneId::CiRuns).pos() == run_count
                     && !selected_path.is_some_and(|path| self.ci_is_fetching(path))
                     && !selected_path.is_some_and(|path| self.ci_is_exhausted(path))
                 {
@@ -732,7 +747,6 @@ impl DiscoveryRowKind {
             (Self::Root, Self::Root)
                 | (Self::WorktreeEntry, Self::WorktreeEntry)
                 | (Self::PathOnly, Self::PathOnly)
-                | (Self::Search, _)
         )
     }
 
@@ -741,7 +755,6 @@ impl DiscoveryRowKind {
             Self::Root => 0,
             Self::WorktreeEntry => 1,
             Self::PathOnly => 2,
-            Self::Search => 3,
         }
     }
 }

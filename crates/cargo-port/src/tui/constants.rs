@@ -10,7 +10,6 @@ pub(super) const BLOCK_BORDER_WIDTH: usize = 2;
 
 pub(super) const FRAME_POLL_MILLIS: u64 = 16;
 
-pub(super) const SEARCH_BAR_HEIGHT: u16 = 3;
 pub(super) const FINDER_POPUP_HEIGHT: u16 = 28;
 pub(super) const SETTINGS_POPUP_WIDTH: u16 = 90;
 pub(super) const CONFIRM_DIALOG_HEIGHT: u16 = 3;

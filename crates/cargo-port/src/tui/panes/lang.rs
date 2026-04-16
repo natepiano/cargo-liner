@@ -123,7 +123,7 @@ fn build_lang_rows(
         .map(|(row_index, entry)| {
             lang_entry_row(entry, name_width).style(
                 app.pane_manager()
-                    .lang
+                    .pane(PaneId::Lang)
                     .selection_state(row_index, focus)
                     .overlay_style(),
             )
@@ -138,14 +138,14 @@ fn render_lang_table(
     widths: [Constraint; 7],
     body_area: Rect,
 ) {
-    let cursor = app.pane_manager().lang.pos();
+    let cursor = app.pane_manager().pane(PaneId::Lang).pos();
     let table = Table::new(rows, widths)
         .column_spacing(1)
         .row_highlight_style(Style::default());
     let mut table_state = TableState::default().with_selected(Some(cursor));
     frame.render_stateful_widget(table, body_area, &mut table_state);
     app.pane_manager_mut()
-        .lang
+        .pane_mut(PaneId::Lang)
         .set_scroll_offset(table_state.offset());
 }
 
@@ -168,7 +168,7 @@ pub fn render_lang_panel_standalone(
     let lang_count = lang_stats.as_ref().map_or(0, |s| s.entries.len());
     let lang_focus = app.pane_focus_state(PaneId::Lang);
     let cursor = matches!(lang_focus, crate::tui::types::PaneFocusState::Active)
-        .then(|| app.pane_manager().lang.pos());
+        .then(|| app.pane_manager().pane(PaneId::Lang).pos());
     let title = pane_title(
         "Languages",
         &PaneTitleCount::Single {
@@ -230,16 +230,24 @@ pub fn render_lang_panel_standalone(
         let body_height = inner.height.saturating_sub(2);
         let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
 
-        app.pane_manager_mut().lang.set_len(rows.len());
-        app.pane_manager_mut().lang.set_content_area(body_area);
+        app.pane_manager_mut()
+            .pane_mut(PaneId::Lang)
+            .set_len(rows.len());
+        app.pane_manager_mut()
+            .pane_mut(PaneId::Lang)
+            .set_content_area(body_area);
         render_lang_table(frame, app, rows, widths, body_area);
     } else {
         rows.push(lang_footer_row(&stats));
         let body_height = inner.height.saturating_sub(1);
         let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
 
-        app.pane_manager_mut().lang.set_len(entry_count);
-        app.pane_manager_mut().lang.set_content_area(body_area);
+        app.pane_manager_mut()
+            .pane_mut(PaneId::Lang)
+            .set_len(entry_count);
+        app.pane_manager_mut()
+            .pane_mut(PaneId::Lang)
+            .set_content_area(body_area);
         render_lang_table(frame, app, rows, widths, body_area);
     }
 }

@@ -4,7 +4,6 @@ use super::App;
 use super::types::ExitMode;
 use super::types::FinderMode;
 use super::types::KeymapMode;
-use super::types::SearchMode;
 use super::types::SelectionSync;
 use super::types::SettingsMode;
 use crate::tui::detail::TargetsData;
@@ -16,8 +15,6 @@ use crate::tui::types::PaneId;
 use crate::tui::types::PaneId::Settings;
 
 impl App {
-    pub(in super::super) const fn is_searching(&self) -> bool { self.ui_modes.search.is_active() }
-
     pub(in super::super) const fn is_finder_open(&self) -> bool {
         self.ui_modes.finder.is_visible()
     }
@@ -62,10 +59,6 @@ impl App {
         self.ui_modes.finder = FinderMode::Hidden;
     }
 
-    pub(in super::super) const fn end_search(&mut self) {
-        self.ui_modes.search = SearchMode::Inactive;
-    }
-
     pub(in super::super) const fn open_settings(&mut self) {
         self.ui_modes.settings = SettingsMode::Browsing;
     }
@@ -84,7 +77,7 @@ impl App {
         self.open_overlay(Settings);
         self.open_settings();
         if let Some(idx) = SettingOption::iter().position(|s| s == IncludeDirs) {
-            self.pane_manager.settings.set_pos(idx);
+            self.pane_manager.pane_mut(PaneId::Settings).set_pos(idx);
         }
         self.set_inline_error("Configure at least one include directory before continuing");
     }
@@ -148,8 +141,6 @@ impl App {
             InputContext::SettingsEditing
         } else if self.ui_modes.settings.is_visible() {
             InputContext::Settings
-        } else if self.ui_modes.search.is_active() {
-            InputContext::Searching
         } else {
             match self.focused_pane {
                 PaneId::Package | PaneId::Lang | PaneId::Git => InputContext::DetailFields,
@@ -158,7 +149,6 @@ impl App {
                 PaneId::CiRuns => InputContext::CiRuns,
                 PaneId::Output => InputContext::Output,
                 PaneId::Toasts => InputContext::Toasts,
-                PaneId::Search => InputContext::Searching,
                 PaneId::Settings => InputContext::Settings,
                 PaneId::Finder => InputContext::Finder,
                 PaneId::Keymap | PaneId::ProjectList => InputContext::ProjectList,
@@ -246,7 +236,7 @@ impl App {
             },
             PaneId::Output => !self.example_output.is_empty(),
             PaneId::Toasts => !self.active_toasts().is_empty(),
-            PaneId::Search | PaneId::Settings | PaneId::Finder | PaneId::Keymap => false,
+            PaneId::Settings | PaneId::Finder | PaneId::Keymap => false,
         }
     }
 
@@ -269,9 +259,9 @@ impl App {
         }
         let current = self.base_focus();
         if current == PaneId::Toasts
-            && self.pane_manager.toasts.pos() + 1 < self.active_toasts().len()
+            && self.pane_manager.pane(PaneId::Toasts).pos() + 1 < self.active_toasts().len()
         {
-            self.pane_manager.toasts.down();
+            self.pane_manager.pane_mut(PaneId::Toasts).down();
             self.focus_pane(PaneId::Toasts);
             return;
         }
@@ -279,7 +269,7 @@ impl App {
         let next = panes[(index + 1) % panes.len()];
         self.focus_pane(next);
         if next == PaneId::Toasts {
-            self.pane_manager.toasts.home();
+            self.pane_manager.pane_mut(PaneId::Toasts).home();
         }
     }
 
@@ -290,8 +280,8 @@ impl App {
             return;
         }
         let current = self.base_focus();
-        if current == PaneId::Toasts && self.pane_manager.toasts.pos() > 0 {
-            self.pane_manager.toasts.up();
+        if current == PaneId::Toasts && self.pane_manager.pane(PaneId::Toasts).pos() > 0 {
+            self.pane_manager.pane_mut(PaneId::Toasts).up();
             self.focus_pane(PaneId::Toasts);
             return;
         }
@@ -299,19 +289,20 @@ impl App {
         let prev = panes[(index + panes.len() - 1) % panes.len()];
         self.focus_pane(prev);
         if prev == PaneId::Toasts {
+            let last_index = self.active_toasts().len().saturating_sub(1);
             self.pane_manager
-                .toasts
-                .set_pos(self.active_toasts().len().saturating_sub(1));
+                .pane_mut(PaneId::Toasts)
+                .set_pos(last_index);
         }
     }
 
     pub(in super::super) fn reset_project_panes(&mut self) {
-        self.pane_manager.package.home();
-        self.pane_manager.git.home();
-        self.pane_manager.targets.home();
-        self.pane_manager.ci.home();
-        self.pane_manager.lints.home();
-        self.pane_manager.toasts.home();
+        self.pane_manager.pane_mut(PaneId::Package).home();
+        self.pane_manager.pane_mut(PaneId::Git).home();
+        self.pane_manager.pane_mut(PaneId::Targets).home();
+        self.pane_manager.pane_mut(PaneId::CiRuns).home();
+        self.pane_manager.pane_mut(PaneId::Lints).home();
+        self.pane_manager.pane_mut(PaneId::Toasts).home();
         self.visited_panes.remove(&PaneId::Package);
         self.visited_panes.remove(&PaneId::Git);
         self.visited_panes.remove(&PaneId::Targets);

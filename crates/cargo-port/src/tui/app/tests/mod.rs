@@ -61,7 +61,6 @@ mod background;
 mod discovery_shimmer;
 mod panes;
 mod rows;
-mod search;
 mod state;
 mod worktrees;
 
@@ -340,24 +339,6 @@ fn make_package_with_vendored(
     )
 }
 
-fn make_workspace_raw_with_vendored(
-    name: Option<&str>,
-    path: &str,
-    groups: Vec<MemberGroup>,
-    vendored: Vec<PackageProject>,
-    worktree_name: Option<&str>,
-) -> WorkspaceProject {
-    WorkspaceProject::new(
-        test_path(path),
-        name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-        groups,
-        vendored,
-        worktree_name.map(String::from),
-        None,
-    )
-}
-
 fn wait_for_tree_build(app: &mut App) {
     // Tree rebuilds no longer exist - just ensure derived state is fresh.
     app.ensure_visible_rows_cached();
@@ -618,7 +599,7 @@ fn expect_real_discovery_creates_group(kind: WorktreeProjectKind) {
         "real worktree discovery should create a worktree group",
     );
 
-    app.list_state.select(Some(0));
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
     assert!(app.expand(), "root should expand into worktree entries");
     app.ensure_visible_rows_cached();
     assert_eq!(app.visible_rows().len(), 3);
@@ -968,7 +949,7 @@ fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProj
 }
 
 fn assert_deleted_linked_worktree_dismisses_to_root(app: &mut App, linked_dir: &Path) {
-    app.list_state.select(Some(0));
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
     assert!(
         app.expand(),
         "root should expand into worktree entries after regroup"
@@ -985,7 +966,7 @@ fn assert_deleted_linked_worktree_dismisses_to_root(app: &mut App, linked_dir: &
         },
     );
     assert!(app.is_deleted(linked_dir));
-    app.list_state.select(Some(2));
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(2);
     let target = app
         .focused_dismiss_target()
         .expect("deleted linked worktree should be dismissable");

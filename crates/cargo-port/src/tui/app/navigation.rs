@@ -1,17 +1,8 @@
 use std::path::Path;
 
-use nucleo_matcher::Matcher;
-use nucleo_matcher::Utf32Str;
-use nucleo_matcher::pattern::Atom;
-use nucleo_matcher::pattern::AtomKind;
-use nucleo_matcher::pattern::CaseMatching;
-use nucleo_matcher::pattern::Normalization;
-
 use super::App;
 use super::snapshots;
 use super::types::ExpandKey;
-use super::types::SearchHit;
-use super::types::SearchMode;
 use super::types::VisibleRow;
 use crate::project;
 use crate::project::AbsolutePath;
@@ -24,6 +15,7 @@ use crate::project::WorktreeGroup;
 use crate::tui;
 use crate::tui::columns::COL_NAME;
 use crate::tui::columns::ResolvedWidths;
+use crate::tui::types::PaneId;
 
 impl App {
     pub(in super::super) fn ensure_visible_rows_cached(&mut self) {
@@ -294,21 +286,12 @@ impl App {
     }
 
     pub(in super::super) fn selected_row(&self) -> Option<VisibleRow> {
-        if self.is_searching() && !self.search_query.is_empty() {
-            return None;
-        }
         let rows = self.visible_rows();
-        let selected = self.list_state.selected()?;
+        let selected = self.pane_manager.pane(PaneId::ProjectList).pos();
         rows.get(selected).copied()
     }
 
     pub(in super::super) fn current_detail_selection_key(&self) -> String {
-        if self.is_searching() && !self.search_query.is_empty() {
-            return self
-                .selected_project_path()
-                .map(|path| format!("search:{}", path.display()))
-                .unwrap_or_default();
-        }
         match self.selected_row() {
             Some(VisibleRow::Root { node_index }) => format!("root:{node_index}"),
             Some(VisibleRow::GroupHeader {
@@ -363,17 +346,10 @@ impl App {
     }
 
     /// Returns the absolute path of the currently selected project, borrowed
-    /// from `project_list_items` (or `filtered` search hits during search).
+    /// from the visible tree rows.
     pub(in super::super) fn selected_project_path(&self) -> Option<&Path> {
-        if self.is_searching() && !self.search_query.is_empty() {
-            let selected = self.list_state.selected()?;
-            self.filtered
-                .get(selected)
-                .map(|hit| hit.abs_path.as_path())
-        } else {
-            let row = self.selected_row()?;
-            self.path_for_row(row)
-        }
+        let row = self.selected_row()?;
+        self.path_for_row(row)
     }
 
     /// Given a `VisibleRow`, resolve the absolute `&Path` borrowed from
@@ -483,7 +459,7 @@ impl App {
     /// Resolve the display path of the currently selected row using `project_list_items`.
     pub(in super::super) fn selected_display_path(&self) -> Option<DisplayPath> {
         let rows = self.visible_rows();
-        let selected = self.list_state.selected()?;
+        let selected = self.pane_manager.pane(PaneId::ProjectList).pos();
         let row = rows.get(selected)?;
         self.display_path_for_row(*row)
     }
@@ -945,12 +921,7 @@ impl App {
     }
 
     pub(in super::super) fn selected_is_expandable(&self) -> bool {
-        if self.is_searching() && !self.search_query.is_empty() {
-            return false;
-        }
-        let Some(selected) = self.list_state.selected() else {
-            return false;
-        };
+        let selected = self.pane_manager.pane(PaneId::ProjectList).pos();
         self.visible_rows()
             .get(selected)
             .copied()
@@ -1012,9 +983,7 @@ impl App {
         if !self.selected_is_expandable() {
             return false;
         }
-        let Some(selected) = self.list_state.selected() else {
-            return false;
-        };
+        let selected = self.pane_manager.pane(PaneId::ProjectList).pos();
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return false;
         };
@@ -1035,7 +1004,7 @@ impl App {
         self.dirty.rows.mark_dirty();
         self.ensure_visible_rows_cached();
         if let Some(pos) = self.visible_rows().iter().position(|r| *r == target) {
-            self.list_state.select(Some(pos));
+            self.pane_manager.pane_mut(PaneId::ProjectList).set_pos(pos);
         }
     }
 
@@ -1051,17 +1020,15 @@ impl App {
     }
 
     pub(in super::super) fn collapse(&mut self) -> bool {
-        let Some(selected) = self.list_state.selected() else {
-            return false;
-        };
+        let selected = self.pane_manager.pane(PaneId::ProjectList).pos();
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return false;
         };
         let expanded_before = self.expanded.len();
-        let selected_before = self.list_state.selected();
+        let selected_before = self.pane_manager.pane(PaneId::ProjectList).pos();
         self.collapse_row(row);
         self.expanded.len() != expanded_before
-            || self.list_state.selected() != selected_before
+            || self.pane_manager.pane(PaneId::ProjectList).pos() != selected_before
             || self.dirty.rows.is_dirty()
     }
 
@@ -1163,22 +1130,18 @@ impl App {
         }
     }
 
-    pub(in super::super) fn row_count(&self) -> usize {
-        if self.is_searching() && !self.search_query.is_empty() {
-            self.filtered.len()
-        } else {
-            self.visible_rows().len()
-        }
-    }
+    pub(in super::super) fn row_count(&self) -> usize { self.visible_rows().len() }
 
     pub(in super::super) fn move_up(&mut self) {
         let count = self.row_count();
         if count == 0 {
             return;
         }
-        let current = self.list_state.selected().unwrap_or(0);
+        let current = self.pane_manager.pane(PaneId::ProjectList).pos();
         if current > 0 {
-            self.list_state.select(Some(current - 1));
+            self.pane_manager
+                .pane_mut(PaneId::ProjectList)
+                .set_pos(current - 1);
         }
     }
 
@@ -1187,22 +1150,26 @@ impl App {
         if count == 0 {
             return;
         }
-        let current = self.list_state.selected().unwrap_or(0);
+        let current = self.pane_manager.pane(PaneId::ProjectList).pos();
         if current < count - 1 {
-            self.list_state.select(Some(current + 1));
+            self.pane_manager
+                .pane_mut(PaneId::ProjectList)
+                .set_pos(current + 1);
         }
     }
 
     pub(in super::super) fn move_to_top(&mut self) {
         if self.row_count() > 0 {
-            self.list_state.select(Some(0));
+            self.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
         }
     }
 
     pub(in super::super) fn move_to_bottom(&mut self) {
         let count = self.row_count();
         if count > 0 {
-            self.list_state.select(Some(count - 1));
+            self.pane_manager
+                .pane_mut(PaneId::ProjectList)
+                .set_pos(count - 1);
         }
     }
 
@@ -1285,7 +1252,7 @@ impl App {
         if let Some(anchor) = anchor
             && let Some(pos) = self.visible_rows().iter().position(|row| *row == anchor)
         {
-            self.list_state.select(Some(pos));
+            self.pane_manager.pane_mut(PaneId::ProjectList).set_pos(pos);
         }
         let anchor_path = self.selected_project_path().map(AbsolutePath::from);
         if selected_path == anchor_path {
@@ -1294,34 +1261,6 @@ impl App {
         } else {
             self.selection_paths.collapsed_selected = selected_path;
             self.selection_paths.collapsed_anchor = anchor_path;
-        }
-    }
-
-    pub(in super::super) fn cancel_search(&mut self) {
-        self.end_search();
-        self.search_query.clear();
-        self.filtered.clear();
-        self.dirty.rows.mark_dirty();
-        self.close_overlay();
-        if !self.projects.is_empty() {
-            self.list_state.select(Some(0));
-        }
-    }
-
-    pub(in super::super) fn confirm_search(&mut self) {
-        let project_path = self
-            .list_state
-            .selected()
-            .and_then(|sel| self.filtered.get(sel))
-            .map(|hit| hit.abs_path.clone());
-        self.end_search();
-        self.search_query.clear();
-        self.filtered.clear();
-        self.dirty.rows.mark_dirty();
-        self.close_overlay();
-
-        if let Some(target_path) = project_path {
-            self.select_project_in_tree(target_path.as_path());
         }
     }
 
@@ -1414,7 +1353,9 @@ impl App {
             .iter()
             .position(|row| self.row_matches_project_path(*row, target_path));
         if let Some(selected_index) = selected_index {
-            self.list_state.select(Some(selected_index));
+            self.pane_manager
+                .pane_mut(PaneId::ProjectList)
+                .set_pos(selected_index);
         }
     }
 
@@ -1422,70 +1363,5 @@ impl App {
         self.expand_path_in_tree(target_path);
         self.dirty.rows.mark_dirty();
         self.select_matching_visible_row(target_path);
-    }
-
-    pub(in super::super) fn update_search(&mut self, query: &str) {
-        self.search_query = query.to_string();
-
-        if query.is_empty() {
-            self.end_search();
-            self.filtered.clear();
-            self.list_state.select(Some(0));
-            return;
-        }
-
-        self.ui_modes.search = SearchMode::Active;
-
-        let mut matcher = Matcher::default();
-        let atom = Atom::new(
-            query,
-            CaseMatching::Smart,
-            Normalization::Smart,
-            AtomKind::Fuzzy,
-            false,
-        );
-
-        let include_non_rust = self.include_non_rust().includes_non_rust();
-        let mut scored = Vec::new();
-        self.projects.visit_searchables(|item| {
-            if !include_non_rust && !item.is_rust {
-                return;
-            }
-
-            let mut buf = Vec::new();
-            let haystack = Utf32Str::new(item.name.as_ref(), &mut buf);
-            let mut best_score = atom.score(haystack, &mut matcher);
-
-            if let Some(cargo_name) = &item.cargo_name {
-                let mut cn_buf = Vec::new();
-                let cn_haystack = Utf32Str::new(cargo_name.as_ref(), &mut cn_buf);
-                if let Some(cn_score) = atom.score(cn_haystack, &mut matcher) {
-                    best_score = Some(best_score.map_or(cn_score, |prev| prev.max(cn_score)));
-                }
-            }
-
-            if let Some(score) = best_score {
-                scored.push(SearchHit {
-                    abs_path: item.abs_path.into(),
-                    display_path: item.display_path.into_owned(),
-                    name: item.name.into_owned(),
-                    score,
-                    is_rust: item.is_rust,
-                });
-            }
-        });
-
-        scored.sort_by(|a, b| {
-            b.score
-                .cmp(&a.score)
-                .then_with(|| a.display_path.cmp(&b.display_path))
-        });
-        self.filtered = scored;
-
-        if self.filtered.is_empty() {
-            self.list_state.select(None);
-        } else {
-            self.list_state.select(Some(0));
-        }
     }
 }

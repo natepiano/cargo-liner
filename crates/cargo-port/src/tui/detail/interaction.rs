@@ -35,7 +35,7 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
         return;
     };
     let entries = build_target_list_from_data(&targets_data);
-    if let Some(entry) = entries.get(app.pane_manager().targets.pos())
+    if let Some(entry) = entries.get(app.pane_manager().pane(PaneId::Targets).pos())
         && let Some(abs_path) = app.selected_project_path()
     {
         let package_name = app.pane_manager().package_data.as_ref().and_then(|d| {
@@ -114,19 +114,18 @@ fn request_clean(app: &mut App) {
 /// currently active detail column.
 fn active_detail_pane(app: &mut App) -> &mut Pane {
     match app.base_focus() {
-        PaneId::Targets => &mut app.pane_manager_mut().targets,
-        PaneId::Lang => &mut app.pane_manager_mut().lang,
-        PaneId::Git => &mut app.pane_manager_mut().git,
+        PaneId::Targets => app.pane_manager_mut().pane_mut(PaneId::Targets),
+        PaneId::Lang => app.pane_manager_mut().pane_mut(PaneId::Lang),
+        PaneId::Git => app.pane_manager_mut().pane_mut(PaneId::Git),
         PaneId::Package
         | PaneId::ProjectList
         | PaneId::Lints
         | PaneId::CiRuns
         | PaneId::Output
         | PaneId::Toasts
-        | PaneId::Search
         | PaneId::Settings
         | PaneId::Finder
-        | PaneId::Keymap => &mut app.pane_manager_mut().package,
+        | PaneId::Keymap => app.pane_manager_mut().pane_mut(PaneId::Package),
     }
 }
 
@@ -138,7 +137,7 @@ fn handle_detail_enter(app: &mut App) {
         if let Some(pkg) = app.pane_manager().package_data.as_ref() {
             let fields = super::package_fields_from_data(pkg);
             if matches!(
-                fields.get(app.pane_manager().package.pos()),
+                fields.get(app.pane_manager().pane(PaneId::Package).pos()),
                 Some(DetailField::CratesIo)
             ) {
                 open_url(&format!("https://crates.io/crates/{}", pkg.title_name));
@@ -147,7 +146,7 @@ fn handle_detail_enter(app: &mut App) {
     } else if let Some(git) = app.pane_manager().git_data.as_ref() {
         let fields = super::git_fields_from_data(git);
         if matches!(
-            fields.get(app.pane_manager().git.pos()),
+            fields.get(app.pane_manager().pane(PaneId::Git).pos()),
             Some(DetailField::Repo)
         ) && let Some(url) = git.url.as_deref()
         {
@@ -173,10 +172,10 @@ fn open_url(url: &str) {
 pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.pane_manager_mut().ci.up(),
-        KeyCode::Down => return app.pane_manager_mut().ci.down(),
-        KeyCode::Home => return app.pane_manager_mut().ci.home(),
-        KeyCode::End => return app.pane_manager_mut().ci.end(),
+        KeyCode::Up => return app.pane_manager_mut().pane_mut(PaneId::CiRuns).up(),
+        KeyCode::Down => return app.pane_manager_mut().pane_mut(PaneId::CiRuns).down(),
+        KeyCode::Home => return app.pane_manager_mut().pane_mut(PaneId::CiRuns).home(),
+        KeyCode::End => return app.pane_manager_mut().pane_mut(PaneId::CiRuns).end(),
         _ => {},
     }
 
@@ -208,7 +207,7 @@ fn handle_ci_enter(app: &App) {
         .as_ref()
         .map(|data| data.runs.clone())
         .unwrap_or_default();
-    let cursor_pos = app.pane_manager().ci.pos();
+    let cursor_pos = app.pane_manager().pane(PaneId::CiRuns).pos();
     if let Some(run) = visible_runs.get(cursor_pos) {
         open_url(&run.url);
     }
@@ -267,10 +266,10 @@ fn handle_ci_fetch_more(app: &mut App) {
 pub fn handle_lints_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.pane_manager_mut().lints.up(),
-        KeyCode::Down => return app.pane_manager_mut().lints.down(),
-        KeyCode::Home => return app.pane_manager_mut().lints.home(),
-        KeyCode::End => return app.pane_manager_mut().lints.end(),
+        KeyCode::Up => return app.pane_manager_mut().pane_mut(PaneId::Lints).up(),
+        KeyCode::Down => return app.pane_manager_mut().pane_mut(PaneId::Lints).down(),
+        KeyCode::Home => return app.pane_manager_mut().pane_mut(PaneId::Lints).home(),
+        KeyCode::End => return app.pane_manager_mut().pane_mut(PaneId::Lints).end(),
         _ => {},
     }
 
@@ -318,7 +317,7 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
         );
     }
     app.complete_ci_fetch_for(abs);
-    app.pane_manager_mut().ci.home();
+    app.pane_manager_mut().pane_mut(PaneId::CiRuns).home();
     app.increment_data_generation();
     app.increment_detail_generation();
 }
@@ -336,7 +335,7 @@ fn clear_lint_history(app: &mut App) {
     if let Some(lr) = app.lint_at_path_mut(&abs_path) {
         lr.clear_runs();
     }
-    app.pane_manager_mut().lints.home();
+    app.pane_manager_mut().pane_mut(PaneId::Lints).home();
     app.focus_pane(PaneId::ProjectList);
     app.refresh_lint_cache_usage_from_disk();
     app.increment_data_generation();
@@ -361,7 +360,7 @@ fn open_lint_run_output(app: &App) {
     if runs.is_empty() {
         return;
     }
-    let Some(run) = runs.get(app.pane_manager().lints.pos()) else {
+    let Some(run) = runs.get(app.pane_manager().pane(PaneId::Lints).pos()) else {
         return;
     };
 
@@ -379,6 +378,6 @@ fn open_lint_run_output(app: &App) {
 
     let _ = crate::tui::input::open_paths_in_editor(
         app.editor(),
-        std::iter::once(abs_path).chain(log_paths.iter().map(|path| path.as_path())),
+        std::iter::once(abs_path).chain(log_paths.iter().map(AbsolutePath::as_path)),
     );
 }

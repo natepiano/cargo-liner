@@ -177,16 +177,32 @@ pub(super) enum PaneId {
     CiRuns,
     Output,
     Toasts,
-    Search,
     Settings,
     Finder,
     Keymap,
 }
 
 impl PaneId {
-    pub const fn is_overlay(self) -> bool {
-        matches!(self, Self::Search | Self::Settings | Self::Finder)
+    pub const fn index(self) -> usize {
+        match self {
+            Self::ProjectList => 0,
+            Self::Package => 1,
+            Self::Lang => 2,
+            Self::Git => 3,
+            Self::Targets => 4,
+            Self::Lints => 5,
+            Self::CiRuns => 6,
+            Self::Output => 7,
+            Self::Toasts => 8,
+            Self::Settings => 9,
+            Self::Finder => 10,
+            Self::Keymap => 11,
+        }
     }
+
+    pub const fn pane_count() -> usize { Self::Keymap.index() + 1 }
+
+    pub const fn is_overlay(self) -> bool { matches!(self, Self::Settings | Self::Finder) }
 }
 
 /// Cached layout rectangles from the last render frame, used for mouse

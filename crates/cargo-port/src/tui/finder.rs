@@ -566,29 +566,29 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
             app.close_finder();
             app.finder_mut().query.clear();
             app.finder_mut().results.clear();
-            app.finder_mut().pane.home();
+            app.pane_manager_mut().pane_mut(PaneId::Finder).home();
             app.close_overlay();
         },
         KeyCode::Enter => {
             confirm_finder(app);
         },
         KeyCode::Up => {
-            app.finder_mut().pane.up();
+            app.pane_manager_mut().pane_mut(PaneId::Finder).up();
         },
         KeyCode::Down => {
-            app.finder_mut().pane.down();
+            app.pane_manager_mut().pane_mut(PaneId::Finder).down();
         },
         KeyCode::Home => {
-            app.finder_mut().pane.home();
+            app.pane_manager_mut().pane_mut(PaneId::Finder).home();
         },
         KeyCode::End => {
-            app.finder_mut().pane.end();
+            app.pane_manager_mut().pane_mut(PaneId::Finder).end();
         },
         KeyCode::Backspace => {
             if app.finder().query.is_empty() {
                 app.close_finder();
                 app.finder_mut().results.clear();
-                app.finder_mut().pane.home();
+                app.pane_manager_mut().pane_mut(PaneId::Finder).home();
                 app.close_overlay();
             } else {
                 app.finder_mut().query.pop();
@@ -611,11 +611,15 @@ fn refresh_finder_results(app: &mut App) {
     let finder = app.finder_mut();
     finder.results = results;
     finder.total = total;
-    finder.pane.home();
+    app.pane_manager_mut().pane_mut(PaneId::Finder).home();
 }
 
 fn confirm_finder(app: &mut App) {
-    let Some(&idx) = app.finder().results.get(app.finder().pane.pos()) else {
+    let Some(&idx) = app
+        .finder()
+        .results
+        .get(app.pane_manager().pane(PaneId::Finder).pos())
+    else {
         return;
     };
     let item = app.finder().index[idx].clone();
@@ -624,7 +628,7 @@ fn confirm_finder(app: &mut App) {
     app.close_finder();
     app.finder_mut().query.clear();
     app.finder_mut().results.clear();
-    app.finder_mut().pane.home();
+    app.pane_manager_mut().pane_mut(PaneId::Finder).home();
     app.close_overlay();
 
     // Navigate to the project
@@ -664,7 +668,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
                 if entry.name == target_name
                     && std::mem::discriminant(&entry.kind) == std::mem::discriminant(&target_kind)
                 {
-                    app.pane_manager_mut().targets.set_pos(i);
+                    app.pane_manager_mut().pane_mut(PaneId::Targets).set_pos(i);
                     return;
                 }
             }
@@ -754,8 +758,12 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     };
 
     let result_count = app.finder().results.len();
-    app.finder_mut().pane.set_len(result_count);
-    app.finder_mut().pane.set_content_area(results_area);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Finder)
+        .set_len(result_count);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Finder)
+        .set_content_area(results_area);
     render_finder_results(frame, app, col_widths, results_area);
 }
 
@@ -877,8 +885,8 @@ fn render_finder_results(
                 )),
             ])
             .style(
-                app.finder()
-                    .pane
+                app.pane_manager()
+                    .pane(PaneId::Finder)
                     .selection_state(row_index, app.pane_focus_state(PaneId::Finder))
                     .overlay_style(),
             )
@@ -901,10 +909,11 @@ fn render_finder_results(
         .column_spacing(1)
         .row_highlight_style(Style::default());
 
-    let mut table_state = TableState::default().with_selected(Some(app.finder().pane.pos()));
+    let mut table_state =
+        TableState::default().with_selected(Some(app.pane_manager().pane(PaneId::Finder).pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.finder_mut()
-        .pane
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Finder)
         .set_scroll_offset(table_state.offset());
 
     let visible_height = usize::from(area.height.saturating_sub(1));

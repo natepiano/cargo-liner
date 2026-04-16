@@ -146,22 +146,30 @@ pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let focused = app.is_focused(PaneId::Lints);
-    let title = lints_panel_title(&lints_data, focused, app.pane_manager().lints.pos());
+    let title = lints_panel_title(
+        &lints_data,
+        focused,
+        app.pane_manager().pane(PaneId::Lints).pos(),
+    );
     let block = lints_panel_block(title, focused, !lints_data.runs.is_empty());
 
     let inner = block.inner(area);
-    app.pane_manager_mut().lints.set_content_area(inner);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Lints)
+        .set_content_area(inner);
 
     if lints_data.runs.is_empty() {
         frame.render_widget(block, area);
-        app.pane_manager_mut().lints.set_len(0);
+        app.pane_manager_mut().pane_mut(PaneId::Lints).set_len(0);
         return;
     }
 
-    let pane = app.pane_manager().lints.clone();
+    let pane = app.pane_manager().pane(PaneId::Lints).clone();
     let focus = app.pane_focus_state(PaneId::Lints);
     let rows = build_lint_rows(&lints_data.runs, app.animation_elapsed(), &pane, focus);
-    app.pane_manager_mut().lints.set_len(rows.len());
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Lints)
+        .set_len(rows.len());
 
     let col_header_style = Style::default()
         .fg(COLUMN_HEADER_COLOR)
@@ -191,17 +199,18 @@ pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     .column_spacing(2)
     .row_highlight_style(Style::default());
 
-    let mut table_state = TableState::default().with_selected(Some(app.pane_manager().lints.pos()));
+    let mut table_state =
+        TableState::default().with_selected(Some(app.pane_manager().pane(PaneId::Lints).pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
     app.pane_manager_mut()
-        .lints
+        .pane_mut(PaneId::Lints)
         .set_scroll_offset(table_state.offset());
 
     let visible_height = usize::from(inner.height.saturating_sub(1));
     let visible_start = table_state.offset();
     let visible_end = app
         .pane_manager()
-        .lints
+        .pane(PaneId::Lints)
         .len()
         .min(visible_start.saturating_add(visible_height));
 

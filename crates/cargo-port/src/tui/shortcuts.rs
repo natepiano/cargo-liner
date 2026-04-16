@@ -19,7 +19,6 @@ pub(super) enum InputContext {
     Toasts,
     Lints,
     Output,
-    Searching,
     Finder,
     Settings,
     SettingsEditing,
@@ -34,8 +33,7 @@ impl InputContext {
     pub const fn is_text_input(self) -> bool {
         matches!(
             self,
-            Self::Searching
-                | Self::Finder
+            Self::Finder
                 | Self::Settings
                 | Self::SettingsEditing
                 | Self::KeymapAwaiting
@@ -128,7 +126,6 @@ pub(super) fn for_status_bar(
     terminal_command_configured: bool,
 ) -> StatusBarGroups {
     let (navigation, actions) = match context {
-        InputContext::Searching => (vec![NAV], vec![enter("select"), ESC_CANCEL]),
         InputContext::Finder => (vec![NAV], vec![enter("go to"), ESC_CLOSE]),
         InputContext::Settings => (
             vec![NAV, ARROWS_TOGGLE],

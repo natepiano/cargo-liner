@@ -254,7 +254,9 @@ fn render_project_panel(
     area: Rect,
 ) {
     let fields = detail::package_fields_from_data(pkg_data);
-    app.pane_manager_mut().package.set_len(fields.len());
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Package)
+        .set_len(fields.len());
     let focus = app.pane_focus_state(PaneId::Package);
     let border_style = if matches!(focus, PaneFocusState::Active) {
         styles.active_border
@@ -278,17 +280,19 @@ fn render_project_panel(
         border_style,
     };
     let areas = render_project_description_section(frame, &context, area, project_inner);
-    app.pane_manager_mut().package.set_content_area(areas.lower);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Package)
+        .set_content_area(areas.lower);
 
     let scroll_offset = render_project_metadata(
         frame,
         app,
-        &app.pane_manager().package,
+        app.pane_manager().pane(PaneId::Package),
         &context,
         areas.lower,
     );
     app.pane_manager_mut()
-        .package
+        .pane_mut(PaneId::Package)
         .set_scroll_offset(scroll_offset);
 }
 
@@ -524,7 +528,7 @@ pub fn render_targets_panel(
     let bench_count = data.benches.len();
 
     let focus = app.pane_focus_state(PaneId::Targets);
-    let cursor = app.pane_manager().targets.pos();
+    let cursor = app.pane_manager().pane(PaneId::Targets).pos();
 
     let targets_title = {
         let focused_cursor = matches!(focus, PaneFocusState::Active).then_some(cursor);
@@ -569,10 +573,12 @@ pub fn render_targets_panel(
         });
 
     let entries = detail::build_target_list_from_data(data);
-    app.pane_manager_mut().targets.set_len(entries.len());
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Targets)
+        .set_len(entries.len());
     let content_inner = targets_block.inner(area);
     app.pane_manager_mut()
-        .targets
+        .pane_mut(PaneId::Targets)
         .set_content_area(content_inner);
 
     let kind_col_width = detail::RunTargetKind::padded_label_width();
@@ -596,7 +602,7 @@ pub fn render_targets_panel(
             ])
             .style(
                 app.pane_manager()
-                    .targets
+                    .pane(PaneId::Targets)
                     .selection_state(row_index, focus)
                     .overlay_style(),
             )
@@ -615,7 +621,7 @@ pub fn render_targets_panel(
     let mut table_state = TableState::default().with_selected(Some(cursor));
     frame.render_stateful_widget(table, area, &mut table_state);
     app.pane_manager_mut()
-        .targets
+        .pane_mut(PaneId::Targets)
         .set_scroll_offset(table_state.offset());
 }
 

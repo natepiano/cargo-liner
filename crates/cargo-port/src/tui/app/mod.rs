@@ -19,7 +19,6 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 use ratatui::layout::Position;
-use ratatui::widgets::ListState;
 
 use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
@@ -58,10 +57,6 @@ pub(super) use types::ExpandKey;
 pub(super) use types::HoveredPaneRow;
 pub(super) use types::PendingClean;
 pub(super) use types::PollBackgroundStats;
-#[cfg(test)]
-pub(super) use types::SearchHit;
-#[cfg(test)]
-pub(super) use types::SearchMode;
 pub(super) use types::VisibleRow;
 
 pub(super) use super::columns::ResolvedWidths;
@@ -91,9 +86,6 @@ pub(super) struct App {
     bg_rx:                    mpsc::Receiver<BackgroundMsg>,
     priority_fetch_path:      Option<AbsolutePath>,
     expanded:                 HashSet<ExpandKey>,
-    list_state:               ListState,
-    search_query:             String,
-    filtered:                 Vec<types::SearchHit>,
     pane_manager:             PaneManager,
     settings_edit_buf:        String,
     settings_edit_cursor:     usize,
@@ -230,34 +222,14 @@ impl App {
         self.hovered_pane_row = hovered_pane_row;
     }
 
-    pub(super) const fn apply_hovered_pane_row(&mut self) {
-        self.pane_manager.package.set_hovered(None);
-        self.pane_manager.lang.set_hovered(None);
-        self.pane_manager.git.set_hovered(None);
-        self.pane_manager.targets.set_hovered(None);
-        self.pane_manager.ci.set_hovered(None);
-        self.pane_manager.toasts.set_hovered(None);
-        self.pane_manager.lints.set_hovered(None);
-        self.pane_manager.settings.set_hovered(None);
-        self.pane_manager.keymap.set_hovered(None);
-        self.finder.pane.set_hovered(None);
-
+    pub(super) fn apply_hovered_pane_row(&mut self) {
+        self.pane_manager.clear_hover();
         let Some(hovered) = self.hovered_pane_row else {
             return;
         };
-
-        match hovered.pane {
-            PaneId::Package => self.pane_manager.package.set_hovered(Some(hovered.row)),
-            PaneId::Lang => self.pane_manager.lang.set_hovered(Some(hovered.row)),
-            PaneId::Git => self.pane_manager.git.set_hovered(Some(hovered.row)),
-            PaneId::Targets => self.pane_manager.targets.set_hovered(Some(hovered.row)),
-            PaneId::CiRuns => self.pane_manager.ci.set_hovered(Some(hovered.row)),
-            PaneId::Lints => self.pane_manager.lints.set_hovered(Some(hovered.row)),
-            PaneId::Settings => self.pane_manager.settings.set_hovered(Some(hovered.row)),
-            PaneId::Finder => self.finder.pane.set_hovered(Some(hovered.row)),
-            PaneId::Keymap => self.pane_manager.keymap.set_hovered(Some(hovered.row)),
-            PaneId::ProjectList | PaneId::Output | PaneId::Toasts | PaneId::Search => {},
-        }
+        self.pane_manager
+            .pane_mut(hovered.pane)
+            .set_hovered(Some(hovered.row));
     }
 
     pub(super) const fn cached_fit_widths(&self) -> &ResolvedWidths { &self.cached_fit_widths }
@@ -268,14 +240,7 @@ impl App {
         &self.cached_child_sorted
     }
 
-    pub(super) const fn list_state(&self) -> &ListState { &self.list_state }
-
-    pub(super) const fn list_state_mut(&mut self) -> &mut ListState { &mut self.list_state }
-
     pub(super) const fn focused_pane(&self) -> PaneId { self.focused_pane }
-
-    #[cfg(test)]
-    pub(super) const fn set_focused_pane(&mut self, pane: PaneId) { self.focused_pane = pane; }
 
     pub(super) const fn expanded(&self) -> &HashSet<ExpandKey> { &self.expanded }
 
@@ -285,9 +250,6 @@ impl App {
     pub(super) const fn dirty(&self) -> &types::DirtyState { &self.dirty }
 
     pub(super) const fn dirty_mut(&mut self) -> &mut types::DirtyState { &mut self.dirty }
-
-    #[cfg(test)]
-    pub(super) const fn ui_modes_mut(&mut self) -> &mut types::UiModes { &mut self.ui_modes }
 
     pub(super) const fn pane_manager(&self) -> &PaneManager { &self.pane_manager }
 
@@ -387,16 +349,6 @@ impl App {
     pub(super) const fn increment_data_generation(&mut self) { self.data_generation += 1; }
 
     pub(super) const fn increment_detail_generation(&mut self) { self.detail_generation += 1; }
-
-    pub(super) fn search_query(&self) -> &str { &self.search_query }
-
-    #[cfg(test)]
-    pub(super) const fn search_query_mut(&mut self) -> &mut String { &mut self.search_query }
-
-    pub(super) fn filtered(&self) -> &[types::SearchHit] { &self.filtered }
-
-    #[cfg(test)]
-    pub(super) const fn filtered_mut(&mut self) -> &mut Vec<types::SearchHit> { &mut self.filtered }
 
     pub(super) const fn config_path(&self) -> Option<&AbsolutePath> { self.config_path.as_ref() }
 

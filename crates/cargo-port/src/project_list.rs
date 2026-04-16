@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::ops::DerefMut;
@@ -7,7 +6,6 @@ use std::path::Path;
 use crate::lint::LintRuns;
 use crate::project::AbsolutePath;
 use crate::project::MemberGroup;
-use crate::project::NonRustProject;
 use crate::project::PackageProject;
 use crate::project::ProjectFields;
 use crate::project::ProjectInfo;
@@ -17,7 +15,6 @@ use crate::project::RustProject;
 use crate::project::Visibility;
 use crate::project::WorkspaceProject;
 use crate::project::WorktreeGroup;
-use crate::project::WorktreeHealth;
 
 /// Owning wrapper around the project hierarchy.
 ///
@@ -27,19 +24,6 @@ use crate::project::WorktreeHealth;
 #[derive(Clone, Default)]
 pub(crate) struct ProjectList {
     root_items: Vec<RootItem>,
-}
-
-pub(crate) struct SearchableItem<'a> {
-    pub abs_path:         &'a Path,
-    pub display_path:     Cow<'a, str>,
-    pub name:             Cow<'a, str>,
-    /// Cargo package name when it differs from the visible label. Not displayed,
-    /// only used for search matching.
-    pub cargo_name:       Option<Cow<'a, str>>,
-    pub is_rust:          bool,
-    pub visibility:       Visibility,
-    pub disk_usage_bytes: Option<u64>,
-    pub worktree_health:  WorktreeHealth,
 }
 
 impl ProjectList {
@@ -150,86 +134,6 @@ impl ProjectList {
                 other => f(other.path(), other.is_rust()),
             }
         }
-    }
-
-    /// Iterate every project-like item that search should match directly from
-    /// the hierarchy without maintaining a synchronized flat cache.
-    pub(crate) fn visit_searchables(&self, mut f: impl FnMut(SearchableItem<'_>)) {
-        for item in &self.root_items {
-            match item {
-                RootItem::Rust(RustProject::Workspace(ws)) => {
-                    visit_workspace_searchables(ws, &mut f);
-                },
-                RootItem::Rust(RustProject::Package(pkg)) => {
-                    visit_package_searchables(pkg, &mut f);
-                },
-                RootItem::NonRust(nr) => f(non_rust_searchable(nr)),
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    visit_workspace_searchables(primary, &mut f);
-                    for l in linked {
-                        let worktree_label = l.worktree_name().map_or_else(
-                            || Cow::Owned(l.root_directory_name().into_string()),
-                            Cow::Borrowed,
-                        );
-                        let cargo_name = ws_root_cargo_name(l, worktree_label.as_ref());
-                        visit_workspace_searchables_with_root_name(
-                            l,
-                            worktree_label,
-                            cargo_name,
-                            &mut f,
-                        );
-                    }
-                },
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => {
-                    visit_package_searchables(primary, &mut f);
-                    for l in linked {
-                        let worktree_label = l.worktree_name().map_or_else(
-                            || Cow::Owned(l.root_directory_name().into_string()),
-                            Cow::Borrowed,
-                        );
-                        let cargo_name = pkg_root_cargo_name(l, worktree_label.as_ref());
-                        visit_package_searchables_with_root_name(
-                            l,
-                            worktree_label,
-                            cargo_name,
-                            &mut f,
-                        );
-                    }
-                },
-            }
-        }
-    }
-
-    pub(crate) fn find_searchable_by_abs_path(&self, target: &Path) -> Option<SearchableItem<'_>> {
-        for item in &self.root_items {
-            let found = match item {
-                RootItem::Rust(RustProject::Workspace(ws)) => find_workspace_searchable(ws, target),
-                RootItem::Rust(RustProject::Package(pkg)) => find_package_searchable(pkg, target),
-                RootItem::NonRust(nr) => (nr.path() == target).then(|| non_rust_searchable(nr)),
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => find_workspace_searchable(primary, target).or_else(|| {
-                    linked
-                        .iter()
-                        .find_map(|ws| find_workspace_searchable(ws, target))
-                }),
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => find_package_searchable(primary, target).or_else(|| {
-                    linked
-                        .iter()
-                        .find_map(|pkg| find_package_searchable(pkg, target))
-                }),
-            };
-            if found.is_some() {
-                return found;
-            }
-        }
-        None
     }
 
     pub(crate) fn at_path(&self, target: &Path) -> Option<&ProjectInfo> {
@@ -643,188 +547,6 @@ fn regroup_workspace(ws: &mut WorkspaceProject, inline_dirs: &[String]) {
     });
 
     *ws.groups_mut() = groups;
-}
-
-fn non_rust_searchable(project: &NonRustProject) -> SearchableItem<'_> {
-    SearchableItem {
-        abs_path:         project.path(),
-        display_path:     Cow::Owned(project.display_path().into_string()),
-        name:             Cow::Owned(project.root_directory_name().into_string()),
-        cargo_name:       None,
-        is_rust:          false,
-        visibility:       project.visibility(),
-        disk_usage_bytes: project.disk_usage_bytes(),
-        worktree_health:  project.worktree_health(),
-    }
-}
-
-fn package_searchable<'a>(
-    project: &'a PackageProject,
-    name: Cow<'a, str>,
-    cargo_name: Option<Cow<'a, str>>,
-) -> SearchableItem<'a> {
-    SearchableItem {
-        abs_path: project.path(),
-        display_path: Cow::Owned(project.display_path().into_string()),
-        name,
-        cargo_name,
-        is_rust: true,
-        visibility: project.visibility(),
-        disk_usage_bytes: project.disk_usage_bytes(),
-        worktree_health: project.worktree_health(),
-    }
-}
-
-fn workspace_searchable<'a>(
-    project: &'a WorkspaceProject,
-    name: Cow<'a, str>,
-    cargo_name: Option<Cow<'a, str>>,
-) -> SearchableItem<'a> {
-    SearchableItem {
-        abs_path: project.path(),
-        display_path: Cow::Owned(project.display_path().into_string()),
-        name,
-        cargo_name,
-        is_rust: true,
-        visibility: project.visibility(),
-        disk_usage_bytes: project.disk_usage_bytes(),
-        worktree_health: project.worktree_health(),
-    }
-}
-
-fn vendored_searchable(project: &PackageProject) -> SearchableItem<'_> {
-    SearchableItem {
-        abs_path:         project.path(),
-        display_path:     Cow::Owned(project.display_path().into_string()),
-        name:             Cow::Owned(format!("{} (vendored)", project.package_name())),
-        cargo_name:       None,
-        is_rust:          true,
-        visibility:       project.visibility(),
-        disk_usage_bytes: project.disk_usage_bytes(),
-        worktree_health:  project.worktree_health(),
-    }
-}
-
-fn visit_package_searchables(pkg: &PackageProject, f: &mut impl FnMut(SearchableItem<'_>)) {
-    let root_name = pkg.root_directory_name().into_string();
-    let cargo_name = pkg_root_cargo_name(pkg, &root_name);
-    visit_package_searchables_with_root_name(pkg, Cow::Owned(root_name), cargo_name, f);
-}
-
-fn visit_package_searchables_with_root_name<'a>(
-    pkg: &'a PackageProject,
-    root_name: Cow<'a, str>,
-    cargo_name: Option<Cow<'a, str>>,
-    f: &mut impl FnMut(SearchableItem<'a>),
-) {
-    f(package_searchable(pkg, root_name, cargo_name));
-    for vendored in pkg.vendored() {
-        f(vendored_searchable(vendored));
-    }
-}
-
-fn find_package_searchable<'a>(
-    pkg: &'a PackageProject,
-    target: &Path,
-) -> Option<SearchableItem<'a>> {
-    if pkg.path() == target {
-        let root_name = pkg.root_directory_name().into_string();
-        let cargo_name = pkg_root_cargo_name(pkg, &root_name);
-        return Some(package_searchable(pkg, Cow::Owned(root_name), cargo_name));
-    }
-    pkg.vendored()
-        .iter()
-        .find(|vendored| vendored.path() == target)
-        .map(vendored_searchable)
-}
-
-fn visit_workspace_searchables(ws: &WorkspaceProject, f: &mut impl FnMut(SearchableItem<'_>)) {
-    let root_name = ws.root_directory_name().into_string();
-    let cargo_name = ws_root_cargo_name(ws, &root_name);
-    visit_workspace_searchables_with_root_name(ws, Cow::Owned(root_name), cargo_name, f);
-}
-
-fn visit_workspace_searchables_with_root_name<'a>(
-    ws: &'a WorkspaceProject,
-    root_name: Cow<'a, str>,
-    cargo_name: Option<Cow<'a, str>>,
-    f: &mut impl FnMut(SearchableItem<'a>),
-) {
-    f(workspace_searchable(ws, root_name, cargo_name));
-    for group in ws.groups() {
-        for member in group.members() {
-            f(package_searchable(
-                member,
-                Cow::Owned(member.package_name().into_string()),
-                None,
-            ));
-            for vendored in member.vendored() {
-                f(vendored_searchable(vendored));
-            }
-        }
-    }
-    for vendored in ws.vendored() {
-        f(vendored_searchable(vendored));
-    }
-}
-
-fn find_workspace_searchable<'a>(
-    ws: &'a WorkspaceProject,
-    target: &Path,
-) -> Option<SearchableItem<'a>> {
-    if ws.path() == target {
-        let root_name = ws.root_directory_name().into_string();
-        let cargo_name = ws_root_cargo_name(ws, &root_name);
-        return Some(workspace_searchable(ws, Cow::Owned(root_name), cargo_name));
-    }
-    for group in ws.groups() {
-        for member in group.members() {
-            if member.path() == target {
-                return Some(package_searchable(
-                    member,
-                    Cow::Owned(member.package_name().into_string()),
-                    None,
-                ));
-            }
-            if let Some(vendored) = member
-                .vendored()
-                .iter()
-                .find(|vendored| vendored.path() == target)
-            {
-                return Some(vendored_searchable(vendored));
-            }
-        }
-    }
-    ws.vendored()
-        .iter()
-        .find(|vendored| vendored.path() == target)
-        .map(vendored_searchable)
-}
-
-/// Return the Cargo package name as a search-only token when it differs from the
-/// visible label. Returns `None` when both names match (no alias needed).
-fn ws_root_cargo_name<'a>(
-    project: &'a WorkspaceProject,
-    visible_name: &str,
-) -> Option<Cow<'a, str>> {
-    let cargo_name = project.package_name();
-    if cargo_name.as_str() == visible_name {
-        None
-    } else {
-        Some(Cow::Owned(cargo_name.into_string()))
-    }
-}
-
-fn pkg_root_cargo_name<'a>(
-    project: &'a PackageProject,
-    visible_name: &str,
-) -> Option<Cow<'a, str>> {
-    let cargo_name = project.package_name();
-    if cargo_name.as_str() == visible_name {
-        None
-    } else {
-        Some(Cow::Owned(cargo_name.into_string()))
-    }
 }
 
 fn try_insert_member(ws: &mut WorkspaceProject, item_path: &Path, item: &RootItem) -> bool {

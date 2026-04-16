@@ -15,6 +15,7 @@ use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
+use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
@@ -34,7 +35,6 @@ use super::constants::COLUMN_HEADER_COLOR;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::constants::ERROR_COLOR;
 use super::constants::LABEL_COLOR;
-use super::constants::SEARCH_BAR_HEIGHT;
 use super::constants::SECONDARY_TEXT_COLOR;
 use super::constants::STATUS_BAR_COLOR;
 use super::constants::SUCCESS_COLOR;
@@ -53,7 +53,6 @@ use crate::ci::Conclusion;
 use crate::project;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
-use crate::project::Visibility;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
 
@@ -308,19 +307,7 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
 }
 
 fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let search_height = if app.is_searching() {
-        SEARCH_BAR_HEIGHT
-    } else {
-        0
-    };
-    let left_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(search_height), Constraint::Min(1)])
-        .split(area);
-    if app.is_searching() {
-        render_search_bar(frame, app, left_layout[0]);
-    }
-    render_project_list(frame, app, left_layout[1]);
+    render_project_list(frame, app, area);
 }
 
 fn pane_render_styles() -> panes::RenderStyles {
@@ -364,7 +351,7 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
         PaneId::Lints => panes::render_lints_panel(frame, app, area),
         PaneId::CiRuns => panes::render_ci_panel(frame, app, area),
         PaneId::Output => render_example_output(frame, app, area),
-        PaneId::Toasts | PaneId::Search | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {},
+        PaneId::Toasts | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {},
     }
 }
 
@@ -405,7 +392,7 @@ fn sync_hovered_pane_row(app: &mut App) {
 fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
     match id {
         PaneId::Package | PaneId::Lang => {
-            let pane = app.pane_manager().by_id(id).clone();
+            let pane = app.pane_manager().pane(id).clone();
             super::interaction::register_pane_row_hitboxes(app, id, &pane, Content);
         },
         PaneId::Git => {
@@ -414,10 +401,10 @@ fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
                 .and_then(|path| app.git_info_for(path))
                 .is_some()
             {
-                let pane = app.pane_manager().git.clone();
+                let pane = app.pane_manager().pane(PaneId::Git).clone();
                 super::interaction::register_pane_row_hitboxes(app, id, &pane, Content);
             } else {
-                reset_pane(&mut app.pane_manager_mut().git);
+                reset_pane(app.pane_manager_mut().pane_mut(PaneId::Git));
             }
         },
         PaneId::Targets => {
@@ -427,10 +414,10 @@ fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
                 .as_ref()
                 .is_some_and(TargetsData::has_targets)
             {
-                let pane = app.pane_manager().targets.clone();
+                let pane = app.pane_manager().pane(PaneId::Targets).clone();
                 super::interaction::register_pane_row_hitboxes(app, id, &pane, Content);
             } else {
-                reset_pane(&mut app.pane_manager_mut().targets);
+                reset_pane(app.pane_manager_mut().pane_mut(PaneId::Targets));
             }
         },
         // These panes register their own hitboxes during rendering
@@ -440,7 +427,6 @@ fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
         | PaneId::CiRuns
         | PaneId::Output
         | PaneId::Toasts
-        | PaneId::Search
         | PaneId::Settings
         | PaneId::Finder
         | PaneId::Keymap => {},
@@ -453,49 +439,10 @@ const fn reset_pane(pane: &mut Pane) {
     pane.set_scroll_offset(0);
 }
 
-pub(super) fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let search_focused = app.is_focused(PaneId::Search);
-    let search_style = if search_focused {
-        Style::default().fg(Color::White)
-    } else {
-        Style::default().fg(LABEL_COLOR)
-    };
-
-    let search_text = if search_focused {
-        if app.search_query().is_empty() {
-            "…".to_string()
-        } else {
-            app.search_query().to_string()
-        }
-    } else {
-        "/ to search".to_string()
-    };
-
-    let search_bar = Paragraph::new(Line::from(vec![
-        Span::styled(" 🔍 ", Style::default().fg(TITLE_COLOR)),
-        Span::styled(search_text, search_style),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(if search_focused {
-                Style::default().fg(ACTIVE_BORDER_COLOR)
-            } else {
-                Style::default().fg(LABEL_COLOR)
-            }),
-    );
-
-    frame.render_widget(search_bar, area);
-}
-
 pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let (mut items, header, summary_line, row_width) = {
         let widths = app.cached_fit_widths();
-        let items: Vec<ListItem> = if app.is_searching() && !app.search_query().is_empty() {
-            render_filtered_items(app, widths)
-        } else {
-            render_tree_items(app, widths)
-        };
+        let items: Vec<ListItem> = render_tree_items(app, widths);
         let total_str = format_bytes(
             app.projects()
                 .iter()
@@ -570,10 +517,18 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     };
     let project_list_focus = app.pane_focus_state(PaneId::ProjectList);
     let project_list = List::new(items).highlight_style(Pane::selection_style(project_list_focus));
-
-    frame.render_stateful_widget(project_list, list_area, app.list_state_mut());
+    let mut list_state = ListState::default()
+        .with_selected(Some(app.pane_manager().pane(PaneId::ProjectList).pos()));
+    *list_state.offset_mut() = app.pane_manager().pane(PaneId::ProjectList).scroll_offset();
+    frame.render_stateful_widget(project_list, list_area, &mut list_state);
     app.layout_cache_mut().project_list = list_area;
-    app.layout_cache_mut().project_list_offset = app.list_state().offset();
+    app.layout_cache_mut().project_list_offset = list_state.offset();
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_scroll_offset(list_state.offset());
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_pos(list_state.selected().unwrap_or(0));
     super::interaction::register_project_list_hitboxes(app, list_area, row_width);
 
     if pin_summary && let Some(line) = summary_line {
@@ -589,7 +544,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
 
 fn project_panel_title_with_counts(app: &App, max_width: usize) -> String {
     let focused = app.is_focused(PaneId::ProjectList);
-    let cursor = app.list_state().selected().unwrap_or(0);
+    let cursor = app.pane_manager().pane(PaneId::ProjectList).pos();
     let roots = app.resolved_dirs();
 
     // Count visible rows per root directory and determine which root the
@@ -1601,88 +1556,6 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
                 node_index,
                 submodule_index,
             } => render_submodule_item(app, *node_index, *submodule_index, widths),
-        })
-        .collect()
-}
-
-pub(super) fn render_filtered_items(app: &App, widths: &ResolvedWidths) -> Vec<ListItem<'static>> {
-    let root_sorted = app.cached_root_sorted();
-    app.filtered()
-        .iter()
-        .map(|hit| {
-            let abs = hit.abs_path.as_path();
-            let metadata = app.projects().find_searchable_by_abs_path(abs);
-            let cargo_active = app.is_cargo_active_path(abs);
-            let disk_bytes = metadata.as_ref().and_then(|item| item.disk_usage_bytes);
-            let disk = format_bytes(disk_bytes.unwrap_or(0));
-            let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
-            let lang = if metadata.as_ref().is_some_and(|item| item.is_rust) || hit.is_rust {
-                crate::project::PackageProject::lang_icon()
-            } else {
-                app.projects()
-                    .at_path(abs)
-                    .and_then(|p| p.language_stats.as_ref())
-                    .and_then(|ls| ls.entries.first())
-                    .map_or("  ", |e| crate::project::language_icon(&e.language))
-            };
-            let lint = if cargo_active {
-                app.lint_icon(abs)
-            } else {
-                " "
-            };
-            let ci = if cargo_active { app.ci_for(abs) } else { None };
-            let hide_git_status = app.is_workspace_member_path(abs);
-            let origin_sync = if hide_git_status
-                || matches!(
-                    app.git_path_state_for(abs),
-                    crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
-                ) {
-                String::new()
-            } else {
-                app.git_sync(abs)
-            };
-            let main_sync = if hide_git_status
-                || matches!(
-                    app.git_path_state_for(abs),
-                    crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
-                ) {
-                String::new()
-            } else {
-                app.git_main(abs)
-            };
-            let deleted = metadata
-                .as_ref()
-                .is_some_and(|item| matches!(item.visibility, Visibility::Deleted));
-            let git_path_state = app.git_path_state_for(abs);
-            let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
-                ("0.0", Some(" [x]"), Some(Style::default().fg(LABEL_COLOR)))
-            } else {
-                (disk.as_str(), None, None)
-            };
-            let row = super::columns::build_row_cells(super::columns::ProjectRow {
-                prefix: "  ",
-                name: &hit.name,
-                name_segments: app.discovery_name_segments_for_path(
-                    abs,
-                    &hit.name,
-                    git_path_state,
-                    DiscoveryRowKind::Search,
-                ),
-                git_path_state,
-                lint_icon: lint,
-                lint_style: lint_style_for(app, abs),
-                disk: disk_text,
-                disk_style: ds,
-                disk_suffix,
-                disk_suffix_style,
-                lang_icon: lang,
-                git_origin_sync: &origin_sync,
-                git_main: &main_sync,
-                ci,
-                deleted,
-                worktree_health: metadata.as_ref().map_or(Normal, |m| m.worktree_health),
-            });
-            ListItem::new(super::columns::row_to_line(&row, widths))
         })
         .collect()
 }

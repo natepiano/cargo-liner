@@ -26,7 +26,6 @@ pub(super) enum UiRegion {
 #[derive(Clone, Debug)]
 pub(super) enum UiTarget {
     ProjectRow(VisibleRow),
-    SearchRow(usize),
     PaneRow { pane: PaneId, row: usize },
     Dismiss(DismissTarget),
     ToastCard(u64),
@@ -68,12 +67,8 @@ pub(super) struct ToastHitbox {
 
 pub(super) fn register_project_list_hitboxes(app: &mut App, list_area: Rect, row_width: u16) {
     let visible_height = usize::from(list_area.height);
-    let visible_start = app.list_state().offset();
-    let project_row_count = if app.is_searching() && !app.search_query().is_empty() {
-        app.filtered().len()
-    } else {
-        app.visible_rows().len()
-    };
+    let visible_start = app.layout_cache().project_list_offset;
+    let project_row_count = app.visible_rows().len();
     let visible_end = project_row_count.min(visible_start.saturating_add(visible_height));
     let suffix_width = u16::try_from(columns::display_width(DISMISS_SUFFIX)).unwrap_or(u16::MAX);
 
@@ -82,14 +77,11 @@ pub(super) fn register_project_list_hitboxes(app: &mut App, list_area: Rect, row
             .y
             .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
         let body_rect = Rect::new(list_area.x, y, row_width, 1);
-        let body_target = if app.is_searching() && !app.search_query().is_empty() {
-            Some(UiTarget::SearchRow(row_index))
-        } else {
-            app.visible_rows()
-                .get(row_index)
-                .copied()
-                .map(UiTarget::ProjectRow)
-        };
+        let body_target = app
+            .visible_rows()
+            .get(row_index)
+            .copied()
+            .map(UiTarget::ProjectRow);
         let Some(body_target) = body_target else {
             continue;
         };
@@ -102,17 +94,11 @@ pub(super) fn register_project_list_hitboxes(app: &mut App, list_area: Rect, row
             order_index,
         ));
 
-        let dismiss_target = if app.is_searching() && !app.search_query().is_empty() {
-            app.filtered().get(row_index).and_then(|hit| {
-                app.is_deleted(hit.abs_path.as_path())
-                    .then(|| DismissTarget::DeletedProject(hit.abs_path.clone()))
-            })
-        } else {
-            app.visible_rows()
-                .get(row_index)
-                .copied()
-                .and_then(|row| app.dismiss_target_for_row(row))
-        };
+        let dismiss_target = app
+            .visible_rows()
+            .get(row_index)
+            .copied()
+            .and_then(|row| app.dismiss_target_for_row(row));
         if let Some(target) = dismiss_target {
             let x = list_area
                 .x
@@ -216,30 +202,34 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
             app.focus_pane(PaneId::ProjectList);
             let rows = app.visible_rows();
             if let Some(index) = rows.iter().position(|candidate| *candidate == row) {
-                app.list_state_mut().select(Some(index));
-            }
-            true
-        },
-        UiTarget::SearchRow(index) => {
-            app.focus_pane(PaneId::ProjectList);
-            if index < app.filtered().len() {
-                app.list_state_mut().select(Some(index));
+                app.pane_manager_mut()
+                    .pane_mut(PaneId::ProjectList)
+                    .set_pos(index);
             }
             true
         },
         UiTarget::PaneRow { pane, row } => {
             app.focus_pane(pane);
             match pane {
-                PaneId::Finder => app.finder_mut().pane.set_pos(row),
-                PaneId::Settings => app.pane_manager_mut().settings.set_pos(row),
-                PaneId::Package => app.pane_manager_mut().package.set_pos(row),
-                PaneId::Lang => app.pane_manager_mut().lang.set_pos(row),
-                PaneId::Git => app.pane_manager_mut().git.set_pos(row),
-                PaneId::Targets => app.pane_manager_mut().targets.set_pos(row),
-                PaneId::Lints => app.pane_manager_mut().lints.set_pos(row),
-                PaneId::CiRuns => app.pane_manager_mut().ci.set_pos(row),
-                PaneId::Keymap => app.pane_manager_mut().keymap.set_pos(row),
-                PaneId::ProjectList | PaneId::Output | PaneId::Toasts | PaneId::Search => {
+                PaneId::Finder => app.pane_manager_mut().pane_mut(PaneId::Finder).set_pos(row),
+                PaneId::Settings => app
+                    .pane_manager_mut()
+                    .pane_mut(PaneId::Settings)
+                    .set_pos(row),
+                PaneId::Package => app
+                    .pane_manager_mut()
+                    .pane_mut(PaneId::Package)
+                    .set_pos(row),
+                PaneId::Lang => app.pane_manager_mut().pane_mut(PaneId::Lang).set_pos(row),
+                PaneId::Git => app.pane_manager_mut().pane_mut(PaneId::Git).set_pos(row),
+                PaneId::Targets => app
+                    .pane_manager_mut()
+                    .pane_mut(PaneId::Targets)
+                    .set_pos(row),
+                PaneId::Lints => app.pane_manager_mut().pane_mut(PaneId::Lints).set_pos(row),
+                PaneId::CiRuns => app.pane_manager_mut().pane_mut(PaneId::CiRuns).set_pos(row),
+                PaneId::Keymap => app.pane_manager_mut().pane_mut(PaneId::Keymap).set_pos(row),
+                PaneId::ProjectList | PaneId::Output | PaneId::Toasts => {
                     return false;
                 },
             }
@@ -252,7 +242,9 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
         UiTarget::ToastCard(id) => {
             let active = app.active_toasts();
             if let Some(index) = active.iter().position(|toast| toast.id() == id) {
-                app.pane_manager_mut().toasts.set_pos(index);
+                app.pane_manager_mut()
+                    .pane_mut(PaneId::Toasts)
+                    .set_pos(index);
                 app.focus_pane(PaneId::Toasts);
             }
             true
@@ -327,8 +319,6 @@ mod tests {
     use crate::tui::app::App;
     use crate::tui::app::DismissTarget;
     use crate::tui::app::ExpandKey;
-    use crate::tui::app::SearchHit;
-    use crate::tui::app::SearchMode;
     use crate::tui::app::VisibleRow;
     use crate::tui::finder;
     use crate::tui::input;
@@ -530,7 +520,7 @@ mod tests {
     }
 
     fn finder_result_point(app: &App, result_index: usize) -> (u16, u16) {
-        let area = app.finder().pane.content_area();
+        let area = app.pane_manager().pane(PaneId::Finder).content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -540,7 +530,7 @@ mod tests {
     }
 
     fn lint_run_point(app: &App, run_index: usize) -> (u16, u16) {
-        let area = app.pane_manager().lints.content_area();
+        let area = app.pane_manager().pane(PaneId::Lints).content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -550,7 +540,7 @@ mod tests {
     }
 
     fn ci_run_point(app: &App, run_index: usize) -> (u16, u16) {
-        let area = app.pane_manager().ci.content_area();
+        let area = app.pane_manager().pane(PaneId::CiRuns).content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -631,7 +621,9 @@ mod tests {
 
         let mut app = make_app(&[make_package("deleted", &deleted_dir)]);
         mark_deleted(&mut app, &deleted_dir);
-        app.list_state_mut().select(Some(0));
+        app.pane_manager_mut()
+            .pane_mut(PaneId::ProjectList)
+            .set_pos(0);
         render_ui(&mut app);
 
         let keyboard_target = app
@@ -676,7 +668,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::ProjectList);
-        assert_eq!(app.list_state().selected(), Some(1));
+        assert_eq!(app.pane_manager().pane(PaneId::ProjectList).pos(), 1);
         assert_eq!(
             app.selected_project_path().map(Path::to_path_buf),
             Some(second),
@@ -714,38 +706,6 @@ mod tests {
     }
 
     #[test]
-    fn search_result_row_click_selects_correct_hit() {
-        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
-        let alpha = tmp.path().join("alpha");
-        let beta = tmp.path().join("beta");
-        std::fs::create_dir_all(&alpha).unwrap_or_else(|_| std::process::abort());
-        std::fs::create_dir_all(&beta).unwrap_or_else(|_| std::process::abort());
-
-        let mut app = make_app(&[make_package("alpha", &alpha), make_package("beta", &beta)]);
-        app.ui_modes_mut().search = SearchMode::Active;
-        app.set_focused_pane(PaneId::Search);
-        *app.search_query_mut() = "beta".to_string();
-        *app.filtered_mut() = vec![SearchHit {
-            abs_path:     beta.clone().into(),
-            display_path: beta.display().to_string(),
-            name:         "beta".to_string(),
-            score:        100,
-            is_rust:      true,
-        }];
-        render_ui(&mut app);
-
-        let (x, y) = row_body_point(&app, 0);
-        click(&mut app, x, y);
-
-        assert_eq!(app.focused_pane(), PaneId::ProjectList);
-        assert_eq!(app.list_state().selected(), Some(0));
-        assert_eq!(
-            app.selected_project_path().map(Path::to_path_buf),
-            Some(beta),
-        );
-    }
-
-    #[test]
     fn finder_row_click_uses_result_index_not_visual_table_row() {
         let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
         let alpha = tmp.path().join("alpha");
@@ -768,7 +728,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.finder().pane.pos(),
+            app.pane_manager().pane(PaneId::Finder).pos(),
             1,
             "clicking the second rendered finder result should select result index 1, not the header-offset visual row"
         );
@@ -781,11 +741,11 @@ mod tests {
         app.open_settings();
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(&app.pane_manager().settings, 5);
+        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Settings), 5);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.pane_manager().settings.pos(),
+            app.pane_manager().pane(PaneId::Settings).pos(),
             SettingOption::CiRunCount as usize,
             "clicking a rendered settings option should select the logical setting, not the visual line index including spacer/header rows"
         );
@@ -808,7 +768,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.pane_manager().lints.pos(),
+            app.pane_manager().pane(PaneId::Lints).pos(),
             1,
             "clicking the second rendered lint run should select run index 1, not the header-offset visual row"
         );
@@ -846,7 +806,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.pane_manager().ci.pos(),
+            app.pane_manager().pane(PaneId::CiRuns).pos(),
             1,
             "clicking the second rendered CI run should select run index 1, not the header-offset visual row"
         );
@@ -907,7 +867,9 @@ mod tests {
         render_ui(&mut app);
         let stale_click = row_dismiss_point(&app, 0);
 
-        app.list_state_mut().select(Some(0));
+        app.pane_manager_mut()
+            .pane_mut(PaneId::ProjectList)
+            .set_pos(0);
         let target = app
             .focused_dismiss_target()
             .unwrap_or_else(|| std::process::abort());
@@ -937,7 +899,9 @@ mod tests {
             app.toasts_mut()
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
         let toast_len = app.active_toasts().len();
-        app.pane_manager_mut().toasts.set_len(toast_len);
+        app.pane_manager_mut()
+            .pane_mut(PaneId::Toasts)
+            .set_len(toast_len);
         render_ui(&mut app);
 
         let (x, y) = toast_close_point(&app, toast_id);
@@ -965,7 +929,9 @@ mod tests {
             app.toasts_mut()
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
         let toast_len = app.active_toasts().len();
-        app.pane_manager_mut().toasts.set_len(toast_len);
+        app.pane_manager_mut()
+            .pane_mut(PaneId::Toasts)
+            .set_len(toast_len);
         render_ui(&mut app);
 
         let (x, y) = toast_body_point(&app, toast_id);
@@ -1001,7 +967,7 @@ mod tests {
         let (x, y) = finder_result_point(&app, 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.finder().pane.pos(), 1);
+        assert_eq!(app.pane_manager().pane(PaneId::Finder).pos(), 1);
     }
 
     #[test]
@@ -1011,11 +977,11 @@ mod tests {
         app.open_settings();
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(&app.pane_manager().settings, 2);
+        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Settings), 2);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.pane_manager().settings.pos(),
+            app.pane_manager().pane(PaneId::Settings).pos(),
             SettingOption::InvertScroll as usize
         );
     }
@@ -1029,11 +995,11 @@ mod tests {
         let mut app = make_app(&[make_package("demo", &project_dir)]);
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(&app.pane_manager().package, 1);
+        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Package), 1);
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::Package);
-        assert_eq!(app.pane_manager().package.pos(), 1);
+        assert_eq!(app.pane_manager().pane(PaneId::Package).pos(), 1);
     }
 
     #[test]
@@ -1057,11 +1023,11 @@ mod tests {
         let mut app = make_app(&[make_package_with_cargo("demo", &project_dir, cargo)]);
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(&app.pane_manager().targets, 1);
+        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Targets), 1);
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::Targets);
-        assert_eq!(app.pane_manager().targets.pos(), 1);
+        assert_eq!(app.pane_manager().pane(PaneId::Targets).pos(), 1);
     }
 
     #[test]
@@ -1079,10 +1045,10 @@ mod tests {
         ))));
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(&app.pane_manager().git, 1);
+        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Git), 1);
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::Git);
-        assert_eq!(app.pane_manager().git.pos(), 1);
+        assert_eq!(app.pane_manager().pane(PaneId::Git).pos(), 1);
     }
 }

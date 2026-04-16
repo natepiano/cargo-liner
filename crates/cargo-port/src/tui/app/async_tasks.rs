@@ -5,8 +5,6 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
-use ratatui::widgets::ListState;
-
 use super::App;
 use super::ExpandKey::Group;
 use super::ExpandKey::Node;
@@ -86,20 +84,11 @@ impl App {
         self.data_generation += 1;
         self.detail_generation += 1;
 
-        // Re-run search if active so filtered results match the latest
-        // hierarchy state.
-        if self.is_searching() && !self.search_query.is_empty() {
-            let query = self.search_query.clone();
-            self.update_search(&query);
-        } else {
-            self.filtered.clear();
-        }
-
         // Try to restore selection
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
         } else if !self.projects.is_empty() {
-            self.list_state.select(Some(0));
+            self.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
         }
         if should_focus_project_list {
             self.focus_pane(PaneId::ProjectList);
@@ -230,7 +219,10 @@ impl App {
             1,
         );
         self.keymap_diagnostics_id = Some(id);
-        self.pane_manager.toasts.set_len(self.active_toasts().len());
+        let toast_len = self.active_toasts().len();
+        self.pane_manager
+            .pane_mut(PaneId::Toasts)
+            .set_len(toast_len);
     }
 
     fn dismiss_keymap_diagnostics(&mut self) {
@@ -1325,10 +1317,6 @@ impl App {
         self.dirty.rows.mark_dirty();
         self.dirty.disk_cache.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
-        if self.is_searching() && !self.search_query.is_empty() {
-            let query = self.search_query.clone();
-            self.update_search(&query);
-        }
     }
 
     fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
@@ -1448,12 +1436,14 @@ impl App {
         self.focus_pane(PaneId::ProjectList);
         self.close_settings();
         self.close_finder();
-        self.end_search();
         self.reset_project_panes();
         self.selection_paths.selected_project = None;
         self.pending_ci_fetch = None;
         self.expanded.clear();
-        self.list_state = ListState::default();
+        self.pane_manager.pane_mut(PaneId::ProjectList).home();
+        self.pane_manager
+            .pane_mut(PaneId::ProjectList)
+            .set_scroll_offset(0);
         self.dirty.rows.mark_dirty();
         self.dirty.disk_cache.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
@@ -1847,7 +1837,10 @@ impl App {
                     }],
                     linger,
                 );
-                self.pane_manager.toasts.set_len(self.active_toasts().len());
+                let toast_len = self.active_toasts().len();
+                self.pane_manager
+                    .pane_mut(PaneId::Toasts)
+                    .set_len(toast_len);
             }
         }
         if self.is_scan_complete() {
@@ -2168,20 +2161,11 @@ impl App {
         self.data_generation += 1;
         self.detail_generation += 1;
 
-        // Re-run search if active so filtered results match the latest
-        // hierarchy state.
-        if self.is_searching() && !self.search_query.is_empty() {
-            let query = self.search_query.clone();
-            self.update_search(&query);
-        } else {
-            self.filtered.clear();
-        }
-
         // Restore selection.
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
         } else if !self.projects.is_empty() {
-            self.list_state.select(Some(0));
+            self.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
         }
         self.sync_selected_project();
 

@@ -238,15 +238,7 @@ impl PaneGridLayout {
 /// mutably while borrowing `App` immutably for project data. Each pane
 /// owns its display data — no shared monolithic struct.
 pub(super) struct PaneManager {
-    pub package:      Pane,
-    pub lang:         Pane,
-    pub git:          Pane,
-    pub targets:      Pane,
-    pub ci:           Pane,
-    pub toasts:       Pane,
-    pub lints:        Pane,
-    pub settings:     Pane,
-    pub keymap:       Pane,
+    panes:            Vec<Pane>,
     // Per-pane data models — populated when the selected project changes.
     pub package_data: Option<PackageData>,
     pub git_data:     Option<GitData>,
@@ -256,60 +248,24 @@ pub(super) struct PaneManager {
 }
 
 impl PaneManager {
-    /// Look up a pane by ID. Exhaustive match — adding a `PaneId` variant
-    /// forces you to decide which pane it maps to.
-    pub const fn by_id(&self, id: PaneId) -> &Pane {
-        match id {
-            PaneId::Package
-            | PaneId::ProjectList
-            | PaneId::Output
-            | PaneId::Search
-            | PaneId::Finder => &self.package,
-            PaneId::Lang => &self.lang,
-            PaneId::Git => &self.git,
-            PaneId::Targets => &self.targets,
-            PaneId::CiRuns => &self.ci,
-            PaneId::Toasts => &self.toasts,
-            PaneId::Lints => &self.lints,
-            PaneId::Settings => &self.settings,
-            PaneId::Keymap => &self.keymap,
-        }
-    }
+    pub fn pane(&self, id: PaneId) -> &Pane { &self.panes[id.index()] }
 
-    pub const fn by_id_mut(&mut self, id: PaneId) -> &mut Pane {
-        match id {
-            PaneId::Package
-            | PaneId::ProjectList
-            | PaneId::Output
-            | PaneId::Search
-            | PaneId::Finder => &mut self.package,
-            PaneId::Lang => &mut self.lang,
-            PaneId::Git => &mut self.git,
-            PaneId::Targets => &mut self.targets,
-            PaneId::CiRuns => &mut self.ci,
-            PaneId::Toasts => &mut self.toasts,
-            PaneId::Lints => &mut self.lints,
-            PaneId::Settings => &mut self.settings,
-            PaneId::Keymap => &mut self.keymap,
-        }
-    }
+    pub fn pane_mut(&mut self, id: PaneId) -> &mut Pane { &mut self.panes[id.index()] }
 
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            package:      Pane::new(),
-            lang:         Pane::new(),
-            git:          Pane::new(),
-            targets:      Pane::new(),
-            ci:           Pane::new(),
-            toasts:       Pane::new(),
-            lints:        Pane::new(),
-            settings:     Pane::new(),
-            keymap:       Pane::new(),
+            panes:        vec![Pane::new(); PaneId::pane_count()],
             package_data: None,
             git_data:     None,
             targets_data: None,
             ci_data:      None,
             lints_data:   None,
+        }
+    }
+
+    pub fn clear_hover(&mut self) {
+        for pane in &mut self.panes {
+            pane.set_hovered(None);
         }
     }
 

@@ -725,7 +725,7 @@ fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
 fn git_first_commit_arriving_before_git_info_is_preserved() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.list_state.select(Some(0));
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
     app.sync_selected_project();
 
     apply_bg_msg(
@@ -764,7 +764,7 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
 fn git_info_invalidates_selected_git_pane_cache() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.list_state.select(Some(0));
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
     app.sync_selected_project();
     app.ensure_detail_cached();
 

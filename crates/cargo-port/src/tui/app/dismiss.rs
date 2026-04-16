@@ -114,10 +114,11 @@ impl App {
                     self.select_root_row(ni);
                 } else {
                     let count = self.row_count();
-                    if let Some(selected) = self.list_state.selected()
-                        && selected >= count
-                    {
-                        self.list_state.select(Some(count.saturating_sub(1)));
+                    let selected = self.pane_manager.pane(PaneId::ProjectList).pos();
+                    if selected >= count {
+                        self.pane_manager
+                            .pane_mut(PaneId::ProjectList)
+                            .set_pos(count.saturating_sub(1));
                     }
                 }
             },
@@ -160,7 +161,7 @@ impl App {
             .iter()
             .position(|row| matches!(row, VisibleRow::Root { node_index: ni } if *ni == node_index))
         {
-            self.list_state.select(Some(pos));
+            self.pane_manager.pane_mut(PaneId::ProjectList).set_pos(pos);
         }
     }
 }
