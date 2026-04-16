@@ -15,8 +15,10 @@ use super::package;
 use super::package::RenderStyles;
 use super::pane_title;
 use crate::constants::IN_SYNC;
+use crate::constants::NO_CI_UNPUBLISHED_BRANCH;
 use crate::tui::app::App;
 use crate::tui::constants::ERROR_COLOR;
+use crate::tui::constants::INACTIVE_BORDER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
@@ -39,7 +41,7 @@ pub(in super::super) fn git_label_width(data: &GitData, fields: &[DetailField]) 
     fields
         .iter()
         .map(|field| match *field {
-            DetailField::VsOrigin => "Remote branch".width(),
+            DetailField::VsOrigin => "Remote".width(),
             DetailField::VsLocal => format!("vs local {}", data.main_branch_label).width(),
             _ => field.label().width(),
         })
@@ -65,7 +67,7 @@ fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect
         let dynamic_label;
         let label = match *field {
             DetailField::VsOrigin => {
-                dynamic_label = "Remote branch".to_string();
+                dynamic_label = "Remote".to_string();
                 &dynamic_label
             },
             DetailField::VsLocal => {
@@ -87,8 +89,10 @@ fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect
         ) && value == IN_SYNC
         {
             Style::default().fg(SUCCESS_COLOR)
-        } else if *field == DetailField::Sync && value == crate::constants::NO_REMOTE_SYNC {
-            Style::default().fg(LABEL_COLOR)
+        } else if (*field == DetailField::VsOrigin && value == NO_CI_UNPUBLISHED_BRANCH)
+            || (*field == DetailField::Sync && value == crate::constants::NO_REMOTE_SYNC)
+        {
+            Style::default().fg(INACTIVE_BORDER_COLOR)
         } else if *field == DetailField::WorktreeError {
             Style::default().fg(Color::White).bg(ERROR_COLOR)
         } else {

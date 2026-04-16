@@ -262,7 +262,7 @@ impl DetailField {
             Self::Branch => "Branch",
             Self::GitPath => "Git Path",
             Self::Sync => "Remote status",
-            Self::VsOrigin => "Remote branch",
+            Self::VsOrigin => "Remote",
             Self::VsLocal => "vs local main",
             Self::Origin | Self::Repo => "Origin",
             Self::Owner => "Owner",
@@ -660,12 +660,16 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let git = app.git_info_for(owner_path.as_path());
     let branch = git.and_then(|info| info.branch.clone());
     let sync = git.map(|info| format_remote_status(info.ahead_behind));
-    let vs_origin = git.map(|info| {
-        info.upstream_branch.as_deref().map_or_else(
-            || "none".to_string(),
-            |branch| format!("{branch} (local cached ref)"),
-        )
-    });
+    let vs_origin = if app.unpublished_ci_branch_name(abs_path).is_some() {
+        Some(NO_CI_UNPUBLISHED_BRANCH.to_string())
+    } else {
+        git.map(|info| {
+            info.upstream_branch.as_deref().map_or_else(
+                || "none".to_string(),
+                |branch| format!("{branch} (local cached ref)"),
+            )
+        })
+    };
     let vs_local = git
         .and_then(|info| info.ahead_behind_local)
         .map(format_ahead_behind);

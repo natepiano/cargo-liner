@@ -238,7 +238,7 @@ fn git_label_width_uses_origin_and_configured_main_labels() {
 fn git_fields_show_explicit_remote_and_local_rows_for_unpublished_branch() {
     let data = GitData {
         sync: Some(crate::constants::NO_REMOTE_SYNC.to_string()),
-        vs_origin: Some("none".to_string()),
+        vs_origin: Some(crate::constants::NO_CI_UNPUBLISHED_BRANCH.to_string()),
         vs_local: Some("↑11 ↓3".to_string()),
         ..git_data()
     };
@@ -251,6 +251,11 @@ fn git_fields_show_explicit_remote_and_local_rows_for_unpublished_branch() {
             DetailField::VsLocal
         ]
     );
+}
+
+#[test]
+fn git_remote_field_label_uses_remote_without_branch_suffix() {
+    assert_eq!(DetailField::VsOrigin.label(), "Remote");
 }
 
 #[test]
