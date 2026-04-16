@@ -3,6 +3,7 @@ use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::project::AbsolutePath;
 use crate::project::WorktreeGroup;
+use crate::tui::detail::DetailField;
 
 #[test]
 fn lint_runtime_waits_for_scan_completion() {
@@ -791,6 +792,56 @@ fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
         ci_data.empty_state.title(),
         " No CI runs for unpublished branch enh/various "
     );
+}
+
+#[test]
+fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    app.scan.phase = ScanPhase::Complete;
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    app.sync_selected_project();
+
+    app.handle_git_info(
+        project.path(),
+        GitInfo {
+            path_state:          GitPathState::default(),
+            origin:              GitOrigin::Clone,
+            branch:              Some("enh/various".to_string()),
+            owner:               Some("natepiano".to_string()),
+            url:                 Some("https://github.com/natepiano/demo".to_string()),
+            first_commit:        None,
+            last_commit:         None,
+            ahead_behind:        None,
+            upstream_branch:     None,
+            default_branch:      Some("main".to_string()),
+            ahead_behind_origin: None,
+            local_main_branch:   Some("main".to_string()),
+            ahead_behind_local:  None,
+            workflows:           WorkflowPresence::Present,
+        },
+    );
+    set_loaded_ci(
+        &mut app,
+        project.path(),
+        vec![CiRun {
+            branch: "main".to_string(),
+            ..make_ci_run(57, Conclusion::Success)
+        }],
+        false,
+        1,
+    );
+    app.ensure_detail_cached();
+
+    let value = DetailField::Ci.package_value(
+        app.pane_manager
+            .package_data
+            .as_ref()
+            .unwrap_or_else(|| std::process::abort()),
+        &app,
+    );
+
+    assert_eq!(value, crate::constants::NO_CI_UNPUBLISHED_BRANCH);
 }
 
 #[test]

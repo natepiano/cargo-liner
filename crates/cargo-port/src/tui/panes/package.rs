@@ -119,7 +119,10 @@ fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect
         let value = field.package_value(data, app);
         let base_label_style = styles.readonly_label;
         let base_value_style = if *field == DetailField::Ci {
-            if value == crate::constants::NO_CI_WORKFLOW || value == crate::constants::NO_CI_RUNS {
+            if value == crate::constants::NO_CI_WORKFLOW
+                || value == crate::constants::NO_CI_RUNS
+                || value == crate::constants::NO_CI_UNPUBLISHED_BRANCH
+            {
                 Style::default().fg(INACTIVE_BORDER_COLOR)
             } else {
                 render::conclusion_style(data.ci)

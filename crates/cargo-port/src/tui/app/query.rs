@@ -235,13 +235,17 @@ impl App {
             .map_or_else(Vec::new, |path| self.ci_runs_for_display(path))
     }
 
+    pub(in super::super) fn unpublished_ci_branch_name(&self, path: &Path) -> Option<String> {
+        let git = self.git_info_for(path)?;
+        (git.upstream_branch.is_none() && git.branch.as_deref() != git.default_branch.as_deref())
+            .then(|| git.branch.clone())
+            .flatten()
+    }
+
     pub(in super::super) fn ci_for(&self, path: &Path) -> Option<Conclusion> {
         // A branch with no upstream tracking can't have CI runs — don't
         // show the parent repo's result for an unpushed worktree branch.
-        if let Some(git) = self.git_info_for(path)
-            && git.upstream_branch.is_none()
-            && git.branch.as_deref() != git.default_branch.as_deref()
-        {
+        if self.unpublished_ci_branch_name(path).is_some() {
             return None;
         }
         self.ci_info_for(path)

@@ -5,6 +5,7 @@ use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_CI_RUNS;
+use crate::constants::NO_CI_UNPUBLISHED_BRANCH;
 use crate::constants::NO_CI_WORKFLOW;
 use crate::constants::NO_LINT_RUNS;
 use crate::constants::NO_LINT_RUNS_NOT_RUST;
@@ -308,6 +309,12 @@ impl DetailField {
                     .is_some_and(|git| git.workflows.is_present());
                 if !has_workflows {
                     return NO_CI_WORKFLOW.to_string();
+                }
+                if app
+                    .unpublished_ci_branch_name(data.abs_path.as_path())
+                    .is_some()
+                {
+                    return NO_CI_UNPUBLISHED_BRANCH.to_string();
                 }
                 let icon = data.ci.map_or_else(String::new, |c| c.icon().to_string());
                 let ci_runs_label = build_ci_runs_label(app, data.abs_path.as_path());
@@ -1011,16 +1018,14 @@ pub fn build_ci_data(app: &App) -> CiData {
     let ci_info = selected_path.and_then(|path| app.ci_info_for(path));
     let current_branch =
         selected_path.and_then(|path| app.git_info_for(path).and_then(|git| git.branch.clone()));
+    let unpublished_branch_name =
+        selected_path.and_then(|path| app.unpublished_ci_branch_name(path));
     let runs = app.selected_ci_runs();
     let is_fetching = selected_path.is_some_and(|path| app.ci_is_fetching(path));
     let branch_filtered_empty = selected_path.is_some_and(|path| {
         app.ci_toggle_available_for(path) && app.ci_display_mode_label_for(path) == "branch"
     }) && ci_info.is_some_and(|info| !info.runs.is_empty())
         && runs.is_empty();
-    let unpublished_branch = git_info.is_some_and(|git| {
-        git.upstream_branch.is_none() && git.branch.as_deref() != git.default_branch.as_deref()
-    });
-
     let empty_state = if selected_path.is_some() && !has_ci_owner {
         CiEmptyState::BranchScopedOnly
     } else if git_info.is_none() {
@@ -1036,19 +1041,16 @@ pub fn build_ci_data(app: &App) -> CiData {
     } else if ci_info.is_none() || !app.is_scan_complete() {
         CiEmptyState::Loading
     } else if branch_filtered_empty {
-        if unpublished_branch {
-            CiEmptyState::NoRunsForUnpublishedBranch(
-                current_branch
-                    .clone()
-                    .unwrap_or_else(|| "current".to_string()),
-            )
-        } else {
-            CiEmptyState::NoRunsForBranch(
-                current_branch
-                    .clone()
-                    .unwrap_or_else(|| "current".to_string()),
-            )
-        }
+        unpublished_branch_name.map_or_else(
+            || {
+                CiEmptyState::NoRunsForBranch(
+                    current_branch
+                        .clone()
+                        .unwrap_or_else(|| "current".to_string()),
+                )
+            },
+            CiEmptyState::NoRunsForUnpublishedBranch,
+        )
     } else {
         CiEmptyState::NoRuns
     };
