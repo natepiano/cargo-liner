@@ -156,7 +156,7 @@ impl App {
                 merged.push(run);
             }
         }
-        merged.sort_by(|left, right| right.run_id.cmp(&left.run_id));
+        merged.sort_by_key(|run| std::cmp::Reverse(run.run_id));
 
         let found_new = merged.len() > prev_count;
         // Only FetchOlder marks/clears exhaustion.  Sync clears it when

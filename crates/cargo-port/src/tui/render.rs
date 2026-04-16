@@ -39,7 +39,6 @@ use super::constants::SECONDARY_TEXT_COLOR;
 use super::constants::STATUS_BAR_COLOR;
 use super::constants::SUCCESS_COLOR;
 use super::constants::TITLE_COLOR;
-use super::detail::TargetsData;
 use super::interaction::UiSurface::Content;
 use super::panes;
 use super::panes::PaneTitleCount;
@@ -47,7 +46,6 @@ use super::panes::PaneTitleGroup;
 use super::shortcuts::Shortcut;
 use super::shortcuts::ShortcutState;
 use super::types::LayoutCache;
-use super::types::Pane;
 use super::types::PaneId;
 use crate::ci::Conclusion;
 use crate::project;
@@ -342,10 +340,10 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
                         area,
                     );
                 } else {
-                    panes::render_empty_targets_panel(frame, area);
+                    panes::render_empty_targets_panel(frame, app, area);
                 }
             } else {
-                panes::render_empty_targets_panel(frame, area);
+                panes::render_empty_targets_panel(frame, app, area);
             }
         },
         PaneId::Lints => panes::render_lints_panel(frame, app, area),
@@ -391,34 +389,9 @@ fn sync_hovered_pane_row(app: &mut App) {
 /// whether the pane gets hitboxes.
 fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
     match id {
-        PaneId::Package | PaneId::Lang => {
+        PaneId::Package | PaneId::Lang | PaneId::Git | PaneId::Targets => {
             let pane = app.pane_manager().pane(id).clone();
             super::interaction::register_pane_row_hitboxes(app, id, &pane, Content);
-        },
-        PaneId::Git => {
-            if app
-                .selected_project_path()
-                .and_then(|path| app.git_info_for(path))
-                .is_some()
-            {
-                let pane = app.pane_manager().pane(PaneId::Git).clone();
-                super::interaction::register_pane_row_hitboxes(app, id, &pane, Content);
-            } else {
-                reset_pane(app.pane_manager_mut().pane_mut(PaneId::Git));
-            }
-        },
-        PaneId::Targets => {
-            if app
-                .pane_manager()
-                .targets_data
-                .as_ref()
-                .is_some_and(TargetsData::has_targets)
-            {
-                let pane = app.pane_manager().pane(PaneId::Targets).clone();
-                super::interaction::register_pane_row_hitboxes(app, id, &pane, Content);
-            } else {
-                reset_pane(app.pane_manager_mut().pane_mut(PaneId::Targets));
-            }
         },
         // These panes register their own hitboxes during rendering
         // or don't have row-based hitboxes.
@@ -431,12 +404,6 @@ fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
         | PaneId::Finder
         | PaneId::Keymap => {},
     }
-}
-
-const fn reset_pane(pane: &mut Pane) {
-    pane.set_len(0);
-    pane.set_content_area(Rect::ZERO);
-    pane.set_scroll_offset(0);
 }
 
 pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -475,6 +442,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
+        clear_project_list_surface(app);
         app.layout_cache_mut().project_list = Rect::ZERO;
         return;
     }
@@ -491,6 +459,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
         Rect::new(inner.x, inner.y, inner.width, 0)
     };
     if content_area.height == 0 {
+        clear_project_list_surface(app);
         app.layout_cache_mut().project_list = Rect::ZERO;
         return;
     }
@@ -515,14 +484,18 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     } else {
         content_area
     };
-    let project_list_focus = app.pane_focus_state(PaneId::ProjectList);
-    let project_list = List::new(items).highlight_style(Pane::selection_style(project_list_focus));
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_len(total_project_rows);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_content_area(list_area);
+    let project_list = List::new(items);
     let mut list_state = ListState::default()
         .with_selected(Some(app.pane_manager().pane(PaneId::ProjectList).pos()));
     *list_state.offset_mut() = app.pane_manager().pane(PaneId::ProjectList).scroll_offset();
     frame.render_stateful_widget(project_list, list_area, &mut list_state);
     app.layout_cache_mut().project_list = list_area;
-    app.layout_cache_mut().project_list_offset = list_state.offset();
     app.pane_manager_mut()
         .pane_mut(PaneId::ProjectList)
         .set_scroll_offset(list_state.offset());
@@ -532,14 +505,24 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     super::interaction::register_project_list_hitboxes(app, list_area, row_width);
 
     if pin_summary && let Some(line) = summary_line {
-        let footer_area = Rect::new(
-            content_area.x,
-            content_area.y + content_area.height.saturating_sub(1),
-            content_area.width,
-            1,
-        );
-        frame.render_widget(Paragraph::new(line), footer_area);
+        render_project_list_footer(frame, content_area, line);
     }
+}
+
+fn clear_project_list_surface(app: &mut App) {
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .clear_surface();
+}
+
+fn render_project_list_footer(frame: &mut Frame, content_area: Rect, line: Line<'static>) {
+    let footer_area = Rect::new(
+        content_area.x,
+        content_area.y + content_area.height.saturating_sub(1),
+        content_area.width,
+        1,
+    );
+    frame.render_widget(Paragraph::new(line), footer_area);
 }
 
 fn project_panel_title_with_counts(app: &App, max_width: usize) -> String {
@@ -1470,94 +1453,111 @@ pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListI
     let root_labels = app
         .projects()
         .resolved_root_labels(app.include_non_rust().includes_non_rust());
+    let focus = app.pane_focus_state(PaneId::ProjectList);
+    let pane = app.pane_manager().pane(PaneId::ProjectList);
 
     let rows = app.visible_rows();
     rows.iter()
-        .map(|row| match row {
-            VisibleRow::Root { node_index } => {
-                render_root_item(app, *node_index, &root_labels, root_sorted, widths)
-            },
-            VisibleRow::GroupHeader {
-                node_index,
-                group_index,
-            } => {
-                let item = &app.projects()[*node_index];
-                let (group_name, member_count) = match item {
-                    crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
-                        let group = &ws.groups()[*group_index];
-                        (group.group_name().to_string(), group.members().len())
-                    },
-                    _ => (String::new(), 0),
-                };
-                let prefix = if app
-                    .expanded()
-                    .contains(&ExpandKey::Group(*node_index, *group_index))
-                {
-                    PREFIX_GROUP_EXPANDED
-                } else {
-                    PREFIX_GROUP_COLLAPSED
-                };
-                let label = format!("{group_name} ({member_count})");
-                let row = super::columns::build_group_header_cells(prefix, &label);
-                ListItem::new(super::columns::row_to_line(&row, widths))
-            },
-            VisibleRow::Member {
-                node_index,
-                group_index,
-                member_index,
-            } => render_member_item(
-                app,
-                *node_index,
-                *group_index,
-                *member_index,
-                child_sorted,
-                widths,
-            ),
-            VisibleRow::Vendored {
-                node_index,
-                vendored_index,
-            } => render_vendored_item(app, *node_index, *vendored_index, child_sorted, widths),
-            VisibleRow::WorktreeEntry {
-                node_index,
-                worktree_index,
-            } => render_worktree_entry(app, *node_index, *worktree_index, child_sorted, widths),
-            VisibleRow::WorktreeGroupHeader {
-                node_index,
-                worktree_index,
-                group_index,
-            } => render_wt_group_header(app, *node_index, *worktree_index, *group_index, widths),
-            VisibleRow::WorktreeMember {
-                node_index,
-                worktree_index,
-                group_index,
-                member_index,
-            } => render_wt_member(
-                app,
-                *node_index,
-                *worktree_index,
-                *group_index,
-                *member_index,
-                child_sorted,
-                widths,
-            ),
-            VisibleRow::WorktreeVendored {
-                node_index,
-                worktree_index,
-                vendored_index,
-            } => render_wt_vendored_item(
-                app,
-                *node_index,
-                *worktree_index,
-                *vendored_index,
-                child_sorted,
-                widths,
-            ),
-            VisibleRow::Submodule {
-                node_index,
-                submodule_index,
-            } => render_submodule_item(app, *node_index, *submodule_index, widths),
+        .enumerate()
+        .map(|(row_index, row)| {
+            let item = render_tree_item(app, row, &root_labels, root_sorted, child_sorted, widths);
+            item.style(pane.selection_state(row_index, focus).overlay_style())
         })
         .collect()
+}
+
+fn render_tree_item(
+    app: &App,
+    row: &VisibleRow,
+    root_labels: &[String],
+    root_sorted: &[u64],
+    child_sorted: &HashMap<usize, Vec<u64>>,
+    widths: &ResolvedWidths,
+) -> ListItem<'static> {
+    match row {
+        VisibleRow::Root { node_index } => {
+            render_root_item(app, *node_index, root_labels, root_sorted, widths)
+        },
+        VisibleRow::GroupHeader {
+            node_index,
+            group_index,
+        } => {
+            let item = &app.projects()[*node_index];
+            let (group_name, member_count) = match item {
+                crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
+                    let group = &ws.groups()[*group_index];
+                    (group.group_name().to_string(), group.members().len())
+                },
+                _ => (String::new(), 0),
+            };
+            let prefix = if app
+                .expanded()
+                .contains(&ExpandKey::Group(*node_index, *group_index))
+            {
+                PREFIX_GROUP_EXPANDED
+            } else {
+                PREFIX_GROUP_COLLAPSED
+            };
+            let label = format!("{group_name} ({member_count})");
+            let row = super::columns::build_group_header_cells(prefix, &label);
+            ListItem::new(super::columns::row_to_line(&row, widths))
+        },
+        VisibleRow::Member {
+            node_index,
+            group_index,
+            member_index,
+        } => render_member_item(
+            app,
+            *node_index,
+            *group_index,
+            *member_index,
+            child_sorted,
+            widths,
+        ),
+        VisibleRow::Vendored {
+            node_index,
+            vendored_index,
+        } => render_vendored_item(app, *node_index, *vendored_index, child_sorted, widths),
+        VisibleRow::WorktreeEntry {
+            node_index,
+            worktree_index,
+        } => render_worktree_entry(app, *node_index, *worktree_index, child_sorted, widths),
+        VisibleRow::WorktreeGroupHeader {
+            node_index,
+            worktree_index,
+            group_index,
+        } => render_wt_group_header(app, *node_index, *worktree_index, *group_index, widths),
+        VisibleRow::WorktreeMember {
+            node_index,
+            worktree_index,
+            group_index,
+            member_index,
+        } => render_wt_member(
+            app,
+            *node_index,
+            *worktree_index,
+            *group_index,
+            *member_index,
+            child_sorted,
+            widths,
+        ),
+        VisibleRow::WorktreeVendored {
+            node_index,
+            worktree_index,
+            vendored_index,
+        } => render_wt_vendored_item(
+            app,
+            *node_index,
+            *worktree_index,
+            *vendored_index,
+            child_sorted,
+            widths,
+        ),
+        VisibleRow::Submodule {
+            node_index,
+            submodule_index,
+        } => render_submodule_item(app, *node_index, *submodule_index, widths),
+    }
 }
 
 #[cfg(test)]

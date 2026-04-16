@@ -189,16 +189,25 @@ pub fn render_lang_panel_standalone(
     frame.render_widget(block, area);
 
     let Some(stats) = lang_stats else {
+        app.pane_manager_mut()
+            .pane_mut(PaneId::Lang)
+            .clear_surface();
         frame.render_widget(Paragraph::new("  Scanning..."), inner);
         return;
     };
 
     if stats.entries.is_empty() {
+        app.pane_manager_mut()
+            .pane_mut(PaneId::Lang)
+            .clear_surface();
         frame.render_widget(Paragraph::new("  No source files detected"), inner);
         return;
     }
 
     if inner.height < 2 {
+        app.pane_manager_mut()
+            .pane_mut(PaneId::Lang)
+            .clear_surface();
         return;
     }
 

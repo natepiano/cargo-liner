@@ -281,13 +281,9 @@ fn prune_runs_under(cache_root: &Path, cache_size: u64) -> io::Result<PruneStats
             .collect();
 
         // Subtract the removed history line bytes from total.
-        let file_before = std::fs::metadata(history_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let file_before = std::fs::metadata(history_path).map_or(0, |m| m.len());
         rewrite_history_file(history_path, &kept)?;
-        let file_after = std::fs::metadata(history_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let file_after = std::fs::metadata(history_path).map_or(0, |m| m.len());
         total_bytes = total_bytes.saturating_sub(file_before.saturating_sub(file_after));
     }
 

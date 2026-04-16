@@ -227,6 +227,9 @@ pub fn render_package_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
         render_project_panel(frame, app, &pkg_data, &styles, area);
     } else {
+        app.pane_manager_mut()
+            .pane_mut(PaneId::Package)
+            .clear_surface();
         let empty_block = Block::default()
             .borders(Borders::ALL)
             .title(" Details ")
@@ -237,7 +240,10 @@ pub fn render_package_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-pub fn render_empty_targets_panel(frame: &mut Frame, area: Rect) {
+pub fn render_empty_targets_panel(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Targets)
+        .clear_surface();
     let empty_targets = Block::default()
         .borders(Borders::ALL)
         .title(" No Targets ")

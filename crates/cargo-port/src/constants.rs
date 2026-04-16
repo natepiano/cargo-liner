@@ -79,7 +79,7 @@ pub(crate) const LINTS_LATEST_JSON: &str = "latest.json";
 pub(crate) const LINTS_HISTORY_JSONL: &str = "history.jsonl";
 
 /// A `started` entry older than this is considered stale (crashed watcher).
-pub(crate) const STALE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub(crate) const STALE_TIMEOUT: Duration = Duration::from_mins(30);
 
 // ── Config constants ──────────────────────────────────────────────────
 

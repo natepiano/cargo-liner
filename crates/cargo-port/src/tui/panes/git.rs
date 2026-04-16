@@ -185,6 +185,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let Some(git_data) = app.pane_manager().git_data.clone() else {
+        app.pane_manager_mut().pane_mut(PaneId::Git).clear_surface();
         let empty = Block::default()
             .borders(Borders::ALL)
             .title(pane_title("Git", &PaneTitleCount::None))
@@ -196,6 +197,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let git = detail::git_fields_from_data(&git_data);
     if git.is_empty() {
+        app.pane_manager_mut().pane_mut(PaneId::Git).clear_surface();
         let empty_git = Block::default()
             .borders(Borders::ALL)
             .title(" Not a git repo ")

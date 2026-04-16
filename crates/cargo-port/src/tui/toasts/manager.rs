@@ -710,7 +710,7 @@ mod tests {
         manager.push_persistent("error", "bad keymap", ToastStyle::Error, None, 1);
 
         // Prune many times — permanent toast stays.
-        let later = Instant::now() + Duration::from_secs(3600);
+        let later = Instant::now() + Duration::from_hours(1);
         manager.prune(later);
         assert_eq!(manager.active(later).len(), 1);
     }

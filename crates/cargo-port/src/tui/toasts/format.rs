@@ -41,7 +41,7 @@ fn format_single(item: &str, max_width: usize) -> String {
 /// Show up to `MAX_VISIBLE` items, one per line. If more exist, the
 /// last visible line gets a `(+ N others)` suffix.
 fn format_multiple(items: &[&str], max_width: usize) -> String {
-    let visible = items.len().min(MAX_VISIBLE_ITEMS);
+    let visible = items.len();
     let extra_count = items.len().saturating_sub(MAX_VISIBLE_ITEMS);
     let mut lines = Vec::with_capacity(visible);
 

@@ -4,7 +4,6 @@ use ratatui::layout::Rect;
 use super::app::App;
 use super::app::DismissTarget;
 use super::app::HoveredPaneRow;
-use super::app::VisibleRow;
 use super::columns;
 use super::types::Pane;
 use super::types::PaneId;
@@ -25,7 +24,6 @@ pub(super) enum UiRegion {
 
 #[derive(Clone, Debug)]
 pub(super) enum UiTarget {
-    ProjectRow(VisibleRow),
     PaneRow { pane: PaneId, row: usize },
     Dismiss(DismissTarget),
     ToastCard(u64),
@@ -66,10 +64,10 @@ pub(super) struct ToastHitbox {
 }
 
 pub(super) fn register_project_list_hitboxes(app: &mut App, list_area: Rect, row_width: u16) {
+    let pane = app.pane_manager().pane(PaneId::ProjectList);
     let visible_height = usize::from(list_area.height);
-    let visible_start = app.layout_cache().project_list_offset;
-    let project_row_count = app.visible_rows().len();
-    let visible_end = project_row_count.min(visible_start.saturating_add(visible_height));
+    let visible_start = pane.scroll_offset();
+    let visible_end = pane.len().min(visible_start.saturating_add(visible_height));
     let suffix_width = u16::try_from(columns::display_width(DISMISS_SUFFIX)).unwrap_or(u16::MAX);
 
     for (screen_row, row_index) in (visible_start..visible_end).enumerate() {
@@ -77,18 +75,13 @@ pub(super) fn register_project_list_hitboxes(app: &mut App, list_area: Rect, row
             .y
             .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
         let body_rect = Rect::new(list_area.x, y, row_width, 1);
-        let body_target = app
-            .visible_rows()
-            .get(row_index)
-            .copied()
-            .map(UiTarget::ProjectRow);
-        let Some(body_target) = body_target else {
-            continue;
-        };
         let order_index = app.layout_cache().ui_hitboxes.len();
         app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
             body_rect,
-            body_target,
+            UiTarget::PaneRow {
+                pane: PaneId::ProjectList,
+                row:  row_index,
+            },
             UiSurface::Content,
             UiRegion::Body,
             order_index,
@@ -198,41 +191,9 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
     };
 
     match hit.target {
-        UiTarget::ProjectRow(row) => {
-            app.focus_pane(PaneId::ProjectList);
-            let rows = app.visible_rows();
-            if let Some(index) = rows.iter().position(|candidate| *candidate == row) {
-                app.pane_manager_mut()
-                    .pane_mut(PaneId::ProjectList)
-                    .set_pos(index);
-            }
-            true
-        },
         UiTarget::PaneRow { pane, row } => {
             app.focus_pane(pane);
-            match pane {
-                PaneId::Finder => app.pane_manager_mut().pane_mut(PaneId::Finder).set_pos(row),
-                PaneId::Settings => app
-                    .pane_manager_mut()
-                    .pane_mut(PaneId::Settings)
-                    .set_pos(row),
-                PaneId::Package => app
-                    .pane_manager_mut()
-                    .pane_mut(PaneId::Package)
-                    .set_pos(row),
-                PaneId::Lang => app.pane_manager_mut().pane_mut(PaneId::Lang).set_pos(row),
-                PaneId::Git => app.pane_manager_mut().pane_mut(PaneId::Git).set_pos(row),
-                PaneId::Targets => app
-                    .pane_manager_mut()
-                    .pane_mut(PaneId::Targets)
-                    .set_pos(row),
-                PaneId::Lints => app.pane_manager_mut().pane_mut(PaneId::Lints).set_pos(row),
-                PaneId::CiRuns => app.pane_manager_mut().pane_mut(PaneId::CiRuns).set_pos(row),
-                PaneId::Keymap => app.pane_manager_mut().pane_mut(PaneId::Keymap).set_pos(row),
-                PaneId::ProjectList | PaneId::Output | PaneId::Toasts => {
-                    return false;
-                },
-            }
+            app.pane_manager_mut().pane_mut(pane).set_pos(row);
             true
         },
         UiTarget::Dismiss(target) => {
@@ -308,18 +269,19 @@ mod tests {
     use crate::project::GitOrigin;
     use crate::project::GitPathState;
     use crate::project::LocalGitState;
+    use crate::project::MemberGroup;
     use crate::project::PackageProject;
     use crate::project::ProjectType;
     use crate::project::RootItem;
     use crate::project::RustProject;
     use crate::project::Visibility;
     use crate::project::WorkflowPresence;
+    use crate::project::WorkspaceProject;
     use crate::project::WorktreeGroup;
     use crate::project_list::ProjectList;
     use crate::tui::app::App;
     use crate::tui::app::DismissTarget;
     use crate::tui::app::ExpandKey;
-    use crate::tui::app::VisibleRow;
     use crate::tui::finder;
     use crate::tui::input;
     use crate::tui::render;
@@ -369,6 +331,31 @@ mod tests {
             worktree_name.map(str::to_string),
             primary_abs_path.map(AbsolutePath::from),
         )
+    }
+
+    fn inline_group(members: Vec<PackageProject>) -> MemberGroup { MemberGroup::Inline { members } }
+
+    fn make_member(name: &str, path: &Path) -> PackageProject {
+        PackageProject::new(
+            AbsolutePath::from(path),
+            Some(name.to_string()),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
+            Vec::new(),
+            None,
+            None,
+        )
+    }
+
+    fn make_workspace_with_members(name: &str, path: &Path, groups: Vec<MemberGroup>) -> RootItem {
+        RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
+            AbsolutePath::from(path),
+            Some(name.to_string()),
+            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
+            groups,
+            Vec::new(),
+            None,
+            None,
+        )))
     }
 
     fn make_git_info(url: Option<&str>) -> GitInfo {
@@ -680,7 +667,10 @@ mod tests {
         let mut app = make_app(&[]);
         app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
             Rect::new(10, 5, 20, 1),
-            UiTarget::ProjectRow(VisibleRow::Root { node_index: 0 }),
+            UiTarget::PaneRow {
+                pane: PaneId::ProjectList,
+                row:  0,
+            },
             UiSurface::Content,
             UiRegion::Body,
             0,
@@ -702,6 +692,30 @@ mod tests {
                 pane: PaneId::Git,
                 row:  2,
             })
+        );
+    }
+
+    #[test]
+    fn hovered_pane_row_resolves_project_list_rows() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let first = tmp.path().join("first");
+        let second = tmp.path().join("second");
+        std::fs::create_dir_all(&first).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&second).unwrap_or_else(|_| std::process::abort());
+
+        let mut app = make_app(&[
+            make_package("first", &first),
+            make_package("second", &second),
+        ]);
+        render_ui(&mut app);
+
+        let (x, y) = row_body_point(&app, 1);
+        assert_eq!(
+            super::hovered_pane_row_at(&app, Position::new(x, y)),
+            Some(HoveredPaneRow {
+                pane: PaneId::ProjectList,
+                row:  1,
+            }),
         );
     }
 
@@ -731,6 +745,40 @@ mod tests {
             app.pane_manager().pane(PaneId::Finder).pos(),
             1,
             "clicking the second rendered finder result should select result index 1, not the header-offset visual row"
+        );
+    }
+
+    #[test]
+    fn git_hover_uses_owner_backed_pane_surface_for_workspace_member() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let workspace = tmp.path().join("ws");
+        let member = workspace.join("core");
+        std::fs::create_dir_all(&member).unwrap_or_else(|_| std::process::abort());
+
+        let root = make_workspace_with_members(
+            "ws",
+            &workspace,
+            vec![inline_group(vec![make_member("core", &member)])],
+        );
+        let mut app = make_app(&[root]);
+        app.expanded_mut().insert(ExpandKey::Node(0));
+        app.dirty_mut().rows.mark_dirty();
+        app.ensure_visible_rows_cached();
+        app.move_down();
+        app.handle_git_info(
+            &workspace,
+            make_git_info(Some("https://github.com/natepiano/demo")),
+        );
+
+        render_ui(&mut app);
+
+        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Git), 0);
+        assert_eq!(
+            super::hovered_pane_row_at(&app, Position::new(x, y)),
+            Some(HoveredPaneRow {
+                pane: PaneId::Git,
+                row:  0,
+            }),
         );
     }
 

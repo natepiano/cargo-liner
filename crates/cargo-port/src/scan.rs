@@ -349,7 +349,7 @@ fn merge_runs(fetched: Vec<CiRun>, cached: Vec<CiRun>) -> Vec<CiRun> {
         }
     }
 
-    merged.sort_by(|a, b| b.run_id.cmp(&a.run_id));
+    merged.sort_by_key(|run| std::cmp::Reverse(run.run_id));
     merged
 }
 
@@ -405,7 +405,7 @@ pub(crate) fn fetch_older_runs(
         fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
 
     let mut result = fetched;
-    result.sort_by(|a, b| b.run_id.cmp(&a.run_id));
+    result.sort_by_key(|run| std::cmp::Reverse(run.run_id));
 
     let result = if gh_runs.is_empty() {
         CiFetchResult::CacheOnly(result)
@@ -702,7 +702,7 @@ fn merge_worktrees_new(items: &mut Vec<RootItem>) {
             Some((wi, id))
         })
         .collect();
-    moves.sort_by(|a, b| b.0.cmp(&a.0));
+    moves.sort_by_key(|entry| std::cmp::Reverse(entry.0));
 
     let mut extracted: Vec<(RootItem, AbsolutePath)> = Vec::new();
     for (wi, id) in moves {
@@ -1377,7 +1377,7 @@ fn build_language_stats(languages: &tokei::Languages) -> LanguageStats {
             }
         })
         .collect();
-    entries.sort_by(|a, b| b.code.cmp(&a.code));
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.code));
     LanguageStats { entries }
 }
 

@@ -113,6 +113,14 @@ impl Pane {
 
     // -- layout --
 
+    pub const fn clear_surface(&mut self) {
+        self.len = 0;
+        self.hovered = None;
+        self.content_area = Rect::ZERO;
+        self.scroll_offset = 0;
+        self.cursor.clamp(0);
+    }
+
     pub const fn set_content_area(&mut self, area: Rect) { self.content_area = area; }
 
     pub const fn set_scroll_offset(&mut self, offset: usize) { self.scroll_offset = offset; }
@@ -209,10 +217,9 @@ impl PaneId {
 /// hit-testing in the event handler.
 #[derive(Default)]
 pub(super) struct LayoutCache {
-    pub project_list:        Rect,
-    pub project_list_offset: usize,
-    pub pane_regions:        Vec<(PaneId, Rect)>,
-    pub ui_hitboxes:         Vec<UiHitbox>,
+    pub project_list: Rect,
+    pub pane_regions: Vec<(PaneId, Rect)>,
+    pub ui_hitboxes:  Vec<UiHitbox>,
 }
 
 #[cfg(test)]
