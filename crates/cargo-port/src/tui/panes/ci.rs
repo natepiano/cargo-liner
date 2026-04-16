@@ -21,6 +21,7 @@ use crate::tui::constants::ACTIVE_BORDER_COLOR;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::INACTIVE_BORDER_COLOR;
+use crate::tui::constants::INACTIVE_TITLE_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::TITLE_COLOR;
 use crate::tui::detail;
@@ -272,7 +273,11 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         .title(title)
         .title_style(
             Style::default()
-                .fg(TITLE_COLOR)
+                .fg(if ci_focused {
+                    TITLE_COLOR
+                } else {
+                    INACTIVE_TITLE_COLOR
+                })
                 .add_modifier(Modifier::BOLD),
         )
         .border_style(if ci_focused {

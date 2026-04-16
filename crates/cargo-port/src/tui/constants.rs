@@ -49,6 +49,8 @@ pub(super) const INLINE_ERROR_COLOR: Color = Color::Yellow;
 /// Unfocused pane borders and titles ("No Lint Runs", "No Targets",
 /// "Not a git repo", empty CI panels).
 pub(super) const INACTIVE_BORDER_COLOR: Color = Color::DarkGray;
+/// Unfocused pane titles for populated panes.
+pub(super) const INACTIVE_TITLE_COLOR: Color = Color::White;
 /// Detail panel field labels ("Path", "Branch", "Disk"), stat labels,
 /// settings labels, toast countdowns, finder hints, chevron arrows.
 pub(super) const LABEL_COLOR: Color = COLUMN_HEADER_COLOR;

@@ -179,7 +179,11 @@ pub fn render_lang_panel_standalone(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .title_style(styles.title)
+        .title_style(if app.is_focused(PaneId::Lang) {
+            styles.active_title
+        } else {
+            styles.inactive_title
+        })
         .border_style(if app.is_focused(PaneId::Lang) {
             styles.active_border
         } else {

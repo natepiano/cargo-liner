@@ -26,6 +26,7 @@ use crate::tui::constants::ACCENT_COLOR;
 use crate::tui::constants::ACTIVE_BORDER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::INACTIVE_BORDER_COLOR;
+use crate::tui::constants::INACTIVE_TITLE_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
@@ -43,7 +44,8 @@ pub struct RenderStyles {
     pub readonly_label:  Style,
     pub active_border:   Style,
     pub inactive_border: Style,
-    pub title:           Style,
+    pub active_title:    Style,
+    pub inactive_title:  Style,
 }
 
 struct PackageRenderCtx<'a> {
@@ -213,20 +215,21 @@ struct ProjectPanelAreas {
 }
 
 pub fn render_package_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let title_style = Style::default()
-        .fg(TITLE_COLOR)
-        .add_modifier(Modifier::BOLD);
-
     if let Some(pkg_data) = app.pane_manager().package_data.clone() {
+        let title_style = Style::default().add_modifier(Modifier::BOLD);
         let styles = RenderStyles {
             readonly_label:  Style::default().fg(LABEL_COLOR),
             active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
             inactive_border: Style::default(),
-            title:           title_style,
+            active_title:    title_style.fg(TITLE_COLOR),
+            inactive_title:  title_style.fg(INACTIVE_TITLE_COLOR),
         };
 
         render_project_panel(frame, app, &pkg_data, &styles, area);
     } else {
+        let title_style = Style::default()
+            .fg(TITLE_COLOR)
+            .add_modifier(Modifier::BOLD);
         app.pane_manager_mut()
             .pane_mut(PaneId::Package)
             .clear_surface();
@@ -273,7 +276,11 @@ fn render_project_panel(
     let project_block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .title_style(styles.title)
+        .title_style(if matches!(focus, PaneFocusState::Active) {
+            styles.active_title
+        } else {
+            styles.inactive_title
+        })
         .border_style(border_style);
     let project_inner = project_block.inner(area);
     frame.render_widget(project_block, area);
@@ -571,7 +578,11 @@ pub fn render_targets_panel(
     let targets_block = Block::default()
         .borders(Borders::ALL)
         .title(targets_title)
-        .title_style(styles.title)
+        .title_style(if matches!(focus, PaneFocusState::Active) {
+            styles.active_title
+        } else {
+            styles.inactive_title
+        })
         .border_style(if matches!(focus, PaneFocusState::Active) {
             styles.active_border
         } else {

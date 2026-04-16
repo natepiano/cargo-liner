@@ -24,6 +24,7 @@ use crate::tui::constants::ACTIVE_BORDER_COLOR;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::INACTIVE_BORDER_COLOR;
+use crate::tui::constants::INACTIVE_TITLE_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
@@ -56,7 +57,11 @@ fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
 fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'static> {
     let title_style = if has_runs {
         Style::default()
-            .fg(TITLE_COLOR)
+            .fg(if focused {
+                TITLE_COLOR
+            } else {
+                INACTIVE_TITLE_COLOR
+            })
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(INACTIVE_BORDER_COLOR)

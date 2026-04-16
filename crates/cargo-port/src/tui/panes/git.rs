@@ -19,6 +19,7 @@ use crate::tui::app::App;
 use crate::tui::constants::ACTIVE_BORDER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::INACTIVE_BORDER_COLOR;
+use crate::tui::constants::INACTIVE_TITLE_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
@@ -174,14 +175,13 @@ fn git_panel_title(data: &GitData) -> String {
 
 /// Render the Git info panel as a standalone pane.
 pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let title_style = Style::default()
-        .fg(TITLE_COLOR)
-        .add_modifier(Modifier::BOLD);
+    let title_style = Style::default().add_modifier(Modifier::BOLD);
     let styles = RenderStyles {
         readonly_label:  Style::default().fg(LABEL_COLOR),
         active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
         inactive_border: Style::default(),
-        title:           title_style,
+        active_title:    title_style.fg(TITLE_COLOR),
+        inactive_title:  title_style.fg(INACTIVE_TITLE_COLOR),
     };
 
     let Some(git_data) = app.pane_manager().git_data.clone() else {
@@ -214,7 +214,11 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let git_block = Block::default()
         .borders(Borders::ALL)
         .title(git_panel_title(&git_data))
-        .title_style(styles.title)
+        .title_style(if matches!(focus, PaneFocusState::Active) {
+            styles.active_title
+        } else {
+            styles.inactive_title
+        })
         .border_style(if matches!(focus, PaneFocusState::Active) {
             styles.active_border
         } else {
