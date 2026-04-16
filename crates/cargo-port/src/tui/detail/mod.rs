@@ -9,6 +9,8 @@ pub(super) use interaction::handle_ci_runs_key;
 pub(super) use interaction::handle_detail_key;
 pub(super) use interaction::handle_lints_key;
 pub(super) use model::CiData;
+#[cfg(test)]
+pub(super) use model::CiEmptyState;
 pub(super) use model::CiFetchKind;
 pub(super) use model::DetailField;
 pub(super) use model::DetailPaneData;

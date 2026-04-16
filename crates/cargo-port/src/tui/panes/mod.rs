@@ -1,5 +1,10 @@
 use std::borrow::Cow;
 
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::widgets::Block;
+use ratatui::widgets::Borders;
+
 mod ci;
 mod git;
 mod lang;
@@ -31,6 +36,10 @@ pub(super) use package::render_targets_panel;
 #[cfg(test)]
 pub(super) use package::stats_column_width;
 
+use super::constants::ACTIVE_BORDER_COLOR;
+use super::constants::INACTIVE_BORDER_COLOR;
+use super::constants::INACTIVE_TITLE_COLOR;
+use super::constants::TITLE_COLOR;
 use super::detail::CiData;
 use super::detail::GitData;
 use super::detail::LintsData;
@@ -102,6 +111,57 @@ pub(super) fn prefixed_pane_title(title: &str, count: &PaneTitleCount<'_>) -> St
     } else {
         format!(" {title}: {body} ")
     }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PaneChrome {
+    pub active_border:   Style,
+    pub inactive_border: Style,
+    pub active_title:    Style,
+    pub inactive_title:  Style,
+}
+
+impl PaneChrome {
+    pub(super) fn block(self, title: String, focused: bool) -> Block<'static> {
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .title_style(if focused {
+                self.active_title
+            } else {
+                self.inactive_title
+            })
+            .border_style(if focused {
+                self.active_border
+            } else {
+                self.inactive_border
+            })
+    }
+
+    pub(super) const fn with_inactive_border(self, inactive_border: Style) -> Self {
+        Self {
+            inactive_border,
+            ..self
+        }
+    }
+}
+
+pub(super) fn default_pane_chrome() -> PaneChrome {
+    let title_style = Style::default().add_modifier(Modifier::BOLD);
+    PaneChrome {
+        active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
+        inactive_border: Style::default(),
+        active_title:    title_style.fg(TITLE_COLOR),
+        inactive_title:  title_style.fg(INACTIVE_TITLE_COLOR),
+    }
+}
+
+pub(super) fn empty_pane_block(title: impl Into<String>) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .title(title.into())
+        .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
+        .border_style(Style::default().fg(INACTIVE_BORDER_COLOR))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -17,16 +17,17 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
+use super::PaneChrome;
 use super::PaneTitleCount;
 use super::PaneTitleGroup;
+use super::default_pane_chrome;
+use super::empty_pane_block;
 use super::prefixed_pane_title;
 use crate::constants::NO_LINT_RUNS;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
-use crate::tui::constants::ACTIVE_BORDER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::INACTIVE_BORDER_COLOR;
-use crate::tui::constants::INACTIVE_TITLE_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
@@ -41,11 +42,8 @@ use crate::tui::types::PaneId;
 
 /// Shared style constants for pane rendering.
 pub struct RenderStyles {
-    pub readonly_label:  Style,
-    pub active_border:   Style,
-    pub inactive_border: Style,
-    pub active_title:    Style,
-    pub inactive_title:  Style,
+    pub readonly_label: Style,
+    pub chrome:         PaneChrome,
 }
 
 struct PackageRenderCtx<'a> {
@@ -216,13 +214,9 @@ struct ProjectPanelAreas {
 
 pub fn render_package_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     if let Some(pkg_data) = app.pane_manager().package_data.clone() {
-        let title_style = Style::default().add_modifier(Modifier::BOLD);
         let styles = RenderStyles {
-            readonly_label:  Style::default().fg(LABEL_COLOR),
-            active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
-            inactive_border: Style::default(),
-            active_title:    title_style.fg(TITLE_COLOR),
-            inactive_title:  title_style.fg(INACTIVE_TITLE_COLOR),
+            readonly_label: Style::default().fg(LABEL_COLOR),
+            chrome:         default_pane_chrome(),
         };
 
         render_project_panel(frame, app, &pkg_data, &styles, area);
@@ -247,11 +241,7 @@ pub fn render_empty_targets_panel(frame: &mut Frame, app: &mut App, area: Rect) 
     app.pane_manager_mut()
         .pane_mut(PaneId::Targets)
         .clear_surface();
-    let empty_targets = Block::default()
-        .borders(Borders::ALL)
-        .title(" No Targets ")
-        .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
-        .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
+    let empty_targets = empty_pane_block(" No Targets ");
     frame.render_widget(empty_targets, area);
 }
 
@@ -268,20 +258,15 @@ fn render_project_panel(
         .set_len(fields.len());
     let focus = app.pane_focus_state(PaneId::Package);
     let border_style = if matches!(focus, PaneFocusState::Active) {
-        styles.active_border
+        styles.chrome.active_border
     } else {
-        styles.inactive_border
+        styles.chrome.inactive_border
     };
     let title = format!(" {} - {} ", pkg_data.package_title, pkg_data.title_name);
-    let project_block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_style(if matches!(focus, PaneFocusState::Active) {
-            styles.active_title
-        } else {
-            styles.inactive_title
-        })
-        .border_style(border_style);
+    let project_block = styles
+        .chrome
+        .with_inactive_border(border_style)
+        .block(title, matches!(focus, PaneFocusState::Active));
     let project_inner = project_block.inner(area);
     frame.render_widget(project_block, area);
 
@@ -575,19 +560,9 @@ pub fn render_targets_panel(
         prefixed_pane_title("Targets", &PaneTitleCount::Grouped(groups))
     };
 
-    let targets_block = Block::default()
-        .borders(Borders::ALL)
-        .title(targets_title)
-        .title_style(if matches!(focus, PaneFocusState::Active) {
-            styles.active_title
-        } else {
-            styles.inactive_title
-        })
-        .border_style(if matches!(focus, PaneFocusState::Active) {
-            styles.active_border
-        } else {
-            styles.inactive_border
-        });
+    let targets_block = styles
+        .chrome
+        .block(targets_title, matches!(focus, PaneFocusState::Active));
 
     let entries = detail::build_target_list_from_data(data);
     app.pane_manager_mut()

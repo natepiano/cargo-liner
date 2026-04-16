@@ -752,6 +752,48 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
 }
 
 #[test]
+fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    app.scan.phase = ScanPhase::Complete;
+    app.handle_git_info(
+        project.path(),
+        GitInfo {
+            path_state:          GitPathState::default(),
+            origin:              GitOrigin::Clone,
+            branch:              Some("enh/various".to_string()),
+            owner:               Some("natepiano".to_string()),
+            url:                 Some("https://github.com/natepiano/demo".to_string()),
+            first_commit:        None,
+            last_commit:         None,
+            ahead_behind:        None,
+            upstream_branch:     None,
+            default_branch:      Some("main".to_string()),
+            ahead_behind_origin: None,
+            local_main_branch:   Some("main".to_string()),
+            ahead_behind_local:  None,
+            workflows:           WorkflowPresence::Present,
+        },
+    );
+    set_loaded_ci(
+        &mut app,
+        project.path(),
+        vec![CiRun {
+            branch: "main".to_string(),
+            ..make_ci_run(9, Conclusion::Success)
+        }],
+        false,
+        0,
+    );
+
+    let ci_data = crate::tui::detail::build_ci_data(&app);
+    assert_eq!(
+        ci_data.empty_state.title(),
+        " No CI runs for unpublished branch enh/various "
+    );
+}
+
+#[test]
 fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));

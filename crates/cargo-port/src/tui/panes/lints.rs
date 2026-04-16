@@ -7,24 +7,22 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
 use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
 use super::PaneTitleCount;
+use super::default_pane_chrome;
+use super::empty_pane_block;
 use super::pane_title;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::tui::LINT_SPINNER;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
-use crate::tui::constants::ACTIVE_BORDER_COLOR;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
-use crate::tui::constants::INACTIVE_BORDER_COLOR;
-use crate::tui::constants::INACTIVE_TITLE_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
@@ -55,29 +53,11 @@ fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
 }
 
 fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'static> {
-    let title_style = if has_runs {
-        Style::default()
-            .fg(if focused {
-                TITLE_COLOR
-            } else {
-                INACTIVE_TITLE_COLOR
-            })
-            .add_modifier(Modifier::BOLD)
+    if has_runs {
+        default_pane_chrome().block(title, focused)
     } else {
-        Style::default().fg(INACTIVE_BORDER_COLOR)
-    };
-    let border_style = if focused {
-        Style::default().fg(ACTIVE_BORDER_COLOR)
-    } else if has_runs {
-        Style::default()
-    } else {
-        Style::default().fg(INACTIVE_BORDER_COLOR)
-    };
-    Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_style(title_style)
-        .border_style(border_style)
+        empty_pane_block(title)
+    }
 }
 
 fn build_lint_rows(

@@ -5,21 +5,18 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use super::PaneTitleCount;
+use super::default_pane_chrome;
+use super::empty_pane_block;
 use super::package;
 use super::package::RenderStyles;
 use super::pane_title;
 use crate::constants::IN_SYNC;
 use crate::tui::app::App;
-use crate::tui::constants::ACTIVE_BORDER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
-use crate::tui::constants::INACTIVE_BORDER_COLOR;
-use crate::tui::constants::INACTIVE_TITLE_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
@@ -175,22 +172,14 @@ fn git_panel_title(data: &GitData) -> String {
 
 /// Render the Git info panel as a standalone pane.
 pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let title_style = Style::default().add_modifier(Modifier::BOLD);
     let styles = RenderStyles {
-        readonly_label:  Style::default().fg(LABEL_COLOR),
-        active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
-        inactive_border: Style::default(),
-        active_title:    title_style.fg(TITLE_COLOR),
-        inactive_title:  title_style.fg(INACTIVE_TITLE_COLOR),
+        readonly_label: Style::default().fg(LABEL_COLOR),
+        chrome:         default_pane_chrome(),
     };
 
     let Some(git_data) = app.pane_manager().git_data.clone() else {
         app.pane_manager_mut().pane_mut(PaneId::Git).clear_surface();
-        let empty = Block::default()
-            .borders(Borders::ALL)
-            .title(pane_title("Git", &PaneTitleCount::None))
-            .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
-            .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
+        let empty = empty_pane_block(pane_title("Git", &PaneTitleCount::None));
         frame.render_widget(empty, area);
         return;
     };
@@ -198,11 +187,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let git = detail::git_fields_from_data(&git_data);
     if git.is_empty() {
         app.pane_manager_mut().pane_mut(PaneId::Git).clear_surface();
-        let empty_git = Block::default()
-            .borders(Borders::ALL)
-            .title(" Not a git repo ")
-            .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
-            .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
+        let empty_git = empty_pane_block(" Not a git repo ");
         frame.render_widget(empty_git, area);
         return;
     }
@@ -211,19 +196,10 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         .pane_mut(PaneId::Git)
         .set_len(git.len());
     let focus = app.pane_focus_state(PaneId::Git);
-    let git_block = Block::default()
-        .borders(Borders::ALL)
-        .title(git_panel_title(&git_data))
-        .title_style(if matches!(focus, PaneFocusState::Active) {
-            styles.active_title
-        } else {
-            styles.inactive_title
-        })
-        .border_style(if matches!(focus, PaneFocusState::Active) {
-            styles.active_border
-        } else {
-            styles.inactive_border
-        });
+    let git_block = styles.chrome.block(
+        git_panel_title(&git_data),
+        matches!(focus, PaneFocusState::Active),
+    );
     let git_inner = git_block.inner(area);
     app.pane_manager_mut()
         .pane_mut(PaneId::Git)

@@ -4,8 +4,6 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
-use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
 use ratatui::widgets::Cell;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
@@ -176,19 +174,7 @@ pub fn render_lang_panel_standalone(
             cursor,
         },
     );
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_style(if app.is_focused(PaneId::Lang) {
-            styles.active_title
-        } else {
-            styles.inactive_title
-        })
-        .border_style(if app.is_focused(PaneId::Lang) {
-            styles.active_border
-        } else {
-            styles.inactive_border
-        });
+    let block = styles.chrome.block(title, app.is_focused(PaneId::Lang));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

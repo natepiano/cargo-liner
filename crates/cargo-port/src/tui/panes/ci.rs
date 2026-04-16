@@ -3,8 +3,6 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
-use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
 use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
@@ -12,18 +10,16 @@ use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
 use super::PaneTitleCount;
+use super::default_pane_chrome;
+use super::empty_pane_block;
 use super::pane_title;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::tui::app::App;
-use crate::tui::constants::ACTIVE_BORDER_COLOR;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
-use crate::tui::constants::INACTIVE_BORDER_COLOR;
-use crate::tui::constants::INACTIVE_TITLE_COLOR;
 use crate::tui::constants::LABEL_COLOR;
-use crate::tui::constants::TITLE_COLOR;
 use crate::tui::detail;
 use crate::tui::detail::CiData;
 use crate::tui::interaction;
@@ -233,17 +229,21 @@ pub(in super::super) fn ci_table_shows_durations(
 }
 
 fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
-    let suffix = data
-        .mode_label
-        .as_deref()
-        .map_or(String::new(), |label| format!(" [{label}]"));
-    pane_title(
-        &format!("CI Runs{suffix}"),
+    let title = pane_title(
+        "CI Runs",
         &PaneTitleCount::Single {
             len:    data.runs.len(),
             cursor: focused_pos,
         },
-    )
+    );
+
+    match (data.mode_label.as_deref(), data.current_branch.as_deref()) {
+        (Some("branch"), Some(branch)) if !branch.is_empty() => {
+            let base = title.trim();
+            format!(" {base} branch: {branch} ")
+        },
+        _ => title,
+    }
 }
 
 fn empty_ci_title(data: &CiData) -> String { data.empty_state.title() }
@@ -268,23 +268,7 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused_pos = ci_focused.then(|| app.pane_manager().pane(PaneId::CiRuns).pos());
     let title = ci_panel_title(&ci_data, focused_pos);
 
-    let ci_block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_style(
-            Style::default()
-                .fg(if ci_focused {
-                    TITLE_COLOR
-                } else {
-                    INACTIVE_TITLE_COLOR
-                })
-                .add_modifier(Modifier::BOLD),
-        )
-        .border_style(if ci_focused {
-            Style::default().fg(ACTIVE_BORDER_COLOR)
-        } else {
-            Style::default()
-        });
+    let ci_block = default_pane_chrome().block(title, ci_focused);
 
     let inner = ci_block.inner(area);
     app.pane_manager_mut()
@@ -350,11 +334,7 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_empty_ci_block(frame: &mut Frame, title: &str, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
-        .border_style(Style::default().fg(INACTIVE_BORDER_COLOR));
+    let block = empty_pane_block(title);
     frame.render_widget(block, area);
 }
 
@@ -374,5 +354,58 @@ fn register_ci_row_hitboxes(app: &mut App, run_count: usize, inner: Rect, visibl
             row_index,
             UiSurface::Content,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ci_panel_title;
+    use crate::ci::CiRun;
+    use crate::ci::Conclusion;
+    use crate::ci::FetchStatus;
+    use crate::tui::detail::CiData;
+    use crate::tui::detail::CiEmptyState;
+
+    fn ci_run(branch: &str) -> CiRun {
+        CiRun {
+            run_id:          1,
+            created_at:      "2026-04-01T21:00:00-04:00".to_string(),
+            branch:          branch.to_string(),
+            url:             "https://example.com/run/1".to_string(),
+            conclusion:      Conclusion::Success,
+            jobs:            Vec::new(),
+            wall_clock_secs: Some(17),
+            commit_title:    Some("feat: add box select".to_string()),
+            updated_at:      None,
+            fetched:         FetchStatus::Fetched,
+        }
+    }
+
+    #[test]
+    fn ci_panel_title_omits_all_mode_suffix() {
+        let data = CiData {
+            runs:           vec![ci_run("main")],
+            mode_label:     Some("all".to_string()),
+            current_branch: Some("main".to_string()),
+            empty_state:    CiEmptyState::NoRuns,
+        };
+
+        assert_eq!(ci_panel_title(&data, Some(0)), " CI Runs (1 of 1) ");
+    }
+
+    #[test]
+    fn ci_panel_title_appends_branch_name_for_branch_mode() {
+        let data = CiData {
+            runs:           vec![ci_run("main"), ci_run("main")],
+            mode_label:     Some("branch".to_string()),
+            current_branch: Some("main".to_string()),
+            empty_state:    CiEmptyState::NoRuns,
+        };
+
+        assert_eq!(
+            ci_panel_title(&data, Some(0)),
+            " CI Runs (1 of 2) branch: main "
+        );
+        assert_eq!(ci_panel_title(&data, None), " CI Runs (2) branch: main ");
     }
 }

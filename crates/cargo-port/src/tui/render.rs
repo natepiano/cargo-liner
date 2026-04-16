@@ -11,8 +11,6 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
 use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
@@ -26,7 +24,6 @@ use super::app::ExpandKey;
 use super::app::ResolvedWidths;
 use super::app::VisibleRow;
 use super::constants::ACCENT_COLOR;
-use super::constants::ACTIVE_BORDER_COLOR;
 use super::constants::BLOCK_BORDER_WIDTH;
 use super::constants::BYTES_PER_GIB;
 use super::constants::BYTES_PER_KIB;
@@ -34,7 +31,6 @@ use super::constants::BYTES_PER_MIB;
 use super::constants::COLUMN_HEADER_COLOR;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::constants::ERROR_COLOR;
-use super::constants::INACTIVE_TITLE_COLOR;
 use super::constants::LABEL_COLOR;
 use super::constants::SECONDARY_TEXT_COLOR;
 use super::constants::STATUS_BAR_COLOR;
@@ -310,14 +306,9 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn pane_render_styles() -> panes::RenderStyles {
-    let title_style = Style::default().add_modifier(Modifier::BOLD);
-
     panes::RenderStyles {
-        readonly_label:  Style::default().fg(LABEL_COLOR),
-        active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
-        inactive_border: Style::default(),
-        active_title:    title_style.fg(TITLE_COLOR),
-        inactive_title:  title_style.fg(INACTIVE_TITLE_COLOR),
+        readonly_label: Style::default().fg(LABEL_COLOR),
+        chrome:         panes::default_pane_chrome(),
     }
 }
 
@@ -426,23 +417,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     let total_project_rows = items.len();
 
     let title = project_panel_title_with_counts(app, area.width.saturating_sub(2).into());
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .border_style(if app.is_focused(PaneId::ProjectList) {
-            Style::default().fg(ACTIVE_BORDER_COLOR)
-        } else {
-            Style::default()
-        })
-        .title_style(
-            Style::default()
-                .fg(if app.is_focused(PaneId::ProjectList) {
-                    TITLE_COLOR
-                } else {
-                    INACTIVE_TITLE_COLOR
-                })
-                .add_modifier(Modifier::BOLD),
-        );
+    let block = panes::default_pane_chrome().block(title, app.is_focused(PaneId::ProjectList));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
@@ -620,25 +595,9 @@ fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
         |n| format!(" Running: {n} "),
     );
 
-    let border_color = if app.is_focused(PaneId::Output) {
-        ACTIVE_BORDER_COLOR
-    } else {
-        LABEL_COLOR
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_style(
-            Style::default()
-                .fg(if app.is_focused(PaneId::Output) {
-                    TITLE_COLOR
-                } else {
-                    INACTIVE_TITLE_COLOR
-                })
-                .add_modifier(Modifier::BOLD),
-        )
-        .border_style(Style::default().fg(border_color));
+    let block = panes::default_pane_chrome()
+        .with_inactive_border(Style::default().fg(LABEL_COLOR))
+        .block(title, app.is_focused(PaneId::Output));
 
     let lines: Vec<Line> = app
         .example_output()

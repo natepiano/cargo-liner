@@ -514,6 +514,7 @@ pub enum CiEmptyState {
     Loading,
     NoRuns,
     NoRunsForBranch(String),
+    NoRunsForUnpublishedBranch(String),
     NoWorkflowConfigured,
     NotGitRepo,
     RequiresGithubRemote,
@@ -526,6 +527,9 @@ impl CiEmptyState {
             Self::Fetching | Self::Loading => " CI Runs — loading… ".to_string(),
             Self::NoRuns => " No CI Runs ".to_string(),
             Self::NoRunsForBranch(branch) => format!(" No CI runs for branch {branch} "),
+            Self::NoRunsForUnpublishedBranch(branch) => {
+                format!(" No CI runs for unpublished branch {branch} ")
+            },
             Self::NoWorkflowConfigured => " No CI workflow configured ".to_string(),
             Self::NotGitRepo => " CI Runs — not a git repository ".to_string(),
             Self::RequiresGithubRemote => " CI Runs — requires a GitHub origin remote ".to_string(),
@@ -535,9 +539,10 @@ impl CiEmptyState {
 
 #[derive(Clone)]
 pub struct CiData {
-    pub runs:        Vec<CiRun>,
-    pub mode_label:  Option<String>,
-    pub empty_state: CiEmptyState,
+    pub runs:           Vec<CiRun>,
+    pub mode_label:     Option<String>,
+    pub current_branch: Option<String>,
+    pub empty_state:    CiEmptyState,
 }
 
 impl CiData {
@@ -1012,6 +1017,9 @@ pub fn build_ci_data(app: &App) -> CiData {
         app.ci_toggle_available_for(path) && app.ci_display_mode_label_for(path) == "branch"
     }) && ci_info.is_some_and(|info| !info.runs.is_empty())
         && runs.is_empty();
+    let unpublished_branch = git_info.is_some_and(|git| {
+        git.upstream_branch.is_none() && git.branch.as_deref() != git.default_branch.as_deref()
+    });
 
     let empty_state = if selected_path.is_some() && !has_ci_owner {
         CiEmptyState::BranchScopedOnly
@@ -1028,7 +1036,19 @@ pub fn build_ci_data(app: &App) -> CiData {
     } else if ci_info.is_none() || !app.is_scan_complete() {
         CiEmptyState::Loading
     } else if branch_filtered_empty {
-        CiEmptyState::NoRunsForBranch(current_branch.unwrap_or_else(|| "current".to_string()))
+        if unpublished_branch {
+            CiEmptyState::NoRunsForUnpublishedBranch(
+                current_branch
+                    .clone()
+                    .unwrap_or_else(|| "current".to_string()),
+            )
+        } else {
+            CiEmptyState::NoRunsForBranch(
+                current_branch
+                    .clone()
+                    .unwrap_or_else(|| "current".to_string()),
+            )
+        }
     } else {
         CiEmptyState::NoRuns
     };
@@ -1039,6 +1059,7 @@ pub fn build_ci_data(app: &App) -> CiData {
             app.ci_toggle_available_for(path)
                 .then(|| app.ci_display_mode_label_for(path).to_string())
         }),
+        current_branch,
         empty_state,
     }
 }
