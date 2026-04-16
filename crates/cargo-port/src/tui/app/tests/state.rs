@@ -665,7 +665,10 @@ fn background_git_info_updates_rendered_git_path_state() {
             },
         },
     );
-    assert_eq!(app.git_path_state_for(project.path()), GitPathState::Modified);
+    assert_eq!(
+        app.git_path_state_for(project.path()),
+        GitPathState::Modified
+    );
 
     apply_bg_msg(
         &mut app,

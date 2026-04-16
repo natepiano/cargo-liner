@@ -101,19 +101,18 @@ pub fn render_toasts(
             height: card_height,
         };
 
-        // Clear one extra cell around the toast to overwrite wide emoji
+        // Clear one extra column on each side to overwrite wide emoji
         // characters (e.g., 🟢) that straddle the toast boundary.
+        // Do not clear above/below the card: stacked toasts with zero gap
+        // would erase the title row of the toast underneath.
         let clear_rect = Rect {
             x:      card.x.saturating_sub(1),
-            y:      card.y.saturating_sub(1),
+            y:      card.y,
             width:  card
                 .width
                 .saturating_add(2)
                 .min(area.x + area.width - card.x.saturating_sub(1)),
-            height: card
-                .height
-                .saturating_add(2)
-                .min(area.y + area.height - card.y.saturating_sub(1)),
+            height: card.height,
         };
         frame.render_widget(Clear, clear_rect);
         let close_rect = render_toast_card(
@@ -478,6 +477,91 @@ fn render_toast_body(
                 .style(body_style)
                 .wrap(Wrap { trim: false }),
             body_area,
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    use super::*;
+    use crate::tui::toasts::ToastManager;
+    use crate::tui::toasts::TrackedItem;
+
+    fn buffer_row(terminal: &Terminal<TestBackend>, y: u16) -> String {
+        let area = terminal.size().unwrap_or_else(|_| std::process::abort());
+        let buffer = terminal.backend().buffer();
+        let mut row = String::new();
+        for x in 0..area.width {
+            row.push_str(buffer[(x, y)].symbol());
+        }
+        row
+    }
+
+    #[test]
+    fn stacked_toasts_keep_titles() {
+        let mut manager = ToastManager::default();
+
+        let top = manager.push_task("Startup", "", 1);
+        manager.set_tracked_items(
+            top,
+            &[
+                TrackedItem {
+                    label:        "Disk usage".to_string(),
+                    key:          "disk".into(),
+                    started_at:   Some(Instant::now()),
+                    completed_at: None,
+                },
+                TrackedItem {
+                    label:        "Local git repos".to_string(),
+                    key:          "git".into(),
+                    started_at:   Some(Instant::now()),
+                    completed_at: None,
+                },
+            ],
+            Duration::from_secs(1),
+        );
+
+        let bottom = manager.push_task("Scanning local git repos", "", 1);
+        manager.set_tracked_items(
+            bottom,
+            &[TrackedItem {
+                label:        "~/rust/bevy/.git".to_string(),
+                key:          "bevy".into(),
+                started_at:   Some(Instant::now()),
+                completed_at: None,
+            }],
+            Duration::from_secs(1),
+        );
+        manager.finish_task(bottom, Duration::from_secs(15));
+
+        let toasts = manager.active(Instant::now());
+        let backend = TestBackend::new(70, 20);
+        let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+        terminal
+            .draw(|frame| {
+                render_toasts(frame, Rect::new(0, 0, 70, 20), &toasts, false, None);
+            })
+            .unwrap_or_else(|_| std::process::abort());
+
+        let rendered: Vec<String> = (0..20).map(|y| buffer_row(&terminal, y)).collect();
+
+        assert!(
+            rendered.iter().any(|row| row.contains(" Startup ")),
+            "startup toast title should remain visible: {rendered:#?}"
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|row| row.contains(" Scanning local git repos ")),
+            "stacked toast title should remain visible: {rendered:#?}"
         );
     }
 }
