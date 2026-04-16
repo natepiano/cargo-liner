@@ -134,17 +134,14 @@ impl Pane {
     pub const fn len(&self) -> usize { self.len }
 
     pub const fn selection_state(&self, row: usize, focus: PaneFocusState) -> PaneSelectionState {
-        if row == self.pos() {
-            match focus {
-                PaneFocusState::Active => PaneSelectionState::Active,
-                PaneFocusState::Remembered => PaneSelectionState::Remembered,
-                PaneFocusState::Inactive => PaneSelectionState::Unselected,
-            }
+        if row == self.pos() && matches!(focus, PaneFocusState::Active) {
+            PaneSelectionState::Active
+        } else if matches!(self.hovered, Some(hovered_row) if hovered_row == row) {
+            PaneSelectionState::Hovered
+        } else if row == self.pos() && matches!(focus, PaneFocusState::Remembered) {
+            PaneSelectionState::Remembered
         } else {
-            match self.hovered {
-                Some(hovered_row) if hovered_row == row => PaneSelectionState::Hovered,
-                _ => PaneSelectionState::Unselected,
-            }
+            PaneSelectionState::Unselected
         }
     }
 
@@ -290,6 +287,19 @@ mod tests {
         assert_eq!(
             pane.selection_state(1, PaneFocusState::Active),
             PaneSelectionState::Active
+        );
+    }
+
+    #[test]
+    fn selection_state_prefers_hover_for_inactive_selected_row() {
+        let mut pane = super::Pane::new();
+        pane.set_len(3);
+        pane.set_pos(0);
+        pane.set_hovered(Some(0));
+
+        assert_eq!(
+            pane.selection_state(0, PaneFocusState::Inactive),
+            PaneSelectionState::Hovered
         );
     }
 }
