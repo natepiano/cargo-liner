@@ -47,7 +47,7 @@ In practice, that usually means:
 - if an item is marked `pub` but is not actually used outside its intended module boundary, that
   is probably a design smell
 
-## V1 policy
+## Mend Policy
 
 Hard errors:
 
@@ -102,11 +102,6 @@ Install the `rustc-dev` component, then install `cargo-mend` with `RUSTC_BOOTSTR
 rustup component add rustc-dev
 RUSTC_BOOTSTRAP=1 cargo install cargo-mend
 ```
-
-### After installation
-
-Once installed, `cargo mend` runs on any project regardless of that project's toolchain. The
-toolchain requirement is only for compiling `cargo-mend` itself.
 
 ## Usage
 
