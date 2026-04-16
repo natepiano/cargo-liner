@@ -1,9 +1,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use notify::event::EventKind;
 #[cfg(test)]
 use notify::Event;
+use notify::event::EventKind;
 
 use crate::project::AbsolutePath;
 
