@@ -691,6 +691,8 @@ fn sanitize_name(name: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::CargoPortConfig;
+    use crate::lint::trigger::LintTriggerKind::RustSource;
+    use crate::lint::trigger::LintEventKind::CreateOrModify;
 
     fn request(path: &str, abs_path: &Path, is_rust: bool) -> RegisterProjectRequest {
         RegisterProjectRequest {
@@ -943,8 +945,8 @@ mod tests {
         runtime.register_project(request);
         runtime.lint_trigger(LintTriggerEvent {
             project_root: AbsolutePath::from(project_dir.path()),
-            trigger:      super::super::trigger::LintTriggerKind::RustSource,
-            event_kind:   super::super::trigger::LintEventKind::CreateOrModify,
+            trigger:      RustSource,
+            event_kind:   CreateOrModify,
             removal:      false,
         });
 
