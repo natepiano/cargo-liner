@@ -33,10 +33,10 @@ pub(super) const ACCENT_COLOR: Color = Color::Cyan;
 /// Border color for the currently focused pane (matches `TITLE_COLOR`).
 pub(super) const ACTIVE_BORDER_COLOR: Color = Color::Yellow;
 /// Background highlight for the currently focused pane row.
-pub(super) const ACTIVE_FOCUS_COLOR: Color = Color::Rgb(70, 70, 70);
+pub(super) const ACTIVE_FOCUS_COLOR: Color = Color::Rgb(125, 125, 125);
 /// Background highlight for the row currently under the mouse in a
 /// scrollable pane.
-pub(super) const HOVER_FOCUS_COLOR: Color = Color::Rgb(55, 55, 55);
+pub(super) const HOVER_FOCUS_COLOR: Color = Color::Rgb(80, 80, 80);
 /// Project list column headers ("Name", "Disk", "Sync", etc.).
 pub(super) const COLUMN_HEADER_COLOR: Color = Color::Rgb(150, 190, 180);
 /// Shimmer animation on newly discovered projects.
