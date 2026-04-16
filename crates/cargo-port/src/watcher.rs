@@ -90,9 +90,7 @@ pub(crate) fn spawn_watcher(
         client,
     };
 
-    thread::spawn(move || {
-        watcher_loop(&ctx, &watch_rx, &notify_rx);
-    });
+    spawn_watcher_thread(ctx, watch_rx, notify_rx, watcher);
 
     watch_tx
 }
@@ -103,6 +101,17 @@ struct WatcherLoopContext {
     ci_run_count: u32,
     non_rust:     NonRustInclusion,
     client:       HttpClient,
+}
+
+fn spawn_watcher_thread<W: Send + 'static>(
+    ctx: WatcherLoopContext,
+    watch_rx: mpsc::Receiver<WatcherMsg>,
+    notify_rx: mpsc::Receiver<notify::Result<notify::Event>>,
+    watcher_guard: W,
+) {
+    thread::spawn(move || {
+        watcher_loop(&ctx, &watch_rx, &notify_rx, watcher_guard);
+    });
 }
 
 /// Per-project tracking state.
@@ -192,10 +201,11 @@ impl WatcherLoopState {
     }
 }
 
-fn watcher_loop(
+fn watcher_loop<W: Send + 'static>(
     ctx: &WatcherLoopContext,
     watch_rx: &mpsc::Receiver<WatcherMsg>,
     notify_rx: &mpsc::Receiver<notify::Result<notify::Event>>,
+    _watcher: W,
 ) {
     let WatcherLoopContext {
         watch_roots,
@@ -417,10 +427,12 @@ fn drain_notify_events(
 ) -> Vec<notify::Event> {
     let mut events = Vec::new();
     while let Ok(result) = notify_rx.try_recv() {
-        let Ok(event) = result else {
-            continue;
-        };
-        events.push(event);
+        match result {
+            Ok(event) => events.push(event),
+            Err(err) => {
+                tracing::warn!(error = %err, "watcher_notify_error");
+            },
+        }
     }
     events
 }
@@ -1275,6 +1287,51 @@ mod tests {
         assert!(!initializing);
     }
 
+    #[test]
+    fn spawn_watcher_thread_keeps_watcher_guard_alive_until_shutdown() {
+        struct DropSignal(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watcher_guard = DropSignal(std::sync::Arc::clone(&dropped));
+        let (watch_tx, watch_rx) = mpsc::channel();
+        let (notify_tx, notify_rx) = mpsc::channel();
+        let (bg_tx, _bg_rx) = mpsc::channel();
+        let client = HttpClient::new(test_runtime().handle().clone()).expect("http client");
+
+        spawn_watcher_thread(
+            WatcherLoopContext {
+                watch_roots:  Vec::new(),
+                bg_tx,
+                ci_run_count: 0,
+                non_rust:     NonRustInclusion::Exclude,
+                client,
+            },
+            watch_rx,
+            notify_rx,
+            watcher_guard,
+        );
+
+        std::thread::sleep(POLL_INTERVAL + Duration::from_millis(100));
+        assert!(
+            !dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "watcher guard dropped before watcher thread shutdown"
+        );
+
+        drop(notify_tx);
+        drop(watch_tx);
+        std::thread::sleep(POLL_INTERVAL + Duration::from_millis(100));
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "watcher guard should drop after watcher thread exits"
+        );
+    }
+
     fn wait_for_completion<T>(rx: &mpsc::Receiver<T>) {
         rx.recv_timeout(Duration::from_secs(1))
             .unwrap_or_else(|_| panic!("timed out waiting for background completion"));
@@ -1284,13 +1341,23 @@ mod tests {
         rx: &mpsc::Receiver<BackgroundMsg>,
         predicate: impl Fn(&BackgroundMsg) -> bool,
     ) -> Vec<BackgroundMsg> {
+        collect_messages_until_with_timeout(rx, Duration::from_secs(1), predicate)
+    }
+
+    fn collect_messages_until_with_timeout(
+        rx: &mpsc::Receiver<BackgroundMsg>,
+        timeout: Duration,
+        predicate: impl Fn(&BackgroundMsg) -> bool,
+    ) -> Vec<BackgroundMsg> {
         let first = rx
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(timeout)
             .unwrap_or_else(|_| panic!("timed out waiting for background message"));
+        let started = Instant::now();
         let mut messages = vec![first];
         while !messages.iter().any(&predicate) {
+            let remaining = timeout.saturating_sub(started.elapsed());
             let next = rx
-                .recv_timeout(Duration::from_secs(1))
+                .recv_timeout(remaining)
                 .unwrap_or_else(|_| panic!("timed out waiting for expected background message"));
             messages.push(next);
         }
