@@ -8,6 +8,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(name = "mend")]
 #[command(about = "Audit Rust visibility patterns against a stricter house style")]
+#[command(version)]
 #[command(long_about = "\
 Audit Rust visibility patterns against a stricter house style.
 
@@ -18,6 +19,10 @@ Phases:
 Use --fix, --fix-pub-use, or --fix-compiler to auto-fix findings.
 Use --fix-all to apply all fixes at once.")]
 pub(crate) struct Cli {
+    /// Show detailed build metadata and exit
+    #[arg(long)]
+    pub build_info: bool,
+
     /// JSON output
     #[arg(long)]
     pub json: bool,

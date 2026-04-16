@@ -122,6 +122,8 @@ cargo mend
 cargo mend --fail-on-warn
 cargo mend --fix
 cargo mend --json
+cargo mend --version
+cargo mend --build-info
 cargo mend --manifest-path path/to/Cargo.toml
 ```
 

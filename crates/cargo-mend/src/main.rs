@@ -67,10 +67,27 @@ fn build_diagnostics_help(diagnostics: &DiagnosticsConfig) -> String {
     lines.join("\n")
 }
 
+fn build_info_text() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    let git_hash = option_env!("MEND_GIT_HASH").unwrap_or("unknown");
+    let build_id = option_env!("MEND_BUILD_ID").unwrap_or("unknown");
+    let build_sysroot = option_env!("MEND_BUILD_SYSROOT").unwrap_or("unknown");
+    format!(
+        "cargo-mend {version}\n\
+         git_hash: {git_hash}\n\
+         build_id: {build_id}\n\
+         build_sysroot: {build_sysroot}"
+    )
+}
+
 fn run() -> Result<ExitCode, MendFailure> {
     let global_diagnostics = config::load_global_diagnostics();
     let after_help = build_diagnostics_help(&global_diagnostics);
     let cli = cli::parse(&after_help);
+    if cli.build_info {
+        println!("{}", build_info_text());
+        return Ok(ExitCode::SUCCESS);
+    }
     let selection = selection::resolve_cargo_selection(cli.cargo.explicit_manifest_path())
         .map_err(MendFailure::Unexpected)?;
     let cargo_plan = selection::build_cargo_check_plan(&selection, &cli.cargo);
@@ -185,6 +202,7 @@ fn color_mode() -> render::ColorMode {
 mod tests {
     use std::ffi::OsString;
 
+    use super::build_info_text;
     use super::color_mode;
     use super::render::ColorMode;
 
@@ -243,5 +261,15 @@ mod tests {
         let _clicolor_force = EnvGuard::remove("CLICOLOR_FORCE");
         let _term = EnvGuard::set("TERM", "xterm-256color");
         assert!(matches!(color_mode(), ColorMode::Enabled));
+    }
+
+    #[test]
+    fn build_info_contains_expected_fields() {
+        let build_info = build_info_text();
+
+        assert!(build_info.starts_with(&format!("cargo-mend {}", env!("CARGO_PKG_VERSION"))));
+        assert!(build_info.contains("\ngit_hash: "));
+        assert!(build_info.contains("\nbuild_id: "));
+        assert!(build_info.contains("\nbuild_sysroot: "));
     }
 }

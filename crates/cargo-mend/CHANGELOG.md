@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `cargo mend --version` now reports the installed CLI version
+- `cargo mend --build-info` now prints build metadata including git hash, build id, and the sysroot used to compile the binary
+
 ## [0.6.1] - 2026-04-13
 
 ### Fixed

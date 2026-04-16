@@ -176,6 +176,37 @@ fn create_clean_lib_with_example_fixture(name: &str) -> tempfile::TempDir {
 }
 
 #[test]
+fn version_flag_prints_version_and_exits_successfully() {
+    let output = mend_command()
+        .arg("--version")
+        .output()
+        .expect("run cargo-mend --version");
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+
+    let stdout = String::from_utf8(output.stdout).expect("decode stdout");
+    assert_eq!(stdout, format!("mend {}\n", env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn build_info_flag_prints_build_metadata_and_exits_successfully() {
+    let output = mend_command()
+        .arg("--build-info")
+        .output()
+        .expect("run cargo-mend --build-info");
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+
+    let stdout = String::from_utf8(output.stdout).expect("decode stdout");
+    assert!(stdout.starts_with(&format!("cargo-mend {}\n", env!("CARGO_PKG_VERSION"))));
+    assert!(stdout.contains("\ngit_hash: "));
+    assert!(stdout.contains("\nbuild_id: "));
+    assert!(stdout.contains("\nbuild_sysroot: "));
+}
+
+#[test]
 fn default_invocation_from_package_root_reports_findings() {
     let temp = create_simple_lib_fixture("cli_default_fixture");
 
