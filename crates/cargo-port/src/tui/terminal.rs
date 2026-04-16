@@ -82,14 +82,14 @@ struct FrameMetrics {
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        EnableFocusChange
-    )?;
+    execute!(stdout, EnterAlternateScreen)?;
+    rearm_input_modes()?;
     let backend = CrosstermBackend::new(stdout);
     Terminal::new(backend)
+}
+
+pub(super) fn rearm_input_modes() -> io::Result<()> {
+    execute!(io::stdout(), EnableMouseCapture, EnableFocusChange)
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> {
@@ -203,6 +203,7 @@ fn event_loop(
     app: &mut App,
     input_rx: &mpsc::Receiver<Event>,
 ) -> io::Result<()> {
+    let mut rearmed_after_first_draw = false;
     loop {
         let frame_started = Instant::now();
 
@@ -220,6 +221,10 @@ fn event_loop(
         let fit_elapsed = measure(|| app.ensure_fit_widths_cached());
         let detail_elapsed = measure(|| app.ensure_detail_cached());
         let draw_elapsed = draw_frame(terminal, app)?;
+        if !rearmed_after_first_draw {
+            let _ = rearm_input_modes();
+            rearmed_after_first_draw = true;
+        }
 
         if app.should_quit() {
             flush_pending_selection(app);
