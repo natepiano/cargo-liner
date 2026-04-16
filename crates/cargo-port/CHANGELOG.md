@@ -8,31 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-
-#### Lints
-- Built-in lint runtime: watches project files (`.rs`, `Cargo.toml`, `Cargo.lock`) and runs configured commands on change
-- Configure which projects to watch and which commands to run from the settings UI
-- Set a global maximum cache size for lint history — oldest runs are evicted first
-- Lint status rolls up across workspace members and worktrees
-- Lint history shows past runs with per-command status, duration, and archived output
-- Press Enter on a run to open its output in the editor
-
-#### Keybindings
-- Customizable keyboard shortcuts via `keymap.toml` with hot-reload
-- Keymap UI overlay (Ctrl-K) for browsing and rebinding keys inline
-- Conflict detection: global, intra-scope, and vim hjkl reservation
-- Partial acceptance: valid bindings apply immediately, invalid ones fall back to defaults with a diagnostic toast
-- Modifier support: Ctrl, Alt, Shift combos fully distinguished
-
-#### Project Tree
-- Vendored path-dependency crates shown as children of their parent
-- Workspace worktrees grouped under their primary checkout
-- Non-Rust projects toggled without rescanning when already cached
-- New projects detected at runtime; deleted projects excluded automatically
+- Built-in lint runs with configurable commands, project filters, archived history, and an editor shortcut for opening saved run output
+- Customizable `keymap.toml` shortcuts with hot-reload, conflict diagnostics, and an in-app keymap overlay for browsing and rebinding actions
+- Vendored crates and Git submodules now appear as child entries in the project tree with their own navigation and detail views
+- Workspace worktrees are now grouped under their primary checkout with expandable member hierarchies and rolled-up git and lint state
+- A dedicated Languages pane now shows per-project language breakdowns with icons, file counts, code, comments, and blank-line totals
+- Git status now includes local-main sync indicators, clearer unpublished-branch states, and a refresh action for fetching newly created CI runs
+- A configurable terminal shortcut opens a shell at the selected project, and config/keymap overlays can be opened directly in the editor
+- Broken worktrees are detected and highlighted in the tree, and build output now preserves ANSI colors
 
 ### Changed
-- CI runs scoped to the branch-owning worktree row, not duplicated across members
-- Faster startup and background work through parallelized fetching and decoupled scan phases
+- `cargo-port` is now TUI-only, with the old `list` and `ci` subcommands removed
+- Startup, scanning, and CI fetching are substantially faster through background discovery, batched HTTP and GraphQL requests, and decoupled git and disk refreshes
+- The TUI layout was reworked into dedicated Package, Type, Languages, Git, Lint Runs, and CI panes with per-pane scrolling, hover, and focus behavior
+- Git and CI details are now scoped to the correct branch-owning row, with configurable primary-branch comparisons instead of relying on remote-only state
+- Lint data now lives under the shared cache root with stable archived run directories and cache-size-based pruning
+
+### Fixed
+- New projects are detected while the app is running, and deleted projects are excluded from project counts and worktree totals
+- Workspace membership and worktree grouping now stay correct for nested members, linked worktrees, and vendored children during live updates
+- Git state now refreshes correctly after commits, index updates, linked worktree metadata changes, and worktree cleanup events
+- Startup and priority background work no longer block the UI thread, improving responsiveness during scans and metadata refreshes
+- Lint timestamps, unpublished-branch CI messaging, toast rendering, and pane hover and selection behavior were corrected across the redesigned interface
 
 ## [0.0.2] - 2026-03-30
 
