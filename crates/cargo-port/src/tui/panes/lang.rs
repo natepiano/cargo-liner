@@ -22,7 +22,7 @@ use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::TITLE_COLOR;
 use crate::tui::render;
-use crate::tui::types::Pane;
+use crate::tui::types::PaneFocusState;
 use crate::tui::types::PaneId;
 
 /// Fixed numeric column width for language stats.
@@ -110,6 +110,45 @@ fn lang_entry_row(entry: &LangEntry, name_width: usize) -> Row<'static> {
     ])
 }
 
+fn build_lang_rows(
+    app: &App,
+    stats: &LanguageStats,
+    name_width: usize,
+    focus: PaneFocusState,
+) -> Vec<Row<'static>> {
+    stats
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(row_index, entry)| {
+            lang_entry_row(entry, name_width).style(
+                app.pane_manager()
+                    .lang
+                    .selection_state(row_index, focus)
+                    .overlay_style(),
+            )
+        })
+        .collect()
+}
+
+fn render_lang_table(
+    frame: &mut Frame,
+    app: &mut App,
+    rows: Vec<Row<'static>>,
+    widths: [Constraint; 7],
+    body_area: Rect,
+) {
+    let cursor = app.pane_manager().lang.pos();
+    let table = Table::new(rows, widths)
+        .column_spacing(1)
+        .row_highlight_style(Style::default());
+    let mut table_state = TableState::default().with_selected(Some(cursor));
+    frame.render_stateful_widget(table, body_area, &mut table_state);
+    app.pane_manager_mut()
+        .lang
+        .set_scroll_offset(table_state.offset());
+}
+
 /// Render the Languages panel as a standalone pane.
 pub fn render_lang_panel_standalone(
     frame: &mut Frame,
@@ -179,11 +218,7 @@ pub fn render_lang_panel_standalone(
     let rows_needed = u16::try_from(entry_count + 1).unwrap_or(u16::MAX);
     let pin_footer = rows_needed > content_below_header;
 
-    let mut rows: Vec<Row> = stats
-        .entries
-        .iter()
-        .map(|e| lang_entry_row(e, name_width))
-        .collect();
+    let mut rows = build_lang_rows(app, &stats, name_width, lang_focus);
 
     if pin_footer {
         let footer_y = inner.y + inner.height.saturating_sub(1);
@@ -197,15 +232,7 @@ pub fn render_lang_panel_standalone(
 
         app.pane_manager_mut().lang.set_len(rows.len());
         app.pane_manager_mut().lang.set_content_area(body_area);
-        let table = Table::new(rows, widths)
-            .column_spacing(1)
-            .row_highlight_style(Pane::selection_style(lang_focus));
-        let cursor = app.pane_manager().lang.pos();
-        let mut table_state = TableState::default().with_selected(Some(cursor));
-        frame.render_stateful_widget(table, body_area, &mut table_state);
-        app.pane_manager_mut()
-            .lang
-            .set_scroll_offset(table_state.offset());
+        render_lang_table(frame, app, rows, widths, body_area);
     } else {
         rows.push(lang_footer_row(&stats));
         let body_height = inner.height.saturating_sub(1);
@@ -213,14 +240,6 @@ pub fn render_lang_panel_standalone(
 
         app.pane_manager_mut().lang.set_len(entry_count);
         app.pane_manager_mut().lang.set_content_area(body_area);
-        let table = Table::new(rows, widths)
-            .column_spacing(1)
-            .row_highlight_style(Pane::selection_style(lang_focus));
-        let cursor = app.pane_manager().lang.pos();
-        let mut table_state = TableState::default().with_selected(Some(cursor));
-        frame.render_stateful_widget(table, body_area, &mut table_state);
-        app.pane_manager_mut()
-            .lang
-            .set_scroll_offset(table_state.offset());
+        render_lang_table(frame, app, rows, widths, body_area);
     }
 }

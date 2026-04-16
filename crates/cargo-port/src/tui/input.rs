@@ -37,12 +37,14 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
             if let Ok(mut pos) = LAST_MOUSE_POS.lock() {
                 *pos = Some((mouse.column, mouse.row));
             }
+            app.set_mouse_pos(Some(Position::new(mouse.column, mouse.row)));
             handle_mouse_event(app, mouse.kind, mouse.column, mouse.row);
         },
         Event::FocusGained => {
             if let Ok(pos) = LAST_MOUSE_POS.lock()
                 && let Some((column, row)) = *pos
             {
+                app.set_mouse_pos(Some(Position::new(column, row)));
                 handle_mouse_click(app, column, row);
             }
         },
@@ -327,11 +329,7 @@ fn open_in_editor(app: &App) {
         })
         .unwrap_or(selected_path);
 
-    let _ = std::process::Command::new(app.editor())
-        .arg(&abs_path)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    let _ = open_paths_in_editor(app.editor(), [&abs_path]);
 }
 
 fn overlay_editor_target_path(
@@ -346,13 +344,39 @@ fn overlay_editor_target_path(
     }
 }
 
-fn open_path_in_zed(path: &Path) -> std::io::Result<()> {
-    let mut command = std::process::Command::new("zed");
-    if let Some(parent) = path.parent() {
+fn open_path_in_editor(editor: &str, path: &Path) -> std::io::Result<()> {
+    open_paths_in_editor(editor, [path])
+}
+
+pub(super) fn open_paths_in_editor<P>(
+    editor: &str,
+    paths: impl IntoIterator<Item = P>,
+) -> std::io::Result<()>
+where
+    P: AsRef<Path>,
+{
+    let owned_paths: Vec<std::path::PathBuf> = paths
+        .into_iter()
+        .map(|path| path.as_ref().to_path_buf())
+        .collect();
+    let paths: Vec<&Path> = owned_paths
+        .iter()
+        .map(std::path::PathBuf::as_path)
+        .collect();
+    open_paths_via_editor_command(editor, &paths)
+}
+
+fn open_paths_via_editor_command(editor: &str, paths: &[&Path]) -> std::io::Result<()> {
+    let mut command = std::process::Command::new(editor);
+    if let Some(path) = paths.first()
+        && let Some(parent) = path.parent()
+    {
         command.current_dir(parent);
     }
+    for path in paths {
+        command.arg(path);
+    }
     command
-        .arg(path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -374,7 +398,7 @@ fn handle_overlay_editor_key(app: &mut App, event: &KeyEvent) -> bool {
         return false;
     };
 
-    if let Err(err) = open_path_in_zed(&path) {
+    if let Err(err) = open_path_in_editor(app.editor(), &path) {
         let title = match context {
             InputContext::Settings => "Settings editor failed",
             InputContext::Keymap => "Keymap editor failed",
@@ -555,7 +579,7 @@ fn handle_toast_key(app: &mut App, event: &KeyEvent) {
                 let editor = app.editor().to_string();
                 let path = path.to_path_buf();
                 std::thread::spawn(move || {
-                    let _ = std::process::Command::new(&editor).arg(&path).spawn();
+                    let _ = open_path_in_editor(&editor, &path);
                 });
             }
         },

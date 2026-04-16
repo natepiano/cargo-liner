@@ -13,6 +13,7 @@ use crate::tui::finder::FINDER_COLUMN_COUNT;
 use crate::tui::finder::FinderItem;
 use crate::tui::toasts::ToastTaskId;
 use crate::tui::types::Pane;
+use crate::tui::types::PaneId;
 
 /// An expand key: a node, group, worktree entry, or group within a worktree.
 #[derive(Hash, Eq, PartialEq, Clone)]
@@ -32,6 +33,12 @@ pub enum ConfirmAction {
 #[derive(Clone)]
 pub struct PendingClean {
     pub abs_path: AbsolutePath,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in super::super) struct HoveredPaneRow {
+    pub pane: PaneId,
+    pub row:  usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

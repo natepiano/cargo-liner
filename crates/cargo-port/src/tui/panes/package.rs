@@ -583,7 +583,8 @@ pub fn render_targets_panel(
 
     let rows: Vec<Row> = entries
         .iter()
-        .map(|entry| {
+        .enumerate()
+        .map(|(row_index, entry)| {
             let display =
                 render::truncate_with_ellipsis(&entry.display_name, name_max_width, "\u{2026}");
             Row::new(vec![
@@ -593,6 +594,12 @@ pub fn render_targets_panel(
                 )
                 .style(Style::default().fg(entry.kind.color())),
             ])
+            .style(
+                app.pane_manager()
+                    .targets
+                    .selection_state(row_index, focus)
+                    .overlay_style(),
+            )
         })
         .collect();
 
@@ -600,12 +607,10 @@ pub fn render_targets_panel(
         Constraint::Fill(1),
         Constraint::Length(u16::try_from(kind_col_width).unwrap_or(u16::MAX)),
     ];
-    let highlight_style = Pane::selection_style(focus);
-
     let table = Table::new(rows, widths)
         .block(targets_block)
         .column_spacing(1)
-        .row_highlight_style(highlight_style);
+        .row_highlight_style(Style::default());
 
     let mut table_state = TableState::default().with_selected(Some(cursor));
     frame.render_stateful_widget(table, area, &mut table_state);

@@ -377,13 +377,8 @@ fn open_lint_run_output(app: &App) {
         return;
     }
 
-    let mut cmd = std::process::Command::new(app.editor());
-    cmd.arg(abs_path);
-    for path in &log_paths {
-        cmd.arg(&**path);
-    }
-    let _ = cmd
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    let _ = crate::tui::input::open_paths_in_editor(
+        app.editor(),
+        std::iter::once(abs_path).chain(log_paths.iter().map(|path| path.as_path())),
+    );
 }

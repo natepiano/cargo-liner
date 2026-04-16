@@ -3,6 +3,7 @@ use ratatui::layout::Rect;
 
 use super::app::App;
 use super::app::DismissTarget;
+use super::app::HoveredPaneRow;
 use super::app::VisibleRow;
 use super::columns;
 use super::types::Pane;
@@ -259,6 +260,22 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
     }
 }
 
+pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPaneRow> {
+    app.layout_cache()
+        .ui_hitboxes
+        .iter()
+        .filter(|hitbox| hitbox.rect.contains(pos))
+        .filter_map(|hitbox| match hitbox.target {
+            UiTarget::PaneRow { pane, row } => Some((
+                (hitbox.surface, hitbox.region, hitbox.order_index),
+                HoveredPaneRow { pane, row },
+            )),
+            _ => None,
+        })
+        .max_by_key(|(priority, _)| *priority)
+        .map(|(_, hovered)| hovered)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -274,7 +291,13 @@ mod tests {
     use crossterm::event::MouseEventKind;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::layout::Position;
+    use ratatui::layout::Rect;
 
+    use super::HoveredPaneRow;
+    use super::UiHitbox;
+    use super::UiRegion;
+    use super::UiSurface;
     use super::UiTarget;
     use crate::ci::CiJob;
     use crate::ci::CiRun;
@@ -306,6 +329,7 @@ mod tests {
     use crate::tui::app::ExpandKey;
     use crate::tui::app::SearchHit;
     use crate::tui::app::SearchMode;
+    use crate::tui::app::VisibleRow;
     use crate::tui::finder;
     use crate::tui::input;
     use crate::tui::render;
@@ -656,6 +680,36 @@ mod tests {
         assert_eq!(
             app.selected_project_path().map(Path::to_path_buf),
             Some(second),
+        );
+    }
+
+    #[test]
+    fn hovered_pane_row_prefers_pane_row_hitboxes() {
+        let mut app = make_app(&[]);
+        app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
+            Rect::new(10, 5, 20, 1),
+            UiTarget::ProjectRow(VisibleRow::Root { node_index: 0 }),
+            UiSurface::Content,
+            UiRegion::Body,
+            0,
+        ));
+        app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
+            Rect::new(10, 5, 20, 1),
+            UiTarget::PaneRow {
+                pane: PaneId::Git,
+                row:  2,
+            },
+            UiSurface::Overlay,
+            UiRegion::Body,
+            1,
+        ));
+
+        assert_eq!(
+            super::hovered_pane_row_at(&app, Position::new(12, 5)),
+            Some(HoveredPaneRow {
+                pane: PaneId::Git,
+                row:  2,
+            })
         );
     }
 

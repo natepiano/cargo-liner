@@ -206,6 +206,7 @@ pub(super) fn disk_color(percentile: Option<f64>) -> Style {
 }
 
 pub(super) fn ui(frame: &mut Frame, app: &mut App) {
+    sync_hovered_pane_row(app);
     *app.layout_cache_mut() = LayoutCache::default();
     app.prune_toasts();
 
@@ -274,6 +275,8 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     if let Some(action) = app.confirm() {
         render_confirm_popup(frame, action);
     }
+
+    sync_hovered_pane_row(app);
 }
 
 fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
@@ -387,6 +390,14 @@ fn sync_layout_pane_hitboxes(app: &mut App, output_visible: bool) {
     for placement in panes::PaneManager::layout(output_visible).placements {
         register_hitbox_for_pane(app, placement.pane);
     }
+}
+
+fn sync_hovered_pane_row(app: &mut App) {
+    let hovered = app
+        .mouse_pos()
+        .and_then(|pos| super::interaction::hovered_pane_row_at(app, pos));
+    app.set_hovered_pane_row(hovered);
+    app.apply_hovered_pane_row();
 }
 
 /// Exhaustive match on `PaneId` — adding a variant forces you to decide

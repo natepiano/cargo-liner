@@ -30,7 +30,6 @@ use super::constants::MAX_FINDER_RESULTS;
 use super::constants::TITLE_COLOR;
 use super::detail::RunTargetKind;
 use super::interaction::UiSurface::Overlay;
-use super::types::Pane;
 use super::types::PaneId;
 use crate::project::AbsolutePath;
 use crate::project::ExampleGroup;
@@ -858,7 +857,8 @@ fn render_finder_results(
         .finder()
         .results
         .iter()
-        .map(|&idx| {
+        .enumerate()
+        .map(|(row_index, &idx)| {
             let item = &app.finder().index[idx];
             let parent = if item.kind == FinderKind::Project {
                 String::new()
@@ -876,6 +876,12 @@ fn render_finder_results(
                     item.kind.color(),
                 )),
             ])
+            .style(
+                app.finder()
+                    .pane
+                    .selection_state(row_index, app.pane_focus_state(PaneId::Finder))
+                    .overlay_style(),
+            )
         })
         .collect();
 
@@ -890,11 +896,10 @@ fn render_finder_results(
             .map(|h| Cell::from(Span::styled(*h, header_style))),
     );
 
-    let highlight_style = Pane::selection_style(app.pane_focus_state(PaneId::Finder));
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
-        .row_highlight_style(highlight_style);
+        .row_highlight_style(Style::default());
 
     let mut table_state = TableState::default().with_selected(Some(app.finder().pane.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);

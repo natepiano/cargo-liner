@@ -2,6 +2,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 
 use super::constants::ACTIVE_FOCUS_COLOR;
+use super::constants::HOVER_FOCUS_COLOR;
 use super::constants::REMEMBERED_FOCUS_COLOR;
 use super::interaction::UiHitbox;
 
@@ -50,6 +51,7 @@ impl ScrollState {
 #[derive(Default, Clone)]
 pub(super) struct Pane {
     cursor:        ScrollState,
+    hovered:       Option<usize>,
     len:           usize,
     content_area:  Rect,
     scroll_offset: usize,
@@ -65,6 +67,7 @@ pub(super) enum PaneFocusState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PaneSelectionState {
     Active,
+    Hovered,
     Remembered,
     Unselected,
 }
@@ -73,6 +76,7 @@ impl Pane {
     pub const fn new() -> Self {
         Self {
             cursor:        ScrollState { pos: 0 },
+            hovered:       None,
             len:           0,
             content_area:  Rect::new(0, 0, 0, 0),
             scroll_offset: 0,
@@ -100,6 +104,11 @@ impl Pane {
     pub const fn set_len(&mut self, len: usize) {
         self.len = len;
         self.cursor.clamp(len);
+        if let Some(row) = self.hovered
+            && row >= len
+        {
+            self.hovered = None;
+        }
     }
 
     // -- layout --
@@ -107,6 +116,8 @@ impl Pane {
     pub const fn set_content_area(&mut self, area: Rect) { self.content_area = area; }
 
     pub const fn set_scroll_offset(&mut self, offset: usize) { self.scroll_offset = offset; }
+
+    pub const fn set_hovered(&mut self, hovered: Option<usize>) { self.hovered = hovered; }
 
     pub const fn content_area(&self) -> Rect { self.content_area }
 
@@ -122,7 +133,10 @@ impl Pane {
                 PaneFocusState::Inactive => PaneSelectionState::Unselected,
             }
         } else {
-            PaneSelectionState::Unselected
+            match self.hovered {
+                Some(hovered_row) if hovered_row == row => PaneSelectionState::Hovered,
+                _ => PaneSelectionState::Unselected,
+            }
         }
     }
 
@@ -139,6 +153,7 @@ impl PaneSelectionState {
     pub fn overlay_style(self) -> Style {
         match self {
             Self::Active => Pane::selection_style(PaneFocusState::Active),
+            Self::Hovered => Style::default().bg(HOVER_FOCUS_COLOR),
             Self::Remembered => Pane::selection_style(PaneFocusState::Remembered),
             Self::Unselected => Style::default(),
         }
@@ -219,5 +234,39 @@ mod tests {
 
         assert_eq!(patched.fg, Some(Color::Green));
         assert_eq!(patched.bg, Some(super::REMEMBERED_FOCUS_COLOR));
+    }
+
+    #[test]
+    fn hovered_selection_patch_preserves_existing_foreground() {
+        let base = Style::default().fg(Color::Blue);
+        let patched = PaneSelectionState::Hovered.patch(base);
+
+        assert_eq!(patched.fg, Some(Color::Blue));
+        assert_eq!(patched.bg, Some(super::HOVER_FOCUS_COLOR));
+    }
+
+    #[test]
+    fn selection_state_returns_hovered_for_non_selected_hovered_row() {
+        let mut pane = super::Pane::new();
+        pane.set_len(3);
+        pane.set_hovered(Some(2));
+
+        assert_eq!(
+            pane.selection_state(2, PaneFocusState::Inactive),
+            PaneSelectionState::Hovered
+        );
+    }
+
+    #[test]
+    fn selection_state_prefers_cursor_over_hovered_row() {
+        let mut pane = super::Pane::new();
+        pane.set_len(3);
+        pane.set_pos(1);
+        pane.set_hovered(Some(1));
+
+        assert_eq!(
+            pane.selection_state(1, PaneFocusState::Active),
+            PaneSelectionState::Active
+        );
     }
 }

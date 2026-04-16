@@ -32,6 +32,7 @@ use crate::tui::detail::LintsData;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface::Content;
 use crate::tui::types::Pane;
+use crate::tui::types::PaneFocusState;
 use crate::tui::types::PaneId;
 
 fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
@@ -74,7 +75,12 @@ fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'sta
         .border_style(border_style)
 }
 
-fn build_lint_rows(runs: &[LintRun], animation_elapsed: std::time::Duration) -> Vec<Row<'static>> {
+fn build_lint_rows(
+    runs: &[LintRun],
+    animation_elapsed: std::time::Duration,
+    pane: &Pane,
+    focus: PaneFocusState,
+) -> Vec<Row<'static>> {
     let date_style = Style::default()
         .fg(TITLE_COLOR)
         .add_modifier(Modifier::BOLD);
@@ -82,7 +88,7 @@ fn build_lint_rows(runs: &[LintRun], animation_elapsed: std::time::Duration) -> 
     let mut rows = Vec::new();
     let mut current_date = String::new();
 
-    for run in runs {
+    for (row_index, run) in runs.iter().enumerate() {
         let date = detail::format_date(&run.started_at);
         let date_cell = if date == current_date {
             Cell::from("")
@@ -107,6 +113,7 @@ fn build_lint_rows(runs: &[LintRun], animation_elapsed: std::time::Duration) -> 
             LintRunStatus::Failed => (Cell::from("failed"), Style::default().fg(ERROR_COLOR)),
         };
 
+        let selection = pane.selection_state(row_index, focus);
         rows.push(
             Row::new(vec![
                 date_cell,
@@ -124,7 +131,7 @@ fn build_lint_rows(runs: &[LintRun], animation_elapsed: std::time::Duration) -> 
                 ),
                 result_cell,
             ])
-            .style(row_style),
+            .style(selection.patch(row_style)),
         );
     }
 
@@ -151,7 +158,9 @@ pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let rows = build_lint_rows(&lints_data.runs, app.animation_elapsed());
+    let pane = app.pane_manager().lints.clone();
+    let focus = app.pane_focus_state(PaneId::Lints);
+    let rows = build_lint_rows(&lints_data.runs, app.animation_elapsed(), &pane, focus);
     app.pane_manager_mut().lints.set_len(rows.len());
 
     let col_header_style = Style::default()
@@ -180,7 +189,7 @@ pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     )
     .block(block)
     .column_spacing(2)
-    .row_highlight_style(Pane::selection_style(app.pane_focus_state(PaneId::Lints)));
+    .row_highlight_style(Style::default());
 
     let mut table_state = TableState::default().with_selected(Some(app.pane_manager().lints.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);

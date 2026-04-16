@@ -18,6 +18,7 @@ use std::sync::Mutex;
 use std::sync::mpsc;
 use std::time::Instant;
 
+use ratatui::layout::Position;
 use ratatui::widgets::ListState;
 
 use crate::ci::CiRun;
@@ -54,6 +55,7 @@ pub(super) use types::CiFetchTracker;
 pub(super) use types::ConfirmAction;
 pub(super) use types::DiscoveryRowKind;
 pub(super) use types::ExpandKey;
+pub(super) use types::HoveredPaneRow;
 pub(super) use types::PendingClean;
 pub(super) use types::PollBackgroundStats;
 #[cfg(test)]
@@ -131,6 +133,8 @@ pub(super) struct App {
     data_generation:          u64,
     detail_generation:        u64,
     detail_cache_key:         Option<types::DetailCacheKey>,
+    mouse_pos:                Option<Position>,
+    hovered_pane_row:         Option<types::HoveredPaneRow>,
     layout_cache:             LayoutCache,
     status_flash:             Option<(String, std::time::Instant)>,
     toasts:                   ToastManager,
@@ -214,6 +218,47 @@ impl App {
     pub(super) const fn layout_cache(&self) -> &LayoutCache { &self.layout_cache }
 
     pub(super) const fn layout_cache_mut(&mut self) -> &mut LayoutCache { &mut self.layout_cache }
+
+    pub(super) const fn mouse_pos(&self) -> Option<Position> { self.mouse_pos }
+
+    pub(super) const fn set_mouse_pos(&mut self, pos: Option<Position>) { self.mouse_pos = pos; }
+
+    pub(super) const fn set_hovered_pane_row(
+        &mut self,
+        hovered_pane_row: Option<types::HoveredPaneRow>,
+    ) {
+        self.hovered_pane_row = hovered_pane_row;
+    }
+
+    pub(super) const fn apply_hovered_pane_row(&mut self) {
+        self.pane_manager.package.set_hovered(None);
+        self.pane_manager.lang.set_hovered(None);
+        self.pane_manager.git.set_hovered(None);
+        self.pane_manager.targets.set_hovered(None);
+        self.pane_manager.ci.set_hovered(None);
+        self.pane_manager.toasts.set_hovered(None);
+        self.pane_manager.lints.set_hovered(None);
+        self.pane_manager.settings.set_hovered(None);
+        self.pane_manager.keymap.set_hovered(None);
+        self.finder.pane.set_hovered(None);
+
+        let Some(hovered) = self.hovered_pane_row else {
+            return;
+        };
+
+        match hovered.pane {
+            PaneId::Package => self.pane_manager.package.set_hovered(Some(hovered.row)),
+            PaneId::Lang => self.pane_manager.lang.set_hovered(Some(hovered.row)),
+            PaneId::Git => self.pane_manager.git.set_hovered(Some(hovered.row)),
+            PaneId::Targets => self.pane_manager.targets.set_hovered(Some(hovered.row)),
+            PaneId::CiRuns => self.pane_manager.ci.set_hovered(Some(hovered.row)),
+            PaneId::Lints => self.pane_manager.lints.set_hovered(Some(hovered.row)),
+            PaneId::Settings => self.pane_manager.settings.set_hovered(Some(hovered.row)),
+            PaneId::Finder => self.finder.pane.set_hovered(Some(hovered.row)),
+            PaneId::Keymap => self.pane_manager.keymap.set_hovered(Some(hovered.row)),
+            PaneId::ProjectList | PaneId::Output | PaneId::Toasts | PaneId::Search => {},
+        }
+    }
 
     pub(super) const fn cached_fit_widths(&self) -> &ResolvedWidths { &self.cached_fit_widths }
 

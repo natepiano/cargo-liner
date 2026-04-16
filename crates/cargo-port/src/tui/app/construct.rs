@@ -233,6 +233,8 @@ impl App {
             data_generation: 0,
             detail_generation: 0,
             detail_cache_key: None,
+            mouse_pos: None,
+            hovered_pane_row: None,
             layout_cache: LayoutCache::default(),
             status_flash: inputs.status_flash,
             toasts: ToastManager::default(),

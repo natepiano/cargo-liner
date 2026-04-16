@@ -29,8 +29,8 @@ use crate::tui::interaction;
 use crate::tui::interaction::UiSurface;
 use crate::tui::render;
 use crate::tui::render::CiColumn;
-use crate::tui::types::Pane;
 use crate::tui::types::PaneId;
+use crate::tui::types::PaneSelectionState;
 
 fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
     let right_aligned = Style::default()
@@ -60,7 +60,12 @@ fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
 
 pub(in super::super) const CI_COMPACT_DURATION_WIDTH: usize = 2;
 
-fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn], show_durations: bool) -> Row<'static> {
+fn build_ci_data_row(
+    ci_run: &CiRun,
+    cols: &[CiColumn],
+    show_durations: bool,
+    selection: PaneSelectionState,
+) -> Row<'static> {
     let timestamp = detail::format_timestamp(&ci_run.created_at);
     let total_dur = ci_run
         .wall_clock_secs
@@ -115,7 +120,7 @@ fn build_ci_data_row(ci_run: &CiRun, cols: &[CiColumn], show_durations: bool) ->
     );
     cells.push(Cell::from(ci_run.conclusion.icon().to_string()).style(total_style));
 
-    Row::new(cells)
+    Row::new(cells).style(selection.overlay_style())
 }
 
 fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -> Vec<Constraint> {
@@ -256,6 +261,7 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let ci_focused = app.is_focused(PaneId::CiRuns);
+    let ci_focus = app.pane_focus_state(PaneId::CiRuns);
     let focused_pos = ci_focused.then(|| app.pane_manager().ci.pos());
     let title = ci_panel_title(&ci_data, focused_pos);
 
@@ -302,18 +308,24 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let rows: Vec<Row> = ci_data
         .runs
         .iter()
-        .map(|ci_run| build_ci_data_row(ci_run, &cols, show_durations))
+        .enumerate()
+        .map(|(row_index, ci_run)| {
+            build_ci_data_row(
+                ci_run,
+                &cols,
+                show_durations,
+                app.pane_manager().ci.selection_state(row_index, ci_focus),
+            )
+        })
         .collect();
 
     let widths = build_ci_widths(&ci_data.runs, &cols, show_durations);
-
-    let highlight_style = Pane::selection_style(app.pane_focus_state(PaneId::CiRuns));
 
     let table = Table::new(rows, widths)
         .header(header)
         .block(ci_block)
         .column_spacing(1)
-        .row_highlight_style(highlight_style);
+        .row_highlight_style(Style::default());
 
     let mut table_state = TableState::default().with_selected(Some(app.pane_manager().ci.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
