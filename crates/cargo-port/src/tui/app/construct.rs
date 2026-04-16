@@ -92,6 +92,7 @@ impl AppInit {
             cfg.tui.ci_run_count,
             cfg.tui.include_non_rust,
             http_client.clone(),
+            lint_spawn.handle.clone(),
         );
         let built = scan::build_tree(projects, &cfg.tui.inline_dirs);
         let projects = crate::project_list::ProjectList::new(built);

@@ -31,6 +31,8 @@ use super::constants::POLL_INTERVAL;
 use super::constants::WATCHER_DISK_CONCURRENCY;
 use super::constants::WATCHER_GIT_CONCURRENCY;
 use super::http::HttpClient;
+use super::lint;
+use super::lint::RuntimeHandle;
 use super::project;
 use super::project::GitInfo;
 use super::project::GitRepoPresence;
@@ -66,6 +68,7 @@ pub(crate) fn spawn_watcher(
     ci_run_count: u32,
     non_rust: NonRustInclusion,
     client: HttpClient,
+    lint_runtime: Option<RuntimeHandle>,
 ) -> mpsc::Sender<WatcherMsg> {
     let (watch_tx, watch_rx) = mpsc::channel();
     let (notify_tx, notify_rx) = mpsc::channel();
@@ -88,6 +91,7 @@ pub(crate) fn spawn_watcher(
         ci_run_count,
         non_rust,
         client,
+        lint_runtime,
     };
 
     spawn_watcher_thread(ctx, watch_rx, notify_rx, watcher);
@@ -101,6 +105,7 @@ struct WatcherLoopContext {
     ci_run_count: u32,
     non_rust:     NonRustInclusion,
     client:       HttpClient,
+    lint_runtime: Option<RuntimeHandle>,
 }
 
 fn spawn_watcher_thread<W: Send + 'static>(
@@ -213,6 +218,7 @@ fn watcher_loop<W: Send + 'static>(
         ci_run_count,
         non_rust,
         client,
+        lint_runtime: _,
     } = ctx;
     let mut state = WatcherLoopState::new();
     let (disk_done_tx, disk_done_rx) = mpsc::channel::<String>();
@@ -242,6 +248,7 @@ fn watcher_loop<W: Send + 'static>(
             notify_events,
             watch_roots,
             bg_tx,
+            ctx.lint_runtime.as_ref(),
             &mut state,
         );
         drain_completed_refreshes(
@@ -359,6 +366,7 @@ fn process_notify_events(
     notify_events: Vec<notify::Event>,
     watch_roots: &[AbsolutePath],
     bg_tx: &mpsc::Sender<BackgroundMsg>,
+    lint_runtime: Option<&RuntimeHandle>,
     state: &mut WatcherLoopState,
 ) {
     let notify_count = notify_events.len();
@@ -379,6 +387,7 @@ fn process_notify_events(
                 discovered: &state.discovered,
             },
             bg_tx,
+            lint_runtime,
         };
         replay_buffered_events(
             &state.buffered_events,
@@ -411,6 +420,7 @@ fn process_notify_events(
                 discovered: &state.discovered,
             },
             bg_tx,
+            lint_runtime,
         };
         replay_buffered_events(
             &notify_events,
@@ -446,10 +456,12 @@ fn replay_buffered_events(
 ) {
     for event in events {
         for event_path in &event.paths {
-            handle_event(
+            handle_notify_event(
                 event_path,
+                Some(event),
                 &ctx.event,
                 ctx.bg_tx,
+                ctx.lint_runtime,
                 pending_disk,
                 pending_git,
                 pending_new,
@@ -482,14 +494,21 @@ struct EventContext<'a> {
 }
 
 struct WatcherDispatchContext<'a> {
-    event: EventContext<'a>,
-    bg_tx: &'a mpsc::Sender<BackgroundMsg>,
+    event:        EventContext<'a>,
+    bg_tx:        &'a mpsc::Sender<BackgroundMsg>,
+    lint_runtime: Option<&'a RuntimeHandle>,
 }
 
-fn handle_event(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "watcher dispatch needs the raw event plus debounce maps and background contexts"
+)]
+fn handle_notify_event(
     event_path: &Path,
+    event: Option<&notify::Event>,
     ctx: &EventContext<'_>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
+    lint_runtime: Option<&RuntimeHandle>,
     pending_disk: &mut HashMap<String, DiskState>,
     pending_git: &mut HashMap<AbsolutePath, GitRefreshState>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
@@ -532,6 +551,13 @@ fn handle_event(
         .iter()
         .find(|(root, _)| event_path.starts_with(root))
     {
+        if let Some(lint_runtime) = lint_runtime
+            && let Some(event) = event
+            && let Some(lint_trigger) =
+                lint::classify_event_path(&entry.abs_path, event.kind, event_path)
+        {
+            lint_runtime.lint_trigger(lint_trigger);
+        }
         if is_target_metadata_event(event_path, entry.abs_path.as_path()) {
             spawn_project_refresh(bg_tx.clone(), entry.abs_path.clone());
         }
@@ -590,6 +616,27 @@ fn handle_event(
             .entry(candidate)
             .or_insert_with(|| now + NEW_PROJECT_DEBOUNCE);
     }
+}
+
+#[cfg(test)]
+fn handle_event(
+    event_path: &Path,
+    ctx: &EventContext<'_>,
+    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    pending_disk: &mut HashMap<String, DiskState>,
+    pending_git: &mut HashMap<AbsolutePath, GitRefreshState>,
+    pending_new: &mut HashMap<AbsolutePath, Instant>,
+) {
+    handle_notify_event(
+        event_path,
+        None,
+        ctx,
+        bg_tx,
+        None,
+        pending_disk,
+        pending_git,
+        pending_new,
+    );
 }
 
 fn schedule_disk_refresh(
@@ -1309,6 +1356,7 @@ mod tests {
                 ci_run_count: 0,
                 non_rust: NonRustInclusion::Exclude,
                 client,
+                lint_runtime: None,
             },
             watch_rx,
             notify_rx,
@@ -2243,8 +2291,9 @@ edition = "2024"
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let dispatch = WatcherDispatchContext {
-            event: ctx,
-            bg_tx: &bg_tx,
+            event:        ctx,
+            bg_tx:        &bg_tx,
+            lint_runtime: None,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
@@ -2284,8 +2333,9 @@ edition = "2024"
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let dispatch = WatcherDispatchContext {
-            event: ctx,
-            bg_tx: &bg_tx,
+            event:        ctx,
+            bg_tx:        &bg_tx,
+            lint_runtime: None,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
@@ -2409,6 +2459,99 @@ edition = "2024"
     }
 
     #[test]
+    fn watcher_event_schedules_lint_run_through_main_runtime() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+        std::fs::create_dir_all(project_dir.path().join("src")).expect("create src");
+        let source_path = project_dir.path().join("src/lib.rs");
+        std::fs::write(&source_path, "pub fn demo() {}\n").expect("write source");
+
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let mut cfg = crate::config::CargoPortConfig::default();
+        cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
+        cfg.lint.enabled = true;
+        cfg.lint.include = vec!["~/rust/demo".to_string()];
+        cfg.lint.commands = vec![crate::config::LintCommandConfig {
+            name:    "echo".to_string(),
+            command: "printf 'lint ok\\n'".to_string(),
+        }];
+
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let runtime = lint::spawn(&cfg, bg_tx.clone())
+            .handle
+            .expect("runtime handle");
+        let request = lint::RegisterProjectRequest {
+            project_label: "~/rust/demo".to_string(),
+            abs_path:      AbsolutePath::from(project_dir.path()),
+            is_rust:       true,
+        };
+        runtime.sync_projects(vec![request.clone()]);
+        runtime.register_project(request);
+
+        let mut projects = HashMap::new();
+        let (key, entry) = make_project_entry("~/rust/demo", project_dir.path());
+        projects.insert(key, entry);
+        let watch_roots = vec![AbsolutePath::from(project_dir.path())];
+        let project_parents = HashSet::new();
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+        let mut pending_disk = HashMap::new();
+        let mut pending_git = HashMap::new();
+        let mut pending_new = HashMap::new();
+        let event = notify::Event {
+            kind:  notify::event::EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Any,
+            )),
+            paths: vec![source_path.clone()],
+            attrs: notify::event::EventAttributes::default(),
+        };
+
+        handle_notify_event(
+            &source_path,
+            Some(&event),
+            &ctx,
+            &bg_tx,
+            Some(&runtime),
+            &mut pending_disk,
+            &mut pending_git,
+            &mut pending_new,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_passed = false;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match bg_rx.recv_timeout(remaining) {
+                Ok(BackgroundMsg::LintStatus { path, status })
+                    if path.as_path() == project_dir.path()
+                        && matches!(status, lint::LintStatus::Passed(_)) =>
+                {
+                    saw_passed = true;
+                    break;
+                },
+                Ok(_) => {},
+                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
+                    break;
+                },
+            }
+        }
+
+        assert!(saw_passed, "expected watcher event to schedule a lint run");
+        assert_pending_disk(&pending_disk, "~/rust/demo");
+        assert!(pending_git.is_empty());
+        assert!(pending_new.is_empty());
+    }
+
+    #[test]
     fn unknown_sibling_event_goes_to_pending_new() {
         let tmp = tempfile::tempdir().expect("failed to create tempdir");
         let base = tmp.path().canonicalize().expect("canonicalize tmpdir");
@@ -2472,8 +2615,9 @@ edition = "2024"
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let dispatch = WatcherDispatchContext {
-            event: ctx,
-            bg_tx: &bg_tx,
+            event:        ctx,
+            bg_tx:        &bg_tx,
+            lint_runtime: None,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();

@@ -332,6 +332,7 @@ impl App {
             self.ci_run_count(),
             self.include_non_rust(),
             self.http_client.clone(),
+            self.lint_runtime.clone(),
         );
     }
 

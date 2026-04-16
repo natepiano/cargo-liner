@@ -13,13 +13,12 @@ use std::time::Duration;
 use std::time::Instant;
 
 use chrono::Local;
-use notify::RecursiveMode;
-use notify::Watcher;
 
 use super::history;
 use super::paths;
 use super::read_write;
 use super::status;
+use super::trigger::LintTriggerEvent;
 use super::types::LintCommand;
 use super::types::LintCommandStatus;
 use super::types::LintRun;
@@ -35,10 +34,9 @@ use crate::constants::LINTS_LATEST_JSON;
 use crate::project::AbsolutePath;
 use crate::scan::BackgroundMsg;
 
-const LINT_DEBOUNCE: Duration = Duration::from_millis(750);
-const DELETE_LINT_DEBOUNCE: Duration = Duration::from_millis(1500);
 const STOP_POLL: Duration = Duration::from_millis(250);
 
+#[derive(Clone)]
 pub struct RegisterProjectRequest {
     pub project_label: String,
     pub abs_path:      AbsolutePath,
@@ -61,6 +59,7 @@ pub fn project_is_eligible(
     )
 }
 
+#[derive(Clone)]
 pub struct RuntimeHandle {
     tx: mpsc::Sender<SupervisorMsg>,
 }
@@ -76,6 +75,10 @@ impl RuntimeHandle {
 
     pub fn unregister_project(&self, abs_path: AbsolutePath) {
         let _ = self.tx.send(SupervisorMsg::UnregisterProject { abs_path });
+    }
+
+    pub fn lint_trigger(&self, event: LintTriggerEvent) {
+        let _ = self.tx.send(SupervisorMsg::LintTriggered { event });
     }
 }
 
@@ -98,12 +101,16 @@ enum SupervisorMsg {
     UnregisterProject {
         abs_path: AbsolutePath,
     },
+    LintTriggered {
+        event: LintTriggerEvent,
+    },
     Shutdown,
 }
 
 struct ProjectWorker {
-    stop:   Arc<AtomicBool>,
-    handle: JoinHandle<()>,
+    stop:       Arc<AtomicBool>,
+    trigger_tx: mpsc::Sender<LintTriggerEvent>,
+    handle:     JoinHandle<()>,
 }
 
 pub fn spawn(config: &CargoPortConfig, bg_tx: mpsc::Sender<BackgroundMsg>) -> SpawnResult {
@@ -178,6 +185,11 @@ fn supervisor_loop(
                         path:   abs_path,
                         status: LintStatus::NoLog,
                     });
+                }
+            },
+            Ok(SupervisorMsg::LintTriggered { event }) => {
+                if let Some(worker) = workers.get(&event.project_root) {
+                    let _ = worker.trigger_tx.send(event);
                 }
             },
             Ok(SupervisorMsg::Shutdown) | Err(_) => {
@@ -295,6 +307,7 @@ fn reconcile_workers(
 
 fn stop_worker(worker: ProjectWorker) {
     worker.stop.store(true, Ordering::Relaxed);
+    drop(worker.trigger_tx);
     let _ = worker.handle.join();
 }
 
@@ -306,6 +319,7 @@ fn spawn_project_worker(
 ) -> ProjectWorker {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::clone(&stop);
+    let (trigger_tx, trigger_rx) = mpsc::channel::<LintTriggerEvent>();
     let worker_project_label = project_label;
     let cache_root = config.cache_root.clone();
     let commands = config.commands.clone();
@@ -313,20 +327,6 @@ fn spawn_project_worker(
     let status_cache = Arc::clone(&config.status_cache);
     let run_immediately = matches!(config.on_discovery, DiscoveryLint::Immediate);
     let handle = thread::spawn(move || {
-        let (event_tx, event_rx) = mpsc::channel();
-        let handler = move |res| {
-            let _ = event_tx.send(res);
-        };
-        let Ok(mut watcher) = notify::recommended_watcher(handler) else {
-            return;
-        };
-        if watcher
-            .watch(&project_root, RecursiveMode::Recursive)
-            .is_err()
-        {
-            return;
-        }
-
         let mut next_run_at = run_immediately.then(Instant::now);
         loop {
             if stop_flag.load(Ordering::Relaxed) {
@@ -339,49 +339,57 @@ fn spawn_project_worker(
                     .min(STOP_POLL)
             });
 
-            match event_rx.recv_timeout(timeout) {
-                Ok(Ok(event)) => {
-                    if let Some(debounce) = event_debounce(&project_root, &event) {
-                        next_run_at = Some(next_run_at.map_or_else(
-                            || Instant::now() + debounce,
-                            |current| current.max(Instant::now() + debounce),
-                        ));
-                    }
+            if let Ok(trigger) = trigger_rx.try_recv() {
+                next_run_at = Some(next_run_at.map_or_else(
+                    || Instant::now() + trigger.debounce(),
+                    |current| current.max(Instant::now() + trigger.debounce()),
+                ));
+            }
+
+            match trigger_rx.recv_timeout(timeout) {
+                Ok(trigger) => {
+                    next_run_at = Some(next_run_at.map_or_else(
+                        || Instant::now() + trigger.debounce(),
+                        |current| current.max(Instant::now() + trigger.debounce()),
+                    ));
                 },
-                Ok(Err(_)) => {},
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if let Some(deadline) = next_run_at
-                        && Instant::now() >= deadline
-                    {
-                        if project_still_runnable(&project_root) {
-                            tracing::info!(
-                                path = %project_root.display(),
-                                "lint_worker_run_start"
-                            );
-                            let run_started = Instant::now();
-                            let _ = run_commands_for_project(
-                                &project_root,
-                                &worker_project_label,
-                                &cache_root,
-                                &commands,
-                                cache_size_bytes,
-                                &status_cache,
-                                &bg_tx,
-                            );
-                            tracing::info!(
-                                path = %project_root.display(),
-                                duration_ms = crate::perf_log::ms(run_started.elapsed().as_millis()),
-                                "lint_worker_run_complete"
-                            );
-                        }
-                        next_run_at = None;
-                    }
-                },
+                Err(mpsc::RecvTimeoutError::Timeout) => {},
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+
+            if let Some(deadline) = next_run_at
+                && Instant::now() >= deadline
+            {
+                if project_still_runnable(&project_root) {
+                    tracing::info!(
+                        path = %project_root.display(),
+                        "lint_worker_run_start"
+                    );
+                    let run_started = Instant::now();
+                    let _ = run_commands_for_project(
+                        &project_root,
+                        &worker_project_label,
+                        &cache_root,
+                        &commands,
+                        cache_size_bytes,
+                        &status_cache,
+                        &bg_tx,
+                    );
+                    tracing::info!(
+                        path = %project_root.display(),
+                        duration_ms = crate::perf_log::ms(run_started.elapsed().as_millis()),
+                        "lint_worker_run_complete"
+                    );
+                }
+                next_run_at = None;
             }
         }
     });
-    ProjectWorker { stop, handle }
+    ProjectWorker {
+        stop,
+        trigger_tx,
+        handle,
+    }
 }
 
 fn should_watch_project(lint: &LintConfig, request: &RegisterProjectRequest) -> bool {
@@ -425,39 +433,6 @@ fn matches_prefixes(
                 .filter_map(|component| component.as_os_str().to_str())
                 .any(|part| !part.is_empty() && part.starts_with(prefix))
     })
-}
-
-fn is_relevant_change(project_root: &Path, path: &Path) -> bool {
-    if !path.starts_with(project_root) {
-        return false;
-    }
-    if path.components().any(|component| {
-        let part = component.as_os_str();
-        part == "target" || part == ".git"
-    }) {
-        return false;
-    }
-    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    file_name == "Cargo.toml"
-        || file_name == "Cargo.lock"
-        || path.extension().is_some_and(|ext| ext == "rs")
-}
-
-fn event_debounce(project_root: &Path, event: &notify::Event) -> Option<Duration> {
-    if !event
-        .paths
-        .iter()
-        .any(|path| is_relevant_change(project_root, path))
-    {
-        return None;
-    }
-    if matches!(event.kind, notify::event::EventKind::Remove(_)) {
-        Some(DELETE_LINT_DEBOUNCE)
-    } else {
-        Some(LINT_DEBOUNCE)
-    }
 }
 
 fn project_still_runnable(project_root: &Path) -> bool {
@@ -797,22 +772,42 @@ mod tests {
     #[test]
     fn relevant_changes_ignore_git_and_target_paths() {
         let project_dir = tempfile::tempdir().expect("tempdir");
-        assert!(is_relevant_change(
-            project_dir.path(),
-            &project_dir.path().join("src/main.rs")
+        let modify_kind = notify::event::EventKind::Modify(notify::event::ModifyKind::Data(
+            notify::event::DataChange::Any,
         ));
-        assert!(is_relevant_change(
-            project_dir.path(),
-            &project_dir.path().join("Cargo.toml")
-        ));
-        assert!(!is_relevant_change(
-            project_dir.path(),
-            &project_dir.path().join("target/debug/app")
-        ));
-        assert!(!is_relevant_change(
-            project_dir.path(),
-            &project_dir.path().join(".git/index")
-        ));
+
+        assert!(
+            crate::lint::classify_event_path(
+                project_dir.path(),
+                modify_kind,
+                &project_dir.path().join("src/main.rs")
+            )
+            .is_some()
+        );
+        assert!(
+            crate::lint::classify_event_path(
+                project_dir.path(),
+                modify_kind,
+                &project_dir.path().join("Cargo.toml")
+            )
+            .is_some()
+        );
+        assert!(
+            crate::lint::classify_event_path(
+                project_dir.path(),
+                modify_kind,
+                &project_dir.path().join("target/debug/app")
+            )
+            .is_none()
+        );
+        assert!(
+            crate::lint::classify_event_path(
+                project_dir.path(),
+                modify_kind,
+                &project_dir.path().join(".git/index")
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -905,12 +900,76 @@ mod tests {
         };
 
         assert_eq!(
-            event_debounce(project_dir.path(), &remove_event),
-            Some(DELETE_LINT_DEBOUNCE)
+            crate::lint::trigger::classify_event(project_dir.path(), &remove_event)
+                .expect("remove event")
+                .debounce(),
+            Duration::from_millis(1500)
         );
         assert_eq!(
-            event_debounce(project_dir.path(), &modify_event),
-            Some(LINT_DEBOUNCE)
+            crate::lint::trigger::classify_event(project_dir.path(), &modify_event)
+                .expect("modify event")
+                .debounce(),
+            Duration::from_millis(750)
+        );
+    }
+
+    #[test]
+    fn main_watcher_trigger_source_schedules_lint_runs() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+        std::fs::create_dir_all(project_dir.path().join("src")).expect("create src");
+        std::fs::write(project_dir.path().join("src/lib.rs"), "pub fn demo() {}\n")
+            .expect("write src");
+
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let mut cfg = CargoPortConfig::default();
+        cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
+        cfg.lint.enabled = true;
+        cfg.lint.include = vec!["~/rust/demo".to_string()];
+        cfg.lint.commands = vec![LintCommandConfig {
+            name:    "echo".to_string(),
+            command: "printf 'lint ok\\n'".to_string(),
+        }];
+
+        let (bg_tx, bg_rx) = mpsc::channel();
+        let spawn = spawn(&cfg, bg_tx);
+        let runtime = spawn.handle.expect("runtime handle");
+        let request = request("~/rust/demo", project_dir.path(), true);
+        runtime.sync_projects(vec![request.clone()]);
+        runtime.register_project(request);
+        runtime.lint_trigger(LintTriggerEvent {
+            project_root: AbsolutePath::from(project_dir.path()),
+            trigger:      super::super::trigger::LintTriggerKind::RustSource,
+            event_kind:   super::super::trigger::LintEventKind::CreateOrModify,
+            removal:      false,
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_passed = false;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match bg_rx.recv_timeout(remaining) {
+                Ok(BackgroundMsg::LintStatus { path, status })
+                    if path.as_path() == project_dir.path()
+                        && matches!(status, LintStatus::Passed(_)) =>
+                {
+                    saw_passed = true;
+                    break;
+                },
+                Ok(_) => {},
+                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
+                    break;
+                },
+            }
+        }
+
+        assert!(
+            saw_passed,
+            "expected watcher-originated lint trigger to run lint"
         );
     }
 
@@ -1002,12 +1061,21 @@ mod tests {
         let stop_flag = Arc::clone(&stop);
         let exited = Arc::new(AtomicBool::new(false));
         let exited_flag = Arc::clone(&exited);
+        let (trigger_tx, trigger_rx) = mpsc::channel::<LintTriggerEvent>();
         let handle = thread::spawn(move || {
+            drop(trigger_rx);
             while !stop_flag.load(Ordering::Relaxed) {
                 thread::sleep(Duration::from_millis(10));
             }
             exited_flag.store(true, Ordering::Relaxed);
         });
-        (ProjectWorker { stop, handle }, exited)
+        (
+            ProjectWorker {
+                stop,
+                trigger_tx,
+                handle,
+            },
+            exited,
+        )
     }
 }
