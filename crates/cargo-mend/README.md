@@ -96,18 +96,11 @@ analysis after macro expansion. This is a permanently unstable feature — it is
 clippy and miri access the compiler, but it means the compiler's internal crates have no
 stability guarantee and `cargo-mend` is sensitive to the exact rustc version used to build it.
 
-Install the `rustc-dev` component, then install `cargo-mend`:
+Install the `rustc-dev` component, then install `cargo-mend` with `RUSTC_BOOTSTRAP=1`:
 
 ```bash
 rustup component add rustc-dev
 RUSTC_BOOTSTRAP=1 cargo install cargo-mend
-```
-
-Alternative:
-
-```bash
-rustup component add rustc-dev --toolchain nightly
-cargo +nightly install cargo-mend
 ```
 
 ### After installation

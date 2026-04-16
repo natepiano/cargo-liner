@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cargo mend --version` now reports the installed CLI version
 - `cargo mend --build-info` now prints build metadata including git hash, build id, and the sysroot used to compile the binary
 
+### Changed
+- `cargo-mend` now uses stable Rust for development and installation; install with `rustc-dev` and `RUSTC_BOOTSTRAP=1`
+
 ## [0.6.1] - 2026-04-13
 
 ### Fixed
