@@ -29,6 +29,13 @@ use crate::project::ProjectFields;
 /// mouse-down event that caused the focus change.
 static LAST_MOUSE_POS: std::sync::Mutex<Option<(u16, u16)>> = std::sync::Mutex::new(None);
 
+#[cfg(test)]
+pub(super) fn set_last_mouse_pos_for_test(pos: Option<(u16, u16)>) {
+    if let Ok(mut last) = LAST_MOUSE_POS.lock() {
+        *last = pos;
+    }
+}
+
 pub(super) fn handle_event(app: &mut App, event: &Event) {
     let started = Instant::now();
     match event {
@@ -41,6 +48,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
             handle_mouse_event(app, mouse.kind, mouse.column, mouse.row);
         },
         Event::FocusGained => {
+            let _ = super::terminal::rearm_input_modes();
             if let Ok(pos) = LAST_MOUSE_POS.lock()
                 && let Some((column, row)) = *pos
             {
@@ -68,6 +76,8 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
 }
 
 fn handle_key_event(app: &mut App, raw: &KeyEvent) {
+    app.set_mouse_pos(None);
+
     let normalized = normalize_nav(app, raw);
     let code = normalized.code;
 

@@ -506,16 +506,6 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     );
     lines.push(Line::from(""));
     line_targets.push(None);
-    let nav_keys_index = SettingOption::iter().position(|s| s == SettingOption::NavigationKeys);
-    if !app.is_settings_editing()
-        && Some(app.pane_manager().pane(PaneId::Settings).pos()) == nav_keys_index
-    {
-        lines.push(Line::from(vec![
-            Span::styled("  Note: ", label_style),
-            Span::styled("maps h/j/k/l to arrow navigation", label_style),
-        ]));
-        line_targets.push(None);
-    }
 
     let popup_height = u16::try_from(lines.len())
         .unwrap_or(u16::MAX)
@@ -574,11 +564,9 @@ const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {
 fn push_toggle_row(
     lines: &mut Vec<Line<'static>>,
     line_targets: &mut Vec<Option<usize>>,
-    target: Option<usize>,
-    label: &str,
     value: &str,
-    selection: PaneSelectionState,
-    label_style: Style,
+    ctx: &SettingsLineContext<'_>,
+    suffix: Option<&str>,
 ) {
     let is_on = value == "ON";
     let toggle_style = if is_on {
@@ -590,14 +578,149 @@ fn push_toggle_row(
             .fg(ERROR_COLOR)
             .add_modifier(Modifier::BOLD)
     };
-    let row_style = selection.patch(label_style);
+    let row_style = ctx.selection.patch(ctx.label_style);
     lines.push(Line::from(vec![
-        Span::styled(label.to_owned(), row_style),
-        Span::styled("< ", selection.patch(Style::default().fg(LABEL_COLOR))),
-        Span::styled(value.to_owned(), selection.patch(toggle_style)),
-        Span::styled(" >", selection.patch(Style::default().fg(LABEL_COLOR))),
+        Span::styled(ctx.label.to_owned(), row_style),
+        Span::styled("< ", ctx.selection.patch(Style::default().fg(LABEL_COLOR))),
+        Span::styled(value.to_owned(), ctx.selection.patch(toggle_style)),
+        Span::styled(" >", ctx.selection.patch(Style::default().fg(LABEL_COLOR))),
+        Span::styled(suffix.unwrap_or_default().to_owned(), row_style),
     ]));
-    line_targets.push(target);
+    line_targets.push(Some(ctx.selection_index));
+}
+
+struct SettingsLineContext<'a> {
+    selection_index: usize,
+    label:           &'a str,
+    selection:       PaneSelectionState,
+    label_style:     Style,
+    content_width:   usize,
+}
+
+fn push_wrapped_setting_value(
+    lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
+    ctx: &SettingsLineContext<'_>,
+    value: &str,
+    value_style: Style,
+) {
+    let row = WrappedValueRow {
+        prefix: ctx.label,
+        value,
+        prefix_style: ctx.selection.patch(ctx.label_style),
+        value_style,
+        content_width: ctx.content_width,
+    };
+    push_wrapped_value_row(lines, line_targets, Some(ctx.selection_index), &row);
+}
+
+fn nav_keys_toggle_suffix(
+    app: &App,
+    setting: Option<SettingOption>,
+    selection: PaneSelectionState,
+) -> Option<&'static str> {
+    if setting == Some(SettingOption::NavigationKeys)
+        && selection != PaneSelectionState::Unselected
+        && !app.is_settings_editing()
+    {
+        Some("  maps h/j/k/l to arrow navigation")
+    } else {
+        None
+    }
+}
+
+fn push_ci_run_count_row(
+    lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
+    ctx: &SettingsLineContext<'_>,
+    value: &str,
+) {
+    lines.push(Line::from(vec![
+        Span::styled(ctx.label.to_owned(), ctx.selection.patch(ctx.label_style)),
+        Span::styled("< ", ctx.selection.patch(Style::default().fg(LABEL_COLOR))),
+        Span::styled(value.to_owned(), ctx.selection.patch(Style::default())),
+        Span::styled(" >", ctx.selection.patch(Style::default().fg(LABEL_COLOR))),
+    ]));
+    line_targets.push(Some(ctx.selection_index));
+}
+
+fn push_lint_cache_size_row(
+    app: &App,
+    lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
+    ctx: &SettingsLineContext<'_>,
+    value: &str,
+) {
+    let used = crate::tui::render::format_bytes(app.lint_cache_usage().bytes);
+    let limit = &app.current_config().lint.cache_size;
+    let usage_suffix = format!("  {used} / {limit}");
+    lines.push(Line::from(vec![
+        Span::styled(ctx.label.to_owned(), ctx.selection.patch(ctx.label_style)),
+        Span::styled(value.to_owned(), ctx.selection.patch(Style::default())),
+        Span::styled(usage_suffix, Style::default().fg(LABEL_COLOR)),
+    ]));
+    line_targets.push(Some(ctx.selection_index));
+}
+
+fn push_setting_row(
+    app: &App,
+    lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
+    ctx: &SettingsLineContext<'_>,
+    setting: Option<SettingOption>,
+    value: &str,
+) {
+    if let Some(error) = selected_inline_error(app, ctx.selection) {
+        push_wrapped_setting_value(
+            lines,
+            line_targets,
+            ctx,
+            &error,
+            ctx.selection.patch(Style::default().fg(INLINE_ERROR_COLOR)),
+        );
+    } else if app.is_settings_editing() && ctx.selection != PaneSelectionState::Unselected {
+        let edit_buffer = render_edit_buffer(app.settings_edit_buf(), app.settings_edit_cursor());
+        push_wrapped_setting_value(
+            lines,
+            line_targets,
+            ctx,
+            &edit_buffer,
+            ctx.selection.patch(Style::default()),
+        );
+    } else if is_toggle_setting(setting) {
+        push_toggle_row(
+            lines,
+            line_targets,
+            value,
+            ctx,
+            nav_keys_toggle_suffix(app, setting, ctx.selection),
+        );
+    } else if setting == Some(SettingOption::CiRunCount)
+        && ctx.selection != PaneSelectionState::Unselected
+        && !app.is_settings_editing()
+    {
+        push_ci_run_count_row(lines, line_targets, ctx, value);
+    } else if setting == Some(SettingOption::TerminalCommand)
+        && value.starts_with("Not configured.")
+    {
+        push_wrapped_setting_value(
+            lines,
+            line_targets,
+            ctx,
+            value,
+            ctx.selection.patch(Style::default().fg(INLINE_ERROR_COLOR)),
+        );
+    } else if setting == Some(SettingOption::LintCacheSize) {
+        push_lint_cache_size_row(app, lines, line_targets, ctx, value);
+    } else {
+        push_wrapped_setting_value(
+            lines,
+            line_targets,
+            ctx,
+            value,
+            ctx.selection.patch(Style::default()),
+        );
+    }
 }
 
 pub(super) fn build_settings_lines(
@@ -632,79 +755,14 @@ pub(super) fn build_settings_lines(
             .selection_state(selection_index, app.pane_focus_state(PaneId::Settings));
         let setting = *setting;
         let label = format!("{SECTION_ITEM_INDENT}{cursor}{name:<max_label$}  ");
-
-        if let Some(error) = selected_inline_error(app, selection) {
-            let row = WrappedValueRow {
-                prefix: &label,
-                value: &error,
-                prefix_style: selection.patch(label_style),
-                value_style: selection.patch(Style::default().fg(INLINE_ERROR_COLOR)),
-                content_width,
-            };
-            push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
-        } else if app.is_settings_editing() && selection != PaneSelectionState::Unselected {
-            let edit_buffer =
-                render_edit_buffer(app.settings_edit_buf(), app.settings_edit_cursor());
-            let row = WrappedValueRow {
-                prefix: &label,
-                value: &edit_buffer,
-                prefix_style: selection.patch(label_style),
-                value_style: selection.patch(Style::default()),
-                content_width,
-            };
-            push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
-        } else if is_toggle_setting(setting) {
-            push_toggle_row(
-                lines,
-                line_targets,
-                Some(selection_index),
-                &label,
-                value,
-                selection,
-                label_style,
-            );
-        } else if setting == Some(SettingOption::CiRunCount)
-            && selection != PaneSelectionState::Unselected
-            && !app.is_settings_editing()
-        {
-            lines.push(Line::from(vec![
-                Span::styled(label, selection.patch(label_style)),
-                Span::styled("< ", selection.patch(Style::default().fg(LABEL_COLOR))),
-                Span::styled((*value).clone(), selection.patch(Style::default())),
-                Span::styled(" >", selection.patch(Style::default().fg(LABEL_COLOR))),
-            ]));
-            line_targets.push(Some(selection_index));
-        } else if setting == Some(SettingOption::TerminalCommand)
-            && value.starts_with("Not configured.")
-        {
-            let row = WrappedValueRow {
-                prefix: &label,
-                value,
-                prefix_style: selection.patch(label_style),
-                value_style: selection.patch(Style::default().fg(INLINE_ERROR_COLOR)),
-                content_width,
-            };
-            push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
-        } else if setting == Some(SettingOption::LintCacheSize) {
-            let used = crate::tui::render::format_bytes(app.lint_cache_usage().bytes);
-            let limit = &app.current_config().lint.cache_size;
-            let usage_suffix = format!("  {used} / {limit}");
-            lines.push(Line::from(vec![
-                Span::styled(label, selection.patch(label_style)),
-                Span::styled((*value).clone(), selection.patch(Style::default())),
-                Span::styled(usage_suffix, Style::default().fg(LABEL_COLOR)),
-            ]));
-            line_targets.push(Some(selection_index));
-        } else {
-            let row = WrappedValueRow {
-                prefix: &label,
-                value,
-                prefix_style: selection.patch(label_style),
-                value_style: selection.patch(Style::default()),
-                content_width,
-            };
-            push_wrapped_value_row(lines, line_targets, Some(selection_index), &row);
-        }
+        let ctx = SettingsLineContext {
+            selection_index,
+            label: &label,
+            selection,
+            label_style,
+            content_width,
+        };
+        push_setting_row(app, lines, line_targets, &ctx, setting, value);
         selection_index += 1;
     }
 }
@@ -1281,5 +1339,33 @@ mod tests {
         assert_eq!(next_char_boundary(text, 1), 1 + crab);
         assert_eq!(prev_char_boundary(text, text.len()), 1 + crab);
         assert_eq!(prev_char_boundary(text, 1 + crab), 1);
+    }
+
+    #[test]
+    fn navigation_keys_selected_toggle_row_inlines_hint() {
+        let mut lines = Vec::new();
+        let mut line_targets = Vec::new();
+        let ctx = SettingsLineContext {
+            selection_index: 0,
+            label:           "  ▶ Vim nav keys  ",
+            selection:       PaneSelectionState::Active,
+            label_style:     Style::default(),
+            content_width:   80,
+        };
+        push_toggle_row(
+            &mut lines,
+            &mut line_targets,
+            "ON",
+            &ctx,
+            Some("  maps h/j/k/l to arrow navigation"),
+        );
+
+        let rendered = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(rendered.contains("< ON >  maps h/j/k/l to arrow navigation"));
     }
 }

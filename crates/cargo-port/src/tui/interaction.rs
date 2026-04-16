@@ -238,6 +238,9 @@ mod tests {
     use std::time::Instant;
 
     use crossterm::event::Event;
+    use crossterm::event::KeyCode;
+    use crossterm::event::KeyEvent;
+    use crossterm::event::KeyEventKind;
     use crossterm::event::KeyModifiers;
     use crossterm::event::MouseButton;
     use crossterm::event::MouseEvent;
@@ -289,6 +292,7 @@ mod tests {
     use crate::tui::toasts::ToastStyle;
     use crate::tui::types::Pane;
     use crate::tui::types::PaneId;
+    use crate::tui::types::PaneSelectionState;
 
     fn test_http_client() -> HttpClient {
         static TEST_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -478,6 +482,32 @@ mod tests {
             }),
         );
     }
+
+    fn move_mouse(app: &mut App, column: u16, row: u16) {
+        input::handle_event(
+            app,
+            &Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+    }
+
+    fn press_key(app: &mut App, code: KeyCode) {
+        input::handle_event(
+            app,
+            &Event::Key(KeyEvent {
+                code,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            }),
+        );
+    }
+
+    fn focus_gained(app: &mut App) { input::handle_event(app, &Event::FocusGained); }
 
     fn row_body_point(app: &App, row_index: usize) -> (u16, u16) {
         let area = app.layout_cache().project_list;
@@ -796,6 +826,97 @@ mod tests {
             app.pane_manager().pane(PaneId::Settings).pos(),
             SettingOption::CiRunCount as usize,
             "clicking a rendered settings option should select the logical setting, not the visual line index including spacer/header rows"
+        );
+    }
+
+    #[test]
+    fn keyboard_navigation_clears_stale_settings_hover() {
+        let mut app = make_app(&[]);
+        app.open_overlay(PaneId::Settings);
+        app.open_settings();
+        render_ui(&mut app);
+
+        let hovered_row = SettingOption::CiRunCount as usize;
+        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Settings), 5);
+        move_mouse(&mut app, x, y);
+        render_ui(&mut app);
+
+        assert_eq!(
+            app.pane_manager()
+                .pane(PaneId::Settings)
+                .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
+            PaneSelectionState::Hovered,
+        );
+
+        press_key(&mut app, KeyCode::Down);
+        render_ui(&mut app);
+
+        assert_eq!(app.pane_manager().pane(PaneId::Settings).pos(), 1);
+        assert_eq!(
+            app.pane_manager()
+                .pane(PaneId::Settings)
+                .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
+            PaneSelectionState::Unselected,
+        );
+        assert_eq!(
+            app.pane_manager()
+                .pane(PaneId::Settings)
+                .selection_state(1, app.pane_focus_state(PaneId::Settings)),
+            PaneSelectionState::Active,
+        );
+    }
+
+    #[test]
+    fn mouse_move_restores_hover_after_keyboard_navigation() {
+        let mut app = make_app(&[]);
+        app.open_overlay(PaneId::Settings);
+        app.open_settings();
+        render_ui(&mut app);
+
+        let hovered_row = SettingOption::CiRunCount as usize;
+        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Settings), 5);
+        move_mouse(&mut app, x, y);
+        render_ui(&mut app);
+        press_key(&mut app, KeyCode::Down);
+        render_ui(&mut app);
+
+        assert_eq!(
+            app.pane_manager()
+                .pane(PaneId::Settings)
+                .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
+            PaneSelectionState::Unselected,
+        );
+
+        move_mouse(&mut app, x, y);
+        render_ui(&mut app);
+
+        assert_eq!(
+            app.pane_manager()
+                .pane(PaneId::Settings)
+                .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
+            PaneSelectionState::Hovered,
+        );
+    }
+
+    #[test]
+    fn focus_gained_restores_selection_from_last_mouse_position() {
+        let mut app = make_app(&[]);
+        app.open_overlay(PaneId::Settings);
+        app.open_settings();
+        render_ui(&mut app);
+
+        let hovered_row = SettingOption::CiRunCount as usize;
+        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Settings), 5);
+        input::set_last_mouse_pos_for_test(Some((x, y)));
+        focus_gained(&mut app);
+        render_ui(&mut app);
+
+        assert_eq!(app.pane_manager().pane(PaneId::Settings).pos(), hovered_row);
+        assert_eq!(
+            app.pane_manager()
+                .pane(PaneId::Settings)
+                .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
+            PaneSelectionState::Active,
         );
     }
 
