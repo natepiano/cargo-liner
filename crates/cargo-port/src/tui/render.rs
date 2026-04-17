@@ -804,7 +804,7 @@ fn render_child_item(
     let origin_sync = if hide_git_status
         || matches!(
             app.git_status_for(path),
-            crate::project::GitStatus::Untracked | crate::project::GitStatus::Ignored
+            Some(crate::project::GitStatus::Untracked | crate::project::GitStatus::Ignored)
         ) {
         String::new()
     } else {
@@ -813,7 +813,7 @@ fn render_child_item(
     let main_sync = if hide_git_status
         || matches!(
             app.git_status_for(path),
-            crate::project::GitStatus::Untracked | crate::project::GitStatus::Ignored
+            Some(crate::project::GitStatus::Untracked | crate::project::GitStatus::Ignored)
         ) {
         String::new()
     } else {

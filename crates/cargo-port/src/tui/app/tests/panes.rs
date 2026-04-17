@@ -83,7 +83,7 @@ fn tabbable_panes_follow_canonical_order() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            status:              GitStatus::default(),
+            status:              GitStatus::Clean,
             origin:              GitOrigin::Clone,
             branch:              None,
             owner:               None,

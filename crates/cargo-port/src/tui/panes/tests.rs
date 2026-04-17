@@ -40,7 +40,7 @@ fn package_data(is_rust_project: bool) -> PackageData {
 fn git_data() -> GitData {
     GitData {
         branch:            None,
-        status:            GitStatus::OutsideRepo,
+        status:            None,
         sync:              None,
         vs_origin:         None,
         vs_local:          None,
@@ -206,7 +206,7 @@ fn detail_column_scroll_stays_at_top_when_not_active() {
 #[test]
 fn git_path_value_appends_status_icon() {
     let data = GitData {
-        status: GitStatus::Modified,
+        status: Some(GitStatus::Modified),
         ..git_data()
     };
 

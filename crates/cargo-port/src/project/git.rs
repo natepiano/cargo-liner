@@ -302,11 +302,9 @@ fn git_output_logged<const N: usize>(
     output
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum GitStatus {
-    #[default]
-    OutsideRepo,
     Clean,
     Modified,
     Untracked,
@@ -316,7 +314,6 @@ pub(crate) enum GitStatus {
 impl GitStatus {
     pub(crate) const fn label(self) -> &'static str {
         match self {
-            Self::OutsideRepo => "outside repo",
             Self::Clean => "clean",
             Self::Modified => "modified",
             Self::Untracked => "untracked",
@@ -329,7 +326,7 @@ impl GitStatus {
             Self::Clean => GIT_STATUS_CLEAN,
             Self::Modified => GIT_STATUS_MODIFIED,
             Self::Untracked => GIT_STATUS_UNTRACKED,
-            Self::OutsideRepo | Self::Ignored => "",
+            Self::Ignored => "",
         }
     }
 

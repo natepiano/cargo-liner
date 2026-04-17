@@ -66,7 +66,7 @@ fn expanded_workspace_members_use_the_parent_shimmer_owner() {
         app.discovery_name_segments_for_path(
             member.path(),
             "crate_a",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::PathOnly,
         )
         .is_some(),
@@ -76,7 +76,7 @@ fn expanded_workspace_members_use_the_parent_shimmer_owner() {
         app.discovery_name_segments_for_path(
             test_path("~/rust/ws").as_path(),
             "ws",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::Root,
         )
         .is_some(),
@@ -141,7 +141,7 @@ fn discovered_workspace_member_shimmers_parent_and_self_but_not_siblings() {
         app.discovery_name_segments_for_path(
             test_path("~/rust/ws").as_path(),
             "ws",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::Root,
         )
         .is_some()
@@ -150,7 +150,7 @@ fn discovered_workspace_member_shimmers_parent_and_self_but_not_siblings() {
         app.discovery_name_segments_for_path(
             test_path("~/rust/ws/crates/crate_new").as_path(),
             "crate_new",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::PathOnly,
         )
         .is_some()
@@ -159,7 +159,7 @@ fn discovered_workspace_member_shimmers_parent_and_self_but_not_siblings() {
         app.discovery_name_segments_for_path(
             test_path("~/rust/ws/crates/crate_new/vendor/helper_new").as_path(),
             "helper_new",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::PathOnly,
         )
         .is_some(),
@@ -169,7 +169,7 @@ fn discovered_workspace_member_shimmers_parent_and_self_but_not_siblings() {
         app.discovery_name_segments_for_path(
             test_path("~/rust/ws/crates/crate_existing").as_path(),
             "crate_existing",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::PathOnly,
         )
         .is_none(),
@@ -206,7 +206,7 @@ fn discovered_linked_worktree_shimmers_parent_and_subtree_but_not_existing_sibli
         app.discovery_name_segments_for_path(
             test_path("~/rust/app").as_path(),
             "app",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::Root,
         )
         .is_some(),
@@ -216,7 +216,7 @@ fn discovered_linked_worktree_shimmers_parent_and_subtree_but_not_existing_sibli
         app.discovery_name_segments_for_path(
             test_path("~/rust/app_feat").as_path(),
             "app_feat",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::WorktreeEntry,
         )
         .is_some(),
@@ -226,7 +226,7 @@ fn discovered_linked_worktree_shimmers_parent_and_subtree_but_not_existing_sibli
         app.discovery_name_segments_for_path(
             test_path("~/rust/app_feat/crates/crate_a").as_path(),
             "crate_a",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::PathOnly,
         )
         .is_some(),
@@ -236,7 +236,7 @@ fn discovered_linked_worktree_shimmers_parent_and_subtree_but_not_existing_sibli
         app.discovery_name_segments_for_path(
             test_path("~/rust/app").as_path(),
             "app",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::WorktreeEntry,
         )
         .is_none(),
@@ -278,7 +278,7 @@ fn discovered_package_worktree_shimmers_parent_and_self_but_not_existing_sibling
         app.discovery_name_segments_for_path(
             test_path("~/rust/cargo-port").as_path(),
             "cargo-port",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::Root,
         )
         .is_some(),
@@ -288,7 +288,7 @@ fn discovered_package_worktree_shimmers_parent_and_self_but_not_existing_sibling
         app.discovery_name_segments_for_path(
             test_path("~/rust/cargo-port-test").as_path(),
             "cargo-port-test",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::WorktreeEntry,
         )
         .is_some(),
@@ -298,7 +298,7 @@ fn discovered_package_worktree_shimmers_parent_and_self_but_not_existing_sibling
         app.discovery_name_segments_for_path(
             test_path("~/rust/cargo-port-feat").as_path(),
             "cargo-port-feat",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::WorktreeEntry,
         )
         .is_none(),
@@ -343,7 +343,7 @@ fn refreshed_stale_package_worktree_keeps_shimmer_after_regroup() {
         app.discovery_name_segments_for_path(
             test_path("~/rust/cargo-port-test").as_path(),
             "cargo-port-test",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::WorktreeEntry,
         )
         .is_some(),
@@ -395,7 +395,7 @@ fn discovered_worktree_member_shimmers_parent_self_and_children_but_not_siblings
         app.discovery_name_segments_for_path(
             test_path("~/rust/app_feat").as_path(),
             "app_feat",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::WorktreeEntry,
         )
         .is_some(),
@@ -405,7 +405,7 @@ fn discovered_worktree_member_shimmers_parent_self_and_children_but_not_siblings
         app.discovery_name_segments_for_path(
             test_path("~/rust/app_feat/crates/crate_new").as_path(),
             "crate_new",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::PathOnly,
         )
         .is_some(),
@@ -415,7 +415,7 @@ fn discovered_worktree_member_shimmers_parent_self_and_children_but_not_siblings
         app.discovery_name_segments_for_path(
             test_path("~/rust/app_feat/crates/crate_new/vendor/helper_new").as_path(),
             "helper_new",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::PathOnly,
         )
         .is_some(),
@@ -425,7 +425,7 @@ fn discovered_worktree_member_shimmers_parent_self_and_children_but_not_siblings
         app.discovery_name_segments_for_path(
             test_path("~/rust/app_feat/crates/crate_existing").as_path(),
             "crate_existing",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::PathOnly,
         )
         .is_none(),
@@ -435,7 +435,7 @@ fn discovered_worktree_member_shimmers_parent_self_and_children_but_not_siblings
         app.discovery_name_segments_for_path(
             test_path("~/rust/app").as_path(),
             "app",
-            GitStatus::Clean,
+            Some(GitStatus::Clean),
             DiscoveryRowKind::WorktreeEntry,
         )
         .is_none(),

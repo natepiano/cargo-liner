@@ -160,7 +160,7 @@ pub(super) struct ProjectRow<'a> {
     pub prefix:            &'a str,
     pub name:              &'a str,
     pub name_segments:     Option<Vec<StyledSegment>>,
-    pub git_status:        GitStatus,
+    pub git_status:        Option<GitStatus>,
     pub lint_icon:         &'a str,
     pub lint_style:        Style,
     pub disk:              &'a str,
@@ -429,7 +429,7 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     let ci_text = row
         .ci
         .map_or(String::new(), |conclusion| String::from(conclusion.icon()));
-    let git_path_icon = row.git_status.icon();
+    let git_path_icon = row.git_status.map_or("", GitStatus::icon);
 
     let compact_status_style = |value: &str| {
         if value == IN_SYNC {
@@ -517,21 +517,21 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     }
 }
 
-pub(super) fn project_name_style(git_status: GitStatus) -> Style {
+pub(super) fn project_name_style(git_status: Option<GitStatus>) -> Style {
     match git_status {
-        GitStatus::Modified => Style::default().fg(GIT_MODIFIED_COLOR),
-        GitStatus::Untracked => Style::default().fg(GIT_UNTRACKED_COLOR),
-        GitStatus::Ignored => Style::default().fg(GIT_IGNORED_COLOR),
-        GitStatus::OutsideRepo | GitStatus::Clean => Style::default(),
+        Some(GitStatus::Modified) => Style::default().fg(GIT_MODIFIED_COLOR),
+        Some(GitStatus::Untracked) => Style::default().fg(GIT_UNTRACKED_COLOR),
+        Some(GitStatus::Ignored) => Style::default().fg(GIT_IGNORED_COLOR),
+        Some(GitStatus::Clean) | None => Style::default(),
     }
 }
 
-pub(super) fn project_name_shimmer_style(git_status: GitStatus) -> Style {
+pub(super) fn project_name_shimmer_style(git_status: Option<GitStatus>) -> Style {
     match git_status {
-        GitStatus::Modified => Style::default().fg(GIT_MODIFIED_COLOR),
-        GitStatus::Untracked => Style::default().fg(GIT_UNTRACKED_COLOR),
-        GitStatus::Ignored => Style::default().fg(SECONDARY_TEXT_COLOR),
-        GitStatus::OutsideRepo | GitStatus::Clean => Style::default().fg(DISCOVERY_SHIMMER_COLOR),
+        Some(GitStatus::Modified) => Style::default().fg(GIT_MODIFIED_COLOR),
+        Some(GitStatus::Untracked) => Style::default().fg(GIT_UNTRACKED_COLOR),
+        Some(GitStatus::Ignored) => Style::default().fg(SECONDARY_TEXT_COLOR),
+        Some(GitStatus::Clean) | None => Style::default().fg(DISCOVERY_SHIMMER_COLOR),
     }
 }
 
@@ -764,7 +764,7 @@ mod tests {
             prefix:            "▶",
             name:              "bevy_brp 🌲:2",
             name_segments:     None,
-            git_status:        GitStatus::Clean,
+            git_status:        Some(GitStatus::Clean),
             lint_icon:         crate::constants::LINT_PASSED,
             lint_style:        Style::default(),
             disk:              "36.3 GiB",
@@ -782,7 +782,7 @@ mod tests {
             prefix:            "▶",
             name:              "bevy_mesh_outline_benchmark",
             name_segments:     None,
-            git_status:        GitStatus::Clean,
+            git_status:        Some(GitStatus::Clean),
             lint_icon:         crate::constants::LINT_PASSED,
             lint_style:        Style::default(),
             disk:              "36.3 GiB",
@@ -870,7 +870,7 @@ mod tests {
             prefix:            "▶",
             name:              "demo",
             name_segments:     None,
-            git_status:        GitStatus::Clean,
+            git_status:        Some(GitStatus::Clean),
             lint_icon:         crate::constants::LINT_PASSED,
             lint_style:        Style::default(),
             disk:              "36.3 GiB",
@@ -900,7 +900,7 @@ mod tests {
             prefix:            "  ",
             name:              "demo",
             name_segments:     None,
-            git_status:        GitStatus::Modified,
+            git_status:        Some(GitStatus::Modified),
             lint_icon:         " ",
             lint_style:        Style::default(),
             disk:              "—",
@@ -924,7 +924,7 @@ mod tests {
             prefix:            "  ",
             name:              "demo",
             name_segments:     None,
-            git_status:        GitStatus::Untracked,
+            git_status:        Some(GitStatus::Untracked),
             lint_icon:         " ",
             lint_style:        Style::default(),
             disk:              "—",
@@ -951,7 +951,7 @@ mod tests {
             prefix:            "  ",
             name:              "demo",
             name_segments:     None,
-            git_status:        GitStatus::Clean,
+            git_status:        Some(GitStatus::Clean),
             lint_icon:         " ",
             lint_style:        Style::default(),
             disk:              "—",
@@ -974,7 +974,7 @@ mod tests {
             prefix:            "  ",
             name:              "demo",
             name_segments:     None,
-            git_status:        GitStatus::Ignored,
+            git_status:        Some(GitStatus::Ignored),
             lint_icon:         " ",
             lint_style:        Style::default(),
             disk:              "—",
@@ -1019,11 +1019,11 @@ mod tests {
     #[test]
     fn shimmer_style_never_uses_bold() {
         for state in [
-            GitStatus::Clean,
-            GitStatus::Modified,
-            GitStatus::Untracked,
-            GitStatus::Ignored,
-            GitStatus::OutsideRepo,
+            Some(GitStatus::Clean),
+            Some(GitStatus::Modified),
+            Some(GitStatus::Untracked),
+            Some(GitStatus::Ignored),
+            None,
         ] {
             assert!(
                 !project_name_shimmer_style(state)
@@ -1036,11 +1036,11 @@ mod tests {
     #[test]
     fn clean_shimmer_style_uses_explicit_high_contrast_foreground() {
         assert_eq!(
-            project_name_shimmer_style(GitStatus::Clean).fg,
+            project_name_shimmer_style(Some(GitStatus::Clean)).fg,
             Some(DISCOVERY_SHIMMER_COLOR)
         );
         assert_eq!(
-            project_name_shimmer_style(GitStatus::OutsideRepo).fg,
+            project_name_shimmer_style(None).fg,
             Some(DISCOVERY_SHIMMER_COLOR)
         );
     }

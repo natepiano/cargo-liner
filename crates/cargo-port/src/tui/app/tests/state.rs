@@ -168,7 +168,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            status:              GitStatus::default(),
+            status:              GitStatus::Clean,
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),
             owner:               Some("acme".to_string()),
@@ -211,7 +211,7 @@ fn ci_for_default_branch_prefers_matching_branch_runs() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            status:              GitStatus::default(),
+            status:              GitStatus::Clean,
             origin:              GitOrigin::Clone,
             branch:              Some("main".to_string()),
             owner:               Some("acme".to_string()),
@@ -261,7 +261,7 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            status:              GitStatus::default(),
+            status:              GitStatus::Clean,
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),
             owner:               Some("acme".to_string()),
@@ -605,7 +605,7 @@ fn git_status_suppresses_sync_for_untracked_and_ignored() {
     let mut app = make_app(std::slice::from_ref(&project));
 
     let base_info = || GitInfo {
-        status:              GitStatus::default(),
+        status:              GitStatus::Clean,
         origin:              GitOrigin::Clone,
         branch:              Some("feat/demo".to_string()),
         owner:               None,
@@ -666,7 +666,10 @@ fn background_git_info_updates_rendered_git_status() {
             },
         },
     );
-    assert_eq!(app.git_status_for(project.path()), GitStatus::Modified);
+    assert_eq!(
+        app.git_status_for(project.path()),
+        Some(GitStatus::Modified)
+    );
 
     apply_bg_msg(
         &mut app,
@@ -690,7 +693,7 @@ fn background_git_info_updates_rendered_git_status() {
             },
         },
     );
-    assert_eq!(app.git_status_for(project.path()), GitStatus::Clean);
+    assert_eq!(app.git_status_for(project.path()), Some(GitStatus::Clean));
 }
 
 #[test]
@@ -701,7 +704,7 @@ fn git_sync_shows_ascii_fill_for_local_only_branch() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            status:              GitStatus::default(),
+            status:              GitStatus::Clean,
             origin:              GitOrigin::Local,
             branch:              Some("feat/demo".to_string()),
             owner:               None,
@@ -729,7 +732,7 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            status:              GitStatus::default(),
+            status:              GitStatus::Clean,
             origin:              GitOrigin::Clone,
             branch:              Some("feature/demo".to_string()),
             owner:               Some("natepiano".to_string()),
@@ -757,7 +760,7 @@ fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            status:              GitStatus::default(),
+            status:              GitStatus::Clean,
             origin:              GitOrigin::Clone,
             branch:              Some("enh/various".to_string()),
             owner:               Some("natepiano".to_string()),
@@ -802,7 +805,7 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
     app.handle_git_info(
         project.path(),
         GitInfo {
-            status:              GitStatus::default(),
+            status:              GitStatus::Clean,
             origin:              GitOrigin::Clone,
             branch:              Some("enh/various".to_string()),
             owner:               Some("natepiano".to_string()),
@@ -849,7 +852,7 @@ fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            status:              GitStatus::default(),
+            status:              GitStatus::Clean,
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),
             owner:               None,

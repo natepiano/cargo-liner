@@ -391,7 +391,7 @@ impl App {
         &self,
         row_path: &Path,
         name: &str,
-        git_status: GitStatus,
+        git_status: Option<GitStatus>,
         row_kind: DiscoveryRowKind,
     ) -> Option<Vec<columns::StyledSegment>> {
         if !self.discovery_shimmer_enabled() {
@@ -559,18 +559,17 @@ impl App {
         self.cargo_active_paths.contains(path)
     }
 
-    pub(in super::super) fn git_status_for(&self, path: &Path) -> GitStatus {
-        self.git_info_for(path)
-            .map_or(GitStatus::OutsideRepo, |info| info.status)
+    pub(in super::super) fn git_status_for(&self, path: &Path) -> Option<GitStatus> {
+        self.git_info_for(path).map(|info| info.status)
     }
 
     /// Roll up the worst git path state across all **visible** children of a
     /// `RootItem`.  For worktree groups, checks primary + non-dismissed linked
     /// entries.  For everything else, returns the state for the single path.
-    pub(in super::super) fn git_status_for_item(&self, item: &RootItem) -> GitStatus {
+    pub(in super::super) fn git_status_for_item(&self, item: &RootItem) -> Option<GitStatus> {
         match item {
             RootItem::Worktrees(g) => {
-                let states: Box<dyn Iterator<Item = GitStatus>> = match g {
+                let states: Box<dyn Iterator<Item = Option<GitStatus>>> = match g {
                     WorktreeGroup::Workspaces {
                         primary, linked, ..
                     } => Box::new(
@@ -941,18 +940,15 @@ fn package_parent_row(
 }
 
 /// Return the most severe git path state from an iterator.
-/// Severity: `Modified` > `Untracked` > `Clean` > `Ignored` > `OutsideRepo`.
-fn worst_git_status(states: impl Iterator<Item = GitStatus>) -> GitStatus {
+/// Severity: `Modified` > `Untracked` > `Clean` > `Ignored`.
+fn worst_git_status(states: impl Iterator<Item = Option<GitStatus>>) -> Option<GitStatus> {
     const fn severity(state: GitStatus) -> u8 {
         match state {
             GitStatus::Modified => 4,
             GitStatus::Untracked => 3,
             GitStatus::Clean => 2,
             GitStatus::Ignored => 1,
-            GitStatus::OutsideRepo => 0,
         }
     }
-    states
-        .max_by_key(|s| severity(*s))
-        .unwrap_or(GitStatus::OutsideRepo)
+    states.flatten().max_by_key(|s| severity(*s))
 }

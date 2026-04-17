@@ -158,10 +158,10 @@ enum GitRefreshState {
 /// Classifies a filesystem event by what level of git detection it requires.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GitRefreshKind {
-    /// The event can only change per-project path state
+    /// The event can only change per-project git status
     /// (clean/modified/untracked/ignored). Examples: `.gitignore` edits, git
     /// index updates, `info/exclude` changes.
-    PathStateOnly,
+    GitStatus,
     /// The event may have changed repo-level metadata (branch, remote,
     /// ahead/behind). Examples: `HEAD` changes, ref updates, `packed-refs`
     /// writes.
@@ -536,7 +536,7 @@ fn handle_notify_event(
                 refresh_kind,
                 match refresh_kind {
                     GitRefreshKind::FullMetadata => "fast_git_metadata",
-                    GitRefreshKind::PathStateOnly => "fast_git_status",
+                    GitRefreshKind::GitStatus => "fast_git_status",
                 },
             );
         }
@@ -573,7 +573,7 @@ fn handle_notify_event(
                     refresh_kind,
                     match refresh_kind {
                         GitRefreshKind::FullMetadata => "git_internal",
-                        GitRefreshKind::PathStateOnly => "git_internal_status",
+                        GitRefreshKind::GitStatus => "git_internal_status",
                     },
                 );
             }
@@ -582,8 +582,8 @@ fn handle_notify_event(
         let is_target_event = event_path.starts_with(entry.abs_path.join("target"));
         schedule_disk_refresh(pending_disk, &entry.project_label, now);
         if !is_target_event && let Some(repo_root) = &entry.repo_root {
-            let scope = classify_internal_git_event(event_path, entry)
-                .unwrap_or(GitRefreshKind::PathStateOnly);
+            let scope =
+                classify_internal_git_event(event_path, entry).unwrap_or(GitRefreshKind::GitStatus);
             enqueue_git_refresh(
                 pending_git,
                 repo_root.clone(),
@@ -716,7 +716,7 @@ fn classify_fast_git_event(event_path: &Path, entry: &ProjectEntry) -> Option<Gi
         || event_path == git_dir.join("index")
         || event_path == git_dir.join("info").join("exclude")
     {
-        Some(GitRefreshKind::PathStateOnly)
+        Some(GitRefreshKind::GitStatus)
     } else if event_path == git_dir.join("HEAD")
         || event_path == common_git_dir.join("packed-refs")
         || event_path.starts_with(common_git_dir.join("refs").join("heads"))
@@ -750,7 +750,7 @@ fn classify_internal_git_event(event_path: &Path, entry: &ProjectEntry) -> Optio
         || event_path == git_dir.join("index.lock")
         || event_path == git_dir.join("info").join("exclude")
     {
-        Some(GitRefreshKind::PathStateOnly)
+        Some(GitRefreshKind::GitStatus)
     } else if event_path == git_dir.join("HEAD")
         || event_path == git_dir.join("FETCH_HEAD")
         || event_path == git_dir.join("ORIG_HEAD")
@@ -771,7 +771,7 @@ fn classify_internal_git_event(event_path: &Path, entry: &ProjectEntry) -> Optio
 fn classify_worktree_git_fallback(event_path: &Path, git_dir: &Path) -> Option<GitRefreshKind> {
     let logs_dir = git_dir.join("logs");
     if event_path == git_dir || event_path == logs_dir || event_path.starts_with(&logs_dir) {
-        Some(GitRefreshKind::PathStateOnly)
+        Some(GitRefreshKind::GitStatus)
     } else {
         None
     }
@@ -958,7 +958,7 @@ fn fire_git_updates(
             repo_root.clone(),
             GitRefreshState::Running {
                 dirty_since_start: false,
-                refresh_scope:     GitRefreshKind::PathStateOnly,
+                refresh_scope:     GitRefreshKind::GitStatus,
             },
         );
         spawn_git_refresh(
@@ -1799,7 +1799,7 @@ mod tests {
     }
 
     #[test]
-    fn tracked_file_edit_and_revert_refresh_git_path_state() {
+    fn tracked_file_edit_and_revert_refresh_git_status() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project_dir = tmp.path().join("demo");
         write_tracked_file(&project_dir, "fn main() {}\n");

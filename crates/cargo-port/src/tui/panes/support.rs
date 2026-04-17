@@ -546,7 +546,9 @@ impl DetailField {
                     branch.to_string()
                 }
             },
-            Self::GitPath => data.status.label_with_icon(),
+            Self::GitPath => data
+                .status
+                .map_or_else(String::new, GitStatus::label_with_icon),
             Self::Sync => data.sync.as_deref().unwrap_or("").to_string(),
             Self::VsOrigin => data.vs_origin.as_deref().unwrap_or("").to_string(),
             Self::VsLocal => data.vs_local.as_deref().unwrap_or("").to_string(),
@@ -614,7 +616,7 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     if data.branch.is_some() {
         fields.push(DetailField::Branch);
     }
-    if data.status != GitStatus::OutsideRepo {
+    if data.status.is_some() {
         fields.push(DetailField::GitPath);
     }
     if data.vs_origin.is_some() {
@@ -666,7 +668,7 @@ pub struct PackageData {
 #[derive(Clone)]
 pub struct GitData {
     pub branch:            Option<String>,
-    pub status:            GitStatus,
+    pub status:            Option<GitStatus>,
     pub sync:              Option<String>,
     pub vs_origin:         Option<String>,
     pub vs_local:          Option<String>,
@@ -821,7 +823,7 @@ fn format_downloads(count: u64) -> String {
 
 struct GitDetailFields {
     branch:            Option<String>,
-    path:              GitStatus,
+    path:              Option<GitStatus>,
     sync:              Option<String>,
     vs_origin:         Option<String>,
     vs_local:          Option<String>,

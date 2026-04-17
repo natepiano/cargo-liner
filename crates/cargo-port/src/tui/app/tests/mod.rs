@@ -500,7 +500,7 @@ fn make_ci_run(run_id: u64, conclusion: Conclusion) -> CiRun {
 
 fn make_git_info(url: Option<&str>) -> GitInfo {
     GitInfo {
-        status:              GitStatus::default(),
+        status:              GitStatus::Clean,
         origin:              GitOrigin::Clone,
         branch:              Some("main".to_string()),
         owner:               Some("natepiano".to_string()),
