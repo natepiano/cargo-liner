@@ -11,16 +11,16 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
 use super::PaneId;
-use super::PaneTitleCount;
 use super::package::RenderStyles;
-use super::pane_title;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
 use crate::tui::app::App;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::TITLE_COLOR;
+use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneTitleCount;
 use crate::tui::render;
 
 /// Fixed numeric column width for language stats.
@@ -167,7 +167,7 @@ pub fn render_lang_panel_standalone(
     let lang_focus = app.pane_focus_state(PaneId::Lang);
     let cursor = matches!(lang_focus, crate::tui::pane::PaneFocusState::Active)
         .then(|| app.pane_manager().pane(PaneId::Lang).pos());
-    let title = pane_title(
+    let title = pane::pane_title(
         "Languages",
         &PaneTitleCount::Single {
             len: lang_count,

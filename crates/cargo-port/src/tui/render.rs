@@ -37,12 +37,12 @@ use super::constants::STATUS_BAR_COLOR;
 use super::constants::SUCCESS_COLOR;
 use super::constants::TITLE_COLOR;
 use super::interaction::UiSurface::Content;
+use super::pane;
+use super::pane::PaneTitleCount;
+use super::pane::PaneTitleGroup;
 use super::panes;
-use super::panes::CPU_PANE_WIDTH;
 use super::panes::LayoutCache;
 use super::panes::PaneId;
-use super::panes::PaneTitleCount;
-use super::panes::PaneTitleGroup;
 use super::shortcuts::Shortcut;
 use super::shortcuts::ShortcutState;
 use crate::ci::Conclusion;
@@ -213,32 +213,23 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     let left_width = u16::try_from(app.cached_fit_widths().total_width() + BLOCK_BORDER_WIDTH)
         .unwrap_or(u16::MAX);
 
-    let output_visible = !app.example_output().is_empty();
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(tiled_row_constraints(app, outer_layout[0].height))
-        .split(outer_layout[0]);
-    let main_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(left_width), Constraint::Min(20)])
-        .split(outer_layout[0]);
+    let bottom_row = if app.example_output().is_empty() {
+        panes::BottomRow::Diagnostics
+    } else {
+        panes::BottomRow::Output
+    };
+    let core_count = app
+        .pane_data()
+        .cpu
+        .as_ref()
+        .map_or(1, |snapshot| snapshot.cores.len());
+    let tiled = panes::resolve_layout(outer_layout[0], left_width, core_count, bottom_row);
 
-    app.layout_cache_mut().pane_regions.clear();
-    for placement in panes::derived_layout(output_visible).placements {
-        let area = pane_area(
-            rows.as_ref(),
-            main_cols.as_ref(),
-            placement.pane,
-            output_visible,
-        );
-        render_tiled_pane(frame, app, placement.pane, area);
-        if placement.pane != PaneId::ProjectList {
-            app.layout_cache_mut()
-                .pane_regions
-                .push((placement.pane, area));
-        }
+    for resolved in tiled.panes() {
+        render_tiled_pane(frame, app, resolved.pane, resolved.area);
     }
-    sync_layout_pane_hitboxes(app, output_visible);
+    sync_layout_pane_hitboxes(app, &tiled);
+    app.layout_cache_mut().tiled = tiled;
 
     render_status_bar(frame, app, outer_layout[1]);
     let toast_result = super::toasts::render_toasts(
@@ -301,7 +292,7 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 fn pane_render_styles() -> panes::RenderStyles {
     panes::RenderStyles {
         readonly_label: Style::default().fg(LABEL_COLOR),
-        chrome:         panes::default_pane_chrome(),
+        chrome:         pane::default_pane_chrome(),
     }
 }
 
@@ -338,55 +329,9 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
     }
 }
 
-fn pane_area(rows: &[Rect], cols: &[Rect], pane: PaneId, output_visible: bool) -> Rect {
-    let project_col = cols[0];
-    let right_col = cols[1];
-    let top_right_area = Rect::new(right_col.x, rows[0].y, right_col.width, rows[0].height);
-    let middle_right_area = Rect::new(right_col.x, rows[1].y, right_col.width, rows[1].height);
-    let top_right = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(panes::constraints_for_sizes(&[
-            panes::size_spec(PaneId::Package, CPU_PANE_WIDTH).width,
-            panes::size_spec(PaneId::Git, CPU_PANE_WIDTH).width,
-        ]))
-        .split(top_right_area);
-    let cpu_width = cpu_column_width(right_col.width);
-    let middle_right = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(panes::constraints_for_sizes(&[
-            panes::size_spec(PaneId::Lang, CPU_PANE_WIDTH).width,
-            panes::PaneAxisSize::Fixed(cpu_width),
-            panes::size_spec(PaneId::Targets, CPU_PANE_WIDTH).width,
-        ]))
-        .split(middle_right_area);
-
-    match pane {
-        PaneId::ProjectList => Rect::new(
-            project_col.x,
-            rows[0].y,
-            project_col.width,
-            rows[1]
-                .y
-                .saturating_add(rows[1].height)
-                .saturating_sub(rows[0].y),
-        ),
-        PaneId::Package => top_right[0],
-        PaneId::Git => top_right[1],
-        PaneId::Lang => middle_right[0],
-        PaneId::Cpu => middle_right[1],
-        PaneId::Targets => middle_right[2],
-        PaneId::Lints => rows[2].intersection(project_col),
-        PaneId::CiRuns => rows[2].intersection(right_col),
-        PaneId::Output if output_visible => rows[2],
-        PaneId::Output | PaneId::Toasts | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {
-            Rect::ZERO
-        },
-    }
-}
-
-fn sync_layout_pane_hitboxes(app: &mut App, output_visible: bool) {
-    for placement in panes::derived_layout(output_visible).placements {
-        register_hitbox_for_pane(app, placement.pane);
+fn sync_layout_pane_hitboxes(app: &mut App, layout: &pane::ResolvedPaneLayout<PaneId>) {
+    for resolved in layout.panes() {
+        register_hitbox_for_pane(app, resolved.pane);
     }
 }
 
@@ -406,32 +351,6 @@ fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
         super::interaction::register_pane_row_hitboxes(app, id, &pane, Content);
     }
 }
-
-fn tiled_row_constraints(app: &App, total_height: u16) -> [Constraint; 3] {
-    let core_count = app
-        .pane_data()
-        .cpu
-        .as_ref()
-        .map_or(1, |snapshot| snapshot.cores.len());
-    let desired_middle = panes::cpu_required_pane_height(core_count);
-    let minimum_outer_rows = 8;
-
-    if total_height >= desired_middle.saturating_add(minimum_outer_rows) {
-        [
-            Constraint::Fill(35),
-            Constraint::Length(desired_middle),
-            Constraint::Fill(25),
-        ]
-    } else {
-        [
-            Constraint::Percentage(35),
-            Constraint::Percentage(40),
-            Constraint::Percentage(25),
-        ]
-    }
-}
-
-const fn cpu_column_width(_right_width: u16) -> u16 { CPU_PANE_WIDTH }
 
 pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let (mut items, header, summary_line, row_width) = {
@@ -453,12 +372,12 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     let total_project_rows = items.len();
 
     let title = project_panel_title_with_counts(app, area.width.saturating_sub(2).into());
-    let block = panes::default_pane_chrome().block(title, app.is_focused(PaneId::ProjectList));
+    let block = pane::default_pane_chrome().block(title, app.is_focused(PaneId::ProjectList));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
         clear_project_list_surface(app);
-        app.layout_cache_mut().project_list = Rect::ZERO;
+        app.layout_cache_mut().project_list_body = Rect::ZERO;
         return;
     }
 
@@ -475,7 +394,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     };
     if content_area.height == 0 {
         clear_project_list_surface(app);
-        app.layout_cache_mut().project_list = Rect::ZERO;
+        app.layout_cache_mut().project_list_body = Rect::ZERO;
         return;
     }
 
@@ -510,7 +429,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
         .with_selected(Some(app.pane_manager().pane(PaneId::ProjectList).pos()));
     *list_state.offset_mut() = app.pane_manager().pane(PaneId::ProjectList).scroll_offset();
     frame.render_stateful_widget(project_list, list_area, &mut list_state);
-    app.layout_cache_mut().project_list = list_area;
+    app.layout_cache_mut().project_list_body = list_area;
     app.pane_manager_mut()
         .pane_mut(PaneId::ProjectList)
         .set_scroll_offset(list_state.offset());
@@ -631,7 +550,7 @@ fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
         |n| format!(" Running: {n} "),
     );
 
-    let block = panes::default_pane_chrome()
+    let block = pane::default_pane_chrome()
         .with_inactive_border(Style::default().fg(LABEL_COLOR))
         .block(title, app.is_focused(PaneId::Output));
 
@@ -1565,41 +1484,12 @@ fn render_tree_item(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
-    use std::time::Instant;
-
-    use ratatui::layout::Constraint;
-    use ratatui::layout::Direction;
-    use ratatui::layout::Layout;
     use ratatui::layout::Rect;
 
-    use super::CPU_PANE_WIDTH;
-    use super::cpu_column_width;
-    use super::pane_area;
     use super::should_pin_project_summary;
-    use crate::config::CargoPortConfig;
-    use crate::http::HttpClient;
-    use crate::scan::BackgroundMsg;
-    use crate::tui::app::App;
-    use crate::tui::cpu::CpuSnapshot;
+    use crate::tui::panes;
+    use crate::tui::panes::BottomRow;
     use crate::tui::panes::PaneId;
-
-    fn test_http_client() -> HttpClient {
-        static TEST_RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-        let rt = TEST_RT.get_or_init(|| {
-            tokio::runtime::Runtime::new().unwrap_or_else(|_| std::process::abort())
-        });
-        HttpClient::new(rt.handle().clone()).unwrap_or_else(|| std::process::abort())
-    }
-
-    fn test_app_with_cpu(core_count: usize) -> App {
-        let mut cfg = CargoPortConfig::default();
-        cfg.tui.include_dirs = vec!["/tmp/test".to_string()];
-        let (bg_tx, bg_rx) = mpsc::channel::<BackgroundMsg>();
-        let mut app = App::new(&[], bg_tx, bg_rx, &cfg, test_http_client(), Instant::now());
-        app.pane_data_mut().cpu = Some(CpuSnapshot::placeholder(core_count));
-        app
-    }
 
     #[test]
     fn project_summary_stays_inline_when_everything_fits() {
@@ -1617,48 +1507,43 @@ mod tests {
     }
 
     #[test]
-    fn cpu_column_stays_narrow_relative_to_right_side() {
-        assert_eq!(cpu_column_width(40), CPU_PANE_WIDTH);
-        assert_eq!(cpu_column_width(90), CPU_PANE_WIDTH);
-        assert_eq!(cpu_column_width(150), CPU_PANE_WIDTH);
+    fn resolved_layout_keeps_cpu_column_fixed() {
+        let narrow = panes::resolve_layout(Rect::new(0, 0, 80, 30), 30, 12, BottomRow::Diagnostics);
+        let wide = panes::resolve_layout(Rect::new(0, 0, 150, 30), 30, 12, BottomRow::Diagnostics);
+
+        assert_eq!(narrow.area(PaneId::Cpu).width, super::panes::CPU_PANE_WIDTH);
+        assert_eq!(wide.area(PaneId::Cpu).width, super::panes::CPU_PANE_WIDTH);
     }
 
     #[test]
     fn top_row_has_no_dead_space_above_targets() {
-        let app = test_app_with_cpu(12);
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(super::tiled_row_constraints(&app, 30))
-            .split(Rect::new(0, 0, 120, 30));
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(30), Constraint::Min(20)])
-            .split(Rect::new(0, 0, 120, 30));
+        let layout =
+            panes::resolve_layout(Rect::new(0, 0, 120, 30), 30, 12, BottomRow::Diagnostics);
+        let package = layout.area(PaneId::Package);
+        let git = layout.area(PaneId::Git);
+        let targets = layout.area(PaneId::Targets);
+        let right_col = Rect::new(30, 0, 90, 30);
 
-        let package = pane_area(rows.as_ref(), cols.as_ref(), PaneId::Package, false);
-        let git = pane_area(rows.as_ref(), cols.as_ref(), PaneId::Git, false);
-        let targets = pane_area(rows.as_ref(), cols.as_ref(), PaneId::Targets, false);
-
-        assert_eq!(package.x, cols[1].x);
+        assert_eq!(package.x, right_col.x);
         assert_eq!(
             git.x.saturating_add(git.width),
-            cols[1].x.saturating_add(cols[1].width)
+            right_col.x.saturating_add(right_col.width)
         );
-        assert_eq!(package.width.saturating_add(git.width), cols[1].width);
+        assert_eq!(package.width.saturating_add(git.width), right_col.width);
         assert_eq!(
             targets.x.saturating_add(targets.width),
-            cols[1].x.saturating_add(cols[1].width)
+            right_col.x.saturating_add(right_col.width)
         );
     }
 
     #[test]
     fn middle_row_expands_to_fit_all_cpu_rows_when_height_allows() {
-        let app = test_app_with_cpu(12);
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(super::tiled_row_constraints(&app, 40))
-            .split(Rect::new(0, 0, 120, 40));
+        let layout =
+            panes::resolve_layout(Rect::new(0, 0, 120, 40), 30, 12, BottomRow::Diagnostics);
 
-        assert_eq!(rows[1].height, super::panes::cpu_required_pane_height(12));
+        assert_eq!(
+            layout.area(PaneId::Cpu).height,
+            super::panes::cpu_required_pane_height(12)
+        );
     }
 }

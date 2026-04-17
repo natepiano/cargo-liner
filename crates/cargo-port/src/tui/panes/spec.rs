@@ -1,6 +1,6 @@
-use super::layout::PaneAxisSize;
-use super::layout::PaneSizeSpec;
+use crate::tui::pane::PaneAxisSize;
 use crate::tui::pane::PaneKey;
+use crate::tui::pane::PaneSizeSpec;
 
 #[derive(Default, PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub(in super::super) enum PaneId {

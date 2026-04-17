@@ -9,12 +9,8 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use super::PaneId;
-use super::PaneTitleCount;
-use super::default_pane_chrome;
-use super::empty_pane_block;
 use super::package;
 use super::package::RenderStyles;
-use super::pane_title;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_CI_UNPUBLISHED_BRANCH;
 use crate::tui::app::App;
@@ -26,8 +22,10 @@ use crate::tui::constants::TITLE_COLOR;
 use crate::tui::detail;
 use crate::tui::detail::DetailField;
 use crate::tui::detail::GitData;
+use crate::tui::pane;
 use crate::tui::pane::Pane;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneTitleCount;
 
 struct GitRenderCtx<'a> {
     data:   &'a GitData,
@@ -170,7 +168,7 @@ fn append_worktree_lines(lines: &mut Vec<Line<'static>>, worktree_names: &[Strin
 fn git_panel_title(data: &GitData) -> String {
     match data.branch.as_deref() {
         Some(branch) if !branch.is_empty() => format!(" Git - {branch} "),
-        _ => pane_title("Git", &PaneTitleCount::None),
+        _ => pane::pane_title("Git", &PaneTitleCount::None),
     }
 }
 
@@ -178,12 +176,12 @@ fn git_panel_title(data: &GitData) -> String {
 pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let styles = RenderStyles {
         readonly_label: Style::default().fg(LABEL_COLOR),
-        chrome:         default_pane_chrome(),
+        chrome:         pane::default_pane_chrome(),
     };
 
     let Some(git_data) = app.pane_data().git.clone() else {
         app.pane_manager_mut().pane_mut(PaneId::Git).clear_surface();
-        let empty = empty_pane_block(pane_title("Git", &PaneTitleCount::None));
+        let empty = pane::empty_pane_block(pane::pane_title("Git", &PaneTitleCount::None));
         frame.render_widget(empty, area);
         return;
     };
@@ -191,7 +189,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let git = detail::git_fields_from_data(&git_data);
     if git.is_empty() {
         app.pane_manager_mut().pane_mut(PaneId::Git).clear_surface();
-        let empty_git = empty_pane_block(" Not a git repo ");
+        let empty_git = pane::empty_pane_block(" Not a git repo ");
         frame.render_widget(empty_git, area);
         return;
     }

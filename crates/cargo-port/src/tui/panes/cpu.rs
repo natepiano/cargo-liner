@@ -11,9 +11,6 @@ use ratatui::widgets::Paragraph;
 
 use super::PaneId;
 use super::package::RenderStyles;
-use super::pane_title;
-use super::render_rules;
-use super::rules::PaneRule;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
@@ -21,7 +18,10 @@ use crate::tui::constants::ERROR_COLOR;
 use crate::tui::cpu;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface::Content;
+use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneRule;
+use crate::tui::pane::PaneTitleCount;
 
 const CPU_BAR_WIDTH: usize = 10;
 pub(super) const CPU_CONTENT_WIDTH: u16 = 17;
@@ -194,9 +194,9 @@ fn cpu_panel_title(core_count: usize, cursor: Option<usize>) -> String {
     if let Some(pos) = cursor
         && (1..=core_count).contains(&pos)
     {
-        return pane_title(
+        return pane::pane_title(
             "CPU",
-            &super::PaneTitleCount::Single {
+            &PaneTitleCount::Single {
                 len:    core_count,
                 cursor: Some(pos - 1),
             },
@@ -235,7 +235,7 @@ fn render_cpu_dividers(
     layout: &CpuPanelLayout,
     border_style: Style,
 ) {
-    render_rules(
+    pane::render_rules(
         frame,
         &[
             PaneRule::Horizontal {

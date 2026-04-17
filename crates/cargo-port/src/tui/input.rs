@@ -230,7 +230,7 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
     let up = scroll_up ^ app.invert_scroll().is_inverted();
     let pos = Position::new(column, row);
 
-    if app.layout_cache().project_list.contains(pos) {
+    if app.layout_cache().project_list_body.contains(pos) {
         if up {
             app.move_up();
         } else {
@@ -239,8 +239,14 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
         return;
     }
 
-    let pane_regions = app.layout_cache().pane_regions.clone();
-    for &(pane_id, pane_rect) in &pane_regions {
+    let pane_regions = app
+        .layout_cache()
+        .tiled
+        .panes()
+        .iter()
+        .map(|resolved| (resolved.pane, resolved.area))
+        .collect::<Vec<_>>();
+    for (pane_id, pane_rect) in pane_regions {
         if pane_id == PaneId::ProjectList || !pane_rect.contains(pos) {
             continue;
         }
@@ -298,15 +304,21 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    let project_list = app.layout_cache().project_list;
-    let pane_regions = app.layout_cache().pane_regions.clone();
+    let project_list = app.layout_cache().project_list_body;
+    let pane_regions = app
+        .layout_cache()
+        .tiled
+        .panes()
+        .iter()
+        .map(|resolved| (resolved.pane, resolved.area))
+        .collect::<Vec<_>>();
 
     if project_list.contains(pos) {
         app.focus_pane(PaneId::ProjectList);
         return;
     }
 
-    for &(pane_id, pane_rect) in &pane_regions {
+    for (pane_id, pane_rect) in pane_regions {
         if pane_id != PaneId::ProjectList && pane_rect.contains(pos) {
             app.focus_pane(pane_id);
             return;

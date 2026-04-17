@@ -1,12 +1,9 @@
 use ratatui::Frame;
-use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-
-use super::layout::PaneAxisSize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in super::super) enum PaneRule {
@@ -33,16 +30,6 @@ pub(in super::super) fn render_rules(frame: &mut Frame, rules: &[PaneRule], styl
             PaneRule::Symbol { area, glyph } => render_symbol_rule(frame, area, style, glyph),
         }
     }
-}
-
-pub(in super::super) fn constraints_for_sizes(sizes: &[PaneAxisSize]) -> Vec<Constraint> {
-    sizes
-        .iter()
-        .map(|size| match size {
-            super::layout::PaneAxisSize::Fixed(length) => Constraint::Length(*length),
-            super::layout::PaneAxisSize::Fill(weight) => Constraint::Fill(*weight),
-        })
-        .collect()
 }
 
 fn render_horizontal_rule(frame: &mut Frame, area: Rect, style: Style, connector_x: Option<u16>) {

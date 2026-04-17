@@ -17,15 +17,7 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
-use super::PaneChrome;
 use super::PaneId;
-use super::PaneTitleCount;
-use super::PaneTitleGroup;
-use super::default_pane_chrome;
-use super::empty_pane_block;
-use super::prefixed_pane_title;
-use super::render_rules;
-use super::rules::PaneRule;
 use crate::constants::NO_LINT_RUNS;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
@@ -38,8 +30,13 @@ use crate::tui::detail;
 use crate::tui::detail::DetailField;
 use crate::tui::detail::PackageData;
 use crate::tui::detail::TargetsData;
+use crate::tui::pane;
 use crate::tui::pane::Pane;
+use crate::tui::pane::PaneChrome;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneRule;
+use crate::tui::pane::PaneTitleCount;
+use crate::tui::pane::PaneTitleGroup;
 use crate::tui::render;
 
 /// Shared style constants for pane rendering.
@@ -221,7 +218,7 @@ pub fn render_package_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     if let Some(pkg_data) = app.pane_data().package.clone() {
         let styles = RenderStyles {
             readonly_label: Style::default().fg(LABEL_COLOR),
-            chrome:         default_pane_chrome(),
+            chrome:         pane::default_pane_chrome(),
         };
 
         render_project_panel(frame, app, &pkg_data, &styles, area);
@@ -246,7 +243,7 @@ pub fn render_empty_targets_panel(frame: &mut Frame, app: &mut App, area: Rect) 
     app.pane_manager_mut()
         .pane_mut(PaneId::Targets)
         .clear_surface();
-    let empty_targets = empty_pane_block(" No Targets ");
+    let empty_targets = pane::empty_pane_block(" No Targets ");
     frame.render_widget(empty_targets, area);
 }
 
@@ -342,7 +339,7 @@ fn render_project_description_section(
     };
     let stats_connector_x = project_stats_connector_x(context.pkg_data, lower_area);
     if separator_height > 0 {
-        render_rules(
+        pane::render_rules(
             frame,
             &[PaneRule::Horizontal {
                 area:        Rect {
@@ -364,7 +361,7 @@ fn render_project_description_section(
             && area.width >= 3
             && area.height > 0
         {
-            render_rules(
+            pane::render_rules(
                 frame,
                 &[PaneRule::Symbol {
                     area:  Rect {
@@ -441,7 +438,7 @@ fn render_stats_column(
     digit_width: u16,
     border_style: Style,
 ) {
-    render_rules(
+    pane::render_rules(
         frame,
         &[PaneRule::Vertical {
             area: Rect {
@@ -554,7 +551,7 @@ pub fn render_targets_panel(
                 cursor: section_cursor(bin_count + ex_count, bench_count),
             });
         }
-        prefixed_pane_title("Targets", &PaneTitleCount::Grouped(groups))
+        pane::prefixed_pane_title("Targets", &PaneTitleCount::Grouped(groups))
     };
 
     let targets_block = styles

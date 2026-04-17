@@ -13,10 +13,6 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
 use super::PaneId;
-use super::PaneTitleCount;
-use super::default_pane_chrome;
-use super::empty_pane_block;
-use super::pane_title;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::tui::LINT_SPINNER;
@@ -31,8 +27,10 @@ use crate::tui::detail;
 use crate::tui::detail::LintsData;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface::Content;
+use crate::tui::pane;
 use crate::tui::pane::Pane;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneTitleCount;
 
 fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
     if data.runs.is_empty() {
@@ -43,7 +41,7 @@ fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
         };
         return format!(" {msg} ");
     }
-    pane_title(
+    pane::pane_title(
         "Lint Runs",
         &PaneTitleCount::Single {
             len:    data.runs.len(),
@@ -54,9 +52,9 @@ fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
 
 fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'static> {
     if has_runs {
-        default_pane_chrome().block(title, focused)
+        pane::default_pane_chrome().block(title, focused)
     } else {
-        empty_pane_block(title)
+        pane::empty_pane_block(title)
     }
 }
 

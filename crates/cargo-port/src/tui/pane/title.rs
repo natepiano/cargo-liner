@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::tui::pane;
+use super::scroll_indicator;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in super::super) struct PaneTitleGroup<'a> {
@@ -24,7 +24,7 @@ impl PaneTitleCount<'_> {
         if let Some(pos) = cursor
             && pos < len
         {
-            pane::scroll_indicator(pos, len)
+            scroll_indicator(pos, len)
         } else {
             len.to_string()
         }

@@ -510,7 +510,7 @@ mod tests {
     fn focus_gained(app: &mut App) { input::handle_event(app, &Event::FocusGained); }
 
     fn row_body_point(app: &App, row_index: usize) -> (u16, u16) {
-        let area = app.layout_cache().project_list;
+        let area = app.layout_cache().project_list_body;
         (
             area.x.saturating_add(1),
             area.y
@@ -519,7 +519,7 @@ mod tests {
     }
 
     fn row_dismiss_point(app: &App, row_index: usize) -> (u16, u16) {
-        let area = app.layout_cache().project_list;
+        let area = app.layout_cache().project_list_body;
         (
             area.x.saturating_add(area.width.saturating_sub(2)),
             area.y

@@ -10,10 +10,6 @@ use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
 use super::PaneId;
-use super::PaneTitleCount;
-use super::default_pane_chrome;
-use super::empty_pane_block;
-use super::pane_title;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
@@ -25,7 +21,9 @@ use crate::tui::detail;
 use crate::tui::detail::CiData;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface;
+use crate::tui::pane;
 use crate::tui::pane::PaneSelectionState;
+use crate::tui::pane::PaneTitleCount;
 use crate::tui::render;
 use crate::tui::render::CiColumn;
 
@@ -229,7 +227,7 @@ pub(in super::super) fn ci_table_shows_durations(
 }
 
 fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
-    let title = pane_title(
+    let title = pane::pane_title(
         "CI Runs",
         &PaneTitleCount::Single {
             len:    data.runs.len(),
@@ -268,7 +266,7 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused_pos = ci_focused.then(|| app.pane_manager().pane(PaneId::CiRuns).pos());
     let title = ci_panel_title(&ci_data, focused_pos);
 
-    let ci_block = default_pane_chrome().block(title, ci_focused);
+    let ci_block = pane::default_pane_chrome().block(title, ci_focused);
 
     let inner = ci_block.inner(area);
     app.pane_manager_mut()
@@ -334,7 +332,7 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_empty_ci_block(frame: &mut Frame, title: &str, area: Rect) {
-    let block = empty_pane_block(title);
+    let block = pane::empty_pane_block(title);
     frame.render_widget(block, area);
 }
 

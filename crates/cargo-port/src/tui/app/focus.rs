@@ -240,14 +240,18 @@ impl App {
     }
 
     pub(in super::super) fn tabbable_panes(&self) -> Vec<PaneId> {
-        panes::tab_order(!self.example_output.is_empty())
-            .into_iter()
-            .filter(|pane| self.is_pane_tabbable(*pane))
-            .chain(
-                self.is_pane_tabbable(PaneId::Toasts)
-                    .then_some(PaneId::Toasts),
-            )
-            .collect()
+        panes::tab_order(if self.example_output.is_empty() {
+            panes::BottomRow::Diagnostics
+        } else {
+            panes::BottomRow::Output
+        })
+        .into_iter()
+        .filter(|pane| self.is_pane_tabbable(*pane))
+        .chain(
+            self.is_pane_tabbable(PaneId::Toasts)
+                .then_some(PaneId::Toasts),
+        )
+        .collect()
     }
 
     pub(in super::super) fn focus_next_pane(&mut self) {
