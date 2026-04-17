@@ -133,47 +133,26 @@ struct ProjectEntry {
     common_git_dir: Option<AbsolutePath>,
 }
 
-enum DiskState {
-    Pending {
-        debounce_deadline: Instant,
-        max_deadline:      Instant,
-    },
-    Running {
-        dirty_since_start: bool,
-    },
-}
-
-enum GitRefreshState {
-    Pending {
-        debounce_deadline: Instant,
-        max_deadline:      Instant,
-        refresh_scope:     GitRefreshKind,
-    },
-    Running {
-        dirty_since_start: bool,
-        refresh_scope:     GitRefreshKind,
-    },
-}
-
-/// Classifies a filesystem event by what level of git detection it requires.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GitRefreshKind {
-    /// The event can only change per-project git status
-    /// (clean/modified/untracked/ignored). Examples: `.gitignore` edits, git
-    /// index updates, `info/exclude` changes.
-    GitStatus,
-    /// The event may have changed repo-level metadata (branch, remote,
-    /// ahead/behind). Examples: `HEAD` changes, ref updates, `packed-refs`
-    /// writes.
-    FullMetadata,
+enum WatchState {
+    Idle,
+    Pending {
+        debounce_deadline: Instant,
+        max_deadline:      Instant,
+    },
+    Running,
+    RunningDirty,
 }
 
-impl GitRefreshKind {
-    /// Widen scope: if either side is `FullMetadata`, the result is
-    /// `FullMetadata`.
-    const fn widen(&mut self, other: Self) {
-        if matches!(other, Self::FullMetadata) {
-            *self = Self::FullMetadata;
+impl WatchState {
+    fn pending(now: Instant, immediate: bool) -> Self {
+        Self::Pending {
+            debounce_deadline: if immediate {
+                now
+            } else {
+                now + DEBOUNCE_DURATION
+            },
+            max_deadline:      now + MAX_WAIT,
         }
     }
 }
@@ -181,8 +160,8 @@ impl GitRefreshKind {
 struct WatcherLoopState {
     projects:             HashMap<AbsolutePath, ProjectEntry>,
     project_parents:      HashSet<AbsolutePath>,
-    pending_disk:         HashMap<String, DiskState>,
-    pending_git:          HashMap<AbsolutePath, GitRefreshState>,
+    pending_disk:         HashMap<String, WatchState>,
+    pending_git:          HashMap<AbsolutePath, WatchState>,
     pending_new:          HashMap<AbsolutePath, Instant>,
     discovered:           HashSet<AbsolutePath>,
     watched_git_metadata: HashSet<AbsolutePath>,
@@ -450,8 +429,8 @@ fn drain_notify_events(
 fn replay_buffered_events(
     events: &[notify::Event],
     ctx: &WatcherDispatchContext<'_>,
-    pending_disk: &mut HashMap<String, DiskState>,
-    pending_git: &mut HashMap<AbsolutePath, GitRefreshState>,
+    pending_disk: &mut HashMap<String, WatchState>,
+    pending_git: &mut HashMap<AbsolutePath, WatchState>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
 ) {
     for event in events {
@@ -473,15 +452,15 @@ fn replay_buffered_events(
 fn drain_completed_refreshes(
     disk_done_rx: &mpsc::Receiver<String>,
     git_done_rx: &mpsc::Receiver<AbsolutePath>,
-    pending_disk: &mut HashMap<String, DiskState>,
-    pending_git: &mut HashMap<AbsolutePath, GitRefreshState>,
+    pending_disk: &mut HashMap<String, WatchState>,
+    pending_git: &mut HashMap<AbsolutePath, WatchState>,
 ) {
     while let Ok(project_path) = disk_done_rx.try_recv() {
         handle_disk_completion(pending_disk, &project_path);
     }
 
     while let Ok(repo_root) = git_done_rx.try_recv() {
-        handle_git_completion(pending_git, repo_root);
+        handle_git_completion(pending_git, &repo_root);
     }
 }
 
@@ -509,36 +488,25 @@ fn handle_notify_event(
     ctx: &EventContext<'_>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     lint_runtime: Option<&RuntimeHandle>,
-    pending_disk: &mut HashMap<String, DiskState>,
-    pending_git: &mut HashMap<AbsolutePath, GitRefreshState>,
+    pending_disk: &mut HashMap<String, WatchState>,
+    pending_git: &mut HashMap<AbsolutePath, WatchState>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
 ) {
     let now = Instant::now();
 
     let mut matched_fast_git = false;
     for entry in ctx.projects.values() {
-        if let Some(refresh_kind) = classify_fast_git_event(event_path, entry)
+        if is_fast_git_refresh_event(event_path, entry)
             && let Some(repo_root) = &entry.repo_root
         {
             matched_fast_git = true;
             tracing::info!(
                 repo_root = %repo_root.display(),
                 event_path = %event_path.display(),
-                refresh_scope = ?refresh_kind,
-                "watcher_fast_git_metadata_event"
+                "watcher_fast_git_event"
             );
             emit_root_git_info_refresh(bg_tx, ctx.projects, repo_root);
-            enqueue_git_refresh(
-                pending_git,
-                repo_root.clone(),
-                now,
-                false,
-                refresh_kind,
-                match refresh_kind {
-                    GitRefreshKind::FullMetadata => "fast_git_metadata",
-                    GitRefreshKind::GitStatus => "fast_git_status",
-                },
-            );
+            enqueue_git_refresh(pending_git, repo_root.clone(), now, false, "fast_git");
         }
     }
     if matched_fast_git {
@@ -563,35 +531,16 @@ fn handle_notify_event(
         }
         if is_internal_git_path(event_path, entry) {
             if let Some(repo_root) = &entry.repo_root
-                && let Some(refresh_kind) = classify_internal_git_event(event_path, entry)
+                && is_internal_git_refresh_event(event_path, entry)
             {
-                enqueue_git_refresh(
-                    pending_git,
-                    repo_root.clone(),
-                    now,
-                    false,
-                    refresh_kind,
-                    match refresh_kind {
-                        GitRefreshKind::FullMetadata => "git_internal",
-                        GitRefreshKind::GitStatus => "git_internal_status",
-                    },
-                );
+                enqueue_git_refresh(pending_git, repo_root.clone(), now, false, "git_internal");
             }
             return;
         }
         let is_target_event = event_path.starts_with(entry.abs_path.join("target"));
         schedule_disk_refresh(pending_disk, &entry.project_label, now);
         if !is_target_event && let Some(repo_root) = &entry.repo_root {
-            let scope =
-                classify_internal_git_event(event_path, entry).unwrap_or(GitRefreshKind::GitStatus);
-            enqueue_git_refresh(
-                pending_git,
-                repo_root.clone(),
-                now,
-                false,
-                scope,
-                "project_event",
-            );
+            enqueue_git_refresh(pending_git, repo_root.clone(), now, false, "project_event");
         }
         return;
     }
@@ -623,8 +572,8 @@ fn handle_event(
     event_path: &Path,
     ctx: &EventContext<'_>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
-    pending_disk: &mut HashMap<String, DiskState>,
-    pending_git: &mut HashMap<AbsolutePath, GitRefreshState>,
+    pending_disk: &mut HashMap<String, WatchState>,
+    pending_git: &mut HashMap<AbsolutePath, WatchState>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
 ) {
     handle_notify_event(
@@ -640,91 +589,158 @@ fn handle_event(
 }
 
 fn schedule_disk_refresh(
-    pending_disk: &mut HashMap<String, DiskState>,
+    pending_disk: &mut HashMap<String, WatchState>,
     project_label: &str,
     now: Instant,
 ) {
-    match pending_disk.get_mut(project_label) {
-        Some(DiskState::Pending {
+    match pending_disk
+        .entry(project_label.to_string())
+        .or_insert(WatchState::Idle)
+    {
+        state @ WatchState::Idle => {
+            *state = WatchState::pending(now, false);
+        },
+        WatchState::Pending {
             debounce_deadline, ..
-        }) => {
+        } => {
             *debounce_deadline = now + DEBOUNCE_DURATION;
         },
-        Some(DiskState::Running { dirty_since_start }) => {
-            *dirty_since_start = true;
-        },
-        None => {
-            pending_disk.insert(
-                project_label.to_string(),
-                DiskState::Pending {
-                    debounce_deadline: now + DEBOUNCE_DURATION,
-                    max_deadline:      now + MAX_WAIT,
-                },
-            );
-        },
+        state @ WatchState::Running => *state = WatchState::RunningDirty,
+        WatchState::RunningDirty => {},
     }
 }
 
-fn handle_disk_completion(pending_disk: &mut HashMap<String, DiskState>, project_label: &str) {
+fn handle_disk_completion(pending_disk: &mut HashMap<String, WatchState>, project_label: &str) {
     let now = Instant::now();
-    let Some(state) = pending_disk.remove(project_label) else {
+    let Some(state) = pending_disk.get_mut(project_label) else {
         return;
     };
-    if let DiskState::Running { dirty_since_start } = state
-        && dirty_since_start
-    {
-        pending_disk.insert(
-            project_label.to_string(),
-            DiskState::Pending {
-                debounce_deadline: now + DEBOUNCE_DURATION,
-                max_deadline:      now + MAX_WAIT,
-            },
-        );
-    }
+    *state = match *state {
+        WatchState::Running => WatchState::Idle,
+        WatchState::RunningDirty => WatchState::pending(now, false),
+        WatchState::Idle | WatchState::Pending { .. } => return,
+    };
 }
 
 fn handle_git_completion(
-    pending_git: &mut HashMap<AbsolutePath, GitRefreshState>,
-    repo_root: AbsolutePath,
+    pending_git: &mut HashMap<AbsolutePath, WatchState>,
+    repo_root: &AbsolutePath,
 ) {
     let now = Instant::now();
-    let Some(state) = pending_git.remove(&repo_root) else {
+    let Some(state) = pending_git.get_mut(repo_root) else {
         return;
     };
-    if let GitRefreshState::Running {
-        dirty_since_start,
-        refresh_scope,
-    } = state
-        && dirty_since_start
-    {
-        pending_git.insert(
-            repo_root,
-            GitRefreshState::Pending {
-                debounce_deadline: now + DEBOUNCE_DURATION,
-                max_deadline: now + MAX_WAIT,
-                refresh_scope,
-            },
-        );
-    }
+    *state = match *state {
+        WatchState::Running => WatchState::Idle,
+        WatchState::RunningDirty => WatchState::pending(now, false),
+        WatchState::Idle | WatchState::Pending { .. } => return,
+    };
 }
 
-fn classify_fast_git_event(event_path: &Path, entry: &ProjectEntry) -> Option<GitRefreshKind> {
-    let repo_root = entry.repo_root.as_deref()?;
-    let git_dir = entry.git_dir.as_deref()?;
-    let common_git_dir = entry.common_git_dir.as_deref()?;
-    if event_path == repo_root.join(".gitignore")
+fn is_fast_git_refresh_event(event_path: &Path, entry: &ProjectEntry) -> bool {
+    let Some(repo_root) = entry.repo_root.as_deref() else {
+        return false;
+    };
+    let Some(git_dir) = entry.git_dir.as_deref() else {
+        return false;
+    };
+    let Some(common_git_dir) = entry.common_git_dir.as_deref() else {
+        return false;
+    };
+    event_path == repo_root.join(".gitignore")
         || event_path == git_dir.join("index")
         || event_path == git_dir.join("info").join("exclude")
-    {
-        Some(GitRefreshKind::GitStatus)
-    } else if event_path == git_dir.join("HEAD")
+        || event_path == git_dir.join("HEAD")
         || event_path == common_git_dir.join("packed-refs")
         || event_path.starts_with(common_git_dir.join("refs").join("heads"))
         || event_path.starts_with(common_git_dir.join("refs").join("remotes"))
-    {
-        Some(GitRefreshKind::FullMetadata)
-    } else {
-        classify_worktree_git_fallback(event_path, git_dir)
+        || is_worktree_git_fallback_event(event_path, git_dir)
+}
+
+fn is_internal_git_refresh_event(event_path: &Path, entry: &ProjectEntry) -> bool {
+    let Some(git_dir) = entry.git_dir.as_deref() else {
+        return false;
+    };
+    let Some(common_git_dir) = entry.common_git_dir.as_deref() else {
+        return false;
+    };
+    let Some(repo_root) = entry.repo_root.as_deref() else {
+        return false;
+    };
+    event_path == repo_root.join(".gitignore")
+        || event_path == git_dir.join("index")
+        || event_path == git_dir.join("index.lock")
+        || event_path == git_dir.join("info").join("exclude")
+        || event_path == git_dir.join("HEAD")
+        || event_path == git_dir.join("FETCH_HEAD")
+        || event_path == git_dir.join("ORIG_HEAD")
+        || event_path == git_dir.join("config")
+        || event_path == git_dir.join("packed-refs")
+        || event_path.starts_with(git_dir.join("refs").join("heads"))
+        || event_path.starts_with(git_dir.join("refs").join("remotes"))
+        || event_path == common_git_dir.join("packed-refs")
+        || event_path.starts_with(common_git_dir.join("refs").join("heads"))
+        || event_path.starts_with(common_git_dir.join("refs").join("remotes"))
+        || is_worktree_git_fallback_event(event_path, git_dir)
+}
+
+fn is_worktree_git_fallback_event(event_path: &Path, git_dir: &Path) -> bool {
+    let logs_dir = git_dir.join("logs");
+    event_path == git_dir || event_path == logs_dir || event_path.starts_with(&logs_dir)
+}
+
+fn enqueue_git_refresh(
+    pending_git: &mut HashMap<AbsolutePath, WatchState>,
+    repo_root: AbsolutePath,
+    now: Instant,
+    immediate: bool,
+    cause: &str,
+) {
+    let pending_count = pending_git
+        .iter()
+        .filter(|(path, _)| path.as_path() != repo_root.as_path())
+        .filter(|(_, state)| matches!(state, WatchState::Pending { .. }))
+        .count()
+        + usize::from(!matches!(
+            pending_git.get(&repo_root),
+            Some(WatchState::Pending { .. })
+        ));
+    tracing::info!(
+        repo_root = %repo_root.display(),
+        immediate,
+        cause,
+        pending_git = pending_count,
+        "watcher_enqueue_git_refresh"
+    );
+    match pending_git.entry(repo_root).or_insert(WatchState::Idle) {
+        state @ WatchState::Idle => *state = WatchState::pending(now, immediate),
+        WatchState::Pending {
+            debounce_deadline, ..
+        } => {
+            *debounce_deadline = if immediate {
+                now
+            } else {
+                now + DEBOUNCE_DURATION
+            };
+        },
+        state @ WatchState::Running => *state = WatchState::RunningDirty,
+        WatchState::RunningDirty => {},
+    }
+}
+
+fn is_ready_to_launch(state: &WatchState, now: Instant) -> bool {
+    matches!(
+        state,
+        WatchState::Pending {
+            debounce_deadline,
+            max_deadline,
+        } if now >= *debounce_deadline || now >= *max_deadline
+    )
+}
+
+const fn mark_running(state: &mut WatchState) {
+    if matches!(state, WatchState::Pending { .. }) {
+        *state = WatchState::Running;
     }
 }
 
@@ -739,42 +755,6 @@ fn is_internal_git_path(event_path: &Path, entry: &ProjectEntry) -> bool {
     git_dir.is_some_and(|d| event_path.starts_with(d))
         || common_git_dir.is_some_and(|d| event_path.starts_with(d))
         || repo_root.is_some_and(|r| event_path.starts_with(r.join(".git")))
-}
-
-fn classify_internal_git_event(event_path: &Path, entry: &ProjectEntry) -> Option<GitRefreshKind> {
-    let git_dir = entry.git_dir.as_deref()?;
-    let common_git_dir = entry.common_git_dir.as_deref()?;
-    let repo_root = entry.repo_root.as_deref()?;
-    if event_path == repo_root.join(".gitignore")
-        || event_path == git_dir.join("index")
-        || event_path == git_dir.join("index.lock")
-        || event_path == git_dir.join("info").join("exclude")
-    {
-        Some(GitRefreshKind::GitStatus)
-    } else if event_path == git_dir.join("HEAD")
-        || event_path == git_dir.join("FETCH_HEAD")
-        || event_path == git_dir.join("ORIG_HEAD")
-        || event_path == git_dir.join("config")
-        || event_path == git_dir.join("packed-refs")
-        || event_path.starts_with(git_dir.join("refs").join("heads"))
-        || event_path.starts_with(git_dir.join("refs").join("remotes"))
-        || event_path == common_git_dir.join("packed-refs")
-        || event_path.starts_with(common_git_dir.join("refs").join("heads"))
-        || event_path.starts_with(common_git_dir.join("refs").join("remotes"))
-    {
-        Some(GitRefreshKind::FullMetadata)
-    } else {
-        classify_worktree_git_fallback(event_path, git_dir)
-    }
-}
-
-fn classify_worktree_git_fallback(event_path: &Path, git_dir: &Path) -> Option<GitRefreshKind> {
-    let logs_dir = git_dir.join("logs");
-    if event_path == git_dir || event_path == logs_dir || event_path.starts_with(&logs_dir) {
-        Some(GitRefreshKind::GitStatus)
-    } else {
-        None
-    }
 }
 
 fn is_target_metadata_event(event_path: &Path, project_root: &Path) -> bool {
@@ -828,68 +808,6 @@ fn spawn_project_refresh_after(
     });
 }
 
-fn enqueue_git_refresh(
-    pending_git: &mut HashMap<AbsolutePath, GitRefreshState>,
-    repo_root: AbsolutePath,
-    now: Instant,
-    immediate: bool,
-    refresh_scope: GitRefreshKind,
-    cause: &str,
-) {
-    let pending_count = pending_git
-        .iter()
-        .filter(|(path, _)| path.as_path() != repo_root.as_path())
-        .filter(|(_, state)| matches!(state, GitRefreshState::Pending { .. }))
-        .count()
-        + usize::from(!matches!(
-            pending_git.get(&repo_root),
-            Some(GitRefreshState::Pending { .. })
-        ));
-    tracing::info!(
-        repo_root = %repo_root.display(),
-        immediate,
-        refresh_scope = ?refresh_scope,
-        cause,
-        pending_git = pending_count,
-        "watcher_enqueue_git_refresh"
-    );
-    match pending_git.get_mut(&repo_root) {
-        Some(GitRefreshState::Pending {
-            debounce_deadline,
-            refresh_scope: pending_scope,
-            ..
-        }) => {
-            *debounce_deadline = if immediate {
-                now
-            } else {
-                now + DEBOUNCE_DURATION
-            };
-            pending_scope.widen(refresh_scope);
-        },
-        Some(GitRefreshState::Running {
-            dirty_since_start,
-            refresh_scope: pending_scope,
-        }) => {
-            *dirty_since_start = true;
-            pending_scope.widen(refresh_scope);
-        },
-        None => {
-            pending_git.insert(
-                repo_root,
-                GitRefreshState::Pending {
-                    debounce_deadline: if immediate {
-                        now
-                    } else {
-                        now + DEBOUNCE_DURATION
-                    },
-                    max_deadline: now + MAX_WAIT,
-                    refresh_scope,
-                },
-            );
-        },
-    }
-}
-
 fn emit_root_git_info_refresh(
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     projects: &HashMap<AbsolutePath, ProjectEntry>,
@@ -924,24 +842,16 @@ fn fire_git_updates(
     git_done_tx: &mpsc::Sender<AbsolutePath>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     projects: &HashMap<AbsolutePath, ProjectEntry>,
-    pending_git: &mut HashMap<AbsolutePath, GitRefreshState>,
+    pending_git: &mut HashMap<AbsolutePath, WatchState>,
 ) {
     let now = Instant::now();
-    let ready: Vec<(AbsolutePath, GitRefreshKind)> = pending_git
+    let ready: Vec<AbsolutePath> = pending_git
         .iter()
-        .filter_map(|(repo_root, state)| match state {
-            GitRefreshState::Pending {
-                debounce_deadline,
-                max_deadline,
-                refresh_scope,
-            } if now >= *debounce_deadline || now >= *max_deadline => {
-                Some((repo_root.clone(), *refresh_scope))
-            },
-            GitRefreshState::Pending { .. } | GitRefreshState::Running { .. } => None,
-        })
+        .filter(|(_, state)| is_ready_to_launch(state, now))
+        .map(|(repo_root, _)| repo_root.clone())
         .collect();
 
-    for (repo_root, refresh_scope) in ready {
+    for repo_root in ready {
         let affected: Vec<(String, String)> = projects
             .values()
             .filter(|entry| entry.repo_root.as_deref() == Some(repo_root.as_path()))
@@ -951,16 +861,14 @@ fn fire_git_updates(
             })
             .collect();
         if affected.is_empty() {
-            pending_git.remove(&repo_root);
+            if let Some(state) = pending_git.get_mut(&repo_root) {
+                *state = WatchState::Idle;
+            }
             continue;
         }
-        pending_git.insert(
-            repo_root.clone(),
-            GitRefreshState::Running {
-                dirty_since_start: false,
-                refresh_scope:     GitRefreshKind::GitStatus,
-            },
-        );
+        if let Some(state) = pending_git.get_mut(&repo_root) {
+            mark_running(state);
+        }
         spawn_git_refresh(
             handle,
             git_limit,
@@ -968,7 +876,6 @@ fn fire_git_updates(
             bg_tx.clone(),
             repo_root,
             affected,
-            refresh_scope,
         );
     }
 }
@@ -980,7 +887,6 @@ fn spawn_git_refresh(
     bg_tx: mpsc::Sender<BackgroundMsg>,
     repo_root: AbsolutePath,
     affected: Vec<(String, String)>,
-    refresh_scope: GitRefreshKind,
 ) {
     let handle = handle.clone();
     let git_limit = Arc::clone(git_limit);
@@ -1016,7 +922,6 @@ fn spawn_git_refresh(
             elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
             repo_root = %repo_root.display(),
             affected_rows = affected.len(),
-            refresh_scope = ?refresh_scope,
             "watcher_git_refresh"
         );
         let _ = git_done_tx.send(repo_root);
@@ -1029,30 +934,25 @@ fn fire_disk_updates(
     disk_done_tx: &mpsc::Sender<String>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     projects: &HashMap<AbsolutePath, ProjectEntry>,
-    pending_disk: &mut HashMap<String, DiskState>,
+    pending_disk: &mut HashMap<String, WatchState>,
 ) {
     let now = Instant::now();
     let ready: Vec<String> = pending_disk
         .iter()
-        .filter_map(|(key, state)| match state {
-            DiskState::Pending {
-                debounce_deadline,
-                max_deadline,
-            } if now >= *debounce_deadline || now >= *max_deadline => Some(key.clone()),
-            DiskState::Pending { .. } | DiskState::Running { .. } => None,
-        })
+        .filter(|(_, state)| is_ready_to_launch(state, now))
+        .map(|(key, _)| key.clone())
         .collect();
 
     for project_label in ready {
-        let Some(state) = pending_disk.get_mut(&project_label) else {
-            continue;
-        };
-        *state = DiskState::Running {
-            dirty_since_start: false,
-        };
         let Some(entry) = projects.values().find(|e| e.project_label == project_label) else {
+            if let Some(state) = pending_disk.get_mut(&project_label) {
+                *state = WatchState::Idle;
+            }
             continue;
         };
+        if let Some(state) = pending_disk.get_mut(&project_label) {
+            mark_running(state);
+        }
         spawn_disk_update(
             handle,
             disk_limit,
@@ -1586,10 +1486,10 @@ mod tests {
         )
     }
 
-    fn assert_pending_disk(states: &HashMap<String, DiskState>, project_path: &str) {
+    fn assert_pending_disk(states: &HashMap<String, WatchState>, project_path: &str) {
         assert!(matches!(
             states.get(project_path),
-            Some(DiskState::Pending { .. })
+            Some(WatchState::Pending { .. })
         ));
     }
 
@@ -1818,8 +1718,8 @@ mod tests {
         let run_refresh =
             |event_path: &Path,
              expected: GitStatus,
-             pending_disk: &mut HashMap<String, DiskState>,
-             pending_git: &mut HashMap<AbsolutePath, GitRefreshState>,
+             pending_disk: &mut HashMap<String, WatchState>,
+             pending_git: &mut HashMap<AbsolutePath, WatchState>,
              pending_new: &mut HashMap<AbsolutePath, Instant>| {
                 handle_event(
                     event_path,
@@ -1832,7 +1732,7 @@ mod tests {
                 let past = Instant::now()
                     .checked_sub(Duration::from_secs(1))
                     .expect("1s subtraction should not underflow");
-                let Some(GitRefreshState::Pending {
+                let Some(WatchState::Pending {
                     debounce_deadline,
                     max_deadline,
                     ..
@@ -1869,7 +1769,7 @@ mod tests {
                 let repo_root = git_done_rx
                     .recv_timeout(Duration::from_secs(1))
                     .expect("git refresh completion");
-                handle_git_completion(pending_git, repo_root);
+                handle_git_completion(pending_git, &repo_root);
             };
 
         let mut pending_disk = HashMap::new();
@@ -2198,12 +2098,9 @@ edition = "2024"
         assert!(
             matches!(
                 pending_git.get(wt_root.as_path()),
-                Some(GitRefreshState::Pending {
-                    refresh_scope: GitRefreshKind::FullMetadata,
-                    ..
-                })
+                Some(WatchState::Pending { .. })
             ),
-            "shared branch ref writes should enqueue a full git refresh for linked worktrees"
+            "shared branch ref writes should enqueue a git refresh for linked worktrees"
         );
     }
 
@@ -2353,12 +2250,9 @@ edition = "2024"
         assert!(
             matches!(
                 pending_git.get(wt_root.as_path()),
-                Some(GitRefreshState::Pending {
-                    refresh_scope: GitRefreshKind::FullMetadata,
-                    ..
-                })
+                Some(WatchState::Pending { .. })
             ),
-            "buffered common-git-dir events should still trigger the full metadata path"
+            "buffered common-git-dir events should still trigger a git refresh"
         );
         assert!(pending_new.is_empty());
     }
@@ -2884,7 +2778,7 @@ edition = "2024"
             .expect("1s subtraction should not underflow");
         let mut pending = HashMap::from([(
             "~/my_project".to_string(),
-            DiskState::Pending {
+            WatchState::Pending {
                 debounce_deadline: past,
                 max_deadline:      past,
             },
@@ -2919,7 +2813,7 @@ edition = "2024"
         assert!(!got_git, "disk updates should no longer emit GitInfo");
         assert!(matches!(
             pending.get("~/my_project"),
-            Some(DiskState::Running { .. })
+            Some(WatchState::Running)
         ));
     }
 
@@ -2947,7 +2841,7 @@ edition = "2024"
             .expect("1s subtraction should not underflow");
         let mut pending = HashMap::from([(
             "~/no_git".to_string(),
-            DiskState::Pending {
+            WatchState::Pending {
                 debounce_deadline: past,
                 max_deadline:      past,
             },
@@ -2982,12 +2876,7 @@ edition = "2024"
 
     #[test]
     fn disk_completion_requeues_once_when_project_changed_while_running() {
-        let mut pending = HashMap::from([(
-            "~/rust/bevy".to_string(),
-            DiskState::Running {
-                dirty_since_start: true,
-            },
-        )]);
+        let mut pending = HashMap::from([("~/rust/bevy".to_string(), WatchState::RunningDirty)]);
 
         handle_disk_completion(&mut pending, "~/rust/bevy");
 
@@ -3207,7 +3096,7 @@ edition = "2024"
             .expect("1s subtraction should not underflow");
         pending_disk.insert(
             "~/app_test".to_string(),
-            DiskState::Pending {
+            WatchState::Pending {
                 debounce_deadline: past,
                 max_deadline:      past,
             },
@@ -3287,7 +3176,7 @@ edition = "2024"
             .expect("1s subtraction should not underflow");
         pending_disk.insert(
             "~/obsidian_knife_test".to_string(),
-            DiskState::Pending {
+            WatchState::Pending {
                 debounce_deadline: past,
                 max_deadline:      past,
             },
