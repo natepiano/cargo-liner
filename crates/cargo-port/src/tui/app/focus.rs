@@ -6,7 +6,8 @@ use super::types::FinderMode;
 use super::types::KeymapMode;
 use super::types::SelectionSync;
 use super::types::SettingsMode;
-use crate::tui::detail::TargetsData;
+use crate::tui::panes::PaneBehavior;
+use crate::tui::panes::PaneManager;
 use crate::tui::settings::SettingOption;
 use crate::tui::settings::SettingOption::IncludeDirs;
 use crate::tui::shortcuts::InputContext;
@@ -128,7 +129,7 @@ impl App {
     }
 
     /// Derive the current input context from app state.
-    pub(in super::super) const fn input_context(&self) -> InputContext {
+    pub(in super::super) fn input_context(&self) -> InputContext {
         if self.ui_modes.keymap.is_awaiting_key() && self.inline_error.is_some() {
             InputContext::KeymapConflict
         } else if self.ui_modes.keymap.is_awaiting_key() {
@@ -142,16 +143,15 @@ impl App {
         } else if self.ui_modes.settings.is_visible() {
             InputContext::Settings
         } else {
-            match self.focused_pane {
-                PaneId::Package | PaneId::Lang | PaneId::Git => InputContext::DetailFields,
-                PaneId::Targets => InputContext::DetailTargets,
-                PaneId::Lints => InputContext::Lints,
-                PaneId::CiRuns => InputContext::CiRuns,
-                PaneId::Output => InputContext::Output,
-                PaneId::Toasts => InputContext::Toasts,
-                PaneId::Settings => InputContext::Settings,
-                PaneId::Finder => InputContext::Finder,
-                PaneId::Keymap | PaneId::ProjectList => InputContext::ProjectList,
+            match PaneManager::behavior(self.focused_pane) {
+                PaneBehavior::ProjectList => InputContext::ProjectList,
+                PaneBehavior::DetailFields => InputContext::DetailFields,
+                PaneBehavior::DetailTargets | PaneBehavior::Cpu => InputContext::DetailTargets,
+                PaneBehavior::Lints => InputContext::Lints,
+                PaneBehavior::CiRuns => InputContext::CiRuns,
+                PaneBehavior::Output => InputContext::Output,
+                PaneBehavior::Toasts => InputContext::Toasts,
+                PaneBehavior::Overlay => InputContext::ProjectList,
             }
         }
     }
@@ -199,26 +199,30 @@ impl App {
     }
 
     pub(in super::super) fn is_pane_tabbable(&self, pane: PaneId) -> bool {
-        match pane {
-            PaneId::ProjectList => true,
-            PaneId::Package => self.selected_project_path().is_some(),
-            PaneId::Lang => self.selected_project_path().is_some_and(|path| {
-                self.projects
-                    .at_path(path)
-                    .and_then(|p| p.language_stats.as_ref())
-                    .is_some_and(|ls| !ls.entries.is_empty())
-            }),
-            PaneId::Git => self
-                .pane_manager
-                .git_data
-                .as_ref()
-                .is_some_and(|g| g.url.is_some()),
-            PaneId::Targets => self
+        match PaneManager::behavior(pane) {
+            PaneBehavior::ProjectList => true,
+            PaneBehavior::DetailFields => match pane {
+                PaneId::Package => self.selected_project_path().is_some(),
+                PaneId::Lang => self.selected_project_path().is_some_and(|path| {
+                    self.projects
+                        .at_path(path)
+                        .and_then(|p| p.language_stats.as_ref())
+                        .is_some_and(|ls| !ls.entries.is_empty())
+                }),
+                PaneId::Git => self
+                    .pane_manager
+                    .git_data
+                    .as_ref()
+                    .is_some_and(|g| g.url.is_some()),
+                _ => false,
+            },
+            PaneBehavior::Cpu => self.pane_manager.cpu_data.is_some(),
+            PaneBehavior::DetailTargets => self
                 .pane_manager
                 .targets_data
                 .as_ref()
-                .is_some_and(TargetsData::has_targets),
-            PaneId::Lints => {
+                .is_some_and(crate::tui::detail::TargetsData::has_targets),
+            PaneBehavior::Lints => {
                 self.example_output.is_empty()
                     && self
                         .pane_manager
@@ -226,7 +230,7 @@ impl App {
                         .as_ref()
                         .is_some_and(crate::tui::detail::LintsData::has_runs)
             },
-            PaneId::CiRuns => {
+            PaneBehavior::CiRuns => {
                 self.example_output.is_empty()
                     && self
                         .pane_manager
@@ -234,9 +238,9 @@ impl App {
                         .as_ref()
                         .is_some_and(crate::tui::detail::CiData::has_runs)
             },
-            PaneId::Output => !self.example_output.is_empty(),
-            PaneId::Toasts => !self.active_toasts().is_empty(),
-            PaneId::Settings | PaneId::Finder | PaneId::Keymap => false,
+            PaneBehavior::Output => !self.example_output.is_empty(),
+            PaneBehavior::Toasts => !self.active_toasts().is_empty(),
+            PaneBehavior::Overlay => false,
         }
     }
 

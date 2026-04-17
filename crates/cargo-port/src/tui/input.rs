@@ -15,6 +15,8 @@ use super::app::ConfirmAction;
 use super::app::PendingClean;
 use super::detail;
 use super::finder;
+use super::panes::PaneBehavior;
+use super::panes::PaneManager;
 use super::settings;
 use super::shortcuts::InputContext;
 use super::types::PaneId;
@@ -127,18 +129,16 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         return;
     }
 
-    match app.focused_pane() {
-        PaneId::Package | PaneId::Lang | PaneId::Git | PaneId::Targets => {
+    match PaneManager::behavior(app.focused_pane()) {
+        PaneBehavior::DetailFields | PaneBehavior::DetailTargets | PaneBehavior::Cpu => {
             detail::handle_detail_key(app, &normalized);
         },
-        PaneId::Lints => detail::handle_lints_key(app, &normalized),
-        PaneId::CiRuns => detail::handle_ci_runs_key(app, &normalized),
-        PaneId::Toasts => handle_toast_key(app, &normalized),
-        PaneId::ProjectList
-        | PaneId::Output
-        | PaneId::Settings
-        | PaneId::Finder
-        | PaneId::Keymap => handle_normal_key(app, &normalized),
+        PaneBehavior::Lints => detail::handle_lints_key(app, &normalized),
+        PaneBehavior::CiRuns => detail::handle_ci_runs_key(app, &normalized),
+        PaneBehavior::Toasts => handle_toast_key(app, &normalized),
+        PaneBehavior::ProjectList | PaneBehavior::Output | PaneBehavior::Overlay => {
+            handle_normal_key(app, &normalized)
+        },
     }
 }
 
@@ -155,13 +155,15 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
     }
 
     let code = if raw.modifiers == KeyModifiers::NONE && app.navigation_keys().uses_vim() {
-        match app.focused_pane() {
-            PaneId::Package | PaneId::Git | PaneId::Targets | PaneId::CiRuns | PaneId::Toasts => {
-                match raw.code {
-                    KeyCode::Char('h' | 'k') => KeyCode::Up,
-                    KeyCode::Char('j' | 'l') => KeyCode::Down,
-                    _ => raw.code,
-                }
+        match PaneManager::behavior(app.focused_pane()) {
+            PaneBehavior::DetailFields
+            | PaneBehavior::DetailTargets
+            | PaneBehavior::Cpu
+            | PaneBehavior::CiRuns
+            | PaneBehavior::Toasts => match raw.code {
+                KeyCode::Char('h' | 'k') => KeyCode::Up,
+                KeyCode::Char('j' | 'l') => KeyCode::Down,
+                _ => raw.code,
             },
             _ => match raw.code {
                 KeyCode::Char('h') => KeyCode::Left,
@@ -177,13 +179,15 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
 
     // In list panes, bare left/right map to up/down.
     let code = if raw.modifiers == KeyModifiers::NONE {
-        match app.focused_pane() {
-            PaneId::Package | PaneId::Git | PaneId::Targets | PaneId::CiRuns | PaneId::Toasts => {
-                match code {
-                    KeyCode::Left => KeyCode::Up,
-                    KeyCode::Right => KeyCode::Down,
-                    _ => code,
-                }
+        match PaneManager::behavior(app.focused_pane()) {
+            PaneBehavior::DetailFields
+            | PaneBehavior::DetailTargets
+            | PaneBehavior::Cpu
+            | PaneBehavior::CiRuns
+            | PaneBehavior::Toasts => match code {
+                KeyCode::Left => KeyCode::Up,
+                KeyCode::Right => KeyCode::Down,
+                _ => code,
             },
             _ => code,
         }
@@ -255,6 +259,7 @@ const fn pane_label(pane: PaneId) -> &'static str {
         PaneId::ProjectList => "project_list",
         PaneId::Package => "package",
         PaneId::Lang => "lang",
+        PaneId::Cpu => "cpu",
         PaneId::Git => "git",
         PaneId::Targets => "targets",
         PaneId::Lints => "lints",

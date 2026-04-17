@@ -112,6 +112,16 @@ fn tabbable_panes_follow_canonical_order() {
     app.ensure_detail_cached();
 
     let expected_without_toasts = app.tabbable_panes();
+    assert!(expected_without_toasts.contains(&PaneId::Cpu));
+    let cpu_index = expected_without_toasts
+        .iter()
+        .position(|pane| *pane == PaneId::Cpu)
+        .unwrap_or_else(|| std::process::abort());
+    let targets_index = expected_without_toasts
+        .iter()
+        .position(|pane| *pane == PaneId::Targets)
+        .unwrap_or_else(|| std::process::abort());
+    assert!(cpu_index < targets_index);
 
     app.show_timed_toast("Settings", "Updated");
     let expected_with_toasts = app.tabbable_panes();
@@ -134,6 +144,20 @@ fn tabbable_panes_follow_canonical_order() {
         app.focused_pane,
         expected_with_toasts[expected_with_toasts.len() - 2]
     );
+}
+
+#[test]
+fn cpu_pane_selection_persists_across_project_changes() {
+    let project_a = make_project(Some("a"), "~/a");
+    let project_b = make_project(Some("b"), "~/b");
+    let mut app = make_app(&[project_a, project_b]);
+    app.focus_pane(PaneId::Cpu);
+    app.pane_manager.pane_mut(PaneId::Cpu).set_pos(1);
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(1);
+
+    app.sync_selected_project();
+
+    assert_eq!(app.pane_manager.pane(PaneId::Cpu).pos(), 1);
 }
 
 #[test]

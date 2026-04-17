@@ -105,6 +105,7 @@ fn external_config_reload_applies_valid_changes() {
     let mut cfg = CargoPortConfig::default();
     cfg.tui.editor = "helix".to_string();
     cfg.tui.ci_run_count = 9;
+    cfg.cpu.poll_ms = 1500;
     cfg.mouse.invert_scroll = ScrollDirection::Normal;
     std::fs::write(
         &path,
@@ -118,6 +119,7 @@ fn external_config_reload_applies_valid_changes() {
 
     assert_eq!(app.editor(), "helix");
     assert_eq!(app.ci_run_count(), 9);
+    assert_eq!(app.current_config.cpu.poll_ms, 1500);
     assert_eq!(app.invert_scroll(), ScrollDirection::Normal);
     assert_eq!(app.current_config.tui.editor, "helix");
     assert_eq!(app.current_config.tui.ci_run_count, 9);

@@ -283,6 +283,9 @@ impl App {
         if !self.discovery_shimmer_enabled() {
             self.discovery_shimmers.clear();
         }
+        if actions.refresh_cpu {
+            self.reset_cpu_placeholder();
+        }
 
         if actions.refresh_lint_runtime {
             self.refresh_lint_runtime_from_config(cfg);

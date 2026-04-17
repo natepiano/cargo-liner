@@ -40,6 +40,9 @@ pub(super) enum SettingOption {
     StatusFlashSecs,
     TaskLingerSecs,
     DiscoveryShimmerSecs,
+    CpuPollMs,
+    CpuGreenMaxPercent,
+    CpuYellowMaxPercent,
     LintsEnabled,
     LintOnDiscovery,
     LintProjects,
@@ -183,9 +186,20 @@ fn format_discovery_shimmer_secs(cfg: &config::CargoPortConfig) -> String {
     format_secs(cfg.tui.discovery_shimmer_secs)
 }
 
+fn format_cpu_poll_ms(cfg: &config::CargoPortConfig) -> String { cfg.cpu.poll_ms.to_string() }
+
+fn format_cpu_green_max(cfg: &config::CargoPortConfig) -> String {
+    cfg.cpu.green_max_percent.to_string()
+}
+
+fn format_cpu_yellow_max(cfg: &config::CargoPortConfig) -> String {
+    cfg.cpu.yellow_max_percent.to_string()
+}
+
 fn settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
     let mut rows = general_settings_rows(app, cfg);
     rows.extend(toast_settings_rows(cfg));
+    rows.extend(cpu_settings_rows(cfg));
     rows.extend(lint_settings_rows(app, cfg));
     rows
 }
@@ -278,6 +292,27 @@ fn toast_settings_rows(cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
             Some(SettingOption::DiscoveryShimmerSecs),
             "Discovery shimmer secs",
             format_discovery_shimmer_secs(cfg),
+        ),
+    ]
+}
+
+fn cpu_settings_rows(cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
+    vec![
+        (None, "CPU", String::new()),
+        (
+            Some(SettingOption::CpuPollMs),
+            "Poll ms",
+            format_cpu_poll_ms(cfg),
+        ),
+        (
+            Some(SettingOption::CpuGreenMaxPercent),
+            "Green max %",
+            format_cpu_green_max(cfg),
+        ),
+        (
+            Some(SettingOption::CpuYellowMaxPercent),
+            "Yellow max %",
+            format_cpu_yellow_max(cfg),
         ),
     ]
 }
@@ -869,6 +904,9 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
             | SettingOption::StatusFlashSecs
             | SettingOption::TaskLingerSecs
             | SettingOption::DiscoveryShimmerSecs
+            | SettingOption::CpuPollMs
+            | SettingOption::CpuGreenMaxPercent
+            | SettingOption::CpuYellowMaxPercent
             | SettingOption::LintProjects
             | SettingOption::LintCommands
             | SettingOption::LintCacheSize,
@@ -925,6 +963,15 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
         },
         Some(SettingOption::DiscoveryShimmerSecs) => {
             begin_settings_edit(app, format_discovery_shimmer_secs(app.current_config()));
+        },
+        Some(SettingOption::CpuPollMs) => {
+            begin_settings_edit(app, format_cpu_poll_ms(app.current_config()));
+        },
+        Some(SettingOption::CpuGreenMaxPercent) => {
+            begin_settings_edit(app, format_cpu_green_max(app.current_config()));
+        },
+        Some(SettingOption::CpuYellowMaxPercent) => {
+            begin_settings_edit(app, format_cpu_yellow_max(app.current_config()));
         },
         Some(SettingOption::IncludeNonRust) => {
             let mut cfg = app.current_config().clone();
@@ -1044,6 +1091,27 @@ fn apply_general_settings_edit(
         SettingOption::DiscoveryShimmerSecs => {
             if !save_number_setting(app, value, |cfg, secs| {
                 cfg.tui.discovery_shimmer_secs = secs;
+            }) {
+                return Ok(true);
+            }
+        },
+        SettingOption::CpuPollMs => {
+            if !save_u32_setting(app, value, |cfg, poll_ms| {
+                cfg.cpu.poll_ms = u64::from(poll_ms)
+            }) {
+                return Ok(true);
+            }
+        },
+        SettingOption::CpuGreenMaxPercent => {
+            if !save_u32_setting(app, value, |cfg, percent| {
+                cfg.cpu.green_max_percent = percent.min(100) as u8;
+            }) {
+                return Ok(true);
+            }
+        },
+        SettingOption::CpuYellowMaxPercent => {
+            if !save_u32_setting(app, value, |cfg, percent| {
+                cfg.cpu.yellow_max_percent = percent.min(100) as u8;
             }) {
                 return Ok(true);
             }
@@ -1179,22 +1247,34 @@ mod tests {
         );
         assert_eq!(
             SettingOption::from_index(13),
-            Some(SettingOption::LintsEnabled)
+            Some(SettingOption::CpuPollMs)
         );
         assert_eq!(
             SettingOption::from_index(14),
-            Some(SettingOption::LintOnDiscovery)
+            Some(SettingOption::CpuGreenMaxPercent)
         );
         assert_eq!(
             SettingOption::from_index(15),
-            Some(SettingOption::LintProjects)
+            Some(SettingOption::CpuYellowMaxPercent)
         );
         assert_eq!(
             SettingOption::from_index(16),
-            Some(SettingOption::LintCommands)
+            Some(SettingOption::LintsEnabled)
         );
         assert_eq!(
             SettingOption::from_index(17),
+            Some(SettingOption::LintOnDiscovery)
+        );
+        assert_eq!(
+            SettingOption::from_index(18),
+            Some(SettingOption::LintProjects)
+        );
+        assert_eq!(
+            SettingOption::from_index(19),
+            Some(SettingOption::LintCommands)
+        );
+        assert_eq!(
+            SettingOption::from_index(20),
             Some(SettingOption::LintCacheSize)
         );
         assert_eq!(
@@ -1209,7 +1289,7 @@ mod tests {
             SettingOption::from_index(7),
             Some(SettingOption::OtherPrimaryBranches)
         );
-        assert_eq!(SettingOption::COUNT, 18);
+        assert_eq!(SettingOption::COUNT, 21);
     }
 
     #[test]

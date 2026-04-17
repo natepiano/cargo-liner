@@ -71,6 +71,7 @@ pub fn handle_detail_key(app: &mut App, event: &KeyEvent) {
     // Action keys through per-pane keymap.
     let bind = KeyBind::new(event.code, event.modifiers);
     match app.base_focus() {
+        PaneId::Cpu => {},
         PaneId::Targets => {
             if let Some(action) = app.current_keymap().targets.action_for(&bind) {
                 match action {
@@ -116,6 +117,7 @@ fn active_detail_pane(app: &mut App) -> &mut Pane {
     match app.base_focus() {
         PaneId::Targets => app.pane_manager_mut().pane_mut(PaneId::Targets),
         PaneId::Lang => app.pane_manager_mut().pane_mut(PaneId::Lang),
+        PaneId::Cpu => app.pane_manager_mut().pane_mut(PaneId::Cpu),
         PaneId::Git => app.pane_manager_mut().pane_mut(PaneId::Git),
         PaneId::Package
         | PaneId::ProjectList

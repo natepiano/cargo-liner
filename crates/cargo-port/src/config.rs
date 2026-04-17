@@ -436,6 +436,13 @@ pub(crate) fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
 pub(crate) fn normalize_config(mut config: CargoPortConfig) -> Result<CargoPortConfig, String> {
     config.lint.commands = normalize_lint_commands(&config.lint.commands);
     config.lint.cache_size = config.lint.normalized_cache_size()?;
+    config.cpu.poll_ms = config.cpu.poll_ms.max(250);
+    config.cpu.green_max_percent = config.cpu.green_max_percent.min(100);
+    config.cpu.yellow_max_percent = config
+        .cpu
+        .yellow_max_percent
+        .max(config.cpu.green_max_percent)
+        .min(100);
     config.tui.main_branch = normalize_branch_name(&config.tui.main_branch, "tui.main_branch")?;
     config.tui.other_primary_branches = normalize_branch_list(
         &config.tui.other_primary_branches,
@@ -524,11 +531,39 @@ pub(crate) struct CargoPortConfig {
     #[config(nested)]
     pub cache: CacheConfig,
     #[config(nested)]
+    pub cpu:   CpuConfig,
+    #[config(nested)]
     pub mouse: MouseConfig,
     #[config(nested)]
     pub tui:   TuiConfig,
     #[config(nested)]
     pub lint:  LintConfig,
+}
+
+/// CPU meter settings for the TUI host metrics pane.
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
+pub(crate) struct CpuConfig {
+    /// How often to refresh CPU utilization values in milliseconds.
+    #[config(default = 1000)]
+    pub poll_ms: u64,
+
+    /// Upper bound for the green CPU severity band.
+    #[config(default = 60)]
+    pub green_max_percent: u8,
+
+    /// Upper bound for the yellow CPU severity band.
+    #[config(default = 85)]
+    pub yellow_max_percent: u8,
+}
+
+impl Default for CpuConfig {
+    fn default() -> Self {
+        Self {
+            poll_ms:            1000,
+            green_max_percent:  60,
+            yellow_max_percent: 85,
+        }
+    }
 }
 
 /// TUI display and behaviour settings.
@@ -726,6 +761,9 @@ mod tests {
 
     fn assert_default_config_subset(cfg: &CargoPortConfig, expected_ci_run_count: u32) {
         assert!(cfg.cache.root.is_empty());
+        assert_eq!(cfg.cpu.poll_ms, 1000);
+        assert_eq!(cfg.cpu.green_max_percent, 60);
+        assert_eq!(cfg.cpu.yellow_max_percent, 85);
         assert_eq!(cfg.tui.inline_dirs, vec!["crates".to_string()]);
         assert_eq!(cfg.tui.ci_run_count, expected_ci_run_count);
         assert!(cfg.tui.include_dirs.is_empty());
@@ -815,6 +853,9 @@ mod tests {
         cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
         cfg.tui.status_flash_secs = 5.0;
         cfg.tui.discovery_shimmer_secs = 4.5;
+        cfg.cpu.poll_ms = 1500;
+        cfg.cpu.green_max_percent = 55;
+        cfg.cpu.yellow_max_percent = 90;
         cfg.mouse.invert_scroll = ScrollDirection::Normal;
 
         let contents = toml::to_string_pretty(&cfg).expect("serialize");
@@ -827,6 +868,9 @@ mod tests {
         assert_eq!(reloaded.cache.root, "/tmp/cargo-port-cache");
         assert_eq!(reloaded.tui.ci_run_count, 42);
         assert_eq!(reloaded.tui.editor, "vim");
+        assert_eq!(reloaded.cpu.poll_ms, 1500);
+        assert_eq!(reloaded.cpu.green_max_percent, 55);
+        assert_eq!(reloaded.cpu.yellow_max_percent, 90);
         assert_eq!(reloaded.tui.terminal_command, "open -a Terminal .");
         assert_eq!(reloaded.tui.main_branch, "primary");
         assert_eq!(

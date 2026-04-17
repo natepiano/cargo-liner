@@ -2,6 +2,9 @@ use crate::config::CargoPortConfig;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ConfigKey {
+    CpuPollMs,
+    CpuGreenMax,
+    CpuYellowMax,
     InvertScroll,
     IncludeNonRust,
     CiRunCount,
@@ -25,6 +28,7 @@ pub(super) enum ConfigKey {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct ReloadActions {
     pub rebuild_tree:         bool,
+    pub refresh_cpu:          bool,
     pub rescan:               bool,
     pub refresh_lint_runtime: bool,
 }
@@ -42,6 +46,18 @@ struct ConfigHandler {
 }
 
 const CONFIG_HANDLERS: &[ConfigHandler] = &[
+    ConfigHandler {
+        key:  ConfigKey::CpuPollMs,
+        mark: mark_refresh_cpu,
+    },
+    ConfigHandler {
+        key:  ConfigKey::CpuGreenMax,
+        mark: mark_refresh_cpu,
+    },
+    ConfigHandler {
+        key:  ConfigKey::CpuYellowMax,
+        mark: mark_refresh_cpu,
+    },
     ConfigHandler {
         key:  ConfigKey::InlineDirs,
         mark: mark_rebuild_tree,
@@ -127,6 +143,15 @@ const fn mark_refresh_lint_runtime(
     actions.refresh_lint_runtime = true;
 }
 
+const fn mark_refresh_cpu(
+    actions: &mut ReloadActions,
+    _old: &CargoPortConfig,
+    _new: &CargoPortConfig,
+    _context: ReloadContext,
+) {
+    actions.refresh_cpu = true;
+}
+
 const fn mark_include_non_rust(
     actions: &mut ReloadActions,
     old: &CargoPortConfig,
@@ -150,6 +175,15 @@ const fn mark_include_non_rust(
 pub(super) fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<ConfigKey> {
     let mut keys = Vec::new();
 
+    if old.cpu.poll_ms != new.cpu.poll_ms {
+        keys.push(ConfigKey::CpuPollMs);
+    }
+    if old.cpu.green_max_percent != new.cpu.green_max_percent {
+        keys.push(ConfigKey::CpuGreenMax);
+    }
+    if old.cpu.yellow_max_percent != new.cpu.yellow_max_percent {
+        keys.push(ConfigKey::CpuYellowMax);
+    }
     if old.mouse.invert_scroll != new.mouse.invert_scroll {
         keys.push(ConfigKey::InvertScroll);
     }
@@ -265,6 +299,7 @@ mod tests {
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions {
                 rebuild_tree:         false,
+                refresh_cpu:          false,
                 rescan:               true,
                 refresh_lint_runtime: false,
             }
@@ -289,6 +324,7 @@ mod tests {
             ),
             ReloadActions {
                 rebuild_tree:         true,
+                refresh_cpu:          false,
                 rescan:               false,
                 refresh_lint_runtime: false,
             }
@@ -311,6 +347,7 @@ mod tests {
             ),
             ReloadActions {
                 rebuild_tree:         false,
+                refresh_cpu:          false,
                 rescan:               true,
                 refresh_lint_runtime: false,
             }
@@ -328,6 +365,7 @@ mod tests {
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions {
                 rebuild_tree:         false,
+                refresh_cpu:          false,
                 rescan:               false,
                 refresh_lint_runtime: true,
             }
@@ -343,8 +381,26 @@ mod tests {
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions {
                 rebuild_tree:         false,
+                refresh_cpu:          false,
                 rescan:               true,
                 refresh_lint_runtime: true,
+            }
+        );
+    }
+
+    #[test]
+    fn cpu_settings_mark_refresh_cpu_only() {
+        let mut new = CargoPortConfig::default();
+        new.cpu.poll_ms = 1500;
+        new.cpu.green_max_percent = 55;
+
+        assert_eq!(
+            collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
+            ReloadActions {
+                rebuild_tree:         false,
+                refresh_cpu:          true,
+                rescan:               false,
+                refresh_lint_runtime: false,
             }
         );
     }

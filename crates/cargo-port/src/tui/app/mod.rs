@@ -35,6 +35,7 @@ use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::RepoCache;
+use crate::tui::cpu::CpuPoller;
 use crate::watcher::WatcherMsg;
 
 #[cfg(test)]
@@ -82,6 +83,7 @@ pub(super) struct App {
     cargo_active_paths:       HashSet<AbsolutePath>,
     discovery_shimmers:       HashMap<AbsolutePath, types::DiscoveryShimmer>,
     pending_git_first_commit: HashMap<AbsolutePath, String>,
+    cpu_poller:               CpuPoller,
     bg_tx:                    mpsc::Sender<BackgroundMsg>,
     bg_rx:                    mpsc::Receiver<BackgroundMsg>,
     priority_fetch_path:      Option<AbsolutePath>,
@@ -394,5 +396,16 @@ impl App {
 
     pub(super) fn ci_runs_for_display(&self, path: &std::path::Path) -> Vec<CiRun> {
         self.ci_runs_for_display_inner(path)
+    }
+
+    pub(super) fn poll_cpu_if_due(&mut self, now: Instant) {
+        if let Some(snapshot) = self.cpu_poller.poll_if_due(now) {
+            self.pane_manager.cpu_data = Some(snapshot);
+        }
+    }
+
+    pub(super) fn reset_cpu_placeholder(&mut self) {
+        self.cpu_poller = CpuPoller::new(&self.current_config.cpu);
+        self.pane_manager.cpu_data = Some(self.cpu_poller.placeholder_snapshot());
     }
 }

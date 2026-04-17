@@ -1,11 +1,18 @@
 use std::borrow::Cow;
 
+use ratatui::Frame;
+use ratatui::layout::Constraint;
+use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
+use ratatui::widgets::Paragraph;
 
 mod ci;
+mod cpu;
 mod git;
 mod lang;
 mod lints;
@@ -18,6 +25,9 @@ pub(super) use ci::ci_table_shows_durations;
 #[cfg(test)]
 pub(super) use ci::ci_total_width;
 pub(super) use ci::render_ci_panel;
+pub(super) use cpu::CPU_PANE_WIDTH;
+pub(super) use cpu::cpu_required_pane_height;
+pub(super) use cpu::render_cpu_panel;
 #[cfg(test)]
 pub(super) use git::git_label_width;
 pub(super) use git::render_git_panel;
@@ -40,6 +50,7 @@ use super::constants::ACTIVE_BORDER_COLOR;
 use super::constants::INACTIVE_BORDER_COLOR;
 use super::constants::INACTIVE_TITLE_COLOR;
 use super::constants::TITLE_COLOR;
+use super::cpu::CpuSnapshot;
 use super::detail::CiData;
 use super::detail::GitData;
 use super::detail::LintsData;
@@ -173,115 +184,14 @@ pub(super) struct PanePlacement {
     pub col_span: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PaneGridLayout {
-    pub placements: &'static [PanePlacement],
+    pub placements: Vec<PanePlacement>,
 }
-
-const TILED_LAYOUT: PaneGridLayout = PaneGridLayout {
-    placements: &[
-        PanePlacement {
-            pane:     PaneId::ProjectList,
-            row:      0,
-            col:      0,
-            row_span: 2,
-            col_span: 1,
-        },
-        PanePlacement {
-            pane:     PaneId::Package,
-            row:      0,
-            col:      1,
-            row_span: 1,
-            col_span: 1,
-        },
-        PanePlacement {
-            pane:     PaneId::Git,
-            row:      0,
-            col:      2,
-            row_span: 1,
-            col_span: 1,
-        },
-        PanePlacement {
-            pane:     PaneId::Lang,
-            row:      1,
-            col:      1,
-            row_span: 1,
-            col_span: 1,
-        },
-        PanePlacement {
-            pane:     PaneId::Targets,
-            row:      1,
-            col:      2,
-            row_span: 1,
-            col_span: 1,
-        },
-        PanePlacement {
-            pane:     PaneId::Lints,
-            row:      2,
-            col:      0,
-            row_span: 1,
-            col_span: 1,
-        },
-        PanePlacement {
-            pane:     PaneId::CiRuns,
-            row:      2,
-            col:      1,
-            row_span: 1,
-            col_span: 2,
-        },
-    ],
-};
-
-const OUTPUT_LAYOUT: PaneGridLayout = PaneGridLayout {
-    placements: &[
-        PanePlacement {
-            pane:     PaneId::ProjectList,
-            row:      0,
-            col:      0,
-            row_span: 2,
-            col_span: 1,
-        },
-        PanePlacement {
-            pane:     PaneId::Package,
-            row:      0,
-            col:      1,
-            row_span: 1,
-            col_span: 1,
-        },
-        PanePlacement {
-            pane:     PaneId::Git,
-            row:      0,
-            col:      2,
-            row_span: 1,
-            col_span: 1,
-        },
-        PanePlacement {
-            pane:     PaneId::Lang,
-            row:      1,
-            col:      1,
-            row_span: 1,
-            col_span: 1,
-        },
-        PanePlacement {
-            pane:     PaneId::Targets,
-            row:      1,
-            col:      2,
-            row_span: 1,
-            col_span: 1,
-        },
-        PanePlacement {
-            pane:     PaneId::Output,
-            row:      2,
-            col:      0,
-            row_span: 1,
-            col_span: 3,
-        },
-    ],
-};
 
 impl PaneGridLayout {
     pub(super) fn tab_order(self) -> Vec<PaneId> {
-        let mut placements = self.placements.to_vec();
+        let mut placements = self.placements;
         placements.sort_by_key(|placement| (placement.row, placement.col));
         placements
             .into_iter()
@@ -290,18 +200,124 @@ impl PaneGridLayout {
     }
 }
 
-// ── PaneManager ────────────────────────────────────────────────────
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PaneBehavior {
+    ProjectList,
+    DetailFields,
+    DetailTargets,
+    Cpu,
+    Lints,
+    CiRuns,
+    Output,
+    Toasts,
+    Overlay,
+}
 
-/// Owns all pane navigation state and per-pane data models.
-///
-/// Extracted from `App` so render functions can borrow `PaneManager`
-/// mutably while borrowing `App` immutably for project data. Each pane
-/// owns its display data — no shared monolithic struct.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PaneAxisSize {
+    Fixed(u16),
+    Fill(u16),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PaneSizeSpec {
+    pub width:  PaneAxisSize,
+    pub height: PaneAxisSize,
+}
+
+impl PaneSizeSpec {
+    pub(super) const fn fill() -> Self {
+        Self {
+            width:  PaneAxisSize::Fill(1),
+            height: PaneAxisSize::Fill(1),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PaneRule {
+    Horizontal {
+        area:        Rect,
+        connector_x: Option<u16>,
+    },
+    Vertical {
+        area: Rect,
+    },
+    Symbol {
+        area:  Rect,
+        glyph: char,
+    },
+}
+
+pub(super) fn constraints_for_sizes(sizes: &[PaneAxisSize]) -> Vec<Constraint> {
+    sizes
+        .iter()
+        .map(|size| match size {
+            PaneAxisSize::Fixed(length) => Constraint::Length(*length),
+            PaneAxisSize::Fill(weight) => Constraint::Fill(*weight),
+        })
+        .collect()
+}
+
+pub(super) fn render_rules(frame: &mut Frame, rules: &[PaneRule], style: Style) {
+    for rule in rules {
+        match *rule {
+            PaneRule::Horizontal { area, connector_x } => {
+                render_horizontal_rule(frame, area, style, connector_x)
+            },
+            PaneRule::Vertical { area } => render_vertical_rule(frame, area, style),
+            PaneRule::Symbol { area, glyph } => render_symbol_rule(frame, area, style, glyph),
+        }
+    }
+}
+
+fn render_horizontal_rule(frame: &mut Frame, area: Rect, style: Style, connector_x: Option<u16>) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let line = (0..area.width)
+        .map(|offset| {
+            let x = area.x.saturating_add(offset);
+            if offset == 0 {
+                '├'
+            } else if offset == area.width.saturating_sub(1) {
+                '┤'
+            } else if connector_x == Some(x) {
+                '┬'
+            } else {
+                '─'
+            }
+        })
+        .collect::<String>();
+    frame.render_widget(Paragraph::new(Line::from(Span::styled(line, style))), area);
+}
+
+fn render_vertical_rule(frame: &mut Frame, area: Rect, style: Style) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let lines = (0..area.height)
+        .map(|_| Line::from(Span::styled("│", style)))
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn render_symbol_rule(frame: &mut Frame, area: Rect, style: Style, glyph: char) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(glyph.to_string(), style))),
+        area,
+    );
+}
+
 pub(super) struct PaneManager {
     panes:            Vec<Pane>,
-    // Per-pane data models — populated when the selected project changes.
     pub package_data: Option<PackageData>,
     pub git_data:     Option<GitData>,
+    pub cpu_data:     Option<CpuSnapshot>,
     pub targets_data: Option<TargetsData>,
     pub ci_data:      Option<CiData>,
     pub lints_data:   Option<LintsData>,
@@ -317,6 +333,7 @@ impl PaneManager {
             panes:        vec![Pane::new(); PaneId::pane_count()],
             package_data: None,
             git_data:     None,
+            cpu_data:     None,
             targets_data: None,
             ci_data:      None,
             lints_data:   None,
@@ -329,20 +346,115 @@ impl PaneManager {
         }
     }
 
-    pub(super) const fn layout(output_visible: bool) -> PaneGridLayout {
-        if output_visible {
-            OUTPUT_LAYOUT
-        } else {
-            TILED_LAYOUT
+    pub(super) fn behavior(id: PaneId) -> PaneBehavior {
+        match id {
+            PaneId::ProjectList => PaneBehavior::ProjectList,
+            PaneId::Package | PaneId::Lang | PaneId::Git => PaneBehavior::DetailFields,
+            PaneId::Cpu => PaneBehavior::Cpu,
+            PaneId::Targets => PaneBehavior::DetailTargets,
+            PaneId::Lints => PaneBehavior::Lints,
+            PaneId::CiRuns => PaneBehavior::CiRuns,
+            PaneId::Output => PaneBehavior::Output,
+            PaneId::Toasts => PaneBehavior::Toasts,
+            PaneId::Settings | PaneId::Finder | PaneId::Keymap => PaneBehavior::Overlay,
         }
     }
 
-    pub(super) fn tab_order(output_visible: bool) -> Vec<PaneId> {
-        Self::layout(output_visible).tab_order()
+    pub(super) fn has_row_hitboxes(id: PaneId) -> bool {
+        matches!(
+            Self::behavior(id),
+            PaneBehavior::DetailFields | PaneBehavior::DetailTargets
+        )
     }
 
-    /// Populate per-pane data for the selected row. Called when the
-    /// selected project changes or detail cache is rebuilt.
+    pub(super) fn size_spec(id: PaneId) -> PaneSizeSpec {
+        match id {
+            PaneId::Cpu => PaneSizeSpec {
+                width:  PaneAxisSize::Fixed(CPU_PANE_WIDTH),
+                height: PaneAxisSize::Fill(1),
+            },
+            _ => PaneSizeSpec::fill(),
+        }
+    }
+
+    pub(super) fn derived_layout(output_visible: bool) -> PaneGridLayout {
+        let mut placements = vec![
+            PanePlacement {
+                pane:     PaneId::ProjectList,
+                row:      0,
+                col:      0,
+                row_span: 2,
+                col_span: 1,
+            },
+            PanePlacement {
+                pane:     PaneId::Package,
+                row:      0,
+                col:      1,
+                row_span: 1,
+                col_span: 1,
+            },
+            PanePlacement {
+                pane:     PaneId::Git,
+                row:      0,
+                col:      2,
+                row_span: 1,
+                col_span: 1,
+            },
+            PanePlacement {
+                pane:     PaneId::Lang,
+                row:      1,
+                col:      1,
+                row_span: 1,
+                col_span: 1,
+            },
+            PanePlacement {
+                pane:     PaneId::Cpu,
+                row:      1,
+                col:      2,
+                row_span: 1,
+                col_span: 1,
+            },
+            PanePlacement {
+                pane:     PaneId::Targets,
+                row:      1,
+                col:      3,
+                row_span: 1,
+                col_span: 1,
+            },
+        ];
+
+        if output_visible {
+            placements.push(PanePlacement {
+                pane:     PaneId::Output,
+                row:      2,
+                col:      0,
+                row_span: 1,
+                col_span: 4,
+            });
+        } else {
+            placements.push(PanePlacement {
+                pane:     PaneId::Lints,
+                row:      2,
+                col:      0,
+                row_span: 1,
+                col_span: 1,
+            });
+            placements.push(PanePlacement {
+                pane:     PaneId::CiRuns,
+                row:      2,
+                col:      1,
+                row_span: 1,
+                col_span: 3,
+            });
+        }
+
+        PaneGridLayout { placements }
+    }
+
+    pub(super) fn tab_order(output_visible: bool) -> Vec<PaneId> {
+        Self::derived_layout(output_visible).tab_order()
+    }
+
     pub fn set_detail_data(
         &mut self,
         package_data: PackageData,
@@ -358,7 +470,6 @@ impl PaneManager {
         self.lints_data = Some(lints_data);
     }
 
-    /// Clear per-pane data (e.g., when no project is selected).
     pub fn clear_detail_data(&mut self) {
         self.package_data = None;
         self.git_data = None;
@@ -372,26 +483,46 @@ impl PaneManager {
 mod tests {
     use std::collections::HashSet;
 
-    use super::OUTPUT_LAYOUT;
     use super::PaneGridLayout;
     use super::PaneId;
+    use super::PaneManager;
     use super::PanePlacement;
     use super::PaneTitleCount;
     use super::PaneTitleGroup;
-    use super::TILED_LAYOUT;
     use super::pane_title;
     use super::prefixed_pane_title;
 
     #[test]
-    fn tiled_layout_has_no_overlapping_cells() { assert_layout_has_no_overlaps(TILED_LAYOUT); }
+    fn tiled_layout_has_no_overlapping_cells() {
+        assert_layout_has_no_overlaps(PaneManager::derived_layout(false));
+    }
 
     #[test]
-    fn output_layout_has_no_overlapping_cells() { assert_layout_has_no_overlaps(OUTPUT_LAYOUT); }
+    fn output_layout_has_no_overlapping_cells() {
+        assert_layout_has_no_overlaps(PaneManager::derived_layout(true));
+    }
+
+    #[test]
+    fn derived_output_layout_keeps_cpu_between_lang_and_targets() {
+        let order = PaneManager::derived_layout(true).tab_order();
+        assert_eq!(
+            order,
+            vec![
+                PaneId::ProjectList,
+                PaneId::Package,
+                PaneId::Git,
+                PaneId::Lang,
+                PaneId::Cpu,
+                PaneId::Targets,
+                PaneId::Output,
+            ]
+        );
+    }
 
     #[test]
     fn tab_order_is_derived_from_grid_position() {
         let layout = PaneGridLayout {
-            placements: &[
+            placements: vec![
                 PanePlacement {
                     pane:     PaneId::Targets,
                     row:      1,
@@ -486,7 +617,7 @@ mod tests {
 
     fn assert_layout_has_no_overlaps(layout: PaneGridLayout) {
         let mut occupied = HashSet::new();
-        for placement in layout.placements {
+        for placement in &layout.placements {
             for row in placement.row..placement.row + placement.row_span {
                 for col in placement.col..placement.col + placement.col_span {
                     assert!(

@@ -31,6 +31,7 @@ use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::tui::columns::ResolvedWidths;
+use crate::tui::cpu::CpuPoller;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -161,6 +162,7 @@ impl App {
     fn build_core(inputs: CoreInputs) -> Self {
         let init = inputs.init;
         let channels = inputs.channels;
+        let cpu_poller = CpuPoller::new(&inputs.cfg.cpu);
         let cached_fit_widths = ResolvedWidths::new(inputs.cfg.lint.enabled);
         Self {
             current_config: inputs.cfg,
@@ -173,6 +175,7 @@ impl App {
             cargo_active_paths: HashSet::new(),
             discovery_shimmers: HashMap::new(),
             pending_git_first_commit: HashMap::new(),
+            cpu_poller,
             bg_tx: inputs.bg_tx,
             bg_rx: inputs.bg_rx,
             priority_fetch_path: None,
@@ -238,6 +241,7 @@ impl App {
     }
 
     fn finish_new(&mut self) {
+        self.pane_manager.cpu_data = Some(self.cpu_poller.placeholder_snapshot());
         self.load_initial_keymap();
         if let Some(warning) = self
             .status_flash

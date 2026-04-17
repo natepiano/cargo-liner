@@ -18,11 +18,13 @@ use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
 use super::PaneChrome;
+use super::PaneRule;
 use super::PaneTitleCount;
 use super::PaneTitleGroup;
 use super::default_pane_chrome;
 use super::empty_pane_block;
 use super::prefixed_pane_title;
+use super::render_rules;
 use crate::constants::NO_LINT_RUNS;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
@@ -340,20 +342,42 @@ fn render_project_description_section(
     };
     let stats_connector_x = project_stats_connector_x(context.pkg_data, lower_area);
     if separator_height > 0 {
-        render_separator(
+        render_rules(
             frame,
-            Rect {
-                x:      area.x,
-                y:      description_area.y.saturating_add(description_height),
-                width:  area.width,
-                height: 1,
-            },
+            &[PaneRule::Horizontal {
+                area:        Rect {
+                    x:      area.x,
+                    y:      description_area.y.saturating_add(description_height),
+                    width:  area.width,
+                    height: 1,
+                },
+                connector_x: stats_connector_x,
+            }],
             context.border_style,
-            stats_connector_x,
         );
     }
     if let Some(connector_x) = stats_connector_x {
-        render_bottom_connector(frame, area, connector_x, context.border_style);
+        let first_inner_x = area.x.saturating_add(1);
+        let last_inner_x = area.right().saturating_sub(2);
+        if connector_x >= first_inner_x
+            && connector_x <= last_inner_x
+            && area.width >= 3
+            && area.height > 0
+        {
+            render_rules(
+                frame,
+                &[PaneRule::Symbol {
+                    area:  Rect {
+                        x:      connector_x,
+                        y:      area.bottom().saturating_sub(1),
+                        width:  1,
+                        height: 1,
+                    },
+                    glyph: '┴',
+                }],
+                context.border_style,
+            );
+        }
     }
 
     ProjectPanelAreas { lower: lower_area }
@@ -417,11 +441,24 @@ fn render_stats_column(
     digit_width: u16,
     border_style: Style,
 ) {
-    let stats_block = Block::default()
-        .borders(Borders::LEFT)
-        .border_style(border_style);
-    let stats_inner = stats_block.inner(area);
-    frame.render_widget(stats_block, area);
+    render_rules(
+        frame,
+        &[PaneRule::Vertical {
+            area: Rect {
+                x:      area.x,
+                y:      area.y,
+                width:  1,
+                height: area.height,
+            },
+        }],
+        border_style,
+    );
+    let stats_inner = Rect {
+        x:      area.x.saturating_add(1),
+        y:      area.y,
+        width:  area.width.saturating_sub(1),
+        height: area.height,
+    };
 
     let stat_label_style = Style::default().fg(LABEL_COLOR);
     let stat_num_style = Style::default().fg(TITLE_COLOR);
@@ -472,49 +509,6 @@ pub(in super::super) fn description_lines(
         .into_iter()
         .map(|line| Line::from(Span::styled(line, style)))
         .collect()
-}
-
-fn render_separator(frame: &mut Frame, area: Rect, style: Style, connector_x: Option<u16>) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-
-    let line = (0..area.width)
-        .map(|offset| {
-            let x = area.x.saturating_add(offset);
-            if offset == 0 {
-                '├'
-            } else if offset == area.width.saturating_sub(1) {
-                '┤'
-            } else if connector_x == Some(x) {
-                '┬'
-            } else {
-                '─'
-            }
-        })
-        .collect::<String>();
-    frame.render_widget(Paragraph::new(Line::from(Span::styled(line, style))), area);
-}
-
-fn render_bottom_connector(frame: &mut Frame, area: Rect, connector_x: u16, style: Style) {
-    if area.width < 3 || area.height == 0 {
-        return;
-    }
-    let first_inner_x = area.x.saturating_add(1);
-    let last_inner_x = area.right().saturating_sub(2);
-    if connector_x < first_inner_x || connector_x > last_inner_x {
-        return;
-    }
-
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled("┴", style))),
-        Rect {
-            x:      connector_x,
-            y:      area.bottom().saturating_sub(1),
-            width:  1,
-            height: 1,
-        },
-    );
 }
 
 pub fn render_targets_panel(
