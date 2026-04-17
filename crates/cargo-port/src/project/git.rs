@@ -66,15 +66,6 @@ pub(crate) enum RemoteKind {
     Fork,
 }
 
-impl RemoteKind {
-    pub(crate) const fn icon(self) -> &'static str {
-        match self {
-            Self::Clone => GIT_CLONE,
-            Self::Fork => GIT_FORK,
-        }
-    }
-}
-
 /// Per-remote metadata. A repo may have any number of these (`origin`,
 /// `upstream`, and others).
 #[derive(Debug, Clone, Serialize)]

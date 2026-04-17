@@ -26,7 +26,9 @@ pub(crate) use git::GitOrigin;
 pub(crate) use git::GitRepoPresence;
 pub(crate) use git::GitStatus;
 pub(crate) use git::LocalGitState;
+#[cfg(test)]
 pub(crate) use git::RemoteInfo;
+#[cfg(test)]
 pub(crate) use git::RemoteKind;
 #[cfg(test)]
 pub(crate) use git::WorkflowPresence;
