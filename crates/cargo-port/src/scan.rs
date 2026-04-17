@@ -1029,8 +1029,18 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
                 }
                 let bytes = dir_size(sub_path);
                 let _ = tx.send(BackgroundMsg::DiskUsage {
-                    path: sub_abs,
+                    path: sub_abs.clone(),
                     bytes,
+                });
+                let lang_tx = tx.clone();
+                let lang_path = sub_abs;
+                rayon::spawn(move || {
+                    let stats = collect_language_stats_single(lang_path.as_path());
+                    if !stats.entries.is_empty() {
+                        let _ = lang_tx.send(BackgroundMsg::LanguageStatsBatch {
+                            entries: vec![(lang_path, stats)],
+                        });
+                    }
                 });
             }
         }
