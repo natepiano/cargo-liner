@@ -1550,7 +1550,7 @@ impl App {
     }
 
     fn spawn_repo_fetch_for_git_info(&self, path: &Path, info: &GitInfo) {
-        let Some(repo_url) = info.url.as_deref() else {
+        let Some(repo_url) = info.primary_url() else {
             return;
         };
         let Some(owner_repo) = crate::ci::parse_owner_repo(repo_url) else {

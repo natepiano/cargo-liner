@@ -509,7 +509,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     let Some(git) = app.git_info_for(Path::new(&fetch.project_path)) else {
         return;
     };
-    let Some(repo_url) = &git.url else {
+    let Some(repo_url) = git.primary_url() else {
         return;
     };
     let Some(owner_repo) = ci::parse_owner_repo(repo_url) else {
@@ -523,7 +523,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     let ci_run_count = fetch.ci_run_count;
     let oldest_created_at = fetch.oldest_created_at.clone();
     let kind = fetch.kind;
-    let url = repo_url.clone();
+    let url = repo_url.to_string();
 
     thread::spawn(move || {
         let (result, network) = match kind {

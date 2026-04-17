@@ -6,6 +6,7 @@ use super::types::CiRunDisplayMode;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::project::AbsolutePath;
+use crate::project::GitInfo;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::project::ProjectFields;
@@ -18,7 +19,7 @@ impl App {
     pub(super) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<ci::OwnerRepo> {
         let owner_path = self.ci_owner_path_for_inner(path)?;
         self.git_info_for(owner_path.as_path())
-            .and_then(|git| git.url.as_deref())
+            .and_then(GitInfo::primary_url)
             .and_then(ci::parse_owner_repo)
     }
 
@@ -31,7 +32,7 @@ impl App {
             let Some(git) = self.git_info_for(path) else {
                 return;
             };
-            let Some(url) = git.url.as_deref() else {
+            let Some(url) = git.primary_url() else {
                 return;
             };
             if ci::parse_owner_repo(url).as_ref() == Some(repo) {
@@ -96,13 +97,9 @@ impl App {
         }
         let exhausted = self
             .git_info_for(path)
-            .and_then(|git| {
-                git.url.as_ref().and_then(|url| {
-                    ci::parse_owner_repo(url)
-                        .map(|owner_repo| scan::is_exhausted(owner_repo.owner(), owner_repo.repo()))
-                })
-            })
-            .unwrap_or(false);
+            .and_then(GitInfo::primary_url)
+            .and_then(ci::parse_owner_repo)
+            .is_some_and(|owner_repo| scan::is_exhausted(owner_repo.owner(), owner_repo.repo()));
         if let Some(project) = self.projects.at_path_mut(path) {
             project.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                 runs,
@@ -165,7 +162,7 @@ impl App {
             CiFetchKind::Sync => {
                 if found_new {
                     if let Some(git) = self.git_info_for(&abs)
-                        && let Some(ref url) = git.url
+                        && let Some(url) = git.primary_url()
                         && let Some(owner_repo) = ci::parse_owner_repo(url)
                     {
                         scan::clear_exhausted(owner_repo.owner(), owner_repo.repo());
@@ -182,7 +179,7 @@ impl App {
             CiFetchKind::FetchOlder => {
                 if found_new {
                     if let Some(git) = self.git_info_for(&abs)
-                        && let Some(ref url) = git.url
+                        && let Some(url) = git.primary_url()
                         && let Some(owner_repo) = ci::parse_owner_repo(url)
                     {
                         scan::clear_exhausted(owner_repo.owner(), owner_repo.repo());
@@ -190,7 +187,7 @@ impl App {
                     false
                 } else {
                     if let Some(git) = self.git_info_for(&abs)
-                        && let Some(ref url) = git.url
+                        && let Some(url) = git.primary_url()
                         && let Some(owner_repo) = ci::parse_owner_repo(url)
                     {
                         scan::mark_exhausted(owner_repo.owner(), owner_repo.repo());

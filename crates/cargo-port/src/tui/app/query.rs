@@ -236,7 +236,8 @@ impl App {
 
     pub(in super::super) fn unpublished_ci_branch_name(&self, path: &Path) -> Option<String> {
         let git = self.git_info_for(path)?;
-        (git.upstream_branch.is_none() && git.branch.as_deref() != git.default_branch.as_deref())
+        (git.primary_tracked_ref().is_none()
+            && git.branch.as_deref() != git.default_branch.as_deref())
             .then(|| git.branch.clone())
             .flatten()
     }
@@ -624,7 +625,7 @@ impl App {
         if matches!(info.status, GitStatus::Untracked | GitStatus::Ignored) {
             return String::new();
         }
-        match info.ahead_behind {
+        match info.primary_ahead_behind() {
             Some((0, 0)) => IN_SYNC.to_string(),
             Some((a, 0)) => format!("{SYNC_UP}{a}"),
             Some((0, b)) => format!("{SYNC_DOWN}{b}"),

@@ -618,6 +618,12 @@ pub(crate) struct TuiConfig {
     #[config(default = [])]
     pub other_primary_branches: Vec<String>,
 
+    /// Default remote host URL prefix. Remote URLs beginning with this prefix
+    /// are shortened in the Git panel's Remotes table to `owner/repo` form;
+    /// remotes on other hosts are shown with the full URL.
+    #[config(default = "https://github.com/")]
+    pub default_remote_host_url: String,
+
     /// How long (in seconds) the status bar flash is shown (e.g. "no new
     /// runs found").
     #[config(default = 5.0)]
@@ -646,6 +652,7 @@ impl Default for TuiConfig {
             terminal_command:       String::new(),
             main_branch:            "main".to_string(),
             other_primary_branches: Vec::new(),
+            default_remote_host_url: "https://github.com/".to_string(),
             status_flash_secs:      5.0,
             task_linger_secs:       1.0,
             discovery_shimmer_secs: 10.0,

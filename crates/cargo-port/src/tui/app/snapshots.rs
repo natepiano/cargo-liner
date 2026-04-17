@@ -276,12 +276,12 @@ pub(super) fn git_sync_snapshot(git_info: Option<&GitInfo>) -> String {
     if matches!(info.status, GitStatus::Untracked | GitStatus::Ignored) {
         return String::new();
     }
-    match info.ahead_behind {
+    match info.primary_ahead_behind() {
         Some((0, 0)) => IN_SYNC.to_string(),
         Some((a, 0)) => format!("{SYNC_UP}{a}"),
         Some((0, b)) => format!("{SYNC_DOWN}{b}"),
         Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
-        None if info.origin != GitOrigin::Local => "-".to_string(),
+        None if info.origin_kind() != GitOrigin::Local => "-".to_string(),
         None => NO_REMOTE_SYNC.to_string(),
     }
 }

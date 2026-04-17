@@ -841,12 +841,12 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         .unwrap_or_else(|| AbsolutePath::from(abs_path));
     let git = app.git_info_for(owner_path.as_path());
     let branch = git.and_then(|info| info.branch.clone());
-    let sync = git.map(|info| format_remote_status(info.ahead_behind));
+    let sync = git.map(|info| format_remote_status(info.primary_ahead_behind()));
     let vs_origin = if app.unpublished_ci_branch_name(abs_path).is_some() {
         Some(NO_CI_UNPUBLISHED_BRANCH.to_string())
     } else {
         git.map(|info| {
-            info.upstream_branch.as_deref().map_or_else(
+            info.primary_tracked_ref().map_or_else(
                 || "none".to_string(),
                 |branch| format!("{branch} (local cached ref)"),
             )
@@ -857,9 +857,12 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         .map(format_ahead_behind);
     let local_main_branch = git.and_then(|info| info.local_main_branch.clone());
     let main_branch_label = app.current_config().tui.main_branch.clone();
-    let origin = git.map(|info| format!("{} {}", info.origin.icon(), info.origin.label()));
-    let owner = git.and_then(|info| info.owner.clone());
-    let url = git.and_then(|info| info.url.clone());
+    let origin = git.map(|info| {
+        let kind = info.origin_kind();
+        format!("{} {}", kind.icon(), kind.label())
+    });
+    let owner = git.and_then(|info| info.primary_owner().map(String::from));
+    let url = git.and_then(|info| info.primary_url().map(String::from));
     let github = app
         .projects()
         .at_path(owner_path.as_path())
@@ -1217,7 +1220,9 @@ pub fn build_ci_data(app: &App) -> CiData {
     } else if git_info.is_none() {
         CiEmptyState::NotGitRepo
     } else if has_ci_owner
-        && git_info.is_some_and(|g| g.origin == GitOrigin::Local || g.url.is_none())
+        && git_info.is_some_and(|g| {
+            g.origin_kind() == GitOrigin::Local || g.primary_url().is_none()
+        })
     {
         CiEmptyState::RequiresGithubRemote
     } else if git_info.is_some_and(|g| !g.workflows.is_present()) {
