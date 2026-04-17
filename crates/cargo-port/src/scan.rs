@@ -811,7 +811,7 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
     remove_indices.sort_unstable();
     remove_indices.dedup();
 
-    // Convert vendored items to `PackageProject`
+    // Convert vendored items to `Package`
     let mut vendored_projects: Vec<(usize, Package)> = Vec::new();
     for &(vi, ni) in &vendored_map {
         let pkg = match &items[vi] {

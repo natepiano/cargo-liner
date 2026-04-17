@@ -52,6 +52,7 @@ pub(crate) use paths::AbsolutePath;
 pub(crate) use paths::DisplayPath;
 pub(crate) use paths::home_relative_path;
 pub(crate) use project_fields::ProjectFields;
+pub(crate) use project_fields::ProjectListEntry;
 pub(crate) use root_item::RootItem;
 // ── Rust info ────────────────────────────────────────────────────────
 pub(crate) use rust_info::Cargo;

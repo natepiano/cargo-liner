@@ -344,12 +344,19 @@ fn observe_item_fit_widths(widths: &mut ResolvedWidths, item: &RootItem, root_la
     }
     for submodule in item.submodules() {
         let label = format!("{} (s)", submodule.name);
-        App::observe_name_width(widths, dw(PREFIX_SUBMODULE) + dw(&label));
-        widths.observe(
-            COL_DISK,
-            dw(&formatted_disk(submodule.info.disk_usage_bytes)),
-        );
+        observe_path_only_entry_fit_widths(widths, PREFIX_SUBMODULE, &label, submodule);
     }
+}
+
+fn observe_path_only_entry_fit_widths(
+    widths: &mut ResolvedWidths,
+    prefix: &str,
+    label: &str,
+    entry: &impl crate::project::ProjectListEntry,
+) {
+    let dw = columns::display_width;
+    App::observe_name_width(widths, dw(prefix) + dw(label));
+    widths.observe(COL_DISK, dw(&formatted_disk(entry.info().disk_usage_bytes)));
 }
 
 fn observe_new_member_group_fit_widths(
@@ -515,7 +522,7 @@ fn collect_child_disk_values(item: &RootItem, values: &mut Vec<u64>) {
             }
         },
     }
-    collect_submodule_disk(item.submodules(), values);
+    collect_project_list_entry_disk(item.submodules(), values);
 }
 
 fn collect_member_group_disk(groups: &[MemberGroup], values: &mut Vec<u64>) {
@@ -536,9 +543,12 @@ fn collect_vendored_disk(vendored: &[Package], values: &mut Vec<u64>) {
     }
 }
 
-fn collect_submodule_disk(submodules: &[Submodule], values: &mut Vec<u64>) {
-    for submodule in submodules {
-        if let Some(bytes) = submodule.info.disk_usage_bytes {
+fn collect_project_list_entry_disk(
+    entries: &[impl crate::project::ProjectListEntry],
+    values: &mut Vec<u64>,
+) {
+    for entry in entries {
+        if let Some(bytes) = entry.info().disk_usage_bytes {
             values.push(bytes);
         }
     }

@@ -6,11 +6,19 @@ use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
 
-/// Shared field access for all project types.
+/// Read-only access shared by all concrete project-list nodes.
 ///
-/// Implemented by `WorkspaceProject`, `PackageProject`, and `NonRustProject`.
-/// Enables generic iteration and ensures all project types expose the same
-/// identity and metadata surface.
+/// This is the minimal contract needed to treat a path-backed list entry as
+/// “real” in generic code: once a type exposes a path and `ProjectInfo`, it
+/// automatically participates in shared disk/git/visibility logic instead of
+/// each caller deciding which metadata to respect.
+pub(crate) trait ProjectListEntry {
+    fn path(&self) -> &AbsolutePath;
+    fn info(&self) -> &ProjectInfo;
+}
+
+/// Shared field access for project types that also expose naming and mutation
+/// helpers beyond the basic project-list entry contract.
 pub(crate) trait ProjectFields {
     fn path(&self) -> &AbsolutePath;
     fn name(&self) -> Option<&str>;
@@ -22,4 +30,10 @@ pub(crate) trait ProjectFields {
     fn info_mut(&mut self) -> &mut ProjectInfo;
     fn display_path(&self) -> DisplayPath;
     fn root_directory_name(&self) -> RootDirectoryName;
+}
+
+impl<T: ProjectFields + ?Sized> ProjectListEntry for T {
+    fn path(&self) -> &AbsolutePath { ProjectFields::path(self) }
+
+    fn info(&self) -> &ProjectInfo { ProjectFields::info(self) }
 }

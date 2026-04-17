@@ -147,7 +147,7 @@ impl App {
         }
     }
 
-    /// Resolve a member `PackageProject` from a `RootItem`.
+    /// Resolve a member `Package` from a `RootItem`.
     fn resolve_member(
         item: &RootItem,
         group_index: usize,
@@ -170,7 +170,7 @@ impl App {
         }
     }
 
-    /// Resolve a vendored `PackageProject` from a `RootItem`.
+    /// Resolve a vendored `Package` from a `RootItem`.
     fn resolve_vendored(item: &RootItem, vendored_index: usize) -> Option<&Package> {
         match item {
             RootItem::Rust(RustProject::Workspace(ws)) => ws.vendored().get(vendored_index),

@@ -8,8 +8,8 @@ use super::package::Package;
 use super::paths::AbsolutePath;
 use crate::lint::LintRuns;
 
-/// Rust-specific project data shared by both `WorkspaceProject` and
-/// `PackageProject`. Derefs to `ProjectInfo` for uniform metadata access.
+/// Rust-specific project data shared by both `Workspace` and `Package`.
+/// Derefs to `ProjectInfo` for uniform metadata access.
 #[derive(Clone)]
 pub(crate) struct RustInfo {
     pub(super) info:                      ProjectInfo,

@@ -2,8 +2,9 @@ use std::path::Path;
 
 use super::info::ProjectInfo;
 use super::paths::AbsolutePath;
+use super::project_fields::ProjectListEntry;
 
-/// Metadata for a git submodule nested inside a project.
+/// A git submodule that participates as a concrete project-list node.
 #[derive(Clone)]
 pub(crate) struct Submodule {
     /// The submodule name from `.gitmodules` (e.g. `glTF-IBL-Sampler`).
@@ -21,6 +22,12 @@ pub(crate) struct Submodule {
     /// Shared metadata (git info, disk usage, etc.) — populated by
     /// background messages through the standard `at_path_mut` lookup.
     pub info:          ProjectInfo,
+}
+
+impl ProjectListEntry for Submodule {
+    fn path(&self) -> &AbsolutePath { &self.path }
+
+    fn info(&self) -> &ProjectInfo { &self.info }
 }
 
 /// Parse `.gitmodules` and resolve pinned commits for all submodules.

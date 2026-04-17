@@ -1258,25 +1258,41 @@ fn render_submodule_item(
         let row = super::columns::build_group_header_cells(PREFIX_SUBMODULE, "");
         return ListItem::new(super::columns::row_to_line(&row, widths));
     };
-    let path = submodule.path.as_path();
     let name = format!("{} (s)", submodule.name);
-    let disk = app.formatted_disk(path);
-    let disk_bytes = submodule.info.disk_usage_bytes;
     let sorted = child_sorted.get(&node_index).map_or(&[][..], Vec::as_slice);
-    let ds = disk_color(disk_percentile(disk_bytes, sorted));
+    render_path_only_entry(
+        app,
+        submodule,
+        item.path(),
+        PREFIX_SUBMODULE,
+        &name,
+        sorted,
+        widths,
+    )
+}
+
+fn render_path_only_entry(
+    app: &App,
+    entry: &impl crate::project::ProjectListEntry,
+    inherited_deleted_path: &Path,
+    prefix: &'static str,
+    name: &str,
+    sorted: &[u64],
+    widths: &ResolvedWidths,
+) -> ListItem<'static> {
+    let path = entry.path().as_path();
+    let disk = app.formatted_disk(path);
+    let ds = disk_color(disk_percentile(entry.info().disk_usage_bytes, sorted));
     let git_status = app.git_status_for(path);
-    let deleted = app.is_deleted(item.path()) || app.is_deleted(path);
-    let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
-        ("0.0", Some(" [x]"), Some(Style::default().fg(LABEL_COLOR)))
-    } else {
-        (disk.as_str(), None, None)
-    };
+    let deleted = app.is_deleted(inherited_deleted_path) || app.is_deleted(path);
+    let (disk_text, disk_suffix, disk_suffix_style) =
+        disk_suffix_for_state(&disk, deleted, entry.info().worktree_health);
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
-        prefix: PREFIX_SUBMODULE,
-        name: &name,
+        prefix,
+        name,
         name_segments: app.discovery_name_segments_for_path(
             path,
-            &name,
+            name,
             git_status,
             DiscoveryRowKind::PathOnly,
         ),
@@ -1292,7 +1308,7 @@ fn render_submodule_item(
         git_main: "",
         ci: None,
         deleted,
-        worktree_health: Normal,
+        worktree_health: entry.info().worktree_health,
     });
     ListItem::new(super::columns::row_to_line(&row, widths))
 }
