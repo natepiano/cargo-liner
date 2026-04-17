@@ -17,7 +17,6 @@ fn collapse_all_anchors_member_selection_to_root() {
     let mut app = make_app(&[workspace, member.clone()]);
     apply_items(&mut app, &[root]);
     app.expanded.insert(ExpandKey::Node(0));
-    app.dirty.rows.mark_dirty();
     app.select_project_in_tree(member.path());
 
     app.collapse_all();

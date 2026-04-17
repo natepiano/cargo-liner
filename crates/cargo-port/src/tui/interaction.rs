@@ -605,7 +605,6 @@ mod tests {
             .unwrap_or_else(|| std::process::abort());
         project.disk_usage_bytes = Some(0);
         project.visibility = Visibility::Deleted;
-        app.dirty_mut().rows.mark_dirty();
         app.dirty_mut().fit_widths.mark_dirty();
         app.dirty_mut().disk_cache.mark_dirty();
     }
@@ -792,7 +791,6 @@ mod tests {
         );
         let mut app = make_app(&[root]);
         app.expanded_mut().insert(ExpandKey::Node(0));
-        app.dirty_mut().rows.mark_dirty();
         app.ensure_visible_rows_cached();
         app.move_down();
         app.handle_git_info(
@@ -1005,7 +1003,6 @@ mod tests {
                 )],
             ),
         )]));
-        app.dirty_mut().rows.mark_dirty();
         app.dirty_mut().fit_widths.mark_dirty();
         app.dirty_mut().disk_cache.mark_dirty();
         render_ui(&mut app);

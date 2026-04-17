@@ -78,7 +78,6 @@ fn non_owner_member_ignores_stale_member_state_and_fetches_via_owner() {
     let mut app = make_app(&[workspace, member.clone()]);
     apply_items(&mut app, &[root]);
     app.expanded.insert(ExpandKey::Node(0));
-    app.dirty.rows.mark_dirty();
     app.ensure_visible_rows_cached();
     app.select_project_in_tree(member.path());
 
