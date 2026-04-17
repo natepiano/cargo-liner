@@ -77,92 +77,213 @@ pub(in super::super) fn git_label_width(data: &GitData, fields: &[DetailField]) 
         .max(8)
 }
 
-fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect) -> usize {
-    let data = ctx.data;
-    let fields = ctx.fields;
-    let pane = ctx.pane;
-    let focus = ctx.focus;
-    let styles = ctx.styles;
-    let active = matches!(focus, PaneFocusState::Active);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut focused_output_line: usize = 0;
-    let label_width = git_label_width(data, fields);
-    let flat_len = fields.len();
-    let remotes_len = data.remotes.len();
-    let worktrees_len = data.worktrees.len();
-    let current_section = if active {
-        section_for_pos(pane.pos(), flat_len, remotes_len, worktrees_len)
+/// A section separator to render as an overlay rule after the paragraph
+/// (so its `├`/`┤` endcaps can overlap the outer pane's vertical borders).
+struct SectionRule {
+    inner_y: usize,
+    title:   String,
+    focused: bool,
+}
+
+fn render_git_column_inner(
+    frame: &mut Frame,
+    ctx: &GitRenderCtx<'_>,
+    outer_area: Rect,
+    inner_area: Rect,
+) -> usize {
+    let flat_len = ctx.fields.len();
+    let remotes_len = ctx.data.remotes.len();
+    let worktrees_len = ctx.data.worktrees.len();
+    let current_section = if matches!(ctx.focus, PaneFocusState::Active) {
+        section_for_pos(ctx.pane.pos(), flat_len, remotes_len, worktrees_len)
     } else {
         None
     };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut focused_output_line: usize = 0;
+    let mut section_rules: Vec<SectionRule> = Vec::new();
 
     render_flat_fields(
         &mut lines,
         &mut focused_output_line,
         &RenderFlatArgs {
-            data,
-            fields,
-            pane,
-            focus,
-            styles,
-            area_width: area.width,
-            label_width,
+            data:        ctx.data,
+            fields:      ctx.fields,
+            pane:        ctx.pane,
+            focus:       ctx.focus,
+            styles:      ctx.styles,
+            area_width:  inner_area.width,
+            label_width: git_label_width(ctx.data, ctx.fields),
         },
     );
 
-    if !data.remotes.is_empty() {
-        let section_cursor = match current_section {
-            Some(Section::Remote(i)) => Some(i),
-            _ => None,
-        };
-        render_section_title(
-            &mut lines,
-            "Remotes",
-            data.remotes.len(),
-            section_cursor,
-            section_cursor.is_some(),
-            area.width,
-        );
-        let col_widths = remote_col_widths(&data.remotes);
-        render_remote_header(&mut lines, &col_widths);
-        for (i, remote) in data.remotes.iter().enumerate() {
-            let row_index = flat_len + i;
-            if active && row_index == pane.pos() {
-                focused_output_line = lines.len();
-            }
-            let selection = pane.selection_state(row_index, focus);
-            lines.push(remote_row_line(remote, &col_widths, selection));
-        }
-    }
+    append_remotes_section(
+        &mut lines,
+        &mut focused_output_line,
+        &mut section_rules,
+        ctx,
+        flat_len,
+        current_section,
+    );
+    append_worktrees_section(
+        &mut lines,
+        &mut focused_output_line,
+        &mut section_rules,
+        ctx,
+        flat_len,
+        remotes_len,
+        current_section,
+    );
 
-    if !data.worktrees.is_empty() {
-        let section_cursor = match current_section {
-            Some(Section::Worktree(i)) => Some(i),
-            _ => None,
-        };
-        render_section_title(
-            &mut lines,
-            "Worktrees",
-            data.worktrees.len(),
-            section_cursor,
-            section_cursor.is_some(),
-            area.width,
-        );
-        let col_widths = worktree_col_widths(&data.worktrees);
-        render_worktree_header(&mut lines, &col_widths);
-        for (i, wt) in data.worktrees.iter().enumerate() {
-            let row_index = flat_len + remotes_len + i;
-            if active && row_index == pane.pos() {
-                focused_output_line = lines.len();
-            }
-            let selection = pane.selection_state(row_index, focus);
-            lines.push(worktree_row_line(wt, &col_widths, selection));
-        }
-    }
-
-    let scroll_y = package::detail_column_scroll_offset(focus, focused_output_line, area.height);
-    frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
+    let scroll_y =
+        package::detail_column_scroll_offset(ctx.focus, focused_output_line, inner_area.height);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), inner_area);
+    render_section_overlays(
+        frame,
+        &section_rules,
+        scroll_y,
+        outer_area,
+        inner_area,
+        ctx.focus,
+        ctx.styles,
+    );
     usize::from(scroll_y)
+}
+
+fn append_remotes_section(
+    lines: &mut Vec<Line<'static>>,
+    focused_output_line: &mut usize,
+    section_rules: &mut Vec<SectionRule>,
+    ctx: &GitRenderCtx<'_>,
+    flat_len: usize,
+    current_section: Option<Section>,
+) {
+    if ctx.data.remotes.is_empty() {
+        return;
+    }
+    let focused = matches!(current_section, Some(Section::Remote(_)));
+    let cursor = match current_section {
+        Some(Section::Remote(i)) => Some(i),
+        _ => None,
+    };
+    let title = section_title_text("Remotes", ctx.data.remotes.len(), cursor);
+    // Blank spacer row + placeholder row for the rule overlay.
+    lines.push(Line::from(Span::raw(String::new())));
+    section_rules.push(SectionRule {
+        inner_y: lines.len(),
+        title,
+        focused,
+    });
+    lines.push(Line::from(Span::raw(String::new())));
+    let col_widths = remote_col_widths(&ctx.data.remotes);
+    render_remote_header(lines, &col_widths);
+    let active = matches!(ctx.focus, PaneFocusState::Active);
+    for (i, remote) in ctx.data.remotes.iter().enumerate() {
+        let row_index = flat_len + i;
+        if active && row_index == ctx.pane.pos() {
+            *focused_output_line = lines.len();
+        }
+        let selection = ctx.pane.selection_state(row_index, ctx.focus);
+        lines.push(remote_row_line(remote, &col_widths, selection));
+    }
+}
+
+fn append_worktrees_section(
+    lines: &mut Vec<Line<'static>>,
+    focused_output_line: &mut usize,
+    section_rules: &mut Vec<SectionRule>,
+    ctx: &GitRenderCtx<'_>,
+    flat_len: usize,
+    remotes_len: usize,
+    current_section: Option<Section>,
+) {
+    if ctx.data.worktrees.is_empty() {
+        return;
+    }
+    let focused = matches!(current_section, Some(Section::Worktree(_)));
+    let cursor = match current_section {
+        Some(Section::Worktree(i)) => Some(i),
+        _ => None,
+    };
+    let title = section_title_text("Worktrees", ctx.data.worktrees.len(), cursor);
+    lines.push(Line::from(Span::raw(String::new())));
+    section_rules.push(SectionRule {
+        inner_y: lines.len(),
+        title,
+        focused,
+    });
+    lines.push(Line::from(Span::raw(String::new())));
+    let col_widths = worktree_col_widths(&ctx.data.worktrees);
+    render_worktree_header(lines, &col_widths);
+    let active = matches!(ctx.focus, PaneFocusState::Active);
+    for (i, wt) in ctx.data.worktrees.iter().enumerate() {
+        let row_index = flat_len + remotes_len + i;
+        if active && row_index == ctx.pane.pos() {
+            *focused_output_line = lines.len();
+        }
+        let selection = ctx.pane.selection_state(row_index, ctx.focus);
+        lines.push(worktree_row_line(wt, &col_widths, selection));
+    }
+}
+
+fn section_title_text(label: &str, len: usize, cursor: Option<usize>) -> String {
+    format!(
+        "{label} {}",
+        PaneTitleCount::Single { len, cursor }.body(),
+    )
+}
+
+fn render_section_overlays(
+    frame: &mut Frame,
+    section_rules: &[SectionRule],
+    scroll_y: u16,
+    outer_area: Rect,
+    inner_area: Rect,
+    focus: PaneFocusState,
+    styles: &RenderStyles,
+) {
+    // Match the outer pane chrome — rule segments use the same border style
+    // as the pane it sits inside, so focused panes stay yellow end-to-end and
+    // unfocused panes stay at the default theme weight.
+    let rule_style = if matches!(focus, PaneFocusState::Active) {
+        styles.chrome.active_border
+    } else {
+        styles.chrome.inactive_border
+    };
+    for rule in section_rules {
+        let relative_y = u16::try_from(rule.inner_y).unwrap_or(u16::MAX);
+        if relative_y < scroll_y {
+            continue;
+        }
+        let abs_y = inner_area.y.saturating_add(relative_y - scroll_y);
+        if abs_y < inner_area.y || abs_y >= inner_area.y.saturating_add(inner_area.height) {
+            continue;
+        }
+        let title_color = if rule.focused {
+            TITLE_COLOR
+        } else {
+            INACTIVE_TITLE_COLOR
+        };
+        let title_style = Style::default()
+            .fg(title_color)
+            .add_modifier(Modifier::BOLD);
+        pane::render_horizontal_rule(
+            frame,
+            Rect {
+                x:      outer_area.x,
+                y:      abs_y,
+                width:  outer_area.width,
+                height: 1,
+            },
+            rule_style,
+            Some(pane::RuleTitle {
+                text:  &rule.title,
+                style: title_style,
+            }),
+            None,
+        );
+    }
 }
 
 struct RenderFlatArgs<'a> {
@@ -269,40 +390,6 @@ fn render_flat_fields(
             ]));
         }
     }
-}
-
-fn render_section_title(
-    lines: &mut Vec<Line<'static>>,
-    label: &str,
-    len: usize,
-    cursor: Option<usize>,
-    focused: bool,
-    pane_width: u16,
-) {
-    let title = pane::pane_title(label, &PaneTitleCount::Single { len, cursor });
-    let title_color = if focused {
-        TITLE_COLOR
-    } else {
-        INACTIVE_TITLE_COLOR
-    };
-    let title_style = Style::default()
-        .fg(title_color)
-        .add_modifier(Modifier::BOLD);
-    let rule_style = Style::default().fg(INACTIVE_BORDER_COLOR);
-    let title_width = title.width();
-    let total_width = usize::from(pane_width);
-    // Layout: "─ {title} ─────────..." — one leading rule char, the title
-    // (which already has its own surrounding spaces from pane_title), then
-    // fill the remaining width with rule chars.
-    let leading = "─";
-    let leading_w = leading.width();
-    let trailing = total_width.saturating_sub(leading_w + title_width);
-    let trailing_str = "─".repeat(trailing);
-    lines.push(Line::from(vec![
-        Span::styled(leading.to_string(), rule_style),
-        Span::styled(title, title_style),
-        Span::styled(trailing_str, rule_style),
-    ]));
 }
 
 // ── Remotes table ────────────────────────────────────────────────────
@@ -546,7 +633,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         focus,
         styles: &styles,
     };
-    let scroll_offset = render_git_column_inner(frame, &git_ctx, git_inner);
+    let scroll_offset = render_git_column_inner(frame, &git_ctx, area, git_inner);
     app.pane_manager_mut()
         .pane_mut(PaneId::Git)
         .set_scroll_offset(scroll_offset);
