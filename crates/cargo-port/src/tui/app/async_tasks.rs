@@ -71,7 +71,6 @@ impl App {
             .or_else(|| self.selection_paths.last_selected.clone());
         let should_focus_project_list = false;
         self.projects = projects;
-        self.dirty.finder.mark_dirty();
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
         self.register_lint_for_root_items();
@@ -1196,7 +1195,6 @@ impl App {
         self.recompute_cargo_active_paths();
         self.data_generation += 1;
         self.detail_generation += 1;
-        self.dirty.finder.mark_dirty();
     }
 
     fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
@@ -1645,7 +1643,6 @@ impl App {
             self.maybe_log_startup_phase_completions();
         }
         self.spawn_repo_fetch_for_git_info(path, &info);
-        self.dirty.finder.mark_dirty();
     }
 
     pub(in super::super) fn handle_git_first_commit(
@@ -2009,7 +2006,6 @@ impl App {
             .map(AbsolutePath::from)
             .or_else(|| self.selection_paths.last_selected.clone());
         self.projects = ProjectList::new(projects);
-        self.dirty.finder.mark_dirty();
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();

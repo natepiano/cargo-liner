@@ -201,14 +201,12 @@ impl RetrySpawnMode {
 
 #[derive(Debug)]
 pub(in super::super) struct DirtyState {
-    pub finder:   Dirtiness,
     pub terminal: Dirtiness,
 }
 
 impl DirtyState {
     pub(in super::super) const fn initial() -> Self {
         Self {
-            finder:   Dirtiness::Dirty,
             terminal: Dirtiness::Clean,
         }
     }

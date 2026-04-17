@@ -430,13 +430,10 @@ fn handle_overlay_editor_key(app: &mut App, event: &KeyEvent) -> bool {
 }
 
 fn open_finder(app: &mut App) {
-    if app.dirty().finder.is_dirty() {
-        let (index, col_widths) = super::finder::build_finder_index(app.projects());
-        let finder = app.finder_mut();
-        finder.index = index;
-        finder.col_widths = col_widths;
-        app.dirty_mut().finder.mark_clean();
-    }
+    let (index, col_widths) = super::finder::build_finder_index(app.projects());
+    let finder = app.finder_mut();
+    finder.index = index;
+    finder.col_widths = col_widths;
     app.open_overlay(PaneId::Finder);
     app.open_finder();
     let finder = app.finder_mut();

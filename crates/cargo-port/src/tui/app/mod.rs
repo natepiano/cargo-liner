@@ -253,10 +253,6 @@ impl App {
     #[cfg(test)]
     pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> { &mut self.expanded }
 
-    pub(super) const fn dirty(&self) -> &types::DirtyState { &self.dirty }
-
-    pub(super) const fn dirty_mut(&mut self) -> &mut types::DirtyState { &mut self.dirty }
-
     pub(super) const fn pane_manager(&self) -> &PaneManager<PaneId> { &self.pane_manager }
 
     pub(super) const fn pane_manager_mut(&mut self) -> &mut PaneManager<PaneId> {

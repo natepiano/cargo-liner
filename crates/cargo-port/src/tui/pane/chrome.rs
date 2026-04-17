@@ -12,7 +12,7 @@ use crate::tui::constants::INACTIVE_BORDER_COLOR;
 use crate::tui::constants::INACTIVE_TITLE_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::TITLE_COLOR;
-use crate::tui::pane::Pane;
+use super::Pane;
 
 #[derive(Clone, Copy)]
 pub(in super::super) struct PaneChrome {
