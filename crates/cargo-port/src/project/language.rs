@@ -11,6 +11,9 @@ pub(crate) fn language_icon(language: &str) -> &'static str {
         "Shell" | "Bash" | "Zsh" | "Fish" => "$_",
         "Liquid" => "\u{1f4a7}",      // 💧
         "TOML" => "\u{2699}\u{fe0f}", // ⚙️
+        "JSON" => "{}",
+        "HTML" => "\u{1f310}",       // 🌐
+        "Plain Text" => "\u{1f4c4}", // 📄
         _ => "  ",
     }
 }
