@@ -32,12 +32,12 @@ use super::project::GitRepoPresence;
 use super::project::LangEntry;
 use super::project::LanguageStats;
 use super::project::MemberGroup;
-use super::project::PackageProject;
+use super::project::Package;
 use super::project::ProjectFields;
 use super::project::RootItem;
 use super::project::RustProject;
-use super::project::SubmoduleInfo;
-use super::project::WorkspaceProject;
+use super::project::Submodule;
+use super::project::Workspace;
 use super::project::WorktreeGroup;
 
 /// Messages sent from background threads to the main event loop.
@@ -109,7 +109,7 @@ pub(crate) enum BackgroundMsg {
     /// Git submodules detected for a project.
     Submodules {
         path:       AbsolutePath,
-        submodules: Vec<SubmoduleInfo>,
+        submodules: Vec<Submodule>,
     },
     /// Live lint status update from the lint runtime (a lint run started,
     /// passed, failed, etc.). Sent during normal operation when files
@@ -473,7 +473,7 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
         let ws_path = ws.path().to_path_buf();
         let member_paths = workspace_member_paths_new(&ws_path, items);
 
-        let mut all_members: Vec<PackageProject> = items
+        let mut all_members: Vec<Package> = items
             .iter()
             .enumerate()
             .filter(|(j, candidate)| {
@@ -487,7 +487,7 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
                     Some(pkg.clone())
                 } else if let RootItem::Rust(RustProject::Workspace(nested_ws)) = candidate {
                     // Nested workspace treated as a package member
-                    Some(PackageProject::new(
+                    Some(Package::new(
                         nested_ws.path().clone(),
                         nested_ws.name().map(str::to_string),
                         nested_ws.cargo().clone(),
@@ -735,7 +735,7 @@ fn merge_worktrees_new(items: &mut Vec<RootItem>) {
         let primary_item = &items[*idx];
         let replacement = match primary_item {
             RootItem::Rust(RustProject::Workspace(ws)) => {
-                let linked_ws: Vec<WorkspaceProject> = linked
+                let linked_ws: Vec<Workspace> = linked
                     .into_iter()
                     .filter_map(|item| {
                         if let RootItem::Rust(RustProject::Workspace(linked_ws)) = item {
@@ -748,7 +748,7 @@ fn merge_worktrees_new(items: &mut Vec<RootItem>) {
                 RootItem::Worktrees(WorktreeGroup::new_workspaces(ws.clone(), linked_ws))
             },
             RootItem::Rust(RustProject::Package(pkg)) => {
-                let linked_pkg: Vec<PackageProject> = linked
+                let linked_pkg: Vec<Package> = linked
                     .into_iter()
                     .filter_map(|item| {
                         if let RootItem::Rust(RustProject::Package(linked_pkg)) = item {
@@ -812,11 +812,11 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
     remove_indices.dedup();
 
     // Convert vendored items to `PackageProject`
-    let mut vendored_projects: Vec<(usize, PackageProject)> = Vec::new();
+    let mut vendored_projects: Vec<(usize, Package)> = Vec::new();
     for &(vi, ni) in &vendored_map {
         let pkg = match &items[vi] {
             RootItem::Rust(RustProject::Package(p)) => p.clone(),
-            RootItem::Rust(RustProject::Workspace(ws)) => PackageProject::new(
+            RootItem::Rust(RustProject::Workspace(ws)) => Package::new(
                 ws.path().clone(),
                 ws.name().map(str::to_string),
                 ws.cargo().clone(),
@@ -824,7 +824,7 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
                 ws.worktree_name().map(str::to_string),
                 ws.worktree_primary_abs_path().cloned(),
             ),
-            RootItem::NonRust(nr) => PackageProject::new(
+            RootItem::NonRust(nr) => Package::new(
                 nr.path().clone(),
                 nr.name().map(str::to_string),
                 Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -869,10 +869,10 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
 
 fn group_members_new(
     workspace_path: &Path,
-    members: Vec<PackageProject>,
+    members: Vec<Package>,
     inline_dirs: &[String],
 ) -> Vec<MemberGroup> {
-    let mut group_map: HashMap<String, Vec<PackageProject>> = HashMap::new();
+    let mut group_map: HashMap<String, Vec<Package>> = HashMap::new();
 
     for member in members {
         let relative = member
@@ -1534,7 +1534,7 @@ mod tests {
         worktree_name: Option<&str>,
         primary_abs: Option<&str>,
     ) -> RootItem {
-        RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
+        RootItem::Rust(RustProject::Workspace(Workspace::new(
             AbsolutePath::from(abs_path),
             name.map(String::from),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -1551,7 +1551,7 @@ mod tests {
         worktree_name: Option<&str>,
         primary_abs: Option<&str>,
     ) -> RootItem {
-        RootItem::Rust(RustProject::Package(PackageProject::new(
+        RootItem::Rust(RustProject::Package(Package::new(
             AbsolutePath::from(abs_path),
             name.map(String::from),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),

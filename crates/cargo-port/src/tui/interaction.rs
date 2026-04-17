@@ -273,13 +273,13 @@ mod tests {
     use crate::project::GitStatus;
     use crate::project::LocalGitState;
     use crate::project::MemberGroup;
-    use crate::project::PackageProject;
+    use crate::project::Package;
     use crate::project::ProjectType;
     use crate::project::RootItem;
     use crate::project::RustProject;
     use crate::project::Visibility;
     use crate::project::WorkflowPresence;
-    use crate::project::WorkspaceProject;
+    use crate::project::Workspace;
     use crate::project::WorktreeGroup;
     use crate::project_list::ProjectList;
     use crate::tui::app::App;
@@ -311,7 +311,7 @@ mod tests {
     }
 
     fn make_package_with_cargo(name: &str, path: &Path, cargo: Cargo) -> RootItem {
-        RootItem::Rust(RustProject::Package(PackageProject::new(
+        RootItem::Rust(RustProject::Package(Package::new(
             AbsolutePath::from(path),
             Some(name.to_string()),
             cargo,
@@ -326,8 +326,8 @@ mod tests {
         path: &Path,
         worktree_name: Option<&str>,
         primary_abs_path: Option<&Path>,
-    ) -> PackageProject {
-        PackageProject::new(
+    ) -> Package {
+        Package::new(
             AbsolutePath::from(path),
             Some(name.to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -337,10 +337,10 @@ mod tests {
         )
     }
 
-    fn inline_group(members: Vec<PackageProject>) -> MemberGroup { MemberGroup::Inline { members } }
+    fn inline_group(members: Vec<Package>) -> MemberGroup { MemberGroup::Inline { members } }
 
-    fn make_member(name: &str, path: &Path) -> PackageProject {
-        PackageProject::new(
+    fn make_member(name: &str, path: &Path) -> Package {
+        Package::new(
             AbsolutePath::from(path),
             Some(name.to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -351,7 +351,7 @@ mod tests {
     }
 
     fn make_workspace_with_members(name: &str, path: &Path, groups: Vec<MemberGroup>) -> RootItem {
-        RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
+        RootItem::Rust(RustProject::Workspace(Workspace::new(
             AbsolutePath::from(path),
             Some(name.to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),

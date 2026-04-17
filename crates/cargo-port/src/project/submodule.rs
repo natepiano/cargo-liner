@@ -5,7 +5,7 @@ use super::paths::AbsolutePath;
 
 /// Metadata for a git submodule nested inside a project.
 #[derive(Clone)]
-pub(crate) struct SubmoduleInfo {
+pub(crate) struct Submodule {
     /// The submodule name from `.gitmodules` (e.g. `glTF-IBL-Sampler`).
     pub name:          String,
     /// Absolute path on disk.
@@ -24,7 +24,7 @@ pub(crate) struct SubmoduleInfo {
 }
 
 /// Parse `.gitmodules` and resolve pinned commits for all submodules.
-pub(crate) fn detect_submodules(project_root: &Path) -> Vec<SubmoduleInfo> {
+pub(crate) fn detect_submodules(project_root: &Path) -> Vec<Submodule> {
     let gitmodules_path = project_root.join(".gitmodules");
     let Ok(content) = std::fs::read_to_string(&gitmodules_path) else {
         return Vec::new();
@@ -48,9 +48,9 @@ pub(crate) fn detect_submodules(project_root: &Path) -> Vec<SubmoduleInfo> {
 }
 
 /// Parse the INI-like `.gitmodules` format into partially filled entries.
-fn parse_gitmodules(content: &str) -> Vec<SubmoduleInfo> {
-    let mut entries: Vec<SubmoduleInfo> = Vec::new();
-    let mut current: Option<SubmoduleInfo> = None;
+fn parse_gitmodules(content: &str) -> Vec<Submodule> {
+    let mut entries: Vec<Submodule> = Vec::new();
+    let mut current: Option<Submodule> = None;
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -61,7 +61,7 @@ fn parse_gitmodules(content: &str) -> Vec<SubmoduleInfo> {
             if let Some(entry) = current.take() {
                 entries.push(entry);
             }
-            current = Some(SubmoduleInfo {
+            current = Some(Submodule {
                 name:          header.to_string(),
                 path:          "/".into(),
                 relative_path: String::new(),

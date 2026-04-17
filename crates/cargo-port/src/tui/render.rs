@@ -786,7 +786,7 @@ fn render_root_item(
 /// Build a `ListItem` for a child project (workspace member or worktree).
 fn render_child_item(
     app: &App,
-    project: &project::PackageProject,
+    project: &project::Package,
     name: &str,
     child_sorted: &[u64],
     prefix: &'static str,
@@ -797,7 +797,7 @@ fn render_child_item(
     let disk = app.formatted_disk(path);
     let disk_bytes = project.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
-    let lang = project::PackageProject::lang_icon();
+    let lang = project::Package::lang_icon();
     let cargo_active = app.is_cargo_active_path(path);
     let lint = if cargo_active {
         app.lint_icon(path)
@@ -1250,6 +1250,7 @@ fn render_submodule_item(
     app: &App,
     node_index: usize,
     submodule_index: usize,
+    child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ResolvedWidths,
 ) -> ListItem<'static> {
     let item = &app.projects()[node_index];
@@ -1259,8 +1260,17 @@ fn render_submodule_item(
     };
     let path = submodule.path.as_path();
     let name = format!("{} (s)", submodule.name);
+    let disk = app.formatted_disk(path);
+    let disk_bytes = submodule.info.disk_usage_bytes;
+    let sorted = child_sorted.get(&node_index).map_or(&[][..], Vec::as_slice);
+    let ds = disk_color(disk_percentile(disk_bytes, sorted));
     let git_status = app.git_status_for(path);
-    let deleted = app.is_deleted(item.path());
+    let deleted = app.is_deleted(item.path()) || app.is_deleted(path);
+    let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
+        ("0.0", Some(" [x]"), Some(Style::default().fg(LABEL_COLOR)))
+    } else {
+        (disk.as_str(), None, None)
+    };
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix: PREFIX_SUBMODULE,
         name: &name,
@@ -1273,10 +1283,10 @@ fn render_submodule_item(
         git_status,
         lint_icon: " ",
         lint_style: Style::default(),
-        disk: "",
-        disk_style: Style::default(),
-        disk_suffix: None,
-        disk_suffix_style: None,
+        disk: disk_text,
+        disk_style: ds,
+        disk_suffix,
+        disk_suffix_style,
         lang_icon: "  ",
         git_origin_sync: "",
         git_main: "",
@@ -1483,7 +1493,7 @@ fn render_tree_item(
         VisibleRow::Submodule {
             node_index,
             submodule_index,
-        } => render_submodule_item(app, *node_index, *submodule_index, widths),
+        } => render_submodule_item(app, *node_index, *submodule_index, child_sorted, widths),
     }
 }
 

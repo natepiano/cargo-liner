@@ -6,14 +6,14 @@ use std::path::Path;
 use crate::lint::LintRuns;
 use crate::project::AbsolutePath;
 use crate::project::MemberGroup;
-use crate::project::PackageProject;
+use crate::project::Package;
 use crate::project::ProjectFields;
 use crate::project::ProjectInfo;
 use crate::project::RootItem;
 use crate::project::RustInfo;
 use crate::project::RustProject;
 use crate::project::Visibility;
-use crate::project::WorkspaceProject;
+use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 
 /// Owning wrapper around the project hierarchy.
@@ -499,16 +499,16 @@ impl<'a> IntoIterator for &'a mut ProjectList {
 
 // -- Helpers --------------------------------------------------------------
 
-fn regroup_workspace(ws: &mut WorkspaceProject, inline_dirs: &[String]) {
+fn regroup_workspace(ws: &mut Workspace, inline_dirs: &[String]) {
     // Collect all members from all existing groups.
-    let members: Vec<PackageProject> = ws
+    let members: Vec<Package> = ws
         .groups_mut()
         .drain(..)
         .flat_map(MemberGroup::into_members)
         .collect();
 
     // Re-sort into groups based on subdirectory and inline_dirs.
-    let mut group_map: std::collections::HashMap<String, Vec<PackageProject>> =
+    let mut group_map: std::collections::HashMap<String, Vec<Package>> =
         std::collections::HashMap::new();
     for member in members {
         let relative = member
@@ -549,7 +549,7 @@ fn regroup_workspace(ws: &mut WorkspaceProject, inline_dirs: &[String]) {
     *ws.groups_mut() = groups;
 }
 
-fn try_insert_member(ws: &mut WorkspaceProject, item_path: &Path, item: &RootItem) -> bool {
+fn try_insert_member(ws: &mut Workspace, item_path: &Path, item: &RootItem) -> bool {
     if !item_path.starts_with(ws.path()) || item_path == ws.path() {
         return false;
     }

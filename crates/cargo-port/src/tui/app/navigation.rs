@@ -7,7 +7,7 @@ use super::types::VisibleRow;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::DisplayPath;
-use crate::project::PackageProject;
+use crate::project::Package;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
@@ -152,7 +152,7 @@ impl App {
         item: &RootItem,
         group_index: usize,
         member_index: usize,
-    ) -> Option<&PackageProject> {
+    ) -> Option<&Package> {
         match item {
             RootItem::Rust(RustProject::Workspace(ws)) => {
                 ws.groups().get(group_index)?.members().get(member_index)
@@ -171,7 +171,7 @@ impl App {
     }
 
     /// Resolve a vendored `PackageProject` from a `RootItem`.
-    fn resolve_vendored(item: &RootItem, vendored_index: usize) -> Option<&PackageProject> {
+    fn resolve_vendored(item: &RootItem, vendored_index: usize) -> Option<&Package> {
         match item {
             RootItem::Rust(RustProject::Workspace(ws)) => ws.vendored().get(vendored_index),
             RootItem::Rust(RustProject::Package(pkg)) => pkg.vendored().get(vendored_index),
@@ -195,7 +195,7 @@ impl App {
         worktree_index: usize,
         group_index: usize,
         member_index: usize,
-    ) -> Option<&PackageProject> {
+    ) -> Option<&Package> {
         match item {
             RootItem::Worktrees(WorktreeGroup::Workspaces {
                 primary, linked, ..
@@ -216,7 +216,7 @@ impl App {
         item: &RootItem,
         worktree_index: usize,
         vendored_index: usize,
-    ) -> Option<&PackageProject> {
+    ) -> Option<&Package> {
         match item {
             RootItem::Worktrees(WorktreeGroup::Workspaces {
                 primary, linked, ..

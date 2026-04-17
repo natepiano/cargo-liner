@@ -46,7 +46,7 @@ pub(crate) use language::language_icon;
 // ── Project types ────────────────────────────────────────────────────
 pub(crate) use member_group::MemberGroup;
 pub(crate) use non_rust::NonRustProject;
-pub(crate) use package::PackageProject;
+pub(crate) use package::Package;
 // ── Path types ───────────────────────────────────────────────────────
 pub(crate) use paths::AbsolutePath;
 pub(crate) use paths::DisplayPath;
@@ -58,7 +58,7 @@ pub(crate) use rust_info::Cargo;
 pub(crate) use rust_info::RustInfo;
 pub(crate) use rust_project::RustProject;
 // ── Submodule types ─────────────────────────────────────────────────
-pub(crate) use submodule::SubmoduleInfo;
+pub(crate) use submodule::Submodule;
 pub(crate) use submodule::detect_submodules;
-pub(crate) use workspace::WorkspaceProject;
+pub(crate) use workspace::Workspace;
 pub(crate) use worktree_group::WorktreeGroup;

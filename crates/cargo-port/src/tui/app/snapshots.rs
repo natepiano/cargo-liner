@@ -14,13 +14,13 @@ use crate::project::GitInfo;
 use crate::project::GitOrigin;
 use crate::project::GitStatus;
 use crate::project::MemberGroup;
-use crate::project::PackageProject;
+use crate::project::Package;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
-use crate::project::SubmoduleInfo;
+use crate::project::Submodule;
 use crate::project::Visibility;
-use crate::project::WorkspaceProject;
+use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::tui::columns;
 use crate::tui::columns::COL_DISK;
@@ -125,7 +125,7 @@ fn emit_groups(
     }
 }
 
-fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[PackageProject]) {
+fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[Package]) {
     for (vi, _) in vendored.iter().enumerate() {
         rows.push(VisibleRow::Vendored {
             node_index:     ni,
@@ -134,7 +134,7 @@ fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[Package
     }
 }
 
-fn emit_submodule_rows(rows: &mut Vec<VisibleRow>, ni: usize, submodules: &[SubmoduleInfo]) {
+fn emit_submodule_rows(rows: &mut Vec<VisibleRow>, ni: usize, submodules: &[Submodule]) {
     for (si, _) in submodules.iter().enumerate() {
         rows.push(VisibleRow::Submodule {
             node_index:      ni,
@@ -221,7 +221,7 @@ fn emit_worktree_children(
     ni: usize,
     wi: usize,
     groups: &[MemberGroup],
-    vendored: &[PackageProject],
+    vendored: &[Package],
     expanded: &HashSet<ExpandKey>,
 ) {
     for (gi, group) in groups.iter().enumerate() {
@@ -345,6 +345,10 @@ fn observe_item_fit_widths(widths: &mut ResolvedWidths, item: &RootItem, root_la
     for submodule in item.submodules() {
         let label = format!("{} (s)", submodule.name);
         App::observe_name_width(widths, dw(PREFIX_SUBMODULE) + dw(&label));
+        widths.observe(
+            COL_DISK,
+            dw(&formatted_disk(submodule.info.disk_usage_bytes)),
+        );
     }
 }
 
@@ -386,7 +390,7 @@ fn observe_new_member_group_fit_widths(
 
 fn observe_typed_vendored_fit_widths(
     widths: &mut ResolvedWidths,
-    vendored: &[PackageProject],
+    vendored: &[Package],
     prefix: &str,
 ) {
     let dw = columns::display_width;
@@ -397,7 +401,7 @@ fn observe_typed_vendored_fit_widths(
     }
 }
 
-fn observe_workspace_worktree_entry_fit_widths(widths: &mut ResolvedWidths, ws: &WorkspaceProject) {
+fn observe_workspace_worktree_entry_fit_widths(widths: &mut ResolvedWidths, ws: &Workspace) {
     let dw = columns::display_width;
     let wt_name = ws
         .worktree_name()
@@ -415,7 +419,7 @@ fn observe_workspace_worktree_entry_fit_widths(widths: &mut ResolvedWidths, ws: 
     observe_typed_vendored_fit_widths(widths, ws.vendored(), PREFIX_WT_VENDORED);
 }
 
-fn observe_package_worktree_entry_fit_widths(widths: &mut ResolvedWidths, pkg: &PackageProject) {
+fn observe_package_worktree_entry_fit_widths(widths: &mut ResolvedWidths, pkg: &Package) {
     let dw = columns::display_width;
     let wt_name = pkg
         .worktree_name()
@@ -477,7 +481,8 @@ pub(super) fn build_disk_cache_snapshot(
     (root_sorted, child_sorted)
 }
 
-/// Collect disk bytes for all children (members, vendored, worktree entries) of an item.
+/// Collect disk bytes for all children (members, vendored, worktree entries,
+/// submodules) of an item.
 fn collect_child_disk_values(item: &RootItem, values: &mut Vec<u64>) {
     match item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
@@ -510,6 +515,7 @@ fn collect_child_disk_values(item: &RootItem, values: &mut Vec<u64>) {
             }
         },
     }
+    collect_submodule_disk(item.submodules(), values);
 }
 
 fn collect_member_group_disk(groups: &[MemberGroup], values: &mut Vec<u64>) {
@@ -522,9 +528,17 @@ fn collect_member_group_disk(groups: &[MemberGroup], values: &mut Vec<u64>) {
     }
 }
 
-fn collect_vendored_disk(vendored: &[PackageProject], values: &mut Vec<u64>) {
+fn collect_vendored_disk(vendored: &[Package], values: &mut Vec<u64>) {
     for project in vendored {
         if let Some(bytes) = project.disk_usage_bytes() {
+            values.push(bytes);
+        }
+    }
+}
+
+fn collect_submodule_disk(submodules: &[Submodule], values: &mut Vec<u64>) {
+    for submodule in submodules {
+        if let Some(bytes) = submodule.info.disk_usage_bytes {
             values.push(bytes);
         }
     }

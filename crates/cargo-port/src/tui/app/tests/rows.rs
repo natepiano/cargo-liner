@@ -1,6 +1,50 @@
 use super::*;
 
 #[test]
+fn submodule_rows_render_disk_usage() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let root_dir = tmp.path().join("blender");
+    let sub_dir = root_dir.join("lib").join("linux_x64");
+    std::fs::create_dir_all(&sub_dir).unwrap_or_else(|_| std::process::abort());
+
+    let root_path = root_dir.to_string_lossy().to_string();
+    let sub_path = sub_dir.to_string_lossy().to_string();
+    let root = make_project(Some("blender"), &root_path);
+    let mut app = make_app(&[root]);
+
+    let root_info = app
+        .projects
+        .at_path_mut(Path::new(&root_path))
+        .unwrap_or_else(|| std::process::abort());
+    root_info.submodules.push(crate::project::Submodule {
+        name:          "lib/linux_x64".to_string(),
+        path:          AbsolutePath::from(sub_path.clone()),
+        relative_path: "lib/linux_x64".to_string(),
+        url:           None,
+        branch:        None,
+        commit:        None,
+        info:          crate::project::ProjectInfo::default(),
+    });
+
+    app.handle_disk_usage(Path::new(&root_path), 2_000_000);
+    app.handle_disk_usage(Path::new(&sub_path), 1_234_567);
+    app.ensure_visible_rows_cached();
+
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    assert!(app.expand(), "root with submodule should expand");
+    app.ensure_visible_rows_cached();
+
+    let rendered = rendered_root_name_cells(&mut app);
+    assert!(
+        rendered.iter().any(|line| {
+            line.contains("lib/linux_x64 (s)")
+                && (line.contains("1.2 MiB") || line.contains("1.2 Mi"))
+        }),
+        "submodule row should render its disk usage: {rendered:?}"
+    );
+}
+
+#[test]
 fn visible_rows_workspace_with_worktrees() {
     let member_a = make_member(Some("a"), "~/ws/a");
     let member_b = make_member(Some("b"), "~/ws/b");
@@ -953,7 +997,7 @@ fn visible_rows_workspace_no_worktrees() {
 
 #[test]
 fn visible_rows_include_vendored_children() {
-    let ws = WorkspaceProject::new(
+    let ws = Workspace::new(
         test_path("~/ws"),
         None,
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),

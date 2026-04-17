@@ -10,7 +10,7 @@ use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
 use super::rust_project::RustProject;
-use super::submodule::SubmoduleInfo;
+use super::submodule::Submodule;
 use super::worktree_group::WorktreeGroup;
 use crate::lint::LintRuns;
 use crate::lint::LintStatus;
@@ -134,7 +134,7 @@ impl RootItem {
     }
 
     /// Git submodules for this item's primary project info.
-    pub(crate) fn submodules(&self) -> &[SubmoduleInfo] {
+    pub(crate) fn submodules(&self) -> &[Submodule] {
         match self {
             Self::Rust(RustProject::Workspace(ws)) => &ws.info().submodules,
             Self::Rust(RustProject::Package(pkg)) => &pkg.info().submodules,
@@ -456,16 +456,16 @@ fn sum_disk(primary: Option<u64>, linked: impl Iterator<Item = Option<u64>>) -> 
     any.then_some(total)
 }
 
-use super::package::PackageProject;
+use super::package::Package;
 use super::rust_info::RustInfo;
-use super::workspace::WorkspaceProject;
+use super::workspace::Workspace;
 
 pub(super) fn single_live_workspace<'a>(
-    primary: &'a WorkspaceProject,
-    linked: &'a [WorkspaceProject],
-) -> Option<&'a WorkspaceProject> {
+    primary: &'a Workspace,
+    linked: &'a [Workspace],
+) -> Option<&'a Workspace> {
     let live_count = std::iter::once(primary.visibility())
-        .chain(linked.iter().map(WorkspaceProject::visibility))
+        .chain(linked.iter().map(Workspace::visibility))
         .filter(|v| !matches!(v, Visibility::Dismissed))
         .count();
     if live_count != 1 {
@@ -477,11 +477,11 @@ pub(super) fn single_live_workspace<'a>(
 }
 
 pub(super) fn single_live_package<'a>(
-    primary: &'a PackageProject,
-    linked: &'a [PackageProject],
-) -> Option<&'a PackageProject> {
+    primary: &'a Package,
+    linked: &'a [Package],
+) -> Option<&'a Package> {
     let live_count = std::iter::once(primary.visibility())
-        .chain(linked.iter().map(PackageProject::visibility))
+        .chain(linked.iter().map(Package::visibility))
         .filter(|v| !matches!(v, Visibility::Dismissed))
         .count();
     if live_count != 1 {

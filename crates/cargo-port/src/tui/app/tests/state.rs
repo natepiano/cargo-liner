@@ -403,11 +403,11 @@ fn startup_git_expected_uses_top_level_git_directories() {
         AbsolutePath::from(non_rust_dir.clone()),
         Some(".claude".to_string()),
     ));
-    let workspace = RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
+    let workspace = RootItem::Rust(RustProject::Workspace(Workspace::new(
         AbsolutePath::from(workspace_dir.clone()),
         Some("bevy".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-        vec![inline_group(vec![PackageProject::new(
+        vec![inline_group(vec![Package::new(
             AbsolutePath::from(member_dir),
             Some("core".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -419,7 +419,7 @@ fn startup_git_expected_uses_top_level_git_directories() {
         None,
         None,
     )));
-    let primary = PackageProject::new(
+    let primary = Package::new(
         AbsolutePath::from(primary_dir.clone()),
         Some("cargo-port".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -427,7 +427,7 @@ fn startup_git_expected_uses_top_level_git_directories() {
         None,
         None,
     );
-    let linked = PackageProject::new(
+    let linked = Package::new(
         AbsolutePath::from(linked_dir),
         Some("cargo-port_feat".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -461,11 +461,11 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
     std::fs::create_dir_all(workspace_dir.join(".git")).unwrap_or_else(|_| std::process::abort());
     std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
 
-    let workspace = RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
+    let workspace = RootItem::Rust(RustProject::Workspace(Workspace::new(
         AbsolutePath::from(workspace_dir.clone()),
         Some("bevy".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-        vec![inline_group(vec![PackageProject::new(
+        vec![inline_group(vec![Package::new(
             AbsolutePath::from(member_dir.clone()),
             Some("core".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -579,7 +579,7 @@ fn lint_runtime_snapshot_deduplicates_primary_worktree_path() {
 #[test]
 fn vendored_path_dependency_becomes_cargo_active() {
     let root_item = {
-        let pkg = PackageProject::new(
+        let pkg = Package::new(
             test_path("~/app"),
             Some("app".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),

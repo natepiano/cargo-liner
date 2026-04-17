@@ -1,9 +1,9 @@
 use super::info::Visibility;
 use super::info::WorktreeHealth;
-use super::package::PackageProject;
+use super::package::Package;
 use super::paths::AbsolutePath;
 use super::project_fields::ProjectFields;
-use super::workspace::WorkspaceProject;
+use super::workspace::Workspace;
 use crate::lint::LintStatus;
 
 /// A worktree group: primary checkout + linked worktree checkouts.
@@ -13,24 +13,21 @@ use crate::lint::LintStatus;
 #[derive(Clone)]
 pub(crate) enum WorktreeGroup {
     Workspaces {
-        primary: WorkspaceProject,
-        linked:  Vec<WorkspaceProject>,
+        primary: Workspace,
+        linked:  Vec<Workspace>,
     },
     Packages {
-        primary: PackageProject,
-        linked:  Vec<PackageProject>,
+        primary: Package,
+        linked:  Vec<Package>,
     },
 }
 
 impl WorktreeGroup {
-    pub(crate) const fn new_workspaces(
-        primary: WorkspaceProject,
-        linked: Vec<WorkspaceProject>,
-    ) -> Self {
+    pub(crate) const fn new_workspaces(primary: Workspace, linked: Vec<Workspace>) -> Self {
         Self::Workspaces { primary, linked }
     }
 
-    pub(crate) const fn new_packages(primary: PackageProject, linked: Vec<PackageProject>) -> Self {
+    pub(crate) const fn new_packages(primary: Package, linked: Vec<Package>) -> Self {
         Self::Packages { primary, linked }
     }
 
@@ -66,13 +63,13 @@ impl WorktreeGroup {
             Self::Workspaces {
                 primary, linked, ..
             } => std::iter::once(primary.visibility())
-                .chain(linked.iter().map(WorkspaceProject::visibility))
+                .chain(linked.iter().map(Workspace::visibility))
                 .filter(|v| !matches!(v, Visibility::Dismissed))
                 .count(),
             Self::Packages {
                 primary, linked, ..
             } => std::iter::once(primary.visibility())
-                .chain(linked.iter().map(PackageProject::visibility))
+                .chain(linked.iter().map(Package::visibility))
                 .filter(|v| !matches!(v, Visibility::Dismissed))
                 .count(),
         }
@@ -83,12 +80,12 @@ impl WorktreeGroup {
             Self::Workspaces {
                 primary, linked, ..
             } => std::iter::once(primary.visibility())
-                .chain(linked.iter().map(WorkspaceProject::visibility))
+                .chain(linked.iter().map(Workspace::visibility))
                 .any(|visibility| visibility == Visibility::Deleted),
             Self::Packages {
                 primary, linked, ..
             } => std::iter::once(primary.visibility())
-                .chain(linked.iter().map(PackageProject::visibility))
+                .chain(linked.iter().map(Package::visibility))
                 .any(|visibility| visibility == Visibility::Deleted),
         }
     }
@@ -98,13 +95,13 @@ impl WorktreeGroup {
             Self::Workspaces {
                 primary, linked, ..
             } => std::iter::once(primary.visibility())
-                .chain(linked.iter().map(WorkspaceProject::visibility))
+                .chain(linked.iter().map(Workspace::visibility))
                 .filter(|visibility| *visibility == Visibility::Visible)
                 .count(),
             Self::Packages {
                 primary, linked, ..
             } => std::iter::once(primary.visibility())
-                .chain(linked.iter().map(PackageProject::visibility))
+                .chain(linked.iter().map(Package::visibility))
                 .filter(|visibility| *visibility == Visibility::Visible)
                 .count(),
         }
@@ -113,7 +110,7 @@ impl WorktreeGroup {
     pub(crate) fn renders_as_group(&self) -> bool { self.live_entry_count() > 1 }
 
     /// Returns the single non-dismissed workspace if exactly one is live.
-    pub(crate) fn single_live_workspace(&self) -> Option<&WorkspaceProject> {
+    pub(crate) fn single_live_workspace(&self) -> Option<&Workspace> {
         match self {
             Self::Workspaces {
                 primary, linked, ..
@@ -123,7 +120,7 @@ impl WorktreeGroup {
     }
 
     /// Returns the single non-dismissed package if exactly one is live.
-    pub(crate) fn single_live_package(&self) -> Option<&PackageProject> {
+    pub(crate) fn single_live_package(&self) -> Option<&Package> {
         match self {
             Self::Packages {
                 primary, linked, ..

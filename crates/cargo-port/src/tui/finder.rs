@@ -34,12 +34,12 @@ use super::panes::RunTargetKind;
 use crate::project::AbsolutePath;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
-use crate::project::PackageProject;
+use crate::project::Package;
 use crate::project::ProjectFields;
 use crate::project::ProjectType;
 use crate::project::RootItem;
 use crate::project::RustProject;
-use crate::project::WorkspaceProject;
+use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 
 /// A searchable item in the universal finder.
@@ -178,7 +178,7 @@ fn branch_for(git_info: Option<&GitInfo>) -> String {
         .to_string()
 }
 
-fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &WorkspaceProject) {
+fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &Workspace) {
     let root_path = ws.display_path().into_string();
     let root_abs_path = ws.path();
     let root_branch = branch_for(ws.git_info());
@@ -231,7 +231,7 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &WorkspaceProject) {
     }
 }
 
-fn add_package_items(items: &mut Vec<FinderItem>, pkg: &PackageProject) {
+fn add_package_items(items: &mut Vec<FinderItem>, pkg: &Package) {
     let root_path = pkg.display_path().into_string();
     let root_abs_path = pkg.path();
     let root_branch = branch_for(pkg.git_info());
@@ -261,11 +261,7 @@ fn add_package_items(items: &mut Vec<FinderItem>, pkg: &PackageProject) {
     }
 }
 
-fn add_vendored_items_typed(
-    items: &mut Vec<FinderItem>,
-    project: &PackageProject,
-    parent_name: &str,
-) {
+fn add_vendored_items_typed(items: &mut Vec<FinderItem>, project: &Package, parent_name: &str) {
     let project_name = project.package_name().into_string();
     let dir = project.display_path().into_string();
     let project_path: AbsolutePath = project.path().clone();
@@ -946,11 +942,11 @@ mod tests {
     use super::*;
     use crate::project::Cargo;
     use crate::project::ExampleGroup;
-    use crate::project::PackageProject;
+    use crate::project::Package;
     use crate::project::ProjectType;
     use crate::project::RootItem;
     use crate::project::RustProject;
-    use crate::project::WorkspaceProject;
+    use crate::project::Workspace;
 
     fn test_path(path: &str) -> AbsolutePath {
         let pb = if path == "~" {
@@ -967,12 +963,12 @@ mod tests {
 
     #[test]
     fn build_finder_index_includes_vendored_projects() {
-        let ws = WorkspaceProject::new(
+        let ws = Workspace::new(
             test_path("~/rust/hana"),
             Some("hana".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
-            vec![PackageProject::new(
+            vec![Package::new(
                 test_path("~/rust/hana/crates/clay-layout"),
                 Some("clay-layout".to_string()),
                 Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -1067,7 +1063,7 @@ mod tests {
 
     #[test]
     fn build_finder_index_tokenizes_display_name_and_dir_segments() {
-        let pkg = PackageProject::new(
+        let pkg = Package::new(
             test_path("~/rust/bevy/tools/build-easefunction-graphs"),
             Some("build-easefunction-graphs".to_string()),
             Cargo::new(

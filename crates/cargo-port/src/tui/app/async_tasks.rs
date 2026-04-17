@@ -1817,8 +1817,7 @@ impl App {
         }
         if let Some(path) = msg.path()
             && self.detail_path_is_affected(path)
-        {
-        }
+        {}
     }
 
     fn handle_disk_usage_msg(&mut self, path: &Path, bytes: u64) {

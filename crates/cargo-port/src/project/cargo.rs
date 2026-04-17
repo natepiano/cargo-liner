@@ -10,11 +10,11 @@ use toml::Value;
 
 use super::git;
 use super::non_rust::NonRustProject;
-use super::package::PackageProject;
+use super::package::Package;
 use super::paths::AbsolutePath;
 use super::project_fields::ProjectFields;
 use super::rust_info::Cargo;
-use super::workspace::WorkspaceProject;
+use super::workspace::Workspace;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -60,8 +60,8 @@ impl fmt::Display for ProjectParseError {
 
 /// Result of parsing a `Cargo.toml`: either a workspace or a standalone package.
 pub(crate) enum CargoParseResult {
-    Workspace(WorkspaceProject),
-    Package(PackageProject),
+    Workspace(Workspace),
+    Package(Package),
 }
 
 /// Parse a `Cargo.toml` and return either a workspace or a package project.
@@ -130,7 +130,7 @@ pub(crate) fn from_cargo_toml(
     );
 
     if table.get("workspace").is_some() {
-        let mut project = WorkspaceProject::new(
+        let mut project = Workspace::new(
             abs_path,
             name,
             cargo,
@@ -142,7 +142,7 @@ pub(crate) fn from_cargo_toml(
         project.rust.info.worktree_health = worktree_health;
         Ok(CargoParseResult::Workspace(project))
     } else {
-        let mut project = PackageProject::new(
+        let mut project = Package::new(
             abs_path,
             name,
             cargo,

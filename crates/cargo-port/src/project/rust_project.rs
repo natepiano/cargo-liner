@@ -4,13 +4,13 @@ use super::git::GitInfo;
 use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
-use super::package::PackageProject;
+use super::package::Package;
 use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
 use super::rust_info::RustInfo;
-use super::workspace::WorkspaceProject;
+use super::workspace::Workspace;
 use crate::lint::LintRuns;
 
 /// A Rust project — either a workspace or a standalone package.
@@ -19,8 +19,8 @@ use crate::lint::LintRuns;
 /// For kind-specific access (e.g. `.groups()`), match on the variant.
 #[derive(Clone)]
 pub(crate) enum RustProject {
-    Workspace(WorkspaceProject),
-    Package(PackageProject),
+    Workspace(Workspace),
+    Package(Package),
 }
 
 impl RustProject {
@@ -150,10 +150,7 @@ impl RustProject {
 
 // ── Traversal helpers ────────────────────────────────────────────────
 
-pub(super) fn info_in_workspace<'a>(
-    ws: &'a WorkspaceProject,
-    path: &Path,
-) -> Option<&'a ProjectInfo> {
+pub(super) fn info_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'a ProjectInfo> {
     if ws.path() == path {
         return Some(ws.rust.info());
     }
@@ -172,7 +169,7 @@ pub(super) fn info_in_workspace<'a>(
     None
 }
 
-pub(super) fn info_in_package<'a>(pkg: &'a PackageProject, path: &Path) -> Option<&'a ProjectInfo> {
+pub(super) fn info_in_package<'a>(pkg: &'a Package, path: &Path) -> Option<&'a ProjectInfo> {
     if pkg.path() == path {
         return Some(pkg.rust.info());
     }
@@ -185,7 +182,7 @@ pub(super) fn info_in_package<'a>(pkg: &'a PackageProject, path: &Path) -> Optio
 }
 
 pub(super) fn info_in_workspace_mut<'a>(
-    ws: &'a mut WorkspaceProject,
+    ws: &'a mut Workspace,
     path: &Path,
 ) -> Option<&'a mut ProjectInfo> {
     if ws.path() == path {
@@ -220,7 +217,7 @@ pub(super) fn info_in_workspace_mut<'a>(
 }
 
 pub(super) fn info_in_package_mut<'a>(
-    pkg: &'a mut PackageProject,
+    pkg: &'a mut Package,
     path: &Path,
 ) -> Option<&'a mut ProjectInfo> {
     if pkg.path() == path {
@@ -236,10 +233,7 @@ pub(super) fn info_in_package_mut<'a>(
 
 // ── RustInfo traversal helpers ──────────────────────────────────────
 
-pub(super) fn rust_info_in_workspace<'a>(
-    ws: &'a WorkspaceProject,
-    path: &Path,
-) -> Option<&'a RustInfo> {
+pub(super) fn rust_info_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'a RustInfo> {
     if ws.path() == path {
         return Some(&ws.rust);
     }
@@ -258,10 +252,7 @@ pub(super) fn rust_info_in_workspace<'a>(
     None
 }
 
-pub(super) fn rust_info_in_package<'a>(
-    pkg: &'a PackageProject,
-    path: &Path,
-) -> Option<&'a RustInfo> {
+pub(super) fn rust_info_in_package<'a>(pkg: &'a Package, path: &Path) -> Option<&'a RustInfo> {
     if pkg.path() == path {
         return Some(&pkg.rust);
     }
@@ -274,7 +265,7 @@ pub(super) fn rust_info_in_package<'a>(
 }
 
 pub(super) fn rust_info_in_workspace_mut<'a>(
-    ws: &'a mut WorkspaceProject,
+    ws: &'a mut Workspace,
     path: &Path,
 ) -> Option<&'a mut RustInfo> {
     if ws.path() == path {
@@ -305,7 +296,7 @@ pub(super) fn rust_info_in_workspace_mut<'a>(
 }
 
 pub(super) fn rust_info_in_package_mut<'a>(
-    pkg: &'a mut PackageProject,
+    pkg: &'a mut Package,
     path: &Path,
 ) -> Option<&'a mut RustInfo> {
     if pkg.path() == path {
@@ -324,7 +315,7 @@ pub(super) fn rust_info_in_package_mut<'a>(
 // Lint runs at the workspace/package level. Members and vendored packages
 // resolve to the owning root's `LintRuns`.
 
-pub(super) fn lint_in_workspace<'a>(ws: &'a WorkspaceProject, path: &Path) -> Option<&'a LintRuns> {
+pub(super) fn lint_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'a LintRuns> {
     if ws.path() == path {
         return Some(ws.lint_runs());
     }
@@ -336,7 +327,7 @@ pub(super) fn lint_in_workspace<'a>(ws: &'a WorkspaceProject, path: &Path) -> Op
     is_child.then(|| ws.lint_runs())
 }
 
-pub(super) fn lint_in_package<'a>(pkg: &'a PackageProject, path: &Path) -> Option<&'a LintRuns> {
+pub(super) fn lint_in_package<'a>(pkg: &'a Package, path: &Path) -> Option<&'a LintRuns> {
     if pkg.path() == path {
         return Some(pkg.lint_runs());
     }
@@ -345,7 +336,7 @@ pub(super) fn lint_in_package<'a>(pkg: &'a PackageProject, path: &Path) -> Optio
 }
 
 pub(super) fn lint_in_workspace_mut<'a>(
-    ws: &'a mut WorkspaceProject,
+    ws: &'a mut Workspace,
     path: &Path,
 ) -> Option<&'a mut LintRuns> {
     if ws.path() == path {
@@ -360,7 +351,7 @@ pub(super) fn lint_in_workspace_mut<'a>(
 }
 
 pub(super) fn lint_in_package_mut<'a>(
-    pkg: &'a mut PackageProject,
+    pkg: &'a mut Package,
     path: &Path,
 ) -> Option<&'a mut LintRuns> {
     if pkg.path() == path {
@@ -370,10 +361,7 @@ pub(super) fn lint_in_package_mut<'a>(
     is_child.then(|| pkg.lint_runs_mut())
 }
 
-fn collect_project_info_from_workspace(
-    ws: &WorkspaceProject,
-    out: &mut Vec<(AbsolutePath, ProjectInfo)>,
-) {
+fn collect_project_info_from_workspace(ws: &Workspace, out: &mut Vec<(AbsolutePath, ProjectInfo)>) {
     out.push((ws.path().clone(), ws.rust.info().clone()));
     for group in ws.groups() {
         for member in group.members() {
@@ -385,10 +373,7 @@ fn collect_project_info_from_workspace(
     }
 }
 
-fn collect_project_info_from_package(
-    pkg: &PackageProject,
-    out: &mut Vec<(AbsolutePath, ProjectInfo)>,
-) {
+fn collect_project_info_from_package(pkg: &Package, out: &mut Vec<(AbsolutePath, ProjectInfo)>) {
     out.push((pkg.path().clone(), pkg.rust.info().clone()));
     for vendored in pkg.vendored() {
         out.push((vendored.path().clone(), vendored.rust.info().clone()));

@@ -21,13 +21,13 @@ use crate::project::ExampleGroup;
 use crate::project::GitOrigin;
 use crate::project::GitStatus;
 use crate::project::NonRustProject;
-use crate::project::PackageProject;
+use crate::project::Package;
 use crate::project::ProjectFields;
 use crate::project::ProjectType;
 use crate::project::RootItem;
 use crate::project::RustProject;
-use crate::project::SubmoduleInfo;
-use crate::project::WorkspaceProject;
+use crate::project::Submodule;
+use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::tui::app::App;
 
@@ -225,9 +225,9 @@ struct ProjectCounts {
 }
 
 impl ProjectCounts {
-    fn add_package(&mut self, project: &PackageProject) { self.add_cargo(project.cargo()); }
+    fn add_package(&mut self, project: &Package) { self.add_cargo(project.cargo()); }
 
-    fn add_workspace(&mut self, ws: &WorkspaceProject) {
+    fn add_workspace(&mut self, ws: &Workspace) {
         self.workspaces += 1;
         self.add_cargo(ws.cargo());
     }
@@ -779,7 +779,7 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
 }
 
 /// Resolve the package title for a non-root package (member or vendored).
-fn resolve_package_title_for_package(app: &App, pkg: &PackageProject) -> String {
+fn resolve_package_title_for_package(app: &App, pkg: &Package) -> String {
     if app.is_vendored_path(pkg.path()) {
         "Vendored Crate".to_string()
     } else if app.is_workspace_member_path(pkg.path()) {
@@ -948,7 +948,7 @@ pub fn build_pane_data(app: &App, item: &RootItem) -> DetailPaneData {
 }
 
 /// Build pane data for a `Project<Package>` (member or vendored row).
-pub fn build_pane_data_for_member(app: &App, pkg: &PackageProject) -> DetailPaneData {
+pub fn build_pane_data_for_member(app: &App, pkg: &Package) -> DetailPaneData {
     let display_path = pkg.display_path().into_string();
     build_pane_data_for_package(app, pkg, &display_path, false, None)
 }
@@ -956,14 +956,14 @@ pub fn build_pane_data_for_member(app: &App, pkg: &PackageProject) -> DetailPane
 /// Build pane data for a linked `Project<Workspace>` worktree entry.
 pub fn build_pane_data_for_workspace_ref(
     app: &App,
-    ws: &WorkspaceProject,
+    ws: &Workspace,
     display_path: &str,
 ) -> DetailPaneData {
     build_pane_data_for_workspace(app, ws, display_path, false, None)
 }
 
 /// Build pane data for a git submodule nested under a project.
-pub fn build_pane_data_for_submodule(app: &App, submodule: &SubmoduleInfo) -> DetailPaneData {
+pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> DetailPaneData {
     let abs_path = &submodule.path;
     let display_path = project::home_relative_path(abs_path);
     let git_detail = build_git_detail_fields(app, abs_path);
@@ -1018,7 +1018,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &SubmoduleInfo) -> De
 
 fn build_pane_data_for_workspace(
     app: &App,
-    ws: &WorkspaceProject,
+    ws: &Workspace,
     display_path: &str,
     is_wt_group: bool,
     wt_item: Option<&RootItem>,
@@ -1055,7 +1055,7 @@ fn build_pane_data_for_workspace(
 
 fn build_pane_data_for_package(
     app: &App,
-    pkg: &PackageProject,
+    pkg: &Package,
     display_path: &str,
     is_wt_group: bool,
     wt_item: Option<&RootItem>,

@@ -6,7 +6,7 @@ use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
 use super::member_group::MemberGroup;
-use super::package::PackageProject;
+use super::package::Package;
 use super::paths;
 use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
@@ -20,20 +20,20 @@ use crate::lint::LintRuns;
 /// A Rust workspace project. Contains member groups in addition to the
 /// shared `RustInfo` data. Derefs to `RustInfo` for uniform access.
 #[derive(Clone)]
-pub(crate) struct WorkspaceProject {
+pub(crate) struct Workspace {
     pub(super) path:   AbsolutePath,
     pub(super) name:   Option<String>,
     pub(super) rust:   RustInfo,
     pub(super) groups: Vec<MemberGroup>,
 }
 
-impl WorkspaceProject {
+impl Workspace {
     pub(crate) fn new(
         path: AbsolutePath,
         name: Option<String>,
         cargo: Cargo,
         groups: Vec<MemberGroup>,
-        vendored: Vec<PackageProject>,
+        vendored: Vec<Package>,
         worktree_name: Option<String>,
         worktree_primary_abs_path: Option<AbsolutePath>,
     ) -> Self {
@@ -69,7 +69,7 @@ impl WorkspaceProject {
     }
 }
 
-impl ProjectFields for WorkspaceProject {
+impl ProjectFields for Workspace {
     fn path(&self) -> &AbsolutePath { &self.path }
 
     fn name(&self) -> Option<&str> { self.name.as_deref() }
@@ -93,12 +93,12 @@ impl ProjectFields for WorkspaceProject {
     }
 }
 
-impl Deref for WorkspaceProject {
+impl Deref for Workspace {
     type Target = RustInfo;
 
     fn deref(&self) -> &RustInfo { &self.rust }
 }
 
-impl DerefMut for WorkspaceProject {
+impl DerefMut for Workspace {
     fn deref_mut(&mut self) -> &mut RustInfo { &mut self.rust }
 }

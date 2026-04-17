@@ -18,14 +18,14 @@ use crate::constants::SYNC_UP;
 use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::GitStatus;
-use crate::project::PackageProject;
+use crate::project::Package;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Visibility;
-use crate::project::WorkspaceProject;
+use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::tui::columns;
 use crate::tui::panes::DetailField;
@@ -525,22 +525,22 @@ impl App {
         for item in &self.projects {
             let vendored_paths: Vec<&AbsolutePath> = match item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
-                    ws.vendored().iter().map(PackageProject::path).collect()
+                    ws.vendored().iter().map(Package::path).collect()
                 },
                 RootItem::Rust(RustProject::Package(pkg)) => {
-                    pkg.vendored().iter().map(PackageProject::path).collect()
+                    pkg.vendored().iter().map(Package::path).collect()
                 },
                 RootItem::Worktrees(WorktreeGroup::Workspaces {
                     primary, linked, ..
                 }) => std::iter::once(primary)
                     .chain(linked.iter())
-                    .flat_map(|ws| ws.vendored().iter().map(PackageProject::path))
+                    .flat_map(|ws| ws.vendored().iter().map(Package::path))
                     .collect(),
                 RootItem::Worktrees(WorktreeGroup::Packages {
                     primary, linked, ..
                 }) => std::iter::once(primary)
                     .chain(linked.iter())
-                    .flat_map(|pkg| pkg.vendored().iter().map(PackageProject::path))
+                    .flat_map(|pkg| pkg.vendored().iter().map(Package::path))
                     .collect(),
                 RootItem::NonRust(_) => Vec::new(),
             };
@@ -755,7 +755,7 @@ impl DiscoveryRowKind {
     }
 }
 
-fn package_contains_path(pkg: &PackageProject, row_path: &Path) -> bool {
+fn package_contains_path(pkg: &Package, row_path: &Path) -> bool {
     pkg.path() == row_path
         || pkg
             .vendored()
@@ -763,7 +763,7 @@ fn package_contains_path(pkg: &PackageProject, row_path: &Path) -> bool {
             .any(|vendored| vendored.path() == row_path)
 }
 
-fn workspace_contains_path(ws: &WorkspaceProject, row_path: &Path) -> bool {
+fn workspace_contains_path(ws: &Workspace, row_path: &Path) -> bool {
     ws.path() == row_path
         || ws.groups().iter().any(|group| {
             group
@@ -805,7 +805,7 @@ fn root_item_scope_contains(item: &RootItem, session_path: &Path, row_path: &Pat
     }
 }
 
-fn workspace_scope_contains(ws: &WorkspaceProject, session_path: &Path, row_path: &Path) -> bool {
+fn workspace_scope_contains(ws: &Workspace, session_path: &Path, row_path: &Path) -> bool {
     if ws.path() == session_path {
         return workspace_contains_path(ws, row_path);
     }
@@ -824,7 +824,7 @@ fn workspace_scope_contains(ws: &WorkspaceProject, session_path: &Path, row_path
     })
 }
 
-fn package_scope_contains(pkg: &PackageProject, session_path: &Path, row_path: &Path) -> bool {
+fn package_scope_contains(pkg: &Package, session_path: &Path, row_path: &Path) -> bool {
     if pkg.path() == session_path {
         return package_contains_path(pkg, row_path);
     }
@@ -886,7 +886,7 @@ fn root_item_parent_row(item: &RootItem, session_path: &Path) -> Option<Discover
 }
 
 fn workspace_parent_row(
-    ws: &WorkspaceProject,
+    ws: &Workspace,
     session_path: &Path,
     parent_kind: DiscoveryRowKind,
 ) -> Option<DiscoveryParentRow> {
@@ -922,7 +922,7 @@ fn workspace_parent_row(
 }
 
 fn package_parent_row(
-    pkg: &PackageProject,
+    pkg: &Package,
     session_path: &Path,
     parent_kind: DiscoveryRowKind,
 ) -> Option<DiscoveryParentRow> {

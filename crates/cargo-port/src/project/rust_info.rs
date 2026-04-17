@@ -4,7 +4,7 @@ use std::ops::DerefMut;
 use super::cargo::ExampleGroup;
 use super::cargo::ProjectType;
 use super::info::ProjectInfo;
-use super::package::PackageProject;
+use super::package::Package;
 use super::paths::AbsolutePath;
 use crate::lint::LintRuns;
 
@@ -14,7 +14,7 @@ use crate::lint::LintRuns;
 pub(crate) struct RustInfo {
     pub(super) info:                      ProjectInfo,
     pub(super) cargo:                     Cargo,
-    pub(super) vendored:                  Vec<PackageProject>,
+    pub(super) vendored:                  Vec<Package>,
     pub(super) worktree_name:             Option<String>,
     pub(super) worktree_primary_abs_path: Option<AbsolutePath>,
     pub(super) lint_runs:                 LintRuns,
@@ -25,9 +25,9 @@ pub(crate) struct RustInfo {
 impl RustInfo {
     pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
 
-    pub(crate) fn vendored(&self) -> &[PackageProject] { &self.vendored }
+    pub(crate) fn vendored(&self) -> &[Package] { &self.vendored }
 
-    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<PackageProject> { &mut self.vendored }
+    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<Package> { &mut self.vendored }
 
     pub(crate) fn worktree_name(&self) -> Option<&str> { self.worktree_name.as_deref() }
 

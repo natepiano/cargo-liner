@@ -17,13 +17,13 @@ use crate::lint::LintRuns;
 
 /// A standalone Rust package project. Derefs to `RustInfo` for uniform access.
 #[derive(Clone)]
-pub(crate) struct PackageProject {
+pub(crate) struct Package {
     pub(super) path: AbsolutePath,
     pub(super) name: Option<String>,
     pub(super) rust: RustInfo,
 }
 
-impl PackageProject {
+impl Package {
     pub(crate) fn new(
         path: AbsolutePath,
         name: Option<String>,
@@ -60,7 +60,7 @@ impl PackageProject {
     pub(crate) const fn lang_icon() -> &'static str { "\u{1f980}" }
 }
 
-impl ProjectFields for PackageProject {
+impl ProjectFields for Package {
     fn path(&self) -> &AbsolutePath { &self.path }
 
     fn name(&self) -> Option<&str> { self.name.as_deref() }
@@ -84,12 +84,12 @@ impl ProjectFields for PackageProject {
     }
 }
 
-impl Deref for PackageProject {
+impl Deref for Package {
     type Target = RustInfo;
 
     fn deref(&self) -> &RustInfo { &self.rust }
 }
 
-impl DerefMut for PackageProject {
+impl DerefMut for Package {
     fn deref_mut(&mut self) -> &mut RustInfo { &mut self.rust }
 }

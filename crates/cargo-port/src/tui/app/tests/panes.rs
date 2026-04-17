@@ -55,7 +55,7 @@ fn name_width_with_gutter_reserves_space_before_lint() {
 
 #[test]
 fn tabbable_panes_follow_canonical_order() {
-    let project = RootItem::Rust(RustProject::Package(PackageProject::new(
+    let project = RootItem::Rust(RustProject::Package(Package::new(
         test_path("~/demo"),
         Some("demo".to_string()),
         Cargo::new(
@@ -187,7 +187,7 @@ fn project_refresh_updates_selected_tree_project_targets() {
     assert_eq!(example_count, Some(0));
     assert!(!app.tabbable_panes().contains(&PaneId::Targets));
 
-    let refreshed = RootItem::Rust(RustProject::Package(PackageProject::new(
+    let refreshed = RootItem::Rust(RustProject::Package(Package::new(
         test_path("~/demo"),
         Some("demo".to_string()),
         Cargo::new(

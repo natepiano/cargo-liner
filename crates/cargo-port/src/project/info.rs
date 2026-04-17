@@ -1,5 +1,5 @@
 use super::git::LocalGitState;
-use super::submodule::SubmoduleInfo;
+use super::submodule::Submodule;
 use crate::ci::CiRun;
 
 /// Visibility state for projects and worktree groups.
@@ -108,5 +108,5 @@ pub(crate) struct ProjectInfo {
     pub language_stats:   Option<LanguageStats>,
     pub visibility:       Visibility,
     pub worktree_health:  WorktreeHealth,
-    pub submodules:       Vec<SubmoduleInfo>,
+    pub submodules:       Vec<Submodule>,
 }

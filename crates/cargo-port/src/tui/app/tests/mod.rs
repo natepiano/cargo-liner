@@ -37,7 +37,7 @@ use crate::project::GitOrigin;
 use crate::project::GitStatus;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
-use crate::project::PackageProject;
+use crate::project::Package;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::project::ProjectFields;
@@ -46,7 +46,7 @@ use crate::project::RustProject;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Dismissed;
 use crate::project::WorkflowPresence;
-use crate::project::WorkspaceProject;
+use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::project_list::ProjectList;
 use crate::scan::BackgroundMsg;
@@ -85,7 +85,7 @@ fn test_path(path: &str) -> AbsolutePath {
 }
 
 fn make_project(name: Option<&str>, path: &str) -> RootItem {
-    RootItem::Rust(RustProject::Package(PackageProject::new(
+    RootItem::Rust(RustProject::Package(Package::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -217,7 +217,7 @@ fn make_non_rust_project(name: Option<&str>, path: &str) -> RootItem {
 }
 
 fn make_workspace_project(name: Option<&str>, path: &str) -> RootItem {
-    RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
+    RootItem::Rust(RustProject::Workspace(Workspace::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -233,7 +233,7 @@ fn make_workspace_with_members(
     path: &str,
     groups: Vec<MemberGroup>,
 ) -> RootItem {
-    RootItem::Rust(RustProject::Workspace(WorkspaceProject::new(
+    RootItem::Rust(RustProject::Workspace(Workspace::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -244,8 +244,8 @@ fn make_workspace_with_members(
     )))
 }
 
-fn make_member(name: Option<&str>, path: &str) -> PackageProject {
-    PackageProject::new(
+fn make_member(name: Option<&str>, path: &str) -> Package {
+    Package::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -255,18 +255,15 @@ fn make_member(name: Option<&str>, path: &str) -> PackageProject {
     )
 }
 
-fn make_workspace_worktrees_item(
-    primary: WorkspaceProject,
-    linked: Vec<WorkspaceProject>,
-) -> RootItem {
+fn make_workspace_worktrees_item(primary: Workspace, linked: Vec<Workspace>) -> RootItem {
     RootItem::Worktrees(WorktreeGroup::new_workspaces(primary, linked))
 }
 
-fn make_package_worktrees_item(primary: PackageProject, linked: Vec<PackageProject>) -> RootItem {
+fn make_package_worktrees_item(primary: Package, linked: Vec<Package>) -> RootItem {
     RootItem::Worktrees(WorktreeGroup::new_packages(primary, linked))
 }
 
-fn make_package_raw(name: Option<&str>, path: &str, worktree_name: Option<&str>) -> PackageProject {
+fn make_package_raw(name: Option<&str>, path: &str, worktree_name: Option<&str>) -> Package {
     make_package_raw_with_primary(name, path, worktree_name, None)
 }
 
@@ -275,8 +272,8 @@ fn make_package_raw_with_primary(
     path: &str,
     worktree_name: Option<&str>,
     primary_abs_path: Option<&str>,
-) -> PackageProject {
-    PackageProject::new(
+) -> Package {
+    Package::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -291,7 +288,7 @@ fn make_workspace_raw(
     path: &str,
     groups: Vec<MemberGroup>,
     worktree_name: Option<&str>,
-) -> WorkspaceProject {
+) -> Workspace {
     make_workspace_raw_with_primary(name, path, groups, worktree_name, None)
 }
 
@@ -301,8 +298,8 @@ fn make_workspace_raw_with_primary(
     groups: Vec<MemberGroup>,
     worktree_name: Option<&str>,
     primary_abs_path: Option<&str>,
-) -> WorkspaceProject {
-    WorkspaceProject::new(
+) -> Workspace {
+    Workspace::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
@@ -313,23 +310,19 @@ fn make_workspace_raw_with_primary(
     )
 }
 
-fn inline_group(members: Vec<PackageProject>) -> MemberGroup {
+fn inline_group(members: Vec<Package>) -> MemberGroup {
     crate::project::MemberGroup::Inline { members }
 }
 
-fn named_group(name: &str, members: Vec<PackageProject>) -> MemberGroup {
+fn named_group(name: &str, members: Vec<Package>) -> MemberGroup {
     crate::project::MemberGroup::Named {
         name: name.to_string(),
         members,
     }
 }
 
-fn make_package_with_vendored(
-    name: Option<&str>,
-    path: &str,
-    vendored: Vec<PackageProject>,
-) -> PackageProject {
-    PackageProject::new(
+fn make_package_with_vendored(name: Option<&str>, path: &str, vendored: Vec<Package>) -> Package {
+    Package::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
