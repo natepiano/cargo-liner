@@ -669,10 +669,15 @@ impl App {
                     }
                 } else {
                     let git = self.pane_data.git.as_ref()?;
-                    let fields = crate::tui::panes::git_fields_from_data(git);
-                    match fields.get(self.pane_manager.pane(PaneId::Git).pos()) {
-                        Some(DetailField::Repo) if git.url.is_some() => Some("open"),
-                        _ => None,
+                    let flat_len = crate::tui::panes::git_fields_from_data(git).len();
+                    let pos = self.pane_manager.pane(PaneId::Git).pos();
+                    if pos >= flat_len
+                        && let Some(remote) = git.remotes.get(pos - flat_len)
+                        && remote.full_url.is_some()
+                    {
+                        Some("open")
+                    } else {
+                        None
                     }
                 }
             },

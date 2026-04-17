@@ -66,6 +66,7 @@ pub(super) use support::LintsData;
 pub(super) use support::PackageData;
 pub(super) use support::PendingCiFetch;
 pub(super) use support::PendingExampleRun;
+pub(super) use support::RemoteRow;
 pub(super) use support::RunTargetKind;
 pub(super) use support::TargetsData;
 pub(super) use support::WorktreeInfo;

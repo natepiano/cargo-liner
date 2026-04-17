@@ -7,9 +7,6 @@ use serde::Serialize;
 
 use super::paths::AbsolutePath;
 use crate::config;
-use crate::constants::GIT_CLONE;
-use crate::constants::GIT_FORK;
-use crate::constants::GIT_LOCAL;
 use crate::constants::GIT_STATUS_CLEAN;
 use crate::constants::GIT_STATUS_MODIFIED;
 use crate::constants::GIT_STATUS_UNTRACKED;
@@ -24,24 +21,6 @@ pub(crate) enum GitOrigin {
     Clone,
     /// A fork (has an "upstream" remote).
     Fork,
-}
-
-impl GitOrigin {
-    pub(crate) const fn icon(self) -> &'static str {
-        match self {
-            Self::Local => GIT_LOCAL,
-            Self::Clone => GIT_CLONE,
-            Self::Fork => GIT_FORK,
-        }
-    }
-
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Local => "local",
-            Self::Clone => "clone",
-            Self::Fork => "fork",
-        }
-    }
 }
 
 /// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
@@ -115,11 +94,6 @@ impl GitInfo {
     /// Convenience: the primary remote's URL.
     pub(crate) fn primary_url(&self) -> Option<&str> {
         self.primary_remote().and_then(|r| r.url.as_deref())
-    }
-
-    /// Convenience: the primary remote's owner.
-    pub(crate) fn primary_owner(&self) -> Option<&str> {
-        self.primary_remote().and_then(|r| r.owner.as_deref())
     }
 
     /// Convenience: the primary remote's ahead/behind vs its tracked ref.

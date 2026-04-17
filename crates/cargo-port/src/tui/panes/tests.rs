@@ -41,18 +41,14 @@ fn git_data() -> GitData {
     GitData {
         branch:            None,
         status:            None,
-        sync:              None,
-        vs_origin:         None,
         vs_local:          None,
         local_main_branch: None,
         main_branch_label: "main".to_string(),
-        origin:            None,
-        owner:             None,
-        url:               None,
         stars:             None,
         description:       None,
         inception:         None,
         last_commit:       None,
+        remotes:           Vec::new(),
         worktrees:         Vec::new(),
     }
 }
@@ -219,43 +215,18 @@ fn sync_value_uses_synced_label_when_in_sync() {
 }
 
 #[test]
-fn git_label_width_uses_origin_and_configured_main_labels() {
+fn git_label_width_uses_configured_main_label() {
     let data = GitData {
-        vs_origin: Some("origin/main (local cached ref)".to_string()),
         vs_local: Some("↑11 ↓3".to_string()),
         main_branch_label: "primary".to_string(),
         ..git_data()
     };
-    let fields = vec![DetailField::VsOrigin, DetailField::VsLocal];
+    let fields = vec![DetailField::VsLocal];
 
     assert_eq!(
         panes::git_label_width(&data, &fields),
         "vs local primary".len()
     );
-}
-
-#[test]
-fn git_fields_show_explicit_remote_and_local_rows_for_unpublished_branch() {
-    let data = GitData {
-        sync: Some(crate::constants::NO_REMOTE_SYNC.to_string()),
-        vs_origin: Some(crate::constants::NO_CI_UNPUBLISHED_BRANCH.to_string()),
-        vs_local: Some("↑11 ↓3".to_string()),
-        ..git_data()
-    };
-
-    assert_eq!(
-        model::git_fields_from_data(&data),
-        vec![
-            DetailField::VsOrigin,
-            DetailField::Sync,
-            DetailField::VsLocal
-        ]
-    );
-}
-
-#[test]
-fn git_remote_field_label_uses_remote_without_branch_suffix() {
-    assert_eq!(DetailField::VsOrigin.label(), "Remote");
 }
 
 #[test]
