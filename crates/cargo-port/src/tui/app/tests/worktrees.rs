@@ -34,13 +34,13 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
     app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
     app.sync_selected_project();
     app.ensure_detail_cached();
-    let root_worktree_names = app.pane_data.git.as_ref().map(|g| g.worktree_names.clone());
-    assert_eq!(root_worktree_names.as_ref().map(Vec::len), Some(2));
+    let root_worktrees = app.pane_data.git.as_ref().map(|g| g.worktrees.clone());
+    assert_eq!(root_worktrees.as_ref().map(Vec::len), Some(2));
     assert_eq!(
-        root_worktree_names
+        root_worktrees
             .as_ref()
-            .and_then(|names| names.get(1))
-            .map(String::as_str),
+            .and_then(|wts| wts.get(1))
+            .map(|wt| wt.name.as_str()),
         Some("ws_feat")
     );
 
@@ -48,8 +48,8 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
     app.sync_selected_project();
     app.ensure_detail_cached();
     assert_eq!(
-        app.pane_data.git.as_ref().map(|g| g.worktree_names.clone()),
-        Some(Vec::new())
+        app.pane_data.git.as_ref().map(|g| g.worktrees.len()),
+        Some(0)
     );
 }
 

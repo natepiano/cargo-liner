@@ -68,6 +68,7 @@ pub(super) use support::PendingCiFetch;
 pub(super) use support::PendingExampleRun;
 pub(super) use support::RunTargetKind;
 pub(super) use support::TargetsData;
+pub(super) use support::WorktreeInfo;
 pub(super) use support::build_ci_data;
 pub(super) use support::build_lints_data;
 pub(super) use support::build_pane_data;

@@ -430,6 +430,49 @@ fn detect_workflow_presence(repo_root: &Path) -> WorkflowPresence {
     }
 }
 
+/// Resolve the current branch for a worktree at `worktree_dir`.
+/// Returns `None` for detached HEAD or read failures.
+pub(crate) fn detect_worktree_branch(worktree_dir: &Path) -> Option<String> {
+    git_output_logged(
+        worktree_dir,
+        "worktree_branch",
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+    )
+    .ok()
+    .and_then(|o| {
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if s.is_empty() || s == "HEAD" {
+            None
+        } else {
+            Some(s)
+        }
+    })
+}
+
+/// Ahead/behind of `worktree_dir`'s HEAD vs `primary_dir`'s HEAD. The
+/// primary HEAD is resolved to a commit SHA so refs resolve cleanly across
+/// the worktree's ref namespace.
+pub(crate) fn worktree_ahead_behind_primary(
+    worktree_dir: &Path,
+    primary_dir: &Path,
+) -> Option<(usize, usize)> {
+    let primary_sha = git_output_logged(
+        primary_dir,
+        "worktree_primary_sha",
+        ["rev-parse", "HEAD"],
+    )
+    .ok()
+    .and_then(|o| {
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if s.is_empty() { None } else { Some(s) }
+    })?;
+    parse_ahead_behind(
+        worktree_dir,
+        &format!("HEAD...{primary_sha}"),
+        "worktree_vs_primary",
+    )
+}
+
 pub(crate) fn detect_first_commit(project_dir: &Path) -> Option<String> {
     let repo_root = git_repo_root(project_dir)?;
     git_output_logged(

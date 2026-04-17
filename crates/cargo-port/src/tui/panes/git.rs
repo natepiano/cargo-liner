@@ -145,18 +145,18 @@ fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect
         }
     }
 
-    append_worktree_lines(&mut lines, &ctx.data.worktree_names);
+    append_worktree_lines(&mut lines, &ctx.data.worktrees);
 
     let scroll_y = package::detail_column_scroll_offset(focus, focused_output_line, area.height);
     frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
     usize::from(scroll_y)
 }
 
-fn append_worktree_lines(lines: &mut Vec<Line<'static>>, worktree_names: &[String]) {
-    if worktree_names.is_empty() {
+fn append_worktree_lines(lines: &mut Vec<Line<'static>>, worktrees: &[super::WorktreeInfo]) {
+    if worktrees.is_empty() {
         return;
     }
-    let count = worktree_names.len();
+    let count = worktrees.len();
     let label_style = Style::default().fg(LABEL_COLOR);
     let value_style = Style::default().fg(TITLE_COLOR);
     lines.push(Line::from(vec![

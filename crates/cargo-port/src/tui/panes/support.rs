@@ -637,7 +637,7 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     if data.last_commit.is_some() {
         fields.push(DetailField::LastCommit);
     }
-    if !data.worktree_names.is_empty() {
+    if !data.worktrees.is_empty() {
         // Worktree count is appended by the render function, not as a field.
     }
     fields
@@ -678,7 +678,17 @@ pub struct GitData {
     pub description:       Option<String>,
     pub inception:         Option<String>,
     pub last_commit:       Option<String>,
-    pub worktree_names:    Vec<String>,
+    pub worktrees:         Vec<WorktreeInfo>,
+}
+
+/// Per-worktree info rendered in the Git pane's Worktrees table.
+///
+/// `ahead_behind` is relative to the primary worktree's HEAD commit.
+#[derive(Clone)]
+pub struct WorktreeInfo {
+    pub name:         String,
+    pub branch:       Option<String>,
+    pub ahead_behind: Option<(usize, usize)>,
 }
 
 /// Per-pane data for the Targets panel.
@@ -896,31 +906,64 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
 /// Check whether a `RootItem` is a worktree group.
 const fn is_worktree_group(item: &RootItem) -> bool { matches!(item, RootItem::Worktrees(_)) }
 
-/// Collect worktree names from a worktree group item.
-fn worktree_names_from_item(item: &RootItem) -> Vec<String> {
-    match item {
+/// Collect worktree info from a worktree group item. Branch and ahead/behind
+/// are queried from git; ahead/behind is relative to the primary's HEAD.
+fn worktrees_from_item(item: &RootItem) -> Vec<WorktreeInfo> {
+    let (paths_and_names, primary_path) = match item {
         RootItem::Worktrees(WorktreeGroup::Workspaces {
             primary, linked, ..
-        }) => std::iter::once(primary)
-            .chain(linked.iter())
-            .map(|ws| {
-                ws.worktree_name()
-                    .unwrap_or_else(|| ws.path().to_str().unwrap_or(""))
-                    .to_string()
-            })
-            .collect(),
+        }) => {
+            let primary_path = primary.path().clone();
+            let entries: Vec<(AbsolutePath, String)> = std::iter::once(primary)
+                .chain(linked.iter())
+                .map(|ws| {
+                    let name = ws
+                        .worktree_name()
+                        .unwrap_or_else(|| ws.path().to_str().unwrap_or(""))
+                        .to_string();
+                    (ws.path().clone(), name)
+                })
+                .collect();
+            (entries, primary_path)
+        },
         RootItem::Worktrees(WorktreeGroup::Packages {
             primary, linked, ..
-        }) => std::iter::once(primary)
-            .chain(linked.iter())
-            .map(|pkg| {
-                pkg.worktree_name()
-                    .unwrap_or_else(|| pkg.path().to_str().unwrap_or(""))
-                    .to_string()
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
+        }) => {
+            let primary_path = primary.path().clone();
+            let entries: Vec<(AbsolutePath, String)> = std::iter::once(primary)
+                .chain(linked.iter())
+                .map(|pkg| {
+                    let name = pkg
+                        .worktree_name()
+                        .unwrap_or_else(|| pkg.path().to_str().unwrap_or(""))
+                        .to_string();
+                    (pkg.path().clone(), name)
+                })
+                .collect();
+            (entries, primary_path)
+        },
+        _ => return Vec::new(),
+    };
+
+    paths_and_names
+        .into_iter()
+        .map(|(path, name)| {
+            let branch = crate::project::detect_worktree_branch(path.as_path());
+            let ahead_behind = if path.as_path() == primary_path.as_path() {
+                Some((0, 0))
+            } else {
+                crate::project::worktree_ahead_behind_primary(
+                    path.as_path(),
+                    primary_path.as_path(),
+                )
+            };
+            WorktreeInfo {
+                name,
+                branch,
+                ahead_behind,
+            }
+        })
+        .collect()
 }
 
 /// Build pane data for a root `RootItem`.
@@ -1005,7 +1048,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             description:       git_detail.description,
             inception:         git_detail.inception,
             last_commit:       git_detail.last_commit,
-            worktree_names:    Vec::new(),
+            worktrees:         Vec::new(),
         },
         targets: TargetsData {
             is_binary:   false,
@@ -1145,7 +1188,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         |item| (App::formatted_disk_for_item(item), app.ci_for_item(item)),
     );
 
-    let worktree_names = wt_item.map_or_else(Vec::new, worktree_names_from_item);
+    let worktrees = wt_item.map_or_else(Vec::new, worktrees_from_item);
 
     let types_str = cargo.map_or_else(String::new, |c| {
         c.types()
@@ -1189,7 +1232,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             description: git_detail.description,
             inception: git_detail.inception,
             last_commit: git_detail.last_commit,
-            worktree_names,
+            worktrees,
         },
         targets: TargetsData {
             is_binary,

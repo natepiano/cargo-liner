@@ -53,7 +53,7 @@ fn git_data() -> GitData {
         description:       None,
         inception:         None,
         last_commit:       None,
-        worktree_names:    Vec::new(),
+        worktrees:         Vec::new(),
     }
 }
 
