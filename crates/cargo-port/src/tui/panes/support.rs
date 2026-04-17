@@ -418,12 +418,7 @@ pub enum DetailField {
     Ci,
     Branch,
     GitPath,
-    Sync,
-    VsOrigin,
     VsLocal,
-    Origin,
-    Owner,
-    Repo,
     Stars,
     RepoDesc,
     Inception,
@@ -444,11 +439,7 @@ impl DetailField {
             Self::Ci => "CI",
             Self::Branch => "Branch",
             Self::GitPath => "Git Path",
-            Self::Sync => "Remote status",
-            Self::VsOrigin => "Remote",
             Self::VsLocal => "vs local main",
-            Self::Origin | Self::Repo => "Origin",
-            Self::Owner => "Owner",
             Self::Stars => "Stars",
             Self::RepoDesc => "About",
             Self::Inception => "Incept",
@@ -515,12 +506,7 @@ impl DetailField {
             // Git fields — should not be called with package_value.
             Self::Branch
             | Self::GitPath
-            | Self::Sync
-            | Self::VsOrigin
             | Self::VsLocal
-            | Self::Origin
-            | Self::Owner
-            | Self::Repo
             | Self::Stars
             | Self::RepoDesc
             | Self::Inception
@@ -546,12 +532,7 @@ impl DetailField {
             Self::GitPath => data
                 .status
                 .map_or_else(String::new, GitStatus::label_with_icon),
-            Self::Sync => data.sync.as_deref().unwrap_or("").to_string(),
-            Self::VsOrigin => data.vs_origin.as_deref().unwrap_or("").to_string(),
             Self::VsLocal => data.vs_local.as_deref().unwrap_or("").to_string(),
-            Self::Origin => data.origin.as_deref().unwrap_or("").to_string(),
-            Self::Owner => data.owner.as_deref().unwrap_or("").to_string(),
-            Self::Repo => data.url.as_deref().unwrap_or("").to_string(),
             Self::Stars => data
                 .stars
                 .map_or_else(String::new, |count| format!("⭐ {count}")),
@@ -604,23 +585,11 @@ pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
 
 pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     let mut fields = Vec::new();
-    if data.url.is_some() {
-        fields.push(DetailField::Repo);
-    }
-    if data.owner.is_some() {
-        fields.push(DetailField::Owner);
-    }
     if data.branch.is_some() {
         fields.push(DetailField::Branch);
     }
     if data.status.is_some() {
         fields.push(DetailField::GitPath);
-    }
-    if data.vs_origin.is_some() {
-        fields.push(DetailField::VsOrigin);
-    }
-    if data.sync.is_some() {
-        fields.push(DetailField::Sync);
     }
     if data.vs_local.is_some() {
         fields.push(DetailField::VsLocal);
@@ -666,19 +635,33 @@ pub struct PackageData {
 pub struct GitData {
     pub branch:            Option<String>,
     pub status:            Option<GitStatus>,
-    pub sync:              Option<String>,
-    pub vs_origin:         Option<String>,
     pub vs_local:          Option<String>,
     pub local_main_branch: Option<String>,
     pub main_branch_label: String,
-    pub origin:            Option<String>,
-    pub owner:             Option<String>,
-    pub url:               Option<String>,
     pub stars:             Option<u64>,
     pub description:       Option<String>,
     pub inception:         Option<String>,
     pub last_commit:       Option<String>,
+    pub remotes:           Vec<RemoteRow>,
     pub worktrees:         Vec<WorktreeInfo>,
+}
+
+impl GitData {
+    /// Whether the repo has no remotes — drives the `(📁 local)` branch
+    /// annotation in the git pane.
+    pub const fn is_local(&self) -> bool { self.remotes.is_empty() }
+}
+
+/// Per-remote row rendered in the Git pane's Remotes table. Pre-formatted
+/// for display — status and `tracked_ref` already reduce to rendered text.
+#[derive(Clone)]
+pub struct RemoteRow {
+    pub name:        String,
+    pub icon:        &'static str,
+    pub display_url: String,
+    pub tracked_ref: String,
+    pub status:      String,
+    pub full_url:    Option<String>,
 }
 
 /// Per-worktree info rendered in the Git pane's Worktrees table.
@@ -831,18 +814,14 @@ fn format_downloads(count: u64) -> String {
 struct GitDetailFields {
     branch:            Option<String>,
     path:              Option<GitStatus>,
-    sync:              Option<String>,
-    vs_origin:         Option<String>,
     vs_local:          Option<String>,
     local_main_branch: Option<String>,
     main_branch_label: String,
-    origin:            Option<String>,
-    owner:             Option<String>,
-    url:               Option<String>,
     stars:             Option<u64>,
     description:       Option<String>,
     inception:         Option<String>,
     last_commit:       Option<String>,
+    remotes:           Vec<RemoteRow>,
 }
 
 fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
@@ -851,28 +830,11 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         .unwrap_or_else(|| AbsolutePath::from(abs_path));
     let git = app.git_info_for(owner_path.as_path());
     let branch = git.and_then(|info| info.branch.clone());
-    let sync = git.map(|info| format_remote_status(info.primary_ahead_behind()));
-    let vs_origin = if app.unpublished_ci_branch_name(abs_path).is_some() {
-        Some(NO_CI_UNPUBLISHED_BRANCH.to_string())
-    } else {
-        git.map(|info| {
-            info.primary_tracked_ref().map_or_else(
-                || "none".to_string(),
-                |branch| format!("{branch} (local cached ref)"),
-            )
-        })
-    };
     let vs_local = git
         .and_then(|info| info.ahead_behind_local)
         .map(format_ahead_behind);
     let local_main_branch = git.and_then(|info| info.local_main_branch.clone());
     let main_branch_label = app.current_config().tui.main_branch.clone();
-    let origin = git.map(|info| {
-        let kind = info.origin_kind();
-        format!("{} {}", kind.icon(), kind.label())
-    });
-    let owner = git.and_then(|info| info.primary_owner().map(String::from));
-    let url = git.and_then(|info| info.primary_url().map(String::from));
     let github = app
         .projects()
         .at_path(owner_path.as_path())
@@ -885,22 +847,62 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let last_commit = git
         .and_then(|info| info.last_commit.as_deref())
         .map(format_timestamp);
+    let default_host = app.current_config().tui.default_remote_host_url.clone();
+    let remotes = git.map_or_else(Vec::new, |info| build_remote_rows(info, &default_host));
     GitDetailFields {
         branch,
         path: app.git_status_for(abs_path),
-        sync,
-        vs_origin,
         vs_local,
         local_main_branch,
         main_branch_label,
-        origin,
-        owner,
-        url,
         stars,
         description,
         inception,
         last_commit,
+        remotes,
     }
+}
+
+/// Convert each `RemoteInfo` into a render-ready `RemoteRow`, shortening
+/// the URL when it begins with `default_host` and collapsing missing
+/// tracked refs / ahead-behind values to placeholder runes.
+fn build_remote_rows(info: &project::GitInfo, default_host: &str) -> Vec<RemoteRow> {
+    info.remotes
+        .iter()
+        .map(|remote| {
+            let icon = match remote.kind {
+                project::RemoteKind::Fork => crate::constants::GIT_FORK,
+                project::RemoteKind::Clone => crate::constants::GIT_CLONE,
+            };
+            let display_url = remote
+                .url
+                .as_deref()
+                .map_or_else(String::new, |raw| shorten_remote_url(raw, default_host));
+            let tracked_ref = remote
+                .tracked_ref
+                .clone()
+                .unwrap_or_else(|| NO_REMOTE_SYNC.to_string());
+            let status = format_remote_status(remote.ahead_behind);
+            RemoteRow {
+                name: remote.name.clone(),
+                icon,
+                display_url,
+                tracked_ref,
+                status,
+                full_url: remote.url.clone(),
+            }
+        })
+        .collect()
+}
+
+/// If `url` starts with `default_host`, return `owner/repo` (stripping
+/// `.git` suffix); otherwise return the full URL.
+fn shorten_remote_url(url: &str, default_host: &str) -> String {
+    let stripped = url.strip_prefix(default_host).unwrap_or(url);
+    stripped
+        .strip_suffix(".git")
+        .unwrap_or(stripped)
+        .to_string()
 }
 
 /// Check whether a `RootItem` is a worktree group.
@@ -1036,18 +1038,14 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
         git:     GitData {
             branch:            git_detail.branch,
             status:            git_detail.path,
-            sync:              git_detail.sync,
-            vs_origin:         git_detail.vs_origin,
             vs_local:          git_detail.vs_local,
             local_main_branch: git_detail.local_main_branch,
             main_branch_label: git_detail.main_branch_label,
-            origin:            git_detail.origin,
-            owner:             git_detail.owner,
-            url:               git_detail.url,
             stars:             git_detail.stars,
             description:       git_detail.description,
             inception:         git_detail.inception,
             last_commit:       git_detail.last_commit,
+            remotes:           git_detail.remotes,
             worktrees:         Vec::new(),
         },
         targets: TargetsData {
@@ -1220,18 +1218,14 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         git:     GitData {
             branch: git_detail.branch,
             status: git_detail.path,
-            sync: git_detail.sync,
-            vs_origin: git_detail.vs_origin,
             vs_local: git_detail.vs_local,
             local_main_branch: git_detail.local_main_branch,
             main_branch_label: git_detail.main_branch_label,
-            origin: git_detail.origin,
-            owner: git_detail.owner,
-            url: git_detail.url,
             stars: git_detail.stars,
             description: git_detail.description,
             inception: git_detail.inception,
             last_commit: git_detail.last_commit,
+            remotes: git_detail.remotes,
             worktrees,
         },
         targets: TargetsData {
@@ -1263,9 +1257,8 @@ pub fn build_ci_data(app: &App) -> CiData {
     } else if git_info.is_none() {
         CiEmptyState::NotGitRepo
     } else if has_ci_owner
-        && git_info.is_some_and(|g| {
-            g.origin_kind() == GitOrigin::Local || g.primary_url().is_none()
-        })
+        && git_info
+            .is_some_and(|g| g.origin_kind() == GitOrigin::Local || g.primary_url().is_none())
     {
         CiEmptyState::RequiresGithubRemote
     } else if git_info.is_some_and(|g| !g.workflows.is_present()) {

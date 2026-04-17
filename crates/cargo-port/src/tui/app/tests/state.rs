@@ -966,7 +966,8 @@ fn git_info_invalidates_selected_git_pane_cache() {
         app.pane_data
             .git
             .as_ref()
-            .and_then(|data| data.url.as_deref()),
+            .and_then(|data| data.remotes.first())
+            .and_then(|row| row.full_url.as_deref()),
         None
     );
 
@@ -980,7 +981,8 @@ fn git_info_invalidates_selected_git_pane_cache() {
         app.pane_data
             .git
             .as_ref()
-            .and_then(|data| data.url.as_deref()),
+            .and_then(|data| data.remotes.first())
+            .and_then(|row| row.full_url.as_deref()),
         Some("https://github.com/natepiano/demo")
     );
 }

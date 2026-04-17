@@ -7,9 +7,6 @@ use serde::Serialize;
 
 use super::paths::AbsolutePath;
 use crate::config;
-use crate::constants::GIT_CLONE;
-use crate::constants::GIT_FORK;
-use crate::constants::GIT_LOCAL;
 use crate::constants::GIT_STATUS_CLEAN;
 use crate::constants::GIT_STATUS_MODIFIED;
 use crate::constants::GIT_STATUS_UNTRACKED;
@@ -24,24 +21,6 @@ pub(crate) enum GitOrigin {
     Clone,
     /// A fork (has an "upstream" remote).
     Fork,
-}
-
-impl GitOrigin {
-    pub(crate) const fn icon(self) -> &'static str {
-        match self {
-            Self::Local => GIT_LOCAL,
-            Self::Clone => GIT_CLONE,
-            Self::Fork => GIT_FORK,
-        }
-    }
-
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Local => "local",
-            Self::Clone => "clone",
-            Self::Fork => "fork",
-        }
-    }
 }
 
 /// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
@@ -115,11 +94,6 @@ impl GitInfo {
     /// Convenience: the primary remote's URL.
     pub(crate) fn primary_url(&self) -> Option<&str> {
         self.primary_remote().and_then(|r| r.url.as_deref())
-    }
-
-    /// Convenience: the primary remote's owner.
-    pub(crate) fn primary_owner(&self) -> Option<&str> {
-        self.primary_remote().and_then(|r| r.owner.as_deref())
     }
 
     /// Convenience: the primary remote's ahead/behind vs its tracked ref.
@@ -294,7 +268,11 @@ fn build_remote_info(
         cfg,
     );
     let ahead_behind = tracked_ref.as_deref().and_then(|r| {
-        parse_ahead_behind(repo_root, &format!("HEAD...{r}"), &format!("tracked_{name}"))
+        parse_ahead_behind(
+            repo_root,
+            &format!("HEAD...{r}"),
+            &format!("tracked_{name}"),
+        )
     });
     let kind = if name == "origin" && has_upstream {
         RemoteKind::Fork
@@ -312,7 +290,10 @@ fn build_remote_info(
     }
 }
 
-fn remote_url_info(repo_root: &Path, name: &str) -> (Option<String>, Option<String>, Option<String>) {
+fn remote_url_info(
+    repo_root: &Path,
+    name: &str,
+) -> (Option<String>, Option<String>, Option<String>) {
     git_output_logged(
         repo_root,
         &format!("remote_get_url_{name}"),
@@ -332,8 +313,7 @@ fn remote_url_info(repo_root: &Path, name: &str) -> (Option<String>, Option<Stri
 /// 2. `symbolic-ref refs/remotes/<remote>/HEAD`.
 /// 3. `<remote>/<default_branch>` (from `origin/HEAD`) if the ref exists.
 /// 4. `<remote>/<current_branch>` if the ref exists.
-/// 5. `<remote>/<cfg.tui.main_branch>` and each `other_primary_branches` entry
-///    if the ref exists.
+/// 5. `<remote>/<cfg.tui.main_branch>` and each `other_primary_branches` entry if the ref exists.
 fn resolve_tracked_ref(
     repo_root: &Path,
     remote_name: &str,
@@ -456,16 +436,12 @@ pub(crate) fn worktree_ahead_behind_primary(
     worktree_dir: &Path,
     primary_dir: &Path,
 ) -> Option<(usize, usize)> {
-    let primary_sha = git_output_logged(
-        primary_dir,
-        "worktree_primary_sha",
-        ["rev-parse", "HEAD"],
-    )
-    .ok()
-    .and_then(|o| {
-        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        if s.is_empty() { None } else { Some(s) }
-    })?;
+    let primary_sha = git_output_logged(primary_dir, "worktree_primary_sha", ["rev-parse", "HEAD"])
+        .ok()
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        })?;
     parse_ahead_behind(
         worktree_dir,
         &format!("HEAD...{primary_sha}"),

@@ -11,13 +11,17 @@ use unicode_width::UnicodeWidthStr;
 use super::DetailField;
 use super::GitData;
 use super::PaneId;
+use super::RemoteRow;
+use super::WorktreeInfo;
 use super::package;
 use super::package::RenderStyles;
+use crate::constants::GIT_LOCAL;
 use crate::constants::IN_SYNC;
-use crate::constants::NO_CI_UNPUBLISHED_BRANCH;
 use crate::tui::app::App;
+use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::INACTIVE_BORDER_COLOR;
+use crate::tui::constants::INACTIVE_TITLE_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
@@ -35,11 +39,36 @@ struct GitRenderCtx<'a> {
     styles: &'a RenderStyles,
 }
 
+/// Which section a flat `pos()` index lives in, plus the offset within
+/// that section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Flat(usize),
+    Remote(usize),
+    Worktree(usize),
+}
+
+const fn section_for_pos(
+    pos: usize,
+    flat_len: usize,
+    remotes_len: usize,
+    worktrees_len: usize,
+) -> Option<Section> {
+    if pos < flat_len {
+        Some(Section::Flat(pos))
+    } else if pos < flat_len + remotes_len {
+        Some(Section::Remote(pos - flat_len))
+    } else if pos < flat_len + remotes_len + worktrees_len {
+        Some(Section::Worktree(pos - flat_len - remotes_len))
+    } else {
+        None
+    }
+}
+
 pub(in super::super) fn git_label_width(data: &GitData, fields: &[DetailField]) -> usize {
     fields
         .iter()
         .map(|field| match *field {
-            DetailField::VsOrigin => "Remote".width(),
             DetailField::VsLocal => format!("vs local {}", data.main_branch_label).width(),
             _ => field.label().width(),
         })
@@ -54,20 +83,118 @@ fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect
     let pane = ctx.pane;
     let focus = ctx.focus;
     let styles = ctx.styles;
+    let active = matches!(focus, PaneFocusState::Active);
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut focused_output_line: usize = 0;
     let label_width = git_label_width(data, fields);
+    let flat_len = fields.len();
+    let remotes_len = data.remotes.len();
+    let worktrees_len = data.worktrees.len();
+    let current_section = if active {
+        section_for_pos(pane.pos(), flat_len, remotes_len, worktrees_len)
+    } else {
+        None
+    };
 
+    render_flat_fields(
+        &mut lines,
+        &mut focused_output_line,
+        &RenderFlatArgs {
+            data,
+            fields,
+            pane,
+            focus,
+            styles,
+            area_width: area.width,
+            label_width,
+        },
+    );
+
+    if !data.remotes.is_empty() {
+        let section_cursor = match current_section {
+            Some(Section::Remote(i)) => Some(i),
+            _ => None,
+        };
+        render_section_title(
+            &mut lines,
+            "Remotes",
+            data.remotes.len(),
+            section_cursor,
+            section_cursor.is_some(),
+            area.width,
+        );
+        let col_widths = remote_col_widths(&data.remotes);
+        render_remote_header(&mut lines, &col_widths);
+        for (i, remote) in data.remotes.iter().enumerate() {
+            let row_index = flat_len + i;
+            if active && row_index == pane.pos() {
+                focused_output_line = lines.len();
+            }
+            let selection = pane.selection_state(row_index, focus);
+            lines.push(remote_row_line(remote, &col_widths, selection));
+        }
+    }
+
+    if !data.worktrees.is_empty() {
+        let section_cursor = match current_section {
+            Some(Section::Worktree(i)) => Some(i),
+            _ => None,
+        };
+        render_section_title(
+            &mut lines,
+            "Worktrees",
+            data.worktrees.len(),
+            section_cursor,
+            section_cursor.is_some(),
+            area.width,
+        );
+        let col_widths = worktree_col_widths(&data.worktrees);
+        render_worktree_header(&mut lines, &col_widths);
+        for (i, wt) in data.worktrees.iter().enumerate() {
+            let row_index = flat_len + remotes_len + i;
+            if active && row_index == pane.pos() {
+                focused_output_line = lines.len();
+            }
+            let selection = pane.selection_state(row_index, focus);
+            lines.push(worktree_row_line(wt, &col_widths, selection));
+        }
+    }
+
+    let scroll_y = package::detail_column_scroll_offset(focus, focused_output_line, area.height);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
+    usize::from(scroll_y)
+}
+
+struct RenderFlatArgs<'a> {
+    data:        &'a GitData,
+    fields:      &'a [DetailField],
+    pane:        &'a Pane,
+    focus:       PaneFocusState,
+    styles:      &'a RenderStyles,
+    area_width:  u16,
+    label_width: usize,
+}
+
+fn render_flat_fields(
+    lines: &mut Vec<Line<'static>>,
+    focused_output_line: &mut usize,
+    args: &RenderFlatArgs<'_>,
+) {
+    let RenderFlatArgs {
+        data,
+        fields,
+        pane,
+        focus,
+        styles,
+        area_width,
+        label_width,
+    } = *args;
     for (i, field) in fields.iter().enumerate() {
         if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
-            focused_output_line = lines.len();
+            *focused_output_line = lines.len();
         }
         let dynamic_label;
         let label = match *field {
-            DetailField::VsOrigin => {
-                dynamic_label = "Remote".to_string();
-                &dynamic_label
-            },
             DetailField::VsLocal => {
                 let branch = data.main_branch_label.as_str();
                 dynamic_label = format!("vs local {branch}");
@@ -75,20 +202,22 @@ fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect
             },
             _ => field.label(),
         };
-        let value = field.git_value(data);
+        let value = match *field {
+            DetailField::Branch => {
+                let raw = field.git_value(data);
+                if data.is_local() && !raw.is_empty() {
+                    format!("{raw} ({GIT_LOCAL} local)")
+                } else {
+                    raw
+                }
+            },
+            _ => field.git_value(data),
+        };
         let selection = pane.selection_state(i, focus);
-        let base_value_style = if *field == DetailField::Origin && value.starts_with('⑂') {
-            Style::default()
-                .fg(TITLE_COLOR)
-                .add_modifier(Modifier::BOLD)
-        } else if matches!(
-            *field,
-            DetailField::Sync | DetailField::VsOrigin | DetailField::VsLocal
-        ) && value == IN_SYNC
-        {
+        let base_value_style = if matches!(*field, DetailField::VsLocal) && value == IN_SYNC {
             Style::default().fg(SUCCESS_COLOR)
-        } else if (*field == DetailField::VsOrigin && value == NO_CI_UNPUBLISHED_BRANCH)
-            || (*field == DetailField::Sync && value == crate::constants::NO_REMOTE_SYNC)
+        } else if matches!(*field, DetailField::VsLocal)
+            && value == crate::constants::NO_REMOTE_SYNC
         {
             Style::default().fg(INACTIVE_BORDER_COLOR)
         } else if *field == DetailField::WorktreeError {
@@ -100,16 +229,12 @@ fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect
         let vs = selection.patch(base_value_style);
         if matches!(
             *field,
-            DetailField::Repo
-                | DetailField::Branch
-                | DetailField::RepoDesc
-                | DetailField::VsOrigin
-                | DetailField::WorktreeError
+            DetailField::Branch | DetailField::RepoDesc | DetailField::WorktreeError
         ) && !value.is_empty()
         {
             let prefix = format!(" {label:<label_width$} ");
             let prefix_len = prefix.width();
-            let col_width = area.width as usize;
+            let col_width = area_width as usize;
             let avail = col_width.saturating_sub(prefix_len + 1);
             if avail > 0 && value.width() > avail {
                 let wrapped =
@@ -144,25 +269,228 @@ fn render_git_column_inner(frame: &mut Frame, ctx: &GitRenderCtx<'_>, area: Rect
             ]));
         }
     }
-
-    append_worktree_lines(&mut lines, &ctx.data.worktrees);
-
-    let scroll_y = package::detail_column_scroll_offset(focus, focused_output_line, area.height);
-    frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
-    usize::from(scroll_y)
 }
 
-fn append_worktree_lines(lines: &mut Vec<Line<'static>>, worktrees: &[super::WorktreeInfo]) {
-    if worktrees.is_empty() {
-        return;
-    }
-    let count = worktrees.len();
-    let label_style = Style::default().fg(LABEL_COLOR);
-    let value_style = Style::default().fg(TITLE_COLOR);
+fn render_section_title(
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    len: usize,
+    cursor: Option<usize>,
+    focused: bool,
+    pane_width: u16,
+) {
+    let title = pane::pane_title(label, &PaneTitleCount::Single { len, cursor });
+    let title_color = if focused {
+        TITLE_COLOR
+    } else {
+        INACTIVE_TITLE_COLOR
+    };
+    let title_style = Style::default()
+        .fg(title_color)
+        .add_modifier(Modifier::BOLD);
+    let rule_style = Style::default().fg(INACTIVE_BORDER_COLOR);
+    let title_width = title.width();
+    let total_width = usize::from(pane_width);
+    // Layout: "─ {title} ─────────..." — one leading rule char, the title
+    // (which already has its own surrounding spaces from pane_title), then
+    // fill the remaining width with rule chars.
+    let leading = "─";
+    let leading_w = leading.width();
+    let trailing = total_width.saturating_sub(leading_w + title_width);
+    let trailing_str = "─".repeat(trailing);
     lines.push(Line::from(vec![
-        Span::styled("  Worktrees  ", label_style),
-        Span::styled(count.to_string(), value_style),
+        Span::styled(leading.to_string(), rule_style),
+        Span::styled(title, title_style),
+        Span::styled(trailing_str, rule_style),
     ]));
+}
+
+// ── Remotes table ────────────────────────────────────────────────────
+
+struct RemoteColWidths {
+    name:    usize,
+    url:     usize,
+    tracked: usize,
+    status:  usize,
+}
+
+/// The icon column pads to this display width. Emoji render as 2 cells on
+/// most terminals; we append a trailing space for separation, giving 3.
+const REMOTE_ICON_COL: usize = 3;
+const REMOTES_NAME_HEADER: &str = "Remote";
+const REMOTES_URL_HEADER: &str = "URL";
+const REMOTES_TRACKED_HEADER: &str = "Tracked";
+const REMOTES_STATUS_HEADER: &str = "Status";
+
+fn remote_col_widths(remotes: &[RemoteRow]) -> RemoteColWidths {
+    let name = remotes
+        .iter()
+        .map(|r| r.name.width())
+        .max()
+        .unwrap_or(0)
+        .max(REMOTES_NAME_HEADER.width());
+    let url = remotes
+        .iter()
+        .map(|r| r.display_url.width())
+        .max()
+        .unwrap_or(0)
+        .max(REMOTES_URL_HEADER.width());
+    let tracked = remotes
+        .iter()
+        .map(|r| r.tracked_ref.width())
+        .max()
+        .unwrap_or(0)
+        .max(REMOTES_TRACKED_HEADER.width());
+    let status = remotes
+        .iter()
+        .map(|r| r.status.width())
+        .max()
+        .unwrap_or(0)
+        .max(REMOTES_STATUS_HEADER.width());
+    RemoteColWidths {
+        name,
+        url,
+        tracked,
+        status,
+    }
+}
+
+fn render_remote_header(lines: &mut Vec<Line<'static>>, widths: &RemoteColWidths) {
+    let style = Style::default()
+        .fg(COLUMN_HEADER_COLOR)
+        .add_modifier(Modifier::BOLD);
+    // Leading: 1 space pad + REMOTE_ICON_COL blank for icon alignment.
+    let text = format!(
+        " {:<icon$}{:<name$}  {:<url$}  {:<tracked$}  {:<status$}",
+        "",
+        REMOTES_NAME_HEADER,
+        REMOTES_URL_HEADER,
+        REMOTES_TRACKED_HEADER,
+        REMOTES_STATUS_HEADER,
+        icon = REMOTE_ICON_COL,
+        name = widths.name,
+        url = widths.url,
+        tracked = widths.tracked,
+        status = widths.status,
+    );
+    lines.push(Line::from(Span::styled(text, style)));
+}
+
+fn remote_row_line(
+    row: &RemoteRow,
+    widths: &RemoteColWidths,
+    selection: crate::tui::pane::PaneSelectionState,
+) -> Line<'static> {
+    // Icon cell: emoji + trailing spaces to reach REMOTE_ICON_COL width.
+    let icon_width = row.icon.width();
+    let icon_pad = REMOTE_ICON_COL.saturating_sub(icon_width);
+    let icon_cell = format!("{}{}", row.icon, " ".repeat(icon_pad));
+    let text = format!(
+        "{:<name$}  {:<url$}  {:<tracked$}  {:<status$}",
+        row.name,
+        row.display_url,
+        row.tracked_ref,
+        row.status,
+        name = widths.name,
+        url = widths.url,
+        tracked = widths.tracked,
+        status = widths.status,
+    );
+    let data_style = selection.patch(Style::default().fg(INACTIVE_TITLE_COLOR));
+    let icon_style = selection.patch(Style::default());
+    Line::from(vec![
+        Span::raw(" ".to_string()),
+        Span::styled(icon_cell, icon_style),
+        Span::styled(text, data_style),
+    ])
+}
+
+// ── Worktrees table ──────────────────────────────────────────────────
+
+struct WorktreeColWidths {
+    name:   usize,
+    branch: usize,
+    status: usize,
+}
+
+const WORKTREES_NAME_HEADER: &str = "Name";
+const WORKTREES_BRANCH_HEADER: &str = "Branch";
+const WORKTREES_STATUS_HEADER: &str = "Status";
+
+fn worktree_col_widths(worktrees: &[WorktreeInfo]) -> WorktreeColWidths {
+    let name = worktrees
+        .iter()
+        .map(|w| w.name.width())
+        .max()
+        .unwrap_or(0)
+        .max(WORKTREES_NAME_HEADER.width());
+    let branch = worktrees
+        .iter()
+        .map(|w| w.branch.as_deref().unwrap_or("").width())
+        .max()
+        .unwrap_or(0)
+        .max(WORKTREES_BRANCH_HEADER.width());
+    let status = worktrees
+        .iter()
+        .map(|w| worktree_status_text(w.ahead_behind).width())
+        .max()
+        .unwrap_or(0)
+        .max(WORKTREES_STATUS_HEADER.width());
+    WorktreeColWidths {
+        name,
+        branch,
+        status,
+    }
+}
+
+fn render_worktree_header(lines: &mut Vec<Line<'static>>, widths: &WorktreeColWidths) {
+    let style = Style::default()
+        .fg(COLUMN_HEADER_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let text = format!(
+        " {:<name$}  {:<branch$}  {:<status$}",
+        WORKTREES_NAME_HEADER,
+        WORKTREES_BRANCH_HEADER,
+        WORKTREES_STATUS_HEADER,
+        name = widths.name,
+        branch = widths.branch,
+        status = widths.status,
+    );
+    lines.push(Line::from(Span::styled(text, style)));
+}
+
+fn worktree_row_line(
+    row: &WorktreeInfo,
+    widths: &WorktreeColWidths,
+    selection: crate::tui::pane::PaneSelectionState,
+) -> Line<'static> {
+    let branch = row.branch.clone().unwrap_or_else(|| "-".to_string());
+    let status = worktree_status_text(row.ahead_behind);
+    let text = format!(
+        " {:<name$}  {:<branch$}  {:<status$}",
+        row.name,
+        branch,
+        status,
+        name = widths.name,
+        branch = widths.branch,
+        status = widths.status,
+    );
+    let style = selection.patch(Style::default().fg(INACTIVE_TITLE_COLOR));
+    Line::from(Span::styled(text, style))
+}
+
+fn worktree_status_text(ahead_behind: Option<(usize, usize)>) -> String {
+    match ahead_behind {
+        Some((0, 0)) => IN_SYNC.to_string(),
+        Some((a, 0)) => format!("{}{a}", crate::constants::SYNC_UP),
+        Some((0, b)) => format!("{}{b}", crate::constants::SYNC_DOWN),
+        Some((a, b)) => format!(
+            "{}{a} {}{b}",
+            crate::constants::SYNC_UP,
+            crate::constants::SYNC_DOWN
+        ),
+        None => crate::constants::NO_REMOTE_SYNC.to_string(),
+    }
 }
 
 fn git_panel_title(data: &GitData) -> String {
@@ -186,8 +514,9 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
 
-    let git = panes::git_fields_from_data(&git_data);
-    if git.is_empty() {
+    let fields = panes::git_fields_from_data(&git_data);
+    let total_rows = fields.len() + git_data.remotes.len() + git_data.worktrees.len();
+    if total_rows == 0 {
         app.pane_manager_mut().pane_mut(PaneId::Git).clear_surface();
         let empty_git = pane::empty_pane_block(" Not a git repo ");
         frame.render_widget(empty_git, area);
@@ -196,7 +525,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
     app.pane_manager_mut()
         .pane_mut(PaneId::Git)
-        .set_len(git.len());
+        .set_len(total_rows);
     let focus = app.pane_focus_state(PaneId::Git);
     let git_block = styles.chrome.block(
         git_panel_title(&git_data),
@@ -212,7 +541,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(git_block, area);
     let git_ctx = GitRenderCtx {
         data: &git_data,
-        fields: &git,
+        fields: &fields,
         pane: app.pane_manager().pane(PaneId::Git),
         focus,
         styles: &styles,
@@ -222,4 +551,32 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         .pane_mut(PaneId::Git)
         .set_scroll_offset(scroll_offset);
     pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::Git));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn section_for_pos_maps_flat_indices() {
+        assert_eq!(section_for_pos(0, 3, 2, 1), Some(Section::Flat(0)));
+        assert_eq!(section_for_pos(2, 3, 2, 1), Some(Section::Flat(2)));
+    }
+
+    #[test]
+    fn section_for_pos_maps_remote_indices() {
+        assert_eq!(section_for_pos(3, 3, 2, 1), Some(Section::Remote(0)));
+        assert_eq!(section_for_pos(4, 3, 2, 1), Some(Section::Remote(1)));
+    }
+
+    #[test]
+    fn section_for_pos_maps_worktree_indices() {
+        assert_eq!(section_for_pos(5, 3, 2, 1), Some(Section::Worktree(0)));
+    }
+
+    #[test]
+    fn section_for_pos_out_of_range_is_none() {
+        assert_eq!(section_for_pos(6, 3, 2, 1), None);
+        assert_eq!(section_for_pos(0, 0, 0, 0), None);
+    }
 }

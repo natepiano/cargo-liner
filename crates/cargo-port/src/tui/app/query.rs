@@ -238,8 +238,8 @@ impl App {
         let git = self.git_info_for(path)?;
         (git.primary_tracked_ref().is_none()
             && git.branch.as_deref() != git.default_branch.as_deref())
-            .then(|| git.branch.clone())
-            .flatten()
+        .then(|| git.branch.clone())
+        .flatten()
     }
 
     pub(in super::super) fn ci_for(&self, path: &Path) -> Option<Conclusion> {
@@ -669,10 +669,15 @@ impl App {
                     }
                 } else {
                     let git = self.pane_data.git.as_ref()?;
-                    let fields = crate::tui::panes::git_fields_from_data(git);
-                    match fields.get(self.pane_manager.pane(PaneId::Git).pos()) {
-                        Some(DetailField::Repo) if git.url.is_some() => Some("open"),
-                        _ => None,
+                    let flat_len = crate::tui::panes::git_fields_from_data(git).len();
+                    let pos = self.pane_manager.pane(PaneId::Git).pos();
+                    if pos >= flat_len
+                        && let Some(remote) = git.remotes.get(pos - flat_len)
+                        && remote.full_url.is_some()
+                    {
+                        Some("open")
+                    } else {
+                        None
                     }
                 }
             },

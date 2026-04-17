@@ -208,7 +208,9 @@ impl App {
                         .and_then(|p| p.language_stats.as_ref())
                         .is_some_and(|ls| !ls.entries.is_empty())
                 }),
-                PaneId::Git => self.pane_data.git.as_ref().is_some_and(|g| g.url.is_some()),
+                PaneId::Git => self.pane_data.git.as_ref().is_some_and(|g| {
+                    g.branch.is_some() || !g.remotes.is_empty() || !g.worktrees.is_empty()
+                }),
                 _ => false,
             },
             PaneBehavior::Cpu => self.pane_data.cpu.is_some(),
