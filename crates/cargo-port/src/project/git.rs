@@ -61,7 +61,7 @@ impl WorkflowPresence {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct GitInfo {
     /// Git path state (clean, modified, untracked, etc.) for this project path.
-    pub path_state:          GitPathState,
+    pub status:              GitStatus,
     /// Whether this is a clone or a fork.
     pub origin:              GitOrigin,
     /// The current branch name.
@@ -177,10 +177,10 @@ impl GitInfo {
                     if s.is_empty() { None } else { Some(s) }
                 });
 
-        let path_state = detect_git_path_state_with_root(project_dir, &repo_root);
+        let git_status = detect_git_status_with_root(project_dir, &repo_root);
 
         Some(Self {
-            path_state,
+            status: git_status,
             origin,
             branch,
             owner,
@@ -304,7 +304,7 @@ fn git_output_logged<const N: usize>(
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum GitPathState {
+pub(crate) enum GitStatus {
     #[default]
     OutsideRepo,
     Clean,
@@ -313,7 +313,7 @@ pub(crate) enum GitPathState {
     Ignored,
 }
 
-impl GitPathState {
+impl GitStatus {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::OutsideRepo => "outside repo",
@@ -372,7 +372,7 @@ impl LocalGitState {
 
 /// Detect git path state when the repo root is already known, avoiding a
 /// redundant `git_repo_root()` call.
-fn detect_git_path_state_with_root(project_dir: &Path, repo_root: &Path) -> GitPathState {
+fn detect_git_status_with_root(project_dir: &Path, repo_root: &Path) -> GitStatus {
     let started = std::time::Instant::now();
     let relative_path = relative_git_path(repo_root, project_dir);
     if relative_path != "." {
@@ -383,13 +383,13 @@ fn detect_git_path_state_with_root(project_dir: &Path, repo_root: &Path) -> GitP
             .ok()
             .is_some_and(|status| status.success());
         if ignored {
-            let state = GitPathState::Ignored;
+            let state = GitStatus::Ignored;
             tracing::info!(
                 elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
                 repo_root = %repo_root.display(),
                 project_dir = %project_dir.display(),
                 state = %state.label(),
-                "git_path_state_single"
+                "git_status_single"
             );
             return state;
         }
@@ -406,7 +406,7 @@ fn detect_git_path_state_with_root(project_dir: &Path, repo_root: &Path) -> GitP
         .current_dir(repo_root)
         .output();
     let Ok(status_output) = status_output else {
-        return GitPathState::Clean;
+        return GitStatus::Clean;
     };
     let stdout = String::from_utf8_lossy(&status_output.stdout);
     let mut has_modified = false;
@@ -422,18 +422,18 @@ fn detect_git_path_state_with_root(project_dir: &Path, repo_root: &Path) -> GitP
     }
 
     let state = if has_modified {
-        GitPathState::Modified
+        GitStatus::Modified
     } else if has_untracked {
-        GitPathState::Untracked
+        GitStatus::Untracked
     } else {
-        GitPathState::Clean
+        GitStatus::Clean
     };
     tracing::info!(
         elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
         repo_root = %repo_root.display(),
         project_dir = %project_dir.display(),
         state = %state.label(),
-        "git_path_state_single"
+        "git_status_single"
     );
     state
 }

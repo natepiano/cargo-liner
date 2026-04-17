@@ -263,7 +263,7 @@ pub(super) fn render_rules(frame: &mut Frame, rules: &[PaneRule], style: Style) 
     for rule in rules {
         match *rule {
             PaneRule::Horizontal { area, connector_x } => {
-                render_horizontal_rule(frame, area, style, connector_x)
+                render_horizontal_rule(frame, area, style, connector_x);
             },
             PaneRule::Vertical { area } => render_vertical_rule(frame, area, style),
             PaneRule::Symbol { area, glyph } => render_symbol_rule(frame, area, style, glyph),
@@ -346,7 +346,7 @@ impl PaneManager {
         }
     }
 
-    pub(super) fn behavior(id: PaneId) -> PaneBehavior {
+    pub(super) const fn behavior(id: PaneId) -> PaneBehavior {
         match id {
             PaneId::ProjectList => PaneBehavior::ProjectList,
             PaneId::Package | PaneId::Lang | PaneId::Git => PaneBehavior::DetailFields,
@@ -360,14 +360,14 @@ impl PaneManager {
         }
     }
 
-    pub(super) fn has_row_hitboxes(id: PaneId) -> bool {
+    pub(super) const fn has_row_hitboxes(id: PaneId) -> bool {
         matches!(
             Self::behavior(id),
             PaneBehavior::DetailFields | PaneBehavior::DetailTargets
         )
     }
 
-    pub(super) fn size_spec(id: PaneId) -> PaneSizeSpec {
+    pub(super) const fn size_spec(id: PaneId) -> PaneSizeSpec {
         match id {
             PaneId::Cpu => PaneSizeSpec {
                 width:  PaneAxisSize::Fixed(CPU_PANE_WIDTH),
@@ -494,12 +494,12 @@ mod tests {
 
     #[test]
     fn tiled_layout_has_no_overlapping_cells() {
-        assert_layout_has_no_overlaps(PaneManager::derived_layout(false));
+        assert_layout_has_no_overlaps(&PaneManager::derived_layout(false));
     }
 
     #[test]
     fn output_layout_has_no_overlapping_cells() {
-        assert_layout_has_no_overlaps(PaneManager::derived_layout(true));
+        assert_layout_has_no_overlaps(&PaneManager::derived_layout(true));
     }
 
     #[test]
@@ -615,7 +615,7 @@ mod tests {
         );
     }
 
-    fn assert_layout_has_no_overlaps(layout: PaneGridLayout) {
+    fn assert_layout_has_no_overlaps(layout: &PaneGridLayout) {
         let mut occupied = HashSet::new();
         for placement in &layout.placements {
             for row in placement.row..placement.row + placement.row_span {

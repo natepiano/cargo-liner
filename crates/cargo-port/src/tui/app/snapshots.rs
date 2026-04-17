@@ -12,7 +12,7 @@ use crate::constants::SYNC_UP;
 use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
-use crate::project::GitPathState;
+use crate::project::GitStatus;
 use crate::project::MemberGroup;
 use crate::project::PackageProject;
 use crate::project::ProjectFields;
@@ -273,10 +273,7 @@ pub(super) fn git_sync_snapshot(git_info: Option<&GitInfo>) -> String {
     let Some(info) = git_info else {
         return String::new();
     };
-    if matches!(
-        info.path_state,
-        GitPathState::Untracked | GitPathState::Ignored
-    ) {
+    if matches!(info.status, GitStatus::Untracked | GitStatus::Ignored) {
         return String::new();
     }
     match info.ahead_behind {
@@ -293,10 +290,7 @@ pub(super) fn git_main_snapshot(git_info: Option<&GitInfo>) -> String {
     let Some(info) = git_info else {
         return String::new();
     };
-    if matches!(
-        info.path_state,
-        GitPathState::Untracked | GitPathState::Ignored
-    ) {
+    if matches!(info.status, GitStatus::Untracked | GitStatus::Ignored) {
         return String::new();
     }
     match info.ahead_behind_local {

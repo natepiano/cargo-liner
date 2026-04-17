@@ -283,22 +283,22 @@ impl App {
         if !self.discovery_shimmer_enabled() {
             self.discovery_shimmers.clear();
         }
-        if actions.refresh_cpu {
+        if actions.refresh_cpu.should_apply() {
             self.reset_cpu_placeholder();
         }
 
-        if actions.refresh_lint_runtime {
+        if actions.refresh_lint_runtime.should_apply() {
             self.refresh_lint_runtime_from_config(cfg);
         }
 
-        if actions.rescan {
+        if actions.rescan.should_apply() {
             self.rescan();
             self.force_settings_if_unconfigured();
         } else {
-            if actions.refresh_lint_runtime {
+            if actions.refresh_lint_runtime.should_apply() {
                 self.respawn_watcher_and_register_existing_projects();
             }
-            if actions.rebuild_tree {
+            if actions.rebuild_tree.should_apply() {
                 // Regroup workspace members in-place based on updated
                 // inline_dirs, then refresh derived state.
                 self.projects
@@ -1762,7 +1762,7 @@ impl App {
         self.dirty.fit_widths.mark_dirty();
         tracing::info!(
             path = %path.display(),
-            path_state = %info.path_state.label(),
+            git_status = %info.status.label(),
             "git_info_applied"
         );
         let preserved_first_commit = self

@@ -18,7 +18,7 @@ use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::ExampleGroup;
 use crate::project::GitOrigin;
-use crate::project::GitPathState;
+use crate::project::GitStatus;
 use crate::project::NonRustProject;
 use crate::project::PackageProject;
 use crate::project::ProjectFields;
@@ -363,7 +363,7 @@ impl DetailField {
                     branch.to_string()
                 }
             },
-            Self::GitPath => data.path_state.label_with_icon(),
+            Self::GitPath => data.status.label_with_icon(),
             Self::Sync => data.sync.as_deref().unwrap_or("").to_string(),
             Self::VsOrigin => data.vs_origin.as_deref().unwrap_or("").to_string(),
             Self::VsLocal => data.vs_local.as_deref().unwrap_or("").to_string(),
@@ -431,7 +431,7 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     if data.branch.is_some() {
         fields.push(DetailField::Branch);
     }
-    if data.path_state != GitPathState::OutsideRepo {
+    if data.status != GitStatus::OutsideRepo {
         fields.push(DetailField::GitPath);
     }
     if data.vs_origin.is_some() {
@@ -483,7 +483,7 @@ pub struct PackageData {
 #[derive(Clone)]
 pub struct GitData {
     pub branch:            Option<String>,
-    pub path_state:        GitPathState,
+    pub status:        GitStatus,
     pub sync:              Option<String>,
     pub vs_origin:         Option<String>,
     pub vs_local:          Option<String>,
@@ -638,7 +638,7 @@ fn format_downloads(count: u64) -> String {
 
 struct GitDetailFields {
     branch:            Option<String>,
-    path:              GitPathState,
+    path:              GitStatus,
     sync:              Option<String>,
     vs_origin:         Option<String>,
     vs_local:          Option<String>,
@@ -692,7 +692,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         .map(timestamp::format_timestamp);
     GitDetailFields {
         branch,
-        path: app.git_path_state_for(abs_path),
+        path: app.git_status_for(abs_path),
         sync,
         vs_origin,
         vs_local,
@@ -807,7 +807,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &SubmoduleInfo) -> De
         },
         git:     GitData {
             branch:            git_detail.branch,
-            path_state:        git_detail.path,
+            status:        git_detail.path,
             sync:              git_detail.sync,
             vs_origin:         git_detail.vs_origin,
             vs_local:          git_detail.vs_local,
@@ -991,7 +991,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         },
         git:     GitData {
             branch: git_detail.branch,
-            path_state: git_detail.path,
+            status: git_detail.path,
             sync: git_detail.sync,
             vs_origin: git_detail.vs_origin,
             vs_local: git_detail.vs_local,

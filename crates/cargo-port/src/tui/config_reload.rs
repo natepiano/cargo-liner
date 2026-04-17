@@ -26,11 +26,22 @@ pub(super) enum ConfigKey {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum ReloadDecision {
+    #[default]
+    Skip,
+    Apply,
+}
+
+impl ReloadDecision {
+    pub(super) const fn should_apply(self) -> bool { matches!(self, Self::Apply) }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct ReloadActions {
-    pub rebuild_tree:         bool,
-    pub refresh_cpu:          bool,
-    pub rescan:               bool,
-    pub refresh_lint_runtime: bool,
+    pub rebuild_tree:         ReloadDecision,
+    pub refresh_cpu:          ReloadDecision,
+    pub rescan:               ReloadDecision,
+    pub refresh_lint_runtime: ReloadDecision,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -122,7 +133,7 @@ const fn mark_rebuild_tree(
     _new: &CargoPortConfig,
     _context: ReloadContext,
 ) {
-    actions.rebuild_tree = true;
+    actions.rebuild_tree = ReloadDecision::Apply;
 }
 
 const fn mark_rescan(
@@ -131,7 +142,7 @@ const fn mark_rescan(
     _new: &CargoPortConfig,
     _context: ReloadContext,
 ) {
-    actions.rescan = true;
+    actions.rescan = ReloadDecision::Apply;
 }
 
 const fn mark_refresh_lint_runtime(
@@ -140,7 +151,7 @@ const fn mark_refresh_lint_runtime(
     _new: &CargoPortConfig,
     _context: ReloadContext,
 ) {
-    actions.refresh_lint_runtime = true;
+    actions.refresh_lint_runtime = ReloadDecision::Apply;
 }
 
 const fn mark_refresh_cpu(
@@ -149,7 +160,7 @@ const fn mark_refresh_cpu(
     _new: &CargoPortConfig,
     _context: ReloadContext,
 ) {
-    actions.refresh_cpu = true;
+    actions.refresh_cpu = ReloadDecision::Apply;
 }
 
 const fn mark_include_non_rust(
@@ -159,16 +170,16 @@ const fn mark_include_non_rust(
     context: ReloadContext,
 ) {
     if !context.scan_complete {
-        actions.rescan = true;
+        actions.rescan = ReloadDecision::Apply;
         return;
     }
 
     let enabling_non_rust = !old.tui.include_non_rust.includes_non_rust()
         && new.tui.include_non_rust.includes_non_rust();
     if enabling_non_rust && !context.has_cached_non_rust {
-        actions.rescan = true;
+        actions.rescan = ReloadDecision::Apply;
     } else {
-        actions.rebuild_tree = true;
+        actions.rebuild_tree = ReloadDecision::Apply;
     }
 }
 
@@ -298,10 +309,10 @@ mod tests {
         assert_eq!(
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions {
-                rebuild_tree:         false,
-                refresh_cpu:          false,
-                rescan:               true,
-                refresh_lint_runtime: false,
+                rebuild_tree:         ReloadDecision::Skip,
+                refresh_cpu:          ReloadDecision::Skip,
+                rescan:               ReloadDecision::Apply,
+                refresh_lint_runtime: ReloadDecision::Skip,
             }
         );
     }
@@ -323,10 +334,10 @@ mod tests {
                 },
             ),
             ReloadActions {
-                rebuild_tree:         true,
-                refresh_cpu:          false,
-                rescan:               false,
-                refresh_lint_runtime: false,
+                rebuild_tree:         ReloadDecision::Apply,
+                refresh_cpu:          ReloadDecision::Skip,
+                rescan:               ReloadDecision::Skip,
+                refresh_lint_runtime: ReloadDecision::Skip,
             }
         );
     }
@@ -346,10 +357,10 @@ mod tests {
                 },
             ),
             ReloadActions {
-                rebuild_tree:         false,
-                refresh_cpu:          false,
-                rescan:               true,
-                refresh_lint_runtime: false,
+                rebuild_tree:         ReloadDecision::Skip,
+                refresh_cpu:          ReloadDecision::Skip,
+                rescan:               ReloadDecision::Apply,
+                refresh_lint_runtime: ReloadDecision::Skip,
             }
         );
     }
@@ -364,10 +375,10 @@ mod tests {
         assert_eq!(
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions {
-                rebuild_tree:         false,
-                refresh_cpu:          false,
-                rescan:               false,
-                refresh_lint_runtime: true,
+                rebuild_tree:         ReloadDecision::Skip,
+                refresh_cpu:          ReloadDecision::Skip,
+                rescan:               ReloadDecision::Skip,
+                refresh_lint_runtime: ReloadDecision::Apply,
             }
         );
     }
@@ -380,10 +391,10 @@ mod tests {
         assert_eq!(
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions {
-                rebuild_tree:         false,
-                refresh_cpu:          false,
-                rescan:               true,
-                refresh_lint_runtime: true,
+                rebuild_tree:         ReloadDecision::Skip,
+                refresh_cpu:          ReloadDecision::Skip,
+                rescan:               ReloadDecision::Apply,
+                refresh_lint_runtime: ReloadDecision::Apply,
             }
         );
     }
@@ -397,10 +408,10 @@ mod tests {
         assert_eq!(
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions {
-                rebuild_tree:         false,
-                refresh_cpu:          true,
-                rescan:               false,
-                refresh_lint_runtime: false,
+                rebuild_tree:         ReloadDecision::Skip,
+                refresh_cpu:          ReloadDecision::Apply,
+                rescan:               ReloadDecision::Skip,
+                refresh_lint_runtime: ReloadDecision::Skip,
             }
         );
     }

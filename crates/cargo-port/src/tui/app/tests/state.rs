@@ -168,7 +168,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            path_state:          GitPathState::default(),
+            status:              GitStatus::default(),
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),
             owner:               Some("acme".to_string()),
@@ -211,7 +211,7 @@ fn ci_for_default_branch_prefers_matching_branch_runs() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            path_state:          GitPathState::default(),
+            status:              GitStatus::default(),
             origin:              GitOrigin::Clone,
             branch:              Some("main".to_string()),
             owner:               Some("acme".to_string()),
@@ -261,7 +261,7 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            path_state:          GitPathState::default(),
+            status:              GitStatus::default(),
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),
             owner:               Some("acme".to_string()),
@@ -346,12 +346,11 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(project_a.path().as_path()));
-    assert!(
-        !app.scan
-            .startup_phases
-            .lint_seen_terminal
-            .contains(project_a.path().as_path())
-    );
+    assert!(!app
+        .scan
+        .startup_phases
+        .lint_seen_terminal
+        .contains(project_a.path().as_path()));
     assert!(app.running_lint_paths.contains_key(project_a.path()));
     assert!(app.lint_toast.is_some());
 
@@ -486,12 +485,11 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
 
     app.handle_git_info(member_dir.as_path(), make_git_info(None));
 
-    assert!(
-        app.scan
-            .startup_phases
-            .git_seen
-            .contains(workspace_dir.join(".git").as_path())
-    );
+    assert!(app
+        .scan
+        .startup_phases
+        .git_seen
+        .contains(workspace_dir.join(".git").as_path()));
 }
 
 #[test]
@@ -600,12 +598,12 @@ fn vendored_path_dependency_becomes_cargo_active() {
 }
 
 #[test]
-fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
+fn git_status_suppresses_sync_for_untracked_and_ignored() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
 
     let base_info = || GitInfo {
-        path_state:          GitPathState::default(),
+        status:              GitStatus::default(),
         origin:              GitOrigin::Clone,
         branch:              Some("feat/demo".to_string()),
         owner:               None,
@@ -625,21 +623,21 @@ fn git_path_state_suppresses_sync_for_untracked_and_ignored() {
 
     app.handle_git_info(project.path(), {
         let mut info = base_info();
-        info.path_state = GitPathState::Untracked;
+        info.status = GitStatus::Untracked;
         info
     });
     assert!(app.git_sync(project.path()).is_empty());
 
     app.handle_git_info(project.path(), {
         let mut info = base_info();
-        info.path_state = GitPathState::Ignored;
+        info.status = GitStatus::Ignored;
         info
     });
     assert!(app.git_sync(project.path()).is_empty());
 }
 
 #[test]
-fn background_git_info_updates_rendered_git_path_state() {
+fn background_git_info_updates_rendered_git_status() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
     app.scan.phase = ScanPhase::Complete;
@@ -649,7 +647,7 @@ fn background_git_info_updates_rendered_git_path_state() {
         BackgroundMsg::GitInfo {
             path: project.path().to_path_buf().into(),
             info: GitInfo {
-                path_state:          GitPathState::Modified,
+                status:              GitStatus::Modified,
                 origin:              GitOrigin::Clone,
                 branch:              Some("feat/demo".to_string()),
                 owner:               None,
@@ -666,17 +664,14 @@ fn background_git_info_updates_rendered_git_path_state() {
             },
         },
     );
-    assert_eq!(
-        app.git_path_state_for(project.path()),
-        GitPathState::Modified
-    );
+    assert_eq!(app.git_status_for(project.path()), GitStatus::Modified);
 
     apply_bg_msg(
         &mut app,
         BackgroundMsg::GitInfo {
             path: project.path().to_path_buf().into(),
             info: GitInfo {
-                path_state:          GitPathState::Clean,
+                status:              GitStatus::Clean,
                 origin:              GitOrigin::Clone,
                 branch:              Some("feat/demo".to_string()),
                 owner:               None,
@@ -693,7 +688,7 @@ fn background_git_info_updates_rendered_git_path_state() {
             },
         },
     );
-    assert_eq!(app.git_path_state_for(project.path()), GitPathState::Clean);
+    assert_eq!(app.git_status_for(project.path()), GitStatus::Clean);
 }
 
 #[test]
@@ -704,7 +699,7 @@ fn git_sync_shows_ascii_fill_for_local_only_branch() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            path_state:          GitPathState::default(),
+            status:              GitStatus::default(),
             origin:              GitOrigin::Local,
             branch:              Some("feat/demo".to_string()),
             owner:               None,
@@ -732,7 +727,7 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            path_state:          GitPathState::default(),
+            status:              GitStatus::default(),
             origin:              GitOrigin::Clone,
             branch:              Some("feature/demo".to_string()),
             owner:               Some("natepiano".to_string()),
@@ -760,7 +755,7 @@ fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            path_state:          GitPathState::default(),
+            status:              GitStatus::default(),
             origin:              GitOrigin::Clone,
             branch:              Some("enh/various".to_string()),
             owner:               Some("natepiano".to_string()),
@@ -805,7 +800,7 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
     app.handle_git_info(
         project.path(),
         GitInfo {
-            path_state:          GitPathState::default(),
+            status:              GitStatus::default(),
             origin:              GitOrigin::Clone,
             branch:              Some("enh/various".to_string()),
             owner:               Some("natepiano".to_string()),
@@ -852,7 +847,7 @@ fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
     app.handle_git_info(
         project.path(),
         GitInfo {
-            path_state:          GitPathState::default(),
+            status:              GitStatus::default(),
             origin:              GitOrigin::Clone,
             branch:              Some("feat/demo".to_string()),
             owner:               None,

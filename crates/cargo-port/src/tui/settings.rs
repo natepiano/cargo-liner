@@ -124,6 +124,10 @@ fn save_u32_setting(
     true
 }
 
+fn bounded_u8_from_u32(value: u32) -> u8 {
+    u8::try_from(value.min(u32::from(u8::MAX))).unwrap_or(u8::MAX)
+}
+
 fn save_string_setting(
     app: &mut App,
     value: &str,
@@ -1097,21 +1101,21 @@ fn apply_general_settings_edit(
         },
         SettingOption::CpuPollMs => {
             if !save_u32_setting(app, value, |cfg, poll_ms| {
-                cfg.cpu.poll_ms = u64::from(poll_ms)
+                cfg.cpu.poll_ms = u64::from(poll_ms);
             }) {
                 return Ok(true);
             }
         },
         SettingOption::CpuGreenMaxPercent => {
             if !save_u32_setting(app, value, |cfg, percent| {
-                cfg.cpu.green_max_percent = percent.min(100) as u8;
+                cfg.cpu.green_max_percent = bounded_u8_from_u32(percent.min(100));
             }) {
                 return Ok(true);
             }
         },
         SettingOption::CpuYellowMaxPercent => {
             if !save_u32_setting(app, value, |cfg, percent| {
-                cfg.cpu.yellow_max_percent = percent.min(100) as u8;
+                cfg.cpu.yellow_max_percent = bounded_u8_from_u32(percent.min(100));
             }) {
                 return Ok(true);
             }

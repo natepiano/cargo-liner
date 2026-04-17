@@ -979,7 +979,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let project_name = req.project_name;
     let repo_presence = req.repo_presence;
     let client = &ctx.client;
-    // Git info (local, fast) — includes path_state detection but skips
+    // Git info (local, fast) — includes git status detection but skips
     // first_commit, which is handled separately by
     // `schedule_git_first_commit_refreshes` (batched by repo root).
     let git_info = if repo_presence.is_in_repo() {

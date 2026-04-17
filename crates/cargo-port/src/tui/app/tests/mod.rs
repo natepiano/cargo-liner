@@ -34,7 +34,7 @@ use crate::project::Cargo;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
 use crate::project::GitOrigin;
-use crate::project::GitPathState;
+use crate::project::GitStatus;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
 use crate::project::PackageProject;
@@ -500,7 +500,7 @@ fn make_ci_run(run_id: u64, conclusion: Conclusion) -> CiRun {
 
 fn make_git_info(url: Option<&str>) -> GitInfo {
     GitInfo {
-        path_state:          GitPathState::default(),
+        status:              GitStatus::default(),
         origin:              GitOrigin::Clone,
         branch:              Some("main".to_string()),
         owner:               Some("natepiano".to_string()),

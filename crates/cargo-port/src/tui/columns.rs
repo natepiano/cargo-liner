@@ -16,7 +16,7 @@ use crate::constants::GIT_IGNORED_COLOR;
 use crate::constants::GIT_MODIFIED_COLOR;
 use crate::constants::GIT_UNTRACKED_COLOR;
 use crate::constants::IN_SYNC;
-use crate::project::GitPathState;
+use crate::project::GitStatus;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
 
@@ -160,7 +160,7 @@ pub(super) struct ProjectRow<'a> {
     pub prefix:            &'a str,
     pub name:              &'a str,
     pub name_segments:     Option<Vec<StyledSegment>>,
-    pub git_path_state:    GitPathState,
+    pub git_status:    GitStatus,
     pub lint_icon:         &'a str,
     pub lint_style:        Style,
     pub disk:              &'a str,
@@ -429,7 +429,7 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     let ci_text = row
         .ci
         .map_or(String::new(), |conclusion| String::from(conclusion.icon()));
-    let git_path_icon = row.git_path_state.icon();
+    let git_path_icon = row.git_status.icon();
 
     let compact_status_style = |value: &str| {
         if value == IN_SYNC {
@@ -452,7 +452,7 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     let origin_sync_align = compact_status_align(row.git_origin_sync);
     let main_align = compact_status_align(row.git_main);
 
-    let name_style = project_name_style(row.git_path_state);
+    let name_style = project_name_style(row.git_status);
     let ci_style = super::render::conclusion_style(row.ci);
     let git_path_style = Style::default();
 
@@ -517,23 +517,21 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     }
 }
 
-pub(super) fn project_name_style(git_path_state: GitPathState) -> Style {
-    match git_path_state {
-        GitPathState::Modified => Style::default().fg(GIT_MODIFIED_COLOR),
-        GitPathState::Untracked => Style::default().fg(GIT_UNTRACKED_COLOR),
-        GitPathState::Ignored => Style::default().fg(GIT_IGNORED_COLOR),
-        GitPathState::OutsideRepo | GitPathState::Clean => Style::default(),
+pub(super) fn project_name_style(git_status: GitStatus) -> Style {
+    match git_status {
+        GitStatus::Modified => Style::default().fg(GIT_MODIFIED_COLOR),
+        GitStatus::Untracked => Style::default().fg(GIT_UNTRACKED_COLOR),
+        GitStatus::Ignored => Style::default().fg(GIT_IGNORED_COLOR),
+        GitStatus::OutsideRepo | GitStatus::Clean => Style::default(),
     }
 }
 
-pub(super) fn project_name_shimmer_style(git_path_state: GitPathState) -> Style {
-    match git_path_state {
-        GitPathState::Modified => Style::default().fg(GIT_MODIFIED_COLOR),
-        GitPathState::Untracked => Style::default().fg(GIT_UNTRACKED_COLOR),
-        GitPathState::Ignored => Style::default().fg(SECONDARY_TEXT_COLOR),
-        GitPathState::OutsideRepo | GitPathState::Clean => {
-            Style::default().fg(DISCOVERY_SHIMMER_COLOR)
-        },
+pub(super) fn project_name_shimmer_style(git_status: GitStatus) -> Style {
+    match git_status {
+        GitStatus::Modified => Style::default().fg(GIT_MODIFIED_COLOR),
+        GitStatus::Untracked => Style::default().fg(GIT_UNTRACKED_COLOR),
+        GitStatus::Ignored => Style::default().fg(SECONDARY_TEXT_COLOR),
+        GitStatus::OutsideRepo | GitStatus::Clean => Style::default().fg(DISCOVERY_SHIMMER_COLOR),
     }
 }
 
@@ -766,7 +764,7 @@ mod tests {
             prefix:            "▶",
             name:              "bevy_brp 🌲:2",
             name_segments:     None,
-            git_path_state:    GitPathState::Clean,
+            git_status:    GitStatus::Clean,
             lint_icon:         crate::constants::LINT_PASSED,
             lint_style:        Style::default(),
             disk:              "36.3 GiB",
@@ -784,7 +782,7 @@ mod tests {
             prefix:            "▶",
             name:              "bevy_mesh_outline_benchmark",
             name_segments:     None,
-            git_path_state:    GitPathState::Clean,
+            git_status:    GitStatus::Clean,
             lint_icon:         crate::constants::LINT_PASSED,
             lint_style:        Style::default(),
             disk:              "36.3 GiB",
@@ -872,7 +870,7 @@ mod tests {
             prefix:            "▶",
             name:              "demo",
             name_segments:     None,
-            git_path_state:    GitPathState::Clean,
+            git_status:    GitStatus::Clean,
             lint_icon:         crate::constants::LINT_PASSED,
             lint_style:        Style::default(),
             disk:              "36.3 GiB",
@@ -897,12 +895,12 @@ mod tests {
     }
 
     #[test]
-    fn git_path_state_changes_name_style() {
+    fn git_status_changes_name_style() {
         let modified = build_row_cells(ProjectRow {
             prefix:            "  ",
             name:              "demo",
             name_segments:     None,
-            git_path_state:    GitPathState::Modified,
+            git_status:    GitStatus::Modified,
             lint_icon:         " ",
             lint_style:        Style::default(),
             disk:              "—",
@@ -926,7 +924,7 @@ mod tests {
             prefix:            "  ",
             name:              "demo",
             name_segments:     None,
-            git_path_state:    GitPathState::Untracked,
+            git_status:    GitStatus::Untracked,
             lint_icon:         " ",
             lint_style:        Style::default(),
             disk:              "—",
@@ -953,7 +951,7 @@ mod tests {
             prefix:            "  ",
             name:              "demo",
             name_segments:     None,
-            git_path_state:    GitPathState::Clean,
+            git_status:    GitStatus::Clean,
             lint_icon:         " ",
             lint_style:        Style::default(),
             disk:              "—",
@@ -976,7 +974,7 @@ mod tests {
             prefix:            "  ",
             name:              "demo",
             name_segments:     None,
-            git_path_state:    GitPathState::Ignored,
+            git_status:    GitStatus::Ignored,
             lint_icon:         " ",
             lint_style:        Style::default(),
             disk:              "—",
@@ -1021,11 +1019,11 @@ mod tests {
     #[test]
     fn shimmer_style_never_uses_bold() {
         for state in [
-            GitPathState::Clean,
-            GitPathState::Modified,
-            GitPathState::Untracked,
-            GitPathState::Ignored,
-            GitPathState::OutsideRepo,
+            GitStatus::Clean,
+            GitStatus::Modified,
+            GitStatus::Untracked,
+            GitStatus::Ignored,
+            GitStatus::OutsideRepo,
         ] {
             assert!(
                 !project_name_shimmer_style(state)
@@ -1038,11 +1036,11 @@ mod tests {
     #[test]
     fn clean_shimmer_style_uses_explicit_high_contrast_foreground() {
         assert_eq!(
-            project_name_shimmer_style(GitPathState::Clean).fg,
+            project_name_shimmer_style(GitStatus::Clean).fg,
             Some(DISCOVERY_SHIMMER_COLOR)
         );
         assert_eq!(
-            project_name_shimmer_style(GitPathState::OutsideRepo).fg,
+            project_name_shimmer_style(GitStatus::OutsideRepo).fg,
             Some(DISCOVERY_SHIMMER_COLOR)
         );
     }

@@ -20,6 +20,7 @@ use std::time::Instant;
 
 use ratatui::layout::Position;
 
+use super::cpu::CpuPoller;
 use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
@@ -35,7 +36,6 @@ use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::RepoCache;
-use crate::tui::cpu::CpuPoller;
 use crate::watcher::WatcherMsg;
 
 #[cfg(test)]

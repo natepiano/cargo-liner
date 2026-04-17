@@ -378,8 +378,9 @@ fn pane_area(rows: &[Rect], cols: &[Rect], pane: PaneId, output_visible: bool) -
         PaneId::Lints => rows[2].intersection(project_col),
         PaneId::CiRuns => rows[2].intersection(right_col),
         PaneId::Output if output_visible => rows[2],
-        PaneId::Output => Rect::ZERO,
-        PaneId::Toasts | PaneId::Settings | PaneId::Finder | PaneId::Keymap => Rect::ZERO,
+        PaneId::Output | PaneId::Toasts | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {
+            Rect::ZERO
+        },
     }
 }
 
@@ -430,7 +431,7 @@ fn tiled_row_constraints(app: &App, total_height: u16) -> [Constraint; 3] {
     }
 }
 
-fn cpu_column_width(_right_width: u16) -> u16 { CPU_PANE_WIDTH }
+const fn cpu_column_width(_right_width: u16) -> u16 { CPU_PANE_WIDTH }
 
 pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let (mut items, header, summary_line, row_width) = {
@@ -818,7 +819,7 @@ fn render_root_item(
     let lint = app.lint_icon_for_root(node_index);
     let origin_sync = app.git_sync(item.path());
     let main_sync = app.git_main(item.path());
-    let git_path_state = app.git_path_state_for_item(item);
+    let git_status = app.git_status_for_item(item);
     let prefix = if item.has_children() {
         if app.expanded().contains(&ExpandKey::Node(node_index)) {
             PREFIX_ROOT_EXPANDED
@@ -838,10 +839,10 @@ fn render_root_item(
         name_segments: app.discovery_name_segments_for_path(
             item.path(),
             name,
-            git_path_state,
+            git_status,
             DiscoveryRowKind::Root,
         ),
-        git_path_state,
+        git_status,
         lint_icon: lint,
         lint_style: lint_style_for(app, item.path()),
         disk: disk_text,
@@ -883,8 +884,8 @@ fn render_child_item(
     let hide_git_status = app.is_workspace_member_path(path);
     let origin_sync = if hide_git_status
         || matches!(
-            app.git_path_state_for(path),
-            crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
+            app.git_status_for(path),
+            crate::project::GitStatus::Untracked | crate::project::GitStatus::Ignored
         ) {
         String::new()
     } else {
@@ -892,15 +893,15 @@ fn render_child_item(
     };
     let main_sync = if hide_git_status
         || matches!(
-            app.git_path_state_for(path),
-            crate::project::GitPathState::Untracked | crate::project::GitPathState::Ignored
+            app.git_status_for(path),
+            crate::project::GitStatus::Untracked | crate::project::GitStatus::Ignored
         ) {
         String::new()
     } else {
         app.git_main(path)
     };
     let deleted = inherited_deleted || app.is_deleted(project.path());
-    let git_path_state = app.git_path_state_for(path);
+    let git_status = app.git_status_for(path);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         ("0.0", Some(" [x]"), Some(Style::default().fg(LABEL_COLOR)))
     } else {
@@ -912,10 +913,10 @@ fn render_child_item(
         name_segments: app.discovery_name_segments_for_path(
             path,
             name,
-            git_path_state,
+            git_status,
             DiscoveryRowKind::PathOnly,
         ),
-        git_path_state,
+        git_status,
         lint_icon: lint,
         lint_style: lint_style_for(app, path),
         disk: disk_text,
@@ -973,7 +974,7 @@ fn render_worktree_entry<'a>(
     let origin_sync = app.git_sync(wt_abs);
     let main_sync = app.git_main(wt_abs);
     let deleted = app.is_deleted(wt_abs);
-    let git_path_state = app.git_path_state_for(wt_abs);
+    let git_status = app.git_status_for(wt_abs);
     let wt_health = worktree_health_for_entry(item, wi);
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, wt_health);
@@ -983,10 +984,10 @@ fn render_worktree_entry<'a>(
         name_segments: app.discovery_name_segments_for_path(
             wt_abs,
             &wt_name,
-            git_path_state,
+            git_status,
             DiscoveryRowKind::WorktreeEntry,
         ),
-        git_path_state,
+        git_status,
         lint_icon: lint,
         lint_style: lint_style_for(app, wt_abs),
         disk: disk_text,
@@ -1334,7 +1335,7 @@ fn render_submodule_item(
     };
     let path = submodule.path.as_path();
     let name = format!("{} (s)", submodule.name);
-    let git_path_state = app.git_path_state_for(path);
+    let git_status = app.git_status_for(path);
     let deleted = app.is_deleted(item.path());
     let row = super::columns::build_row_cells(super::columns::ProjectRow {
         prefix: PREFIX_SUBMODULE,
@@ -1342,10 +1343,10 @@ fn render_submodule_item(
         name_segments: app.discovery_name_segments_for_path(
             path,
             &name,
-            git_path_state,
+            git_status,
             DiscoveryRowKind::PathOnly,
         ),
-        git_path_state,
+        git_status,
         lint_icon: " ",
         lint_style: Style::default(),
         disk: "",

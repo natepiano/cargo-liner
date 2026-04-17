@@ -270,7 +270,7 @@ mod tests {
     use crate::project::ExampleGroup;
     use crate::project::GitInfo;
     use crate::project::GitOrigin;
-    use crate::project::GitPathState;
+    use crate::project::GitStatus;
     use crate::project::LocalGitState;
     use crate::project::MemberGroup;
     use crate::project::PackageProject;
@@ -364,7 +364,7 @@ mod tests {
 
     fn make_git_info(url: Option<&str>) -> GitInfo {
         GitInfo {
-            path_state:          GitPathState::default(),
+            status:              GitStatus::default(),
             origin:              GitOrigin::Clone,
             branch:              Some("main".to_string()),
             owner:               Some("natepiano".to_string()),

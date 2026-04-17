@@ -129,7 +129,7 @@ impl App {
     }
 
     /// Derive the current input context from app state.
-    pub(in super::super) fn input_context(&self) -> InputContext {
+    pub(in super::super) const fn input_context(&self) -> InputContext {
         if self.ui_modes.keymap.is_awaiting_key() && self.inline_error.is_some() {
             InputContext::KeymapConflict
         } else if self.ui_modes.keymap.is_awaiting_key() {
@@ -144,14 +144,13 @@ impl App {
             InputContext::Settings
         } else {
             match PaneManager::behavior(self.focused_pane) {
-                PaneBehavior::ProjectList => InputContext::ProjectList,
+                PaneBehavior::ProjectList | PaneBehavior::Overlay => InputContext::ProjectList,
                 PaneBehavior::DetailFields => InputContext::DetailFields,
                 PaneBehavior::DetailTargets | PaneBehavior::Cpu => InputContext::DetailTargets,
                 PaneBehavior::Lints => InputContext::Lints,
                 PaneBehavior::CiRuns => InputContext::CiRuns,
                 PaneBehavior::Output => InputContext::Output,
                 PaneBehavior::Toasts => InputContext::Toasts,
-                PaneBehavior::Overlay => InputContext::ProjectList,
             }
         }
     }

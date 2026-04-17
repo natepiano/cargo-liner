@@ -1,14 +1,14 @@
 use ratatui::text::Line;
 
-use super::GitData;
-use super::PackageData;
 use super::model;
 use super::model::DetailField;
+use super::GitData;
+use super::PackageData;
 use crate::ci::CiJob;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::ci::FetchStatus::Fetched;
-use crate::project::GitPathState;
+use crate::project::GitStatus;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::panes;
 use crate::tui::panes::CI_COMPACT_DURATION_WIDTH;
@@ -40,7 +40,7 @@ fn package_data(is_rust_project: bool) -> PackageData {
 fn git_data() -> GitData {
     GitData {
         branch:            None,
-        path_state:        GitPathState::OutsideRepo,
+        status:            GitStatus::OutsideRepo,
         sync:              None,
         vs_origin:         None,
         vs_local:          None,
@@ -206,7 +206,7 @@ fn detail_column_scroll_stays_at_top_when_not_active() {
 #[test]
 fn git_path_value_appends_status_icon() {
     let data = GitData {
-        path_state: GitPathState::Modified,
+        status: GitStatus::Modified,
         ..git_data()
     };
 

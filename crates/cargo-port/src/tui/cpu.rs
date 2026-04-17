@@ -45,9 +45,9 @@ impl CpuSnapshot {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct CpuBreakdownSnapshot {
-    pub system_percent: u8,
-    pub user_percent:   u8,
-    pub idle_percent:   u8,
+    pub system: u8,
+    pub user:   u8,
+    pub idle:   u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,7 +133,7 @@ pub(super) fn filled_cells(percent: u8) -> usize {
     usize::from(clamped).div_ceil(10)
 }
 
-pub(super) fn severity(percent: u8, config: &CpuConfig) -> CpuSeverity {
+pub(super) const fn severity(percent: u8, config: &CpuConfig) -> CpuSeverity {
     if percent <= config.green_max_percent {
         CpuSeverity::Green
     } else if percent <= config.yellow_max_percent {
@@ -145,10 +145,7 @@ pub(super) fn severity(percent: u8, config: &CpuConfig) -> CpuSeverity {
 
 pub(super) const fn blank_bar_color() -> Color { INACTIVE_BORDER_COLOR }
 
-fn cpu_percent(value: f32) -> u8 {
-    let rounded = value.round().clamp(0.0, 100.0);
-    rounded as u8
-}
+fn cpu_percent(value: f32) -> u8 { rounded_percent(f64::from(value)) }
 
 fn normalize_cpu_label(name: &str, index: usize) -> String {
     let trimmed = name.trim();
@@ -181,9 +178,9 @@ fn cpu_breakdown(previous: &mut CpuBreakdownRaw) -> CpuBreakdownSnapshot {
     }
 
     CpuBreakdownSnapshot {
-        system_percent: percent_from_parts(delta_system, delta_total),
-        user_percent:   percent_from_parts(delta_user, delta_total),
-        idle_percent:   percent_from_parts(delta_idle, delta_total),
+        system: percent_from_parts(delta_system, delta_total),
+        user:   percent_from_parts(delta_user, delta_total),
+        idle:   percent_from_parts(delta_idle, delta_total),
     }
 }
 
@@ -191,11 +188,20 @@ fn percent_from_parts(value: u64, total: u64) -> u8 {
     if total == 0 {
         return 0;
     }
-    let percent = ((value as f64 / total as f64) * 100.0)
-        .round()
-        .clamp(0.0, 100.0);
-    percent as u8
+    let rounded = value.saturating_mul(100).saturating_add(total / 2) / total;
+    bounded_percent_u8(rounded)
 }
+
+fn rounded_percent(value: f64) -> u8 {
+    let clamped = value.clamp(0.0, 100.0);
+    let mut percent = 0u8;
+    while percent < 100 && f64::from(percent) + 0.5 <= clamped {
+        percent += 1;
+    }
+    percent
+}
+
+fn bounded_percent_u8(value: u64) -> u8 { u8::try_from(value.min(100)).unwrap_or(100) }
 
 #[cfg(target_os = "macos")]
 fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { macos_cpu_breakdown_raw() }
@@ -236,7 +242,7 @@ fn parse_gpu_percent(output: &str) -> Option<u8> {
     let after = output.split_once(needle)?.1.trim_start();
     let digits = after
         .chars()
-        .take_while(|ch| ch.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
         .collect::<String>();
     digits.parse::<u8>().ok().map(|value| value.min(100))
 }
@@ -276,15 +282,19 @@ fn macos_cpu_breakdown_raw() -> CpuBreakdownRaw {
     let mut info = HostCpuLoadInfo {
         cpu_ticks: [0; CPU_STATE_MAX],
     };
-    let mut count =
-        (std::mem::size_of::<HostCpuLoadInfo>() / std::mem::size_of::<Integer>()) as MachMsgCount;
+    let Some(mut count) = MachMsgCount::try_from(
+        std::mem::size_of::<HostCpuLoadInfo>() / std::mem::size_of::<Integer>(),
+    )
+    .ok() else {
+        return CpuBreakdownRaw::default();
+    };
 
     let result = unsafe {
         host_statistics(
             mach_host_self(),
             HOST_CPU_LOAD_INFO,
-            (&mut info as *mut HostCpuLoadInfo).cast::<Integer>(),
-            &mut count,
+            (&raw mut info).cast::<Integer>(),
+            &raw mut count,
         )
     };
 
@@ -426,7 +436,7 @@ fn windows_gpu_percent() -> Option<u8> {
         .trim()
         .parse::<f64>()
         .ok()?;
-    Some(value.round().clamp(0.0, 100.0) as u8)
+    Some(rounded_percent(value))
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project::AbsolutePath;
 use crate::project::GitInfo;
-use crate::project::GitPathState;
+use crate::project::GitStatus;
 use crate::project::PackageProject;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
@@ -391,7 +391,7 @@ impl App {
         &self,
         row_path: &Path,
         name: &str,
-        git_path_state: GitPathState,
+        git_status: GitStatus,
         row_kind: DiscoveryRowKind,
     ) -> Option<Vec<columns::StyledSegment>> {
         if !self.discovery_shimmer_enabled() {
@@ -405,8 +405,8 @@ impl App {
             return None;
         }
 
-        let base_style = columns::project_name_style(git_path_state);
-        let accent_style = columns::project_name_shimmer_style(git_path_state);
+        let base_style = columns::project_name_style(git_status);
+        let accent_style = columns::project_name_shimmer_style(git_status);
         let window = discovery_shimmer_window_len(char_count);
         let elapsed_ms = usize::try_from(now.duration_since(shimmer.started_at).as_millis())
             .unwrap_or(usize::MAX);
@@ -559,42 +559,42 @@ impl App {
         self.cargo_active_paths.contains(path)
     }
 
-    pub(in super::super) fn git_path_state_for(&self, path: &Path) -> GitPathState {
+    pub(in super::super) fn git_status_for(&self, path: &Path) -> GitStatus {
         self.git_info_for(path)
-            .map_or(GitPathState::OutsideRepo, |info| info.path_state)
+            .map_or(GitStatus::OutsideRepo, |info| info.status)
     }
 
     /// Roll up the worst git path state across all **visible** children of a
     /// `RootItem`.  For worktree groups, checks primary + non-dismissed linked
     /// entries.  For everything else, returns the state for the single path.
-    pub(in super::super) fn git_path_state_for_item(&self, item: &RootItem) -> GitPathState {
+    pub(in super::super) fn git_status_for_item(&self, item: &RootItem) -> GitStatus {
         match item {
             RootItem::Worktrees(g) => {
-                let states: Box<dyn Iterator<Item = GitPathState>> = match g {
+                let states: Box<dyn Iterator<Item = GitStatus>> = match g {
                     WorktreeGroup::Workspaces {
                         primary, linked, ..
                     } => Box::new(
-                        std::iter::once(self.git_path_state_for(primary.path())).chain(
+                        std::iter::once(self.git_status_for(primary.path())).chain(
                             linked
                                 .iter()
                                 .filter(|l| l.visibility() == Visibility::Visible)
-                                .map(|l| self.git_path_state_for(l.path())),
+                                .map(|l| self.git_status_for(l.path())),
                         ),
                     ),
                     WorktreeGroup::Packages {
                         primary, linked, ..
                     } => Box::new(
-                        std::iter::once(self.git_path_state_for(primary.path())).chain(
+                        std::iter::once(self.git_status_for(primary.path())).chain(
                             linked
                                 .iter()
                                 .filter(|l| l.visibility() == Visibility::Visible)
-                                .map(|l| self.git_path_state_for(l.path())),
+                                .map(|l| self.git_status_for(l.path())),
                         ),
                     ),
                 };
-                worst_git_path_state(states)
+                worst_git_status(states)
             },
-            _ => self.git_path_state_for(item.path()),
+            _ => self.git_status_for(item.path()),
         }
     }
 
@@ -623,10 +623,7 @@ impl App {
         let Some(info) = self.git_info_for(path) else {
             return String::new();
         };
-        if matches!(
-            info.path_state,
-            GitPathState::Untracked | GitPathState::Ignored
-        ) {
+        if matches!(info.status, GitStatus::Untracked | GitStatus::Ignored) {
             return String::new();
         }
         match info.ahead_behind {
@@ -643,10 +640,7 @@ impl App {
         let Some(info) = self.git_info_for(path) else {
             return String::new();
         };
-        if matches!(
-            info.path_state,
-            GitPathState::Untracked | GitPathState::Ignored
-        ) {
+        if matches!(info.status, GitStatus::Untracked | GitStatus::Ignored) {
             return String::new();
         }
         match info.ahead_behind_local {
@@ -948,17 +942,17 @@ fn package_parent_row(
 
 /// Return the most severe git path state from an iterator.
 /// Severity: `Modified` > `Untracked` > `Clean` > `Ignored` > `OutsideRepo`.
-fn worst_git_path_state(states: impl Iterator<Item = GitPathState>) -> GitPathState {
-    const fn severity(state: GitPathState) -> u8 {
+fn worst_git_status(states: impl Iterator<Item = GitStatus>) -> GitStatus {
+    const fn severity(state: GitStatus) -> u8 {
         match state {
-            GitPathState::Modified => 4,
-            GitPathState::Untracked => 3,
-            GitPathState::Clean => 2,
-            GitPathState::Ignored => 1,
-            GitPathState::OutsideRepo => 0,
+            GitStatus::Modified => 4,
+            GitStatus::Untracked => 3,
+            GitStatus::Clean => 2,
+            GitStatus::Ignored => 1,
+            GitStatus::OutsideRepo => 0,
         }
     }
     states
         .max_by_key(|s| severity(*s))
-        .unwrap_or(GitPathState::OutsideRepo)
+        .unwrap_or(GitStatus::OutsideRepo)
 }

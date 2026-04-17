@@ -24,17 +24,18 @@ use crate::tui::types::PaneFocusState;
 use crate::tui::types::PaneId;
 
 const CPU_BAR_WIDTH: usize = 10;
-pub(crate) const CPU_CONTENT_WIDTH: u16 = 17;
-pub(crate) const CPU_PANE_WIDTH: u16 = CPU_CONTENT_WIDTH + 2;
+pub(super) const CPU_CONTENT_WIDTH: u16 = 17;
+pub const CPU_PANE_WIDTH: u16 = CPU_CONTENT_WIDTH + 2;
 const CPU_STATIC_INNER_HEIGHT: u16 = 8;
 
 const fn total_selectable_rows(core_count: usize) -> usize { core_count + 5 }
 
-pub(crate) const fn cpu_required_inner_height(core_count: usize) -> u16 {
-    CPU_STATIC_INNER_HEIGHT.saturating_add(core_count as u16)
+pub(super) fn cpu_required_inner_height(core_count: usize) -> u16 {
+    let core_rows = u16::try_from(core_count).unwrap_or(u16::MAX);
+    CPU_STATIC_INNER_HEIGHT.saturating_add(core_rows)
 }
 
-pub(crate) const fn cpu_required_pane_height(core_count: usize) -> u16 {
+pub fn cpu_required_pane_height(core_count: usize) -> u16 {
     cpu_required_inner_height(core_count).saturating_add(2)
 }
 
@@ -137,6 +138,58 @@ fn aggregate_line(percent: u8, width: u16) -> Line<'static> {
     ])
 }
 
+struct CpuPanelLayout {
+    rows:       Vec<Rect>,
+    core_count: usize,
+    system_row: usize,
+    user_row:   usize,
+    idle_row:   usize,
+    gpu_row:    usize,
+}
+
+impl CpuPanelLayout {
+    fn new(inner: Rect, core_count: usize) -> Self {
+        let mut constraints =
+            Vec::with_capacity(usize::from(cpu_required_inner_height(core_count)) + 1);
+        constraints.push(Constraint::Length(1));
+        constraints.extend(std::iter::repeat_n(Constraint::Length(1), core_count));
+        constraints.extend([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Min(0),
+        ]);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(inner);
+        let system_row = 1 + core_count + 1;
+        let user_row = system_row + 1;
+        let idle_row = user_row + 1;
+        let gpu_row = idle_row + 2;
+        Self {
+            rows: rows.to_vec(),
+            core_count,
+            system_row,
+            user_row,
+            idle_row,
+            gpu_row,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct BreakdownRowSpec<'a> {
+    area:        Rect,
+    logical_row: usize,
+    label:       &'a str,
+    percent:     u8,
+    color:       Color,
+}
+
 fn cpu_panel_title(core_count: usize, cursor: Option<usize>) -> String {
     if let Some(pos) = cursor
         && (1..=core_count).contains(&pos)
@@ -152,6 +205,150 @@ fn cpu_panel_title(core_count: usize, cursor: Option<usize>) -> String {
 
     let core_label = if core_count == 1 { "core" } else { "cores" };
     format!(" CPU ({core_count} {core_label}) ")
+}
+
+fn cpu_row_overlay_style(app: &App, logical_row: usize, focus: PaneFocusState) -> Style {
+    app.pane_manager()
+        .pane(PaneId::Cpu)
+        .selection_state(logical_row, focus)
+        .overlay_style()
+}
+
+fn render_selectable_row(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    logical_row: usize,
+    focus: PaneFocusState,
+    paragraph: Paragraph<'static>,
+) {
+    frame.render_widget(
+        paragraph.style(cpu_row_overlay_style(app, logical_row, focus)),
+        area,
+    );
+    interaction::register_pane_row_hitbox(app, area, PaneId::Cpu, logical_row, Content);
+}
+
+fn render_cpu_dividers(
+    frame: &mut Frame,
+    area: Rect,
+    layout: &CpuPanelLayout,
+    border_style: Style,
+) {
+    render_rules(
+        frame,
+        &[
+            PaneRule::Horizontal {
+                area:        Rect {
+                    x:      area.x,
+                    y:      layout.rows[1 + layout.core_count].y,
+                    width:  area.width,
+                    height: 1,
+                },
+                connector_x: None,
+            },
+            PaneRule::Horizontal {
+                area:        Rect {
+                    x:      area.x,
+                    y:      layout.rows[layout.gpu_row - 1].y,
+                    width:  area.width,
+                    height: 1,
+                },
+                connector_x: None,
+            },
+        ],
+        border_style,
+    );
+}
+
+fn render_aggregate_row(
+    frame: &mut Frame,
+    app: &mut App,
+    snapshot: &cpu::CpuSnapshot,
+    layout: &CpuPanelLayout,
+    focus: PaneFocusState,
+) {
+    let logical_row = CpuSelectableRow::Aggregate.logical_index(layout.core_count);
+    render_selectable_row(
+        frame,
+        app,
+        layout.rows[0],
+        logical_row,
+        focus,
+        Paragraph::new(aggregate_line(snapshot.total_percent, layout.rows[0].width)),
+    );
+}
+
+fn render_core_rows(
+    frame: &mut Frame,
+    app: &mut App,
+    snapshot: &cpu::CpuSnapshot,
+    layout: &CpuPanelLayout,
+    focus: PaneFocusState,
+) {
+    for (core_index, core) in snapshot.cores.iter().enumerate() {
+        let logical_row = CpuSelectableRow::Core(core_index).logical_index(layout.core_count);
+        render_selectable_row(
+            frame,
+            app,
+            layout.rows[1 + core_index],
+            logical_row,
+            focus,
+            Paragraph::new(cpu_bar_line(core.percent, app)),
+        );
+    }
+}
+
+fn render_breakdown_row(
+    frame: &mut Frame,
+    app: &mut App,
+    focus: PaneFocusState,
+    row: BreakdownRowSpec<'_>,
+) {
+    render_selectable_row(
+        frame,
+        app,
+        row.area,
+        row.logical_row,
+        focus,
+        Paragraph::new(metric_line(
+            row.label,
+            row.percent,
+            row.color,
+            row.area.width,
+        )),
+    );
+}
+
+fn render_gpu_row(
+    frame: &mut Frame,
+    app: &mut App,
+    snapshot: &cpu::CpuSnapshot,
+    layout: &CpuPanelLayout,
+    focus: PaneFocusState,
+) {
+    let logical_row = CpuSelectableRow::Gpu.logical_index(layout.core_count);
+    render_selectable_row(
+        frame,
+        app,
+        layout.rows[layout.gpu_row],
+        logical_row,
+        focus,
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled("GPU", Style::default().fg(COLUMN_HEADER_COLOR)),
+            ]),
+            gpu_bar_line(snapshot.gpu_percent, app),
+        ]),
+    );
+}
+
+fn sync_cpu_pane_state(app: &mut App, inner: Rect, core_count: usize) {
+    let pane = app.pane_manager_mut().pane_mut(PaneId::Cpu);
+    pane.set_len(total_selectable_rows(core_count));
+    pane.set_content_area(inner);
+    pane.set_scroll_offset(0);
 }
 
 pub fn render_cpu_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles, area: Rect) {
@@ -176,175 +373,52 @@ pub fn render_cpu_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles,
         .cpu_data
         .clone()
         .unwrap_or_else(|| cpu::CpuSnapshot::placeholder(1));
-    let mut constraints =
-        Vec::with_capacity(usize::from(cpu_required_inner_height(snapshot.cores.len())) + 1);
-    constraints.push(Constraint::Length(1));
-    constraints.extend(std::iter::repeat_n(
-        Constraint::Length(1),
-        snapshot.cores.len(),
-    ));
-    constraints.extend([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(2),
-        Constraint::Min(0),
-    ]);
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(inner);
-    let core_count = snapshot.cores.len();
-    let system_row = 1 + core_count + 1;
-    let user_row = system_row + 1;
-    let idle_row = user_row + 1;
-    let gpu_row = idle_row + 2;
+    let layout = CpuPanelLayout::new(inner, snapshot.cores.len());
 
     let border_style = if matches!(focus, PaneFocusState::Active) {
         styles.chrome.active_border
     } else {
         styles.chrome.inactive_border
     };
-    render_rules(
+    render_cpu_dividers(frame, area, &layout, border_style);
+    render_aggregate_row(frame, app, &snapshot, &layout, focus);
+    render_core_rows(frame, app, &snapshot, &layout, focus);
+    render_breakdown_row(
         frame,
-        &[
-            PaneRule::Horizontal {
-                area:        Rect {
-                    x:      area.x,
-                    y:      rows[1 + core_count].y,
-                    width:  area.width,
-                    height: 1,
-                },
-                connector_x: None,
-            },
-            PaneRule::Horizontal {
-                area:        Rect {
-                    x:      area.x,
-                    y:      rows[gpu_row - 1].y,
-                    width:  area.width,
-                    height: 1,
-                },
-                connector_x: None,
-            },
-        ],
-        border_style,
-    );
-
-    let aggregate_row = CpuSelectableRow::Aggregate.logical_index(core_count);
-    frame.render_widget(
-        Paragraph::new(aggregate_line(snapshot.total_percent, rows[0].width)).style(
-            app.pane_manager()
-                .pane(PaneId::Cpu)
-                .selection_state(aggregate_row, focus)
-                .overlay_style(),
-        ),
-        rows[0],
-    );
-    interaction::register_pane_row_hitbox(app, rows[0], PaneId::Cpu, aggregate_row, Content);
-
-    for (core_index, core) in snapshot.cores.iter().enumerate() {
-        let row_area = rows[1 + core_index];
-        let logical_row = CpuSelectableRow::Core(core_index).logical_index(core_count);
-        frame.render_widget(
-            Paragraph::new(cpu_bar_line(core.percent, app)).style(
-                app.pane_manager()
-                    .pane(PaneId::Cpu)
-                    .selection_state(logical_row, focus)
-                    .overlay_style(),
-            ),
-            row_area,
-        );
-        interaction::register_pane_row_hitbox(app, row_area, PaneId::Cpu, logical_row, Content);
-    }
-
-    let system_logical = CpuSelectableRow::System.logical_index(core_count);
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "System",
-            snapshot.breakdown.system_percent,
-            ERROR_COLOR,
-            rows[system_row].width,
-        ))
-        .style(
-            app.pane_manager()
-                .pane(PaneId::Cpu)
-                .selection_state(system_logical, focus)
-                .overlay_style(),
-        ),
-        rows[system_row],
-    );
-    interaction::register_pane_row_hitbox(
         app,
-        rows[system_row],
-        PaneId::Cpu,
-        system_logical,
-        Content,
+        focus,
+        BreakdownRowSpec {
+            area:        layout.rows[layout.system_row],
+            logical_row: CpuSelectableRow::System.logical_index(layout.core_count),
+            label:       "System",
+            percent:     snapshot.breakdown.system,
+            color:       ERROR_COLOR,
+        },
     );
-
-    let user_logical = CpuSelectableRow::User.logical_index(core_count);
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "User",
-            snapshot.breakdown.user_percent,
-            ACCENT_COLOR,
-            rows[user_row].width,
-        ))
-        .style(
-            app.pane_manager()
-                .pane(PaneId::Cpu)
-                .selection_state(user_logical, focus)
-                .overlay_style(),
-        ),
-        rows[user_row],
+    render_breakdown_row(
+        frame,
+        app,
+        focus,
+        BreakdownRowSpec {
+            area:        layout.rows[layout.user_row],
+            logical_row: CpuSelectableRow::User.logical_index(layout.core_count),
+            label:       "User",
+            percent:     snapshot.breakdown.user,
+            color:       ACCENT_COLOR,
+        },
     );
-    interaction::register_pane_row_hitbox(app, rows[user_row], PaneId::Cpu, user_logical, Content);
-
-    let idle_logical = CpuSelectableRow::Idle.logical_index(core_count);
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Idle",
-            snapshot.breakdown.idle_percent,
-            Color::White,
-            rows[idle_row].width,
-        ))
-        .style(
-            app.pane_manager()
-                .pane(PaneId::Cpu)
-                .selection_state(idle_logical, focus)
-                .overlay_style(),
-        ),
-        rows[idle_row],
+    render_breakdown_row(
+        frame,
+        app,
+        focus,
+        BreakdownRowSpec {
+            area:        layout.rows[layout.idle_row],
+            logical_row: CpuSelectableRow::Idle.logical_index(layout.core_count),
+            label:       "Idle",
+            percent:     snapshot.breakdown.idle,
+            color:       Color::White,
+        },
     );
-    interaction::register_pane_row_hitbox(app, rows[idle_row], PaneId::Cpu, idle_logical, Content);
-
-    let gpu_logical = CpuSelectableRow::Gpu.logical_index(core_count);
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(vec![
-                Span::raw(" "),
-                Span::styled("GPU", Style::default().fg(COLUMN_HEADER_COLOR)),
-            ]),
-            gpu_bar_line(snapshot.gpu_percent, app),
-        ])
-        .style(
-            app.pane_manager()
-                .pane(PaneId::Cpu)
-                .selection_state(gpu_logical, focus)
-                .overlay_style(),
-        ),
-        rows[gpu_row],
-    );
-    interaction::register_pane_row_hitbox(app, rows[gpu_row], PaneId::Cpu, gpu_logical, Content);
-
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Cpu)
-        .set_len(total_selectable_rows(snapshot.cores.len()));
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Cpu)
-        .set_content_area(inner);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Cpu)
-        .set_scroll_offset(0);
+    render_gpu_row(frame, app, &snapshot, &layout, focus);
+    sync_cpu_pane_state(app, inner, snapshot.cores.len());
 }

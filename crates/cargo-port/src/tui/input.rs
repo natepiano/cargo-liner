@@ -137,7 +137,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         PaneBehavior::CiRuns => detail::handle_ci_runs_key(app, &normalized),
         PaneBehavior::Toasts => handle_toast_key(app, &normalized),
         PaneBehavior::ProjectList | PaneBehavior::Output | PaneBehavior::Overlay => {
-            handle_normal_key(app, &normalized)
+            handle_normal_key(app, &normalized);
         },
     }
 }

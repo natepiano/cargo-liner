@@ -536,7 +536,7 @@ fn handle_notify_event(
                 refresh_kind,
                 match refresh_kind {
                     GitRefreshKind::FullMetadata => "fast_git_metadata",
-                    GitRefreshKind::PathStateOnly => "fast_git_path_state",
+                    GitRefreshKind::PathStateOnly => "fast_git_status",
                 },
             );
         }
@@ -573,7 +573,7 @@ fn handle_notify_event(
                     refresh_kind,
                     match refresh_kind {
                         GitRefreshKind::FullMetadata => "git_internal",
-                        GitRefreshKind::PathStateOnly => "git_internal_path_state",
+                        GitRefreshKind::PathStateOnly => "git_internal_status",
                     },
                 );
             }
@@ -909,7 +909,7 @@ fn emit_root_git_info_refresh(
         elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
         repo_root = %repo_root.display(),
         path = %root_entry.project_label,
-        path_state = %info.path_state.label(),
+        git_status = %info.status.label(),
         "watcher_root_git_info_refresh"
     );
     let _ = bg_tx.send(BackgroundMsg::GitInfo {
@@ -1257,9 +1257,9 @@ mod tests {
 
     use super::*;
     use crate::lint;
-    use crate::project::GitPathState;
-    use crate::project::GitPathState::Clean;
-    use crate::project::GitPathState::Modified;
+    use crate::project::GitStatus;
+    use crate::project::GitStatus::Clean;
+    use crate::project::GitStatus::Modified;
 
     fn test_runtime() -> &'static tokio::runtime::Runtime {
         static TEST_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -1817,7 +1817,7 @@ mod tests {
 
         let run_refresh =
             |event_path: &Path,
-             expected: GitPathState,
+             expected: GitStatus,
              pending_disk: &mut HashMap<String, DiskState>,
              pending_git: &mut HashMap<AbsolutePath, GitRefreshState>,
              pending_new: &mut HashMap<AbsolutePath, Instant>| {
@@ -1865,7 +1865,7 @@ mod tests {
                         _ => None,
                     })
                     .expect("git info message for project");
-                assert_eq!(git_msg.path_state, expected);
+                assert_eq!(git_msg.status, expected);
                 let repo_root = git_done_rx
                     .recv_timeout(Duration::from_secs(1))
                     .expect("git refresh completion");
