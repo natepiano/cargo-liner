@@ -1,19 +1,19 @@
 use ratatui::text::Line;
 
-use super::model;
-use super::model::DetailField;
 use super::GitData;
 use super::PackageData;
+use super::model;
+use super::model::DetailField;
 use crate::ci::CiJob;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::ci::FetchStatus::Fetched;
 use crate::project::GitStatus;
 use crate::tui::constants::LABEL_COLOR;
+use crate::tui::pane::PaneFocusState;
 use crate::tui::panes;
 use crate::tui::panes::CI_COMPACT_DURATION_WIDTH;
 use crate::tui::render::CiColumn;
-use crate::tui::types::PaneFocusState;
 
 fn package_data(is_rust_project: bool) -> PackageData {
     PackageData {

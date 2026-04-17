@@ -21,8 +21,8 @@ use super::constants::SETTINGS_POPUP_WIDTH;
 use super::constants::SUCCESS_COLOR;
 use super::constants::TITLE_COLOR;
 use super::interaction::UiSurface::Overlay;
-use super::types::PaneId;
-use super::types::PaneSelectionState;
+use super::pane::PaneSelectionState;
+use super::panes::PaneId;
 use crate::config;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::EnumCount, strum::EnumIter)]

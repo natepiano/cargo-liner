@@ -20,8 +20,8 @@ use crate::project::ProjectCiInfo;
 use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::ConfirmAction;
-use crate::tui::types::Pane;
-use crate::tui::types::PaneId;
+use crate::tui::pane::Pane;
+use crate::tui::panes::PaneId;
 
 /// Whether to build in release or debug mode.
 #[derive(Clone, Copy)]
@@ -31,14 +31,14 @@ enum BuildMode {
 }
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
-    let Some(targets_data) = app.pane_manager().targets_data.clone() else {
+    let Some(targets_data) = app.pane_data().targets.clone() else {
         return;
     };
     let entries = build_target_list_from_data(&targets_data);
     if let Some(entry) = entries.get(app.pane_manager().pane(PaneId::Targets).pos())
         && let Some(abs_path) = app.selected_project_path()
     {
-        let package_name = app.pane_manager().package_data.as_ref().and_then(|d| {
+        let package_name = app.pane_data().package.as_ref().and_then(|d| {
             if d.title_name == "-" {
                 None
             } else {
@@ -136,7 +136,7 @@ fn handle_detail_enter(app: &mut App) {
     if app.is_focused(PaneId::Targets) {
         handle_target_action(app, BuildMode::Debug);
     } else if app.base_focus() == PaneId::Package {
-        if let Some(pkg) = app.pane_manager().package_data.as_ref() {
+        if let Some(pkg) = app.pane_data().package.as_ref() {
             let fields = super::package_fields_from_data(pkg);
             if matches!(
                 fields.get(app.pane_manager().pane(PaneId::Package).pos()),
@@ -145,7 +145,7 @@ fn handle_detail_enter(app: &mut App) {
                 open_url(&format!("https://crates.io/crates/{}", pkg.title_name));
             }
         }
-    } else if let Some(git) = app.pane_manager().git_data.as_ref() {
+    } else if let Some(git) = app.pane_data().git.as_ref() {
         let fields = super::git_fields_from_data(git);
         if matches!(
             fields.get(app.pane_manager().pane(PaneId::Git).pos()),
@@ -204,8 +204,8 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
 
 fn handle_ci_enter(app: &App) {
     let visible_runs = app
-        .pane_manager()
-        .ci_data
+        .pane_data()
+        .ci
         .as_ref()
         .map(|data| data.runs.clone())
         .unwrap_or_default();
@@ -352,8 +352,8 @@ fn open_lint_run_output(app: &App) {
         return;
     };
     let Some(runs) = app
-        .pane_manager()
-        .lints_data
+        .pane_data()
+        .lints
         .as_ref()
         .map(|data| data.runs.as_slice())
     else {

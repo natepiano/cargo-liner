@@ -8,6 +8,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+use super::PaneId;
 use super::PaneTitleCount;
 use super::default_pane_chrome;
 use super::empty_pane_block;
@@ -25,9 +26,8 @@ use crate::tui::constants::TITLE_COLOR;
 use crate::tui::detail;
 use crate::tui::detail::DetailField;
 use crate::tui::detail::GitData;
-use crate::tui::types::Pane;
-use crate::tui::types::PaneFocusState;
-use crate::tui::types::PaneId;
+use crate::tui::pane::Pane;
+use crate::tui::pane::PaneFocusState;
 
 struct GitRenderCtx<'a> {
     data:   &'a GitData,
@@ -181,7 +181,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         chrome:         default_pane_chrome(),
     };
 
-    let Some(git_data) = app.pane_manager().git_data.clone() else {
+    let Some(git_data) = app.pane_data().git.clone() else {
         app.pane_manager_mut().pane_mut(PaneId::Git).clear_surface();
         let empty = empty_pane_block(pane_title("Git", &PaneTitleCount::None));
         frame.render_widget(empty, area);

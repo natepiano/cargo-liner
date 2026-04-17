@@ -30,7 +30,7 @@ use super::constants::MAX_FINDER_RESULTS;
 use super::constants::TITLE_COLOR;
 use super::detail::RunTargetKind;
 use super::interaction::UiSurface::Overlay;
-use super::types::PaneId;
+use super::panes::PaneId;
 use crate::project::AbsolutePath;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
@@ -648,7 +648,7 @@ fn confirm_finder(app: &mut App) {
 /// to the matching target entry.
 fn navigate_to_target(app: &mut App, item: &FinderItem) {
     // Focus the targets pane (now in the left panel below the project list).
-    let Some(targets_data) = app.pane_manager().targets_data.clone() else {
+    let Some(targets_data) = app.pane_data().targets.clone() else {
         return;
     };
     if targets_data.has_targets() {

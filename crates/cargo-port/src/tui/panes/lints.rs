@@ -12,6 +12,7 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
+use super::PaneId;
 use super::PaneTitleCount;
 use super::default_pane_chrome;
 use super::empty_pane_block;
@@ -30,9 +31,8 @@ use crate::tui::detail;
 use crate::tui::detail::LintsData;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface::Content;
-use crate::tui::types::Pane;
-use crate::tui::types::PaneFocusState;
-use crate::tui::types::PaneId;
+use crate::tui::pane::Pane;
+use crate::tui::pane::PaneFocusState;
 
 fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
     if data.runs.is_empty() {
@@ -124,7 +124,7 @@ fn build_lint_rows(
 }
 
 pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let Some(lints_data) = app.pane_manager().lints_data.clone() else {
+    let Some(lints_data) = app.pane_data().lints.clone() else {
         let block = lints_panel_block(" No Lint Runs ".to_string(), false, false);
         frame.render_widget(block, area);
         return;

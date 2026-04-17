@@ -9,6 +9,7 @@ mod finder;
 mod input;
 mod interaction;
 mod keymap_ui;
+mod pane;
 mod panes;
 mod popup;
 mod render;
@@ -16,7 +17,6 @@ mod settings;
 mod shortcuts;
 mod terminal;
 mod toasts;
-mod types;
 
 pub use animation::Icon;
 pub use animation::LINT_SPINNER;

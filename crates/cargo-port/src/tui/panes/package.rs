@@ -18,13 +18,14 @@ use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
 use super::PaneChrome;
-use super::PaneRule;
+use super::PaneId;
 use super::PaneTitleCount;
 use super::PaneTitleGroup;
 use super::default_pane_chrome;
 use super::empty_pane_block;
 use super::prefixed_pane_title;
 use super::render_rules;
+use super::rules::PaneRule;
 use crate::constants::NO_LINT_RUNS;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
@@ -37,10 +38,9 @@ use crate::tui::detail;
 use crate::tui::detail::DetailField;
 use crate::tui::detail::PackageData;
 use crate::tui::detail::TargetsData;
+use crate::tui::pane::Pane;
+use crate::tui::pane::PaneFocusState;
 use crate::tui::render;
-use crate::tui::types::Pane;
-use crate::tui::types::PaneFocusState;
-use crate::tui::types::PaneId;
 
 /// Shared style constants for pane rendering.
 pub struct RenderStyles {
@@ -218,7 +218,7 @@ struct ProjectPanelAreas {
 }
 
 pub fn render_package_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    if let Some(pkg_data) = app.pane_manager().package_data.clone() {
+    if let Some(pkg_data) = app.pane_data().package.clone() {
         let styles = RenderStyles {
             readonly_label: Style::default().fg(LABEL_COLOR),
             chrome:         default_pane_chrome(),

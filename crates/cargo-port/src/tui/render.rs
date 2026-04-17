@@ -39,12 +39,12 @@ use super::constants::TITLE_COLOR;
 use super::interaction::UiSurface::Content;
 use super::panes;
 use super::panes::CPU_PANE_WIDTH;
+use super::panes::LayoutCache;
+use super::panes::PaneId;
 use super::panes::PaneTitleCount;
 use super::panes::PaneTitleGroup;
 use super::shortcuts::Shortcut;
 use super::shortcuts::ShortcutState;
-use super::types::LayoutCache;
-use super::types::PaneId;
 use crate::ci::Conclusion;
 use crate::project;
 use crate::project::ProjectFields;
@@ -224,7 +224,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         .split(outer_layout[0]);
 
     app.layout_cache_mut().pane_regions.clear();
-    for placement in panes::PaneManager::derived_layout(output_visible).placements {
+    for placement in panes::derived_layout(output_visible).placements {
         let area = pane_area(
             rows.as_ref(),
             main_cols.as_ref(),
@@ -315,7 +315,7 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
         },
         PaneId::Cpu => panes::render_cpu_panel(frame, app, &pane_render_styles(), area),
         PaneId::Targets => {
-            if let Some(targets_data) = app.pane_manager().targets_data.clone() {
+            if let Some(targets_data) = app.pane_data().targets.clone() {
                 if targets_data.has_targets() {
                     panes::render_targets_panel(
                         frame,
@@ -346,17 +346,17 @@ fn pane_area(rows: &[Rect], cols: &[Rect], pane: PaneId, output_visible: bool) -
     let top_right = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(panes::constraints_for_sizes(&[
-            panes::PaneManager::size_spec(PaneId::Package).width,
-            panes::PaneManager::size_spec(PaneId::Git).width,
+            panes::size_spec(PaneId::Package, CPU_PANE_WIDTH).width,
+            panes::size_spec(PaneId::Git, CPU_PANE_WIDTH).width,
         ]))
         .split(top_right_area);
     let cpu_width = cpu_column_width(right_col.width);
     let middle_right = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(panes::constraints_for_sizes(&[
-            panes::PaneManager::size_spec(PaneId::Lang).width,
+            panes::size_spec(PaneId::Lang, CPU_PANE_WIDTH).width,
             panes::PaneAxisSize::Fixed(cpu_width),
-            panes::PaneManager::size_spec(PaneId::Targets).width,
+            panes::size_spec(PaneId::Targets, CPU_PANE_WIDTH).width,
         ]))
         .split(middle_right_area);
 
@@ -385,7 +385,7 @@ fn pane_area(rows: &[Rect], cols: &[Rect], pane: PaneId, output_visible: bool) -
 }
 
 fn sync_layout_pane_hitboxes(app: &mut App, output_visible: bool) {
-    for placement in panes::PaneManager::derived_layout(output_visible).placements {
+    for placement in panes::derived_layout(output_visible).placements {
         register_hitbox_for_pane(app, placement.pane);
     }
 }
@@ -401,7 +401,7 @@ fn sync_hovered_pane_row(app: &mut App) {
 /// Exhaustive match on `PaneId` — adding a variant forces you to decide
 /// whether the pane gets hitboxes.
 fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
-    if panes::PaneManager::has_row_hitboxes(id) {
+    if panes::has_row_hitboxes(id) {
         let pane = app.pane_manager().pane(id).clone();
         super::interaction::register_pane_row_hitboxes(app, id, &pane, Content);
     }
@@ -409,8 +409,8 @@ fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
 
 fn tiled_row_constraints(app: &App, total_height: u16) -> [Constraint; 3] {
     let core_count = app
-        .pane_manager()
-        .cpu_data
+        .pane_data()
+        .cpu
         .as_ref()
         .map_or(1, |snapshot| snapshot.cores.len());
     let desired_middle = panes::cpu_required_pane_height(core_count);
@@ -1582,7 +1582,7 @@ mod tests {
     use crate::scan::BackgroundMsg;
     use crate::tui::app::App;
     use crate::tui::cpu::CpuSnapshot;
-    use crate::tui::types::PaneId;
+    use crate::tui::panes::PaneId;
 
     fn test_http_client() -> HttpClient {
         static TEST_RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
@@ -1597,7 +1597,7 @@ mod tests {
         cfg.tui.include_dirs = vec!["/tmp/test".to_string()];
         let (bg_tx, bg_rx) = mpsc::channel::<BackgroundMsg>();
         let mut app = App::new(&[], bg_tx, bg_rx, &cfg, test_http_client(), Instant::now());
-        app.pane_manager_mut().cpu_data = Some(CpuSnapshot::placeholder(core_count));
+        app.pane_data_mut().cpu = Some(CpuSnapshot::placeholder(core_count));
         app
     }
 

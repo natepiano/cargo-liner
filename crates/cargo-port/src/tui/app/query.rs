@@ -29,11 +29,11 @@ use crate::project::WorkspaceProject;
 use crate::project::WorktreeGroup;
 use crate::tui::columns;
 use crate::tui::detail::DetailField;
+use crate::tui::panes::PaneId;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastTaskId;
 use crate::tui::toasts::ToastView;
 use crate::tui::toasts::TrackedItem;
-use crate::tui::types::PaneId;
 
 impl App {
     pub(in super::super) const fn lint_enabled(&self) -> bool { self.current_config.lint.enabled }
@@ -660,7 +660,7 @@ impl App {
             InputContext::DetailTargets => Some("run"),
             InputContext::DetailFields => {
                 if self.base_focus() == PaneId::Package {
-                    let pkg = self.pane_manager.package_data.as_ref()?;
+                    let pkg = self.pane_data.package.as_ref()?;
                     let fields = crate::tui::detail::package_fields_from_data(pkg);
                     let field = *fields.get(self.pane_manager.pane(PaneId::Package).pos())?;
                     if field == DetailField::CratesIo && pkg.crates_version.is_some() {
@@ -669,7 +669,7 @@ impl App {
                         None
                     }
                 } else {
-                    let git = self.pane_manager.git_data.as_ref()?;
+                    let git = self.pane_data.git.as_ref()?;
                     let fields = crate::tui::detail::git_fields_from_data(git);
                     match fields.get(self.pane_manager.pane(PaneId::Git).pos()) {
                         Some(DetailField::Repo) if git.url.is_some() => Some("open"),

@@ -15,7 +15,7 @@ use crate::project::WorktreeGroup;
 use crate::tui;
 use crate::tui::columns::COL_NAME;
 use crate::tui::columns::ResolvedWidths;
-use crate::tui::types::PaneId;
+use crate::tui::panes::PaneId;
 
 impl App {
     pub(in super::super) fn ensure_visible_rows_cached(&mut self) {
@@ -63,7 +63,7 @@ impl App {
         }
 
         if let Some(data) = self.build_selected_pane_data() {
-            self.pane_manager.set_detail_data(
+            self.pane_data.set_detail_data(
                 data.package,
                 data.git,
                 data.targets,
@@ -75,7 +75,7 @@ impl App {
                 selection:  current_selection,
             });
         } else {
-            self.pane_manager.clear_detail_data();
+            self.pane_data.clear_detail_data();
             self.detail_cache_key = None;
         }
     }

@@ -9,6 +9,7 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
+use super::PaneId;
 use super::PaneTitleCount;
 use super::default_pane_chrome;
 use super::empty_pane_block;
@@ -24,10 +25,9 @@ use crate::tui::detail;
 use crate::tui::detail::CiData;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface;
+use crate::tui::pane::PaneSelectionState;
 use crate::tui::render;
 use crate::tui::render::CiColumn;
-use crate::tui::types::PaneId;
-use crate::tui::types::PaneSelectionState;
 
 fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
     let right_aligned = Style::default()
@@ -249,7 +249,7 @@ fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
 fn empty_ci_title(data: &CiData) -> String { data.empty_state.title() }
 
 pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let Some(ci_data) = app.pane_manager().ci_data.clone() else {
+    let Some(ci_data) = app.pane_data().ci.clone() else {
         render_empty_ci_block(frame, " No CI Runs ", area);
         return;
     };

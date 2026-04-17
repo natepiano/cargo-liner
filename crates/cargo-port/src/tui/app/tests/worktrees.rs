@@ -35,11 +35,7 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
     app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
     app.sync_selected_project();
     app.ensure_detail_cached();
-    let root_worktree_names = app
-        .pane_manager
-        .git_data
-        .as_ref()
-        .map(|g| g.worktree_names.clone());
+    let root_worktree_names = app.pane_data.git.as_ref().map(|g| g.worktree_names.clone());
     assert_eq!(root_worktree_names.as_ref().map(Vec::len), Some(2));
     assert_eq!(
         root_worktree_names
@@ -53,10 +49,7 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
     app.sync_selected_project();
     app.ensure_detail_cached();
     assert_eq!(
-        app.pane_manager
-            .git_data
-            .as_ref()
-            .map(|g| g.worktree_names.clone()),
+        app.pane_data.git.as_ref().map(|g| g.worktree_names.clone()),
         Some(Vec::new())
     );
 }
@@ -114,10 +107,7 @@ fn linked_worktree_entry_builds_detail_for_selected_row() {
         Some(linked_ws.path().to_path_buf())
     );
     assert_eq!(
-        app.pane_manager
-            .package_data
-            .as_ref()
-            .map(|p| p.path.as_str()),
+        app.pane_data.package.as_ref().map(|p| p.path.as_str()),
         Some("~/rust/cargo-port_speedup")
     );
     assert!(

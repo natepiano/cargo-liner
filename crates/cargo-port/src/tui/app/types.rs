@@ -11,8 +11,8 @@ use crate::project::AbsolutePath;
 use crate::tui::columns::ResolvedWidths;
 use crate::tui::finder::FINDER_COLUMN_COUNT;
 use crate::tui::finder::FinderItem;
+use crate::tui::panes::PaneId;
 use crate::tui::toasts::ToastTaskId;
-use crate::tui::types::PaneId;
 
 /// An expand key: a node, group, worktree entry, or group within a worktree.
 #[derive(Hash, Eq, PartialEq, Clone)]

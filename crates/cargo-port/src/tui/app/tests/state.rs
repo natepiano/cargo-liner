@@ -346,11 +346,12 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(project_a.path().as_path()));
-    assert!(!app
-        .scan
-        .startup_phases
-        .lint_seen_terminal
-        .contains(project_a.path().as_path()));
+    assert!(
+        !app.scan
+            .startup_phases
+            .lint_seen_terminal
+            .contains(project_a.path().as_path())
+    );
     assert!(app.running_lint_paths.contains_key(project_a.path()));
     assert!(app.lint_toast.is_some());
 
@@ -485,11 +486,12 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
 
     app.handle_git_info(member_dir.as_path(), make_git_info(None));
 
-    assert!(app
-        .scan
-        .startup_phases
-        .git_seen
-        .contains(workspace_dir.join(".git").as_path()));
+    assert!(
+        app.scan
+            .startup_phases
+            .git_seen
+            .contains(workspace_dir.join(".git").as_path())
+    );
 }
 
 #[test]
@@ -829,8 +831,8 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
     app.ensure_detail_cached();
 
     let value = DetailField::Ci.package_value(
-        app.pane_manager
-            .package_data
+        app.pane_data
+            .package
             .as_ref()
             .unwrap_or_else(|| std::process::abort()),
         &app,
@@ -897,8 +899,8 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
         Some("2026-03-12T21:18:54-04:00")
     );
     assert!(
-        app.pane_manager
-            .git_data
+        app.pane_data
+            .git
             .as_ref()
             .and_then(|g| g.inception.as_ref())
             .is_some(),
@@ -915,8 +917,8 @@ fn git_info_invalidates_selected_git_pane_cache() {
     app.ensure_detail_cached();
 
     assert_eq!(
-        app.pane_manager
-            .git_data
+        app.pane_data
+            .git
             .as_ref()
             .and_then(|data| data.url.as_deref()),
         None
@@ -929,8 +931,8 @@ fn git_info_invalidates_selected_git_pane_cache() {
     app.ensure_detail_cached();
 
     assert_eq!(
-        app.pane_manager
-            .git_data
+        app.pane_data
+            .git
             .as_ref()
             .and_then(|data| data.url.as_deref()),
         Some("https://github.com/natepiano/demo")

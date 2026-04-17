@@ -53,9 +53,9 @@ use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
 use crate::tui::columns::ResolvedWidths;
 use crate::tui::detail::CiFetchKind;
+use crate::tui::panes::PaneId;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastManager;
-use crate::tui::types::PaneId;
 
 mod background;
 mod discovery_shimmer;

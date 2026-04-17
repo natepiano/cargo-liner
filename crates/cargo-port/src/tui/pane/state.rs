@@ -1,10 +1,9 @@
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-use super::constants::ACTIVE_FOCUS_COLOR;
-use super::constants::HOVER_FOCUS_COLOR;
-use super::constants::REMEMBERED_FOCUS_COLOR;
-use super::interaction::UiHitbox;
+use crate::tui::constants::ACTIVE_FOCUS_COLOR;
+use crate::tui::constants::HOVER_FOCUS_COLOR;
+use crate::tui::constants::REMEMBERED_FOCUS_COLOR;
 
 /// A bounded cursor for scrollable lists. Replaces raw `usize` index + manual
 /// bounds checking with a single type that enforces invariants.
@@ -14,28 +13,28 @@ pub(super) struct ScrollState {
 }
 
 impl ScrollState {
-    pub const fn pos(&self) -> usize { self.pos }
+    pub(super) const fn pos(&self) -> usize { self.pos }
 
-    pub const fn set(&mut self, pos: usize) { self.pos = pos; }
+    pub(super) const fn set(&mut self, pos: usize) { self.pos = pos; }
 
-    pub const fn up(&mut self) {
+    pub(super) const fn up(&mut self) {
         if self.pos > 0 {
             self.pos -= 1;
         }
     }
 
-    pub const fn down(&mut self, len: usize) {
+    pub(super) const fn down(&mut self, len: usize) {
         if len > 0 && self.pos < len - 1 {
             self.pos += 1;
         }
     }
 
-    pub const fn jump_home(&mut self) { self.pos = 0; }
+    pub(super) const fn jump_home(&mut self) { self.pos = 0; }
 
-    pub const fn jump_end(&mut self, len: usize) { self.pos = len.saturating_sub(1); }
+    pub(super) const fn jump_end(&mut self, len: usize) { self.pos = len.saturating_sub(1); }
 
     /// Clamp position to `0..len`. Useful after the backing list shrinks.
-    pub const fn clamp(&mut self, len: usize) {
+    pub(super) const fn clamp(&mut self, len: usize) {
         if len == 0 {
             self.pos = 0;
         } else if self.pos >= len {
@@ -49,7 +48,7 @@ impl ScrollState {
 /// Each pane owns its cursor, knows its row count, and stores the screen
 /// region it occupies so navigation and mouse hit-testing are self-contained.
 #[derive(Default, Clone)]
-pub(super) struct Pane {
+pub(in super::super) struct Pane {
     cursor:        ScrollState,
     hovered:       Option<usize>,
     len:           usize,
@@ -58,14 +57,14 @@ pub(super) struct Pane {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PaneFocusState {
+pub(in super::super) enum PaneFocusState {
     Active,
     Remembered,
     Inactive,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PaneSelectionState {
+pub(in super::super) enum PaneSelectionState {
     Active,
     Hovered,
     Remembered,
@@ -73,7 +72,7 @@ pub(super) enum PaneSelectionState {
 }
 
 impl Pane {
-    pub const fn new() -> Self {
+    pub(in super::super) const fn new() -> Self {
         Self {
             cursor:        ScrollState { pos: 0 },
             hovered:       None,
@@ -83,25 +82,19 @@ impl Pane {
         }
     }
 
-    // -- navigation (pane knows its own len) --
+    pub(in super::super) const fn up(&mut self) { self.cursor.up(); }
 
-    pub const fn up(&mut self) { self.cursor.up(); }
+    pub(in super::super) const fn down(&mut self) { self.cursor.down(self.len); }
 
-    pub const fn down(&mut self) { self.cursor.down(self.len); }
+    pub(in super::super) const fn home(&mut self) { self.cursor.jump_home(); }
 
-    pub const fn home(&mut self) { self.cursor.jump_home(); }
+    pub(in super::super) const fn end(&mut self) { self.cursor.jump_end(self.len); }
 
-    pub const fn end(&mut self) { self.cursor.jump_end(self.len); }
+    pub(in super::super) const fn pos(&self) -> usize { self.cursor.pos() }
 
-    // -- position --
+    pub(in super::super) const fn set_pos(&mut self, pos: usize) { self.cursor.set(pos); }
 
-    pub const fn pos(&self) -> usize { self.cursor.pos() }
-
-    pub const fn set_pos(&mut self, pos: usize) { self.cursor.set(pos); }
-
-    // -- length (auto-clamps cursor) --
-
-    pub const fn set_len(&mut self, len: usize) {
+    pub(in super::super) const fn set_len(&mut self, len: usize) {
         self.len = len;
         self.cursor.clamp(len);
         if let Some(row) = self.hovered
@@ -111,9 +104,7 @@ impl Pane {
         }
     }
 
-    // -- layout --
-
-    pub const fn clear_surface(&mut self) {
+    pub(in super::super) const fn clear_surface(&mut self) {
         self.len = 0;
         self.hovered = None;
         self.content_area = Rect::ZERO;
@@ -121,19 +112,29 @@ impl Pane {
         self.cursor.clamp(0);
     }
 
-    pub const fn set_content_area(&mut self, area: Rect) { self.content_area = area; }
+    pub(in super::super) const fn set_content_area(&mut self, area: Rect) {
+        self.content_area = area;
+    }
 
-    pub const fn set_scroll_offset(&mut self, offset: usize) { self.scroll_offset = offset; }
+    pub(in super::super) const fn set_scroll_offset(&mut self, offset: usize) {
+        self.scroll_offset = offset;
+    }
 
-    pub const fn set_hovered(&mut self, hovered: Option<usize>) { self.hovered = hovered; }
+    pub(in super::super) const fn set_hovered(&mut self, hovered: Option<usize>) {
+        self.hovered = hovered;
+    }
 
-    pub const fn content_area(&self) -> Rect { self.content_area }
+    pub(in super::super) const fn content_area(&self) -> Rect { self.content_area }
 
-    pub const fn scroll_offset(&self) -> usize { self.scroll_offset }
+    pub(in super::super) const fn scroll_offset(&self) -> usize { self.scroll_offset }
 
-    pub const fn len(&self) -> usize { self.len }
+    pub(in super::super) const fn len(&self) -> usize { self.len }
 
-    pub const fn selection_state(&self, row: usize, focus: PaneFocusState) -> PaneSelectionState {
+    pub(in super::super) const fn selection_state(
+        &self,
+        row: usize,
+        focus: PaneFocusState,
+    ) -> PaneSelectionState {
         if row == self.pos() && matches!(focus, PaneFocusState::Active) {
             PaneSelectionState::Active
         } else if matches!(self.hovered, Some(hovered_row) if hovered_row == row) {
@@ -145,7 +146,7 @@ impl Pane {
         }
     }
 
-    pub fn selection_style(focus: PaneFocusState) -> Style {
+    pub(in super::super) fn selection_style(focus: PaneFocusState) -> Style {
         match focus {
             PaneFocusState::Active => Style::default().bg(ACTIVE_FOCUS_COLOR),
             PaneFocusState::Remembered => Style::default().bg(REMEMBERED_FOCUS_COLOR),
@@ -155,7 +156,7 @@ impl Pane {
 }
 
 impl PaneSelectionState {
-    pub fn overlay_style(self) -> Style {
+    pub(in super::super) fn overlay_style(self) -> Style {
         match self {
             Self::Active => Pane::selection_style(PaneFocusState::Active),
             Self::Hovered => Style::default().bg(HOVER_FOCUS_COLOR),
@@ -164,61 +165,12 @@ impl PaneSelectionState {
         }
     }
 
-    pub fn patch(self, style: Style) -> Style { style.patch(self.overlay_style()) }
+    pub(in super::super) fn patch(self, style: Style) -> Style { style.patch(self.overlay_style()) }
 }
 
 /// Format a 1-based scroll position as `"{pos+1} of {len}"`.
-pub(super) fn scroll_indicator(pos: usize, len: usize) -> String { format!("{} of {len}", pos + 1) }
-
-#[derive(Default, PartialEq, Eq, Clone, Copy, Debug, Hash)]
-pub(super) enum PaneId {
-    #[default]
-    ProjectList,
-    Package,
-    Lang,
-    Cpu,
-    Git,
-    Targets,
-    Lints,
-    CiRuns,
-    Output,
-    Toasts,
-    Settings,
-    Finder,
-    Keymap,
-}
-
-impl PaneId {
-    pub const fn index(self) -> usize {
-        match self {
-            Self::ProjectList => 0,
-            Self::Package => 1,
-            Self::Lang => 2,
-            Self::Cpu => 3,
-            Self::Git => 4,
-            Self::Targets => 5,
-            Self::Lints => 6,
-            Self::CiRuns => 7,
-            Self::Output => 8,
-            Self::Toasts => 9,
-            Self::Settings => 10,
-            Self::Finder => 11,
-            Self::Keymap => 12,
-        }
-    }
-
-    pub const fn pane_count() -> usize { Self::Keymap.index() + 1 }
-
-    pub const fn is_overlay(self) -> bool { matches!(self, Self::Settings | Self::Finder) }
-}
-
-/// Cached layout rectangles from the last render frame, used for mouse
-/// hit-testing in the event handler.
-#[derive(Default)]
-pub(super) struct LayoutCache {
-    pub project_list: Rect,
-    pub pane_regions: Vec<(PaneId, Rect)>,
-    pub ui_hitboxes:  Vec<UiHitbox>,
+pub(in super::super) fn scroll_indicator(pos: usize, len: usize) -> String {
+    format!("{} of {len}", pos + 1)
 }
 
 #[cfg(test)]
@@ -227,12 +179,13 @@ mod tests {
     use ratatui::style::Modifier;
     use ratatui::style::Style;
 
+    use super::Pane;
     use super::PaneFocusState;
     use super::PaneSelectionState;
 
     #[test]
     fn active_selection_style_only_adds_background_and_emphasis() {
-        let style = super::Pane::selection_style(PaneFocusState::Active);
+        let style = Pane::selection_style(PaneFocusState::Active);
 
         assert_eq!(style.fg, None);
         assert_eq!(style.bg, Some(super::ACTIVE_FOCUS_COLOR));
@@ -269,7 +222,7 @@ mod tests {
 
     #[test]
     fn selection_state_returns_hovered_for_non_selected_hovered_row() {
-        let mut pane = super::Pane::new();
+        let mut pane = Pane::new();
         pane.set_len(3);
         pane.set_hovered(Some(2));
 
@@ -281,7 +234,7 @@ mod tests {
 
     #[test]
     fn selection_state_prefers_cursor_over_hovered_row() {
-        let mut pane = super::Pane::new();
+        let mut pane = Pane::new();
         pane.set_len(3);
         pane.set_pos(1);
         pane.set_hovered(Some(1));
@@ -294,7 +247,7 @@ mod tests {
 
     #[test]
     fn selection_state_prefers_hover_for_inactive_selected_row() {
-        let mut pane = super::Pane::new();
+        let mut pane = Pane::new();
         pane.set_len(3);
         pane.set_pos(0);
         pane.set_hovered(Some(0));

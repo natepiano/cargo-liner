@@ -6,14 +6,14 @@ use super::types::FinderMode;
 use super::types::KeymapMode;
 use super::types::SelectionSync;
 use super::types::SettingsMode;
+use crate::tui::pane::PaneFocusState;
+use crate::tui::panes;
 use crate::tui::panes::PaneBehavior;
-use crate::tui::panes::PaneManager;
+use crate::tui::panes::PaneId;
+use crate::tui::panes::PaneId::Settings;
 use crate::tui::settings::SettingOption;
 use crate::tui::settings::SettingOption::IncludeDirs;
 use crate::tui::shortcuts::InputContext;
-use crate::tui::types::PaneFocusState;
-use crate::tui::types::PaneId;
-use crate::tui::types::PaneId::Settings;
 
 impl App {
     pub(in super::super) const fn is_finder_open(&self) -> bool {
@@ -143,7 +143,7 @@ impl App {
         } else if self.ui_modes.settings.is_visible() {
             InputContext::Settings
         } else {
-            match PaneManager::behavior(self.focused_pane) {
+            match panes::behavior(self.focused_pane) {
                 PaneBehavior::ProjectList | PaneBehavior::Overlay => InputContext::ProjectList,
                 PaneBehavior::DetailFields => InputContext::DetailFields,
                 PaneBehavior::DetailTargets | PaneBehavior::Cpu => InputContext::DetailTargets,
@@ -198,7 +198,7 @@ impl App {
     }
 
     pub(in super::super) fn is_pane_tabbable(&self, pane: PaneId) -> bool {
-        match PaneManager::behavior(pane) {
+        match panes::behavior(pane) {
             PaneBehavior::ProjectList => true,
             PaneBehavior::DetailFields => match pane {
                 PaneId::Package => self.selected_project_path().is_some(),
@@ -208,32 +208,28 @@ impl App {
                         .and_then(|p| p.language_stats.as_ref())
                         .is_some_and(|ls| !ls.entries.is_empty())
                 }),
-                PaneId::Git => self
-                    .pane_manager
-                    .git_data
-                    .as_ref()
-                    .is_some_and(|g| g.url.is_some()),
+                PaneId::Git => self.pane_data.git.as_ref().is_some_and(|g| g.url.is_some()),
                 _ => false,
             },
-            PaneBehavior::Cpu => self.pane_manager.cpu_data.is_some(),
+            PaneBehavior::Cpu => self.pane_data.cpu.is_some(),
             PaneBehavior::DetailTargets => self
-                .pane_manager
-                .targets_data
+                .pane_data
+                .targets
                 .as_ref()
                 .is_some_and(crate::tui::detail::TargetsData::has_targets),
             PaneBehavior::Lints => {
                 self.example_output.is_empty()
                     && self
-                        .pane_manager
-                        .lints_data
+                        .pane_data
+                        .lints
                         .as_ref()
                         .is_some_and(crate::tui::detail::LintsData::has_runs)
             },
             PaneBehavior::CiRuns => {
                 self.example_output.is_empty()
                     && self
-                        .pane_manager
-                        .ci_data
+                        .pane_data
+                        .ci
                         .as_ref()
                         .is_some_and(crate::tui::detail::CiData::has_runs)
             },
@@ -244,7 +240,7 @@ impl App {
     }
 
     pub(in super::super) fn tabbable_panes(&self) -> Vec<PaneId> {
-        super::super::panes::PaneManager::tab_order(!self.example_output.is_empty())
+        panes::tab_order(!self.example_output.is_empty())
             .into_iter()
             .filter(|pane| self.is_pane_tabbable(*pane))
             .chain(

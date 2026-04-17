@@ -483,7 +483,7 @@ pub struct PackageData {
 #[derive(Clone)]
 pub struct GitData {
     pub branch:            Option<String>,
-    pub status:        GitStatus,
+    pub status:            GitStatus,
     pub sync:              Option<String>,
     pub vs_origin:         Option<String>,
     pub vs_local:          Option<String>,
@@ -807,7 +807,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &SubmoduleInfo) -> De
         },
         git:     GitData {
             branch:            git_detail.branch,
-            status:        git_detail.path,
+            status:            git_detail.path,
             sync:              git_detail.sync,
             vs_origin:         git_detail.vs_origin,
             vs_local:          git_detail.vs_local,

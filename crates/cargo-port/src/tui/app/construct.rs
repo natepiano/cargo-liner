@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
+use super::App;
+use super::CiFetchTracker;
 use super::types::AsyncBuildState;
 use super::types::BuildChannels;
 use super::types::ConfigFileStamp;
@@ -18,8 +20,6 @@ use super::types::ScanState;
 use super::types::SelectionPaths;
 use super::types::SelectionSync;
 use super::types::UiModes;
-use super::App;
-use super::CiFetchTracker;
 use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
 use crate::keymap;
@@ -32,13 +32,14 @@ use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::tui::columns::ResolvedWidths;
 use crate::tui::cpu::CpuPoller;
-use crate::tui::panes::PaneManager;
+use crate::tui::pane::PaneManager;
+use crate::tui::panes::LayoutCache;
+use crate::tui::panes::PaneDataStore;
+use crate::tui::panes::PaneId;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
 use crate::tui::toasts::ToastManager;
-use crate::tui::types::LayoutCache;
-use crate::tui::types::PaneId;
 use crate::watcher;
 use crate::watcher::WatcherMsg;
 
@@ -182,6 +183,7 @@ impl App {
             priority_fetch_path: None,
             expanded: HashSet::new(),
             pane_manager: PaneManager::new(),
+            pane_data: PaneDataStore::new(),
             settings_edit_buf: String::new(),
             settings_edit_cursor: 0,
             focused_pane: PaneId::ProjectList,
@@ -242,7 +244,7 @@ impl App {
     }
 
     fn finish_new(&mut self) {
-        self.pane_manager.cpu_data = Some(self.cpu_poller.placeholder_snapshot());
+        self.pane_data_mut().cpu = Some(self.cpu_poller.placeholder_snapshot());
         self.load_initial_keymap();
         if let Some(warning) = self
             .status_flash

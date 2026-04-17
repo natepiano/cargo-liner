@@ -183,8 +183,8 @@ fn project_refresh_updates_selected_tree_project_targets() {
 
     app.ensure_detail_cached();
     let example_count = app
-        .pane_manager
-        .targets_data
+        .pane_data
+        .targets
         .as_ref()
         .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
     assert_eq!(example_count, Some(0));
@@ -215,8 +215,8 @@ fn project_refresh_updates_selected_tree_project_targets() {
 
     app.ensure_detail_cached();
     let example_count = app
-        .pane_manager
-        .targets_data
+        .pane_data
+        .targets
         .as_ref()
         .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
     assert_eq!(example_count, Some(1));

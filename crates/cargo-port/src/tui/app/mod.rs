@@ -21,6 +21,10 @@ use std::time::Instant;
 use ratatui::layout::Position;
 
 use super::cpu::CpuPoller;
+use super::pane::PaneManager;
+use super::panes::LayoutCache;
+use super::panes::PaneDataStore;
+use super::panes::PaneId;
 use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
@@ -63,15 +67,11 @@ pub(super) use types::VisibleRow;
 pub(super) use super::columns::ResolvedWidths;
 use super::detail::PendingCiFetch;
 use super::detail::PendingExampleRun;
-use super::panes::PaneManager;
 use super::terminal::CiFetchMsg;
 use super::terminal::CleanMsg;
 use super::terminal::ExampleMsg;
 use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
-use super::types::LayoutCache;
-use super::types::PaneId;
-
 pub(super) struct App {
     current_config:           CargoPortConfig,
     http_client:              HttpClient,
@@ -88,7 +88,8 @@ pub(super) struct App {
     bg_rx:                    mpsc::Receiver<BackgroundMsg>,
     priority_fetch_path:      Option<AbsolutePath>,
     expanded:                 HashSet<ExpandKey>,
-    pane_manager:             PaneManager,
+    pane_manager:             PaneManager<PaneId>,
+    pane_data:                PaneDataStore,
     settings_edit_buf:        String,
     settings_edit_cursor:     usize,
     focused_pane:             PaneId,
@@ -213,6 +214,10 @@ impl App {
 
     pub(super) const fn layout_cache_mut(&mut self) -> &mut LayoutCache { &mut self.layout_cache }
 
+    pub(super) const fn pane_data(&self) -> &PaneDataStore { &self.pane_data }
+
+    pub(super) const fn pane_data_mut(&mut self) -> &mut PaneDataStore { &mut self.pane_data }
+
     pub(super) const fn mouse_pos(&self) -> Option<Position> { self.mouse_pos }
 
     pub(super) const fn set_mouse_pos(&mut self, pos: Option<Position>) { self.mouse_pos = pos; }
@@ -253,9 +258,11 @@ impl App {
 
     pub(super) const fn dirty_mut(&mut self) -> &mut types::DirtyState { &mut self.dirty }
 
-    pub(super) const fn pane_manager(&self) -> &PaneManager { &self.pane_manager }
+    pub(super) const fn pane_manager(&self) -> &PaneManager<PaneId> { &self.pane_manager }
 
-    pub(super) const fn pane_manager_mut(&mut self) -> &mut PaneManager { &mut self.pane_manager }
+    pub(super) const fn pane_manager_mut(&mut self) -> &mut PaneManager<PaneId> {
+        &mut self.pane_manager
+    }
 
     pub(super) const fn finder(&self) -> &types::FinderState { &self.finder }
 
@@ -400,12 +407,12 @@ impl App {
 
     pub(super) fn poll_cpu_if_due(&mut self, now: Instant) {
         if let Some(snapshot) = self.cpu_poller.poll_if_due(now) {
-            self.pane_manager.cpu_data = Some(snapshot);
+            self.pane_data_mut().cpu = Some(snapshot);
         }
     }
 
     pub(super) fn reset_cpu_placeholder(&mut self) {
         self.cpu_poller = CpuPoller::new(&self.current_config.cpu);
-        self.pane_manager.cpu_data = Some(self.cpu_poller.placeholder_snapshot());
+        self.pane_data_mut().cpu = Some(self.cpu_poller.placeholder_snapshot());
     }
 }

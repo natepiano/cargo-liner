@@ -12,7 +12,7 @@ use crate::project::ProjectFields;
 use crate::scan;
 use crate::scan::CiFetchResult;
 use crate::tui::detail::CiFetchKind;
-use crate::tui::types::PaneId;
+use crate::tui::panes::PaneId;
 
 impl App {
     pub(super) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<ci::OwnerRepo> {

@@ -9,10 +9,11 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
-use super::PaneRule;
+use super::PaneId;
 use super::package::RenderStyles;
 use super::pane_title;
 use super::render_rules;
+use super::rules::PaneRule;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
@@ -20,8 +21,7 @@ use crate::tui::constants::ERROR_COLOR;
 use crate::tui::cpu;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface::Content;
-use crate::tui::types::PaneFocusState;
-use crate::tui::types::PaneId;
+use crate::tui::pane::PaneFocusState;
 
 const CPU_BAR_WIDTH: usize = 10;
 pub(super) const CPU_CONTENT_WIDTH: u16 = 17;
@@ -355,7 +355,7 @@ pub fn render_cpu_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles,
     let focus = app.pane_focus_state(PaneId::Cpu);
     let pane = app.pane_manager().pane(PaneId::Cpu);
     let cursor = matches!(focus, PaneFocusState::Active).then(|| pane.pos());
-    let title = app.pane_manager().cpu_data.as_ref().map_or_else(
+    let title = app.pane_data().cpu.as_ref().map_or_else(
         || " CPU ".to_string(),
         |snapshot| cpu_panel_title(snapshot.cores.len(), cursor),
     );
@@ -369,8 +369,8 @@ pub fn render_cpu_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles,
     }
 
     let snapshot = app
-        .pane_manager()
-        .cpu_data
+        .pane_data()
+        .cpu
         .clone()
         .unwrap_or_else(|| cpu::CpuSnapshot::placeholder(1));
     let layout = CpuPanelLayout::new(inner, snapshot.cores.len());

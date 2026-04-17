@@ -5,8 +5,8 @@ use super::app::App;
 use super::app::DismissTarget;
 use super::app::HoveredPaneRow;
 use super::columns;
-use super::types::Pane;
-use super::types::PaneId;
+use super::pane::Pane;
+use super::panes::PaneId;
 
 const DISMISS_SUFFIX: &str = " [x]";
 
@@ -287,12 +287,12 @@ mod tests {
     use crate::tui::app::ExpandKey;
     use crate::tui::finder;
     use crate::tui::input;
+    use crate::tui::pane::Pane;
+    use crate::tui::pane::PaneSelectionState;
+    use crate::tui::panes::PaneId;
     use crate::tui::render;
     use crate::tui::settings::SettingOption;
     use crate::tui::toasts::ToastStyle;
-    use crate::tui::types::Pane;
-    use crate::tui::types::PaneId;
-    use crate::tui::types::PaneSelectionState;
 
     fn test_http_client() -> HttpClient {
         static TEST_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -447,7 +447,7 @@ mod tests {
 
     fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
         app.ensure_detail_cached();
-        app.pane_manager_mut().lints_data = Some(crate::tui::detail::LintsData {
+        app.pane_data_mut().lints = Some(crate::tui::detail::LintsData {
             runs:            runs.to_vec(),
             is_cargo_active: true,
         });
@@ -460,7 +460,7 @@ mod tests {
 
     fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
         app.ensure_detail_cached();
-        if let Some(ci_data) = app.pane_manager_mut().ci_data.as_mut() {
+        if let Some(ci_data) = app.pane_data_mut().ci.as_mut() {
             ci_data.runs = runs.to_vec();
             ci_data.mode_label = None;
         }

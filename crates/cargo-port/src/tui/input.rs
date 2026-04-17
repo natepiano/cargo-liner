@@ -15,11 +15,11 @@ use super::app::ConfirmAction;
 use super::app::PendingClean;
 use super::detail;
 use super::finder;
+use super::panes;
 use super::panes::PaneBehavior;
-use super::panes::PaneManager;
+use super::panes::PaneId;
 use super::settings;
 use super::shortcuts::InputContext;
-use super::types::PaneId;
 use crate::keymap::GlobalAction;
 use crate::keymap::KeyBind;
 use crate::keymap::ProjectListAction;
@@ -129,7 +129,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         return;
     }
 
-    match PaneManager::behavior(app.focused_pane()) {
+    match panes::behavior(app.focused_pane()) {
         PaneBehavior::DetailFields | PaneBehavior::DetailTargets | PaneBehavior::Cpu => {
             detail::handle_detail_key(app, &normalized);
         },
@@ -155,7 +155,7 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
     }
 
     let code = if raw.modifiers == KeyModifiers::NONE && app.navigation_keys().uses_vim() {
-        match PaneManager::behavior(app.focused_pane()) {
+        match panes::behavior(app.focused_pane()) {
             PaneBehavior::DetailFields
             | PaneBehavior::DetailTargets
             | PaneBehavior::Cpu
@@ -179,7 +179,7 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
 
     // In list panes, bare left/right map to up/down.
     let code = if raw.modifiers == KeyModifiers::NONE {
-        match PaneManager::behavior(app.focused_pane()) {
+        match panes::behavior(app.focused_pane()) {
             PaneBehavior::DetailFields
             | PaneBehavior::DetailTargets
             | PaneBehavior::Cpu

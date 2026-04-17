@@ -45,13 +45,13 @@ use crate::tui::constants::STARTUP_PHASE_DISK;
 use crate::tui::constants::STARTUP_PHASE_GIT;
 use crate::tui::constants::STARTUP_PHASE_GITHUB;
 use crate::tui::constants::STARTUP_PHASE_LINT;
+use crate::tui::panes::PaneId;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
 use crate::tui::toasts;
 use crate::tui::toasts::ToastStyle::Error;
 use crate::tui::toasts::TrackedItem;
-use crate::tui::types::PaneId;
 use crate::watcher;
 use crate::watcher::WatchRequest;
 use crate::watcher::WatcherMsg;
@@ -1919,7 +1919,7 @@ impl App {
         self.migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
         self.detail_cache_key = None;
-        self.pane_manager.clear_detail_data();
+        self.pane_data.clear_detail_data();
         // Signal that derived state needs refresh (batched by caller).
         true
     }
@@ -2315,8 +2315,8 @@ impl App {
             .selected_display_path()
             .unwrap_or_else(|| abs_key.display_path());
         let name = self
-            .pane_manager
-            .package_data
+            .pane_data
+            .package
             .as_ref()
             .map(|d| d.title_name.clone())
             .filter(|n| n != "-");

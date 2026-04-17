@@ -5,7 +5,7 @@ use super::types::VisibleRow;
 use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
 use crate::project::Visibility::Dismissed;
-use crate::tui::types::PaneId;
+use crate::tui::panes::PaneId;
 
 // ── Dismiss target ──────────────────────────────────────────────
 
