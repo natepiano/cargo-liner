@@ -471,10 +471,7 @@ impl DetailField {
                     return NO_LINT_RUNS_NOT_RUST.to_string();
                 }
                 let abs_path = data.abs_path.as_path();
-                let is_worktree_group = app
-                    .projects()
-                    .iter()
-                    .any(|item| item.path() == abs_path && matches!(item, RootItem::Worktrees(_)));
+                let is_worktree_group = data.package_title == "Worktree Group";
                 let lint_icon = if is_worktree_group {
                     app.selected_lint_icon(abs_path)
                         .unwrap_or_else(|| app.lint_icon(abs_path))
