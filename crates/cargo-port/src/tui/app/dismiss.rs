@@ -106,7 +106,6 @@ impl App {
                 if let Some(project) = self.projects.at_path_mut(&path) {
                     project.visibility = Dismissed;
                 }
-                self.dirty.rows.mark_dirty();
                 self.dirty.disk_cache.mark_dirty();
                 self.dirty.fit_widths.mark_dirty();
                 self.ensure_visible_rows_cached();

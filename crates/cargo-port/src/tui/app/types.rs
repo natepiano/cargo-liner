@@ -216,7 +216,6 @@ impl RetrySpawnMode {
 
 #[derive(Debug)]
 pub(in super::super) struct DirtyState {
-    pub rows:       Dirtiness,
     pub disk_cache: Dirtiness,
     pub fit_widths: Dirtiness,
     pub finder:     Dirtiness,
@@ -226,7 +225,6 @@ pub(in super::super) struct DirtyState {
 impl DirtyState {
     pub(in super::super) const fn initial() -> Self {
         Self {
-            rows:       Dirtiness::Dirty,
             disk_cache: Dirtiness::Dirty,
             fit_widths: Dirtiness::Dirty,
             finder:     Dirtiness::Dirty,

@@ -74,7 +74,6 @@ impl App {
         let should_focus_project_list = false;
         self.projects = projects;
         self.dirty.finder.mark_dirty();
-        self.dirty.rows.mark_dirty();
         self.dirty.disk_cache.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
         self.recompute_cargo_active_paths();
@@ -317,7 +316,6 @@ impl App {
         self.sync_lint_runtime_projects();
         self.refresh_lint_runs_from_disk();
         self.cached_fit_widths = ResolvedWidths::new(self.lint_enabled());
-        self.dirty.rows.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
         self.data_generation += 1;
         self.detail_generation += 1;
@@ -1318,7 +1316,6 @@ impl App {
         self.data_generation += 1;
         self.detail_generation += 1;
         self.dirty.finder.mark_dirty();
-        self.dirty.rows.mark_dirty();
         self.dirty.disk_cache.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
     }
@@ -1413,7 +1410,6 @@ impl App {
             &self.expanded,
             self.include_non_rust().includes_non_rust(),
         );
-        self.dirty.rows.mark_clean();
     }
 
     pub(in super::super) fn refresh_async_caches(&mut self) {
@@ -1448,7 +1444,6 @@ impl App {
         self.pane_manager
             .pane_mut(PaneId::ProjectList)
             .set_scroll_offset(0);
-        self.dirty.rows.mark_dirty();
         self.dirty.disk_cache.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
         self.builds.fit.active = None;
@@ -2152,7 +2147,6 @@ impl App {
             .or_else(|| self.selection_paths.last_selected.clone());
         self.projects = ProjectList::new(projects);
         self.dirty.finder.mark_dirty();
-        self.dirty.rows.mark_dirty();
         self.dirty.disk_cache.mark_dirty();
         self.dirty.fit_widths.mark_dirty();
         self.recompute_cargo_active_paths();
@@ -2286,7 +2280,6 @@ impl App {
             }
         }
         self.detail_generation += 1;
-        self.dirty.rows.mark_dirty();
     }
 
     pub(in super::super) fn detail_path_is_affected(&self, path: &Path) -> bool {

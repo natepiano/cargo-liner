@@ -19,10 +19,6 @@ use crate::tui::panes::PaneId;
 
 impl App {
     pub(in super::super) fn ensure_visible_rows_cached(&mut self) {
-        if !self.dirty.rows.is_dirty() {
-            return;
-        }
-        self.dirty.rows.mark_clean();
         self.cached_visible_rows = snapshots::build_visible_rows(
             &self.projects,
             &self.expanded,
@@ -990,18 +986,12 @@ impl App {
         let Some(key) = self.expand_key_for_row(row) else {
             return false;
         };
-        if self.expanded.insert(key) {
-            self.dirty.rows.mark_dirty();
-            true
-        } else {
-            false
-        }
+        self.expanded.insert(key)
     }
 
     /// Remove `key` from expanded, recompute rows, and move cursor to `target`.
     pub(in super::super) fn collapse_to(&mut self, key: &ExpandKey, target: VisibleRow) {
         self.expanded.remove(key);
-        self.dirty.rows.mark_dirty();
         self.ensure_visible_rows_cached();
         if let Some(pos) = self.visible_rows().iter().position(|r| *r == target) {
             self.pane_manager.pane_mut(PaneId::ProjectList).set_pos(pos);
@@ -1011,12 +1001,7 @@ impl App {
     /// Try to remove `key` from expanded. If present, mark dirty and return `true`.
     /// Otherwise return `false` (caller should cascade to parent).
     pub(in super::super) fn try_collapse(&mut self, key: &ExpandKey) -> bool {
-        if self.expanded.remove(key) {
-            self.dirty.rows.mark_dirty();
-            true
-        } else {
-            false
-        }
+        self.expanded.remove(key)
     }
 
     pub(in super::super) fn collapse(&mut self) -> bool {
@@ -1029,7 +1014,6 @@ impl App {
         self.collapse_row(row);
         self.expanded.len() != expanded_before
             || self.pane_manager.pane(PaneId::ProjectList).pos() != selected_before
-            || self.dirty.rows.is_dirty()
     }
 
     pub(in super::super) fn collapse_row(&mut self, row: VisibleRow) {
@@ -1237,7 +1221,6 @@ impl App {
                 _ => {},
             }
         }
-        self.dirty.rows.mark_dirty();
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
         }
@@ -1247,7 +1230,6 @@ impl App {
         let selected_path = self.selected_project_path().map(AbsolutePath::from);
         let anchor = self.selected_row().map(Self::collapse_anchor_row);
         self.expanded.clear();
-        self.dirty.rows.mark_dirty();
         self.ensure_visible_rows_cached();
         if let Some(anchor) = anchor
             && let Some(pos) = self.visible_rows().iter().position(|row| *row == anchor)
@@ -1361,7 +1343,6 @@ impl App {
 
     pub(in super::super) fn select_project_in_tree(&mut self, target_path: &Path) {
         self.expand_path_in_tree(target_path);
-        self.dirty.rows.mark_dirty();
         self.select_matching_visible_row(target_path);
     }
 }
