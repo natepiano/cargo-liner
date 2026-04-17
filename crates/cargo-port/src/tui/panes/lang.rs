@@ -235,6 +235,9 @@ pub fn render_lang_panel_standalone(
         app.pane_manager_mut()
             .pane_mut(PaneId::Lang)
             .set_content_area(body_area);
+        app.pane_manager_mut()
+            .pane_mut(PaneId::Lang)
+            .set_viewport_rows(usize::from(body_area.height));
         render_lang_table(frame, app, rows, widths, body_area);
     } else {
         rows.push(lang_footer_row(&stats));
@@ -247,6 +250,11 @@ pub fn render_lang_panel_standalone(
         app.pane_manager_mut()
             .pane_mut(PaneId::Lang)
             .set_content_area(body_area);
+        app.pane_manager_mut()
+            .pane_mut(PaneId::Lang)
+            .set_viewport_rows(usize::from(body_area.height));
         render_lang_table(frame, app, rows, widths, body_area);
     }
+
+    pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::Lang));
 }

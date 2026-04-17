@@ -274,6 +274,9 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     app.pane_manager_mut()
         .pane_mut(PaneId::CiRuns)
         .set_content_area(inner);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::CiRuns)
+        .set_viewport_rows(usize::from(inner.height.saturating_sub(1)));
 
     let all_columns = [
         CiColumn::Fmt,
@@ -327,6 +330,7 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     app.pane_manager_mut()
         .pane_mut(PaneId::CiRuns)
         .set_scroll_offset(table_state.offset());
+    pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::CiRuns));
     register_ci_row_hitboxes(app, ci_data.runs.len(), inner, table_state.offset());
 }
 

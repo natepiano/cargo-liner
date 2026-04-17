@@ -54,6 +54,7 @@ pub(in super::super) struct Pane {
     len:           usize,
     content_area:  Rect,
     scroll_offset: usize,
+    viewport_rows: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,6 +80,7 @@ impl Pane {
             len:           0,
             content_area:  Rect::new(0, 0, 0, 0),
             scroll_offset: 0,
+            viewport_rows: 0,
         }
     }
 
@@ -109,6 +111,7 @@ impl Pane {
         self.hovered = None;
         self.content_area = Rect::ZERO;
         self.scroll_offset = 0;
+        self.viewport_rows = 0;
         self.cursor.clamp(0);
     }
 
@@ -120,6 +123,10 @@ impl Pane {
         self.scroll_offset = offset;
     }
 
+    pub(in super::super) const fn set_viewport_rows(&mut self, rows: usize) {
+        self.viewport_rows = rows;
+    }
+
     pub(in super::super) const fn set_hovered(&mut self, hovered: Option<usize>) {
         self.hovered = hovered;
     }
@@ -129,6 +136,22 @@ impl Pane {
     pub(in super::super) const fn scroll_offset(&self) -> usize { self.scroll_offset }
 
     pub(in super::super) const fn len(&self) -> usize { self.len }
+
+    pub(in super::super) const fn overflow_affordance(&self) -> Option<&'static str> {
+        let viewport_rows = self.viewport_rows;
+        if viewport_rows == 0 || self.len <= viewport_rows {
+            return None;
+        }
+
+        let has_above = self.scroll_offset > 0;
+        let has_below = self.scroll_offset.saturating_add(viewport_rows) < self.len;
+        match (has_above, has_below) {
+            (true, true) => Some("▲ more ▼"),
+            (true, false) => Some("▲ more"),
+            (false, true) => Some("more ▼"),
+            (false, false) => None,
+        }
+    }
 
     pub(in super::super) const fn selection_state(
         &self,
@@ -256,5 +279,44 @@ mod tests {
             pane.selection_state(0, PaneFocusState::Inactive),
             PaneSelectionState::Hovered
         );
+    }
+
+    #[test]
+    fn overflow_affordance_is_hidden_when_all_rows_fit() {
+        let mut pane = Pane::new();
+        pane.set_len(3);
+        pane.set_viewport_rows(3);
+
+        assert_eq!(pane.overflow_affordance(), None);
+    }
+
+    #[test]
+    fn overflow_affordance_shows_bottom_only_at_top() {
+        let mut pane = Pane::new();
+        pane.set_len(5);
+        pane.set_viewport_rows(3);
+        pane.set_scroll_offset(0);
+
+        assert_eq!(pane.overflow_affordance(), Some("more ▼"));
+    }
+
+    #[test]
+    fn overflow_affordance_shows_both_in_middle() {
+        let mut pane = Pane::new();
+        pane.set_len(7);
+        pane.set_viewport_rows(3);
+        pane.set_scroll_offset(2);
+
+        assert_eq!(pane.overflow_affordance(), Some("▲ more ▼"));
+    }
+
+    #[test]
+    fn overflow_affordance_shows_top_only_at_bottom() {
+        let mut pane = Pane::new();
+        pane.set_len(5);
+        pane.set_viewport_rows(3);
+        pane.set_scroll_offset(2);
+
+        assert_eq!(pane.overflow_affordance(), Some("▲ more"));
     }
 }

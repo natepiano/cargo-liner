@@ -210,7 +210,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
 
-    let left_width = u16::try_from(app.cached_fit_widths().total_width() + BLOCK_BORDER_WIDTH)
+    let left_width = u16::try_from(app.cached_fit_widths().total_width() + BLOCK_BORDER_WIDTH + 1)
         .unwrap_or(u16::MAX);
 
     let bottom_row = if app.example_output().is_empty() {
@@ -424,6 +424,9 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     app.pane_manager_mut()
         .pane_mut(PaneId::ProjectList)
         .set_content_area(list_area);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_viewport_rows(usize::from(list_area.height));
     let project_list = List::new(items);
     let mut list_state = ListState::default()
         .with_selected(Some(app.pane_manager().pane(PaneId::ProjectList).pos()));
@@ -441,6 +444,8 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     if pin_summary && let Some(line) = summary_line {
         render_project_list_footer(frame, content_area, line);
     }
+
+    pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::ProjectList));
 }
 
 fn clear_project_list_surface(app: &mut App) {

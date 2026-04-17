@@ -139,6 +139,9 @@ pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     app.pane_manager_mut()
         .pane_mut(PaneId::Lints)
         .set_content_area(inner);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Lints)
+        .set_viewport_rows(usize::from(inner.height.saturating_sub(1)));
 
     if lints_data.runs.is_empty() {
         frame.render_widget(block, area);
@@ -187,6 +190,7 @@ pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     app.pane_manager_mut()
         .pane_mut(PaneId::Lints)
         .set_scroll_offset(table_state.offset());
+    pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::Lints));
 
     let visible_height = usize::from(inner.height.saturating_sub(1));
     let visible_start = table_state.offset();

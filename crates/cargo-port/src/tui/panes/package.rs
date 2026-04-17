@@ -283,6 +283,9 @@ fn render_project_panel(
     app.pane_manager_mut()
         .pane_mut(PaneId::Package)
         .set_content_area(areas.lower);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Package)
+        .set_viewport_rows(usize::from(areas.lower.height));
 
     let scroll_offset = render_project_metadata(
         frame,
@@ -294,6 +297,7 @@ fn render_project_panel(
     app.pane_manager_mut()
         .pane_mut(PaneId::Package)
         .set_scroll_offset(scroll_offset);
+    pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::Package));
 }
 
 fn render_project_description_section(
@@ -566,6 +570,9 @@ pub fn render_targets_panel(
     app.pane_manager_mut()
         .pane_mut(PaneId::Targets)
         .set_content_area(content_inner);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Targets)
+        .set_viewport_rows(usize::from(content_inner.height));
 
     let kind_col_width = panes::RunTargetKind::padded_label_width();
     let col_spacing: usize = 1;
@@ -609,6 +616,7 @@ pub fn render_targets_panel(
     app.pane_manager_mut()
         .pane_mut(PaneId::Targets)
         .set_scroll_offset(table_state.offset());
+    pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::Targets));
 }
 
 /// Returns the appropriate style for the lint detail field value based on

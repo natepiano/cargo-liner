@@ -112,7 +112,7 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
         },
         // 5: Origin/upstream sync status
         ColumnDef {
-            header:      "O",
+            header:      "Og",
             width:       ColumnWidth::Fit { min: 0 },
             align:       Align::Right,
             gap:         1,
@@ -669,7 +669,7 @@ mod tests {
         // Fit columns get their min
         assert_eq!(widths.get(COL_NAME), 10);
         assert_eq!(widths.get(COL_DISK), 4);
-        assert_eq!(widths.get(COL_SYNC), 1);
+        assert_eq!(widths.get(COL_SYNC), 2);
         assert_eq!(widths.get(COL_MAIN), 1);
     }
 
@@ -710,7 +710,7 @@ mod tests {
         assert_eq!(display_width(line.spans[COL_LINT].content.as_ref()), 4);
         assert_eq!(line.spans[COL_CI].content.as_ref(), " CI");
         assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), " Git");
-        assert_eq!(line.spans[COL_SYNC].content.as_ref(), "  O");
+        assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Og");
         assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  M");
         assert_eq!(line.spans[COL_DISK].content.as_ref(), "    Disk");
         assert_eq!(line.width(), widths.total_width());
@@ -729,7 +729,7 @@ mod tests {
         assert_eq!(line.spans[COL_CI].content.as_ref(), " CI");
         assert_eq!(display_width(line.spans[COL_LANG].content.as_ref()), 2);
         assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), " Git");
-        assert_eq!(line.spans[COL_SYNC].content.as_ref(), "  O");
+        assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Og");
         assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  M");
         assert_eq!(line.width(), widths.total_width());
     }

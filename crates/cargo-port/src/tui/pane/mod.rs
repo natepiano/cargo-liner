@@ -8,6 +8,7 @@ mod title;
 pub(super) use chrome::PaneChrome;
 pub(super) use chrome::default_pane_chrome;
 pub(super) use chrome::empty_pane_block;
+pub(super) use chrome::render_overflow_affordance;
 pub(super) use layout::PaneAxisSize;
 pub(super) use layout::PaneGridLayout;
 pub(super) use layout::PanePlacement;

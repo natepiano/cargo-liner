@@ -206,6 +206,9 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     app.pane_manager_mut()
         .pane_mut(PaneId::Git)
         .set_content_area(git_inner);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Git)
+        .set_viewport_rows(usize::from(git_inner.height));
     frame.render_widget(git_block, area);
     let git_ctx = GitRenderCtx {
         data: &git_data,
@@ -218,4 +221,5 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     app.pane_manager_mut()
         .pane_mut(PaneId::Git)
         .set_scroll_offset(scroll_offset);
+    pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::Git));
 }
