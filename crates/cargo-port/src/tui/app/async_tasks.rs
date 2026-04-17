@@ -76,7 +76,6 @@ impl App {
         self.register_lint_for_root_items();
         self.refresh_lint_runs_from_disk();
         self.data_generation += 1;
-        self.detail_generation += 1;
 
         // Try to restore selection
         if let Some(path) = selected_path {
@@ -312,7 +311,6 @@ impl App {
         self.refresh_lint_runs_from_disk();
         self.cached_fit_widths = ResolvedWidths::new(self.lint_enabled());
         self.data_generation += 1;
-        self.detail_generation += 1;
         if let Some(warning) = lint_spawn.warning {
             self.status_flash = Some((warning.clone(), Instant::now()));
             self.show_timed_toast("Lint runtime", warning);
@@ -1194,7 +1192,6 @@ impl App {
     pub(in super::super) fn refresh_derived_state(&mut self) {
         self.recompute_cargo_active_paths();
         self.data_generation += 1;
-        self.detail_generation += 1;
     }
 
     fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
@@ -1317,7 +1314,6 @@ impl App {
             .pane_mut(PaneId::ProjectList)
             .set_scroll_offset(0);
         self.data_generation += 1;
-        self.detail_generation += 1;
         let scan_dirs = scan::resolve_include_dirs(&self.current_config.tui.include_dirs);
         let (tx, rx) = scan::spawn_streaming_scan(
             scan_dirs,
@@ -1615,7 +1611,6 @@ impl App {
     }
 
     pub(in super::super) fn handle_git_info(&mut self, path: &Path, info: GitInfo) {
-        self.detail_generation += 1;
         tracing::info!(
             path = %path.display(),
             git_status = %info.status.label(),
@@ -1773,7 +1768,6 @@ impl App {
         self.reload_lint_history(&path);
         self.migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
-        self.detail_cache_key = None;
         self.pane_data.clear_detail_data();
         // Signal that derived state needs refresh (batched by caller).
         true
@@ -1824,7 +1818,6 @@ impl App {
         if let Some(path) = msg.path()
             && self.detail_path_is_affected(path)
         {
-            self.detail_generation += 1;
         }
     }
 
@@ -1843,12 +1836,6 @@ impl App {
         entries: Vec<(AbsolutePath, u64)>,
     ) {
         self.data_generation += 1;
-        if entries
-            .iter()
-            .any(|(path, _)| self.detail_path_is_affected(path.as_path()))
-        {
-            self.detail_generation += 1;
-        }
         self.scan.startup_phases.disk_seen.insert(root_path.clone());
         self.handle_disk_usage_batch(entries);
         self.maybe_log_startup_phase_completions();
@@ -2014,7 +2001,6 @@ impl App {
         self.scan.startup_phases.lint_startup_complete_at = None;
         self.refresh_lint_runs_from_disk();
         self.data_generation += 1;
-        self.detail_generation += 1;
 
         // Restore selection.
         if let Some(path) = selected_path {
@@ -2065,7 +2051,6 @@ impl App {
             BackgroundMsg::Submodules { path, submodules } => {
                 if let Some(info) = self.projects.at_path_mut(path.as_path()) {
                     info.submodules = submodules;
-                    self.detail_generation += 1;
                 }
             },
             BackgroundMsg::CratesIoVersion {
@@ -2136,7 +2121,6 @@ impl App {
                 project.language_stats = Some(stats);
             }
         }
-        self.detail_generation += 1;
     }
 
     pub(in super::super) fn detail_path_is_affected(&self, path: &Path) -> bool {

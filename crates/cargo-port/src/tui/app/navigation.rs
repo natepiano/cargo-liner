@@ -58,18 +58,8 @@ impl App {
     }
 
     /// Ensure per-pane data on `PaneManager` is up to date for the selected
-    /// project. The cache key tracks generation + selection to avoid
-    /// redundant rebuilds.
+    /// project.
     pub(in super::super) fn ensure_detail_cached(&mut self) {
-        let current_selection = self.current_detail_selection_key();
-
-        if let Some(ref key) = self.detail_cache_key
-            && key.generation == self.detail_generation
-            && key.selection == current_selection
-        {
-            return;
-        }
-
         if let Some(data) = self.build_selected_pane_data() {
             self.pane_data.set_detail_data(
                 data.package,
@@ -78,13 +68,8 @@ impl App {
                 tui::panes::build_ci_data(self),
                 tui::panes::build_lints_data(self),
             );
-            self.detail_cache_key = Some(super::types::DetailCacheKey {
-                generation: self.detail_generation,
-                selection:  current_selection,
-            });
         } else {
             self.pane_data.clear_detail_data();
-            self.detail_cache_key = None;
         }
     }
 
@@ -297,52 +282,6 @@ impl App {
         let rows = self.visible_rows();
         let selected = self.pane_manager.pane(PaneId::ProjectList).pos();
         rows.get(selected).copied()
-    }
-
-    pub(in super::super) fn current_detail_selection_key(&self) -> String {
-        match self.selected_row() {
-            Some(VisibleRow::Root { node_index }) => format!("root:{node_index}"),
-            Some(VisibleRow::GroupHeader {
-                node_index,
-                group_index,
-            }) => format!("group:{node_index}:{group_index}"),
-            Some(VisibleRow::Member {
-                node_index,
-                group_index,
-                member_index,
-            }) => format!("member:{node_index}:{group_index}:{member_index}"),
-            Some(VisibleRow::Vendored {
-                node_index,
-                vendored_index,
-            }) => format!("vendored:{node_index}:{vendored_index}"),
-            Some(VisibleRow::WorktreeEntry {
-                node_index,
-                worktree_index,
-            }) => format!("worktree:{node_index}:{worktree_index}"),
-            Some(VisibleRow::WorktreeGroupHeader {
-                node_index,
-                worktree_index,
-                group_index,
-            }) => format!("worktree-group:{node_index}:{worktree_index}:{group_index}"),
-            Some(VisibleRow::WorktreeMember {
-                node_index,
-                worktree_index,
-                group_index,
-                member_index,
-            }) => format!(
-                "worktree-member:{node_index}:{worktree_index}:{group_index}:{member_index}"
-            ),
-            Some(VisibleRow::WorktreeVendored {
-                node_index,
-                worktree_index,
-                vendored_index,
-            }) => format!("worktree-vendored:{node_index}:{worktree_index}:{vendored_index}"),
-            Some(VisibleRow::Submodule {
-                node_index,
-                submodule_index,
-            }) => format!("submodule:{node_index}:{submodule_index}"),
-            None => String::new(),
-        }
     }
 
     /// Returns the `RootItem` when a root row is selected.

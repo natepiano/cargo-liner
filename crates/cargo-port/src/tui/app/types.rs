@@ -370,12 +370,3 @@ pub(in super::super) enum CiRunDisplayMode {
     BranchOnly,
     All,
 }
-
-/// Generation-stamped detail cache. Automatically stale when `detail_generation`
-/// on `App` has advanced past the generation stored here.
-/// Cache key for per-pane detail data. When generation and selection
-/// match, the pane data on `PaneManager` is still valid.
-pub(in super::super) struct DetailCacheKey {
-    pub generation: u64,
-    pub selection:  String,
-}

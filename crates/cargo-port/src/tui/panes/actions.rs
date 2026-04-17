@@ -321,7 +321,6 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
     app.complete_ci_fetch_for(abs);
     app.pane_manager_mut().pane_mut(PaneId::CiRuns).home();
     app.increment_data_generation();
-    app.increment_detail_generation();
 }
 
 fn clear_lint_history(app: &mut App) {
@@ -341,7 +340,6 @@ fn clear_lint_history(app: &mut App) {
     app.focus_pane(PaneId::ProjectList);
     app.refresh_lint_cache_usage_from_disk();
     app.increment_data_generation();
-    app.increment_detail_generation();
 }
 
 fn open_lint_run_output(app: &App) {

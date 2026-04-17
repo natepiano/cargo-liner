@@ -202,7 +202,6 @@ impl App {
             && self.selection_paths.last_selected.as_ref() != Some(&abs_path)
         {
             self.data_generation += 1;
-            self.detail_generation += 1;
             self.selection_paths.last_selected = Some(abs_path);
             self.mark_selection_changed();
             self.maybe_priority_fetch();

@@ -98,7 +98,6 @@ fn tabbable_panes_follow_canonical_order() {
             workflows:           WorkflowPresence::Present,
         },
     );
-    app.detail_generation += 1;
     app.ensure_detail_cached();
     set_loaded_ci(
         &mut app,
@@ -107,7 +106,6 @@ fn tabbable_panes_follow_canonical_order() {
         false,
         0,
     );
-    app.detail_generation += 1;
     app.ensure_detail_cached();
 
     let expected_without_toasts = app.tabbable_panes();

@@ -125,8 +125,6 @@ pub(super) struct App {
     cached_child_sorted:      HashMap<usize, Vec<u64>>,
     cached_fit_widths:        ResolvedWidths,
     data_generation:          u64,
-    detail_generation:        u64,
-    detail_cache_key:         Option<types::DetailCacheKey>,
     mouse_pos:                Option<Position>,
     hovered_pane_row:         Option<types::HoveredPaneRow>,
     layout_cache:             LayoutCache,
@@ -351,8 +349,6 @@ impl App {
     }
 
     pub(super) const fn increment_data_generation(&mut self) { self.data_generation += 1; }
-
-    pub(super) const fn increment_detail_generation(&mut self) { self.detail_generation += 1; }
 
     pub(super) const fn config_path(&self) -> Option<&AbsolutePath> { self.config_path.as_ref() }
 

@@ -110,7 +110,6 @@ impl App {
                 exhausted,
             });
         }
-        self.detail_generation += 1;
     }
 
     /// Process a completed CI fetch: merge runs and detect exhaustion.
@@ -228,7 +227,6 @@ impl App {
             }
         }
         self.data_generation += 1;
-        self.detail_generation += 1;
     }
 
     pub(super) fn is_ci_owner_path(&self, path: &Path) -> bool {
@@ -278,7 +276,6 @@ impl App {
             .insert(AbsolutePath::from(path), new_mode);
         self.pane_manager.pane_mut(PaneId::CiRuns).home();
         self.data_generation += 1;
-        self.detail_generation += 1;
     }
 
     pub(super) fn ci_runs_for_display_inner(&self, path: &Path) -> Vec<CiRun> {

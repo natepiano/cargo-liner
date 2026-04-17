@@ -216,8 +216,6 @@ impl App {
             cached_child_sorted: HashMap::new(),
             cached_fit_widths,
             data_generation: 0,
-            detail_generation: 0,
-            detail_cache_key: None,
             mouse_pos: None,
             hovered_pane_row: None,
             layout_cache: LayoutCache::default(),

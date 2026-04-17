@@ -336,7 +336,6 @@ fn spawn_pending_background_tasks(app: &mut App) {
         let abs_path = Path::new(&fetch.project_path);
         app.start_ci_fetch_for(AbsolutePath::from(abs_path));
         app.increment_data_generation();
-        app.increment_detail_generation();
         spawn_ci_fetch(app, &fetch);
     }
 }
