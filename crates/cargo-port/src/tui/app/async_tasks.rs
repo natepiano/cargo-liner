@@ -11,7 +11,6 @@ use super::ExpandKey::Node;
 use super::ExpandKey::Worktree;
 use super::ExpandKey::WorktreeGroup;
 use super::types::ConfigFileStamp;
-use super::types::DiskCacheBuildResult;
 use super::types::PollBackgroundStats;
 use super::types::ScanPhase;
 use super::types::StartupPhaseTracker;
@@ -73,7 +72,6 @@ impl App {
         let should_focus_project_list = false;
         self.projects = projects;
         self.dirty.finder.mark_dirty();
-        self.dirty.disk_cache.mark_dirty();
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
         self.register_lint_for_root_items();
@@ -1192,62 +1190,6 @@ impl App {
         }
     }
 
-    pub(in super::super) fn request_disk_cache_build(&mut self) {
-        if !self.dirty.disk_cache.is_dirty() {
-            return;
-        }
-        self.builds.disk.latest = self.builds.disk.latest.wrapping_add(1);
-        if self.builds.disk.active.is_some() {
-            return;
-        }
-        self.spawn_disk_cache_build(self.builds.disk.latest);
-    }
-
-    pub(in super::super) fn spawn_disk_cache_build(&mut self, build_id: u64) {
-        let tx = self.builds.disk.tx.clone();
-        let items = self.projects.clone();
-        self.builds.disk.active = Some(build_id);
-        std::thread::spawn(move || {
-            let started = Instant::now();
-            let (root_sorted, child_sorted) = super::snapshots::build_disk_cache_snapshot(&items);
-            let elapsed = started.elapsed();
-            if elapsed.as_millis() >= crate::perf_log::SLOW_WORKER_MS {
-                tracing::info!(
-                    elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
-                    build_id,
-                    items = items.len(),
-                    root_values = root_sorted.len(),
-                    child_sets = child_sorted.len(),
-                    "disk_cache_build"
-                );
-            }
-            let _ = tx.send(DiskCacheBuildResult {
-                build_id,
-                root_sorted,
-                child_sorted,
-            });
-        });
-    }
-
-    pub(in super::super) fn poll_disk_cache_builds(&mut self) -> usize {
-        let mut applied = 0;
-        while let Ok(result) = self.builds.disk.rx.try_recv() {
-            if self.builds.disk.active != Some(result.build_id) {
-                continue;
-            }
-            self.builds.disk.active = None;
-            self.cached_root_sorted = result.root_sorted;
-            self.cached_child_sorted = result.child_sorted;
-            applied += 1;
-            if result.build_id == self.builds.disk.latest {
-                self.dirty.disk_cache.mark_clean();
-            } else {
-                self.spawn_disk_cache_build(self.builds.disk.latest);
-            }
-        }
-        applied
-    }
-
     /// Lightweight refresh of derived state after in-place hierarchy changes
     /// (discovery, refresh). Marks caches dirty without a full tree rebuild.
     pub(in super::super) fn refresh_derived_state(&mut self) {
@@ -1255,7 +1197,6 @@ impl App {
         self.data_generation += 1;
         self.detail_generation += 1;
         self.dirty.finder.mark_dirty();
-        self.dirty.disk_cache.mark_dirty();
     }
 
     fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
@@ -1350,8 +1291,6 @@ impl App {
         );
     }
 
-    pub(in super::super) fn refresh_async_caches(&mut self) { self.request_disk_cache_build(); }
-
     pub(in super::super) fn rescan(&mut self) {
         self.projects.clear();
         // disk_usage lives on project items — cleared with projects above
@@ -1379,9 +1318,6 @@ impl App {
         self.pane_manager
             .pane_mut(PaneId::ProjectList)
             .set_scroll_offset(0);
-        self.dirty.disk_cache.mark_dirty();
-        self.builds.disk.active = None;
-        self.builds.disk.latest = 0;
         self.data_generation += 1;
         self.detail_generation += 1;
         let scan_dirs = scan::resolve_include_dirs(&self.current_config.tui.include_dirs);
@@ -1421,7 +1357,7 @@ impl App {
 
         stats.tree_results = 0;
         stats.fit_results = 0;
-        stats.disk_results = self.poll_disk_cache_builds();
+        stats.disk_results = 0;
 
         if needs_rebuild {
             self.refresh_derived_state();
@@ -1429,7 +1365,6 @@ impl App {
         }
         stats.needs_rebuild = needs_rebuild;
 
-        self.refresh_async_caches();
         let elapsed = started.elapsed();
         if elapsed.as_millis() >= crate::perf_log::SLOW_BG_BATCH_MS {
             tracing::info!(
@@ -1596,8 +1531,6 @@ impl App {
     }
 
     pub(in super::super) fn apply_disk_usage(&mut self, path: &Path, bytes: u64) {
-        self.dirty.disk_cache.mark_dirty();
-
         // Set disk usage on the matching project item and update visibility.
         let mut lint_runtime_changed = false;
         if let Some(project) = self.projects.at_path_mut(path) {
@@ -2077,7 +2010,6 @@ impl App {
             .or_else(|| self.selection_paths.last_selected.clone());
         self.projects = ProjectList::new(projects);
         self.dirty.finder.mark_dirty();
-        self.dirty.disk_cache.mark_dirty();
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();

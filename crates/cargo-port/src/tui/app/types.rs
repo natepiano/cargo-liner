@@ -1,7 +1,4 @@
-use std::collections::HashMap;
 use std::collections::HashSet;
-use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
@@ -43,12 +40,6 @@ pub(in super::super) struct HoveredPaneRow {
 pub(in super::super) struct ConfigFileStamp {
     pub modified: Option<SystemTime>,
     pub len:      u64,
-}
-
-pub(in super::super) struct DiskCacheBuildResult {
-    pub build_id:     u64,
-    pub root_sorted:  Vec<u64>,
-    pub child_sorted: HashMap<usize, Vec<u64>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,17 +201,15 @@ impl RetrySpawnMode {
 
 #[derive(Debug)]
 pub(in super::super) struct DirtyState {
-    pub disk_cache: Dirtiness,
-    pub finder:     Dirtiness,
-    pub terminal:   Dirtiness,
+    pub finder:   Dirtiness,
+    pub terminal: Dirtiness,
 }
 
 impl DirtyState {
     pub(in super::super) const fn initial() -> Self {
         Self {
-            disk_cache: Dirtiness::Dirty,
-            finder:     Dirtiness::Dirty,
-            terminal:   Dirtiness::Clean,
+            finder:   Dirtiness::Dirty,
+            terminal: Dirtiness::Clean,
         }
     }
 }
@@ -286,48 +275,6 @@ impl FinderState {
             index:      Vec::new(),
             col_widths: [0; FINDER_COLUMN_COUNT],
         }
-    }
-}
-
-pub(in super::super) struct BuildQueue<T> {
-    pub tx:     mpsc::Sender<T>,
-    pub rx:     Receiver<T>,
-    pub active: Option<u64>,
-    pub latest: u64,
-}
-
-impl<T> BuildQueue<T> {
-    const fn new(tx: mpsc::Sender<T>, rx: Receiver<T>) -> Self {
-        Self {
-            tx,
-            rx,
-            active: None,
-            latest: 0,
-        }
-    }
-}
-
-pub(in super::super) struct AsyncBuildState {
-    pub disk: BuildQueue<DiskCacheBuildResult>,
-}
-
-impl AsyncBuildState {
-    pub(in super::super) fn new(channels: BuildChannels) -> Self {
-        Self {
-            disk: BuildQueue::new(channels.disk_tx, channels.disk_rx),
-        }
-    }
-}
-
-pub(in super::super) struct BuildChannels {
-    pub disk_tx: mpsc::Sender<DiskCacheBuildResult>,
-    pub disk_rx: Receiver<DiskCacheBuildResult>,
-}
-
-impl BuildChannels {
-    pub(in super::super) fn new() -> Self {
-        let (disk_tx, disk_rx) = mpsc::channel();
-        Self { disk_tx, disk_rx }
     }
 }
 

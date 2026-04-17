@@ -106,7 +106,6 @@ impl App {
                 if let Some(project) = self.projects.at_path_mut(&path) {
                     project.visibility = Dismissed;
                 }
-                self.dirty.disk_cache.mark_dirty();
                 self.ensure_visible_rows_cached();
                 if let Some(ni) = parent_node_index {
                     self.select_root_row(ni);

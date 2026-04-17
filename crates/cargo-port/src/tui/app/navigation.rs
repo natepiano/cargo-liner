@@ -51,8 +51,11 @@ impl App {
         content_width.saturating_add(1)
     }
 
-    /// Keep disk sort caches rebuilding in the background, never inline on the UI thread.
-    pub(in super::super) fn ensure_disk_cache(&mut self) { self.request_disk_cache_build(); }
+    pub(in super::super) fn ensure_disk_cache(&mut self) {
+        let (root_sorted, child_sorted) = snapshots::build_disk_cache_snapshot(&self.projects);
+        self.cached_root_sorted = root_sorted;
+        self.cached_child_sorted = child_sorted;
+    }
 
     /// Ensure per-pane data on `PaneManager` is up to date for the selected
     /// project. The cache key tracks generation + selection to avoid

@@ -605,7 +605,6 @@ mod tests {
             .unwrap_or_else(|| std::process::abort());
         project.disk_usage_bytes = Some(0);
         project.visibility = Visibility::Deleted;
-        app.dirty_mut().disk_cache.mark_dirty();
     }
 
     #[test]
@@ -1002,7 +1001,6 @@ mod tests {
                 )],
             ),
         )]));
-        app.dirty_mut().disk_cache.mark_dirty();
         render_ui(&mut app);
 
         let (x, y) = row_body_point(&app, 2);

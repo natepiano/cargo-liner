@@ -9,8 +9,6 @@ use std::time::Instant;
 
 use super::App;
 use super::CiFetchTracker;
-use super::types::AsyncBuildState;
-use super::types::BuildChannels;
 use super::types::ConfigFileStamp;
 use super::types::DirtyState;
 use super::types::FinderState;
@@ -117,7 +115,6 @@ struct CoreInputs {
     bg_rx:           Receiver<BackgroundMsg>,
     cfg:             CargoPortConfig,
     scan_started_at: Instant,
-    builds:          AsyncBuildState,
     channels:        AppChannels,
     init:            AppInit,
     status_flash:    Option<(String, Instant)>,
@@ -143,7 +140,6 @@ impl App {
         scan_started_at: Instant,
     ) -> Self {
         let channels = AppChannels::new();
-        let builds = AsyncBuildState::new(BuildChannels::new());
         let init = AppInit::new(projects, &bg_tx, cfg, &http_client);
         let status_flash = init.lint_warning.clone().map(|w| (w, Instant::now()));
         let mut app = Self::build_core(CoreInputs {
@@ -152,7 +148,6 @@ impl App {
             bg_rx,
             cfg: cfg.clone(),
             scan_started_at,
-            builds,
             channels,
             init,
             status_flash,
@@ -220,7 +215,6 @@ impl App {
             cached_root_sorted: Vec::new(),
             cached_child_sorted: HashMap::new(),
             cached_fit_widths,
-            builds: inputs.builds,
             data_generation: 0,
             detail_generation: 0,
             detail_cache_key: None,

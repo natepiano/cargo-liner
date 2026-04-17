@@ -12,7 +12,6 @@ static PERF_LOG_PATH: OnceLock<AbsolutePath> = OnceLock::new();
 
 pub(crate) const SLOW_FRAME_MS: u128 = 100;
 pub(crate) const SLOW_BG_BATCH_MS: u128 = 50;
-pub(crate) const SLOW_WORKER_MS: u128 = 25;
 pub(crate) const SLOW_INPUT_EVENT_MS: u128 = 25;
 
 /// Saturating conversion from `u128` milliseconds to `u64` for tracing fields.

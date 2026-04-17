@@ -124,7 +124,6 @@ pub(super) struct App {
     cached_root_sorted:       Vec<u64>,
     cached_child_sorted:      HashMap<usize, Vec<u64>>,
     cached_fit_widths:        ResolvedWidths,
-    builds:                   types::AsyncBuildState,
     data_generation:          u64,
     detail_generation:        u64,
     detail_cache_key:         Option<types::DetailCacheKey>,
