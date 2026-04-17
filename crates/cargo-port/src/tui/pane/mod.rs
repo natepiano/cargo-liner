@@ -19,6 +19,8 @@ pub(super) use layout::constraints_for_sizes;
 pub(super) use manager::PaneKey;
 pub(super) use manager::PaneManager;
 pub(super) use rules::PaneRule;
+pub(super) use rules::RuleTitle;
+pub(super) use rules::render_horizontal_rule;
 pub(super) use rules::render_rules;
 pub(super) use state::Pane;
 pub(super) use state::PaneFocusState;
