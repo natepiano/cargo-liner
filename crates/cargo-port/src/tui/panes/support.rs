@@ -1263,9 +1263,8 @@ pub fn build_ci_data(app: &App) -> CiData {
     } else if git_info.is_none() {
         CiEmptyState::NotGitRepo
     } else if has_ci_owner
-        && git_info.is_some_and(|g| {
-            g.origin_kind() == GitOrigin::Local || g.primary_url().is_none()
-        })
+        && git_info
+            .is_some_and(|g| g.origin_kind() == GitOrigin::Local || g.primary_url().is_none())
     {
         CiEmptyState::RequiresGithubRemote
     } else if git_info.is_some_and(|g| !g.workflows.is_present()) {

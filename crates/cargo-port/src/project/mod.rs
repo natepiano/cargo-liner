@@ -34,10 +34,10 @@ pub(crate) use git::RemoteKind;
 pub(crate) use git::WorkflowPresence;
 pub(crate) use git::detect_first_commit;
 pub(crate) use git::detect_worktree_branch;
-pub(crate) use git::worktree_ahead_behind_primary;
 pub(crate) use git::git_repo_root;
 pub(crate) use git::resolve_common_git_dir;
 pub(crate) use git::resolve_git_dir;
+pub(crate) use git::worktree_ahead_behind_primary;
 // ── Info types ───────────────────────────────────────────────────────
 pub(crate) use info::GitHubInfo;
 pub(crate) use info::LangEntry;

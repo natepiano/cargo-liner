@@ -294,7 +294,11 @@ fn build_remote_info(
         cfg,
     );
     let ahead_behind = tracked_ref.as_deref().and_then(|r| {
-        parse_ahead_behind(repo_root, &format!("HEAD...{r}"), &format!("tracked_{name}"))
+        parse_ahead_behind(
+            repo_root,
+            &format!("HEAD...{r}"),
+            &format!("tracked_{name}"),
+        )
     });
     let kind = if name == "origin" && has_upstream {
         RemoteKind::Fork
@@ -312,7 +316,10 @@ fn build_remote_info(
     }
 }
 
-fn remote_url_info(repo_root: &Path, name: &str) -> (Option<String>, Option<String>, Option<String>) {
+fn remote_url_info(
+    repo_root: &Path,
+    name: &str,
+) -> (Option<String>, Option<String>, Option<String>) {
     git_output_logged(
         repo_root,
         &format!("remote_get_url_{name}"),
@@ -332,8 +339,7 @@ fn remote_url_info(repo_root: &Path, name: &str) -> (Option<String>, Option<Stri
 /// 2. `symbolic-ref refs/remotes/<remote>/HEAD`.
 /// 3. `<remote>/<default_branch>` (from `origin/HEAD`) if the ref exists.
 /// 4. `<remote>/<current_branch>` if the ref exists.
-/// 5. `<remote>/<cfg.tui.main_branch>` and each `other_primary_branches` entry
-///    if the ref exists.
+/// 5. `<remote>/<cfg.tui.main_branch>` and each `other_primary_branches` entry if the ref exists.
 fn resolve_tracked_ref(
     repo_root: &Path,
     remote_name: &str,
@@ -456,16 +462,12 @@ pub(crate) fn worktree_ahead_behind_primary(
     worktree_dir: &Path,
     primary_dir: &Path,
 ) -> Option<(usize, usize)> {
-    let primary_sha = git_output_logged(
-        primary_dir,
-        "worktree_primary_sha",
-        ["rev-parse", "HEAD"],
-    )
-    .ok()
-    .and_then(|o| {
-        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        if s.is_empty() { None } else { Some(s) }
-    })?;
+    let primary_sha = git_output_logged(primary_dir, "worktree_primary_sha", ["rev-parse", "HEAD"])
+        .ok()
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        })?;
     parse_ahead_behind(
         worktree_dir,
         &format!("HEAD...{primary_sha}"),

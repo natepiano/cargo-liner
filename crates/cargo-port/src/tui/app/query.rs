@@ -238,8 +238,8 @@ impl App {
         let git = self.git_info_for(path)?;
         (git.primary_tracked_ref().is_none()
             && git.branch.as_deref() != git.default_branch.as_deref())
-            .then(|| git.branch.clone())
-            .flatten()
+        .then(|| git.branch.clone())
+        .flatten()
     }
 
     pub(in super::super) fn ci_for(&self, path: &Path) -> Option<Conclusion> {

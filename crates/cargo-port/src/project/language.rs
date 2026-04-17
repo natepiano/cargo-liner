@@ -9,6 +9,8 @@ pub(crate) fn language_icon(language: &str) -> &'static str {
         "TypeScript" | "TSX" => "TS",
         "Markdown" => "M\u{2193}", // M↓
         "Shell" | "Bash" | "Zsh" | "Fish" => "$_",
+        "Liquid" => "\u{1f4a7}",      // 💧
+        "TOML" => "\u{2699}\u{fe0f}", // ⚙️
         _ => "  ",
     }
 }

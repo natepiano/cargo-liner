@@ -643,19 +643,19 @@ pub(crate) struct TuiConfig {
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            inline_dirs:            vec!["crates".to_string()],
-            ci_run_count:           5,
-            navigation_keys:        NavigationKeys::ArrowsOnly,
-            include_dirs:           Vec::new(),
-            include_non_rust:       NonRustInclusion::Exclude,
-            editor:                 "zed".to_string(),
-            terminal_command:       String::new(),
-            main_branch:            "main".to_string(),
-            other_primary_branches: Vec::new(),
+            inline_dirs:             vec!["crates".to_string()],
+            ci_run_count:            5,
+            navigation_keys:         NavigationKeys::ArrowsOnly,
+            include_dirs:            Vec::new(),
+            include_non_rust:        NonRustInclusion::Exclude,
+            editor:                  "zed".to_string(),
+            terminal_command:        String::new(),
+            main_branch:             "main".to_string(),
+            other_primary_branches:  Vec::new(),
             default_remote_host_url: "https://github.com/".to_string(),
-            status_flash_secs:      5.0,
-            task_linger_secs:       1.0,
-            discovery_shimmer_secs: 10.0,
+            status_flash_secs:       5.0,
+            task_linger_secs:        1.0,
+            discovery_shimmer_secs:  10.0,
         }
     }
 }
