@@ -237,6 +237,7 @@ fn read_gpu_percent() -> Option<u8> { windows_gpu_percent() }
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn read_gpu_percent() -> Option<u8> { None }
 
+#[cfg(target_os = "macos")]
 fn parse_gpu_percent(output: &str) -> Option<u8> {
     let needle = "\"Device Utilization %\"=";
     let after = output.split_once(needle)?.1.trim_start();
