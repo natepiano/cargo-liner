@@ -1,14 +1,12 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Instant;
 
-use super::App;
-use super::CiFetchTracker;
 use super::types::AsyncBuildState;
 use super::types::BuildChannels;
 use super::types::ConfigFileStamp;
@@ -20,6 +18,8 @@ use super::types::ScanState;
 use super::types::SelectionPaths;
 use super::types::SelectionSync;
 use super::types::UiModes;
+use super::App;
+use super::CiFetchTracker;
 use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
 use crate::keymap;
@@ -32,6 +32,7 @@ use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::tui::columns::ResolvedWidths;
 use crate::tui::cpu::CpuPoller;
+use crate::tui::panes::PaneManager;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -180,7 +181,7 @@ impl App {
             bg_rx: inputs.bg_rx,
             priority_fetch_path: None,
             expanded: HashSet::new(),
-            pane_manager: crate::tui::panes::PaneManager::new(),
+            pane_manager: PaneManager::new(),
             settings_edit_buf: String::new(),
             settings_edit_cursor: 0,
             focused_pane: PaneId::ProjectList,
