@@ -447,7 +447,7 @@ mod tests {
 
     fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
         app.ensure_detail_cached();
-        app.pane_data_mut().lints = Some(crate::tui::detail::LintsData {
+        app.pane_data_mut().lints = Some(crate::tui::panes::LintsData {
             runs:            runs.to_vec(),
             is_cargo_active: true,
         });

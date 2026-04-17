@@ -28,9 +28,9 @@ use super::constants::FINDER_POPUP_HEIGHT;
 use super::constants::LABEL_COLOR;
 use super::constants::MAX_FINDER_RESULTS;
 use super::constants::TITLE_COLOR;
-use super::detail::RunTargetKind;
 use super::interaction::UiSurface::Overlay;
 use super::panes::PaneId;
+use super::panes::RunTargetKind;
 use crate::project::AbsolutePath;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
@@ -656,7 +656,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
 
         // Build target list and find the matching entry index
         {
-            let entries = super::detail::build_target_list_from_data(&targets_data);
+            let entries = super::panes::build_target_list_from_data(&targets_data);
             let target_kind = match item.kind {
                 FinderKind::Binary => RunTargetKind::Binary,
                 FinderKind::Example => RunTargetKind::Example,

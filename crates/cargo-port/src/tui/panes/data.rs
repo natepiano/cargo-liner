@@ -1,9 +1,9 @@
+use super::CiData;
+use super::GitData;
+use super::LintsData;
+use super::PackageData;
+use super::TargetsData;
 use crate::tui::cpu::CpuSnapshot;
-use crate::tui::detail::CiData;
-use crate::tui::detail::GitData;
-use crate::tui::detail::LintsData;
-use crate::tui::detail::PackageData;
-use crate::tui::detail::TargetsData;
 
 pub(in super::super) struct PaneDataStore {
     pub(in super::super) package: Option<PackageData>,

@@ -216,14 +216,14 @@ impl App {
                 .pane_data
                 .targets
                 .as_ref()
-                .is_some_and(crate::tui::detail::TargetsData::has_targets),
+                .is_some_and(crate::tui::panes::TargetsData::has_targets),
             PaneBehavior::Lints => {
                 self.example_output.is_empty()
                     && self
                         .pane_data
                         .lints
                         .as_ref()
-                        .is_some_and(crate::tui::detail::LintsData::has_runs)
+                        .is_some_and(crate::tui::panes::LintsData::has_runs)
             },
             PaneBehavior::CiRuns => {
                 self.example_output.is_empty()
@@ -231,7 +231,7 @@ impl App {
                         .pane_data
                         .ci
                         .as_ref()
-                        .is_some_and(crate::tui::detail::CiData::has_runs)
+                        .is_some_and(crate::tui::panes::CiData::has_runs)
             },
             PaneBehavior::Output => !self.example_output.is_empty(),
             PaneBehavior::Toasts => !self.active_toasts().is_empty(),

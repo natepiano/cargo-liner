@@ -35,7 +35,7 @@ pub(super) fn cpu_required_inner_height(core_count: usize) -> u16 {
     CPU_STATIC_INNER_HEIGHT.saturating_add(core_rows)
 }
 
-pub fn cpu_required_pane_height(core_count: usize) -> u16 {
+pub(in super::super) fn cpu_required_pane_height(core_count: usize) -> u16 {
     cpu_required_inner_height(core_count).saturating_add(2)
 }
 

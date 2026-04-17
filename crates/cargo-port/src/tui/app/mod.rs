@@ -65,8 +65,8 @@ pub(super) use types::PollBackgroundStats;
 pub(super) use types::VisibleRow;
 
 pub(super) use super::columns::ResolvedWidths;
-use super::detail::PendingCiFetch;
-use super::detail::PendingExampleRun;
+use super::panes::PendingCiFetch;
+use super::panes::PendingExampleRun;
 use super::terminal::CiFetchMsg;
 use super::terminal::CleanMsg;
 use super::terminal::ExampleMsg;

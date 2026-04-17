@@ -8,6 +8,8 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+use super::DetailField;
+use super::GitData;
 use super::PaneId;
 use super::package;
 use super::package::RenderStyles;
@@ -19,13 +21,11 @@ use crate::tui::constants::INACTIVE_BORDER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
-use crate::tui::detail;
-use crate::tui::detail::DetailField;
-use crate::tui::detail::GitData;
 use crate::tui::pane;
 use crate::tui::pane::Pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneTitleCount;
+use crate::tui::panes;
 
 struct GitRenderCtx<'a> {
     data:   &'a GitData,
@@ -186,7 +186,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
 
-    let git = detail::git_fields_from_data(&git_data);
+    let git = panes::git_fields_from_data(&git_data);
     if git.is_empty() {
         app.pane_manager_mut().pane_mut(PaneId::Git).clear_surface();
         let empty_git = pane::empty_pane_block(" Not a git repo ");

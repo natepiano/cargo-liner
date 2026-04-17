@@ -17,7 +17,10 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
+use super::DetailField;
+use super::PackageData;
 use super::PaneId;
+use super::TargetsData;
 use crate::constants::NO_LINT_RUNS;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
@@ -26,10 +29,6 @@ use crate::tui::constants::INACTIVE_BORDER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
-use crate::tui::detail;
-use crate::tui::detail::DetailField;
-use crate::tui::detail::PackageData;
-use crate::tui::detail::TargetsData;
 use crate::tui::pane;
 use crate::tui::pane::Pane;
 use crate::tui::pane::PaneChrome;
@@ -37,6 +36,7 @@ use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRule;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::PaneTitleGroup;
+use crate::tui::panes;
 use crate::tui::render;
 
 /// Shared style constants for pane rendering.
@@ -254,7 +254,7 @@ fn render_project_panel(
     styles: &RenderStyles,
     area: Rect,
 ) {
-    let fields = detail::package_fields_from_data(pkg_data);
+    let fields = panes::package_fields_from_data(pkg_data);
     app.pane_manager_mut()
         .pane_mut(PaneId::Package)
         .set_len(fields.len());
@@ -558,7 +558,7 @@ pub fn render_targets_panel(
         .chrome
         .block(targets_title, matches!(focus, PaneFocusState::Active));
 
-    let entries = detail::build_target_list_from_data(data);
+    let entries = panes::build_target_list_from_data(data);
     app.pane_manager_mut()
         .pane_mut(PaneId::Targets)
         .set_len(entries.len());
@@ -567,7 +567,7 @@ pub fn render_targets_panel(
         .pane_mut(PaneId::Targets)
         .set_content_area(content_inner);
 
-    let kind_col_width = detail::RunTargetKind::padded_label_width();
+    let kind_col_width = panes::RunTargetKind::padded_label_width();
     let col_spacing: usize = 1;
     let leading_pad: usize = 1;
     let name_max_width =

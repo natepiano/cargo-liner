@@ -67,8 +67,8 @@ impl App {
                 data.package,
                 data.git,
                 data.targets,
-                tui::detail::build_ci_data(self),
-                tui::detail::build_lints_data(self),
+                tui::panes::build_ci_data(self),
+                tui::panes::build_lints_data(self),
             );
             self.detail_cache_key = Some(super::types::DetailCacheKey {
                 generation: self.detail_generation,
@@ -82,12 +82,12 @@ impl App {
 
     /// Build per-pane data for the currently selected row, resolving through
     /// the `project_list_items` hierarchy.
-    fn build_selected_pane_data(&self) -> Option<tui::detail::DetailPaneData> {
+    fn build_selected_pane_data(&self) -> Option<tui::panes::DetailPaneData> {
         let row = self.selected_row()?;
         match row {
             VisibleRow::Root { node_index } => {
                 let item = self.projects.get(node_index)?;
-                Some(tui::detail::build_pane_data(self, item))
+                Some(tui::panes::build_pane_data(self, item))
             },
             VisibleRow::Member {
                 node_index,
@@ -96,7 +96,7 @@ impl App {
             } => {
                 let item = self.projects.get(node_index)?;
                 let pkg = Self::resolve_member(item, group_index, member_index)?;
-                Some(tui::detail::build_pane_data_for_member(self, pkg))
+                Some(tui::panes::build_pane_data_for_member(self, pkg))
             },
             VisibleRow::Vendored {
                 node_index,
@@ -104,12 +104,12 @@ impl App {
             } => {
                 let item = self.projects.get(node_index)?;
                 let pkg = Self::resolve_vendored(item, vendored_index)?;
-                Some(tui::detail::build_pane_data_for_member(self, pkg))
+                Some(tui::panes::build_pane_data_for_member(self, pkg))
             },
             VisibleRow::GroupHeader { node_index, .. } => {
                 // Group headers show the parent project's detail
                 let item = self.projects.get(node_index)?;
-                Some(tui::detail::build_pane_data(self, item))
+                Some(tui::panes::build_pane_data(self, item))
             },
             VisibleRow::WorktreeEntry {
                 node_index,
@@ -132,7 +132,7 @@ impl App {
                 let item = self.projects.get(node_index)?;
                 let pkg =
                     Self::worktree_member_ref(item, worktree_index, group_index, member_index)?;
-                Some(tui::detail::build_pane_data_for_member(self, pkg))
+                Some(tui::panes::build_pane_data_for_member(self, pkg))
             },
             VisibleRow::WorktreeVendored {
                 node_index,
@@ -141,7 +141,7 @@ impl App {
             } => {
                 let item = self.projects.get(node_index)?;
                 let pkg = Self::worktree_vendored_ref(item, worktree_index, vendored_index)?;
-                Some(tui::detail::build_pane_data_for_member(self, pkg))
+                Some(tui::panes::build_pane_data_for_member(self, pkg))
             },
             VisibleRow::Submodule {
                 node_index,
@@ -149,7 +149,7 @@ impl App {
             } => {
                 let item = self.projects.get(node_index)?;
                 let submodule = item.submodules().get(submodule_index)?;
-                Some(tui::detail::build_pane_data_for_submodule(self, submodule))
+                Some(tui::panes::build_pane_data_for_submodule(self, submodule))
             },
         }
     }
@@ -254,7 +254,7 @@ impl App {
         &self,
         item: &RootItem,
         worktree_index: usize,
-    ) -> Option<tui::detail::DetailPaneData> {
+    ) -> Option<tui::panes::DetailPaneData> {
         match item {
             RootItem::Worktrees(WorktreeGroup::Workspaces {
                 primary, linked, ..
@@ -265,7 +265,7 @@ impl App {
                     linked.get(worktree_index - 1)?
                 };
                 let display_path = ws.display_path();
-                Some(tui::detail::build_pane_data_for_workspace_ref(
+                Some(tui::panes::build_pane_data_for_workspace_ref(
                     self,
                     ws,
                     display_path.as_str(),
@@ -279,7 +279,7 @@ impl App {
                 } else {
                     linked.get(worktree_index - 1)?
                 };
-                Some(tui::detail::build_pane_data_for_member(self, pkg))
+                Some(tui::panes::build_pane_data_for_member(self, pkg))
             },
             _ => None,
         }

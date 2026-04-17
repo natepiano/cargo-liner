@@ -12,6 +12,7 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
+use super::LintsData;
 use super::PaneId;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
@@ -23,8 +24,6 @@ use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
-use crate::tui::detail;
-use crate::tui::detail::LintsData;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface::Content;
 use crate::tui::pane;
@@ -72,7 +71,7 @@ fn build_lint_rows(
     let mut current_date = String::new();
 
     for (row_index, run) in runs.iter().enumerate() {
-        let date = detail::format_date(&run.started_at);
+        let date = super::format_date(&run.started_at);
         let date_cell = if date == current_date {
             Cell::from("")
         } else {
@@ -80,12 +79,12 @@ fn build_lint_rows(
             Cell::from(Span::styled(date, date_style))
         };
 
-        let start_time = detail::format_time(&run.started_at);
+        let start_time = super::format_time(&run.started_at);
         let end_time = run
             .finished_at
             .as_deref()
-            .map_or_else(|| "—".to_string(), detail::format_time);
-        let duration = detail::format_duration(run.duration_ms);
+            .map_or_else(|| "—".to_string(), super::format_time);
+        let duration = super::format_duration(run.duration_ms);
 
         let (result_cell, row_style) = match run.status {
             LintRunStatus::Running => {

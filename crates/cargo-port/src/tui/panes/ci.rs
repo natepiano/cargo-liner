@@ -9,6 +9,7 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
+use super::CiData;
 use super::PaneId;
 use crate::ci;
 use crate::ci::CiRun;
@@ -17,8 +18,6 @@ use crate::tui::app::App;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
-use crate::tui::detail;
-use crate::tui::detail::CiData;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface;
 use crate::tui::pane;
@@ -61,7 +60,7 @@ fn build_ci_data_row(
     show_durations: bool,
     selection: PaneSelectionState,
 ) -> Row<'static> {
-    let timestamp = detail::format_timestamp(&ci_run.created_at);
+    let timestamp = super::format_timestamp(&ci_run.created_at);
     let total_dur = ci_run
         .wall_clock_secs
         .map_or_else(|| "—".to_string(), ci::format_secs);
@@ -361,8 +360,8 @@ mod tests {
     use crate::ci::CiRun;
     use crate::ci::Conclusion;
     use crate::ci::FetchStatus;
-    use crate::tui::detail::CiData;
-    use crate::tui::detail::CiEmptyState;
+    use crate::tui::panes::CiData;
+    use crate::tui::panes::CiEmptyState;
 
     fn ci_run(branch: &str) -> CiRun {
         CiRun {

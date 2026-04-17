@@ -5,6 +5,7 @@ use crossterm::event::KeyEvent;
 
 use super::CiFetchKind;
 use super::DetailField;
+use super::PaneId;
 use super::PendingCiFetch;
 use super::PendingExampleRun;
 use super::build_target_list_from_data;
@@ -21,7 +22,6 @@ use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::ConfirmAction;
 use crate::tui::pane::Pane;
-use crate::tui::panes::PaneId;
 
 /// Whether to build in release or debug mode.
 #[derive(Clone, Copy)]

@@ -13,7 +13,6 @@ use ratatui::layout::Position;
 use super::app::App;
 use super::app::ConfirmAction;
 use super::app::PendingClean;
-use super::detail;
 use super::finder;
 use super::panes;
 use super::panes::PaneBehavior;
@@ -131,10 +130,10 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
 
     match panes::behavior(app.focused_pane()) {
         PaneBehavior::DetailFields | PaneBehavior::DetailTargets | PaneBehavior::Cpu => {
-            detail::handle_detail_key(app, &normalized);
+            panes::handle_detail_key(app, &normalized);
         },
-        PaneBehavior::Lints => detail::handle_lints_key(app, &normalized),
-        PaneBehavior::CiRuns => detail::handle_ci_runs_key(app, &normalized),
+        PaneBehavior::Lints => panes::handle_lints_key(app, &normalized),
+        PaneBehavior::CiRuns => panes::handle_ci_runs_key(app, &normalized),
         PaneBehavior::Toasts => handle_toast_key(app, &normalized),
         PaneBehavior::ProjectList | PaneBehavior::Output | PaneBehavior::Overlay => {
             handle_normal_key(app, &normalized);

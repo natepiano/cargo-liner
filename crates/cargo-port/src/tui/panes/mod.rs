@@ -1,3 +1,4 @@
+mod actions;
 mod ci;
 mod cpu;
 mod data;
@@ -7,7 +8,14 @@ mod layout;
 mod lints;
 mod package;
 mod spec;
+mod support;
 
+#[cfg(test)]
+mod tests;
+
+pub(super) use actions::handle_ci_runs_key;
+pub(super) use actions::handle_detail_key;
+pub(super) use actions::handle_lints_key;
 #[cfg(test)]
 pub(super) use ci::CI_COMPACT_DURATION_WIDTH;
 #[cfg(test)]
@@ -47,3 +55,29 @@ pub(super) use spec::PaneId;
 pub(super) use spec::behavior;
 pub(super) use spec::has_row_hitboxes;
 pub(super) use spec::size_spec;
+pub(super) use support::CiData;
+#[cfg(test)]
+pub(super) use support::CiEmptyState;
+pub(super) use support::CiFetchKind;
+pub(super) use support::DetailField;
+pub(super) use support::DetailPaneData;
+pub(super) use support::GitData;
+pub(super) use support::LintsData;
+pub(super) use support::PackageData;
+pub(super) use support::PendingCiFetch;
+pub(super) use support::PendingExampleRun;
+pub(super) use support::RunTargetKind;
+pub(super) use support::TargetsData;
+pub(super) use support::build_ci_data;
+pub(super) use support::build_lints_data;
+pub(super) use support::build_pane_data;
+pub(super) use support::build_pane_data_for_member;
+pub(super) use support::build_pane_data_for_submodule;
+pub(super) use support::build_pane_data_for_workspace_ref;
+pub(super) use support::build_target_list_from_data;
+pub(super) use support::format_date;
+pub(super) use support::format_duration;
+pub(super) use support::format_time;
+pub(super) use support::format_timestamp;
+pub(super) use support::git_fields_from_data;
+pub(super) use support::package_fields_from_data;
