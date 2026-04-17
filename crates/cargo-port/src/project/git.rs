@@ -57,37 +57,100 @@ impl WorkflowPresence {
     pub(crate) const fn is_present(self) -> bool { matches!(self, Self::Present) }
 }
 
-/// Git metadata for a project: origin type, owner, repo URL, and current branch.
+/// How a single git remote relates to the repo: a plain clone or the fork
+/// origin when an `upstream` remote also exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum RemoteKind {
+    Clone,
+    Fork,
+}
+
+impl RemoteKind {
+    pub(crate) const fn icon(self) -> &'static str {
+        match self {
+            Self::Clone => GIT_CLONE,
+            Self::Fork => GIT_FORK,
+        }
+    }
+}
+
+/// Per-remote metadata. A repo may have any number of these (`origin`,
+/// `upstream`, and others).
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RemoteInfo {
+    pub name:         String,
+    pub url:          Option<String>,
+    pub owner:        Option<String>,
+    pub repo:         Option<String>,
+    pub tracked_ref:  Option<String>,
+    pub ahead_behind: Option<(usize, usize)>,
+    pub kind:         RemoteKind,
+}
+
+/// Git metadata for a project: remotes, current branch, and status info.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct GitInfo {
     /// Git path state (clean, modified, untracked, etc.) for this project path.
-    pub status:              GitStatus,
-    /// Whether this is a clone or a fork.
-    pub origin:              GitOrigin,
+    pub status:               GitStatus,
     /// The current branch name.
-    pub branch:              Option<String>,
-    /// The GitHub/GitLab owner (e.g. "natepiano").
-    pub owner:               Option<String>,
-    /// The HTTPS URL to the repository.
-    pub url:                 Option<String>,
+    pub branch:               Option<String>,
     /// ISO 8601 date of the first commit (inception).
-    pub first_commit:        Option<String>,
+    pub first_commit:         Option<String>,
     /// ISO 8601 date of the most recent commit.
-    pub last_commit:         Option<String>,
-    /// Commits ahead and behind the upstream tracking branch (ahead, behind).
-    pub ahead_behind:        Option<(usize, usize)>,
-    /// The upstream tracking ref for the current branch (e.g. `origin/main`).
-    pub upstream_branch:     Option<String>,
+    pub last_commit:          Option<String>,
     /// The repo's default branch name resolved from `origin/HEAD`.
-    pub default_branch:      Option<String>,
-    /// Commits ahead and behind `origin/{default_branch}`.
-    pub ahead_behind_origin: Option<(usize, usize)>,
+    pub default_branch:       Option<String>,
     /// The local branch name used for `M` comparisons.
-    pub local_main_branch:   Option<String>,
+    pub local_main_branch:    Option<String>,
     /// Commits ahead and behind the local `{local_main_branch}`.
-    pub ahead_behind_local:  Option<(usize, usize)>,
+    pub ahead_behind_local:   Option<(usize, usize)>,
     /// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
-    pub workflows:           WorkflowPresence,
+    pub workflows:            WorkflowPresence,
+    /// All remotes declared for this repo.
+    pub remotes:              Vec<RemoteInfo>,
+    /// Index into `remotes` for the remote matching the current branch's
+    /// `@{upstream}` (the "primary" remote). `None` when the current branch
+    /// has no upstream tracking ref.
+    pub primary_remote_index: Option<usize>,
+}
+
+impl GitInfo {
+    /// The remote matching the current branch's `@{upstream}`, if any.
+    pub(crate) fn primary_remote(&self) -> Option<&RemoteInfo> {
+        self.primary_remote_index.and_then(|i| self.remotes.get(i))
+    }
+
+    /// Convenience: the primary remote's URL.
+    pub(crate) fn primary_url(&self) -> Option<&str> {
+        self.primary_remote().and_then(|r| r.url.as_deref())
+    }
+
+    /// Convenience: the primary remote's owner.
+    pub(crate) fn primary_owner(&self) -> Option<&str> {
+        self.primary_remote().and_then(|r| r.owner.as_deref())
+    }
+
+    /// Convenience: the primary remote's ahead/behind vs its tracked ref.
+    pub(crate) fn primary_ahead_behind(&self) -> Option<(usize, usize)> {
+        self.primary_remote().and_then(|r| r.ahead_behind)
+    }
+
+    /// Convenience: the primary remote's tracked ref (e.g. `origin/main`).
+    pub(crate) fn primary_tracked_ref(&self) -> Option<&str> {
+        self.primary_remote().and_then(|r| r.tracked_ref.as_deref())
+    }
+
+    /// Repo-level origin classification derived from `remotes`.
+    pub(crate) fn origin_kind(&self) -> GitOrigin {
+        if self.remotes.is_empty() {
+            GitOrigin::Local
+        } else if self.remotes.iter().any(|r| r.name == "upstream") {
+            GitOrigin::Fork
+        } else {
+            GitOrigin::Clone
+        }
+    }
 }
 
 impl GitInfo {
@@ -95,68 +158,11 @@ impl GitInfo {
     /// is handled by `schedule_git_first_commit_refreshes` batched by repo root).
     pub(crate) fn detect_fast(project_dir: &Path) -> Option<Self> {
         let repo_root = git_repo_root(project_dir)?;
+        let cfg = config::active_config();
 
-        let remote_output = git_output_logged(&repo_root, "remote", ["remote"]).ok()?;
-        let remotes = String::from_utf8_lossy(&remote_output.stdout);
-        let has_origin = remotes.lines().any(|line| line.trim() == "origin");
-        let has_upstream = remotes.lines().any(|line| line.trim() == "upstream");
-        let origin = if !has_origin {
-            GitOrigin::Local
-        } else if has_upstream {
-            GitOrigin::Fork
-        } else {
-            GitOrigin::Clone
-        };
-
-        let (owner, url) = git_output_logged(
-            &repo_root,
-            "remote_get_url_origin",
-            ["remote", "get-url", "origin"],
-        )
-        .ok()
-        .map_or((None, None), |url_output| {
-            let raw_url = String::from_utf8_lossy(&url_output.stdout)
-                .trim()
-                .to_string();
-            parse_remote_url(&raw_url)
-        });
-
-        let branch = git_output_logged(
-            &repo_root,
-            "rev_parse_head",
-            ["rev-parse", "--abbrev-ref", "HEAD"],
-        )
-        .ok()
-        .and_then(|o| {
-            let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if b.is_empty() { None } else { Some(b) }
-        });
-
-        let ahead_behind = parse_ahead_behind(&repo_root, "HEAD...@{upstream}", "upstream");
-        let upstream_branch = detect_upstream_branch(&repo_root);
-
-        // Resolve the repo's default branch from origin/HEAD (e.g. "origin/main").
-        let default_branch = git_output_logged(
-            &repo_root,
-            "symbolic_ref_origin_head",
-            ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
-        )
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            // Comes back as "origin/main" — strip the "origin/" prefix.
-            s.strip_prefix("origin/")
-                .filter(|b| !b.is_empty())
-                .map(str::to_string)
-        });
-
-        // Compare HEAD against the remote default branch when it differs from the current branch.
-        let not_on_default = default_branch
-            .as_deref()
-            .filter(|db| branch.as_deref() != Some(*db));
-        let ahead_behind_origin = not_on_default.and_then(|db| {
-            parse_ahead_behind(&repo_root, &format!("HEAD...origin/{db}"), "default_origin")
-        });
+        let branch = detect_current_branch(&repo_root);
+        let current_upstream = detect_upstream_branch(&repo_root);
+        let default_branch = detect_default_branch(&repo_root);
         let local_main_branch = resolve_local_main_branch(&repo_root);
         let ahead_behind_local = local_main_branch
             .as_deref()
@@ -168,6 +174,29 @@ impl GitInfo {
                     "configured_local_main",
                 )
             });
+
+        let remote_names = list_remote_names(&repo_root);
+        let has_upstream = remote_names.iter().any(|n| n == "upstream");
+        let remotes: Vec<RemoteInfo> = remote_names
+            .iter()
+            .map(|name| {
+                build_remote_info(
+                    &repo_root,
+                    name,
+                    has_upstream,
+                    current_upstream.as_deref(),
+                    default_branch.as_deref(),
+                    branch.as_deref(),
+                    &cfg,
+                )
+            })
+            .collect();
+
+        let primary_remote_index = current_upstream.as_deref().and_then(|us| {
+            remotes
+                .iter()
+                .position(|r| r.tracked_ref.as_deref() == Some(us))
+        });
 
         let last_commit =
             git_output_logged(&repo_root, "log_last_commit", ["log", "-1", "--format=%aI"])
@@ -181,21 +210,30 @@ impl GitInfo {
 
         Some(Self {
             status: git_status,
-            origin,
             branch,
-            owner,
-            url,
             first_commit: None,
             last_commit,
-            ahead_behind,
-            upstream_branch,
             default_branch,
-            ahead_behind_origin,
             local_main_branch,
             ahead_behind_local,
             workflows: detect_workflow_presence(&repo_root),
+            remotes,
+            primary_remote_index,
         })
     }
+}
+
+fn detect_current_branch(repo_root: &Path) -> Option<String> {
+    git_output_logged(
+        repo_root,
+        "rev_parse_head",
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+    )
+    .ok()
+    .and_then(|o| {
+        let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if b.is_empty() { None } else { Some(b) }
+    })
 }
 
 fn detect_upstream_branch(project_dir: &Path) -> Option<String> {
@@ -214,6 +252,153 @@ fn detect_upstream_branch(project_dir: &Path) -> Option<String> {
         let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
         if s.is_empty() { None } else { Some(s) }
     })
+}
+
+/// Resolve the repo's default branch from `origin/HEAD` (e.g. `main`).
+fn detect_default_branch(repo_root: &Path) -> Option<String> {
+    git_output_logged(
+        repo_root,
+        "symbolic_ref_origin_head",
+        ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
+    )
+    .ok()
+    .and_then(|o| {
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        s.strip_prefix("origin/")
+            .filter(|b| !b.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn list_remote_names(repo_root: &Path) -> Vec<String> {
+    git_output_logged(repo_root, "remote", ["remote"])
+        .ok()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn build_remote_info(
+    repo_root: &Path,
+    name: &str,
+    has_upstream: bool,
+    current_upstream: Option<&str>,
+    default_branch: Option<&str>,
+    current_branch: Option<&str>,
+    cfg: &config::CargoPortConfig,
+) -> RemoteInfo {
+    let (owner, url, repo) = remote_url_info(repo_root, name);
+    let tracked_ref = resolve_tracked_ref(
+        repo_root,
+        name,
+        current_upstream,
+        default_branch,
+        current_branch,
+        cfg,
+    );
+    let ahead_behind = tracked_ref.as_deref().and_then(|r| {
+        parse_ahead_behind(repo_root, &format!("HEAD...{r}"), &format!("tracked_{name}"))
+    });
+    let kind = if name == "origin" && has_upstream {
+        RemoteKind::Fork
+    } else {
+        RemoteKind::Clone
+    };
+    RemoteInfo {
+        name: name.to_string(),
+        url,
+        owner,
+        repo,
+        tracked_ref,
+        ahead_behind,
+        kind,
+    }
+}
+
+fn remote_url_info(repo_root: &Path, name: &str) -> (Option<String>, Option<String>, Option<String>) {
+    git_output_logged(
+        repo_root,
+        &format!("remote_get_url_{name}"),
+        ["remote", "get-url", name],
+    )
+    .ok()
+    .map_or((None, None, None), |out| {
+        let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        parse_remote_url(&raw)
+    })
+}
+
+/// Resolve the tracked ref for a remote with a fallback chain.
+///
+/// Tries, in order:
+/// 1. The current branch's `@{upstream}` if it belongs to this remote.
+/// 2. `symbolic-ref refs/remotes/<remote>/HEAD`.
+/// 3. `<remote>/<default_branch>` (from `origin/HEAD`) if the ref exists.
+/// 4. `<remote>/<current_branch>` if the ref exists.
+/// 5. `<remote>/<cfg.tui.main_branch>` and each `other_primary_branches` entry
+///    if the ref exists.
+fn resolve_tracked_ref(
+    repo_root: &Path,
+    remote_name: &str,
+    current_upstream: Option<&str>,
+    default_branch: Option<&str>,
+    current_branch: Option<&str>,
+    cfg: &config::CargoPortConfig,
+) -> Option<String> {
+    let prefix = format!("{remote_name}/");
+    if let Some(us) = current_upstream
+        && us.starts_with(&prefix)
+    {
+        return Some(us.to_string());
+    }
+    if let Ok(out) = git_output_logged(
+        repo_root,
+        &format!("symbolic_ref_{remote_name}_head"),
+        [
+            "symbolic-ref",
+            &format!("refs/remotes/{remote_name}/HEAD"),
+            "--short",
+        ],
+    ) {
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if s.starts_with(&prefix) {
+            return Some(s);
+        }
+    }
+    if let Some(db) = default_branch
+        && remote_ref_exists(repo_root, remote_name, db)
+    {
+        return Some(format!("{remote_name}/{db}"));
+    }
+    if let Some(cb) = current_branch
+        && remote_ref_exists(repo_root, remote_name, cb)
+    {
+        return Some(format!("{remote_name}/{cb}"));
+    }
+    std::iter::once(cfg.tui.main_branch.as_str())
+        .chain(cfg.tui.other_primary_branches.iter().map(String::as_str))
+        .find(|b| remote_ref_exists(repo_root, remote_name, b))
+        .map(|b| format!("{remote_name}/{b}"))
+}
+
+fn remote_ref_exists(repo_root: &Path, remote_name: &str, branch: &str) -> bool {
+    git_output_logged(
+        repo_root,
+        &format!("show_ref_{remote_name}"),
+        [
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/{remote_name}/{branch}"),
+        ],
+    )
+    .is_ok()
 }
 
 fn resolve_local_main_branch(project_dir: &Path) -> Option<String> {
@@ -524,31 +709,35 @@ fn parse_ahead_behind(
     })
 }
 
-/// Extract the owner and HTTPS URL from a git remote URL.
+/// Extract `(owner, url, repo)` from a git remote URL.
 ///
 /// Handles:
 /// - `https://github.com/owner/repo.git`
 /// - `git@github.com:owner/repo.git`
-fn parse_remote_url(raw: &str) -> (Option<String>, Option<String>) {
-    // SSH: git@github.com:owner/repo.git
+///
+/// SSH forms are canonicalized to HTTPS so downstream prefix-matching against
+/// `default_remote_host_url` works uniformly.
+fn parse_remote_url(raw: &str) -> (Option<String>, Option<String>, Option<String>) {
     if let Some(after_at) = raw.strip_prefix("git@")
         && let Some((host, path)) = after_at.split_once(':')
     {
         let path = path.strip_suffix(".git").unwrap_or(path);
-        let owner = path.split('/').next().map(|s| (*s).to_string());
+        let mut parts = path.splitn(2, '/');
+        let owner = parts.next().map(String::from);
+        let repo = parts.next().map(String::from);
         let url = format!("https://{host}/{path}");
-        return (owner, Some(url));
+        return (owner, Some(url), repo);
     }
 
-    // HTTPS: https://github.com/owner/repo.git
     if raw.starts_with("https://") || raw.starts_with("http://") {
         let clean = raw.strip_suffix(".git").unwrap_or(raw);
-        // Extract owner from path: https://host/owner/repo
-        let owner = clean.split('/').nth(3).map(|s| (*s).to_string());
-        return (owner, Some((*clean).to_string()));
+        let mut segments = clean.split('/').skip(3);
+        let owner = segments.next().map(String::from);
+        let repo = segments.next().map(String::from);
+        return (owner, Some(clean.to_string()), repo);
     }
 
-    (None, None)
+    (None, None, None)
 }
 
 /// Whether a project path lives inside a git repository.

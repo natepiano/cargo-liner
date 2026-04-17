@@ -87,6 +87,13 @@
 # Default value: []
 #other_primary_branches = []
 
+# Default remote host URL prefix. Remote URLs beginning with this prefix
+# are shortened in the Git panel's Remotes table to `owner/repo` form;
+# remotes on other hosts are shown with the full URL.
+#
+# Default value: "https://github.com/"
+#default_remote_host_url = "https://github.com/"
+
 # How long (in seconds) the status bar flash is shown (e.g. "no new
 # runs found").
 #

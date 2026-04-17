@@ -33,7 +33,8 @@ use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::ExampleGroup;
 use crate::project::GitInfo;
-use crate::project::GitOrigin;
+use crate::project::RemoteInfo;
+use crate::project::RemoteKind;
 use crate::project::GitStatus;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
@@ -493,20 +494,24 @@ fn make_ci_run(run_id: u64, conclusion: Conclusion) -> CiRun {
 
 fn make_git_info(url: Option<&str>) -> GitInfo {
     GitInfo {
-        status:              GitStatus::Clean,
-        origin:              GitOrigin::Clone,
-        branch:              Some("main".to_string()),
-        owner:               Some("natepiano".to_string()),
-        url:                 url.map(String::from),
-        first_commit:        None,
-        last_commit:         None,
-        ahead_behind:        None,
-        upstream_branch:     Some("origin/main".to_string()),
-        default_branch:      Some("main".to_string()),
-        ahead_behind_origin: None,
-        local_main_branch:   Some("main".to_string()),
-        ahead_behind_local:  None,
-        workflows:           WorkflowPresence::Present,
+        status:               GitStatus::Clean,
+        branch:               Some("main".to_string()),
+        first_commit:         None,
+        last_commit:          None,
+        default_branch:       Some("main".to_string()),
+        local_main_branch:    Some("main".to_string()),
+        ahead_behind_local:   None,
+        workflows:            WorkflowPresence::Present,
+        remotes:              vec![RemoteInfo {
+            name:         "origin".to_string(),
+            url:          url.map(String::from),
+            owner:        Some("natepiano".to_string()),
+            repo:         None,
+            tracked_ref:  Some("origin/main".to_string()),
+            ahead_behind: None,
+            kind:         RemoteKind::Clone,
+        }],
+        primary_remote_index: Some(0),
     }
 }
 

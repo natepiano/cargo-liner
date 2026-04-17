@@ -269,12 +269,13 @@ mod tests {
     use crate::project::Cargo;
     use crate::project::ExampleGroup;
     use crate::project::GitInfo;
-    use crate::project::GitOrigin;
     use crate::project::GitStatus;
     use crate::project::LocalGitState;
     use crate::project::MemberGroup;
     use crate::project::Package;
     use crate::project::ProjectType;
+    use crate::project::RemoteInfo;
+    use crate::project::RemoteKind;
     use crate::project::RootItem;
     use crate::project::RustProject;
     use crate::project::Visibility;
@@ -364,20 +365,24 @@ mod tests {
 
     fn make_git_info(url: Option<&str>) -> GitInfo {
         GitInfo {
-            status:              GitStatus::Clean,
-            origin:              GitOrigin::Clone,
-            branch:              Some("main".to_string()),
-            owner:               Some("natepiano".to_string()),
-            url:                 url.map(str::to_string),
-            first_commit:        Some("2024-01-01T00:00:00Z".to_string()),
-            last_commit:         Some("2024-01-02T00:00:00Z".to_string()),
-            ahead_behind:        Some((0, 0)),
-            upstream_branch:     Some("origin/main".to_string()),
-            default_branch:      Some("main".to_string()),
-            ahead_behind_origin: Some((0, 0)),
-            local_main_branch:   Some("main".to_string()),
-            ahead_behind_local:  Some((0, 0)),
-            workflows:           WorkflowPresence::Present,
+            status:               GitStatus::Clean,
+            branch:               Some("main".to_string()),
+            first_commit:         Some("2024-01-01T00:00:00Z".to_string()),
+            last_commit:          Some("2024-01-02T00:00:00Z".to_string()),
+            default_branch:       Some("main".to_string()),
+            local_main_branch:    Some("main".to_string()),
+            ahead_behind_local:   Some((0, 0)),
+            workflows:            WorkflowPresence::Present,
+            remotes:              vec![RemoteInfo {
+                name:         "origin".to_string(),
+                url:          url.map(str::to_string),
+                owner:        Some("natepiano".to_string()),
+                repo:         Some("demo".to_string()),
+                tracked_ref:  Some("origin/main".to_string()),
+                ahead_behind: Some((0, 0)),
+                kind:         RemoteKind::Clone,
+            }],
+            primary_remote_index: Some(0),
         }
     }
 
