@@ -453,6 +453,7 @@ mod tests {
         assert_eq!(filled_cells(100), 10);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn parse_gpu_percent_finds_device_utilization() {
         let input =
