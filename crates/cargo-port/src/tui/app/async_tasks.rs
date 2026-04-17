@@ -12,7 +12,6 @@ use super::ExpandKey::Worktree;
 use super::ExpandKey::WorktreeGroup;
 use super::types::ConfigFileStamp;
 use super::types::DiskCacheBuildResult;
-use super::types::FitWidthsBuildResult;
 use super::types::PollBackgroundStats;
 use super::types::ScanPhase;
 use super::types::StartupPhaseTracker;
@@ -75,7 +74,6 @@ impl App {
         self.projects = projects;
         self.dirty.finder.mark_dirty();
         self.dirty.disk_cache.mark_dirty();
-        self.dirty.fit_widths.mark_dirty();
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
         self.register_lint_for_root_items();
@@ -316,7 +314,6 @@ impl App {
         self.sync_lint_runtime_projects();
         self.refresh_lint_runs_from_disk();
         self.cached_fit_widths = ResolvedWidths::new(self.lint_enabled());
-        self.dirty.fit_widths.mark_dirty();
         self.data_generation += 1;
         self.detail_generation += 1;
         if let Some(warning) = lint_spawn.warning {
@@ -1195,64 +1192,6 @@ impl App {
         }
     }
 
-    pub(in super::super) fn request_fit_widths_build(&mut self) {
-        if !self.dirty.fit_widths.is_dirty() {
-            return;
-        }
-        self.builds.fit.latest = self.builds.fit.latest.wrapping_add(1);
-        if self.builds.fit.active.is_some() {
-            return;
-        }
-        self.spawn_fit_widths_build(self.builds.fit.latest);
-    }
-
-    pub(in super::super) fn spawn_fit_widths_build(&mut self, build_id: u64) {
-        let tx = self.builds.fit.tx.clone();
-        let items = self.projects.clone();
-        let root_labels = self
-            .projects
-            .resolved_root_labels(self.include_non_rust().includes_non_rust());
-        let lint_enabled = self.lint_enabled();
-        self.builds.fit.active = Some(build_id);
-        std::thread::spawn(move || {
-            let started = Instant::now();
-            let widths = super::snapshots::build_fit_widths_snapshot(
-                &items,
-                &root_labels,
-                lint_enabled,
-                build_id,
-            );
-            let elapsed = started.elapsed();
-            if elapsed.as_millis() >= crate::perf_log::SLOW_WORKER_MS {
-                tracing::info!(
-                    elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
-                    build_id,
-                    items = items.len(),
-                    "fit_widths_build"
-                );
-            }
-            let _ = tx.send(FitWidthsBuildResult { build_id, widths });
-        });
-    }
-
-    pub(in super::super) fn poll_fit_width_builds(&mut self) -> usize {
-        let mut applied = 0;
-        while let Ok(result) = self.builds.fit.rx.try_recv() {
-            if self.builds.fit.active != Some(result.build_id) {
-                continue;
-            }
-            self.builds.fit.active = None;
-            self.cached_fit_widths = result.widths;
-            applied += 1;
-            if result.build_id == self.builds.fit.latest {
-                self.dirty.fit_widths.mark_clean();
-            } else {
-                self.spawn_fit_widths_build(self.builds.fit.latest);
-            }
-        }
-        applied
-    }
-
     pub(in super::super) fn request_disk_cache_build(&mut self) {
         if !self.dirty.disk_cache.is_dirty() {
             return;
@@ -1317,7 +1256,6 @@ impl App {
         self.detail_generation += 1;
         self.dirty.finder.mark_dirty();
         self.dirty.disk_cache.mark_dirty();
-        self.dirty.fit_widths.mark_dirty();
     }
 
     fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
@@ -1412,10 +1350,7 @@ impl App {
         );
     }
 
-    pub(in super::super) fn refresh_async_caches(&mut self) {
-        self.request_disk_cache_build();
-        self.request_fit_widths_build();
-    }
+    pub(in super::super) fn refresh_async_caches(&mut self) { self.request_disk_cache_build(); }
 
     pub(in super::super) fn rescan(&mut self) {
         self.projects.clear();
@@ -1445,9 +1380,6 @@ impl App {
             .pane_mut(PaneId::ProjectList)
             .set_scroll_offset(0);
         self.dirty.disk_cache.mark_dirty();
-        self.dirty.fit_widths.mark_dirty();
-        self.builds.fit.active = None;
-        self.builds.fit.latest = 0;
         self.builds.disk.active = None;
         self.builds.disk.latest = 0;
         self.data_generation += 1;
@@ -1488,7 +1420,7 @@ impl App {
         self.poll_clean_msgs();
 
         stats.tree_results = 0;
-        stats.fit_results = self.poll_fit_width_builds();
+        stats.fit_results = 0;
         stats.disk_results = self.poll_disk_cache_builds();
 
         if needs_rebuild {
@@ -1665,7 +1597,6 @@ impl App {
 
     pub(in super::super) fn apply_disk_usage(&mut self, path: &Path, bytes: u64) {
         self.dirty.disk_cache.mark_dirty();
-        self.dirty.fit_widths.mark_dirty();
 
         // Set disk usage on the matching project item and update visibility.
         let mut lint_runtime_changed = false;
@@ -1754,7 +1685,6 @@ impl App {
 
     pub(in super::super) fn handle_git_info(&mut self, path: &Path, info: GitInfo) {
         self.detail_generation += 1;
-        self.dirty.fit_widths.mark_dirty();
         tracing::info!(
             path = %path.display(),
             git_status = %info.status.label(),
@@ -2148,7 +2078,6 @@ impl App {
         self.projects = ProjectList::new(projects);
         self.dirty.finder.mark_dirty();
         self.dirty.disk_cache.mark_dirty();
-        self.dirty.fit_widths.mark_dirty();
         self.recompute_cargo_active_paths();
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();

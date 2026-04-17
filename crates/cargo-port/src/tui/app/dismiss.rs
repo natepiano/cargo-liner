@@ -107,7 +107,6 @@ impl App {
                     project.visibility = Dismissed;
                 }
                 self.dirty.disk_cache.mark_dirty();
-                self.dirty.fit_widths.mark_dirty();
                 self.ensure_visible_rows_cached();
                 if let Some(ni) = parent_node_index {
                     self.select_root_row(ni);

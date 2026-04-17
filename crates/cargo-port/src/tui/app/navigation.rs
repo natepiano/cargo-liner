@@ -29,8 +29,17 @@ impl App {
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
     pub(in super::super) fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
 
-    /// Keep fit-to-content widths rebuilding in the background, never inline on the UI thread.
-    pub(in super::super) fn ensure_fit_widths_cached(&mut self) { self.request_fit_widths_build(); }
+    pub(in super::super) fn ensure_fit_widths_cached(&mut self) {
+        let root_labels = self
+            .projects
+            .resolved_root_labels(self.include_non_rust().includes_non_rust());
+        self.cached_fit_widths = snapshots::build_fit_widths_snapshot(
+            &self.projects,
+            &root_labels,
+            self.lint_enabled(),
+            0,
+        );
+    }
 
     pub(in super::super) fn observe_name_width(widths: &mut ResolvedWidths, content_width: usize) {
         use COL_NAME;

@@ -8,7 +8,6 @@ use std::time::SystemTime;
 
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
-use crate::tui::columns::ResolvedWidths;
 use crate::tui::finder::FINDER_COLUMN_COUNT;
 use crate::tui::finder::FinderItem;
 use crate::tui::panes::PaneId;
@@ -44,11 +43,6 @@ pub(in super::super) struct HoveredPaneRow {
 pub(in super::super) struct ConfigFileStamp {
     pub modified: Option<SystemTime>,
     pub len:      u64,
-}
-
-pub(in super::super) struct FitWidthsBuildResult {
-    pub build_id: u64,
-    pub widths:   ResolvedWidths,
 }
 
 pub(in super::super) struct DiskCacheBuildResult {
@@ -217,7 +211,6 @@ impl RetrySpawnMode {
 #[derive(Debug)]
 pub(in super::super) struct DirtyState {
     pub disk_cache: Dirtiness,
-    pub fit_widths: Dirtiness,
     pub finder:     Dirtiness,
     pub terminal:   Dirtiness,
 }
@@ -226,7 +219,6 @@ impl DirtyState {
     pub(in super::super) const fn initial() -> Self {
         Self {
             disk_cache: Dirtiness::Dirty,
-            fit_widths: Dirtiness::Dirty,
             finder:     Dirtiness::Dirty,
             terminal:   Dirtiness::Clean,
         }
@@ -316,36 +308,26 @@ impl<T> BuildQueue<T> {
 }
 
 pub(in super::super) struct AsyncBuildState {
-    pub fit:  BuildQueue<FitWidthsBuildResult>,
     pub disk: BuildQueue<DiskCacheBuildResult>,
 }
 
 impl AsyncBuildState {
     pub(in super::super) fn new(channels: BuildChannels) -> Self {
         Self {
-            fit:  BuildQueue::new(channels.fit_tx, channels.fit_rx),
             disk: BuildQueue::new(channels.disk_tx, channels.disk_rx),
         }
     }
 }
 
 pub(in super::super) struct BuildChannels {
-    pub fit_tx:  mpsc::Sender<FitWidthsBuildResult>,
-    pub fit_rx:  Receiver<FitWidthsBuildResult>,
     pub disk_tx: mpsc::Sender<DiskCacheBuildResult>,
     pub disk_rx: Receiver<DiskCacheBuildResult>,
 }
 
 impl BuildChannels {
     pub(in super::super) fn new() -> Self {
-        let (fit_tx, fit_rx) = mpsc::channel();
         let (disk_tx, disk_rx) = mpsc::channel();
-        Self {
-            fit_tx,
-            fit_rx,
-            disk_tx,
-            disk_rx,
-        }
+        Self { disk_tx, disk_rx }
     }
 }
 
