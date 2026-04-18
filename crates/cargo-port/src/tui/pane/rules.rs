@@ -42,12 +42,11 @@ pub(in super::super) fn render_rules(frame: &mut Frame, rules: &[PaneRule], styl
 
 /// Render a horizontal rule with `├`/`┤` endcaps.
 ///
-/// - `title`: when present, embeds `├─ Title ─...─┤`. Falls back to the
-///   plain form when the area is too narrow to fit the title.
-/// - `connector_x`: absolute x column that should render as `┬` instead of
-///   `─`, used when a vertical pane border tees in from above. Only honored
-///   in the untitled form; a titled rule ignores it since section headers
-///   don't intersect with vertical rules.
+/// - `title`: when present, embeds `├─ Title ─...─┤`. Falls back to the plain form when the area is
+///   too narrow to fit the title.
+/// - `connector_x`: absolute x column that should render as `┬` instead of `─`, used when a
+///   vertical pane border tees in from above. Only honored in the untitled form; a titled rule
+///   ignores it since section headers don't intersect with vertical rules.
 pub fn render_horizontal_rule(
     frame: &mut Frame,
     area: Rect,
@@ -60,7 +59,9 @@ pub fn render_horizontal_rule(
     }
 
     let line = match title {
-        Some(title) if fits_title(area.width, title.text) => titled_line(area.width, title, rule_style),
+        Some(title) if fits_title(area.width, title.text) => {
+            titled_line(area.width, title, rule_style)
+        },
         _ => plain_line(area, rule_style, connector_x),
     };
 

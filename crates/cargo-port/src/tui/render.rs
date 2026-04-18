@@ -1273,7 +1273,7 @@ fn render_submodule_item(
 
 fn render_path_only_entry(
     app: &App,
-    entry: &impl crate::project::ProjectListEntry,
+    entry: &impl crate::project::ProjectFields,
     inherited_deleted_path: &Path,
     prefix: &'static str,
     name: &str,

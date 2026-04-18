@@ -6,19 +6,34 @@ use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
 
-/// Read-only access shared by all concrete project-list nodes.
-///
-/// This is the minimal contract needed to treat a path-backed list entry as
-/// “real” in generic code: once a type exposes a path and `ProjectInfo`, it
-/// automatically participates in shared disk/git/visibility logic instead of
-/// each caller deciding which metadata to respect.
-pub(crate) trait ProjectListEntry {
-    fn path(&self) -> &AbsolutePath;
-    fn info(&self) -> &ProjectInfo;
+/// Whether to scan languages for an entry during enrichment.
+pub(crate) enum LanguageScan {
+    Run,
+    Skip,
 }
 
-/// Shared field access for project types that also expose naming and mutation
-/// helpers beyond the basic project-list entry contract.
+/// Whether to fetch CI runs for an entry during enrichment.
+pub(crate) enum CiFetch {
+    Run,
+    Skip,
+}
+
+/// Whether to fetch the first-commit date for an entry during enrichment.
+pub(crate) enum FirstCommitFetch {
+    Run,
+    Skip,
+}
+
+/// Whether to fetch GitHub repo metadata (stars, description) for an entry.
+pub(crate) enum RepoMetadataFetch {
+    Run,
+    Skip,
+}
+
+/// Shared field access for every concrete project-list node.
+///
+/// Once a type implements this trait it participates in all generic
+/// disk/git/visibility/enrichment logic — there is no looser tier.
 pub(crate) trait ProjectFields {
     fn path(&self) -> &AbsolutePath;
     fn name(&self) -> Option<&str>;
@@ -30,10 +45,39 @@ pub(crate) trait ProjectFields {
     fn info_mut(&mut self) -> &mut ProjectInfo;
     fn display_path(&self) -> DisplayPath;
     fn root_directory_name(&self) -> RootDirectoryName;
-}
 
-impl<T: ProjectFields + ?Sized> ProjectListEntry for T {
-    fn path(&self) -> &AbsolutePath { ProjectFields::path(self) }
+    /// Crates.io package name to query, when the entry corresponds to a
+    /// publishable crate. Default `None` — opt in by overriding.
+    fn crates_io_name(&self) -> Option<&str> { None }
 
-    fn info(&self) -> &ProjectInfo { ProjectFields::info(self) }
+    /// Whether the enrichment funnel should run a language scan.
+    fn language_scan(&self) -> LanguageScan { LanguageScan::Run }
+
+    /// Whether the enrichment funnel should fetch CI runs. Default keys
+    /// off the entry's primary git remote URL.
+    fn ci_fetch(&self) -> CiFetch {
+        match self.git_info().and_then(GitInfo::primary_url) {
+            Some(_) => CiFetch::Run,
+            None => CiFetch::Skip,
+        }
+    }
+
+    /// Whether the enrichment funnel should fetch the first-commit date.
+    /// Default keys off whether git info has been resolved.
+    fn first_commit(&self) -> FirstCommitFetch {
+        match self.git_info() {
+            Some(_) => FirstCommitFetch::Run,
+            None => FirstCommitFetch::Skip,
+        }
+    }
+
+    /// Whether the enrichment funnel should fetch GitHub repo metadata.
+    /// Default tracks `ci_fetch` because today's repo-metadata fetch
+    /// piggybacks on the same upstream resolution.
+    fn repo_metadata(&self) -> RepoMetadataFetch {
+        match self.ci_fetch() {
+            CiFetch::Run => RepoMetadataFetch::Run,
+            CiFetch::Skip => RepoMetadataFetch::Skip,
+        }
+    }
 }

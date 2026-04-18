@@ -1,8 +1,17 @@
 use std::path::Path;
 
+use super::git::GitInfo;
 use super::info::ProjectInfo;
+use super::info::Visibility;
+use super::info::WorktreeHealth;
+use super::paths;
 use super::paths::AbsolutePath;
-use super::project_fields::ProjectListEntry;
+use super::paths::DisplayPath;
+use super::paths::RootDirectoryName;
+use super::project_fields::CiFetch;
+use super::project_fields::FirstCommitFetch;
+use super::project_fields::ProjectFields;
+use super::project_fields::RepoMetadataFetch;
 
 /// A git submodule that participates as a concrete project-list node.
 #[derive(Clone)]
@@ -24,10 +33,37 @@ pub(crate) struct Submodule {
     pub info:          ProjectInfo,
 }
 
-impl ProjectListEntry for Submodule {
+impl ProjectFields for Submodule {
     fn path(&self) -> &AbsolutePath { &self.path }
 
+    fn name(&self) -> Option<&str> { Some(&self.name) }
+
+    fn visibility(&self) -> Visibility { self.info.visibility }
+
+    fn worktree_health(&self) -> WorktreeHealth { self.info.worktree_health }
+
+    fn disk_usage_bytes(&self) -> Option<u64> { self.info.disk_usage_bytes }
+
+    fn git_info(&self) -> Option<&GitInfo> { self.info.local_git_state.info() }
+
     fn info(&self) -> &ProjectInfo { &self.info }
+
+    fn info_mut(&mut self) -> &mut ProjectInfo { &mut self.info }
+
+    fn display_path(&self) -> DisplayPath { self.path.display_path() }
+
+    fn root_directory_name(&self) -> RootDirectoryName {
+        RootDirectoryName(paths::directory_leaf(self.path.as_path()))
+    }
+
+    fn ci_fetch(&self) -> CiFetch { CiFetch::Skip }
+
+    fn repo_metadata(&self) -> RepoMetadataFetch { RepoMetadataFetch::Skip }
+
+    // Explicit Run: at funnel time the submodule's git_info() has not yet
+    // been populated (the GitInfo message arrives after Submodules), so the
+    // git_info()-keyed default would resolve to Skip.
+    fn first_commit(&self) -> FirstCommitFetch { FirstCommitFetch::Run }
 }
 
 /// Parse `.gitmodules` and resolve pinned commits for all submodules.

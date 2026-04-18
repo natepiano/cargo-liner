@@ -91,6 +91,12 @@ impl ProjectFields for Workspace {
     fn root_directory_name(&self) -> RootDirectoryName {
         RootDirectoryName(paths::directory_leaf(self.path.as_path()))
     }
+
+    fn crates_io_name(&self) -> Option<&str> {
+        self.name
+            .as_deref()
+            .filter(|_| self.rust.cargo.publishable())
+    }
 }
 
 impl Deref for Workspace {

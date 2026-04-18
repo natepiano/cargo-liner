@@ -352,7 +352,7 @@ fn observe_path_only_entry_fit_widths(
     widths: &mut ResolvedWidths,
     prefix: &str,
     label: &str,
-    entry: &impl crate::project::ProjectListEntry,
+    entry: &impl crate::project::ProjectFields,
 ) {
     let dw = columns::display_width;
     App::observe_name_width(widths, dw(prefix) + dw(label));
@@ -544,7 +544,7 @@ fn collect_vendored_disk(vendored: &[Package], values: &mut Vec<u64>) {
 }
 
 fn collect_project_list_entry_disk(
-    entries: &[impl crate::project::ProjectListEntry],
+    entries: &[impl crate::project::ProjectFields],
     values: &mut Vec<u64>,
 ) {
     for entry in entries {
