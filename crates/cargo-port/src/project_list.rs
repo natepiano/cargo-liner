@@ -148,8 +148,8 @@ impl ProjectList {
 
     /// Whether `target` is the path of a submodule under any root item.
     /// CI fetches and GitHub repo metadata for submodules belong to the
-    /// upstream repository and should be suppressed at the parent project's
-    /// level — `ci_fetch`/`repo_metadata` on `Submodule` return `Skip`.
+    /// upstream repository and are suppressed at the parent project's
+    /// level — see the `BackgroundMsg::GitInfo` handler.
     pub(crate) fn is_submodule_path(&self, target: &Path) -> bool {
         self.root_items
             .iter()

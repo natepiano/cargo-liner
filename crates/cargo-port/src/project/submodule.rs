@@ -8,10 +8,7 @@ use super::paths;
 use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
-use super::project_fields::CiFetch;
-use super::project_fields::FirstCommitFetch;
 use super::project_fields::ProjectFields;
-use super::project_fields::RepoMetadataFetch;
 
 /// A git submodule that participates as a concrete project-list node.
 #[derive(Clone)]
@@ -55,15 +52,6 @@ impl ProjectFields for Submodule {
     fn root_directory_name(&self) -> RootDirectoryName {
         RootDirectoryName(paths::directory_leaf(self.path.as_path()))
     }
-
-    fn ci_fetch(&self) -> CiFetch { CiFetch::Skip }
-
-    fn repo_metadata(&self) -> RepoMetadataFetch { RepoMetadataFetch::Skip }
-
-    // Explicit Run: at funnel time the submodule's git_info() has not yet
-    // been populated (the GitInfo message arrives after Submodules), so the
-    // git_info()-keyed default would resolve to Skip.
-    fn first_commit(&self) -> FirstCommitFetch { FirstCommitFetch::Run }
 }
 
 /// Parse `.gitmodules` and resolve pinned commits for all submodules.

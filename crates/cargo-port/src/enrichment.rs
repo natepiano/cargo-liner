@@ -3,28 +3,23 @@
 //! Every site that *discovers* a new project-like path at runtime — the
 //! filesystem watcher, the per-submodule loop in `scan::fetch_project_details`
 //! — calls [`enrich`] with the entry as `&dyn ProjectFields`. The funnel
-//! emits the same set of `BackgroundMsg::*` values today's hand-wired
-//! call sites emit, and consults the entry's capability methods to decide
-//! which signals to fire.
+//! emits git info, disk usage, language stats, and (when the entry's
+//! `crates_io_name` returns `Some`) crates.io metadata.
 //!
 //! Initial bulk scanning keeps its own paths (`spawn_initial_language_stats`
 //! for tree-batched language scans, and the post-scan schedulers in
 //! `tui::app::async_tasks`) — those have aggregate context the funnel
 //! cannot replicate per-entry without regressing performance.
 //!
-//! The capability methods `ci_fetch`, `first_commit`, and `repo_metadata`
-//! are declared on `ProjectFields` but not yet honoured here. Today CI and
-//! GitHub repo metadata cascade off the central `BackgroundMsg::GitInfo`
-//! handler, and first-commit is scheduled batched-per-repo post-scan.
-//! Honouring the `Skip` variants of those capabilities (e.g. for
-//! submodules whose upstream we do not own) requires gating the cascade
-//! and lives in a follow-up.
+//! CI runs and GitHub repo metadata cascade off the central
+//! `BackgroundMsg::GitInfo` handler in `async_tasks.rs`. That handler
+//! consults `ProjectList::is_submodule_path` to suppress the cascade for
+//! submodule paths, since CI/metadata is shown on the parent project.
 
 use std::sync::mpsc::Sender;
 
 use crate::project::AbsolutePath;
 use crate::project::GitInfo;
-use crate::project::LanguageScan;
 use crate::project::ProjectFields;
 use crate::scan::BackgroundMsg;
 use crate::scan::FetchContext;
@@ -41,12 +36,7 @@ pub(crate) fn enrich(entry: &dyn ProjectFields, tx: &Sender<BackgroundMsg>, ctx:
 
     emit_git(&path, tx);
     emit_disk(&path, tx);
-
-    match entry.language_scan() {
-        LanguageScan::Run => spawn_language_scan(path.clone(), tx.clone()),
-        LanguageScan::Skip => {},
-    }
-
+    spawn_language_scan(path.clone(), tx.clone());
     if let Some(name) = entry.crates_io_name() {
         emit_crates_io(name, &path, tx, ctx);
     }

@@ -56,7 +56,6 @@ pub(crate) use package::Package;
 pub(crate) use paths::AbsolutePath;
 pub(crate) use paths::DisplayPath;
 pub(crate) use paths::home_relative_path;
-pub(crate) use project_fields::LanguageScan;
 pub(crate) use project_fields::ProjectFields;
 pub(crate) use root_item::RootItem;
 // ── Rust info ────────────────────────────────────────────────────────
