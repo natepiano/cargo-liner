@@ -15,8 +15,6 @@ use super::RemoteRow;
 use super::WorktreeInfo;
 use super::package;
 use super::package::RenderStyles;
-use crate::tui::interaction;
-use crate::tui::interaction::UiSurface;
 use crate::constants::GIT_LOCAL;
 use crate::constants::IN_SYNC;
 use crate::tui::app::App;
@@ -27,6 +25,8 @@ use crate::tui::constants::INACTIVE_TITLE_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
+use crate::tui::interaction;
+use crate::tui::interaction::UiSurface;
 use crate::tui::pane;
 use crate::tui::pane::Pane;
 use crate::tui::pane::PaneFocusState;
@@ -226,7 +226,9 @@ fn append_remotes_section(
             *accum.focused_output_line = accum.lines.len();
         }
         let selection = ctx.pane.selection_state(row_index, ctx.focus);
-        accum.lines.push(remote_row_line(remote, &col_widths, selection));
+        accum
+            .lines
+            .push(remote_row_line(remote, &col_widths, selection));
     }
 }
 
@@ -263,15 +265,14 @@ fn append_worktrees_section(
             *accum.focused_output_line = accum.lines.len();
         }
         let selection = ctx.pane.selection_state(row_index, ctx.focus);
-        accum.lines.push(worktree_row_line(wt, &col_widths, selection));
+        accum
+            .lines
+            .push(worktree_row_line(wt, &col_widths, selection));
     }
 }
 
 fn section_title_text(label: &str, len: usize, cursor: Option<usize>) -> String {
-    format!(
-        "{label} {}",
-        PaneTitleCount::Single { len, cursor }.body(),
-    )
+    format!("{label} {}", PaneTitleCount::Single { len, cursor }.body(),)
 }
 
 fn render_section_overlays(
