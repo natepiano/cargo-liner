@@ -15,6 +15,8 @@ use super::RemoteRow;
 use super::WorktreeInfo;
 use super::package;
 use super::package::RenderStyles;
+use crate::tui::interaction;
+use crate::tui::interaction::UiSurface;
 use crate::constants::GIT_LOCAL;
 use crate::constants::IN_SYNC;
 use crate::tui::app::App;
@@ -85,12 +87,30 @@ struct SectionRule {
     focused: bool,
 }
 
+/// Result of building the Git pane paragraph, used to register row
+/// hitboxes at the correct screen rows after rendering.
+struct GitRenderLayout {
+    scroll_offset: usize,
+    /// Inner-y (paragraph-relative) of the first rendered line for each
+    /// selectable row (flat fields first, then remote rows, then worktree
+    /// rows). Same ordering as `pane.pos()`.
+    row_line_ys:   Vec<usize>,
+}
+
+/// Mutable accumulators threaded through the per-section builders.
+struct SectionAccum<'a> {
+    lines:               &'a mut Vec<Line<'static>>,
+    focused_output_line: &'a mut usize,
+    section_rules:       &'a mut Vec<SectionRule>,
+    row_line_ys:         &'a mut Vec<usize>,
+}
+
 fn render_git_column_inner(
     frame: &mut Frame,
     ctx: &GitRenderCtx<'_>,
     outer_area: Rect,
     inner_area: Rect,
-) -> usize {
+) -> GitRenderLayout {
     let flat_len = ctx.fields.len();
     let remotes_len = ctx.data.remotes.len();
     let worktrees_len = ctx.data.worktrees.len();
@@ -103,10 +123,17 @@ fn render_git_column_inner(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut focused_output_line: usize = 0;
     let mut section_rules: Vec<SectionRule> = Vec::new();
+    let mut row_line_ys: Vec<usize> = Vec::with_capacity(flat_len + remotes_len + worktrees_len);
+
+    let mut accum = SectionAccum {
+        lines:               &mut lines,
+        focused_output_line: &mut focused_output_line,
+        section_rules:       &mut section_rules,
+        row_line_ys:         &mut row_line_ys,
+    };
 
     render_flat_fields(
-        &mut lines,
-        &mut focused_output_line,
+        &mut accum,
         &RenderFlatArgs {
             data:        ctx.data,
             fields:      ctx.fields,
@@ -117,24 +144,8 @@ fn render_git_column_inner(
             label_width: git_label_width(ctx.data, ctx.fields),
         },
     );
-
-    append_remotes_section(
-        &mut lines,
-        &mut focused_output_line,
-        &mut section_rules,
-        ctx,
-        flat_len,
-        current_section,
-    );
-    append_worktrees_section(
-        &mut lines,
-        &mut focused_output_line,
-        &mut section_rules,
-        ctx,
-        flat_len,
-        remotes_len,
-        current_section,
-    );
+    append_remotes_section(&mut accum, ctx, flat_len, current_section);
+    append_worktrees_section(&mut accum, ctx, flat_len, remotes_len, current_section);
 
     let scroll_y =
         package::detail_column_scroll_offset(ctx.focus, focused_output_line, inner_area.height);
@@ -148,13 +159,42 @@ fn render_git_column_inner(
         ctx.focus,
         ctx.styles,
     );
-    usize::from(scroll_y)
+    GitRenderLayout {
+        scroll_offset: usize::from(scroll_y),
+        row_line_ys,
+    }
+}
+
+/// Register one-line hitboxes for every visible selectable row. Called
+/// after the paragraph renders because we need the scroll offset to map
+/// inner-y to absolute screen-y.
+fn register_git_row_hitboxes(app: &mut App, inner_area: Rect, layout: &GitRenderLayout) {
+    let scroll = layout.scroll_offset;
+    let visible_top = inner_area.y;
+    let visible_bottom = inner_area.y.saturating_add(inner_area.height);
+    for (row_index, &inner_y) in layout.row_line_ys.iter().enumerate() {
+        if inner_y < scroll {
+            continue;
+        }
+        let offset = inner_y - scroll;
+        let screen_y = inner_area
+            .y
+            .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
+        if screen_y < visible_top || screen_y >= visible_bottom {
+            continue;
+        }
+        interaction::register_pane_row_hitbox(
+            app,
+            Rect::new(inner_area.x, screen_y, inner_area.width, 1),
+            PaneId::Git,
+            row_index,
+            UiSurface::Content,
+        );
+    }
 }
 
 fn append_remotes_section(
-    lines: &mut Vec<Line<'static>>,
-    focused_output_line: &mut usize,
-    section_rules: &mut Vec<SectionRule>,
+    accum: &mut SectionAccum<'_>,
     ctx: &GitRenderCtx<'_>,
     flat_len: usize,
     current_section: Option<Section>,
@@ -169,30 +209,29 @@ fn append_remotes_section(
     };
     let title = section_title_text("Remotes", ctx.data.remotes.len(), cursor);
     // Blank spacer row + placeholder row for the rule overlay.
-    lines.push(Line::from(Span::raw(String::new())));
-    section_rules.push(SectionRule {
-        inner_y: lines.len(),
+    accum.lines.push(Line::from(Span::raw(String::new())));
+    accum.section_rules.push(SectionRule {
+        inner_y: accum.lines.len(),
         title,
         focused,
     });
-    lines.push(Line::from(Span::raw(String::new())));
+    accum.lines.push(Line::from(Span::raw(String::new())));
     let col_widths = remote_col_widths(&ctx.data.remotes);
-    render_remote_header(lines, &col_widths);
+    render_remote_header(accum.lines, &col_widths);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, remote) in ctx.data.remotes.iter().enumerate() {
         let row_index = flat_len + i;
+        accum.row_line_ys.push(accum.lines.len());
         if active && row_index == ctx.pane.pos() {
-            *focused_output_line = lines.len();
+            *accum.focused_output_line = accum.lines.len();
         }
         let selection = ctx.pane.selection_state(row_index, ctx.focus);
-        lines.push(remote_row_line(remote, &col_widths, selection));
+        accum.lines.push(remote_row_line(remote, &col_widths, selection));
     }
 }
 
 fn append_worktrees_section(
-    lines: &mut Vec<Line<'static>>,
-    focused_output_line: &mut usize,
-    section_rules: &mut Vec<SectionRule>,
+    accum: &mut SectionAccum<'_>,
     ctx: &GitRenderCtx<'_>,
     flat_len: usize,
     remotes_len: usize,
@@ -207,23 +246,24 @@ fn append_worktrees_section(
         _ => None,
     };
     let title = section_title_text("Worktrees", ctx.data.worktrees.len(), cursor);
-    lines.push(Line::from(Span::raw(String::new())));
-    section_rules.push(SectionRule {
-        inner_y: lines.len(),
+    accum.lines.push(Line::from(Span::raw(String::new())));
+    accum.section_rules.push(SectionRule {
+        inner_y: accum.lines.len(),
         title,
         focused,
     });
-    lines.push(Line::from(Span::raw(String::new())));
+    accum.lines.push(Line::from(Span::raw(String::new())));
     let col_widths = worktree_col_widths(&ctx.data.worktrees);
-    render_worktree_header(lines, &col_widths);
+    render_worktree_header(accum.lines, &col_widths);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, wt) in ctx.data.worktrees.iter().enumerate() {
         let row_index = flat_len + remotes_len + i;
+        accum.row_line_ys.push(accum.lines.len());
         if active && row_index == ctx.pane.pos() {
-            *focused_output_line = lines.len();
+            *accum.focused_output_line = accum.lines.len();
         }
         let selection = ctx.pane.selection_state(row_index, ctx.focus);
-        lines.push(worktree_row_line(wt, &col_widths, selection));
+        accum.lines.push(worktree_row_line(wt, &col_widths, selection));
     }
 }
 
@@ -296,11 +336,7 @@ struct RenderFlatArgs<'a> {
     label_width: usize,
 }
 
-fn render_flat_fields(
-    lines: &mut Vec<Line<'static>>,
-    focused_output_line: &mut usize,
-    args: &RenderFlatArgs<'_>,
-) {
+fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
     let RenderFlatArgs {
         data,
         fields,
@@ -311,8 +347,9 @@ fn render_flat_fields(
         label_width,
     } = *args;
     for (i, field) in fields.iter().enumerate() {
+        accum.row_line_ys.push(accum.lines.len());
         if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
-            *focused_output_line = lines.len();
+            *accum.focused_output_line = accum.lines.len();
         }
         let dynamic_label;
         let label = match *field {
@@ -366,25 +403,25 @@ fn render_flat_fields(
                     };
                 for (wi, chunk) in wrapped.iter().enumerate() {
                     if wi == 0 {
-                        lines.push(Line::from(vec![
+                        accum.lines.push(Line::from(vec![
                             Span::styled(prefix.clone(), ls),
                             Span::styled(chunk.clone(), vs),
                         ]));
                     } else {
-                        lines.push(Line::from(vec![
+                        accum.lines.push(Line::from(vec![
                             Span::raw(" ".repeat(prefix_len)),
                             Span::styled(chunk.clone(), vs),
                         ]));
                     }
                 }
             } else {
-                lines.push(Line::from(vec![
+                accum.lines.push(Line::from(vec![
                     Span::styled(prefix, ls),
                     Span::styled(value, vs),
                 ]));
             }
         } else {
-            lines.push(Line::from(vec![
+            accum.lines.push(Line::from(vec![
                 Span::styled(format!(" {label:<label_width$} "), ls),
                 Span::styled(value, vs),
             ]));
@@ -633,10 +670,11 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         focus,
         styles: &styles,
     };
-    let scroll_offset = render_git_column_inner(frame, &git_ctx, area, git_inner);
+    let layout = render_git_column_inner(frame, &git_ctx, area, git_inner);
     app.pane_manager_mut()
         .pane_mut(PaneId::Git)
-        .set_scroll_offset(scroll_offset);
+        .set_scroll_offset(layout.scroll_offset);
+    register_git_row_hitboxes(app, git_inner, &layout);
     pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::Git));
 }
 

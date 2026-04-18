@@ -80,6 +80,12 @@ pub(in super::super) const fn behavior(id: PaneId) -> PaneBehavior {
 }
 
 pub(in super::super) const fn has_row_hitboxes(id: PaneId) -> bool {
+    // The Git pane registers its own hitboxes from `render_git_panel`
+    // because rows don't map 1:1 to screen lines (section rules, column
+    // headers, and spacers break the default flat mapping).
+    if matches!(id, PaneId::Git) {
+        return false;
+    }
     matches!(
         behavior(id),
         PaneBehavior::DetailFields | PaneBehavior::DetailTargets
