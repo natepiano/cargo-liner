@@ -273,7 +273,7 @@ fn append_worktrees_section(
 }
 
 fn section_title_text(label: &str, len: usize, cursor: Option<usize>) -> String {
-    format!("{label} {}", PaneTitleCount::Single { len, cursor }.body(),)
+    format!("{label} {}", PaneTitleCount::Single { len, cursor }.body())
 }
 
 fn render_section_overlays(
