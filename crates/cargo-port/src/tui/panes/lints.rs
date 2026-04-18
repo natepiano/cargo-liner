@@ -33,7 +33,7 @@ use crate::tui::pane::PaneTitleCount;
 
 fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
     if data.runs.is_empty() {
-        let msg = if data.is_cargo_active {
+        let msg = if data.is_rust {
             crate::constants::NO_LINT_RUNS
         } else {
             crate::constants::NO_LINT_RUNS_NOT_RUST

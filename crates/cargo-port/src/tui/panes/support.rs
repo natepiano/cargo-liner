@@ -733,8 +733,8 @@ impl CiData {
 
 #[derive(Clone)]
 pub struct LintsData {
-    pub runs:            Vec<LintRun>,
-    pub is_cargo_active: bool,
+    pub runs:    Vec<LintRun>,
+    pub is_rust: bool,
 }
 
 impl LintsData {
@@ -1296,11 +1296,11 @@ pub fn build_ci_data(app: &App) -> CiData {
 pub fn build_lints_data(app: &App) -> LintsData {
     let selected_path = app.selected_project_path();
     LintsData {
-        runs:            selected_path
+        runs:    selected_path
             .and_then(|path| app.lint_at_path(path))
             .map(|lr| lr.runs().to_vec())
             .unwrap_or_default(),
-        is_cargo_active: selected_path.is_some_and(|path| app.is_cargo_active_path(path)),
+        is_rust: selected_path.is_some_and(|path| app.is_rust_at_path(path)),
     }
 }
 

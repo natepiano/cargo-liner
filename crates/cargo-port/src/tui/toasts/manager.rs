@@ -23,6 +23,7 @@ pub(super) enum ToastPersistence {
 pub enum ToastStyle {
     #[default]
     Normal,
+    Warning,
     Error,
 }
 
@@ -237,6 +238,17 @@ impl ToastManager {
         timeout: Duration,
         min_interior_lines: u16,
     ) -> u64 {
+        self.push_timed_styled(title, body, timeout, min_interior_lines, ToastStyle::Normal)
+    }
+
+    pub fn push_timed_styled(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        timeout: Duration,
+        min_interior_lines: u16,
+        style: ToastStyle,
+    ) -> u64 {
         let id = self.alloc_id();
         let now = Instant::now();
         let body = body.into();
@@ -254,7 +266,7 @@ impl ToastManager {
             created_at: now,
             exit_started_at: None,
             persistence: ToastPersistence::Timed,
-            style: ToastStyle::Normal,
+            style,
             action_path: None,
             target_height,
             min_interior_lines,

@@ -88,7 +88,7 @@ impl App {
 
     /// Insert CI runs from the initial scan for a CI owner path.
     pub(super) fn insert_ci_runs(&mut self, path: &Path, runs: Vec<CiRun>, github_total: u32) {
-        if !self.is_cargo_active_path(path) {
+        if !self.is_ci_owner_path(path) {
             if let Some(project) = self.projects.at_path_mut(path) {
                 project.ci_data = ProjectCiData::Unfetched;
             }
@@ -224,21 +224,6 @@ impl App {
             }
         }
         self.data_generation += 1;
-    }
-
-    pub(super) fn is_ci_owner_path(&self, path: &Path) -> bool {
-        self.projects.iter().any(|item| {
-            item.path() == path
-                || match item {
-                    crate::project::RootItem::Worktrees(
-                        crate::project::WorktreeGroup::Workspaces { linked, .. },
-                    ) => linked.iter().any(|l| l.path() == path),
-                    crate::project::RootItem::Worktrees(
-                        crate::project::WorktreeGroup::Packages { linked, .. },
-                    ) => linked.iter().any(|l| l.path() == path),
-                    _ => false,
-                }
-        })
     }
 
     pub(super) fn ci_display_mode_for(&self, path: &Path) -> CiRunDisplayMode {

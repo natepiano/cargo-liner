@@ -325,7 +325,27 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     }
 }
 
-fn open_in_editor(app: &App) {
+fn selected_project_display_name(app: &App) -> String {
+    if let Some(name) = app.selected_item().and_then(crate::project::RootItem::name) {
+        return name.to_owned();
+    }
+    app.selected_project_path()
+        .and_then(Path::file_name)
+        .map_or_else(
+            || "selected project".to_owned(),
+            |s| s.to_string_lossy().into_owned(),
+        )
+}
+
+fn open_in_editor(app: &mut App) {
+    if app.selected_project_is_deleted() {
+        let name = selected_project_display_name(app);
+        app.show_timed_warning_toast(
+            "Editor unavailable",
+            format!("Can't open editor, {name} is deleted"),
+        );
+        return;
+    }
     let Some(selected_path) = app
         .selected_project_path()
         .map(std::path::Path::to_path_buf)
@@ -480,6 +500,14 @@ fn spawn_terminal_command(command: &str, cwd: &Path) -> std::io::Result<()> {
 }
 
 fn open_terminal(app: &mut App) {
+    if app.selected_project_is_deleted() {
+        let name = selected_project_display_name(app);
+        app.show_timed_warning_toast(
+            "Terminal unavailable",
+            format!("Can't open terminal, {name} is deleted"),
+        );
+        return;
+    }
     let command = app.terminal_command().trim();
     if command.is_empty() {
         open_settings_to_terminal_command(app);

@@ -15,8 +15,6 @@ use super::RemoteRow;
 use super::WorktreeInfo;
 use super::package;
 use super::package::RenderStyles;
-use crate::tui::interaction;
-use crate::tui::interaction::UiSurface;
 use crate::constants::GIT_LOCAL;
 use crate::constants::IN_SYNC;
 use crate::tui::app::App;
@@ -27,9 +25,12 @@ use crate::tui::constants::INACTIVE_TITLE_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
+use crate::tui::interaction;
+use crate::tui::interaction::UiSurface;
 use crate::tui::pane;
 use crate::tui::pane::Pane;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneSelectionState;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::panes;
 
@@ -226,7 +227,9 @@ fn append_remotes_section(
             *accum.focused_output_line = accum.lines.len();
         }
         let selection = ctx.pane.selection_state(row_index, ctx.focus);
-        accum.lines.push(remote_row_line(remote, &col_widths, selection));
+        accum
+            .lines
+            .push(remote_row_line(remote, &col_widths, selection));
     }
 }
 
@@ -263,7 +266,9 @@ fn append_worktrees_section(
             *accum.focused_output_line = accum.lines.len();
         }
         let selection = ctx.pane.selection_state(row_index, ctx.focus);
-        accum.lines.push(worktree_row_line(wt, &col_widths, selection));
+        accum
+            .lines
+            .push(worktree_row_line(wt, &col_widths, selection));
     }
 }
 
@@ -500,7 +505,7 @@ fn render_remote_header(lines: &mut Vec<Line<'static>>, widths: &RemoteColWidths
 fn remote_row_line(
     row: &RemoteRow,
     widths: &RemoteColWidths,
-    selection: crate::tui::pane::PaneSelectionState,
+    selection: PaneSelectionState,
 ) -> Line<'static> {
     // Icon cell: emoji + trailing spaces to reach REMOTE_ICON_COL width.
     let icon_width = row.icon.width();
@@ -583,7 +588,7 @@ fn render_worktree_header(lines: &mut Vec<Line<'static>>, widths: &WorktreeColWi
 fn worktree_row_line(
     row: &WorktreeInfo,
     widths: &WorktreeColWidths,
-    selection: crate::tui::pane::PaneSelectionState,
+    selection: PaneSelectionState,
 ) -> Line<'static> {
     let branch = row.branch.clone().unwrap_or_else(|| "-".to_string());
     let status = worktree_status_text(row.ahead_behind);

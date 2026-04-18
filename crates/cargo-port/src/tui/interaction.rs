@@ -453,8 +453,8 @@ mod tests {
     fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
         app.ensure_detail_cached();
         app.pane_data_mut().lints = Some(crate::tui::panes::LintsData {
-            runs:            runs.to_vec(),
-            is_cargo_active: true,
+            runs:    runs.to_vec(),
+            is_rust: true,
         });
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());

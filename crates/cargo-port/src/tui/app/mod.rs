@@ -80,7 +80,7 @@ pub(super) struct App {
     ci_fetch_tracker:         CiFetchTracker,
     ci_display_modes:         HashMap<AbsolutePath, types::CiRunDisplayMode>,
     lint_cache_usage:         CacheUsage,
-    cargo_active_paths:       HashSet<AbsolutePath>,
+    ci_owner_paths:           HashSet<AbsolutePath>,
     discovery_shimmers:       HashMap<AbsolutePath, types::DiscoveryShimmer>,
     pending_git_first_commit: HashMap<AbsolutePath, String>,
     cpu_poller:               CpuPoller,

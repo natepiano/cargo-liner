@@ -124,6 +124,7 @@ pub(super) fn for_status_bar(
     clear_lint_action: Option<&'static str>,
     km: &ResolvedKeymap,
     terminal_command_configured: bool,
+    selected_project_is_deleted: bool,
 ) -> StatusBarGroups {
     let (navigation, actions) = match context {
         InputContext::Finder => (vec![NAV], vec![enter("go to"), ESC_CLOSE]),
@@ -165,7 +166,7 @@ pub(super) fn for_status_bar(
     let global = if context.is_overlay() || context.is_text_input() {
         vec![]
     } else {
-        let terminal_shortcut = if terminal_command_configured {
+        let terminal_shortcut = if terminal_command_configured && !selected_project_is_deleted {
             Shortcut::from_keymap(
                 km.global.display_key_for(GlobalAction::OpenTerminal),
                 "terminal",
@@ -176,12 +177,20 @@ pub(super) fn for_status_bar(
                 "terminal",
             )
         };
-        vec![
-            Shortcut::from_keymap(km.global.display_key_for(GlobalAction::Find), "find"),
+        let editor_shortcut = if selected_project_is_deleted {
+            Shortcut::disabled_from_keymap(
+                km.global.display_key_for(GlobalAction::OpenEditor),
+                "editor",
+            )
+        } else {
             Shortcut::from_keymap(
                 km.global.display_key_for(GlobalAction::OpenEditor),
                 "editor",
-            ),
+            )
+        };
+        vec![
+            Shortcut::from_keymap(km.global.display_key_for(GlobalAction::Find), "find"),
+            editor_shortcut,
             terminal_shortcut,
             Shortcut::from_keymap(
                 km.global.display_key_for(GlobalAction::Settings),
@@ -332,6 +341,7 @@ mod tests {
             None,
             &ResolvedKeymap::defaults(),
             true,
+            false,
         );
         let global_labels = groups
             .global
@@ -354,6 +364,7 @@ mod tests {
             None,
             &ResolvedKeymap::defaults(),
             false,
+            false,
         );
         let terminal = groups
             .global
@@ -361,6 +372,32 @@ mod tests {
             .find(|shortcut| shortcut.description == "terminal")
             .expect("terminal shortcut");
 
+        assert_eq!(terminal.state, ShortcutState::Disabled);
+    }
+
+    #[test]
+    fn editor_and_terminal_are_disabled_when_selected_project_is_deleted() {
+        let groups = for_status_bar(
+            InputContext::ProjectList,
+            None,
+            true,
+            None,
+            &ResolvedKeymap::defaults(),
+            true,
+            true,
+        );
+        let editor = groups
+            .global
+            .iter()
+            .find(|shortcut| shortcut.description == "editor")
+            .expect("editor shortcut");
+        let terminal = groups
+            .global
+            .iter()
+            .find(|shortcut| shortcut.description == "terminal")
+            .expect("terminal shortcut");
+
+        assert_eq!(editor.state, ShortcutState::Disabled);
         assert_eq!(terminal.state, ShortcutState::Disabled);
     }
 
@@ -373,6 +410,7 @@ mod tests {
             None,
             &ResolvedKeymap::defaults(),
             true,
+            false,
         );
 
         assert!(
@@ -392,6 +430,7 @@ mod tests {
             None,
             &ResolvedKeymap::defaults(),
             true,
+            false,
         );
 
         assert!(
@@ -411,6 +450,7 @@ mod tests {
             None,
             &ResolvedKeymap::defaults(),
             true,
+            false,
         );
 
         assert!(

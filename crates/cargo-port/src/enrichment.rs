@@ -21,11 +21,9 @@ use std::sync::mpsc::Sender;
 use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::ProjectFields;
+use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::FetchContext;
-use crate::scan::collect_language_stats_single;
-use crate::scan::dir_size;
-use crate::scan::emit_service_signal;
 
 /// Run enrichment for a single discovered entry.
 ///
@@ -53,7 +51,7 @@ fn emit_git(path: &AbsolutePath, tx: &Sender<BackgroundMsg>) {
 }
 
 fn emit_disk(path: &AbsolutePath, tx: &Sender<BackgroundMsg>) {
-    let bytes = dir_size(path.as_path());
+    let bytes = scan::dir_size(path.as_path());
     let _ = tx.send(BackgroundMsg::DiskUsage {
         path: path.clone(),
         bytes,
@@ -62,7 +60,7 @@ fn emit_disk(path: &AbsolutePath, tx: &Sender<BackgroundMsg>) {
 
 pub(crate) fn spawn_language_scan(path: AbsolutePath, tx: Sender<BackgroundMsg>) {
     rayon::spawn(move || {
-        let stats = collect_language_stats_single(path.as_path());
+        let stats = scan::collect_language_stats_single(path.as_path());
         if !stats.entries.is_empty() {
             let _ = tx.send(BackgroundMsg::LanguageStatsBatch {
                 entries: vec![(path, stats)],
@@ -73,7 +71,7 @@ pub(crate) fn spawn_language_scan(path: AbsolutePath, tx: Sender<BackgroundMsg>)
 
 fn emit_crates_io(name: &str, path: &AbsolutePath, tx: &Sender<BackgroundMsg>, ctx: &FetchContext) {
     let (info, signal) = ctx.client.fetch_crates_io_info(name);
-    emit_service_signal(tx, signal);
+    scan::emit_service_signal(tx, signal);
     if let Some(info) = info {
         let _ = tx.send(BackgroundMsg::CratesIoVersion {
             path:      path.clone(),

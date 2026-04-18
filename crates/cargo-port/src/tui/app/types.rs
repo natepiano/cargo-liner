@@ -71,9 +71,10 @@ pub enum DiscoveryRowKind {
 #[derive(Debug, Default)]
 pub(in super::super) struct StartupPhaseTracker {
     pub scan_complete_at:         Option<Instant>,
-    pub disk_expected:            Option<usize>,
+    pub disk_expected:            Option<HashSet<AbsolutePath>>,
     pub disk_seen:                HashSet<AbsolutePath>,
     pub disk_complete_at:         Option<Instant>,
+    pub disk_toast:               Option<ToastTaskId>,
     pub git_expected:             HashSet<AbsolutePath>,
     pub git_seen:                 HashSet<AbsolutePath>,
     pub git_complete_at:          Option<Instant>,

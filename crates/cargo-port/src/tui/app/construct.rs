@@ -169,7 +169,7 @@ impl App {
             ci_fetch_tracker: CiFetchTracker::default(),
             ci_display_modes: HashMap::new(),
             lint_cache_usage: crate::lint::CacheUsage::default(),
-            cargo_active_paths: HashSet::new(),
+            ci_owner_paths: HashSet::new(),
             discovery_shimmers: HashMap::new(),
             pending_git_first_commit: HashMap::new(),
             cpu_poller,
@@ -246,7 +246,7 @@ impl App {
             self.show_timed_toast("Lint runtime", warning);
         }
         self.force_settings_if_unconfigured();
-        self.recompute_cargo_active_paths();
+        self.recompute_ci_owner_paths();
         self.prune_inactive_project_state();
         self.register_existing_projects();
         if !self.projects.is_empty() {

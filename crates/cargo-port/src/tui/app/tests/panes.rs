@@ -235,7 +235,7 @@ fn first_non_empty_tree_build_focuses_project_list() {
 }
 
 #[test]
-fn initial_disk_batch_count_groups_nested_projects_under_one_root() {
+fn initial_disk_roots_groups_nested_projects_under_one_root() {
     let projects: Vec<RootItem> = [
         make_project(Some("bevy"), "~/rust/bevy"),
         make_project(Some("ecs"), "~/rust/bevy/crates/bevy_ecs"),
@@ -245,7 +245,7 @@ fn initial_disk_batch_count_groups_nested_projects_under_one_root() {
     ]
     .to_vec();
 
-    assert_eq!(snapshots::initial_disk_batch_count(&projects), 2);
+    assert_eq!(snapshots::initial_disk_roots(&projects).len(), 2);
 }
 
 #[test]

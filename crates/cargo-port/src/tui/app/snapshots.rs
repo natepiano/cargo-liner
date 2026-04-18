@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::Path;
 
 use super::App;
 use super::types::ExpandKey;
@@ -554,7 +553,7 @@ fn collect_project_list_entry_disk(
     }
 }
 
-pub(super) fn initial_disk_batch_count(projects: &[RootItem]) -> usize {
+pub(super) fn initial_disk_roots(projects: &[RootItem]) -> HashSet<AbsolutePath> {
     let mut abs_paths: Vec<&AbsolutePath> = projects.iter().map(RootItem::path).collect();
     abs_paths.sort_by(|left, right| {
         left.components()
@@ -563,7 +562,7 @@ pub(super) fn initial_disk_batch_count(projects: &[RootItem]) -> usize {
             .then_with(|| left.cmp(right))
     });
 
-    let mut roots: Vec<&Path> = Vec::new();
+    let mut roots: Vec<&AbsolutePath> = Vec::new();
     for abs_path in abs_paths {
         if roots.iter().any(|root| abs_path.starts_with(root)) {
             continue;
@@ -571,5 +570,5 @@ pub(super) fn initial_disk_batch_count(projects: &[RootItem]) -> usize {
         roots.push(abs_path);
     }
 
-    roots.len()
+    roots.into_iter().cloned().collect()
 }

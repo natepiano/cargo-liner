@@ -22,6 +22,7 @@ use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::TITLE_COLOR;
 use crate::tui::constants::TOAST_GAP;
 use crate::tui::constants::TOAST_WIDTH;
+use crate::tui::constants::WARNING_COLOR;
 use crate::tui::interaction::ToastHitbox;
 
 /// Fade text from white to grey based on progress (0.0 = white, 1.0 = grey).
@@ -205,15 +206,21 @@ fn render_toast_card(
 ) -> Rect {
     let focused = pane_focused && focused_toast_id == Some(toast.id());
     let is_error = toast.style() == ToastStyle::Error;
+    let is_warning = toast.style() == ToastStyle::Warning;
+    let accent_color = if is_error {
+        ERROR_COLOR
+    } else if is_warning {
+        WARNING_COLOR
+    } else {
+        Color::White
+    };
     let border_style = if focused {
         Style::default().fg(ACTIVE_BORDER_COLOR)
-    } else if is_error {
-        Style::default().fg(ERROR_COLOR)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(accent_color)
     };
-    let text_style = if is_error {
-        border_style
+    let text_style = if is_error || is_warning {
+        Style::default().fg(accent_color)
     } else {
         border_style.add_modifier(Modifier::BOLD)
     };
@@ -222,7 +229,14 @@ fn render_toast_card(
     let close_text = "[x]";
     let close_width = u16::try_from(close_text.len()).unwrap_or(u16::MAX);
     let title_max = usize::from(card.width.saturating_sub(close_width + 4));
-    let title = truncate(toast.title(), title_max);
+    let raw_title = if is_warning {
+        format!("⚠️ {}", toast.title())
+    } else if is_error {
+        format!("⛔ {}", toast.title())
+    } else {
+        toast.title().to_owned()
+    };
+    let title = truncate(&raw_title, title_max);
 
     let block = Block::default()
         .title(Span::styled(format!(" {title} "), text_style))
@@ -248,8 +262,8 @@ fn render_toast_card(
     }
 
     // Full inner area is body content (title is on border, not inner).
-    let body_style = if is_error {
-        Style::default().fg(ERROR_COLOR)
+    let body_style = if is_error || is_warning {
+        Style::default().fg(accent_color)
     } else {
         Style::default()
     };

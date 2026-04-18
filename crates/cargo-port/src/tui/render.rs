@@ -649,6 +649,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         clear_lint_action,
         app.current_keymap(),
         app.terminal_command_configured(),
+        app.selected_project_is_deleted(),
     );
 
     let mut left_spans = Vec::new();
@@ -798,13 +799,16 @@ fn render_child_item(
     let disk_bytes = project.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
     let lang = project::Package::lang_icon();
-    let cargo_active = app.is_cargo_active_path(path);
-    let lint = if cargo_active {
+    let lint = if app.is_rust_at_path(path) {
         app.lint_icon(path)
     } else {
         " "
     };
-    let ci = if cargo_active { app.ci_for(path) } else { None };
+    let ci = if app.is_ci_owner_path(path) {
+        app.ci_for(path)
+    } else {
+        None
+    };
     let hide_git_status = app.is_workspace_member_path(path);
     let origin_sync = if hide_git_status
         || matches!(

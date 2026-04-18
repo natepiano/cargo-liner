@@ -589,7 +589,7 @@ fn lint_runtime_snapshot_deduplicates_primary_worktree_path() {
 }
 
 #[test]
-fn vendored_path_dependency_becomes_cargo_active() {
+fn vendored_path_dependency_becomes_ci_owner() {
     let root_item = {
         let pkg = Package::new(
             test_path("~/app"),
@@ -607,7 +607,7 @@ fn vendored_path_dependency_becomes_cargo_active() {
     apply_items(&mut app, &[root_item]);
 
     assert!(app.is_vendored_path(vendored.path()));
-    assert!(app.is_cargo_active_path(vendored.path()));
+    assert!(app.is_ci_owner_path(vendored.path()));
 }
 
 #[test]

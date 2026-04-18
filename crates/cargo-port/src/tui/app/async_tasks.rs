@@ -71,7 +71,7 @@ impl App {
             .or_else(|| self.selection_paths.last_selected.clone());
         let should_focus_project_list = false;
         self.projects = projects;
-        self.recompute_cargo_active_paths();
+        self.recompute_ci_owner_paths();
         self.prune_inactive_project_state();
         self.register_lint_for_root_items();
         self.refresh_lint_runs_from_disk();
@@ -362,7 +362,7 @@ impl App {
     }
 
     pub(in super::super) fn reload_lint_history(&mut self, project_path: &Path) {
-        if !self.is_cargo_active_path(project_path) {
+        if !self.is_rust_at_path(project_path) {
             return;
         }
         let runs = crate::lint::read_history(project_path);
@@ -579,7 +579,7 @@ impl App {
         }
         self.lint_runtime_root_entries()
             .into_iter()
-            .filter(|(path, _)| !self.is_deleted(path) && self.is_cargo_active_path(path))
+            .filter(|(path, _)| !self.is_deleted(path))
             .map(|(abs_path, is_rust)| RegisterProjectRequest {
                 project_label: crate::project::home_relative_path(&abs_path),
                 abs_path,
@@ -694,7 +694,15 @@ impl App {
     }
 
     pub(in super::super) fn initialize_startup_phase_tracker(&mut self) {
-        let disk_expected = super::snapshots::initial_disk_batch_count(&self.projects);
+        self.reset_startup_phase_state();
+        self.start_startup_toast();
+        self.start_startup_detail_toasts();
+        self.log_startup_phase_plan();
+        self.maybe_log_startup_phase_completions();
+    }
+
+    fn reset_startup_phase_state(&mut self) {
+        let disk_expected = super::snapshots::initial_disk_roots(&self.projects);
         let git_expected = self
             .projects
             .git_directories()
@@ -709,12 +717,14 @@ impl App {
         self.scan.startup_phases.disk_complete_at = None;
         self.scan.startup_phases.scan_complete_at = Some(Instant::now());
         self.scan.startup_phases.disk_expected = Some(disk_expected);
+        self.scan.startup_phases.disk_seen.clear();
         self.scan.startup_phases.git_expected = git_expected;
         self.scan.startup_phases.git_seen = git_seen;
         self.scan.startup_phases.git_complete_at = None;
         self.scan.startup_phases.repo_expected.clear();
         self.scan.startup_phases.repo_seen.clear();
         self.scan.startup_phases.repo_complete_at = None;
+        self.scan.startup_phases.disk_toast = None;
         self.scan.startup_phases.git_toast = None;
         self.scan.startup_phases.repo_toast = None;
         self.scan.startup_phases.startup_toast = None;
@@ -722,8 +732,10 @@ impl App {
         self.scan.startup_phases.lint_seen_terminal.clear();
         self.scan.startup_phases.lint_complete_at = None;
         self.scan.startup_phases.startup_complete_at = None;
-        // High-level startup activity toast — one line per phase.
-        // Created first so it appears above the detail toasts.
+    }
+
+    // Created first so it appears above the detail toasts.
+    fn start_startup_toast(&mut self) {
         let startup_items = vec![
             TrackedItem {
                 label:        STARTUP_PHASE_DISK.to_string(),
@@ -747,6 +759,21 @@ impl App {
         let task_id = self.start_task_toast("Startup", "");
         self.set_task_tracked_items(task_id, &startup_items);
         self.scan.startup_phases.startup_toast = Some(task_id);
+    }
+
+    fn start_startup_detail_toasts(&mut self) {
+        if let Some(disk_expected) = self.scan.startup_phases.disk_expected.clone() {
+            let disk_items = Self::tracked_items_for_startup(
+                &disk_expected,
+                &self.scan.startup_phases.disk_seen,
+            );
+            if !disk_items.is_empty() {
+                let body = self.startup_disk_toast_body();
+                let task_id = self.start_task_toast("Calculating disk usage", &body);
+                self.set_task_tracked_items(task_id, &disk_items);
+                self.scan.startup_phases.disk_toast = Some(task_id);
+            }
+        }
 
         let git_items = Self::tracked_items_for_startup(
             &self.scan.startup_phases.git_expected,
@@ -768,9 +795,16 @@ impl App {
             self.set_task_tracked_items(task_id, &repo_items);
             self.scan.startup_phases.repo_toast = Some(task_id);
         }
+    }
 
+    fn log_startup_phase_plan(&self) {
         tracing::info!(
-            disk_expected = self.scan.startup_phases.disk_expected.unwrap_or(0),
+            disk_expected = self
+                .scan
+                .startup_phases
+                .disk_expected
+                .as_ref()
+                .map_or(0, HashSet::len),
             git_expected = self.scan.startup_phases.git_expected.len(),
             repo_expected = self.scan.startup_phases.repo_expected.len(),
             lint_expected = self
@@ -781,7 +815,6 @@ impl App {
                 .map_or(0, HashSet::len),
             "startup_phase_plan"
         );
-        self.maybe_log_startup_phase_completions();
     }
 
     pub(in super::super) fn maybe_log_startup_phase_completions(&mut self) {
@@ -806,9 +839,17 @@ impl App {
                 .scan
                 .startup_phases
                 .disk_expected
-                .is_some_and(|expected| self.scan.startup_phases.disk_seen.len() >= expected)
+                .as_ref()
+                .is_some_and(|expected| {
+                    expected
+                        .iter()
+                        .all(|root| self.scan.startup_phases.disk_seen.contains(root))
+                })
         {
             self.scan.startup_phases.disk_complete_at = Some(now);
+            if let Some(disk_toast) = self.scan.startup_phases.disk_toast.take() {
+                self.finish_task_toast(disk_toast);
+            }
             if let Some(toast) = self.scan.startup_phases.startup_toast {
                 self.mark_tracked_item_completed(toast, STARTUP_PHASE_DISK);
             }
@@ -817,7 +858,12 @@ impl App {
                 since_scan_complete_ms =
                     crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
                 seen = self.scan.startup_phases.disk_seen.len(),
-                expected = self.scan.startup_phases.disk_expected.unwrap_or(0),
+                expected = self
+                    .scan
+                    .startup_phases
+                    .disk_expected
+                    .as_ref()
+                    .map_or(0, HashSet::len),
                 "startup_phase_complete"
             );
         }
@@ -933,7 +979,12 @@ impl App {
                     since_scan_complete_ms =
                         crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
                     disk_seen = self.scan.startup_phases.disk_seen.len(),
-                    disk_expected = self.scan.startup_phases.disk_expected.unwrap_or(0),
+                    disk_expected = self
+                        .scan
+                        .startup_phases
+                        .disk_expected
+                        .as_ref()
+                        .map_or(0, HashSet::len),
                     git_seen = self.scan.startup_phases.git_seen.len(),
                     git_expected = self.scan.startup_phases.git_expected.len(),
                     repo_seen = self.scan.startup_phases.repo_seen.len(),
@@ -954,6 +1005,17 @@ impl App {
                 );
             }
         }
+    }
+
+    pub(in super::super) fn startup_disk_toast_body(&self) -> String {
+        let empty = HashSet::new();
+        let expected = self
+            .scan
+            .startup_phases
+            .disk_expected
+            .as_ref()
+            .unwrap_or(&empty);
+        Self::startup_remaining_toast_body(expected, &self.scan.startup_phases.disk_seen)
     }
 
     pub(in super::super) fn startup_git_toast_body(&self) -> String {
@@ -1190,7 +1252,7 @@ impl App {
     /// Lightweight refresh of derived state after in-place hierarchy changes
     /// (discovery, refresh). Marks caches dirty without a full tree rebuild.
     pub(in super::super) fn refresh_derived_state(&mut self) {
-        self.recompute_cargo_active_paths();
+        self.recompute_ci_owner_paths();
         self.data_generation += 1;
     }
 
@@ -1293,7 +1355,7 @@ impl App {
         self.ci_display_modes.clear();
         self.clear_all_lint_state();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
-        self.cargo_active_paths.clear();
+        self.ci_owner_paths.clear();
         self.repo_fetch_cache = crate::scan::new_repo_cache();
         self.discovery_shimmers.clear();
         self.scan.phase = ScanPhase::Running;
@@ -1838,6 +1900,9 @@ impl App {
     ) {
         self.data_generation += 1;
         self.scan.startup_phases.disk_seen.insert(root_path.clone());
+        if let Some(disk_toast) = self.scan.startup_phases.disk_toast {
+            self.mark_tracked_item_completed(disk_toast, &root_path.to_string());
+        }
         self.handle_disk_usage_batch(entries);
         self.maybe_log_startup_phase_completions();
     }
@@ -1900,7 +1965,7 @@ impl App {
             status,
             LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog
         );
-        if !self.is_cargo_active_path(path) {
+        if !self.is_rust_at_path(path) {
             if let Some(lr) = self.projects.lint_at_path_mut(path) {
                 lr.clear_runs();
             }
@@ -1994,7 +2059,7 @@ impl App {
             .map(AbsolutePath::from)
             .or_else(|| self.selection_paths.last_selected.clone());
         self.projects = ProjectList::new(projects);
-        self.recompute_cargo_active_paths();
+        self.recompute_ci_owner_paths();
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();
         self.scan.startup_phases.lint_startup_expected = Some(lint_registered);

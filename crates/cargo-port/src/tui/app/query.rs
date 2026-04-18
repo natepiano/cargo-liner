@@ -31,6 +31,7 @@ use crate::tui::columns;
 use crate::tui::panes::DetailField;
 use crate::tui::panes::PaneId;
 use crate::tui::shortcuts::InputContext;
+use crate::tui::toasts::ToastStyle::Warning;
 use crate::tui::toasts::ToastTaskId;
 use crate::tui::toasts::ToastView;
 use crate::tui::toasts::TrackedItem;
@@ -99,6 +100,19 @@ impl App {
         body: impl Into<String>,
     ) {
         self.toasts.push_timed(title, body, self.toast_timeout(), 1);
+        let toast_len = self.active_toasts().len();
+        self.pane_manager
+            .pane_mut(PaneId::Toasts)
+            .set_len(toast_len);
+    }
+
+    pub(in super::super) fn show_timed_warning_toast(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) {
+        self.toasts
+            .push_timed_styled(title, body, self.toast_timeout(), 1, Warning);
         let toast_len = self.active_toasts().len();
         self.pane_manager
             .pane_mut(PaneId::Toasts)
@@ -213,6 +227,11 @@ impl App {
         self.projects
             .at_path(path)
             .is_some_and(|project| project.visibility == Visibility::Deleted)
+    }
+
+    pub(in super::super) fn selected_project_is_deleted(&self) -> bool {
+        self.selected_project_path()
+            .is_some_and(|path| self.is_deleted(path))
     }
 
     pub(in super::super) fn formatted_disk(&self, path: &Path) -> String {
@@ -514,15 +533,18 @@ impl App {
         })
     }
 
-    pub(in super::super) fn recompute_cargo_active_paths(&mut self) {
-        let mut active_paths: HashSet<AbsolutePath> = HashSet::new();
+    /// Recompute the set of "CI owner" paths: project-tree leaves plus the
+    /// vendored deps beneath them. Used by CI fetch/prune and the CI
+    /// column in the list.
+    pub(in super::super) fn recompute_ci_owner_paths(&mut self) {
+        let mut owners: HashSet<AbsolutePath> = HashSet::new();
         self.projects.for_each_leaf(|item| {
             if !self.is_vendored_path(item.path()) {
-                active_paths.insert(item.path().clone());
+                owners.insert(item.path().clone());
             }
         });
 
-        // Include vendored projects whose parent is active.
+        // Include vendored deps whose parent is a CI owner.
         for item in &self.projects {
             let vendored_paths: Vec<&AbsolutePath> = match item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
@@ -545,18 +567,20 @@ impl App {
                     .collect(),
                 RootItem::NonRust(_) => Vec::new(),
             };
-            if active_paths.contains(item.path()) {
+            if owners.contains(item.path()) {
                 for vp in vendored_paths {
-                    active_paths.insert(vp.clone());
+                    owners.insert(vp.clone());
                 }
             }
         }
 
-        self.cargo_active_paths = active_paths;
+        self.ci_owner_paths = owners;
     }
 
-    pub(in super::super) fn is_cargo_active_path(&self, path: &Path) -> bool {
-        self.cargo_active_paths.contains(path)
+    /// Whether `path` is a project-tree leaf or a vendored dep under one —
+    /// the paths for which we maintain CI state.
+    pub(in super::super) fn is_ci_owner_path(&self, path: &Path) -> bool {
+        self.ci_owner_paths.contains(path)
     }
 
     pub(in super::super) fn git_status_for(&self, path: &Path) -> Option<GitStatus> {
@@ -607,7 +631,7 @@ impl App {
         self.ci_fetch_tracker
             .retain(|path| all_paths.contains(path));
         for path in &all_paths {
-            if self.is_cargo_active_path(path) {
+            if self.is_ci_owner_path(path) {
                 continue;
             }
             self.ci_fetch_tracker.complete(path.as_path());
