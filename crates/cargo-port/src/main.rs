@@ -6,6 +6,7 @@ mod cache_paths;
 mod ci;
 mod config;
 mod constants;
+mod enrichment;
 mod http;
 mod keymap;
 mod lint;

@@ -1008,40 +1008,17 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     }
 
     // Submodules (local, fast — reads .gitmodules + one git ls-tree).
-    // Send the Submodules message first so `at_path_mut` can find them,
-    // then send standard GitInfo/DiskUsage messages that the
-    // existing handlers route through the normal lookup machinery.
+    // Send the Submodules message first so `at_path_mut` can resolve each
+    // submodule before its per-entry enrichment messages arrive.
     if repo_presence.is_in_repo() {
         let submodules = super::project::detect_submodules(abs_path);
         if !submodules.is_empty() {
-            let sub_paths: Vec<AbsolutePath> = submodules.iter().map(|s| s.path.clone()).collect();
             let _ = tx.send(BackgroundMsg::Submodules {
-                path: abs.clone(),
-                submodules,
+                path:       abs.clone(),
+                submodules: submodules.clone(),
             });
-            for sub_path in &sub_paths {
-                let sub_abs: AbsolutePath = sub_path.clone();
-                if let Some(info) = GitInfo::detect_fast(sub_path) {
-                    let _ = tx.send(BackgroundMsg::GitInfo {
-                        path: sub_abs.clone(),
-                        info,
-                    });
-                }
-                let bytes = dir_size(sub_path);
-                let _ = tx.send(BackgroundMsg::DiskUsage {
-                    path: sub_abs.clone(),
-                    bytes,
-                });
-                let lang_tx = tx.clone();
-                let lang_path = sub_abs;
-                rayon::spawn(move || {
-                    let stats = collect_language_stats_single(lang_path.as_path());
-                    if !stats.entries.is_empty() {
-                        let _ = lang_tx.send(BackgroundMsg::LanguageStatsBatch {
-                            entries: vec![(lang_path, stats)],
-                        });
-                    }
-                });
+            for sub in &submodules {
+                crate::enrichment::enrich(sub, tx, ctx);
             }
         }
     }

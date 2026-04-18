@@ -146,6 +146,16 @@ impl ProjectList {
             .find_map(|item| item.at_path_mut(target))
     }
 
+    /// Whether `target` is the path of a submodule under any root item.
+    /// CI fetches and GitHub repo metadata for submodules belong to the
+    /// upstream repository and should be suppressed at the parent project's
+    /// level — `ci_fetch`/`repo_metadata` on `Submodule` return `Skip`.
+    pub(crate) fn is_submodule_path(&self, target: &Path) -> bool {
+        self.root_items
+            .iter()
+            .any(|item| item.submodules().iter().any(|s| s.path.as_path() == target))
+    }
+
     pub(crate) fn rust_info_at_path(&self, target: &Path) -> Option<&RustInfo> {
         self.root_items
             .iter()

@@ -1637,7 +1637,9 @@ impl App {
             }
             self.maybe_log_startup_phase_completions();
         }
-        self.spawn_repo_fetch_for_git_info(path, &info);
+        if !self.projects.is_submodule_path(path) {
+            self.spawn_repo_fetch_for_git_info(path, &info);
+        }
     }
 
     pub(in super::super) fn handle_git_first_commit(
