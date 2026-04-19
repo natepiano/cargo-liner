@@ -103,7 +103,7 @@ pub(crate) fn from_cargo_toml(
         .and_then(|n| n.as_str())
         .map(|s| (*s).to_string());
 
-    let worktree_name = git::detect_worktree_name(project_dir);
+    let is_linked_worktree = git::detect_is_linked_worktree(project_dir);
     let worktree_primary_abs_path =
         git::detect_worktree_primary(project_dir).map(AbsolutePath::from);
     let worktree_health = git::detect_worktree_health(project_dir);
@@ -136,7 +136,7 @@ pub(crate) fn from_cargo_toml(
             cargo,
             Vec::new(),
             Vec::new(),
-            worktree_name,
+            is_linked_worktree,
             worktree_primary_abs_path,
         );
         project.rust.info.worktree_health = worktree_health;
@@ -147,7 +147,7 @@ pub(crate) fn from_cargo_toml(
             name,
             cargo,
             Vec::new(),
-            worktree_name,
+            is_linked_worktree,
             worktree_primary_abs_path,
         );
         project.rust.info.worktree_health = worktree_health;

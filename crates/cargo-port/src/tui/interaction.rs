@@ -317,7 +317,7 @@ mod tests {
             Some(name.to_string()),
             cargo,
             Vec::new(),
-            None,
+            false,
             None,
         )))
     }
@@ -325,7 +325,7 @@ mod tests {
     fn make_package_worktree(
         name: &str,
         path: &Path,
-        worktree_name: Option<&str>,
+        is_linked_worktree: bool,
         primary_abs_path: Option<&Path>,
     ) -> Package {
         Package::new(
@@ -333,7 +333,7 @@ mod tests {
             Some(name.to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
-            worktree_name.map(str::to_string),
+            is_linked_worktree,
             primary_abs_path.map(AbsolutePath::from),
         )
     }
@@ -346,7 +346,7 @@ mod tests {
             Some(name.to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
-            None,
+            false,
             None,
         )
     }
@@ -358,7 +358,7 @@ mod tests {
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             groups,
             Vec::new(),
-            None,
+            false,
             None,
         )))
     }
@@ -990,7 +990,7 @@ mod tests {
         let mut app = make_app(&[RootItem::Rust(RustProject::Package(make_package_worktree(
             "app",
             &primary,
-            None,
+            false,
             Some(primary.as_path()),
         )))]);
         app.expanded_mut().insert(ExpandKey::Node(0));
@@ -998,11 +998,11 @@ mod tests {
 
         app.set_projects(ProjectList::new(vec![RootItem::Worktrees(
             WorktreeGroup::new_packages(
-                make_package_worktree("app", &primary, None, Some(primary.as_path())),
+                make_package_worktree("app", &primary, false, Some(primary.as_path())),
                 vec![make_package_worktree(
                     "app",
                     &linked,
-                    Some("app_feat"),
+                    true,
                     Some(primary.as_path()),
                 )],
             ),

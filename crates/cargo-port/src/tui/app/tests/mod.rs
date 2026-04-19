@@ -91,7 +91,7 @@ fn make_project(name: Option<&str>, path: &str) -> RootItem {
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
-        None,
+        false,
         None,
     )))
 }
@@ -224,7 +224,7 @@ fn make_workspace_project(name: Option<&str>, path: &str) -> RootItem {
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
         Vec::new(),
-        None,
+        false,
         None,
     )))
 }
@@ -240,7 +240,7 @@ fn make_workspace_with_members(
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         groups,
         Vec::new(),
-        None,
+        false,
         None,
     )))
 }
@@ -251,7 +251,7 @@ fn make_member(name: Option<&str>, path: &str) -> Package {
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
-        None,
+        false,
         None,
     )
 }
@@ -264,14 +264,14 @@ fn make_package_worktrees_item(primary: Package, linked: Vec<Package>) -> RootIt
     RootItem::Worktrees(WorktreeGroup::new_packages(primary, linked))
 }
 
-fn make_package_raw(name: Option<&str>, path: &str, worktree_name: Option<&str>) -> Package {
-    make_package_raw_with_primary(name, path, worktree_name, None)
+fn make_package_raw(name: Option<&str>, path: &str, worktree_marker: Option<&str>) -> Package {
+    make_package_raw_with_primary(name, path, worktree_marker, None)
 }
 
 fn make_package_raw_with_primary(
     name: Option<&str>,
     path: &str,
-    worktree_name: Option<&str>,
+    worktree_marker: Option<&str>,
     primary_abs_path: Option<&str>,
 ) -> Package {
     Package::new(
@@ -279,7 +279,7 @@ fn make_package_raw_with_primary(
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
-        worktree_name.map(String::from),
+        worktree_marker.is_some(),
         primary_abs_path.map(test_path),
     )
 }
@@ -288,16 +288,16 @@ fn make_workspace_raw(
     name: Option<&str>,
     path: &str,
     groups: Vec<MemberGroup>,
-    worktree_name: Option<&str>,
+    worktree_marker: Option<&str>,
 ) -> Workspace {
-    make_workspace_raw_with_primary(name, path, groups, worktree_name, None)
+    make_workspace_raw_with_primary(name, path, groups, worktree_marker, None)
 }
 
 fn make_workspace_raw_with_primary(
     name: Option<&str>,
     path: &str,
     groups: Vec<MemberGroup>,
-    worktree_name: Option<&str>,
+    worktree_marker: Option<&str>,
     primary_abs_path: Option<&str>,
 ) -> Workspace {
     Workspace::new(
@@ -306,7 +306,7 @@ fn make_workspace_raw_with_primary(
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         groups,
         Vec::new(),
-        worktree_name.map(String::from),
+        worktree_marker.is_some(),
         primary_abs_path.map(test_path),
     )
 }
@@ -328,7 +328,7 @@ fn make_package_with_vendored(name: Option<&str>, path: &str, vendored: Vec<Pack
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         vendored,
-        None,
+        false,
         None,
     )
 }

@@ -948,8 +948,7 @@ fn worktree_entry_name_and_expandable(
             } else {
                 linked.get(wi - 1).unwrap_or(primary)
             };
-            ws.worktree_name()
-                .map_or_else(|| ws.root_directory_name().into_string(), str::to_string)
+            ws.root_directory_name().into_string()
         },
         crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
             primary,
@@ -961,8 +960,7 @@ fn worktree_entry_name_and_expandable(
             } else {
                 linked.get(wi - 1).unwrap_or(primary)
             };
-            pkg.worktree_name()
-                .map_or_else(|| pkg.root_directory_name().into_string(), str::to_string)
+            pkg.root_directory_name().into_string()
         },
         _ => fallback.to_string(),
     };

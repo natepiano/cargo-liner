@@ -492,7 +492,7 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
                         nested_ws.name().map(str::to_string),
                         nested_ws.cargo().clone(),
                         Vec::new(),
-                        nested_ws.worktree_name().map(str::to_string),
+                        nested_ws.is_linked_worktree(),
                         nested_ws.worktree_primary_abs_path().cloned(),
                     ))
                 } else {
@@ -659,7 +659,7 @@ fn item_worktree_identity(item: &RootItem) -> Option<&AbsolutePath> {
 
 fn item_is_linked(item: &RootItem) -> bool {
     match item {
-        RootItem::Rust(p) => p.worktree_name().is_some(),
+        RootItem::Rust(p) => p.is_linked_worktree(),
         _ => false,
     }
 }
@@ -821,7 +821,7 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
                 ws.name().map(str::to_string),
                 ws.cargo().clone(),
                 Vec::new(),
-                ws.worktree_name().map(str::to_string),
+                ws.is_linked_worktree(),
                 ws.worktree_primary_abs_path().cloned(),
             ),
             RootItem::NonRust(nr) => Package::new(
@@ -829,7 +829,7 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
                 nr.name().map(str::to_string),
                 Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
                 Vec::new(),
-                None,
+                false,
                 None,
             ),
             _ => continue,
@@ -1518,7 +1518,7 @@ mod tests {
     fn make_workspace(
         name: Option<&str>,
         abs_path: &str,
-        worktree_name: Option<&str>,
+        is_linked_worktree: bool,
         primary_abs: Option<&str>,
     ) -> RootItem {
         RootItem::Rust(RustProject::Workspace(Workspace::new(
@@ -1527,7 +1527,7 @@ mod tests {
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
             Vec::new(),
-            worktree_name.map(String::from),
+            is_linked_worktree,
             primary_abs.map(|s| AbsolutePath::from(s.to_string())),
         )))
     }
@@ -1535,7 +1535,7 @@ mod tests {
     fn make_package(
         name: Option<&str>,
         abs_path: &str,
-        worktree_name: Option<&str>,
+        is_linked_worktree: bool,
         primary_abs: Option<&str>,
     ) -> RootItem {
         RootItem::Rust(RustProject::Package(Package::new(
@@ -1543,15 +1543,15 @@ mod tests {
             name.map(String::from),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
-            worktree_name.map(String::from),
+            is_linked_worktree,
             primary_abs.map(|s| AbsolutePath::from(s.to_string())),
         )))
     }
 
     #[test]
     fn merge_virtual_workspace() {
-        let primary = make_workspace(None, "/home/ws", None, Some("/home/ws"));
-        let worktree = make_workspace(None, "/home/ws_feat", Some("ws_feat"), Some("/home/ws"));
+        let primary = make_workspace(None, "/home/ws", false, Some("/home/ws"));
+        let worktree = make_workspace(None, "/home/ws_feat", true, Some("/home/ws"));
         let mut items = vec![primary, worktree];
         merge_worktrees_new(&mut items);
 
@@ -1564,13 +1564,8 @@ mod tests {
 
     #[test]
     fn merge_named_workspace() {
-        let primary = make_workspace(Some("my-ws"), "/home/ws", None, Some("/home/ws"));
-        let worktree = make_workspace(
-            Some("my-ws"),
-            "/home/ws_feat",
-            Some("ws_feat"),
-            Some("/home/ws"),
-        );
+        let primary = make_workspace(Some("my-ws"), "/home/ws", false, Some("/home/ws"));
+        let worktree = make_workspace(Some("my-ws"), "/home/ws_feat", true, Some("/home/ws"));
         let mut items = vec![primary, worktree];
         merge_worktrees_new(&mut items);
 
@@ -1605,17 +1600,17 @@ mod tests {
         )
         .unwrap_or_else(|_| std::process::abort());
 
-        let workspace = make_workspace(Some("hana"), &workspace_dir.to_string_lossy(), None, None);
+        let workspace = make_workspace(Some("hana"), &workspace_dir.to_string_lossy(), false, None);
         let included = make_package(
             Some("hana-node-api"),
             &included_dir.to_string_lossy(),
-            None,
+            false,
             None,
         );
         let vendored = make_package(
             Some("clay-layout"),
             &vendored_dir.to_string_lossy(),
-            None,
+            false,
             None,
         );
 
@@ -1644,13 +1639,8 @@ mod tests {
 
     #[test]
     fn merge_standalone_project() {
-        let primary = make_package(Some("app"), "/home/app", None, Some("/home/app"));
-        let worktree = make_package(
-            Some("app"),
-            "/home/app_feat",
-            Some("app_feat"),
-            Some("/home/app"),
-        );
+        let primary = make_package(Some("app"), "/home/app", false, Some("/home/app"));
+        let worktree = make_package(Some("app"), "/home/app_feat", true, Some("/home/app"));
         let mut items = vec![primary, worktree];
         merge_worktrees_new(&mut items);
 
@@ -1663,8 +1653,8 @@ mod tests {
 
     #[test]
     fn no_merge_different_repos() {
-        let a = make_package(Some("a"), "/home/a", None, Some("/home/a"));
-        let b = make_package(Some("b"), "/home/b", Some("b"), Some("/home/b"));
+        let a = make_package(Some("a"), "/home/a", false, Some("/home/a"));
+        let b = make_package(Some("b"), "/home/b", true, Some("/home/b"));
         let mut items = vec![a, b];
         merge_worktrees_new(&mut items);
 
@@ -1673,8 +1663,8 @@ mod tests {
 
     #[test]
     fn no_merge_none_identity() {
-        let a = make_package(Some("x"), "/home/x", None, None);
-        let b = make_package(Some("x"), "/home/x2", Some("x2"), None);
+        let a = make_package(Some("x"), "/home/x", false, None);
+        let b = make_package(Some("x"), "/home/x2", true, None);
         let mut items = vec![a, b];
         merge_worktrees_new(&mut items);
 

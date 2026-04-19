@@ -973,10 +973,10 @@ mod tests {
                 Some("clay-layout".to_string()),
                 Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
                 Vec::new(),
-                None,
+                false,
                 None,
             )],
-            None,
+            false,
             None,
         );
         let list_items = vec![RootItem::Rust(RustProject::Workspace(ws))];
@@ -1079,7 +1079,7 @@ mod tests {
                 false,
             ),
             Vec::new(),
-            None,
+            false,
             None,
         );
 

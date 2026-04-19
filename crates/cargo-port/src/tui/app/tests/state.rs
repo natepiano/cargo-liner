@@ -427,11 +427,11 @@ fn startup_git_expected_uses_top_level_git_directories() {
             Some("core".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
-            None,
+            false,
             None,
         )])],
         Vec::new(),
-        None,
+        false,
         None,
     )));
     let primary = Package::new(
@@ -439,7 +439,7 @@ fn startup_git_expected_uses_top_level_git_directories() {
         Some("cargo-port".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
-        None,
+        false,
         None,
     );
     let linked = Package::new(
@@ -447,7 +447,7 @@ fn startup_git_expected_uses_top_level_git_directories() {
         Some("cargo-port_feat".to_string()),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
-        Some("cargo-port_feat".to_string()),
+        true,
         Some(AbsolutePath::from(primary_dir.clone())),
     );
     let worktrees = RootItem::Worktrees(WorktreeGroup::new_packages(primary, vec![linked]));
@@ -485,11 +485,11 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
             Some("core".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
-            None,
+            false,
             None,
         )])],
         Vec::new(),
-        None,
+        false,
         None,
     )));
 
@@ -599,7 +599,7 @@ fn vendored_path_dependency_becomes_ci_owner() {
             Some("app".to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             vec![make_member(Some("helper"), "~/app/vendor/helper")],
-            None,
+            false,
             None,
         );
         RootItem::Rust(RustProject::Package(pkg))

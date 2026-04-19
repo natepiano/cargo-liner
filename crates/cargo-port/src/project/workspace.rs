@@ -34,7 +34,7 @@ impl Workspace {
         cargo: Cargo,
         groups: Vec<MemberGroup>,
         vendored: Vec<Package>,
-        worktree_name: Option<String>,
+        is_linked_worktree: bool,
         worktree_primary_abs_path: Option<AbsolutePath>,
     ) -> Self {
         Self {
@@ -44,7 +44,7 @@ impl Workspace {
                 info: ProjectInfo::default(),
                 cargo,
                 vendored,
-                worktree_name,
+                is_linked_worktree,
                 worktree_primary_abs_path,
                 lint_runs: LintRuns::default(),
                 crates_version: None,

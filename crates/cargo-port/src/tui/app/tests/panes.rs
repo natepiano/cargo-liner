@@ -71,7 +71,7 @@ fn tabbable_panes_follow_canonical_order() {
             false,
         ),
         Vec::new(),
-        None,
+        false,
         None,
     )));
 
@@ -208,7 +208,7 @@ fn project_refresh_updates_selected_tree_project_targets() {
             false,
         ),
         Vec::new(),
-        None,
+        false,
         None,
     )));
 

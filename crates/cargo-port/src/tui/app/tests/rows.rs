@@ -1006,7 +1006,7 @@ fn visible_rows_include_vendored_children() {
             "~/ws/member",
         )])],
         vec![make_member(Some("vendored"), "~/ws/vendor/helper")],
-        None,
+        false,
         None,
     );
     let root = RootItem::Rust(RustProject::Workspace(ws));

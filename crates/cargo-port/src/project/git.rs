@@ -692,10 +692,12 @@ fn detect_last_fetched(repo_root: &Path) -> Option<String> {
 }
 
 fn system_time_to_iso8601_utc(t: std::time::SystemTime) -> Option<String> {
-    let secs = t
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64;
+    let secs = i64::try_from(
+        t.duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .ok()?
+            .as_secs(),
+    )
+    .ok()?;
     let days = secs.div_euclid(86_400);
     let time_of_day = secs.rem_euclid(86_400);
     let hour = time_of_day / 3_600;
@@ -709,6 +711,12 @@ fn system_time_to_iso8601_utc(t: std::time::SystemTime) -> Option<String> {
 
 /// Inverse of `days_from_civil`: days since Unix epoch → (year, month, day).
 /// Howard Hinnant's algorithm.
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "Hinnant's algorithm bounces between signed/unsigned; month/day always 1..=12 / 1..=31"
+)]
 const fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -830,18 +838,23 @@ pub(crate) fn detect_worktree_health(project_dir: &Path) -> WorktreeHealth {
     }
 }
 
-pub(super) fn detect_worktree_name(project_dir: &Path) -> Option<String> {
+/// Returns true when the project's nearest enclosing `.git` is a file
+/// (i.e. this project lives inside a linked worktree), false when it's a
+/// directory (primary repo) or when no `.git` is found.
+pub(super) fn detect_is_linked_worktree(project_dir: &Path) -> bool {
     let mut dir = project_dir;
     loop {
         let git_path = dir.join(".git");
         if git_path.is_file() {
-            return dir.file_name().map(|n| n.to_string_lossy().to_string());
+            return true;
         }
         if git_path.is_dir() {
-            // Found a real .git directory — not a worktree
-            return None;
+            return false;
         }
-        dir = dir.parent()?;
+        let Some(parent) = dir.parent() else {
+            return false;
+        };
+        dir = parent;
     }
 }
 

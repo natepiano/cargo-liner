@@ -15,7 +15,7 @@ pub(crate) struct RustInfo {
     pub(super) info:                      ProjectInfo,
     pub(super) cargo:                     Cargo,
     pub(super) vendored:                  Vec<Package>,
-    pub(super) worktree_name:             Option<String>,
+    pub(super) is_linked_worktree:        bool,
     pub(super) worktree_primary_abs_path: Option<AbsolutePath>,
     pub(super) lint_runs:                 LintRuns,
     pub(super) crates_version:            Option<String>,
@@ -29,7 +29,7 @@ impl RustInfo {
 
     pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<Package> { &mut self.vendored }
 
-    pub(crate) fn worktree_name(&self) -> Option<&str> { self.worktree_name.as_deref() }
+    pub(crate) const fn is_linked_worktree(&self) -> bool { self.is_linked_worktree }
 
     pub(crate) const fn worktree_primary_abs_path(&self) -> Option<&AbsolutePath> {
         self.worktree_primary_abs_path.as_ref()

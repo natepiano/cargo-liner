@@ -38,10 +38,10 @@ impl RustProject {
         }
     }
 
-    pub(crate) fn worktree_name(&self) -> Option<&str> {
+    pub(crate) fn is_linked_worktree(&self) -> bool {
         match self {
-            Self::Workspace(ws) => ws.worktree_name(),
-            Self::Package(pkg) => pkg.worktree_name(),
+            Self::Workspace(ws) => ws.is_linked_worktree(),
+            Self::Package(pkg) => pkg.is_linked_worktree(),
         }
     }
 
