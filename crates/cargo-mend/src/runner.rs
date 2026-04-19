@@ -52,8 +52,8 @@ struct RunPlan {
     narrow_pub_crate_scan:     Option<NarrowPubCrateScan>,
     pub_use_scan:              Option<PubUseFixScan>,
     check_duration:            Duration,
-    compiler_warning_count:    usize,
-    compiler_fixable_count:    usize,
+    compiler_warnings:         usize,
+    compiler_fixable:          usize,
 }
 
 impl<'a> MendRunner<'a> {
@@ -89,8 +89,8 @@ impl<'a> MendRunner<'a> {
         let selection_result = self.build_selection(output_mode)?;
         let report = selection_result.report;
         let check_duration = selection_result.check_duration;
-        let compiler_warning_count = selection_result.compiler_warning_count;
-        let compiler_fixable_count = selection_result.compiler_fixable_count;
+        let compiler_warnings = selection_result.compiler_warnings;
+        let compiler_fixable = selection_result.compiler_fixable;
         let diagnostics = &self.config.diagnostics;
         let import_scan = (mode.fixes.contains(FixKind::ShortenImport)
             && (diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
@@ -129,22 +129,22 @@ impl<'a> MendRunner<'a> {
             narrow_pub_crate_scan,
             pub_use_scan,
             check_duration,
-            compiler_warning_count,
-            compiler_fixable_count,
+            compiler_warnings,
+            compiler_fixable,
         })
     }
 
     fn execute(&self, planned: RunPlan) -> Result<ExecutionOutcome, MendFailure> {
         let check_duration = planned.check_duration;
-        let compiler_warning_count = planned.compiler_warning_count;
-        let compiler_fixable_count = planned.compiler_fixable_count;
+        let compiler_warnings = planned.compiler_warnings;
+        let compiler_fixable = planned.compiler_fixable;
         match planned.mode.intent {
             OperationIntent::ReadOnly => Ok(ExecutionOutcome {
                 report: planned.report,
                 notice: None,
                 check_duration,
-                compiler_warning_count,
-                compiler_fixable_count,
+                compiler_warnings,
+                compiler_fixable,
             }),
             OperationIntent::DryRun => {
                 let notice = Self::build_fix_notice(
@@ -160,8 +160,8 @@ impl<'a> MendRunner<'a> {
                     report: planned.report,
                     notice,
                     check_duration,
-                    compiler_warning_count,
-                    compiler_fixable_count,
+                    compiler_warnings,
+                    compiler_fixable,
                 })
             },
             OperationIntent::Apply => self.apply(planned),
@@ -170,8 +170,8 @@ impl<'a> MendRunner<'a> {
 
     fn apply(&self, planned: RunPlan) -> Result<ExecutionOutcome, MendFailure> {
         let plan_check_duration = planned.check_duration;
-        let compiler_warning_count = planned.compiler_warning_count;
-        let compiler_fixable_count = planned.compiler_fixable_count;
+        let compiler_warnings = planned.compiler_warnings;
+        let compiler_fixable = planned.compiler_fixable;
         let fixes = Self::combined_fixes(
             planned.import_scan.as_ref(),
             planned.prefer_module_import_scan.as_ref(),
@@ -193,8 +193,8 @@ impl<'a> MendRunner<'a> {
                 report: planned.report,
                 notice,
                 check_duration: plan_check_duration,
-                compiler_warning_count,
-                compiler_fixable_count,
+                compiler_warnings,
+                compiler_fixable,
             });
         }
 
@@ -216,8 +216,8 @@ impl<'a> MendRunner<'a> {
                     report: validation.report,
                     notice,
                     check_duration,
-                    compiler_warning_count,
-                    compiler_fixable_count,
+                    compiler_warnings,
+                    compiler_fixable,
                 })
             },
             Err(err) => {

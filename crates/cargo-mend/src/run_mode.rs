@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
 use super::cli::FixCli;
+use super::cli::FixExecution;
+use super::cli::FixRequest;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum FixKind {
@@ -18,14 +20,20 @@ pub(crate) struct FixSelection {
 
 impl FixSelection {
     pub(crate) fn from_cli(fix_cli: &FixCli) -> Self {
+        match fix_cli.execution {
+            FixExecution::ApplyAll | FixExecution::PreviewAll => return Self::all_fix_kinds(),
+            FixExecution::ReadOnly => return Self::default(),
+            FixExecution::ApplyRequested | FixExecution::PreviewRequested => {},
+        }
+
         let mut kinds = BTreeSet::new();
-        if fix_cli.fix() || fix_cli.fix_all() {
+        if fix_cli.includes(FixRequest::Mend) {
             kinds.insert(FixKind::ShortenImport);
             kinds.insert(FixKind::PreferModuleImport);
             kinds.insert(FixKind::InlinePathQualifiedType);
             kinds.insert(FixKind::NarrowToPubCrate);
         }
-        if fix_cli.fix_pub_use() || fix_cli.fix_all() {
+        if fix_cli.includes(FixRequest::PubUse) {
             kinds.insert(FixKind::FixPubUse);
         }
         Self { kinds }
@@ -42,8 +50,6 @@ impl FixSelection {
     }
 
     pub(crate) fn contains(&self, kind: FixKind) -> bool { self.kinds.contains(&kind) }
-
-    pub(crate) fn is_empty(&self) -> bool { self.kinds.is_empty() }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,47 +68,37 @@ pub(crate) struct OperationMode {
 impl OperationMode {
     pub(crate) fn from_cli(fix_cli: &FixCli) -> Self {
         let fixes = FixSelection::from_cli(fix_cli);
-        if fix_cli.dry_run() {
-            let effective_fixes = if fixes.is_empty() {
-                FixSelection::all_fix_kinds()
-            } else {
-                fixes
-            };
-            return Self {
+        match fix_cli.execution {
+            FixExecution::PreviewRequested | FixExecution::PreviewAll => Self {
                 intent: OperationIntent::DryRun,
-                fixes:  effective_fixes,
-            };
-        }
-
-        if fixes.is_empty() {
-            Self {
+                fixes,
+            },
+            FixExecution::ReadOnly => Self {
                 intent: OperationIntent::ReadOnly,
                 fixes,
-            }
-        } else {
-            Self {
+            },
+            FixExecution::ApplyRequested | FixExecution::ApplyAll => Self {
                 intent: OperationIntent::Apply,
                 fixes,
-            }
+            },
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::FixKind;
     use super::OperationIntent;
     use super::OperationMode;
-    use crate::cli::AutoFixCli;
     use crate::cli::FixCli;
-    use crate::cli::FixExecutionCli;
+    use crate::cli::FixExecution;
+    use crate::cli::FixRequest;
 
     #[test]
     fn operation_mode_is_read_only_without_fix_flags() {
-        let cli = FixCli {
-            auto_fix:  AutoFixCli::default(),
-            execution: FixExecutionCli::default(),
-        };
+        let cli = FixCli::default();
         let mode = OperationMode::from_cli(&cli);
         assert_eq!(mode.intent, OperationIntent::ReadOnly);
     }
@@ -110,11 +106,8 @@ mod tests {
     #[test]
     fn operation_mode_dry_run_alone_implies_all_fix_kinds() {
         let cli = FixCli {
-            auto_fix:  AutoFixCli::default(),
-            execution: FixExecutionCli {
-                dry_run: true,
-                ..Default::default()
-            },
+            execution: FixExecution::PreviewAll,
+            ..FixCli::default()
         };
         let mode = OperationMode::from_cli(&cli);
         assert_eq!(mode.intent, OperationIntent::DryRun);
@@ -128,15 +121,8 @@ mod tests {
     #[test]
     fn operation_mode_allows_previewing_multiple_fix_kinds() {
         let cli = FixCli {
-            auto_fix:  AutoFixCli {
-                fix: true,
-                fix_pub_use: true,
-                ..Default::default()
-            },
-            execution: FixExecutionCli {
-                dry_run: true,
-                ..Default::default()
-            },
+            execution:       FixExecution::PreviewRequested,
+            requested_fixes: BTreeSet::from([FixRequest::Mend, FixRequest::PubUse]),
         };
         let mode = OperationMode::from_cli(&cli);
         assert_eq!(mode.intent, OperationIntent::DryRun);
@@ -148,12 +134,8 @@ mod tests {
     #[test]
     fn operation_mode_allows_applying_multiple_fix_kinds() {
         let cli = FixCli {
-            auto_fix:  AutoFixCli {
-                fix: true,
-                fix_pub_use: true,
-                ..Default::default()
-            },
-            execution: FixExecutionCli::default(),
+            execution:       FixExecution::ApplyRequested,
+            requested_fixes: BTreeSet::from([FixRequest::Mend, FixRequest::PubUse]),
         };
         let mode = OperationMode::from_cli(&cli);
         assert_eq!(mode.intent, OperationIntent::Apply);

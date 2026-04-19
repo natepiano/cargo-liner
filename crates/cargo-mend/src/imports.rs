@@ -10,7 +10,6 @@ use proc_macro2::LineColumn;
 use syn::ItemMod;
 use syn::ItemUse;
 use syn::UseTree;
-use syn::parse_file;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use walkdir::WalkDir;
@@ -238,7 +237,7 @@ fn scan_file(analysis_root: &Path, src_root: &Path, path: &Path) -> Result<Vec<I
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
-        parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
+        syn::parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
     let base_module_path = module_paths::file_module_path(src_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let offsets = line_offsets(&text);

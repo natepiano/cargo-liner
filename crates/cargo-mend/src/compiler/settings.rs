@@ -10,6 +10,7 @@ use crate::config::VisibilityConfig;
 use crate::constants::CONFIG_FINGERPRINT_ENV;
 use crate::constants::CONFIG_JSON_ENV;
 use crate::constants::CONFIG_ROOT_ENV;
+use crate::constants::FINDINGS_DIR_ENV;
 use crate::constants::PACKAGE_ROOT_ENV;
 use crate::constants::SCOPE_FINGERPRINT_ENV;
 
@@ -43,7 +44,7 @@ impl DriverSettings {
         let config_fingerprint =
             env::var(CONFIG_FINGERPRINT_ENV).context("missing MEND_CONFIG_FINGERPRINT")?;
         let findings_dir = PathBuf::from(
-            env::var_os(crate::constants::FINDINGS_DIR_ENV)
+            env::var_os(FINDINGS_DIR_ENV)
                 .context("missing MEND_FINDINGS_DIR for compiler driver")?,
         );
         let scope_fingerprint =
@@ -101,20 +102,12 @@ pub(super) fn config_relative_path_for_settings(
 fn normalize_relative_path(path: &Path) -> String { path.to_string_lossy().replace('\\', "/") }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::SystemTime;
     use std::time::UNIX_EPOCH;
 
-    use super::DriverSettings;
-    use super::config_relative_path;
-    use super::config_relative_path_for_settings;
-    use super::current_analysis_fingerprint;
     use crate::config::VisibilityConfig;
 
     #[test]
@@ -129,7 +122,7 @@ mod tests {
         fs::write(&file_path, "pub mod world_query;\n")?;
 
         assert_eq!(
-            config_relative_path(&file_path, &workspace_root).as_deref(),
+            super::config_relative_path(&file_path, &workspace_root).as_deref(),
             Some("mcp/src/brp_tools/tools/mod.rs")
         );
 
@@ -138,19 +131,19 @@ mod tests {
 
     #[test]
     fn config_relative_path_for_settings_handles_package_relative_workspace_paths() {
-        let settings = DriverSettings {
+        let settings = super::DriverSettings {
             config_root:          PathBuf::from("/workspace/root"),
             config:               VisibilityConfig::default(),
             config_fingerprint:   "test".to_string(),
             scope_fingerprint:    "scope".to_string(),
             findings_dir:         PathBuf::from("/workspace/root/target/mend-findings"),
             package_root:         PathBuf::from("/workspace/root/mcp"),
-            analysis_fingerprint: current_analysis_fingerprint(),
+            analysis_fingerprint: super::current_analysis_fingerprint(),
         };
         let file_path = PathBuf::from("src/brp_tools/tools/mod.rs");
 
         assert_eq!(
-            config_relative_path_for_settings(&file_path, &settings).as_deref(),
+            super::config_relative_path_for_settings(&file_path, &settings).as_deref(),
             Some("mcp/src/brp_tools/tools/mod.rs")
         );
     }
@@ -165,19 +158,19 @@ mod tests {
             package_root.join("src/brp_tools/tools/mod.rs"),
             "pub mod child;\n",
         )?;
-        let settings = DriverSettings {
+        let settings = super::DriverSettings {
             config_root,
             config: VisibilityConfig::default(),
             config_fingerprint: "test".to_string(),
             scope_fingerprint: "scope".to_string(),
             findings_dir: temp.path().join("workspace/target/mend-findings"),
             package_root,
-            analysis_fingerprint: current_analysis_fingerprint(),
+            analysis_fingerprint: super::current_analysis_fingerprint(),
         };
         let file_path = PathBuf::from("mcp/src/brp_tools/tools/mod.rs");
 
         assert_eq!(
-            config_relative_path_for_settings(&file_path, &settings).as_deref(),
+            super::config_relative_path_for_settings(&file_path, &settings).as_deref(),
             Some("mcp/src/brp_tools/tools/mod.rs")
         );
 

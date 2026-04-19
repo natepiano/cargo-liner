@@ -109,7 +109,7 @@ fn run() -> Result<ExitCode, MendFailure> {
     let outcome =
         MendRunner::new(&selection, &cargo_plan, &config, color, output).run(operation_mode)?;
 
-    let fix_compiler_duration = if cli.fix.fix_compiler() || cli.fix.fix_all() {
+    let fix_compiler_duration = if cli.fix.runs_compiler_fix() {
         Some(compiler::run_cargo_fix(&cargo_plan, color).map_err(MendFailure::Unexpected)?)
     } else {
         None
@@ -120,8 +120,8 @@ fn run() -> Result<ExitCode, MendFailure> {
     let mend_duration = total_duration.saturating_sub(check_duration);
 
     let compiler_stats = render::CompilerStats {
-        warning_count: outcome.compiler_warning_count,
-        fixable_count: outcome.compiler_fixable_count,
+        warnings: outcome.compiler_warnings,
+        fixable:  outcome.compiler_fixable,
     };
 
     match output {

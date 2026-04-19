@@ -10,11 +10,11 @@ use super::run_mode::OperationIntent;
 
 #[derive(Debug)]
 pub(crate) struct ExecutionOutcome {
-    pub report:                 Report,
-    pub notice:                 Option<ExecutionNotice>,
-    pub check_duration:         Duration,
-    pub compiler_warning_count: usize,
-    pub compiler_fixable_count: usize,
+    pub report:            Report,
+    pub notice:            Option<ExecutionNotice>,
+    pub check_duration:    Duration,
+    pub compiler_warnings: usize,
+    pub compiler_fixable:  usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

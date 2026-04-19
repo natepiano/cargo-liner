@@ -49,18 +49,18 @@ pub(super) enum DiagnosticBlockKind {
 
 #[derive(Debug, Clone, Copy)]
 struct CommandOutcome {
-    status:                 std::process::ExitStatus,
-    compiler_warnings:      CompilerWarningFacts,
-    duration:               Duration,
-    compiler_warning_count: usize,
-    compiler_fixable_count: usize,
+    status:            std::process::ExitStatus,
+    warning_facts:     CompilerWarningFacts,
+    duration:          Duration,
+    compiler_warnings: usize,
+    compiler_fixable:  usize,
 }
 
 pub(crate) struct SelectionResult {
-    pub report:                 Report,
-    pub check_duration:         Duration,
-    pub compiler_warning_count: usize,
-    pub compiler_fixable_count: usize,
+    pub report:            Report,
+    pub check_duration:    Duration,
+    pub compiler_warnings: usize,
+    pub compiler_fixable:  usize,
 }
 
 pub(crate) fn run_selection(
@@ -111,12 +111,12 @@ pub(crate) fn run_selection(
     })?;
 
     let mut report = report;
-    report.facts.compiler_warnings = command_outcome.compiler_warnings;
+    report.facts.compiler_warnings = command_outcome.warning_facts;
     Ok(SelectionResult {
         report,
         check_duration: command_outcome.duration,
-        compiler_warning_count: command_outcome.compiler_warning_count,
-        compiler_fixable_count: command_outcome.compiler_fixable_count,
+        compiler_warnings: command_outcome.compiler_warnings,
+        compiler_fixable: command_outcome.compiler_fixable,
     })
 }
 
@@ -226,10 +226,10 @@ fn run_cargo_command(
     let duration = start.elapsed();
     Ok(CommandOutcome {
         status,
-        compiler_warnings: stderr_outcome.warnings,
+        warning_facts: stderr_outcome.warnings,
         duration,
-        compiler_warning_count: stderr_outcome.warning_count,
-        compiler_fixable_count: stderr_outcome.fixable_count,
+        compiler_warnings: stderr_outcome.warning_count,
+        compiler_fixable: stderr_outcome.fixable_count,
     })
 }
 

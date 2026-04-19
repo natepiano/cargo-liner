@@ -50,7 +50,7 @@ pub(crate) fn driver_main() -> ExitCode {
         Ok(code) => code,
         Err(err) => {
             eprintln!("mend: {err:#}");
-            ExitCode::from(1)
+            ExitCode::from(EXIT_CODE_ERROR)
         },
     }
 }
@@ -98,7 +98,9 @@ fn passthrough_to_rustc(wrapper_args: &[OsString]) -> Result<ExitCode> {
         .stderr(Stdio::inherit())
         .status()
         .context("failed to invoke rustc passthrough from mend wrapper")?;
-    Ok(exit_code_from_i32(status.code().unwrap_or(1)))
+    Ok(exit_code_from_i32(
+        status.code().unwrap_or_else(|| i32::from(EXIT_CODE_ERROR)),
+    ))
 }
 
 /// Compatibility trait for `rustc_driver::catch_with_exit_code` which returns

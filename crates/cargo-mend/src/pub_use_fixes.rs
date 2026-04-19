@@ -10,7 +10,6 @@ use regex::Regex;
 use syn::Item;
 use syn::ItemUse;
 use syn::UseTree;
-use syn::parse_file;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
@@ -235,7 +234,7 @@ fn build_parent_pub_use_edit_for_exports(
 ) -> Result<UseFix> {
     let source = fs::read_to_string(&parent_boundary.parent_module)
         .with_context(|| format!("failed to read {}", parent_boundary.parent_module.display()))?;
-    let file = parse_file(&source).context("failed to parse parent module file")?;
+    let file = syn::parse_file(&source).context("failed to parse parent module file")?;
     let offsets = line_offsets(&source);
     for item in file.items {
         let Item::Use(item_use) = item else {
@@ -337,7 +336,7 @@ fn rewrite_in_subtree_imports(
     let source =
         fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
     let syntax =
-        parse_file(&source).with_context(|| format!("failed to parse {}", file.display()))?;
+        syn::parse_file(&source).with_context(|| format!("failed to parse {}", file.display()))?;
     let src_root = find_src_root(file).with_context(|| {
         format!(
             "failed to determine src root for subtree file {} under {}",
@@ -719,7 +718,7 @@ fn resolve_parent_pub_use_export(
     child_module_name: &str,
     item_name: &str,
 ) -> Result<Option<ParentExportResolution>> {
-    let file = parse_file(source).context("failed to parse parent module file")?;
+    let file = syn::parse_file(source).context("failed to parse parent module file")?;
     let offsets = line_offsets(source);
     for item in file.items {
         let Item::Use(item_use) = item else {

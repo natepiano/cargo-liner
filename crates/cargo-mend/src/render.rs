@@ -29,8 +29,8 @@ pub(crate) enum OutputFormat {
 }
 
 pub(crate) struct CompilerStats {
-    pub warning_count: usize,
-    pub fixable_count: usize,
+    pub warnings: usize,
+    pub fixable:  usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +44,7 @@ enum Findings {
 impl Findings {
     const fn classify(report: &Report, compiler_stats: &CompilerStats) -> Self {
         let has_mend = !report.findings.is_empty();
-        let has_compiler = compiler_stats.warning_count > 0;
+        let has_compiler = compiler_stats.warnings > 0;
         match (has_mend, has_compiler) {
             (false, false) => Self::None,
             (false, true) => Self::CompilerOnly,
@@ -201,13 +201,13 @@ fn summary_line(report: &Report, compiler_stats: &CompilerStats, color: ColorMod
             fixable:     None,
         });
     }
-    if compiler_stats.warning_count > 0 {
-        let n = compiler_stats.warning_count;
+    if compiler_stats.warnings > 0 {
+        let n = compiler_stats.warnings;
         rows.push(SummaryRow {
             count:       n,
             description: pluralize(n, "compiler warning", "compiler warnings").to_string(),
-            fixable:     (compiler_stats.fixable_count > 0).then_some(SummaryFixable {
-                count:   compiler_stats.fixable_count,
+            fixable:     (compiler_stats.fixable > 0).then_some(SummaryFixable {
+                count:   compiler_stats.fixable,
                 command: "cargo mend --fix-compiler",
             }),
         });
@@ -238,10 +238,10 @@ fn summary_line(report: &Report, compiler_stats: &CompilerStats, color: ColorMod
         return format!("{} no issues found", dim("summary:", color));
     }
 
-    let total_warnings = report.summary.warnings + compiler_stats.warning_count;
-    let total_fixable = mend_fixable_count + compiler_stats.fixable_count;
+    let total_warnings = report.summary.warnings + compiler_stats.warnings;
+    let total_fixable = mend_fixable_count + compiler_stats.fixable;
     let action_row =
-        (mend_fixable_count > 0 && compiler_stats.fixable_count > 0).then_some(SummaryActionRow {
+        (mend_fixable_count > 0 && compiler_stats.fixable > 0).then_some(SummaryActionRow {
             count:         total_warnings,
             description:   "total warnings",
             fixable_count: total_fixable,
@@ -372,11 +372,8 @@ mod tests {
     use crate::diagnostics::Severity;
     use crate::fix_support::FixSupport;
 
-    fn compiler_stats(warning_count: usize, fixable_count: usize) -> CompilerStats {
-        CompilerStats {
-            warning_count,
-            fixable_count,
-        }
+    fn compiler_stats(warnings: usize, fixable: usize) -> CompilerStats {
+        CompilerStats { warnings, fixable }
     }
 
     fn mend_warning_report() -> Report {

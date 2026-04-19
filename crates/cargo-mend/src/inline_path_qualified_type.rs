@@ -10,7 +10,6 @@ use syn::Item;
 use syn::ItemUse;
 use syn::TypePath;
 use syn::UseTree;
-use syn::parse_file;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use walkdir::WalkDir;
@@ -81,7 +80,7 @@ fn scan_file(
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
-        parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
+        syn::parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
     let offsets = line_offsets(&text);
     let base_module_path = module_paths::file_module_path(src_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
