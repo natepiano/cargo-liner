@@ -132,7 +132,6 @@ pub(crate) fn from_cargo_toml(
     let rust = RustInfo {
         info: ProjectInfo {
             worktree_health,
-            worktree_status,
             ..ProjectInfo::default()
         },
         cargo,
@@ -143,6 +142,7 @@ pub(crate) fn from_cargo_toml(
         Ok(CargoParseResult::Workspace(Workspace {
             path: abs_path,
             name,
+            worktree_status,
             rust,
             ..Workspace::default()
         }))
@@ -150,6 +150,7 @@ pub(crate) fn from_cargo_toml(
         Ok(CargoParseResult::Package(Package {
             path: abs_path,
             name,
+            worktree_status,
             rust,
         }))
     }
@@ -162,9 +163,8 @@ pub(crate) fn from_git_dir(project_dir: &Path) -> NonRustProject {
         .map(|n| n.to_string_lossy().to_string());
 
     let mut project = NonRustProject::new(AbsolutePath::from(project_dir), name);
-    let info = project.info_mut();
-    info.worktree_health = git::detect_worktree_health(project_dir);
-    info.worktree_status = git::detect_worktree_status(project_dir);
+    project.info_mut().worktree_health = git::detect_worktree_health(project_dir);
+    project.worktree_status = git::detect_worktree_status(project_dir);
     project
 }
 

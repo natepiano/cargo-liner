@@ -23,10 +23,12 @@ pub(crate) trait ProjectFields {
     fn display_path(&self) -> DisplayPath;
     fn root_directory_name(&self) -> RootDirectoryName;
 
-    /// Git worktree status (not-git / primary / linked). Lives on
-    /// `ProjectInfo` so it is uniformly available to Rust and non-Rust
-    /// projects alike.
-    fn worktree_status(&self) -> &WorktreeStatus { &self.info().worktree_status }
+    /// Git worktree status (not-git / primary / linked). Lives as a
+    /// top-level identity field on each project type — not inside
+    /// `ProjectInfo` — so `handle_project_refreshed` cannot accidentally
+    /// overwrite the freshly-detected value when copying runtime data
+    /// across a refresh.
+    fn worktree_status(&self) -> &WorktreeStatus;
 
     /// Crates.io package name to query, when the entry corresponds to a
     /// publishable crate. Default `None` — opt in by overriding.

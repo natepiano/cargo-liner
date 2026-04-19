@@ -431,28 +431,18 @@ fn startup_git_expected_uses_top_level_git_directories() {
     let primary = Package {
         path: AbsolutePath::from(primary_dir.clone()),
         name: Some("cargo-port".to_string()),
-        rust: RustInfo {
-            info: ProjectInfo {
-                worktree_status: WorktreeStatus::Primary {
-                    root: AbsolutePath::from(primary_dir.clone()),
-                },
-                ..ProjectInfo::default()
-            },
-            ..RustInfo::default()
+        worktree_status: WorktreeStatus::Primary {
+            root: AbsolutePath::from(primary_dir.clone()),
         },
+        ..Package::default()
     };
     let linked = Package {
         path: AbsolutePath::from(linked_dir),
         name: Some("cargo-port_feat".to_string()),
-        rust: RustInfo {
-            info: ProjectInfo {
-                worktree_status: WorktreeStatus::Linked {
-                    primary: AbsolutePath::from(primary_dir.clone()),
-                },
-                ..ProjectInfo::default()
-            },
-            ..RustInfo::default()
+        worktree_status: WorktreeStatus::Linked {
+            primary: AbsolutePath::from(primary_dir.clone()),
         },
+        ..Package::default()
     };
     let worktrees = RootItem::Worktrees(WorktreeGroup::new_packages(primary, vec![linked]));
 
@@ -599,6 +589,7 @@ fn vendored_path_dependency_becomes_ci_owner() {
                 vendored: vec![make_member(Some("helper"), "~/app/vendor/helper")],
                 ..RustInfo::default()
             },
+            ..Package::default()
         };
         RootItem::Rust(RustProject::Package(pkg))
     };

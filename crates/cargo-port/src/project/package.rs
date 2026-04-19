@@ -2,6 +2,7 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 
 use super::git::GitInfo;
+use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
@@ -19,9 +20,10 @@ use super::rust_info::RustInfo;
 /// All fields default to empty/none, so tests can use `..Default::default()`.
 #[derive(Clone, Default)]
 pub(crate) struct Package {
-    pub(crate) path: AbsolutePath,
-    pub(crate) name: Option<String>,
-    pub(crate) rust: RustInfo,
+    pub(crate) path:            AbsolutePath,
+    pub(crate) name:            Option<String>,
+    pub(crate) worktree_status: WorktreeStatus,
+    pub(crate) rust:            RustInfo,
 }
 
 impl Package {
@@ -59,6 +61,8 @@ impl ProjectFields for Package {
     fn root_directory_name(&self) -> RootDirectoryName {
         RootDirectoryName(paths::directory_leaf(self.path.as_path()))
     }
+
+    fn worktree_status(&self) -> &WorktreeStatus { &self.worktree_status }
 
     fn crates_io_name(&self) -> Option<&str> {
         self.name

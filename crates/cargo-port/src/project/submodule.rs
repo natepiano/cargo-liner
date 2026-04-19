@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use super::git::GitInfo;
+use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
@@ -52,7 +53,13 @@ impl ProjectFields for Submodule {
     fn root_directory_name(&self) -> RootDirectoryName {
         RootDirectoryName(paths::directory_leaf(self.path.as_path()))
     }
+
+    /// Submodules are not treated as worktree roots themselves — their
+    /// git-ness is handled inside their parent repo. Always `NotGit`.
+    fn worktree_status(&self) -> &WorktreeStatus { &NOT_GIT }
 }
+
+static NOT_GIT: WorktreeStatus = WorktreeStatus::NotGit;
 
 /// Parse `.gitmodules` and resolve pinned commits for all submodules.
 pub(crate) fn detect_submodules(project_root: &Path) -> Vec<Submodule> {

@@ -1826,18 +1826,18 @@ impl App {
         let path = item.path().to_path_buf();
 
         // Replace the leaf in project_list_items, transferring runtime data
-        // from the old item to the incoming one. Freshly-detected fields on
-        // the new item (worktree_status, worktree_health) must be preserved
-        // across the copy, since the old snapshot predates this refresh.
+        // from the old item to the incoming one. `worktree_health` is
+        // filesystem-detected at refresh time and must survive the info copy.
+        // `worktree_status` is no longer on `ProjectInfo` — it lives directly
+        // on `Workspace` / `Package` / `NonRustProject` — so this copy cannot
+        // clobber it.
         let Some(old) = self.projects.replace_leaf_by_path(&path, item.clone()) else {
             return false;
         };
         for (project_path, info) in old.collect_project_info() {
             if let Some(project) = item.at_path_mut(&project_path) {
-                let fresh_worktree_status = project.worktree_status.clone();
                 let fresh_worktree_health = project.worktree_health;
                 *project = info;
-                project.worktree_status = fresh_worktree_status;
                 project.worktree_health = fresh_worktree_health;
             }
         }

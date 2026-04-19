@@ -68,6 +68,7 @@ fn tabbable_panes_follow_canonical_order() {
             },
             ..RustInfo::default()
         },
+        ..Package::default()
     }));
 
     let mut app = make_app(std::slice::from_ref(&project));
@@ -200,6 +201,7 @@ fn project_refresh_updates_selected_tree_project_targets() {
             },
             ..RustInfo::default()
         },
+        ..Package::default()
     }));
 
     app.handle_project_refreshed(refreshed);

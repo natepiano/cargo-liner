@@ -273,7 +273,6 @@ mod tests {
     use crate::project::LocalGitState;
     use crate::project::MemberGroup;
     use crate::project::Package;
-    use crate::project::ProjectInfo;
     use crate::project::ProjectType;
     use crate::project::RemoteInfo;
     use crate::project::RemoteKind;
@@ -318,6 +317,7 @@ mod tests {
                 cargo,
                 ..RustInfo::default()
             },
+            ..Package::default()
         }))
     }
 
@@ -339,13 +339,8 @@ mod tests {
         Package {
             path: AbsolutePath::from(path),
             name: Some(name.to_string()),
-            rust: RustInfo {
-                info: ProjectInfo {
-                    worktree_status,
-                    ..ProjectInfo::default()
-                },
-                ..RustInfo::default()
-            },
+            worktree_status,
+            ..Package::default()
         }
     }
 

@@ -1075,6 +1075,7 @@ mod tests {
                 },
                 ..RustInfo::default()
             },
+            ..Package::default()
         };
 
         let (items, _widths) = build_finder_index(&[RootItem::Rust(RustProject::Package(pkg))]);

@@ -33,7 +33,6 @@ use super::project::LanguageStats;
 use super::project::MemberGroup;
 use super::project::Package;
 use super::project::ProjectFields;
-use super::project::ProjectInfo;
 use super::project::RootItem;
 use super::project::RustInfo;
 use super::project::RustProject;
@@ -489,13 +488,10 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
                 } else if let RootItem::Rust(RustProject::Workspace(nested_ws)) = candidate {
                     // Nested workspace treated as a package member
                     Some(Package {
-                        path: nested_ws.path().clone(),
-                        name: nested_ws.name().map(str::to_string),
-                        rust: RustInfo {
-                            info: ProjectInfo {
-                                worktree_status: nested_ws.worktree_status().clone(),
-                                ..ProjectInfo::default()
-                            },
+                        path:            nested_ws.path().clone(),
+                        name:            nested_ws.name().map(str::to_string),
+                        worktree_status: nested_ws.worktree_status().clone(),
+                        rust:            RustInfo {
                             cargo: nested_ws.cargo().clone(),
                             ..RustInfo::default()
                         },
@@ -822,13 +818,10 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
         let pkg = match &items[vi] {
             RootItem::Rust(RustProject::Package(p)) => p.clone(),
             RootItem::Rust(RustProject::Workspace(ws)) => Package {
-                path: ws.path().clone(),
-                name: ws.name().map(str::to_string),
-                rust: RustInfo {
-                    info: ProjectInfo {
-                        worktree_status: ws.worktree_status().clone(),
-                        ..ProjectInfo::default()
-                    },
+                path:            ws.path().clone(),
+                name:            ws.name().map(str::to_string),
+                worktree_status: ws.worktree_status().clone(),
+                rust:            RustInfo {
                     cargo: ws.cargo().clone(),
                     ..RustInfo::default()
                 },
@@ -1548,13 +1541,7 @@ mod tests {
         RootItem::Rust(RustProject::Workspace(Workspace {
             path: AbsolutePath::from(abs_path),
             name: name.map(String::from),
-            rust: RustInfo {
-                info: ProjectInfo {
-                    worktree_status: status_for(is_linked_worktree, primary_abs),
-                    ..ProjectInfo::default()
-                },
-                ..RustInfo::default()
-            },
+            worktree_status: status_for(is_linked_worktree, primary_abs),
             ..Workspace::default()
         }))
     }
@@ -1568,13 +1555,8 @@ mod tests {
         RootItem::Rust(RustProject::Package(Package {
             path: AbsolutePath::from(abs_path),
             name: name.map(String::from),
-            rust: RustInfo {
-                info: ProjectInfo {
-                    worktree_status: status_for(is_linked_worktree, primary_abs),
-                    ..ProjectInfo::default()
-                },
-                ..RustInfo::default()
-            },
+            worktree_status: status_for(is_linked_worktree, primary_abs),
+            ..Package::default()
         }))
     }
 

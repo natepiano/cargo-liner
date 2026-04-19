@@ -40,7 +40,6 @@ use crate::project::Package;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::project::ProjectFields;
-use crate::project::ProjectInfo;
 use crate::project::RemoteInfo;
 use crate::project::RemoteKind;
 use crate::project::RootItem;
@@ -280,13 +279,8 @@ fn make_package_raw_with_primary(
     Package {
         path: test_path(path),
         name: name.map(String::from),
-        rust: RustInfo {
-            info: ProjectInfo {
-                worktree_status: status_for(worktree_marker, primary_abs_path),
-                ..ProjectInfo::default()
-            },
-            ..RustInfo::default()
-        },
+        worktree_status: status_for(worktree_marker, primary_abs_path),
+        ..Package::default()
     }
 }
 
@@ -309,14 +303,9 @@ fn make_workspace_raw_with_primary(
     Workspace {
         path: test_path(path),
         name: name.map(String::from),
-        rust: RustInfo {
-            info: ProjectInfo {
-                worktree_status: status_for(worktree_marker, primary_abs_path),
-                ..ProjectInfo::default()
-            },
-            ..RustInfo::default()
-        },
+        worktree_status: status_for(worktree_marker, primary_abs_path),
         groups,
+        ..Workspace::default()
     }
 }
 
@@ -339,6 +328,7 @@ fn make_package_with_vendored(name: Option<&str>, path: &str, vendored: Vec<Pack
             vendored,
             ..RustInfo::default()
         },
+        ..Package::default()
     }
 }
 

@@ -2,6 +2,7 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 
 use super::git::GitInfo;
+use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
@@ -15,9 +16,10 @@ use super::project_fields::ProjectFields;
 /// Derefs to `ProjectInfo` for uniform metadata access.
 #[derive(Clone)]
 pub(crate) struct NonRustProject {
-    pub(super) path: AbsolutePath,
-    pub(super) name: Option<String>,
-    pub(super) info: ProjectInfo,
+    pub(super) path:            AbsolutePath,
+    pub(super) name:            Option<String>,
+    pub(super) worktree_status: WorktreeStatus,
+    pub(super) info:            ProjectInfo,
 }
 
 impl NonRustProject {
@@ -25,6 +27,7 @@ impl NonRustProject {
         Self {
             path,
             name,
+            worktree_status: WorktreeStatus::default(),
             info: ProjectInfo::default(),
         }
     }
@@ -52,6 +55,8 @@ impl ProjectFields for NonRustProject {
     fn root_directory_name(&self) -> RootDirectoryName {
         RootDirectoryName(paths::directory_leaf(self.path.as_path()))
     }
+
+    fn worktree_status(&self) -> &WorktreeStatus { &self.worktree_status }
 }
 
 impl Deref for NonRustProject {
