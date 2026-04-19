@@ -742,6 +742,9 @@ impl CiData {
 #[derive(Clone)]
 pub struct LintsData {
     pub runs:    Vec<LintRun>,
+    /// Archive-directory size in bytes for each run, aligned by index with
+    /// `runs`.
+    pub sizes:   Vec<u64>,
     pub is_rust: bool,
 }
 
@@ -1298,11 +1301,21 @@ pub fn build_ci_data(app: &App) -> CiData {
 
 pub fn build_lints_data(app: &App) -> LintsData {
     let selected_path = app.selected_project_path();
+    let runs: Vec<LintRun> = selected_path
+        .and_then(|path| app.lint_at_path(path))
+        .map(|lr| lr.runs().to_vec())
+        .unwrap_or_default();
+    let sizes = selected_path.map_or_else(
+        || vec![0; runs.len()],
+        |project_root| {
+            runs.iter()
+                .map(|run| crate::lint::run_archive_bytes(project_root, &run.run_id))
+                .collect()
+        },
+    );
     LintsData {
-        runs:    selected_path
-            .and_then(|path| app.lint_at_path(path))
-            .map(|lr| lr.runs().to_vec())
-            .unwrap_or_default(),
+        runs,
+        sizes,
         is_rust: selected_path.is_some_and(|path| app.is_rust_at_path(path)),
     }
 }

@@ -31,6 +31,13 @@ pub fn retained_cache_usage(cache_size_bytes: Option<u64>) -> CacheUsage {
     retained_cache_usage_under(&paths::cache_root(), cache_size_bytes)
 }
 
+/// Total bytes on disk under a run's archived output directory
+/// (`{cache}/{project_key}/runs/{run_id}`).
+pub fn run_archive_bytes(project_root: &Path, run_id: &str) -> u64 {
+    let run_dir = paths::project_dir(project_root).join("runs").join(run_id);
+    total_bytes_under(&run_dir)
+}
+
 pub(super) fn retained_cache_usage_under(
     cache_root: &Path,
     cache_size_bytes: Option<u64>,

@@ -59,6 +59,7 @@ fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'sta
 
 fn build_lint_rows(
     runs: &[LintRun],
+    sizes: &[u64],
     animation_elapsed: std::time::Duration,
     pane: &Pane,
     focus: PaneFocusState,
@@ -85,6 +86,10 @@ fn build_lint_rows(
             .as_deref()
             .map_or_else(|| "—".to_string(), super::format_time);
         let duration = super::format_duration(run.duration_ms);
+        let size = sizes
+            .get(row_index)
+            .copied()
+            .map_or_else(String::new, crate::tui::render::format_bytes);
 
         let (result_cell, row_style) = match run.status {
             LintRunStatus::Running => {
@@ -109,6 +114,10 @@ fn build_lint_rows(
                 ),
                 Cell::from(
                     Line::from(Span::styled(duration, Style::default().fg(LABEL_COLOR)))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(size, Style::default().fg(LABEL_COLOR)))
                         .alignment(Alignment::Right),
                 ),
                 result_cell,
@@ -151,7 +160,13 @@ pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let pane = app.pane_manager().pane(PaneId::Lints).clone();
     let focus = app.pane_focus_state(PaneId::Lints);
-    let rows = build_lint_rows(&lints_data.runs, app.animation_elapsed(), &pane, focus);
+    let rows = build_lint_rows(
+        &lints_data.runs,
+        &lints_data.sizes,
+        app.animation_elapsed(),
+        &pane,
+        focus,
+    );
     app.pane_manager_mut()
         .pane_mut(PaneId::Lints)
         .set_len(rows.len());
@@ -167,6 +182,7 @@ pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(8),
             Constraint::Length(8),
             Constraint::Length(8),
+            Constraint::Length(9),
             Constraint::Length(8),
         ],
     )
@@ -176,6 +192,7 @@ pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             Cell::from(Line::from("Start").alignment(Alignment::Right)),
             Cell::from(Line::from("End").alignment(Alignment::Right)),
             Cell::from(Line::from("Duration").alignment(Alignment::Right)),
+            Cell::from(Line::from("Size").alignment(Alignment::Right)),
             Cell::from("Result"),
         ])
         .style(col_header_style),

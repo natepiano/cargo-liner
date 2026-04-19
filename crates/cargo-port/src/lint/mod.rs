@@ -19,6 +19,7 @@ mod tests;
 pub use history::CacheUsage;
 pub use history::read_history;
 pub use history::retained_cache_usage;
+pub use history::run_archive_bytes;
 pub use lint_runs::LintRuns;
 #[cfg(test)]
 pub use paths::cache_root;

@@ -456,6 +456,7 @@ mod tests {
         app.ensure_detail_cached();
         app.pane_data_mut().lints = Some(crate::tui::panes::LintsData {
             runs:    runs.to_vec(),
+            sizes:   vec![0; runs.len()],
             is_rust: true,
         });
         let backend = TestBackend::new(120, 20);
