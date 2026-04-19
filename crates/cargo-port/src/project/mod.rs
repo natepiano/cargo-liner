@@ -22,7 +22,8 @@ pub(crate) use cargo::ProjectType;
 pub(crate) use cargo::from_cargo_toml;
 pub(crate) use cargo::from_git_dir;
 // ── Git types and functions ──────────────────────────────────────────
-pub(crate) use git::GitInfo;
+pub(crate) use git::CheckoutInfo;
+pub(crate) use git::DetectedGit;
 pub(crate) use git::GitOrigin;
 pub(crate) use git::GitRepoPresence;
 pub(crate) use git::GitStatus;
@@ -30,6 +31,7 @@ pub(crate) use git::LocalGitState;
 #[cfg(test)]
 pub(crate) use git::RemoteInfo;
 pub(crate) use git::RemoteKind;
+pub(crate) use git::RepoDetection;
 #[cfg(test)]
 pub(crate) use git::WorkflowPresence;
 pub(crate) use git::WorktreeStatus;

@@ -26,7 +26,7 @@ use super::http::ServiceSignal;
 use super::lint::LintStatus;
 use super::project::AbsolutePath;
 use super::project::CargoParseResult;
-use super::project::GitInfo;
+use super::project::DetectedGit;
 use super::project::GitRepoPresence;
 use super::project::LangEntry;
 use super::project::LanguageStats;
@@ -68,10 +68,12 @@ pub(crate) enum BackgroundMsg {
     },
     /// Git metadata detected for a project (branch, origin, ahead/behind,
     /// path state). Sent by `detect_fast()` during startup and watcher
-    /// refreshes.
+    /// refreshes. Carries both the per-checkout `CheckoutInfo` and the
+    /// per-repo `RepoDetection`; the handler routes them to their
+    /// respective storage slots.
     GitInfo {
         path: AbsolutePath,
-        info: GitInfo,
+        info: DetectedGit,
     },
     /// First commit date detected for a project (deferred post-scan,
     /// batched by repo root to avoid redundant `git log` calls).
@@ -982,7 +984,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     // first_commit, which is handled separately by
     // `schedule_git_first_commit_refreshes` (batched by repo root).
     let git_info = if repo_presence.is_in_repo() {
-        GitInfo::detect_fast(abs_path)
+        DetectedGit::detect_fast(abs_path)
     } else {
         None
     };

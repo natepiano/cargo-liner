@@ -182,26 +182,30 @@ fn ci_for_prefers_runs_matching_local_branch() {
     let mut app = make_app(std::slice::from_ref(&project));
     app.handle_git_info(
         project.path(),
-        GitInfo {
-            status:               GitStatus::Clean,
-            branch:               Some("feat/demo".to_string()),
-            first_commit:         None,
-            last_commit:          None,
-            last_fetched:         None,
-            default_branch:       Some("main".to_string()),
-            local_main_branch:    Some("main".to_string()),
-            ahead_behind_local:   None,
-            workflows:            WorkflowPresence::Present,
-            remotes:              vec![RemoteInfo {
-                name:         "origin".to_string(),
-                url:          Some("https://github.com/acme/demo".to_string()),
-                owner:        Some("acme".to_string()),
-                repo:         Some("demo".to_string()),
-                tracked_ref:  Some("origin/main".to_string()),
-                ahead_behind: None,
-                kind:         RemoteKind::Clone,
-            }],
-            primary_remote_index: Some(0),
+        DetectedGit {
+            checkout: CheckoutInfo {
+                status:              GitStatus::Clean,
+                branch:              Some("feat/demo".to_string()),
+                last_commit:         None,
+                ahead_behind_local:  None,
+                primary_tracked_ref: Some("origin/main".to_string()),
+            },
+            repo:     RepoDetection {
+                remotes:           vec![RemoteInfo {
+                    name:         "origin".to_string(),
+                    url:          Some("https://github.com/acme/demo".to_string()),
+                    owner:        Some("acme".to_string()),
+                    repo:         Some("demo".to_string()),
+                    tracked_ref:  Some("origin/main".to_string()),
+                    ahead_behind: None,
+                    kind:         RemoteKind::Clone,
+                }],
+                workflows:         WorkflowPresence::Present,
+                first_commit:      None,
+                last_fetched:      None,
+                default_branch:    Some("main".to_string()),
+                local_main_branch: Some("main".to_string()),
+            },
         },
     );
     set_loaded_ci(
@@ -230,26 +234,30 @@ fn ci_for_default_branch_prefers_matching_branch_runs() {
     let mut app = make_app(std::slice::from_ref(&project));
     app.handle_git_info(
         project.path(),
-        GitInfo {
-            status:               GitStatus::Clean,
-            branch:               Some("main".to_string()),
-            first_commit:         None,
-            last_commit:          None,
-            last_fetched:         None,
-            default_branch:       Some("main".to_string()),
-            local_main_branch:    Some("main".to_string()),
-            ahead_behind_local:   None,
-            workflows:            WorkflowPresence::Present,
-            remotes:              vec![RemoteInfo {
-                name:         "origin".to_string(),
-                url:          Some("https://github.com/acme/demo".to_string()),
-                owner:        Some("acme".to_string()),
-                repo:         Some("demo".to_string()),
-                tracked_ref:  Some("origin/main".to_string()),
-                ahead_behind: None,
-                kind:         RemoteKind::Clone,
-            }],
-            primary_remote_index: Some(0),
+        DetectedGit {
+            checkout: CheckoutInfo {
+                status:              GitStatus::Clean,
+                branch:              Some("main".to_string()),
+                last_commit:         None,
+                ahead_behind_local:  None,
+                primary_tracked_ref: Some("origin/main".to_string()),
+            },
+            repo:     RepoDetection {
+                remotes:           vec![RemoteInfo {
+                    name:         "origin".to_string(),
+                    url:          Some("https://github.com/acme/demo".to_string()),
+                    owner:        Some("acme".to_string()),
+                    repo:         Some("demo".to_string()),
+                    tracked_ref:  Some("origin/main".to_string()),
+                    ahead_behind: None,
+                    kind:         RemoteKind::Clone,
+                }],
+                workflows:         WorkflowPresence::Present,
+                first_commit:      None,
+                last_fetched:      None,
+                default_branch:    Some("main".to_string()),
+                local_main_branch: Some("main".to_string()),
+            },
         },
     );
     set_loaded_ci(
@@ -285,26 +293,30 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
     let mut app = make_app(std::slice::from_ref(&project));
     app.handle_git_info(
         project.path(),
-        GitInfo {
-            status:               GitStatus::Clean,
-            branch:               Some("feat/demo".to_string()),
-            first_commit:         None,
-            last_commit:          None,
-            last_fetched:         None,
-            default_branch:       Some("main".to_string()),
-            local_main_branch:    Some("main".to_string()),
-            ahead_behind_local:   None,
-            workflows:            WorkflowPresence::Present,
-            remotes:              vec![RemoteInfo {
-                name:         "origin".to_string(),
-                url:          Some("https://github.com/acme/demo".to_string()),
-                owner:        Some("acme".to_string()),
-                repo:         Some("demo".to_string()),
-                tracked_ref:  Some("origin/main".to_string()),
-                ahead_behind: None,
-                kind:         RemoteKind::Clone,
-            }],
-            primary_remote_index: Some(0),
+        DetectedGit {
+            checkout: CheckoutInfo {
+                status:              GitStatus::Clean,
+                branch:              Some("feat/demo".to_string()),
+                last_commit:         None,
+                ahead_behind_local:  None,
+                primary_tracked_ref: Some("origin/main".to_string()),
+            },
+            repo:     RepoDetection {
+                remotes:           vec![RemoteInfo {
+                    name:         "origin".to_string(),
+                    url:          Some("https://github.com/acme/demo".to_string()),
+                    owner:        Some("acme".to_string()),
+                    repo:         Some("demo".to_string()),
+                    tracked_ref:  Some("origin/main".to_string()),
+                    ahead_behind: None,
+                    kind:         RemoteKind::Clone,
+                }],
+                workflows:         WorkflowPresence::Present,
+                first_commit:      None,
+                last_fetched:      None,
+                default_branch:    Some("main".to_string()),
+                local_main_branch: Some("main".to_string()),
+            },
         },
     );
     set_loaded_ci(
@@ -626,40 +638,44 @@ fn git_status_suppresses_sync_for_untracked_and_ignored() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
 
-    let base_info = || GitInfo {
-        status:               GitStatus::Clean,
-        branch:               Some("feat/demo".to_string()),
-        first_commit:         None,
-        last_commit:          None,
-        last_fetched:         None,
-        default_branch:       Some("main".to_string()),
-        local_main_branch:    Some("main".to_string()),
-        ahead_behind_local:   None,
-        workflows:            WorkflowPresence::Present,
-        remotes:              vec![RemoteInfo {
-            name:         "origin".to_string(),
-            url:          Some("https://github.com/acme/demo".to_string()),
-            owner:        None,
-            repo:         Some("demo".to_string()),
-            tracked_ref:  Some("origin/main".to_string()),
-            ahead_behind: Some((2, 0)),
-            kind:         RemoteKind::Clone,
-        }],
-        primary_remote_index: Some(0),
+    let base_info = || DetectedGit {
+        checkout: CheckoutInfo {
+            status:              GitStatus::Clean,
+            branch:              Some("feat/demo".to_string()),
+            last_commit:         None,
+            ahead_behind_local:  None,
+            primary_tracked_ref: Some("origin/main".to_string()),
+        },
+        repo:     RepoDetection {
+            remotes:           vec![RemoteInfo {
+                name:         "origin".to_string(),
+                url:          Some("https://github.com/acme/demo".to_string()),
+                owner:        None,
+                repo:         Some("demo".to_string()),
+                tracked_ref:  Some("origin/main".to_string()),
+                ahead_behind: Some((2, 0)),
+                kind:         RemoteKind::Clone,
+            }],
+            workflows:         WorkflowPresence::Present,
+            first_commit:      None,
+            last_fetched:      None,
+            default_branch:    Some("main".to_string()),
+            local_main_branch: Some("main".to_string()),
+        },
     };
 
     app.handle_git_info(project.path(), base_info());
 
     app.handle_git_info(project.path(), {
         let mut info = base_info();
-        info.status = GitStatus::Untracked;
+        info.checkout.status = GitStatus::Untracked;
         info
     });
     assert!(app.git_sync(project.path()).is_empty());
 
     app.handle_git_info(project.path(), {
         let mut info = base_info();
-        info.status = GitStatus::Ignored;
+        info.checkout.status = GitStatus::Ignored;
         info
     });
     assert!(app.git_sync(project.path()).is_empty());
@@ -675,26 +691,30 @@ fn background_git_info_updates_rendered_git_status() {
         &mut app,
         BackgroundMsg::GitInfo {
             path: project.path().to_path_buf().into(),
-            info: GitInfo {
-                status:               GitStatus::Modified,
-                branch:               Some("feat/demo".to_string()),
-                first_commit:         None,
-                last_commit:          None,
-                last_fetched:         None,
-                default_branch:       Some("main".to_string()),
-                local_main_branch:    Some("main".to_string()),
-                ahead_behind_local:   None,
-                workflows:            WorkflowPresence::Present,
-                remotes:              vec![RemoteInfo {
-                    name:         "origin".to_string(),
-                    url:          Some("https://github.com/acme/demo".to_string()),
-                    owner:        None,
-                    repo:         Some("demo".to_string()),
-                    tracked_ref:  Some("origin/main".to_string()),
-                    ahead_behind: Some((1, 0)),
-                    kind:         RemoteKind::Clone,
-                }],
-                primary_remote_index: Some(0),
+            info: DetectedGit {
+                checkout: CheckoutInfo {
+                    status:              GitStatus::Modified,
+                    branch:              Some("feat/demo".to_string()),
+                    last_commit:         None,
+                    ahead_behind_local:  None,
+                    primary_tracked_ref: Some("origin/main".to_string()),
+                },
+                repo:     RepoDetection {
+                    remotes:           vec![RemoteInfo {
+                        name:         "origin".to_string(),
+                        url:          Some("https://github.com/acme/demo".to_string()),
+                        owner:        None,
+                        repo:         Some("demo".to_string()),
+                        tracked_ref:  Some("origin/main".to_string()),
+                        ahead_behind: Some((1, 0)),
+                        kind:         RemoteKind::Clone,
+                    }],
+                    workflows:         WorkflowPresence::Present,
+                    first_commit:      None,
+                    last_fetched:      None,
+                    default_branch:    Some("main".to_string()),
+                    local_main_branch: Some("main".to_string()),
+                },
             },
         },
     );
@@ -707,26 +727,30 @@ fn background_git_info_updates_rendered_git_status() {
         &mut app,
         BackgroundMsg::GitInfo {
             path: project.path().to_path_buf().into(),
-            info: GitInfo {
-                status:               GitStatus::Clean,
-                branch:               Some("feat/demo".to_string()),
-                first_commit:         None,
-                last_commit:          None,
-                last_fetched:         None,
-                default_branch:       Some("main".to_string()),
-                local_main_branch:    Some("main".to_string()),
-                ahead_behind_local:   None,
-                workflows:            WorkflowPresence::Present,
-                remotes:              vec![RemoteInfo {
-                    name:         "origin".to_string(),
-                    url:          Some("https://github.com/acme/demo".to_string()),
-                    owner:        None,
-                    repo:         Some("demo".to_string()),
-                    tracked_ref:  Some("origin/main".to_string()),
-                    ahead_behind: Some((1, 0)),
-                    kind:         RemoteKind::Clone,
-                }],
-                primary_remote_index: Some(0),
+            info: DetectedGit {
+                checkout: CheckoutInfo {
+                    status:              GitStatus::Clean,
+                    branch:              Some("feat/demo".to_string()),
+                    last_commit:         None,
+                    ahead_behind_local:  None,
+                    primary_tracked_ref: Some("origin/main".to_string()),
+                },
+                repo:     RepoDetection {
+                    remotes:           vec![RemoteInfo {
+                        name:         "origin".to_string(),
+                        url:          Some("https://github.com/acme/demo".to_string()),
+                        owner:        None,
+                        repo:         Some("demo".to_string()),
+                        tracked_ref:  Some("origin/main".to_string()),
+                        ahead_behind: Some((1, 0)),
+                        kind:         RemoteKind::Clone,
+                    }],
+                    workflows:         WorkflowPresence::Present,
+                    first_commit:      None,
+                    last_fetched:      None,
+                    default_branch:    Some("main".to_string()),
+                    local_main_branch: Some("main".to_string()),
+                },
             },
         },
     );
@@ -740,26 +764,30 @@ fn git_sync_shows_ascii_fill_for_local_only_branch() {
 
     app.handle_git_info(
         project.path(),
-        GitInfo {
-            status:               GitStatus::Clean,
-            branch:               Some("feat/demo".to_string()),
-            first_commit:         None,
-            last_commit:          None,
-            last_fetched:         None,
-            default_branch:       None,
-            local_main_branch:    Some("main".to_string()),
-            ahead_behind_local:   Some((3, 0)),
-            workflows:            WorkflowPresence::Present,
-            remotes:              vec![RemoteInfo {
-                name:         "origin".to_string(),
-                url:          None,
-                owner:        None,
-                repo:         None,
-                tracked_ref:  None,
-                ahead_behind: None,
-                kind:         RemoteKind::Clone,
-            }],
-            primary_remote_index: Some(0),
+        DetectedGit {
+            checkout: CheckoutInfo {
+                status:              GitStatus::Clean,
+                branch:              Some("feat/demo".to_string()),
+                last_commit:         None,
+                ahead_behind_local:  Some((3, 0)),
+                primary_tracked_ref: None,
+            },
+            repo:     RepoDetection {
+                remotes:           vec![RemoteInfo {
+                    name:         "origin".to_string(),
+                    url:          None,
+                    owner:        None,
+                    repo:         None,
+                    tracked_ref:  None,
+                    ahead_behind: None,
+                    kind:         RemoteKind::Clone,
+                }],
+                workflows:         WorkflowPresence::Present,
+                first_commit:      None,
+                last_fetched:      None,
+                default_branch:    None,
+                local_main_branch: Some("main".to_string()),
+            },
         },
     );
 
@@ -773,26 +801,30 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
 
     app.handle_git_info(
         project.path(),
-        GitInfo {
-            status:               GitStatus::Clean,
-            branch:               Some("feature/demo".to_string()),
-            first_commit:         None,
-            last_commit:          None,
-            last_fetched:         None,
-            default_branch:       Some("main".to_string()),
-            local_main_branch:    Some("main".to_string()),
-            ahead_behind_local:   Some((2, 1)),
-            workflows:            WorkflowPresence::Present,
-            remotes:              vec![RemoteInfo {
-                name:         "origin".to_string(),
-                url:          Some("https://github.com/natepiano/demo".to_string()),
-                owner:        Some("natepiano".to_string()),
-                repo:         Some("demo".to_string()),
-                tracked_ref:  None,
-                ahead_behind: None,
-                kind:         RemoteKind::Clone,
-            }],
-            primary_remote_index: Some(0),
+        DetectedGit {
+            checkout: CheckoutInfo {
+                status:              GitStatus::Clean,
+                branch:              Some("feature/demo".to_string()),
+                last_commit:         None,
+                ahead_behind_local:  Some((2, 1)),
+                primary_tracked_ref: None,
+            },
+            repo:     RepoDetection {
+                remotes:           vec![RemoteInfo {
+                    name:         "origin".to_string(),
+                    url:          Some("https://github.com/natepiano/demo".to_string()),
+                    owner:        Some("natepiano".to_string()),
+                    repo:         Some("demo".to_string()),
+                    tracked_ref:  None,
+                    ahead_behind: None,
+                    kind:         RemoteKind::Clone,
+                }],
+                workflows:         WorkflowPresence::Present,
+                first_commit:      None,
+                last_fetched:      None,
+                default_branch:    Some("main".to_string()),
+                local_main_branch: Some("main".to_string()),
+            },
         },
     );
 
@@ -806,26 +838,30 @@ fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
     app.scan.phase = ScanPhase::Complete;
     app.handle_git_info(
         project.path(),
-        GitInfo {
-            status:               GitStatus::Clean,
-            branch:               Some("enh/various".to_string()),
-            first_commit:         None,
-            last_commit:          None,
-            last_fetched:         None,
-            default_branch:       Some("main".to_string()),
-            local_main_branch:    Some("main".to_string()),
-            ahead_behind_local:   None,
-            workflows:            WorkflowPresence::Present,
-            remotes:              vec![RemoteInfo {
-                name:         "origin".to_string(),
-                url:          Some("https://github.com/natepiano/demo".to_string()),
-                owner:        Some("natepiano".to_string()),
-                repo:         Some("demo".to_string()),
-                tracked_ref:  None,
-                ahead_behind: None,
-                kind:         RemoteKind::Clone,
-            }],
-            primary_remote_index: Some(0),
+        DetectedGit {
+            checkout: CheckoutInfo {
+                status:              GitStatus::Clean,
+                branch:              Some("enh/various".to_string()),
+                last_commit:         None,
+                ahead_behind_local:  None,
+                primary_tracked_ref: None,
+            },
+            repo:     RepoDetection {
+                remotes:           vec![RemoteInfo {
+                    name:         "origin".to_string(),
+                    url:          Some("https://github.com/natepiano/demo".to_string()),
+                    owner:        Some("natepiano".to_string()),
+                    repo:         Some("demo".to_string()),
+                    tracked_ref:  None,
+                    ahead_behind: None,
+                    kind:         RemoteKind::Clone,
+                }],
+                workflows:         WorkflowPresence::Present,
+                first_commit:      None,
+                last_fetched:      None,
+                default_branch:    Some("main".to_string()),
+                local_main_branch: Some("main".to_string()),
+            },
         },
     );
     set_loaded_ci(
@@ -856,26 +892,30 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
 
     app.handle_git_info(
         project.path(),
-        GitInfo {
-            status:               GitStatus::Clean,
-            branch:               Some("enh/various".to_string()),
-            first_commit:         None,
-            last_commit:          None,
-            last_fetched:         None,
-            default_branch:       Some("main".to_string()),
-            local_main_branch:    Some("main".to_string()),
-            ahead_behind_local:   None,
-            workflows:            WorkflowPresence::Present,
-            remotes:              vec![RemoteInfo {
-                name:         "origin".to_string(),
-                url:          Some("https://github.com/natepiano/demo".to_string()),
-                owner:        Some("natepiano".to_string()),
-                repo:         Some("demo".to_string()),
-                tracked_ref:  None,
-                ahead_behind: None,
-                kind:         RemoteKind::Clone,
-            }],
-            primary_remote_index: Some(0),
+        DetectedGit {
+            checkout: CheckoutInfo {
+                status:              GitStatus::Clean,
+                branch:              Some("enh/various".to_string()),
+                last_commit:         None,
+                ahead_behind_local:  None,
+                primary_tracked_ref: None,
+            },
+            repo:     RepoDetection {
+                remotes:           vec![RemoteInfo {
+                    name:         "origin".to_string(),
+                    url:          Some("https://github.com/natepiano/demo".to_string()),
+                    owner:        Some("natepiano".to_string()),
+                    repo:         Some("demo".to_string()),
+                    tracked_ref:  None,
+                    ahead_behind: None,
+                    kind:         RemoteKind::Clone,
+                }],
+                workflows:         WorkflowPresence::Present,
+                first_commit:      None,
+                last_fetched:      None,
+                default_branch:    Some("main".to_string()),
+                local_main_branch: Some("main".to_string()),
+            },
         },
     );
     set_loaded_ci(
@@ -908,26 +948,30 @@ fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
 
     app.handle_git_info(
         project.path(),
-        GitInfo {
-            status:               GitStatus::Clean,
-            branch:               Some("feat/demo".to_string()),
-            first_commit:         None,
-            last_commit:          None,
-            last_fetched:         None,
-            default_branch:       Some("main".to_string()),
-            local_main_branch:    Some("main".to_string()),
-            ahead_behind_local:   Some((0, 0)),
-            workflows:            WorkflowPresence::Present,
-            remotes:              vec![RemoteInfo {
-                name:         "origin".to_string(),
-                url:          Some("https://github.com/acme/demo".to_string()),
-                owner:        None,
-                repo:         Some("demo".to_string()),
-                tracked_ref:  Some("origin/main".to_string()),
-                ahead_behind: Some((0, 0)),
-                kind:         RemoteKind::Clone,
-            }],
-            primary_remote_index: Some(0),
+        DetectedGit {
+            checkout: CheckoutInfo {
+                status:              GitStatus::Clean,
+                branch:              Some("feat/demo".to_string()),
+                last_commit:         None,
+                ahead_behind_local:  Some((0, 0)),
+                primary_tracked_ref: Some("origin/main".to_string()),
+            },
+            repo:     RepoDetection {
+                remotes:           vec![RemoteInfo {
+                    name:         "origin".to_string(),
+                    url:          Some("https://github.com/acme/demo".to_string()),
+                    owner:        None,
+                    repo:         Some("demo".to_string()),
+                    tracked_ref:  Some("origin/main".to_string()),
+                    ahead_behind: Some((0, 0)),
+                    kind:         RemoteKind::Clone,
+                }],
+                workflows:         WorkflowPresence::Present,
+                first_commit:      None,
+                last_fetched:      None,
+                default_branch:    Some("main".to_string()),
+                local_main_branch: Some("main".to_string()),
+            },
         },
     );
 
@@ -959,8 +1003,8 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
     app.ensure_detail_cached();
 
     assert_eq!(
-        app.git_info_for(test_path("~/demo").as_path())
-            .and_then(|info| info.first_commit.as_deref()),
+        app.repo_detection_for(test_path("~/demo").as_path())
+            .and_then(|repo| repo.first_commit.as_deref()),
         Some("2026-03-12T21:18:54-04:00")
     );
     assert!(

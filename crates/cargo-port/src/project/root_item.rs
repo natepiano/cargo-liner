@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::git::GitInfo;
+use super::git::CheckoutInfo;
 use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
@@ -173,7 +173,7 @@ impl RootItem {
         }
     }
 
-    pub(crate) fn git_info(&self) -> Option<&GitInfo> {
+    pub(crate) fn git_info(&self) -> Option<&CheckoutInfo> {
         match self {
             Self::Rust(p) => p.git_info(),
             Self::NonRust(p) => p.git_info(),

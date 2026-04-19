@@ -2,6 +2,7 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::path::Path;
 
+use super::git::RepoDetection;
 use super::info::GitHubInfo;
 use super::info::ProjectCiData;
 use super::paths::AbsolutePath;
@@ -11,10 +12,12 @@ use super::root_item::RootItem;
 ///
 /// Stored on the containing `ProjectEntry`, not on each `ProjectInfo`, so
 /// the fields below cannot drift between sibling worktrees of the same
-/// repo. Stage 1 moves `github_info` and `ci_data` here; later stages
-/// add repo detection fields.
+/// repo. `detection` is `None` while the repo is known but the
+/// background `detect_fast` probe hasn't completed yet — the UI can use
+/// that distinction to show "loading" instead of empty values.
 #[derive(Clone, Default)]
 pub(crate) struct GitRepo {
+    pub detection:   Option<RepoDetection>,
     pub github_info: Option<GitHubInfo>,
     pub ci_data:     ProjectCiData,
 }

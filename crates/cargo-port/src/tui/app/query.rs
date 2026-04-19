@@ -16,12 +16,13 @@ use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project::AbsolutePath;
-use crate::project::GitInfo;
+use crate::project::CheckoutInfo;
 use crate::project::GitStatus;
 use crate::project::Package;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::project::ProjectFields;
+use crate::project::RepoDetection;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Visibility;
@@ -256,10 +257,12 @@ impl App {
 
     pub(in super::super) fn unpublished_ci_branch_name(&self, path: &Path) -> Option<String> {
         let git = self.git_info_for(path)?;
-        (git.primary_tracked_ref().is_none()
-            && git.branch.as_deref() != git.default_branch.as_deref())
-        .then(|| git.branch.clone())
-        .flatten()
+        let default_branch = self
+            .repo_detection_for(path)
+            .and_then(|repo| repo.default_branch.as_deref());
+        (git.primary_tracked_ref().is_none() && git.branch.as_deref() != default_branch)
+            .then(|| git.branch.clone())
+            .flatten()
     }
 
     pub(in super::super) fn ci_for(&self, path: &Path) -> Option<Conclusion> {
@@ -296,10 +299,36 @@ impl App {
             .is_some_and(ProjectCiData::is_exhausted)
     }
 
-    pub(in super::super) fn git_info_for(&self, path: &Path) -> Option<&GitInfo> {
+    pub(in super::super) fn git_info_for(&self, path: &Path) -> Option<&CheckoutInfo> {
         self.projects
             .at_path(path)
             .and_then(|project| project.local_git_state.info())
+    }
+
+    /// Per-repo detection (remotes, workflows, default branch, ...) for
+    /// the entry containing `path`. `None` means either the path isn't in
+    /// a known entry, the entry isn't in a git repo, or the background
+    /// `detect_fast` probe hasn't completed yet.
+    pub(in super::super) fn repo_detection_for(&self, path: &Path) -> Option<&RepoDetection> {
+        self.projects
+            .entry_containing(path)
+            .and_then(|entry| entry.git_repo.as_ref()?.detection.as_ref())
+    }
+
+    /// Convenience: the primary remote's URL for the checkout at `path`,
+    /// looked up against its containing entry's `RepoDetection`.
+    pub(in super::super) fn primary_url_for(&self, path: &Path) -> Option<&str> {
+        let checkout = self.git_info_for(path)?;
+        let repo = self.repo_detection_for(path)?;
+        checkout.primary_url(repo)
+    }
+
+    /// Convenience: the primary remote's ahead/behind for the checkout
+    /// at `path`.
+    pub(in super::super) fn primary_ahead_behind_for(&self, path: &Path) -> Option<(usize, usize)> {
+        let checkout = self.git_info_for(path)?;
+        let repo = self.repo_detection_for(path)?;
+        checkout.primary_ahead_behind(repo)
     }
 
     pub(in super::super) fn is_rust_at_path(&self, path: &Path) -> bool {
@@ -593,7 +622,7 @@ impl App {
         if matches!(info.status, GitStatus::Untracked | GitStatus::Ignored) {
             return String::new();
         }
-        match info.primary_ahead_behind() {
+        match self.primary_ahead_behind_for(path) {
             Some((0, 0)) => IN_SYNC.to_string(),
             Some((a, 0)) => format!("{SYNC_UP}{a}"),
             Some((0, b)) => format!("{SYNC_DOWN}{b}"),

@@ -478,8 +478,8 @@ impl DetailField {
             },
             Self::Ci => {
                 let has_workflows = app
-                    .git_info_for(data.abs_path.as_path())
-                    .is_some_and(|git| git.workflows.is_present());
+                    .repo_detection_for(data.abs_path.as_path())
+                    .is_some_and(|repo| repo.workflows.is_present());
                 if !has_workflows {
                     return NO_CI_WORKFLOW.to_string();
                 }
@@ -838,29 +838,30 @@ struct GitDetailFields {
 
 fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let entry = app.projects().entry_containing(abs_path);
-    let git = app.git_info_for(abs_path);
-    let branch = git.and_then(|info| info.branch.clone());
-    let vs_local = git
+    let git_repo = entry.and_then(|entry| entry.git_repo.as_ref());
+    let detection = git_repo.and_then(|repo| repo.detection.as_ref());
+    let checkout = app.git_info_for(abs_path);
+
+    let branch = checkout.and_then(|info| info.branch.clone());
+    let vs_local = checkout
         .and_then(|info| info.ahead_behind_local)
         .map(format_ahead_behind);
-    let local_main_branch = git.and_then(|info| info.local_main_branch.clone());
+    let local_main_branch = detection.and_then(|repo| repo.local_main_branch.clone());
     let main_branch_label = app.current_config().tui.main_branch.clone();
-    let github = entry
-        .and_then(|entry| entry.git_repo.as_ref())
-        .and_then(|repo| repo.github_info.as_ref());
+    let github = git_repo.and_then(|repo| repo.github_info.as_ref());
     let stars = github.map(|g| g.stars);
     let description = github.and_then(|g| g.description.clone());
-    let inception = git
-        .and_then(|info| info.first_commit.as_deref())
+    let inception = detection
+        .and_then(|repo| repo.first_commit.as_deref())
         .map(format_timestamp);
-    let last_commit = git
+    let last_commit = checkout
         .and_then(|info| info.last_commit.as_deref())
         .map(format_timestamp);
-    let last_fetched = git
-        .and_then(|info| info.last_fetched.as_deref())
+    let last_fetched = detection
+        .and_then(|repo| repo.last_fetched.as_deref())
         .map(format_timestamp);
     let default_host = app.current_config().tui.default_remote_host_url.clone();
-    let remotes = git.map_or_else(Vec::new, |info| build_remote_rows(info, &default_host));
+    let remotes = detection.map_or_else(Vec::new, |repo| build_remote_rows(repo, &default_host));
     GitDetailFields {
         branch,
         path: app.git_status_for(abs_path),
@@ -879,8 +880,8 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
 /// Convert each `RemoteInfo` into a render-ready `RemoteRow`, shortening
 /// the URL when it begins with `default_host` and collapsing missing
 /// tracked refs / ahead-behind values to placeholder runes.
-fn build_remote_rows(info: &project::GitInfo, default_host: &str) -> Vec<RemoteRow> {
-    info.remotes
+fn build_remote_rows(repo: &project::RepoDetection, default_host: &str) -> Vec<RemoteRow> {
+    repo.remotes
         .iter()
         .map(|remote| {
             let icon = match remote.kind {
@@ -1244,6 +1245,7 @@ pub fn build_ci_data(app: &App) -> CiData {
     let selected_path = app.selected_project_path();
     let has_ci_owner = app.selected_ci_path().is_some();
     let git_info = selected_path.and_then(|path| app.git_info_for(path));
+    let detection = selected_path.and_then(|path| app.repo_detection_for(path));
     let ci_info = selected_path.and_then(|path| app.ci_info_for(path));
     let current_branch =
         selected_path.and_then(|path| app.git_info_for(path).and_then(|git| git.branch.clone()));
@@ -1255,16 +1257,25 @@ pub fn build_ci_data(app: &App) -> CiData {
         app.ci_toggle_available_for(path) && app.ci_display_mode_label_for(path) == "branch"
     }) && ci_info.is_some_and(|info| !info.runs.is_empty())
         && runs.is_empty();
+    // "Do we have a GitHub-parseable remote?" is a per-repo question and
+    // must not depend on whether the current branch has an upstream — a
+    // checkout on a branch without upstream tracking still belongs to
+    // the repo.
+    let has_github_remote = detection.is_some_and(|d| {
+        d.remotes
+            .iter()
+            .filter_map(|r| r.url.as_deref())
+            .any(|url| crate::ci::parse_owner_repo(url).is_some())
+    });
     let empty_state = if selected_path.is_some() && !has_ci_owner {
         CiEmptyState::BranchScopedOnly
     } else if git_info.is_none() {
         CiEmptyState::NotGitRepo
     } else if has_ci_owner
-        && git_info
-            .is_some_and(|g| g.origin_kind() == GitOrigin::Local || g.primary_url().is_none())
+        && (detection.map_or(true, |d| d.origin_kind() == GitOrigin::Local) || !has_github_remote)
     {
         CiEmptyState::RequiresGithubRemote
-    } else if git_info.is_some_and(|g| !g.workflows.is_present()) {
+    } else if detection.is_some_and(|d| !d.workflows.is_present()) {
         CiEmptyState::NoWorkflowConfigured
     } else if is_fetching {
         CiEmptyState::Fetching

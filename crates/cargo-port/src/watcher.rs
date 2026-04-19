@@ -34,7 +34,7 @@ use super::http::HttpClient;
 use super::lint;
 use super::lint::RuntimeHandle;
 use super::project;
-use super::project::GitInfo;
+use super::project::DetectedGit;
 use super::project::GitRepoPresence;
 #[cfg(test)]
 use super::project::ProjectFields;
@@ -820,14 +820,14 @@ fn emit_root_git_info_refresh(
     else {
         return;
     };
-    let Some(info) = GitInfo::detect_fast(repo_root) else {
+    let Some(info) = DetectedGit::detect_fast(repo_root) else {
         return;
     };
     tracing::info!(
         elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
         repo_root = %repo_root.display(),
         path = %root_entry.project_label,
-        git_status = %info.status.label(),
+        git_status = %info.checkout.status.label(),
         "watcher_root_git_info_refresh"
     );
     let _ = bg_tx.send(BackgroundMsg::GitInfo {
@@ -905,7 +905,7 @@ fn spawn_git_refresh(
         let started = Instant::now();
         let repo_root_for_detect = repo_root.clone();
         let git_info =
-            tokio::task::spawn_blocking(move || GitInfo::detect_fast(&repo_root_for_detect))
+            tokio::task::spawn_blocking(move || DetectedGit::detect_fast(&repo_root_for_detect))
                 .await
                 .ok()
                 .flatten();
@@ -1756,7 +1756,7 @@ mod tests {
                         _ => None,
                     })
                     .expect("git info message for project");
-                assert_eq!(git_msg.status, expected);
+                assert_eq!(git_msg.checkout.status, expected);
                 let repo_root = git_done_rx
                     .recv_timeout(Duration::from_secs(1))
                     .expect("git refresh completion");

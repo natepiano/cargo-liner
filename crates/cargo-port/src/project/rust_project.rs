@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::git::GitInfo;
+use super::git::CheckoutInfo;
 use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::info::Visibility;
@@ -81,7 +81,7 @@ impl RustProject {
         }
     }
 
-    pub(crate) fn git_info(&self) -> Option<&GitInfo> {
+    pub(crate) fn git_info(&self) -> Option<&CheckoutInfo> {
         match self {
             Self::Workspace(ws) => ws.git_info(),
             Self::Package(pkg) => pkg.git_info(),

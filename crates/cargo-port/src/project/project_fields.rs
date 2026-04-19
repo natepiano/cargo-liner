@@ -1,4 +1,4 @@
-use super::git::GitInfo;
+use super::git::CheckoutInfo;
 use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::info::Visibility;
@@ -17,7 +17,7 @@ pub(crate) trait ProjectFields {
     fn visibility(&self) -> Visibility;
     fn worktree_health(&self) -> WorktreeHealth;
     fn disk_usage_bytes(&self) -> Option<u64>;
-    fn git_info(&self) -> Option<&GitInfo>;
+    fn git_info(&self) -> Option<&CheckoutInfo>;
     fn info(&self) -> &ProjectInfo;
     fn info_mut(&mut self) -> &mut ProjectInfo;
     fn display_path(&self) -> DisplayPath;

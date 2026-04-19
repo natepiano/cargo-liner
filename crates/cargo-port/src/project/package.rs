@@ -1,7 +1,7 @@
 use std::ops::Deref;
 use std::ops::DerefMut;
 
-use super::git::GitInfo;
+use super::git::CheckoutInfo;
 use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::info::Visibility;
@@ -50,7 +50,7 @@ impl ProjectFields for Package {
 
     fn disk_usage_bytes(&self) -> Option<u64> { self.rust.info.disk_usage_bytes }
 
-    fn git_info(&self) -> Option<&GitInfo> { self.rust.info.local_git_state.info() }
+    fn git_info(&self) -> Option<&CheckoutInfo> { self.rust.info.local_git_state.info() }
 
     fn info(&self) -> &ProjectInfo { &self.rust.info }
 

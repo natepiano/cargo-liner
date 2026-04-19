@@ -31,8 +31,9 @@ use crate::http::ServiceKind;
 use crate::lint::LintStatus;
 use crate::project::AbsolutePath;
 use crate::project::Cargo;
+use crate::project::CheckoutInfo;
+use crate::project::DetectedGit;
 use crate::project::ExampleGroup;
-use crate::project::GitInfo;
 use crate::project::GitStatus;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
@@ -42,6 +43,7 @@ use crate::project::ProjectCiInfo;
 use crate::project::ProjectFields;
 use crate::project::RemoteInfo;
 use crate::project::RemoteKind;
+use crate::project::RepoDetection;
 use crate::project::RootItem;
 use crate::project::RustInfo;
 use crate::project::RustProject;
@@ -507,27 +509,31 @@ fn make_ci_run(run_id: u64, conclusion: Conclusion) -> CiRun {
     }
 }
 
-fn make_git_info(url: Option<&str>) -> GitInfo {
-    GitInfo {
-        status:               GitStatus::Clean,
-        branch:               Some("main".to_string()),
-        first_commit:         None,
-        last_commit:          None,
-        last_fetched:         None,
-        default_branch:       Some("main".to_string()),
-        local_main_branch:    Some("main".to_string()),
-        ahead_behind_local:   None,
-        workflows:            WorkflowPresence::Present,
-        remotes:              vec![RemoteInfo {
-            name:         "origin".to_string(),
-            url:          url.map(String::from),
-            owner:        Some("natepiano".to_string()),
-            repo:         None,
-            tracked_ref:  Some("origin/main".to_string()),
-            ahead_behind: None,
-            kind:         RemoteKind::Clone,
-        }],
-        primary_remote_index: Some(0),
+fn make_git_info(url: Option<&str>) -> DetectedGit {
+    DetectedGit {
+        checkout: CheckoutInfo {
+            status:              GitStatus::Clean,
+            branch:              Some("main".to_string()),
+            last_commit:         None,
+            ahead_behind_local:  None,
+            primary_tracked_ref: Some("origin/main".to_string()),
+        },
+        repo:     RepoDetection {
+            remotes:           vec![RemoteInfo {
+                name:         "origin".to_string(),
+                url:          url.map(String::from),
+                owner:        Some("natepiano".to_string()),
+                repo:         None,
+                tracked_ref:  Some("origin/main".to_string()),
+                ahead_behind: None,
+                kind:         RemoteKind::Clone,
+            }],
+            workflows:         WorkflowPresence::Present,
+            first_commit:      None,
+            last_fetched:      None,
+            default_branch:    Some("main".to_string()),
+            local_main_branch: Some("main".to_string()),
+        },
     }
 }
 

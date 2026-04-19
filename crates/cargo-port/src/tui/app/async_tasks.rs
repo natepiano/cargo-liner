@@ -25,7 +25,7 @@ use crate::lint;
 use crate::lint::LintStatus;
 use crate::lint::RegisterProjectRequest;
 use crate::project::AbsolutePath;
-use crate::project::GitInfo;
+use crate::project::DetectedGit;
 use crate::project::GitRepoPresence;
 use crate::project::LanguageStats;
 use crate::project::LocalGitState;
@@ -1606,10 +1606,7 @@ impl App {
         }
     }
 
-    fn spawn_repo_fetch_for_git_info(&self, path: &Path, info: &GitInfo) {
-        let Some(repo_url) = info.primary_url() else {
-            return;
-        };
+    fn spawn_repo_fetch_for_git_info(&self, path: &Path, repo_url: &str) {
         let Some(owner_repo) = crate::ci::parse_owner_repo(repo_url) else {
             return;
         };
@@ -1667,32 +1664,45 @@ impl App {
         });
     }
 
-    pub(in super::super) fn handle_git_info(&mut self, path: &Path, info: GitInfo) {
+    pub(in super::super) fn handle_git_info(&mut self, path: &Path, info: DetectedGit) {
         tracing::info!(
             path = %path.display(),
-            git_status = %info.status.label(),
+            git_status = %info.checkout.status.label(),
             "git_info_applied"
         );
+        let DetectedGit { checkout, mut repo } = info;
+
+        // Preserve a previously-fetched `first_commit` across re-detection.
+        // `detect_fast` always returns `None`; the value is filled in
+        // either by a prior `handle_git_first_commit` write or via the
+        // `pending_git_first_commit` map below.
         let preserved_first_commit = self
-            .git_info_for(path)
+            .repo_detection_for(path)
             .and_then(|existing| existing.first_commit.clone());
-        let mut info = info;
-        if info.first_commit.is_none() {
-            info.first_commit =
+        if repo.first_commit.is_none() {
+            repo.first_commit =
                 preserved_first_commit.or_else(|| self.pending_git_first_commit.remove(path));
         }
+
         if let Some(project) = self.projects.at_path_mut(path) {
-            project.local_git_state = LocalGitState::Detected(Box::new(info.clone()));
+            project.local_git_state = LocalGitState::Detected(Box::new(checkout));
         }
-        // Detected git state implies the entry is in a git repo. Ensure the
-        // entry has a `git_repo` slot so per-repo writes (CI, GitHub meta)
-        // can land on it. Production scan probes the same predicate via
-        // `git_repo_root`; this upsert closes the gap when an entry was
-        // first wrapped before the probe (and for tests where paths don't
-        // exist on disk).
+
+        // Repo-detection write policy: only the primary checkout writes
+        // `RepoDetection`. Linked worktrees share the primary's
+        // `.git/config` by design; admitting last-writer-wins from any
+        // checkout would produce silent arbitration if they ever
+        // diverged. The entry's `git_repo` slot is upserted regardless,
+        // so per-repo CI / GitHub-meta writes can land on it.
         if let Some(entry) = self.projects.entry_containing_mut(path) {
-            entry.git_repo.get_or_insert_with(Default::default);
+            let is_primary = entry.item.path().as_path() == path;
+            let git_repo = entry.git_repo.get_or_insert_with(Default::default);
+            if is_primary {
+                git_repo.detection = Some(repo);
+            }
         }
+        let primary_url = self.primary_url_for(path).map(String::from);
+
         if self.is_scan_complete() {
             let git_dir = self
                 .startup_git_directory_for_path(path)
@@ -1707,13 +1717,14 @@ impl App {
             // A post-scan GitInfo update means a git fetch (or other ref change) was
             // detected — treat it as a signal to refresh CI too, not just local git state.
             // During scan the cache dedups fetches across worktrees of the same repo.
-            if self.is_scan_complete()
-                && let Some(repo_url) = info.primary_url()
-                && let Some(owner_repo) = crate::ci::parse_owner_repo(repo_url)
-            {
-                crate::scan::invalidate_cached_repo_data(&self.repo_fetch_cache, &owner_repo);
+            if let Some(url) = primary_url.as_deref() {
+                if self.is_scan_complete()
+                    && let Some(owner_repo) = crate::ci::parse_owner_repo(url)
+                {
+                    crate::scan::invalidate_cached_repo_data(&self.repo_fetch_cache, &owner_repo);
+                }
+                self.spawn_repo_fetch_for_git_info(path, url);
             }
-            self.spawn_repo_fetch_for_git_info(path, &info);
         }
     }
 
@@ -1723,20 +1734,17 @@ impl App {
         first_commit: Option<&str>,
     ) {
         let first_commit = first_commit.map(String::from);
-        let mut applied = false;
-        let Some(project) = self.projects.at_path_mut(path) else {
-            if let Some(first_commit) = first_commit {
-                self.pending_git_first_commit
-                    .insert(AbsolutePath::from(path), first_commit);
-            } else {
-                self.pending_git_first_commit.remove(path);
-            }
-            return;
-        };
-        if let Some(info) = project.local_git_state.info_mut() {
-            info.first_commit.clone_from(&first_commit);
-            applied = true;
-        }
+        // first_commit is per-repo, so it lands on the entry's
+        // `RepoDetection`. If the entry's detection slot doesn't exist
+        // yet (detect_fast hasn't completed), stash the value in
+        // `pending_git_first_commit` and `handle_git_info` will fold it
+        // in when detection arrives.
+        let applied = self
+            .projects
+            .entry_containing_mut(path)
+            .and_then(|entry| entry.git_repo.as_mut()?.detection.as_mut())
+            .map(|detection| detection.first_commit.clone_from(&first_commit))
+            .is_some();
         if applied {
             self.pending_git_first_commit.remove(path);
         } else if let Some(first_commit) = first_commit {

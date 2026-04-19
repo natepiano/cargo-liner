@@ -32,8 +32,8 @@ use super::interaction::UiSurface::Overlay;
 use super::panes::PaneId;
 use super::panes::RunTargetKind;
 use crate::project::AbsolutePath;
+use crate::project::CheckoutInfo;
 use crate::project::ExampleGroup;
-use crate::project::GitInfo;
 use crate::project::Package;
 use crate::project::ProjectFields;
 use crate::project::ProjectType;
@@ -171,7 +171,7 @@ pub(super) fn build_finder_index(
     (items, col_widths)
 }
 
-fn branch_for(git_info: Option<&GitInfo>) -> String {
+fn branch_for(git_info: Option<&CheckoutInfo>) -> String {
     git_info
         .and_then(|g| g.branch.as_deref())
         .unwrap_or("")

@@ -77,26 +77,30 @@ fn tabbable_panes_follow_canonical_order() {
     app.scan.phase = ScanPhase::Complete;
     app.handle_git_info(
         project.path(),
-        GitInfo {
-            status:               GitStatus::Clean,
-            branch:               None,
-            first_commit:         None,
-            last_commit:          None,
-            last_fetched:         None,
-            default_branch:       None,
-            local_main_branch:    None,
-            ahead_behind_local:   None,
-            workflows:            WorkflowPresence::Present,
-            remotes:              vec![RemoteInfo {
-                name:         "origin".to_string(),
-                url:          Some("https://github.com/acme/demo".to_string()),
-                owner:        None,
-                repo:         Some("demo".to_string()),
-                tracked_ref:  None,
-                ahead_behind: None,
-                kind:         RemoteKind::Clone,
-            }],
-            primary_remote_index: None,
+        DetectedGit {
+            checkout: CheckoutInfo {
+                status:              GitStatus::Clean,
+                branch:              None,
+                last_commit:         None,
+                ahead_behind_local:  None,
+                primary_tracked_ref: None,
+            },
+            repo:     RepoDetection {
+                remotes:           vec![RemoteInfo {
+                    name:         "origin".to_string(),
+                    url:          Some("https://github.com/acme/demo".to_string()),
+                    owner:        None,
+                    repo:         Some("demo".to_string()),
+                    tracked_ref:  None,
+                    ahead_behind: None,
+                    kind:         RemoteKind::Clone,
+                }],
+                workflows:         WorkflowPresence::Present,
+                first_commit:      None,
+                last_fetched:      None,
+                default_branch:    None,
+                local_main_branch: None,
+            },
         },
     );
     app.ensure_detail_cached();

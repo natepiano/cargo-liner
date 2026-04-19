@@ -267,15 +267,16 @@ mod tests {
     use crate::lint::LintRunStatus;
     use crate::project::AbsolutePath;
     use crate::project::Cargo;
+    use crate::project::CheckoutInfo;
+    use crate::project::DetectedGit;
     use crate::project::ExampleGroup;
-    use crate::project::GitInfo;
     use crate::project::GitStatus;
-    use crate::project::LocalGitState;
     use crate::project::MemberGroup;
     use crate::project::Package;
     use crate::project::ProjectType;
     use crate::project::RemoteInfo;
     use crate::project::RemoteKind;
+    use crate::project::RepoDetection;
     use crate::project::RootItem;
     use crate::project::RustInfo;
     use crate::project::RustProject;
@@ -363,27 +364,31 @@ mod tests {
         }))
     }
 
-    fn make_git_info(url: Option<&str>) -> GitInfo {
-        GitInfo {
-            status:               GitStatus::Clean,
-            branch:               Some("main".to_string()),
-            first_commit:         Some("2024-01-01T00:00:00Z".to_string()),
-            last_commit:          Some("2024-01-02T00:00:00Z".to_string()),
-            last_fetched:         None,
-            default_branch:       Some("main".to_string()),
-            local_main_branch:    Some("main".to_string()),
-            ahead_behind_local:   Some((0, 0)),
-            workflows:            WorkflowPresence::Present,
-            remotes:              vec![RemoteInfo {
-                name:         "origin".to_string(),
-                url:          url.map(str::to_string),
-                owner:        Some("natepiano".to_string()),
-                repo:         Some("demo".to_string()),
-                tracked_ref:  Some("origin/main".to_string()),
-                ahead_behind: Some((0, 0)),
-                kind:         RemoteKind::Clone,
-            }],
-            primary_remote_index: Some(0),
+    fn make_git_info(url: Option<&str>) -> DetectedGit {
+        DetectedGit {
+            checkout: CheckoutInfo {
+                status:              GitStatus::Clean,
+                branch:              Some("main".to_string()),
+                last_commit:         Some("2024-01-02T00:00:00Z".to_string()),
+                ahead_behind_local:  Some((0, 0)),
+                primary_tracked_ref: Some("origin/main".to_string()),
+            },
+            repo:     RepoDetection {
+                remotes:           vec![RemoteInfo {
+                    name:         "origin".to_string(),
+                    url:          url.map(str::to_string),
+                    owner:        Some("natepiano".to_string()),
+                    repo:         Some("demo".to_string()),
+                    tracked_ref:  Some("origin/main".to_string()),
+                    ahead_behind: Some((0, 0)),
+                    kind:         RemoteKind::Clone,
+                }],
+                workflows:         WorkflowPresence::Present,
+                first_commit:      Some("2024-01-01T00:00:00Z".to_string()),
+                last_fetched:      None,
+                default_branch:    Some("main".to_string()),
+                local_main_branch: Some("main".to_string()),
+            },
         }
     }
 
@@ -1198,12 +1203,10 @@ mod tests {
         std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
 
         let mut app = make_app(&[make_package("demo", &project_dir)]);
-        app.projects_mut()
-            .at_path_mut(&project_dir)
-            .unwrap_or_else(|| std::process::abort())
-            .local_git_state = LocalGitState::Detected(Box::new(make_git_info(Some(
-            "https://github.com/natepiano/demo",
-        ))));
+        app.handle_git_info(
+            &project_dir,
+            make_git_info(Some("https://github.com/natepiano/demo")),
+        );
         render_ui(&mut app);
 
         let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Git), 1);

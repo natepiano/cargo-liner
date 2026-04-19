@@ -58,75 +58,75 @@ pub(crate) struct RemoteInfo {
     pub kind:         RemoteKind,
 }
 
-/// Git metadata for a project: remotes, current branch, and status info.
+/// Per-checkout git metadata: state that can legitimately differ between
+/// two worktrees of the same repo. Lives inside `ProjectInfo.local_git_state`.
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct GitInfo {
+pub(crate) struct CheckoutInfo {
     /// Git path state (clean, modified, untracked, etc.) for this project path.
-    pub status:               GitStatus,
+    pub status:              GitStatus,
     /// The current branch name.
-    pub branch:               Option<String>,
-    /// ISO 8601 date of the first commit (inception).
-    pub first_commit:         Option<String>,
-    /// ISO 8601 date of the most recent commit.
-    pub last_commit:          Option<String>,
-    /// ISO 8601 timestamp of the last `git fetch` against any remote,
-    /// derived from the mtime of `FETCH_HEAD` in the common git dir.
-    pub last_fetched:         Option<String>,
-    /// The repo's default branch name resolved from `origin/HEAD`.
-    pub default_branch:       Option<String>,
-    /// The local branch name used for `M` comparisons.
-    pub local_main_branch:    Option<String>,
+    pub branch:              Option<String>,
+    /// ISO 8601 date of the most recent commit on this branch.
+    pub last_commit:         Option<String>,
     /// Commits ahead and behind the local `{local_main_branch}`.
-    pub ahead_behind_local:   Option<(usize, usize)>,
-    /// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
-    pub workflows:            WorkflowPresence,
-    /// All remotes declared for this repo.
-    pub remotes:              Vec<RemoteInfo>,
-    /// Index into `remotes` for the remote matching the current branch's
-    /// `@{upstream}` (the "primary" remote). `None` when the current branch
-    /// has no upstream tracking ref.
-    pub primary_remote_index: Option<usize>,
+    pub ahead_behind_local:  Option<(usize, usize)>,
+    /// The current branch's `@{upstream}` tracked ref (e.g. `origin/main`).
+    /// Stored as a string instead of an index so a primary-side remotes
+    /// rewrite cannot silently invalidate a linked checkout's pointer.
+    /// `None` when the current branch has no upstream tracking ref.
+    pub primary_tracked_ref: Option<String>,
 }
 
-impl GitInfo {
-    #[cfg(test)]
-    #[expect(dead_code, reason = "Stage 0 scaffolding; used in later stage tests")]
-    pub(crate) fn for_tests() -> Self {
-        Self {
-            status:               GitStatus::Clean,
-            branch:               None,
-            first_commit:         None,
-            last_commit:          None,
-            last_fetched:         None,
-            default_branch:       None,
-            local_main_branch:    None,
-            ahead_behind_local:   None,
-            workflows:            WorkflowPresence::Missing,
-            remotes:              Vec::new(),
-            primary_remote_index: None,
-        }
+impl CheckoutInfo {
+    /// The remote matching the current branch's `@{upstream}` within
+    /// `repo`, if any. Lookup is by name match against
+    /// `repo.remotes[i].tracked_ref` — this is rendered data, not hot.
+    pub(crate) fn primary_remote<'r>(&self, repo: &'r RepoDetection) -> Option<&'r RemoteInfo> {
+        let want = self.primary_tracked_ref.as_deref()?;
+        repo.remotes
+            .iter()
+            .find(|r| r.tracked_ref.as_deref() == Some(want))
     }
 
-    /// The remote matching the current branch's `@{upstream}`, if any.
-    pub(crate) fn primary_remote(&self) -> Option<&RemoteInfo> {
-        self.primary_remote_index.and_then(|i| self.remotes.get(i))
+    /// The primary remote's URL, looked up against `repo`.
+    pub(crate) fn primary_url<'r>(&self, repo: &'r RepoDetection) -> Option<&'r str> {
+        self.primary_remote(repo).and_then(|r| r.url.as_deref())
     }
 
-    /// Convenience: the primary remote's URL.
-    pub(crate) fn primary_url(&self) -> Option<&str> {
-        self.primary_remote().and_then(|r| r.url.as_deref())
+    /// The primary remote's ahead/behind vs its tracked ref.
+    pub(crate) fn primary_ahead_behind(&self, repo: &RepoDetection) -> Option<(usize, usize)> {
+        self.primary_remote(repo).and_then(|r| r.ahead_behind)
     }
 
-    /// Convenience: the primary remote's ahead/behind vs its tracked ref.
-    pub(crate) fn primary_ahead_behind(&self) -> Option<(usize, usize)> {
-        self.primary_remote().and_then(|r| r.ahead_behind)
-    }
+    /// The primary remote's tracked ref (e.g. `origin/main`).
+    pub(crate) fn primary_tracked_ref(&self) -> Option<&str> { self.primary_tracked_ref.as_deref() }
+}
 
-    /// Convenience: the primary remote's tracked ref (e.g. `origin/main`).
-    pub(crate) fn primary_tracked_ref(&self) -> Option<&str> {
-        self.primary_remote().and_then(|r| r.tracked_ref.as_deref())
-    }
+/// Repo-level metadata: state that is the same across every checkout of
+/// the same git repo. Lives on `GitRepo::detection` so siblings cannot
+/// drift.
+#[derive(Debug, Clone, Default, Serialize)]
+pub(crate) struct RepoDetection {
+    /// All remotes declared for this repo.
+    pub remotes:           Vec<RemoteInfo>,
+    /// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
+    pub workflows:         WorkflowPresence,
+    /// ISO 8601 date of the first commit (inception).
+    pub first_commit:      Option<String>,
+    /// ISO 8601 timestamp of the last `git fetch` against any remote,
+    /// derived from the mtime of `FETCH_HEAD` in the common git dir.
+    pub last_fetched:      Option<String>,
+    /// The repo's default branch name resolved from `origin/HEAD`.
+    pub default_branch:    Option<String>,
+    /// The local branch name used for `M` comparisons.
+    pub local_main_branch: Option<String>,
+}
 
+impl Default for WorkflowPresence {
+    fn default() -> Self { Self::Missing }
+}
+
+impl RepoDetection {
     /// Repo-level origin classification derived from `remotes`.
     pub(crate) fn origin_kind(&self) -> GitOrigin {
         if self.remotes.is_empty() {
@@ -139,7 +139,18 @@ impl GitInfo {
     }
 }
 
-impl GitInfo {
+/// Result of a `detect_fast` probe: the per-checkout half lands on
+/// `ProjectInfo.local_git_state`, the per-repo half on
+/// `GitRepo::detection`. Bundled so the split lands atomically — there
+/// is no intermediate state where half the callers see the old return
+/// shape.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DetectedGit {
+    pub checkout: CheckoutInfo,
+    pub repo:     RepoDetection,
+}
+
+impl DetectedGit {
     /// Detect git info for a project directory (excludes `first_commit`, which
     /// is handled by `schedule_git_first_commit_refreshes` batched by repo root).
     pub(crate) fn detect_fast(project_dir: &Path) -> Option<Self> {
@@ -178,12 +189,6 @@ impl GitInfo {
             })
             .collect();
 
-        let primary_remote_index = current_upstream.as_deref().and_then(|us| {
-            remotes
-                .iter()
-                .position(|r| r.tracked_ref.as_deref() == Some(us))
-        });
-
         let last_commit =
             git_output_logged(&repo_root, "log_last_commit", ["log", "-1", "--format=%aI"])
                 .ok()
@@ -197,17 +202,21 @@ impl GitInfo {
         let git_status = detect_git_status_with_root(project_dir, &repo_root);
 
         Some(Self {
-            status: git_status,
-            branch,
-            first_commit: None,
-            last_commit,
-            last_fetched,
-            default_branch,
-            local_main_branch,
-            ahead_behind_local,
-            workflows: detect_workflow_presence(&repo_root),
-            remotes,
-            primary_remote_index,
+            checkout: CheckoutInfo {
+                status: git_status,
+                branch,
+                last_commit,
+                ahead_behind_local,
+                primary_tracked_ref: current_upstream,
+            },
+            repo:     RepoDetection {
+                remotes,
+                workflows: detect_workflow_presence(&repo_root),
+                first_commit: None,
+                last_fetched,
+                default_branch,
+                local_main_branch,
+            },
         })
     }
 }
@@ -559,26 +568,19 @@ impl GitStatus {
     }
 }
 
-/// Wrapper for `GitInfo` that distinguishes "not yet detected" from
-/// "detected with full metadata."
+/// Wrapper for `CheckoutInfo` that distinguishes "not yet detected"
+/// from "detected with full metadata."
 #[derive(Clone, Debug, Default)]
 pub(crate) enum LocalGitState {
     /// Not yet detected (during startup/scan).
     #[default]
     Pending,
-    /// Full git metadata detected for this project.
-    Detected(Box<GitInfo>),
+    /// Per-checkout git metadata detected for this project path.
+    Detected(Box<CheckoutInfo>),
 }
 
 impl LocalGitState {
-    pub(crate) fn info(&self) -> Option<&GitInfo> {
-        match self {
-            Self::Detected(info) => Some(info),
-            Self::Pending => None,
-        }
-    }
-
-    pub(crate) fn info_mut(&mut self) -> Option<&mut GitInfo> {
+    pub(crate) fn info(&self) -> Option<&CheckoutInfo> {
         match self {
             Self::Detected(info) => Some(info),
             Self::Pending => None,

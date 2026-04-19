@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::git::GitInfo;
+use super::git::CheckoutInfo;
 use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::info::Visibility;
@@ -42,7 +42,7 @@ impl ProjectFields for Submodule {
 
     fn disk_usage_bytes(&self) -> Option<u64> { self.info.disk_usage_bytes }
 
-    fn git_info(&self) -> Option<&GitInfo> { self.info.local_git_state.info() }
+    fn git_info(&self) -> Option<&CheckoutInfo> { self.info.local_git_state.info() }
 
     fn info(&self) -> &ProjectInfo { &self.info }
 
