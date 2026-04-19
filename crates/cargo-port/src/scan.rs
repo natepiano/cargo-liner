@@ -33,6 +33,7 @@ use super::project::LanguageStats;
 use super::project::MemberGroup;
 use super::project::Package;
 use super::project::ProjectFields;
+use super::project::ProjectInfo;
 use super::project::RootItem;
 use super::project::RustInfo;
 use super::project::RustProject;
@@ -491,8 +492,11 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
                         path: nested_ws.path().clone(),
                         name: nested_ws.name().map(str::to_string),
                         rust: RustInfo {
+                            info: ProjectInfo {
+                                worktree_status: nested_ws.worktree_status().clone(),
+                                ..ProjectInfo::default()
+                            },
                             cargo: nested_ws.cargo().clone(),
-                            worktree_status: nested_ws.worktree_status().clone(),
                             ..RustInfo::default()
                         },
                     })
@@ -821,8 +825,11 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
                 path: ws.path().clone(),
                 name: ws.name().map(str::to_string),
                 rust: RustInfo {
+                    info: ProjectInfo {
+                        worktree_status: ws.worktree_status().clone(),
+                        ..ProjectInfo::default()
+                    },
                     cargo: ws.cargo().clone(),
-                    worktree_status: ws.worktree_status().clone(),
                     ..RustInfo::default()
                 },
             },
@@ -1542,7 +1549,10 @@ mod tests {
             path: AbsolutePath::from(abs_path),
             name: name.map(String::from),
             rust: RustInfo {
-                worktree_status: status_for(is_linked_worktree, primary_abs),
+                info: ProjectInfo {
+                    worktree_status: status_for(is_linked_worktree, primary_abs),
+                    ..ProjectInfo::default()
+                },
                 ..RustInfo::default()
             },
             ..Workspace::default()
@@ -1559,7 +1569,10 @@ mod tests {
             path: AbsolutePath::from(abs_path),
             name: name.map(String::from),
             rust: RustInfo {
-                worktree_status: status_for(is_linked_worktree, primary_abs),
+                info: ProjectInfo {
+                    worktree_status: status_for(is_linked_worktree, primary_abs),
+                    ..ProjectInfo::default()
+                },
                 ..RustInfo::default()
             },
         }))
