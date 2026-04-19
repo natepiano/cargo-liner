@@ -2,6 +2,7 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 
 use super::git::GitInfo;
+use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
@@ -34,8 +35,7 @@ impl Workspace {
         cargo: Cargo,
         groups: Vec<MemberGroup>,
         vendored: Vec<Package>,
-        is_linked_worktree: bool,
-        worktree_primary_abs_path: Option<AbsolutePath>,
+        worktree_status: WorktreeStatus,
     ) -> Self {
         Self {
             path,
@@ -44,8 +44,7 @@ impl Workspace {
                 info: ProjectInfo::default(),
                 cargo,
                 vendored,
-                is_linked_worktree,
-                worktree_primary_abs_path,
+                worktree_status,
                 lint_runs: LintRuns::default(),
                 crates_version: None,
                 crates_downloads: None,

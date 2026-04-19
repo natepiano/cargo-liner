@@ -282,6 +282,7 @@ mod tests {
     use crate::project::WorkflowPresence;
     use crate::project::Workspace;
     use crate::project::WorktreeGroup;
+    use crate::project::WorktreeStatus;
     use crate::project_list::ProjectList;
     use crate::tui::app::App;
     use crate::tui::app::DismissTarget;
@@ -317,8 +318,7 @@ mod tests {
             Some(name.to_string()),
             cargo,
             Vec::new(),
-            false,
-            None,
+            WorktreeStatus::NotGit,
         )))
     }
 
@@ -328,13 +328,21 @@ mod tests {
         is_linked_worktree: bool,
         primary_abs_path: Option<&Path>,
     ) -> Package {
+        let status = match (is_linked_worktree, primary_abs_path) {
+            (true, Some(p)) => WorktreeStatus::Linked {
+                primary: AbsolutePath::from(p),
+            },
+            (false, Some(p)) => WorktreeStatus::Primary {
+                root: AbsolutePath::from(p),
+            },
+            _ => WorktreeStatus::NotGit,
+        };
         Package::new(
             AbsolutePath::from(path),
             Some(name.to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
-            is_linked_worktree,
-            primary_abs_path.map(AbsolutePath::from),
+            status,
         )
     }
 
@@ -346,8 +354,7 @@ mod tests {
             Some(name.to_string()),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
-            false,
-            None,
+            WorktreeStatus::NotGit,
         )
     }
 
@@ -358,8 +365,7 @@ mod tests {
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             groups,
             Vec::new(),
-            false,
-            None,
+            WorktreeStatus::NotGit,
         )))
     }
 

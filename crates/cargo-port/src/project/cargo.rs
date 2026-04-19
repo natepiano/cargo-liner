@@ -103,9 +103,7 @@ pub(crate) fn from_cargo_toml(
         .and_then(|n| n.as_str())
         .map(|s| (*s).to_string());
 
-    let is_linked_worktree = git::detect_is_linked_worktree(project_dir);
-    let worktree_primary_abs_path =
-        git::detect_worktree_primary(project_dir).map(AbsolutePath::from);
+    let worktree_status = git::detect_worktree_status(project_dir);
     let worktree_health = git::detect_worktree_health(project_dir);
 
     let publishable = match table.get("package").and_then(|p| p.get("publish")) {
@@ -136,20 +134,12 @@ pub(crate) fn from_cargo_toml(
             cargo,
             Vec::new(),
             Vec::new(),
-            is_linked_worktree,
-            worktree_primary_abs_path,
+            worktree_status,
         );
         project.rust.info.worktree_health = worktree_health;
         Ok(CargoParseResult::Workspace(project))
     } else {
-        let mut project = Package::new(
-            abs_path,
-            name,
-            cargo,
-            Vec::new(),
-            is_linked_worktree,
-            worktree_primary_abs_path,
-        );
+        let mut project = Package::new(abs_path, name, cargo, Vec::new(), worktree_status);
         project.rust.info.worktree_health = worktree_health;
         Ok(CargoParseResult::Package(project))
     }

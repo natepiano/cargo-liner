@@ -947,6 +947,7 @@ mod tests {
     use crate::project::RootItem;
     use crate::project::RustProject;
     use crate::project::Workspace;
+    use crate::project::WorktreeStatus;
 
     fn test_path(path: &str) -> AbsolutePath {
         let pb = if path == "~" {
@@ -973,11 +974,9 @@ mod tests {
                 Some("clay-layout".to_string()),
                 Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
                 Vec::new(),
-                false,
-                None,
+                WorktreeStatus::NotGit,
             )],
-            false,
-            None,
+            WorktreeStatus::NotGit,
         );
         let list_items = vec![RootItem::Rust(RustProject::Workspace(ws))];
         let (items, _widths) = build_finder_index(&list_items);
@@ -1079,8 +1078,7 @@ mod tests {
                 false,
             ),
             Vec::new(),
-            false,
-            None,
+            WorktreeStatus::NotGit,
         );
 
         let (items, _widths) = build_finder_index(&[RootItem::Rust(RustProject::Package(pkg))]);

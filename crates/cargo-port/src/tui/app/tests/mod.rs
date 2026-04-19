@@ -49,6 +49,7 @@ use crate::project::Visibility::Dismissed;
 use crate::project::WorkflowPresence;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
+use crate::project::WorktreeStatus;
 use crate::project_list::ProjectList;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
@@ -85,14 +86,26 @@ fn test_path(path: &str) -> AbsolutePath {
     AbsolutePath::from(pb)
 }
 
+fn status_for(worktree_marker: Option<&str>, primary_abs_path: Option<&str>) -> WorktreeStatus {
+    match (worktree_marker, primary_abs_path) {
+        (None, None) => WorktreeStatus::NotGit,
+        (Some(_), Some(p)) => WorktreeStatus::Linked {
+            primary: test_path(p),
+        },
+        (None, Some(p)) => WorktreeStatus::Primary { root: test_path(p) },
+        (Some(_), None) => WorktreeStatus::Linked {
+            primary: test_path("~/unknown-primary"),
+        },
+    }
+}
+
 fn make_project(name: Option<&str>, path: &str) -> RootItem {
     RootItem::Rust(RustProject::Package(Package::new(
         test_path(path),
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
-        false,
-        None,
+        WorktreeStatus::NotGit,
     )))
 }
 
@@ -224,8 +237,7 @@ fn make_workspace_project(name: Option<&str>, path: &str) -> RootItem {
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
         Vec::new(),
-        false,
-        None,
+        WorktreeStatus::NotGit,
     )))
 }
 
@@ -240,8 +252,7 @@ fn make_workspace_with_members(
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         groups,
         Vec::new(),
-        false,
-        None,
+        WorktreeStatus::NotGit,
     )))
 }
 
@@ -251,8 +262,7 @@ fn make_member(name: Option<&str>, path: &str) -> Package {
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
-        false,
-        None,
+        WorktreeStatus::NotGit,
     )
 }
 
@@ -279,8 +289,7 @@ fn make_package_raw_with_primary(
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         Vec::new(),
-        worktree_marker.is_some(),
-        primary_abs_path.map(test_path),
+        status_for(worktree_marker, primary_abs_path),
     )
 }
 
@@ -306,8 +315,7 @@ fn make_workspace_raw_with_primary(
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         groups,
         Vec::new(),
-        worktree_marker.is_some(),
-        primary_abs_path.map(test_path),
+        status_for(worktree_marker, primary_abs_path),
     )
 }
 
@@ -328,8 +336,7 @@ fn make_package_with_vendored(name: Option<&str>, path: &str, vendored: Vec<Pack
         name.map(String::from),
         Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
         vendored,
-        false,
-        None,
+        WorktreeStatus::NotGit,
     )
 }
 

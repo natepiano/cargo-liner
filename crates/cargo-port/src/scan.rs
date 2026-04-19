@@ -39,6 +39,7 @@ use super::project::RustProject;
 use super::project::Submodule;
 use super::project::Workspace;
 use super::project::WorktreeGroup;
+use super::project::WorktreeStatus;
 
 /// Messages sent from background threads to the main event loop.
 pub(crate) enum BackgroundMsg {
@@ -492,8 +493,7 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
                         nested_ws.name().map(str::to_string),
                         nested_ws.cargo().clone(),
                         Vec::new(),
-                        nested_ws.is_linked_worktree(),
-                        nested_ws.worktree_primary_abs_path().cloned(),
+                        nested_ws.worktree_status().clone(),
                     ))
                 } else {
                     None
@@ -821,16 +821,14 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
                 ws.name().map(str::to_string),
                 ws.cargo().clone(),
                 Vec::new(),
-                ws.is_linked_worktree(),
-                ws.worktree_primary_abs_path().cloned(),
+                ws.worktree_status().clone(),
             ),
             RootItem::NonRust(nr) => Package::new(
                 nr.path().clone(),
                 nr.name().map(str::to_string),
                 Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
                 Vec::new(),
-                false,
-                None,
+                WorktreeStatus::NotGit,
             ),
             _ => continue,
         };
@@ -1515,6 +1513,18 @@ mod tests {
     use crate::project::AbsolutePath;
     use crate::project::Cargo;
 
+    fn status_for(is_linked_worktree: bool, primary_abs: Option<&str>) -> WorktreeStatus {
+        match (is_linked_worktree, primary_abs) {
+            (_, None) => WorktreeStatus::NotGit,
+            (true, Some(p)) => WorktreeStatus::Linked {
+                primary: AbsolutePath::from(p.to_string()),
+            },
+            (false, Some(p)) => WorktreeStatus::Primary {
+                root: AbsolutePath::from(p.to_string()),
+            },
+        }
+    }
+
     fn make_workspace(
         name: Option<&str>,
         abs_path: &str,
@@ -1527,8 +1537,7 @@ mod tests {
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
             Vec::new(),
-            is_linked_worktree,
-            primary_abs.map(|s| AbsolutePath::from(s.to_string())),
+            status_for(is_linked_worktree, primary_abs),
         )))
     }
 
@@ -1543,8 +1552,7 @@ mod tests {
             name.map(String::from),
             Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
             Vec::new(),
-            is_linked_worktree,
-            primary_abs.map(|s| AbsolutePath::from(s.to_string())),
+            status_for(is_linked_worktree, primary_abs),
         )))
     }
 

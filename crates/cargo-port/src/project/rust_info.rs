@@ -3,6 +3,7 @@ use std::ops::DerefMut;
 
 use super::cargo::ExampleGroup;
 use super::cargo::ProjectType;
+use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::package::Package;
 use super::paths::AbsolutePath;
@@ -12,14 +13,13 @@ use crate::lint::LintRuns;
 /// Derefs to `ProjectInfo` for uniform metadata access.
 #[derive(Clone)]
 pub(crate) struct RustInfo {
-    pub(super) info:                      ProjectInfo,
-    pub(super) cargo:                     Cargo,
-    pub(super) vendored:                  Vec<Package>,
-    pub(super) is_linked_worktree:        bool,
-    pub(super) worktree_primary_abs_path: Option<AbsolutePath>,
-    pub(super) lint_runs:                 LintRuns,
-    pub(super) crates_version:            Option<String>,
-    pub(super) crates_downloads:          Option<u64>,
+    pub(super) info:             ProjectInfo,
+    pub(super) cargo:            Cargo,
+    pub(super) vendored:         Vec<Package>,
+    pub(super) worktree_status:  WorktreeStatus,
+    pub(super) lint_runs:        LintRuns,
+    pub(super) crates_version:   Option<String>,
+    pub(super) crates_downloads: Option<u64>,
 }
 
 impl RustInfo {
@@ -29,10 +29,14 @@ impl RustInfo {
 
     pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<Package> { &mut self.vendored }
 
-    pub(crate) const fn is_linked_worktree(&self) -> bool { self.is_linked_worktree }
+    pub(crate) const fn worktree_status(&self) -> &WorktreeStatus { &self.worktree_status }
+
+    pub(crate) const fn is_linked_worktree(&self) -> bool {
+        self.worktree_status.is_linked_worktree()
+    }
 
     pub(crate) const fn worktree_primary_abs_path(&self) -> Option<&AbsolutePath> {
-        self.worktree_primary_abs_path.as_ref()
+        self.worktree_status.primary_root()
     }
 
     pub(crate) const fn info(&self) -> &ProjectInfo { &self.info }

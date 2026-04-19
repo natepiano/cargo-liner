@@ -838,52 +838,80 @@ pub(crate) fn detect_worktree_health(project_dir: &Path) -> WorktreeHealth {
     }
 }
 
-/// Returns true when the project's nearest enclosing `.git` is a file
-/// (i.e. this project lives inside a linked worktree), false when it's a
-/// directory (primary repo) or when no `.git` is found.
-pub(super) fn detect_is_linked_worktree(project_dir: &Path) -> bool {
+/// The git worktree status of a project directory.
+///
+/// Captures the mutually exclusive ways a project can relate to git:
+/// not in a repo at all, inside a primary (unlinked) repo, or inside a
+/// linked worktree. `Primary.root` and `Linked.primary` are both the
+/// canonical path of the repo where `.git/` (a directory) lives —
+/// distinguishing the two ensures we always know whether this project
+/// sits on the main checkout or on a linked one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum WorktreeStatus {
+    NotGit,
+    Primary { root: AbsolutePath },
+    Linked { primary: AbsolutePath },
+}
+
+impl WorktreeStatus {
+    pub(crate) const fn is_linked_worktree(&self) -> bool { matches!(self, Self::Linked { .. }) }
+
+    /// Canonical path of the primary repo root (where `.git/` is a
+    /// directory). For `NotGit` returns `None`; for both `Primary` and
+    /// `Linked` returns the primary repo's root.
+    pub(crate) const fn primary_root(&self) -> Option<&AbsolutePath> {
+        match self {
+            Self::NotGit => None,
+            Self::Primary { root } => Some(root),
+            Self::Linked { primary } => Some(primary),
+        }
+    }
+}
+
+/// Detect the git worktree status for a project directory by walking up
+/// until a `.git` entry is found: file → `Linked`, directory → `Primary`,
+/// nothing found → `NotGit`.
+pub(super) fn detect_worktree_status(project_dir: &Path) -> WorktreeStatus {
     let mut dir = project_dir;
     loop {
         let git_path = dir.join(".git");
         if git_path.is_file() {
-            return true;
+            return linked_status_from_gitfile(&git_path, dir);
         }
         if git_path.is_dir() {
-            return false;
+            return dir
+                .canonicalize()
+                .map_or(WorktreeStatus::NotGit, |canonical| {
+                    WorktreeStatus::Primary {
+                        root: AbsolutePath::from(canonical),
+                    }
+                });
         }
         let Some(parent) = dir.parent() else {
-            return false;
+            return WorktreeStatus::NotGit;
         };
         dir = parent;
     }
 }
 
-/// Resolve the primary git repo root for a project directory.
-///
-/// For worktrees (`.git` is a file containing `gitdir: ...`), parse the gitdir
-/// path and strip the `.git/worktrees/<name>` suffix to find the primary root.
-/// For primary repos (`.git` is a directory), return the canonicalized directory.
-pub(super) fn detect_worktree_primary(project_dir: &Path) -> Option<String> {
-    let mut dir = project_dir;
-    loop {
-        let git_path = dir.join(".git");
-        if git_path.is_file() {
-            let contents = std::fs::read_to_string(&git_path).ok()?;
-            let gitdir_str = contents.strip_prefix("gitdir: ")?.trim();
-            let gitdir = AbsolutePath::resolve(gitdir_str, dir);
-            // gitdir is `<primary>/.git/worktrees/<name>` — go up 3 levels
-            let canonical = gitdir;
-            let primary_root = canonical.parent()?.parent()?.parent()?;
-            return Some(primary_root.to_string_lossy().to_string());
-        }
-        if git_path.is_dir() {
-            // This IS the primary — canonicalize for consistent comparison
-            return dir
-                .canonicalize()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string());
-        }
-        dir = dir.parent()?;
+fn linked_status_from_gitfile(git_path: &Path, dir: &Path) -> WorktreeStatus {
+    let Ok(contents) = std::fs::read_to_string(git_path) else {
+        return WorktreeStatus::NotGit;
+    };
+    let Some(gitdir_str) = contents.strip_prefix("gitdir: ") else {
+        return WorktreeStatus::NotGit;
+    };
+    let gitdir = AbsolutePath::resolve(gitdir_str.trim(), dir);
+    // gitdir is `<primary>/.git/worktrees/<name>` — go up 3 levels
+    let Some(primary_root) = gitdir
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+    else {
+        return WorktreeStatus::NotGit;
+    };
+    WorktreeStatus::Linked {
+        primary: AbsolutePath::from(primary_root.to_path_buf()),
     }
 }
 
