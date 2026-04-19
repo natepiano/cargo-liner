@@ -43,6 +43,7 @@ use crate::project::ProjectFields;
 use crate::project::RemoteInfo;
 use crate::project::RemoteKind;
 use crate::project::RootItem;
+use crate::project::RustInfo;
 use crate::project::RustProject;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Dismissed;
@@ -100,13 +101,11 @@ fn status_for(worktree_marker: Option<&str>, primary_abs_path: Option<&str>) -> 
 }
 
 fn make_project(name: Option<&str>, path: &str) -> RootItem {
-    RootItem::Rust(RustProject::Package(Package::new(
-        test_path(path),
-        name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-        Vec::new(),
-        WorktreeStatus::NotGit,
-    )))
+    RootItem::Rust(RustProject::Package(Package {
+        path: test_path(path),
+        name: name.map(String::from),
+        ..Package::default()
+    }))
 }
 
 fn make_app(projects: &[RootItem]) -> App {
@@ -231,14 +230,11 @@ fn make_non_rust_project(name: Option<&str>, path: &str) -> RootItem {
 }
 
 fn make_workspace_project(name: Option<&str>, path: &str) -> RootItem {
-    RootItem::Rust(RustProject::Workspace(Workspace::new(
-        test_path(path),
-        name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-        Vec::new(),
-        Vec::new(),
-        WorktreeStatus::NotGit,
-    )))
+    RootItem::Rust(RustProject::Workspace(Workspace {
+        path: test_path(path),
+        name: name.map(String::from),
+        ..Workspace::default()
+    }))
 }
 
 fn make_workspace_with_members(
@@ -246,24 +242,20 @@ fn make_workspace_with_members(
     path: &str,
     groups: Vec<MemberGroup>,
 ) -> RootItem {
-    RootItem::Rust(RustProject::Workspace(Workspace::new(
-        test_path(path),
-        name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
+    RootItem::Rust(RustProject::Workspace(Workspace {
+        path: test_path(path),
+        name: name.map(String::from),
         groups,
-        Vec::new(),
-        WorktreeStatus::NotGit,
-    )))
+        ..Workspace::default()
+    }))
 }
 
 fn make_member(name: Option<&str>, path: &str) -> Package {
-    Package::new(
-        test_path(path),
-        name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-        Vec::new(),
-        WorktreeStatus::NotGit,
-    )
+    Package {
+        path: test_path(path),
+        name: name.map(String::from),
+        ..Package::default()
+    }
 }
 
 fn make_workspace_worktrees_item(primary: Workspace, linked: Vec<Workspace>) -> RootItem {
@@ -284,13 +276,14 @@ fn make_package_raw_with_primary(
     worktree_marker: Option<&str>,
     primary_abs_path: Option<&str>,
 ) -> Package {
-    Package::new(
-        test_path(path),
-        name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-        Vec::new(),
-        status_for(worktree_marker, primary_abs_path),
-    )
+    Package {
+        path: test_path(path),
+        name: name.map(String::from),
+        rust: RustInfo {
+            worktree_status: status_for(worktree_marker, primary_abs_path),
+            ..RustInfo::default()
+        },
+    }
 }
 
 fn make_workspace_raw(
@@ -309,14 +302,15 @@ fn make_workspace_raw_with_primary(
     worktree_marker: Option<&str>,
     primary_abs_path: Option<&str>,
 ) -> Workspace {
-    Workspace::new(
-        test_path(path),
-        name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
+    Workspace {
+        path: test_path(path),
+        name: name.map(String::from),
+        rust: RustInfo {
+            worktree_status: status_for(worktree_marker, primary_abs_path),
+            ..RustInfo::default()
+        },
         groups,
-        Vec::new(),
-        status_for(worktree_marker, primary_abs_path),
-    )
+    }
 }
 
 fn inline_group(members: Vec<Package>) -> MemberGroup {
@@ -331,13 +325,14 @@ fn named_group(name: &str, members: Vec<Package>) -> MemberGroup {
 }
 
 fn make_package_with_vendored(name: Option<&str>, path: &str, vendored: Vec<Package>) -> Package {
-    Package::new(
-        test_path(path),
-        name.map(String::from),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-        vendored,
-        WorktreeStatus::NotGit,
-    )
+    Package {
+        path: test_path(path),
+        name: name.map(String::from),
+        rust: RustInfo {
+            vendored,
+            ..RustInfo::default()
+        },
+    }
 }
 
 fn wait_for_tree_build(app: &mut App) {

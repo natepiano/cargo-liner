@@ -846,11 +846,16 @@ pub(crate) fn detect_worktree_health(project_dir: &Path) -> WorktreeHealth {
 /// canonical path of the repo where `.git/` (a directory) lives —
 /// distinguishing the two ensures we always know whether this project
 /// sits on the main checkout or on a linked one.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum WorktreeStatus {
+    #[default]
     NotGit,
-    Primary { root: AbsolutePath },
-    Linked { primary: AbsolutePath },
+    Primary {
+        root: AbsolutePath,
+    },
+    Linked {
+        primary: AbsolutePath,
+    },
 }
 
 impl WorktreeStatus {

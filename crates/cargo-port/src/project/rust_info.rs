@@ -10,15 +10,15 @@ use crate::lint::LintRuns;
 
 /// Rust-specific project data shared by both `Workspace` and `Package`.
 /// Derefs to `ProjectInfo` for uniform metadata access.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct RustInfo {
-    pub(super) info:             ProjectInfo,
-    pub(super) cargo:            Cargo,
-    pub(super) vendored:         Vec<Package>,
-    pub(super) worktree_status:  WorktreeStatus,
-    pub(super) lint_runs:        LintRuns,
-    pub(super) crates_version:   Option<String>,
-    pub(super) crates_downloads: Option<u64>,
+    pub(crate) info:             ProjectInfo,
+    pub(crate) cargo:            Cargo,
+    pub(crate) vendored:         Vec<Package>,
+    pub(crate) worktree_status:  WorktreeStatus,
+    pub(crate) lint_runs:        LintRuns,
+    pub(crate) crates_version:   Option<String>,
+    pub(crate) crates_downloads: Option<u64>,
 }
 
 impl RustInfo {
@@ -59,38 +59,18 @@ impl DerefMut for RustInfo {
 }
 
 /// Shared Cargo fields extracted from `Cargo.toml`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Cargo {
-    version:     Option<String>,
-    description: Option<String>,
-    types:       Vec<ProjectType>,
-    examples:    Vec<ExampleGroup>,
-    benches:     Vec<String>,
-    test_count:  usize,
-    publishable: bool,
+    pub(crate) version:     Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) types:       Vec<ProjectType>,
+    pub(crate) examples:    Vec<ExampleGroup>,
+    pub(crate) benches:     Vec<String>,
+    pub(crate) test_count:  usize,
+    pub(crate) publishable: bool,
 }
 
 impl Cargo {
-    pub(crate) const fn new(
-        version: Option<String>,
-        description: Option<String>,
-        types: Vec<ProjectType>,
-        examples: Vec<ExampleGroup>,
-        benches: Vec<String>,
-        test_count: usize,
-        publishable: bool,
-    ) -> Self {
-        Self {
-            version,
-            description,
-            types,
-            examples,
-            benches,
-            test_count,
-            publishable,
-        }
-    }
-
     pub(crate) fn types(&self) -> &[ProjectType] { &self.types }
 
     pub(crate) fn examples(&self) -> &[ExampleGroup] { &self.examples }

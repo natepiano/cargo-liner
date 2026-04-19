@@ -997,17 +997,18 @@ fn visible_rows_workspace_no_worktrees() {
 
 #[test]
 fn visible_rows_include_vendored_children() {
-    let ws = Workspace::new(
-        test_path("~/ws"),
-        None,
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-        vec![inline_group(vec![make_member(
+    let ws = Workspace {
+        path: test_path("~/ws"),
+        groups: vec![inline_group(vec![make_member(
             Some("member"),
             "~/ws/member",
         )])],
-        vec![make_member(Some("vendored"), "~/ws/vendor/helper")],
-        WorktreeStatus::NotGit,
-    );
+        rust: RustInfo {
+            vendored: vec![make_member(Some("vendored"), "~/ws/vendor/helper")],
+            ..RustInfo::default()
+        },
+        ..Workspace::default()
+    };
     let root = RootItem::Rust(RustProject::Workspace(ws));
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();

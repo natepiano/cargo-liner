@@ -25,7 +25,6 @@ use super::http::ServiceKind;
 use super::http::ServiceSignal;
 use super::lint::LintStatus;
 use super::project::AbsolutePath;
-use super::project::Cargo;
 use super::project::CargoParseResult;
 use super::project::GitInfo;
 use super::project::GitRepoPresence;
@@ -35,11 +34,11 @@ use super::project::MemberGroup;
 use super::project::Package;
 use super::project::ProjectFields;
 use super::project::RootItem;
+use super::project::RustInfo;
 use super::project::RustProject;
 use super::project::Submodule;
 use super::project::Workspace;
 use super::project::WorktreeGroup;
-use super::project::WorktreeStatus;
 
 /// Messages sent from background threads to the main event loop.
 pub(crate) enum BackgroundMsg {
@@ -488,13 +487,15 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
                     Some(pkg.clone())
                 } else if let RootItem::Rust(RustProject::Workspace(nested_ws)) = candidate {
                     // Nested workspace treated as a package member
-                    Some(Package::new(
-                        nested_ws.path().clone(),
-                        nested_ws.name().map(str::to_string),
-                        nested_ws.cargo().clone(),
-                        Vec::new(),
-                        nested_ws.worktree_status().clone(),
-                    ))
+                    Some(Package {
+                        path: nested_ws.path().clone(),
+                        name: nested_ws.name().map(str::to_string),
+                        rust: RustInfo {
+                            cargo: nested_ws.cargo().clone(),
+                            worktree_status: nested_ws.worktree_status().clone(),
+                            ..RustInfo::default()
+                        },
+                    })
                 } else {
                     None
                 }
@@ -816,20 +817,20 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
     for &(vi, ni) in &vendored_map {
         let pkg = match &items[vi] {
             RootItem::Rust(RustProject::Package(p)) => p.clone(),
-            RootItem::Rust(RustProject::Workspace(ws)) => Package::new(
-                ws.path().clone(),
-                ws.name().map(str::to_string),
-                ws.cargo().clone(),
-                Vec::new(),
-                ws.worktree_status().clone(),
-            ),
-            RootItem::NonRust(nr) => Package::new(
-                nr.path().clone(),
-                nr.name().map(str::to_string),
-                Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-                Vec::new(),
-                WorktreeStatus::NotGit,
-            ),
+            RootItem::Rust(RustProject::Workspace(ws)) => Package {
+                path: ws.path().clone(),
+                name: ws.name().map(str::to_string),
+                rust: RustInfo {
+                    cargo: ws.cargo().clone(),
+                    worktree_status: ws.worktree_status().clone(),
+                    ..RustInfo::default()
+                },
+            },
+            RootItem::NonRust(nr) => Package {
+                path: nr.path().clone(),
+                name: nr.name().map(str::to_string),
+                ..Package::default()
+            },
             _ => continue,
         };
         vendored_projects.push((ni, pkg));
@@ -1511,7 +1512,7 @@ pub(crate) fn disk_usage_batch_for_item(item: &RootItem) -> Vec<(AbsolutePath, u
 mod tests {
     use super::*;
     use crate::project::AbsolutePath;
-    use crate::project::Cargo;
+    use crate::project::WorktreeStatus;
 
     fn status_for(is_linked_worktree: bool, primary_abs: Option<&str>) -> WorktreeStatus {
         match (is_linked_worktree, primary_abs) {
@@ -1531,14 +1532,15 @@ mod tests {
         is_linked_worktree: bool,
         primary_abs: Option<&str>,
     ) -> RootItem {
-        RootItem::Rust(RustProject::Workspace(Workspace::new(
-            AbsolutePath::from(abs_path),
-            name.map(String::from),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-            Vec::new(),
-            Vec::new(),
-            status_for(is_linked_worktree, primary_abs),
-        )))
+        RootItem::Rust(RustProject::Workspace(Workspace {
+            path: AbsolutePath::from(abs_path),
+            name: name.map(String::from),
+            rust: RustInfo {
+                worktree_status: status_for(is_linked_worktree, primary_abs),
+                ..RustInfo::default()
+            },
+            ..Workspace::default()
+        }))
     }
 
     fn make_package(
@@ -1547,13 +1549,14 @@ mod tests {
         is_linked_worktree: bool,
         primary_abs: Option<&str>,
     ) -> RootItem {
-        RootItem::Rust(RustProject::Package(Package::new(
-            AbsolutePath::from(abs_path),
-            name.map(String::from),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-            Vec::new(),
-            status_for(is_linked_worktree, primary_abs),
-        )))
+        RootItem::Rust(RustProject::Package(Package {
+            path: AbsolutePath::from(abs_path),
+            name: name.map(String::from),
+            rust: RustInfo {
+                worktree_status: status_for(is_linked_worktree, primary_abs),
+                ..RustInfo::default()
+            },
+        }))
     }
 
     #[test]
