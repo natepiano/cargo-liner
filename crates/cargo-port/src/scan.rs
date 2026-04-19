@@ -1068,6 +1068,12 @@ pub(crate) fn store_cached_repo_data(
     }
 }
 
+pub(crate) fn invalidate_cached_repo_data(repo_cache: &RepoCache, owner_repo: &OwnerRepo) {
+    if let Ok(mut cache) = repo_cache.lock() {
+        cache.remove(owner_repo);
+    }
+}
+
 /// Resolve include-dir entries to absolute paths. `~` and `~/…` entries
 /// expand via the user's home directory; already-absolute entries are
 /// used as-is; relative entries are joined to the home directory.

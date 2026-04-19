@@ -1700,6 +1700,15 @@ impl App {
             self.maybe_log_startup_phase_completions();
         }
         if !self.projects.is_submodule_path(path) {
+            // A post-scan GitInfo update means a git fetch (or other ref change) was
+            // detected — treat it as a signal to refresh CI too, not just local git state.
+            // During scan the cache dedups fetches across worktrees of the same repo.
+            if self.is_scan_complete()
+                && let Some(repo_url) = info.primary_url()
+                && let Some(owner_repo) = crate::ci::parse_owner_repo(repo_url)
+            {
+                crate::scan::invalidate_cached_repo_data(&self.repo_fetch_cache, &owner_repo);
+            }
             self.spawn_repo_fetch_for_git_info(path, &info);
         }
     }
