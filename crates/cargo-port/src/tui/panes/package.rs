@@ -316,8 +316,11 @@ fn render_project_description_section(
     let description_width = project_inner
         .width
         .saturating_sub(description_padding.saturating_mul(2));
-    let description_lines =
-        description_lines(context.pkg_data, description_width, description_max_height);
+    let description_lines = description_lines(
+        context.pkg_data.description.as_deref(),
+        description_width,
+        description_max_height,
+    );
     let description_height = u16::try_from(description_lines.len()).unwrap_or(u16::MAX);
     let description_area = Rect {
         x: project_inner.x.saturating_add(description_padding),
@@ -478,7 +481,7 @@ fn render_stats_column(
 }
 
 pub(in super::super) fn description_lines(
-    data: &PackageData,
+    description: Option<&str>,
     width: u16,
     max_height: u16,
 ) -> Vec<Line<'static>> {
@@ -488,9 +491,7 @@ pub(in super::super) fn description_lines(
         return Vec::new();
     }
 
-    let (description, style) = data
-        .description
-        .as_deref()
+    let (description, style) = description
         .map(str::trim)
         .filter(|description| !description.is_empty())
         .map_or_else(

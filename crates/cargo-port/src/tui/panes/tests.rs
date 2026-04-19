@@ -143,7 +143,7 @@ fn package_label_width_expands_for_crates_io() {
 fn description_lines_use_muted_fallback_when_missing() {
     let data = package_data(true);
 
-    let lines = panes::description_lines(&data, 80, 3);
+    let lines = panes::description_lines(data.description.as_deref(), 80, 3);
 
     assert_eq!(lines.len(), 1);
     assert_eq!(line_text(&lines[0]), "No description available");
@@ -157,7 +157,7 @@ fn description_lines_render_real_description_with_default_style() {
         ..package_data(true)
     };
 
-    let lines = panes::description_lines(&data, 80, 3);
+    let lines = panes::description_lines(data.description.as_deref(), 80, 3);
 
     assert_eq!(lines.len(), 1);
     assert_eq!(line_text(&lines[0]), "Real package description");
@@ -171,7 +171,7 @@ fn description_lines_truncate_overflow_with_ellipsis() {
         ..package_data(true)
     };
 
-    let lines = panes::description_lines(&data, 13, 2);
+    let lines = panes::description_lines(data.description.as_deref(), 13, 2);
 
     assert_eq!(lines.len(), 2);
     assert_eq!(line_text(&lines[0]), "one two three");

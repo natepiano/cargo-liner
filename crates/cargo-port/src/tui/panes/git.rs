@@ -640,9 +640,13 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
 
-    let fields = panes::git_fields_from_data(&git_data);
-    let total_rows = fields.len() + git_data.remotes.len() + git_data.worktrees.len();
-    if total_rows == 0 {
+    let all_fields = panes::git_fields_from_data(&git_data);
+    let flat_fields: Vec<DetailField> = all_fields
+        .into_iter()
+        .filter(|field| *field != DetailField::RepoDesc)
+        .collect();
+    let total_rows = flat_fields.len() + git_data.remotes.len() + git_data.worktrees.len();
+    if total_rows == 0 && git_data.description.as_deref().is_none_or(str::is_empty) {
         app.pane_manager_mut().pane_mut(PaneId::Git).clear_surface();
         let empty_git = pane::empty_pane_block(" Not a git repo ");
         frame.render_widget(empty_git, area);
@@ -653,31 +657,137 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         .pane_mut(PaneId::Git)
         .set_len(total_rows);
     let focus = app.pane_focus_state(PaneId::Git);
+    let border_style = if matches!(focus, PaneFocusState::Active) {
+        styles.chrome.active_border
+    } else {
+        styles.chrome.inactive_border
+    };
     let git_block = styles.chrome.block(
         git_panel_title(&git_data),
         matches!(focus, PaneFocusState::Active),
     );
     let git_inner = git_block.inner(area);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Git)
-        .set_content_area(git_inner);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Git)
-        .set_viewport_rows(usize::from(git_inner.height));
     frame.render_widget(git_block, area);
+
+    let content_area = render_git_about_section(
+        frame,
+        git_data.description.as_deref(),
+        &flat_fields,
+        &git_data,
+        area,
+        git_inner,
+        border_style,
+    );
+
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Git)
+        .set_content_area(content_area);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Git)
+        .set_viewport_rows(usize::from(content_area.height));
     let git_ctx = GitRenderCtx {
         data: &git_data,
-        fields: &fields,
+        fields: &flat_fields,
         pane: app.pane_manager().pane(PaneId::Git),
         focus,
         styles: &styles,
     };
-    let layout = render_git_column_inner(frame, &git_ctx, area, git_inner);
+    let layout = render_git_column_inner(frame, &git_ctx, area, content_area);
     app.pane_manager_mut()
         .pane_mut(PaneId::Git)
         .set_scroll_offset(layout.scroll_offset);
-    register_git_row_hitboxes(app, git_inner, &layout);
+    register_git_row_hitboxes(app, content_area, &layout);
     pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::Git));
+}
+
+/// Render the About section (repo description) at the top of the Git panel,
+/// separated from the rest of the pane by a horizontal rule with `├`/`┤`
+/// endcaps. Returns the area below the separator for the scrolling content.
+fn render_git_about_section(
+    frame: &mut Frame,
+    description: Option<&str>,
+    flat_fields: &[DetailField],
+    data: &GitData,
+    outer_area: Rect,
+    git_inner: Rect,
+    border_style: Style,
+) -> Rect {
+    let description = description.map(str::trim).filter(|d| !d.is_empty());
+    let Some(description) = description else {
+        return git_inner;
+    };
+
+    let remotes_block = if data.remotes.is_empty() {
+        0
+    } else {
+        3 + data.remotes.len()
+    };
+    let worktrees_block = if data.worktrees.is_empty() {
+        0
+    } else {
+        3 + data.worktrees.len()
+    };
+    let lower_content_height = flat_fields.len() + remotes_block + worktrees_block;
+    let reserved_lower_height = u16::try_from(lower_content_height).unwrap_or(u16::MAX);
+    let reserved_separator_height = u16::from(git_inner.height > reserved_lower_height);
+    let description_max_height = git_inner
+        .height
+        .saturating_sub(reserved_lower_height.saturating_add(reserved_separator_height));
+    if description_max_height == 0 {
+        return git_inner;
+    }
+
+    let description_padding = u16::from(git_inner.width > 2);
+    let description_width = git_inner
+        .width
+        .saturating_sub(description_padding.saturating_mul(2));
+    let lines =
+        package::description_lines(Some(description), description_width, description_max_height);
+    let description_height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    if description_height == 0 {
+        return git_inner;
+    }
+
+    let description_area = Rect {
+        x:      git_inner.x.saturating_add(description_padding),
+        y:      git_inner.y,
+        width:  description_width,
+        height: description_height,
+    };
+    frame.render_widget(Paragraph::new(lines), description_area);
+
+    let separator_y = git_inner.y.saturating_add(description_height);
+    let has_room_for_separator = separator_y < git_inner.bottom();
+    if !has_room_for_separator {
+        return Rect {
+            x:      git_inner.x,
+            y:      separator_y,
+            width:  git_inner.width,
+            height: 0,
+        };
+    }
+
+    pane::render_rules(
+        frame,
+        &[pane::PaneRule::Horizontal {
+            area:        Rect {
+                x:      outer_area.x,
+                y:      separator_y,
+                width:  outer_area.width,
+                height: 1,
+            },
+            connector_x: None,
+        }],
+        border_style,
+    );
+
+    let content_y = separator_y.saturating_add(1);
+    Rect {
+        x:      git_inner.x,
+        y:      content_y,
+        width:  git_inner.width,
+        height: git_inner.bottom().saturating_sub(content_y),
+    }
 }
 
 #[cfg(test)]
