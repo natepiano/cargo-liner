@@ -22,7 +22,7 @@ use crate::project::Package;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::project::ProjectFields;
-use crate::project::RepoDetection;
+use crate::project::RepoInfo;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Visibility;
@@ -258,7 +258,7 @@ impl App {
     pub(in super::super) fn unpublished_ci_branch_name(&self, path: &Path) -> Option<String> {
         let git = self.git_info_for(path)?;
         let default_branch = self
-            .repo_detection_for(path)
+            .repo_info_for(path)
             .and_then(|repo| repo.default_branch.as_deref());
         (git.primary_tracked_ref().is_none() && git.branch.as_deref() != default_branch)
             .then(|| git.branch.clone())
@@ -305,21 +305,21 @@ impl App {
             .and_then(|project| project.local_git_state.info())
     }
 
-    /// Per-repo detection (remotes, workflows, default branch, ...) for
-    /// the entry containing `path`. `None` means either the path isn't in
-    /// a known entry, the entry isn't in a git repo, or the background
-    /// `detect_fast` probe hasn't completed yet.
-    pub(in super::super) fn repo_detection_for(&self, path: &Path) -> Option<&RepoDetection> {
+    /// Per-repo info (remotes, workflows, default branch, ...) for the
+    /// entry containing `path`. `None` means either the path isn't in a
+    /// known entry, the entry isn't in a git repo, or the background
+    /// `LocalGitInfo::get` call hasn't completed yet.
+    pub(in super::super) fn repo_info_for(&self, path: &Path) -> Option<&RepoInfo> {
         self.projects
             .entry_containing(path)
-            .and_then(|entry| entry.git_repo.as_ref()?.detection.as_ref())
+            .and_then(|entry| entry.git_repo.as_ref()?.repo_info.as_ref())
     }
 
     /// Convenience: the primary remote's URL for the checkout at `path`,
-    /// looked up against its containing entry's `RepoDetection`.
+    /// looked up against its containing entry's `RepoInfo`.
     pub(in super::super) fn primary_url_for(&self, path: &Path) -> Option<&str> {
         let checkout = self.git_info_for(path)?;
-        let repo = self.repo_detection_for(path)?;
+        let repo = self.repo_info_for(path)?;
         checkout.primary_url(repo)
     }
 
@@ -327,7 +327,7 @@ impl App {
     /// at `path`.
     pub(in super::super) fn primary_ahead_behind_for(&self, path: &Path) -> Option<(usize, usize)> {
         let checkout = self.git_info_for(path)?;
-        let repo = self.repo_detection_for(path)?;
+        let repo = self.repo_info_for(path)?;
         checkout.primary_ahead_behind(repo)
     }
 

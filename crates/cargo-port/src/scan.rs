@@ -26,7 +26,7 @@ use super::http::ServiceSignal;
 use super::lint::LintStatus;
 use super::project::AbsolutePath;
 use super::project::CargoParseResult;
-use super::project::DetectedGit;
+use super::project::LocalGitInfo;
 use super::project::GitRepoPresence;
 use super::project::LangEntry;
 use super::project::LanguageStats;
@@ -66,14 +66,14 @@ pub(crate) enum BackgroundMsg {
     RepoFetchComplete {
         repo: OwnerRepo,
     },
-    /// Git metadata detected for a project (branch, origin, ahead/behind,
-    /// path state). Sent by `detect_fast()` during startup and watcher
+    /// Git metadata for a project (branch, origin, ahead/behind, path
+    /// state). Sent by `LocalGitInfo::get()` during startup and watcher
     /// refreshes. Carries both the per-checkout `CheckoutInfo` and the
-    /// per-repo `RepoDetection`; the handler routes them to their
-    /// respective storage slots.
+    /// per-repo `RepoInfo`; the handler routes them to their respective
+    /// storage slots.
     GitInfo {
         path: AbsolutePath,
-        info: DetectedGit,
+        info: LocalGitInfo,
     },
     /// First commit date detected for a project (deferred post-scan,
     /// batched by repo root to avoid redundant `git log` calls).
@@ -980,11 +980,11 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let project_name = req.project_name;
     let repo_presence = req.repo_presence;
     let client = &ctx.client;
-    // Git info (local, fast) — includes git status detection but skips
-    // first_commit, which is handled separately by
+    // Local git info — includes git status but skips first_commit,
+    // which is handled separately by
     // `schedule_git_first_commit_refreshes` (batched by repo root).
     let git_info = if repo_presence.is_in_repo() {
-        DetectedGit::detect_fast(abs_path)
+        LocalGitInfo::get(abs_path)
     } else {
         None
     };
@@ -1012,7 +1012,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     // Send the Submodules message first so `at_path_mut` can resolve each
     // submodule before its per-entry enrichment messages arrive.
     if repo_presence.is_in_repo() {
-        let submodules = super::project::detect_submodules(abs_path);
+        let submodules = super::project::get_submodules(abs_path);
         if !submodules.is_empty() {
             let _ = tx.send(BackgroundMsg::Submodules {
                 path:       abs.clone(),

@@ -77,7 +77,7 @@ fn tabbable_panes_follow_canonical_order() {
     app.scan.phase = ScanPhase::Complete;
     app.handle_git_info(
         project.path(),
-        DetectedGit {
+        LocalGitInfo {
             checkout: CheckoutInfo {
                 status:              GitStatus::Clean,
                 branch:              None,
@@ -85,7 +85,7 @@ fn tabbable_panes_follow_canonical_order() {
                 ahead_behind_local:  None,
                 primary_tracked_ref: None,
             },
-            repo:     RepoDetection {
+            repo:     RepoInfo {
                 remotes:           vec![RemoteInfo {
                     name:         "origin".to_string(),
                     url:          Some("https://github.com/acme/demo".to_string()),

@@ -2,22 +2,21 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::path::Path;
 
-use super::git::RepoDetection;
+use super::git::RepoInfo;
 use super::info::GitHubInfo;
 use super::info::ProjectCiData;
-use super::paths::AbsolutePath;
 use super::root_item::RootItem;
 
 /// Repo-level metadata shared by every checkout of the same git repo.
 ///
 /// Stored on the containing `ProjectEntry`, not on each `ProjectInfo`, so
 /// the fields below cannot drift between sibling worktrees of the same
-/// repo. `detection` is `None` while the repo is known but the
-/// background `detect_fast` probe hasn't completed yet — the UI can use
-/// that distinction to show "loading" instead of empty values.
+/// repo. `repo_info` is `None` while the repo is known but the background
+/// `LocalGitInfo::get` call hasn't completed yet — the UI can use that
+/// distinction to show "loading" instead of empty values.
 #[derive(Clone, Default)]
 pub(crate) struct GitRepo {
-    pub detection:   Option<RepoDetection>,
+    pub repo_info:   Option<RepoInfo>,
     pub github_info: Option<GitHubInfo>,
     pub ci_data:     ProjectCiData,
 }
@@ -48,10 +47,6 @@ impl ProjectEntry {
     pub(crate) const fn with_repo(item: RootItem, git_repo: Option<GitRepo>) -> Self {
         Self { item, git_repo }
     }
-
-    /// Absolute path to the primary checkout of the contained item.
-    #[expect(dead_code, reason = "Reserved for Stage 2 detection-write policy")]
-    pub(crate) fn primary_path(&self) -> &AbsolutePath { self.item.path() }
 
     #[cfg(test)]
     #[expect(dead_code, reason = "Reserved for later-stage test helpers")]

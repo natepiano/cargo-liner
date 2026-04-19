@@ -34,7 +34,7 @@ use super::http::HttpClient;
 use super::lint;
 use super::lint::RuntimeHandle;
 use super::project;
-use super::project::DetectedGit;
+use super::project::LocalGitInfo;
 use super::project::GitRepoPresence;
 #[cfg(test)]
 use super::project::ProjectFields;
@@ -820,7 +820,7 @@ fn emit_root_git_info_refresh(
     else {
         return;
     };
-    let Some(info) = DetectedGit::detect_fast(repo_root) else {
+    let Some(info) = LocalGitInfo::get(repo_root) else {
         return;
     };
     tracing::info!(
@@ -905,7 +905,7 @@ fn spawn_git_refresh(
         let started = Instant::now();
         let repo_root_for_detect = repo_root.clone();
         let git_info =
-            tokio::task::spawn_blocking(move || DetectedGit::detect_fast(&repo_root_for_detect))
+            tokio::task::spawn_blocking(move || LocalGitInfo::get(&repo_root_for_detect))
                 .await
                 .ok()
                 .flatten();
@@ -2671,7 +2671,7 @@ edition = "2024"
     // ── fire_disk_updates ───────────────────────────────────────────
 
     /// Helper: create a git repo in `dir` with one commit so
-    /// `GitInfo::detect` returns `Some`.
+    /// `LocalGitInfo::get` returns `Some`.
     fn git_binary() -> &'static str {
         if Path::new("/usr/bin/git").is_file() {
             "/usr/bin/git"

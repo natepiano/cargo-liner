@@ -105,8 +105,8 @@ pub(crate) fn from_cargo_toml(
         .and_then(|n| n.as_str())
         .map(|s| (*s).to_string());
 
-    let worktree_status = git::detect_worktree_status(project_dir);
-    let worktree_health = git::detect_worktree_health(project_dir);
+    let worktree_status = git::get_worktree_status(project_dir);
+    let worktree_health = git::get_worktree_health(project_dir);
 
     let publishable = match table.get("package").and_then(|p| p.get("publish")) {
         None => true,
@@ -114,7 +114,7 @@ pub(crate) fn from_cargo_toml(
         Some(v) => v.as_array().is_none_or(|arr| !arr.is_empty()),
     };
 
-    let types = detect_types(&table, project_dir);
+    let types = get_types(&table, project_dir);
     let examples = collect_examples(&table, project_dir);
     let benches = collect_target_names(&table, project_dir, "bench", "benches");
     let test_count = count_targets(&table, project_dir, "test", "tests");
@@ -163,12 +163,12 @@ pub(crate) fn from_git_dir(project_dir: &Path) -> NonRustProject {
         .map(|n| n.to_string_lossy().to_string());
 
     let mut project = NonRustProject::new(AbsolutePath::from(project_dir), name);
-    project.info_mut().worktree_health = git::detect_worktree_health(project_dir);
-    project.worktree_status = git::detect_worktree_status(project_dir);
+    project.info_mut().worktree_health = git::get_worktree_health(project_dir);
+    project.worktree_status = git::get_worktree_status(project_dir);
     project
 }
 
-fn detect_types(table: &Table, project_dir: &Path) -> Vec<ProjectType> {
+fn get_types(table: &Table, project_dir: &Path) -> Vec<ProjectType> {
     let mut types = Vec::new();
 
     if table.get("workspace").is_some() {

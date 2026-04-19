@@ -25,7 +25,7 @@ use crate::lint;
 use crate::lint::LintStatus;
 use crate::lint::RegisterProjectRequest;
 use crate::project::AbsolutePath;
-use crate::project::DetectedGit;
+use crate::project::LocalGitInfo;
 use crate::project::GitRepoPresence;
 use crate::project::LanguageStats;
 use crate::project::LocalGitState;
@@ -518,7 +518,7 @@ impl App {
         std::thread::spawn(move || {
             for (repo_root, paths) in projects_by_repo {
                 let started = Instant::now();
-                let first_commit = crate::project::detect_first_commit(&repo_root);
+                let first_commit = crate::project::get_first_commit(&repo_root);
                 tracing::info!(
                     elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
                     repo_root = %repo_root.display(),
@@ -1664,20 +1664,20 @@ impl App {
         });
     }
 
-    pub(in super::super) fn handle_git_info(&mut self, path: &Path, info: DetectedGit) {
+    pub(in super::super) fn handle_git_info(&mut self, path: &Path, info: LocalGitInfo) {
         tracing::info!(
             path = %path.display(),
             git_status = %info.checkout.status.label(),
             "git_info_applied"
         );
-        let DetectedGit { checkout, mut repo } = info;
+        let LocalGitInfo { checkout, mut repo } = info;
 
         // Preserve a previously-fetched `first_commit` across re-detection.
-        // `detect_fast` always returns `None`; the value is filled in
-        // either by a prior `handle_git_first_commit` write or via the
-        // `pending_git_first_commit` map below.
+        // `LocalGitInfo::get` always returns `None` for it; the value is
+        // filled in either by a prior `handle_git_first_commit` write or
+        // via the `pending_git_first_commit` map below.
         let preserved_first_commit = self
-            .repo_detection_for(path)
+            .repo_info_for(path)
             .and_then(|existing| existing.first_commit.clone());
         if repo.first_commit.is_none() {
             repo.first_commit =
@@ -1688,8 +1688,8 @@ impl App {
             project.local_git_state = LocalGitState::Detected(Box::new(checkout));
         }
 
-        // Repo-detection write policy: only the primary checkout writes
-        // `RepoDetection`. Linked worktrees share the primary's
+        // Repo-info write policy: only the primary checkout writes
+        // `RepoInfo`. Linked worktrees share the primary's
         // `.git/config` by design; admitting last-writer-wins from any
         // checkout would produce silent arbitration if they ever
         // diverged. The entry's `git_repo` slot is upserted regardless,
@@ -1698,7 +1698,7 @@ impl App {
             let is_primary = entry.item.path().as_path() == path;
             let git_repo = entry.git_repo.get_or_insert_with(Default::default);
             if is_primary {
-                git_repo.detection = Some(repo);
+                git_repo.repo_info = Some(repo);
             }
         }
         let primary_url = self.primary_url_for(path).map(String::from);
@@ -1735,15 +1735,15 @@ impl App {
     ) {
         let first_commit = first_commit.map(String::from);
         // first_commit is per-repo, so it lands on the entry's
-        // `RepoDetection`. If the entry's detection slot doesn't exist
-        // yet (detect_fast hasn't completed), stash the value in
+        // `RepoInfo`. If the entry's `repo_info` slot doesn't exist yet
+        // (`LocalGitInfo::get` hasn't completed), stash the value in
         // `pending_git_first_commit` and `handle_git_info` will fold it
-        // in when detection arrives.
+        // in when repo info arrives.
         let applied = self
             .projects
             .entry_containing_mut(path)
-            .and_then(|entry| entry.git_repo.as_mut()?.detection.as_mut())
-            .map(|detection| detection.first_commit.clone_from(&first_commit))
+            .and_then(|entry| entry.git_repo.as_mut()?.repo_info.as_mut())
+            .map(|repo| repo.first_commit.clone_from(&first_commit))
             .is_some();
         if applied {
             self.pending_git_first_commit.remove(path);

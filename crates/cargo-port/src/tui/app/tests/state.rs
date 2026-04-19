@@ -182,7 +182,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
     let mut app = make_app(std::slice::from_ref(&project));
     app.handle_git_info(
         project.path(),
-        DetectedGit {
+        LocalGitInfo {
             checkout: CheckoutInfo {
                 status:              GitStatus::Clean,
                 branch:              Some("feat/demo".to_string()),
@@ -190,7 +190,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
             },
-            repo:     RepoDetection {
+            repo:     RepoInfo {
                 remotes:           vec![RemoteInfo {
                     name:         "origin".to_string(),
                     url:          Some("https://github.com/acme/demo".to_string()),
@@ -234,7 +234,7 @@ fn ci_for_default_branch_prefers_matching_branch_runs() {
     let mut app = make_app(std::slice::from_ref(&project));
     app.handle_git_info(
         project.path(),
-        DetectedGit {
+        LocalGitInfo {
             checkout: CheckoutInfo {
                 status:              GitStatus::Clean,
                 branch:              Some("main".to_string()),
@@ -242,7 +242,7 @@ fn ci_for_default_branch_prefers_matching_branch_runs() {
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
             },
-            repo:     RepoDetection {
+            repo:     RepoInfo {
                 remotes:           vec![RemoteInfo {
                     name:         "origin".to_string(),
                     url:          Some("https://github.com/acme/demo".to_string()),
@@ -293,7 +293,7 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
     let mut app = make_app(std::slice::from_ref(&project));
     app.handle_git_info(
         project.path(),
-        DetectedGit {
+        LocalGitInfo {
             checkout: CheckoutInfo {
                 status:              GitStatus::Clean,
                 branch:              Some("feat/demo".to_string()),
@@ -301,7 +301,7 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
             },
-            repo:     RepoDetection {
+            repo:     RepoInfo {
                 remotes:           vec![RemoteInfo {
                     name:         "origin".to_string(),
                     url:          Some("https://github.com/acme/demo".to_string()),
@@ -388,12 +388,11 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(project_a.path().as_path()));
-    assert!(
-        !app.scan
-            .startup_phases
-            .lint_seen_terminal
-            .contains(project_a.path().as_path())
-    );
+    assert!(!app
+        .scan
+        .startup_phases
+        .lint_seen_terminal
+        .contains(project_a.path().as_path()));
     assert!(app.running_lint_paths.contains_key(project_a.path()));
     assert!(app.lint_toast.is_some());
 
@@ -516,12 +515,11 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
 
     app.handle_git_info(member_dir.as_path(), make_git_info(None));
 
-    assert!(
-        app.scan
-            .startup_phases
-            .git_seen
-            .contains(workspace_dir.join(".git").as_path())
-    );
+    assert!(app
+        .scan
+        .startup_phases
+        .git_seen
+        .contains(workspace_dir.join(".git").as_path()));
 }
 
 #[test]
@@ -638,7 +636,7 @@ fn git_status_suppresses_sync_for_untracked_and_ignored() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
 
-    let base_info = || DetectedGit {
+    let base_info = || LocalGitInfo {
         checkout: CheckoutInfo {
             status:              GitStatus::Clean,
             branch:              Some("feat/demo".to_string()),
@@ -646,7 +644,7 @@ fn git_status_suppresses_sync_for_untracked_and_ignored() {
             ahead_behind_local:  None,
             primary_tracked_ref: Some("origin/main".to_string()),
         },
-        repo:     RepoDetection {
+        repo:     RepoInfo {
             remotes:           vec![RemoteInfo {
                 name:         "origin".to_string(),
                 url:          Some("https://github.com/acme/demo".to_string()),
@@ -691,7 +689,7 @@ fn background_git_info_updates_rendered_git_status() {
         &mut app,
         BackgroundMsg::GitInfo {
             path: project.path().to_path_buf().into(),
-            info: DetectedGit {
+            info: LocalGitInfo {
                 checkout: CheckoutInfo {
                     status:              GitStatus::Modified,
                     branch:              Some("feat/demo".to_string()),
@@ -699,7 +697,7 @@ fn background_git_info_updates_rendered_git_status() {
                     ahead_behind_local:  None,
                     primary_tracked_ref: Some("origin/main".to_string()),
                 },
-                repo:     RepoDetection {
+                repo:     RepoInfo {
                     remotes:           vec![RemoteInfo {
                         name:         "origin".to_string(),
                         url:          Some("https://github.com/acme/demo".to_string()),
@@ -727,7 +725,7 @@ fn background_git_info_updates_rendered_git_status() {
         &mut app,
         BackgroundMsg::GitInfo {
             path: project.path().to_path_buf().into(),
-            info: DetectedGit {
+            info: LocalGitInfo {
                 checkout: CheckoutInfo {
                     status:              GitStatus::Clean,
                     branch:              Some("feat/demo".to_string()),
@@ -735,7 +733,7 @@ fn background_git_info_updates_rendered_git_status() {
                     ahead_behind_local:  None,
                     primary_tracked_ref: Some("origin/main".to_string()),
                 },
-                repo:     RepoDetection {
+                repo:     RepoInfo {
                     remotes:           vec![RemoteInfo {
                         name:         "origin".to_string(),
                         url:          Some("https://github.com/acme/demo".to_string()),
@@ -764,7 +762,7 @@ fn git_sync_shows_ascii_fill_for_local_only_branch() {
 
     app.handle_git_info(
         project.path(),
-        DetectedGit {
+        LocalGitInfo {
             checkout: CheckoutInfo {
                 status:              GitStatus::Clean,
                 branch:              Some("feat/demo".to_string()),
@@ -772,7 +770,7 @@ fn git_sync_shows_ascii_fill_for_local_only_branch() {
                 ahead_behind_local:  Some((3, 0)),
                 primary_tracked_ref: None,
             },
-            repo:     RepoDetection {
+            repo:     RepoInfo {
                 remotes:           vec![RemoteInfo {
                     name:         "origin".to_string(),
                     url:          None,
@@ -801,7 +799,7 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
 
     app.handle_git_info(
         project.path(),
-        DetectedGit {
+        LocalGitInfo {
             checkout: CheckoutInfo {
                 status:              GitStatus::Clean,
                 branch:              Some("feature/demo".to_string()),
@@ -809,7 +807,7 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
                 ahead_behind_local:  Some((2, 1)),
                 primary_tracked_ref: None,
             },
-            repo:     RepoDetection {
+            repo:     RepoInfo {
                 remotes:           vec![RemoteInfo {
                     name:         "origin".to_string(),
                     url:          Some("https://github.com/natepiano/demo".to_string()),
@@ -838,7 +836,7 @@ fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
     app.scan.phase = ScanPhase::Complete;
     app.handle_git_info(
         project.path(),
-        DetectedGit {
+        LocalGitInfo {
             checkout: CheckoutInfo {
                 status:              GitStatus::Clean,
                 branch:              Some("enh/various".to_string()),
@@ -846,7 +844,7 @@ fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
                 ahead_behind_local:  None,
                 primary_tracked_ref: None,
             },
-            repo:     RepoDetection {
+            repo:     RepoInfo {
                 remotes:           vec![RemoteInfo {
                     name:         "origin".to_string(),
                     url:          Some("https://github.com/natepiano/demo".to_string()),
@@ -892,7 +890,7 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
 
     app.handle_git_info(
         project.path(),
-        DetectedGit {
+        LocalGitInfo {
             checkout: CheckoutInfo {
                 status:              GitStatus::Clean,
                 branch:              Some("enh/various".to_string()),
@@ -900,7 +898,7 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
                 ahead_behind_local:  None,
                 primary_tracked_ref: None,
             },
-            repo:     RepoDetection {
+            repo:     RepoInfo {
                 remotes:           vec![RemoteInfo {
                     name:         "origin".to_string(),
                     url:          Some("https://github.com/natepiano/demo".to_string()),
@@ -948,7 +946,7 @@ fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
 
     app.handle_git_info(
         project.path(),
-        DetectedGit {
+        LocalGitInfo {
             checkout: CheckoutInfo {
                 status:              GitStatus::Clean,
                 branch:              Some("feat/demo".to_string()),
@@ -956,7 +954,7 @@ fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
                 ahead_behind_local:  Some((0, 0)),
                 primary_tracked_ref: Some("origin/main".to_string()),
             },
-            repo:     RepoDetection {
+            repo:     RepoInfo {
                 remotes:           vec![RemoteInfo {
                     name:         "origin".to_string(),
                     url:          Some("https://github.com/acme/demo".to_string()),
@@ -1003,7 +1001,7 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
     app.ensure_detail_cached();
 
     assert_eq!(
-        app.repo_detection_for(test_path("~/demo").as_path())
+        app.repo_info_for(test_path("~/demo").as_path())
             .and_then(|repo| repo.first_commit.as_deref()),
         Some("2026-03-12T21:18:54-04:00")
     );

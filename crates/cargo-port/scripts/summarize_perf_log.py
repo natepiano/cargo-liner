@@ -16,7 +16,7 @@ COMPARE_LABELS = (
     "startup_complete",
     "watcher_git_queue_wait",
     "watcher_git_refresh",
-    "watcher_git_info_detect",
+    "watcher_git_info_get",
     "git_info_detect_call",
     "watcher_disk_queue_wait",
     "watcher_disk_usage",

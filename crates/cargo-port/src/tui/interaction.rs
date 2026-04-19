@@ -232,8 +232,8 @@ pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPan
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::sync::OnceLock;
     use std::sync::mpsc;
+    use std::sync::OnceLock;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -245,10 +245,10 @@ mod tests {
     use crossterm::event::MouseButton;
     use crossterm::event::MouseEvent;
     use crossterm::event::MouseEventKind;
-    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
+    use ratatui::Terminal;
 
     use super::HoveredPaneRow;
     use super::UiHitbox;
@@ -268,15 +268,15 @@ mod tests {
     use crate::project::AbsolutePath;
     use crate::project::Cargo;
     use crate::project::CheckoutInfo;
-    use crate::project::DetectedGit;
     use crate::project::ExampleGroup;
     use crate::project::GitStatus;
+    use crate::project::LocalGitInfo;
     use crate::project::MemberGroup;
     use crate::project::Package;
     use crate::project::ProjectType;
     use crate::project::RemoteInfo;
     use crate::project::RemoteKind;
-    use crate::project::RepoDetection;
+    use crate::project::RepoInfo;
     use crate::project::RootItem;
     use crate::project::RustInfo;
     use crate::project::RustProject;
@@ -364,8 +364,8 @@ mod tests {
         }))
     }
 
-    fn make_git_info(url: Option<&str>) -> DetectedGit {
-        DetectedGit {
+    fn make_git_info(url: Option<&str>) -> LocalGitInfo {
+        LocalGitInfo {
             checkout: CheckoutInfo {
                 status:              GitStatus::Clean,
                 branch:              Some("main".to_string()),
@@ -373,7 +373,7 @@ mod tests {
                 ahead_behind_local:  Some((0, 0)),
                 primary_tracked_ref: Some("origin/main".to_string()),
             },
-            repo:     RepoDetection {
+            repo:     RepoInfo {
                 remotes:           vec![RemoteInfo {
                     name:         "origin".to_string(),
                     url:          url.map(str::to_string),

@@ -81,7 +81,7 @@ impl CheckoutInfo {
     /// The remote matching the current branch's `@{upstream}` within
     /// `repo`, if any. Lookup is by name match against
     /// `repo.remotes[i].tracked_ref` — this is rendered data, not hot.
-    pub(crate) fn primary_remote<'r>(&self, repo: &'r RepoDetection) -> Option<&'r RemoteInfo> {
+    pub(crate) fn primary_remote<'r>(&self, repo: &'r RepoInfo) -> Option<&'r RemoteInfo> {
         let want = self.primary_tracked_ref.as_deref()?;
         repo.remotes
             .iter()
@@ -89,12 +89,12 @@ impl CheckoutInfo {
     }
 
     /// The primary remote's URL, looked up against `repo`.
-    pub(crate) fn primary_url<'r>(&self, repo: &'r RepoDetection) -> Option<&'r str> {
+    pub(crate) fn primary_url<'r>(&self, repo: &'r RepoInfo) -> Option<&'r str> {
         self.primary_remote(repo).and_then(|r| r.url.as_deref())
     }
 
     /// The primary remote's ahead/behind vs its tracked ref.
-    pub(crate) fn primary_ahead_behind(&self, repo: &RepoDetection) -> Option<(usize, usize)> {
+    pub(crate) fn primary_ahead_behind(&self, repo: &RepoInfo) -> Option<(usize, usize)> {
         self.primary_remote(repo).and_then(|r| r.ahead_behind)
     }
 
@@ -103,10 +103,10 @@ impl CheckoutInfo {
 }
 
 /// Repo-level metadata: state that is the same across every checkout of
-/// the same git repo. Lives on `GitRepo::detection` so siblings cannot
+/// the same git repo. Lives on `GitRepo::repo_info` so siblings cannot
 /// drift.
 #[derive(Debug, Clone, Default, Serialize)]
-pub(crate) struct RepoDetection {
+pub(crate) struct RepoInfo {
     /// All remotes declared for this repo.
     pub remotes:           Vec<RemoteInfo>,
     /// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
@@ -126,7 +126,7 @@ impl Default for WorkflowPresence {
     fn default() -> Self { Self::Missing }
 }
 
-impl RepoDetection {
+impl RepoInfo {
     /// Repo-level origin classification derived from `remotes`.
     pub(crate) fn origin_kind(&self) -> GitOrigin {
         if self.remotes.is_empty() {
@@ -139,27 +139,28 @@ impl RepoDetection {
     }
 }
 
-/// Result of a `detect_fast` probe: the per-checkout half lands on
-/// `ProjectInfo.local_git_state`, the per-repo half on
-/// `GitRepo::detection`. Bundled so the split lands atomically — there
-/// is no intermediate state where half the callers see the old return
-/// shape.
+/// Local git metadata for a project, split into per-checkout and
+/// per-repo halves: `checkout` lands on `ProjectInfo.local_git_state`,
+/// `repo` on `GitRepo::repo_info`. Bundled so the split lands
+/// atomically — there is no intermediate state where half the callers
+/// see the old shape. Contrast with `GitHubInfo`, which holds data
+/// sourced from the GitHub API rather than probed locally.
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct DetectedGit {
+pub(crate) struct LocalGitInfo {
     pub checkout: CheckoutInfo,
-    pub repo:     RepoDetection,
+    pub repo:     RepoInfo,
 }
 
-impl DetectedGit {
-    /// Detect git info for a project directory (excludes `first_commit`, which
+impl LocalGitInfo {
+    /// Retrieve git info for a project directory (excludes `first_commit`, which
     /// is handled by `schedule_git_first_commit_refreshes` batched by repo root).
-    pub(crate) fn detect_fast(project_dir: &Path) -> Option<Self> {
+    pub(crate) fn get(project_dir: &Path) -> Option<Self> {
         let repo_root = git_repo_root(project_dir)?;
         let cfg = config::active_config();
 
-        let branch = detect_current_branch(&repo_root);
-        let current_upstream = detect_upstream_branch(&repo_root);
-        let default_branch = detect_default_branch(&repo_root);
+        let branch = get_current_branch(&repo_root);
+        let current_upstream = get_upstream_branch(&repo_root);
+        let default_branch = get_default_branch(&repo_root);
         let local_main_branch = resolve_local_main_branch(&repo_root);
         let ahead_behind_local = local_main_branch
             .as_deref()
@@ -197,9 +198,9 @@ impl DetectedGit {
                     if s.is_empty() { None } else { Some(s) }
                 });
 
-        let last_fetched = detect_last_fetched(&repo_root);
+        let last_fetched = get_last_fetched(&repo_root);
 
-        let git_status = detect_git_status_with_root(project_dir, &repo_root);
+        let git_status = get_git_status(project_dir, &repo_root);
 
         Some(Self {
             checkout: CheckoutInfo {
@@ -209,9 +210,9 @@ impl DetectedGit {
                 ahead_behind_local,
                 primary_tracked_ref: current_upstream,
             },
-            repo:     RepoDetection {
+            repo:     RepoInfo {
                 remotes,
-                workflows: detect_workflow_presence(&repo_root),
+                workflows: get_workflow_presence(&repo_root),
                 first_commit: None,
                 last_fetched,
                 default_branch,
@@ -221,7 +222,7 @@ impl DetectedGit {
     }
 }
 
-fn detect_current_branch(repo_root: &Path) -> Option<String> {
+fn get_current_branch(repo_root: &Path) -> Option<String> {
     git_output_logged(
         repo_root,
         "rev_parse_head",
@@ -234,7 +235,7 @@ fn detect_current_branch(repo_root: &Path) -> Option<String> {
     })
 }
 
-fn detect_upstream_branch(project_dir: &Path) -> Option<String> {
+fn get_upstream_branch(project_dir: &Path) -> Option<String> {
     git_output_logged(
         project_dir,
         "rev_parse_upstream_name",
@@ -253,7 +254,7 @@ fn detect_upstream_branch(project_dir: &Path) -> Option<String> {
 }
 
 /// Resolve the repo's default branch from `origin/HEAD` (e.g. `main`).
-fn detect_default_branch(repo_root: &Path) -> Option<String> {
+fn get_default_branch(repo_root: &Path) -> Option<String> {
     git_output_logged(
         repo_root,
         "symbolic_ref_origin_head",
@@ -427,7 +428,7 @@ fn local_branch_exists(project_dir: &Path, branch: &str) -> bool {
     .is_ok()
 }
 
-fn detect_workflow_presence(repo_root: &Path) -> WorkflowPresence {
+fn get_workflow_presence(repo_root: &Path) -> WorkflowPresence {
     let workflows_dir = repo_root.join(".github").join("workflows");
     let has_yaml = std::fs::read_dir(workflows_dir).is_ok_and(|entries| {
         entries.filter_map(Result::ok).any(|entry| {
@@ -445,7 +446,7 @@ fn detect_workflow_presence(repo_root: &Path) -> WorkflowPresence {
 
 /// Resolve the current branch for a worktree at `worktree_dir`.
 /// Returns `None` for detached HEAD or read failures.
-pub(crate) fn detect_worktree_branch(worktree_dir: &Path) -> Option<String> {
+pub(crate) fn get_worktree_branch(worktree_dir: &Path) -> Option<String> {
     git_output_logged(
         worktree_dir,
         "worktree_branch",
@@ -482,7 +483,7 @@ pub(crate) fn worktree_ahead_behind_primary(
     )
 }
 
-pub(crate) fn detect_first_commit(project_dir: &Path) -> Option<String> {
+pub(crate) fn get_first_commit(project_dir: &Path) -> Option<String> {
     let repo_root = git_repo_root(project_dir)?;
     git_output_logged(
         &repo_root,
@@ -525,7 +526,7 @@ fn git_output_logged<const N: usize>(
         repo_root = %repo_root.display(),
         op,
         status,
-        "git_info_detect_call"
+        "git_info_get_call"
     );
     output
 }
@@ -588,9 +589,9 @@ impl LocalGitState {
     }
 }
 
-/// Detect git path state when the repo root is already known, avoiding a
+/// Get git path state when the repo root is already known, avoiding a
 /// redundant `git_repo_root()` call.
-fn detect_git_status_with_root(project_dir: &Path, repo_root: &Path) -> GitStatus {
+fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
     let started = std::time::Instant::now();
     let relative_path = relative_git_path(repo_root, project_dir);
     if relative_path != "." {
@@ -704,7 +705,7 @@ pub(crate) fn resolve_common_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
 /// Read `FETCH_HEAD` mtime from the common git dir and render it as UTC ISO
 /// 8601. `FETCH_HEAD` is rewritten on every `git fetch` regardless of whether
 /// refs changed, so its mtime is the most reliable "last fetched" signal.
-fn detect_last_fetched(repo_root: &Path) -> Option<String> {
+fn get_last_fetched(repo_root: &Path) -> Option<String> {
     let common_dir = resolve_common_git_dir(repo_root)?;
     let fetch_head = common_dir.join("FETCH_HEAD");
     let modified = std::fs::metadata(&fetch_head).ok()?.modified().ok()?;
@@ -839,7 +840,7 @@ impl GitRepoPresence {
 
 /// Check if a project directory is a broken worktree — `.git` is a file whose
 /// gitdir target does not exist on disk.
-pub(crate) fn detect_worktree_health(project_dir: &Path) -> WorktreeHealth {
+pub(crate) fn get_worktree_health(project_dir: &Path) -> WorktreeHealth {
     let git_path = project_dir.join(".git");
     if !git_path.is_file() {
         return WorktreeHealth::Normal;
@@ -893,10 +894,10 @@ impl WorktreeStatus {
     }
 }
 
-/// Detect the git worktree status for a project directory by walking up
+/// Get the git worktree status for a project directory by walking up
 /// until a `.git` entry is found: file → `Linked`, directory → `Primary`,
 /// nothing found → `NotGit`.
-pub(super) fn detect_worktree_status(project_dir: &Path) -> WorktreeStatus {
+pub(super) fn get_worktree_status(project_dir: &Path) -> WorktreeStatus {
     let mut dir = project_dir;
     loop {
         let git_path = dir.join(".git");

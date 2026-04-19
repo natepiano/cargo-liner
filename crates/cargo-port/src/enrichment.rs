@@ -19,7 +19,7 @@
 use std::sync::mpsc::Sender;
 
 use crate::project::AbsolutePath;
-use crate::project::DetectedGit;
+use crate::project::LocalGitInfo;
 use crate::project::ProjectFields;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -41,7 +41,7 @@ pub(crate) fn enrich(entry: &dyn ProjectFields, tx: &Sender<BackgroundMsg>, ctx:
 }
 
 fn emit_git(path: &AbsolutePath, tx: &Sender<BackgroundMsg>) {
-    let Some(info) = DetectedGit::detect_fast(path.as_path()) else {
+    let Some(info) = LocalGitInfo::get(path.as_path()) else {
         return;
     };
     let _ = tx.send(BackgroundMsg::GitInfo {

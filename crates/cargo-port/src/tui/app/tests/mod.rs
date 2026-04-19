@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::OnceLock;
 use std::sync::mpsc;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use chrono::DateTime;
@@ -16,10 +16,10 @@ use ratatui::style::Style;
 use ratatui::widgets::List;
 use ratatui::widgets::Widget;
 
-pub(super) use super::App;
-use super::DismissTarget;
 use super::snapshots;
 use super::types::*;
+pub(super) use super::App;
+use super::DismissTarget;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::ci::FetchStatus;
@@ -32,9 +32,9 @@ use crate::lint::LintStatus;
 use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::CheckoutInfo;
-use crate::project::DetectedGit;
 use crate::project::ExampleGroup;
 use crate::project::GitStatus;
+use crate::project::LocalGitInfo;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
 use crate::project::Package;
@@ -43,7 +43,7 @@ use crate::project::ProjectCiInfo;
 use crate::project::ProjectFields;
 use crate::project::RemoteInfo;
 use crate::project::RemoteKind;
-use crate::project::RepoDetection;
+use crate::project::RepoInfo;
 use crate::project::RootItem;
 use crate::project::RustInfo;
 use crate::project::RustProject;
@@ -509,8 +509,8 @@ fn make_ci_run(run_id: u64, conclusion: Conclusion) -> CiRun {
     }
 }
 
-fn make_git_info(url: Option<&str>) -> DetectedGit {
-    DetectedGit {
+fn make_git_info(url: Option<&str>) -> LocalGitInfo {
+    LocalGitInfo {
         checkout: CheckoutInfo {
             status:              GitStatus::Clean,
             branch:              Some("main".to_string()),
@@ -518,7 +518,7 @@ fn make_git_info(url: Option<&str>) -> DetectedGit {
             ahead_behind_local:  None,
             primary_tracked_ref: Some("origin/main".to_string()),
         },
-        repo:     RepoDetection {
+        repo:     RepoInfo {
             remotes:           vec![RemoteInfo {
                 name:         "origin".to_string(),
                 url:          url.map(String::from),
@@ -766,16 +766,12 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
                 panic!("expected existing root to remain a package worktree group");
             };
             assert_eq!(linked.len(), 2);
-            assert!(
-                linked
-                    .iter()
-                    .any(|l| l.path() == Path::new(existing_linked_path))
-            );
-            assert!(
-                linked
-                    .iter()
-                    .any(|l| l.path() == Path::new(new_linked_path))
-            );
+            assert!(linked
+                .iter()
+                .any(|l| l.path() == Path::new(existing_linked_path)));
+            assert!(linked
+                .iter()
+                .any(|l| l.path() == Path::new(new_linked_path)));
         },
         WorktreeProjectKind::Workspace => {
             let primary_path = "/abs/obsidian_knife";
@@ -816,16 +812,12 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
                 panic!("expected existing root to remain a workspace worktree group");
             };
             assert_eq!(linked.len(), 2);
-            assert!(
-                linked
-                    .iter()
-                    .any(|l| l.path() == Path::new(existing_linked_path))
-            );
-            assert!(
-                linked
-                    .iter()
-                    .any(|l| l.path() == Path::new(new_linked_path))
-            );
+            assert!(linked
+                .iter()
+                .any(|l| l.path() == Path::new(existing_linked_path)));
+            assert!(linked
+                .iter()
+                .any(|l| l.path() == Path::new(new_linked_path)));
         },
     }
 }
