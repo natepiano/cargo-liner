@@ -92,11 +92,11 @@ pub fn append_history_under(
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)?;
+        .open(&path)?;
     let json = serde_json::to_string(run)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     writeln!(file, "{json}")?;
-    enforce_cache_size_under(cache_root, cache_size_bytes)
+    enforce_cache_size_under(cache_root, cache_size_bytes, Some((&path, &run.run_id)))
 }
 
 pub fn read_history(project_root: &Path) -> Vec<LintRun> {
@@ -123,11 +123,12 @@ pub(super) fn read_history_under(cache_root: &Path, project_root: &Path) -> Vec<
 fn enforce_cache_size_under(
     cache_root: &Path,
     cache_size_bytes: Option<u64>,
+    protected: Option<(&Path, &str)>,
 ) -> io::Result<PruneStats> {
     let Some(cache_size) = cache_size_bytes else {
         return Ok(PruneStats::default());
     };
-    prune_runs_under(cache_root, cache_size)
+    prune_runs_under(cache_root, cache_size, protected)
 }
 
 pub(super) fn total_bytes_under(root: &Path) -> u64 {
@@ -223,8 +224,22 @@ fn rewrite_history_file(path: &Path, kept_indices: &[usize]) -> io::Result<()> {
 }
 
 /// Remove the oldest complete runs (history line + archived output directory)
-/// until total bytes under the cache root are within the cache size limit.
-fn prune_runs_under(cache_root: &Path, cache_size: u64) -> io::Result<PruneStats> {
+/// in fixed 5%-of-cache-size batches until total bytes fall within the limit.
+///
+/// Why: trimming to exactly the cache limit causes the very next append to
+/// re-trigger eviction. Reclaiming a fixed chunk per call leaves headroom.
+/// The chunk is 5% of the cache limit, recorded in bytes up-front so repeated
+/// batches do not shrink as the cache drains.
+///
+/// `protected` is the (`history_path`, `run_id`) of a run that must not be
+/// evicted — typically the run that was just appended. If reclaiming every
+/// other run still leaves the cache over its limit, the protected run stays
+/// and the cache remains over the limit.
+fn prune_runs_under(
+    cache_root: &Path,
+    cache_size: u64,
+    protected: Option<(&Path, &str)>,
+) -> io::Result<PruneStats> {
     let bytes_before = total_bytes_under(cache_root);
     if bytes_before <= cache_size {
         return Ok(PruneStats::default());
@@ -244,13 +259,24 @@ fn prune_runs_under(cache_root: &Path, cache_size: u64) -> io::Result<PruneStats
             .then_with(|| lhs.line_index.cmp(&rhs.line_index))
     });
 
+    let batch_bytes = (cache_size / 20).max(1);
+    let mut target = batch_bytes;
+    let mut reclaimed: u64 = 0;
+
     // Track which runs to remove, keyed by history file path.
     let mut removed: HashMap<AbsolutePath, Vec<usize>> = HashMap::new();
     let mut runs_evicted: usize = 0;
 
     for run in &runs {
-        if total_bytes <= cache_size {
+        if reclaimed >= target && total_bytes <= cache_size {
             break;
+        }
+
+        if let Some((protected_history, protected_id)) = protected
+            && run.history_path.as_path() == protected_history
+            && run.run_id == protected_id
+        {
+            continue;
         }
 
         // Remove the archived output directory for this run.
@@ -259,6 +285,7 @@ fn prune_runs_under(cache_root: &Path, cache_size: u64) -> io::Result<PruneStats
             let dir_bytes = total_bytes_under(&run_dir);
             std::fs::remove_dir_all(&run_dir).ok();
             total_bytes = total_bytes.saturating_sub(dir_bytes);
+            reclaimed = reclaimed.saturating_add(dir_bytes);
         }
 
         removed
@@ -266,6 +293,13 @@ fn prune_runs_under(cache_root: &Path, cache_size: u64) -> io::Result<PruneStats
             .or_default()
             .push(run.line_index);
         runs_evicted += 1;
+
+        // Hit the current batch target but still over the cache limit —
+        // advance to the next fixed 5% multiple.
+        if reclaimed >= target && total_bytes > cache_size {
+            let batches_done = reclaimed / batch_bytes;
+            target = batches_done.saturating_add(1).saturating_mul(batch_bytes);
+        }
     }
 
     // Rewrite each affected history file, keeping only non-removed lines.

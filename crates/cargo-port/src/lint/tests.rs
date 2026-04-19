@@ -264,7 +264,7 @@ fn append_history_prunes_oldest_runs_under_cache_size() {
         project_dir.path(),
         "older",
         "2026-04-01T18:00:00-04:00",
-        "older logs",
+        "older logs with padding to exceed batch size",
     );
     append_archived_run(cache_dir.path(), project_dir.path(), &older, None);
 
@@ -273,7 +273,7 @@ fn append_history_prunes_oldest_runs_under_cache_size() {
         project_dir.path(),
         "newer",
         "2026-04-01T19:00:00-04:00",
-        "newer logs",
+        "newer logs with padding to exceed batch size",
     );
 
     let total_before = history::total_bytes_under(cache_dir.path());
@@ -436,7 +436,7 @@ fn prune_removes_oldest_run_directory_and_history_line() {
         project_dir.path(),
         "run-older",
         "2026-04-01T18:00:00-04:00",
-        "older output",
+        "older output with padding to exceed batch size",
     );
     append_archived_run(cache_dir.path(), project_dir.path(), &older, None);
 
@@ -445,7 +445,7 @@ fn prune_removes_oldest_run_directory_and_history_line() {
         project_dir.path(),
         "run-newer",
         "2026-04-01T19:00:00-04:00",
-        "newer output",
+        "newer output with padding to exceed batch size",
     );
 
     // Measure total bytes with both runs fully on disk. The cache size must be
@@ -493,7 +493,7 @@ fn prune_across_projects_removes_globally_oldest() {
         project_a.path(),
         "run-old-a",
         "2026-04-01T17:00:00-04:00",
-        "project-a output",
+        "project-a output with padding to exceed batch size",
     );
     append_archived_run(cache_dir.path(), project_a.path(), &old_a, None);
 
@@ -502,7 +502,7 @@ fn prune_across_projects_removes_globally_oldest() {
         project_b.path(),
         "run-new-b",
         "2026-04-01T20:00:00-04:00",
-        "project-b output",
+        "project-b output with padding to exceed batch size",
     );
 
     // Budget: total with both archived + room for B's history line, minus 1
@@ -569,7 +569,7 @@ fn prune_returns_stats_about_evicted_runs() {
         project_dir.path(),
         "run-older",
         "2026-04-01T18:00:00-04:00",
-        "older output",
+        "older output with padding to exceed batch size",
     );
     append_archived_run(cache_dir.path(), project_dir.path(), &older, None);
 
@@ -578,7 +578,7 @@ fn prune_returns_stats_about_evicted_runs() {
         project_dir.path(),
         "run-newer",
         "2026-04-01T19:00:00-04:00",
-        "newer output",
+        "newer output with padding to exceed batch size",
     );
 
     let total_before = history::total_bytes_under(cache_dir.path());
@@ -594,6 +594,51 @@ fn prune_returns_stats_about_evicted_runs() {
 
     assert_eq!(stats.runs_evicted, 1);
     assert!(stats.bytes_reclaimed > 0);
+}
+
+#[test]
+fn prune_protects_just_appended_run_even_when_larger_than_cache() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let project_dir = tempfile::tempdir().expect("tempdir");
+
+    let older = archive_run_with_logs(
+        cache_dir.path(),
+        project_dir.path(),
+        "run-older",
+        "2026-04-01T18:00:00-04:00",
+        "older output",
+    );
+    append_archived_run(cache_dir.path(), project_dir.path(), &older, None);
+
+    // Newer run whose archived logs alone far exceed the cache budget.
+    let huge_content = "x".repeat(10_000);
+    let newer = archive_run_with_logs(
+        cache_dir.path(),
+        project_dir.path(),
+        "run-newer",
+        "2026-04-01T19:00:00-04:00",
+        &huge_content,
+    );
+
+    // Tiny cache forces eviction; even wiping the older run cannot get
+    // below cache_size because the newer run alone is far larger. The
+    // newer run should survive because it was just appended.
+    let stats = append_archived_run(cache_dir.path(), project_dir.path(), &newer, Some(500));
+
+    let runs = history::read_history_under(cache_dir.path(), project_dir.path());
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].run_id, "run-newer");
+
+    let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
+    assert!(
+        project_cache.join("runs/run-newer").exists(),
+        "just-appended run directory should survive"
+    );
+    assert!(
+        !project_cache.join("runs/run-older").exists(),
+        "older run directory should be evicted"
+    );
+    assert_eq!(stats.runs_evicted, 1);
 }
 
 #[test]
