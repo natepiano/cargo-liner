@@ -495,7 +495,7 @@ impl App {
     }
 
     pub(in super::super) fn is_vendored_path(&self, path: &Path) -> bool {
-        self.projects.iter().any(|item| match item {
+        self.projects.iter().any(|item| match &item.item {
             RootItem::Rust(RustProject::Workspace(ws)) => {
                 ws.vendored().iter().any(|v| v.path() == path)
             },
@@ -517,7 +517,7 @@ impl App {
     }
 
     pub(in super::super) fn is_workspace_member_path(&self, path: &Path) -> bool {
-        self.projects.iter().any(|item| match item {
+        self.projects.iter().any(|item| match &item.item {
             RootItem::Rust(RustProject::Workspace(ws)) => ws
                 .groups()
                 .iter()
@@ -545,8 +545,8 @@ impl App {
         });
 
         // Include vendored deps whose parent is a CI owner.
-        for item in &self.projects {
-            let vendored_paths: Vec<&AbsolutePath> = match item {
+        for entry in &self.projects {
+            let vendored_paths: Vec<&AbsolutePath> = match &entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     ws.vendored().iter().map(Package::path).collect()
                 },
@@ -567,7 +567,7 @@ impl App {
                     .collect(),
                 RootItem::NonRust(_) => Vec::new(),
             };
-            if owners.contains(item.path()) {
+            if owners.contains(entry.item.path()) {
                 for vp in vendored_paths {
                     owners.insert(vp.clone());
                 }

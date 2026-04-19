@@ -355,7 +355,7 @@ fn open_in_editor(app: &mut App) {
     let abs_path = app
         .projects()
         .iter()
-        .find_map(|item| match item {
+        .find_map(|item| match &item.item {
             crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws))
                 if ws.groups().iter().any(|g| {
                     g.members()

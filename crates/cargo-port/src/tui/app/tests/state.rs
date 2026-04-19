@@ -1019,7 +1019,7 @@ fn lint_rollups_distinguish_root_from_primary_worktree() {
     let root_status = app.projects().first().unwrap().lint_rollup_status();
     assert!(matches!(root_status, LintStatus::Failed(_)));
 
-    let RootItem::Worktrees(g) = app.projects().first().unwrap() else {
+    let RootItem::Worktrees(g) = &app.projects().first().unwrap().item else {
         panic!("expected Worktrees");
     };
     assert!(matches!(
@@ -1074,7 +1074,7 @@ fn lint_rollup_prefers_running_worktree_over_failed_root_history() {
     let root_status = app.projects().first().unwrap().lint_rollup_status();
     assert!(matches!(root_status, LintStatus::Running(_)));
 
-    let RootItem::Worktrees(g) = app.projects().first().unwrap() else {
+    let RootItem::Worktrees(g) = &app.projects().first().unwrap().item else {
         panic!("expected Worktrees");
     };
     assert!(matches!(

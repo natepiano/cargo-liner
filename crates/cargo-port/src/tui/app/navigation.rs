@@ -287,7 +287,9 @@ impl App {
     /// Returns the `RootItem` when a root row is selected.
     pub(in super::super) fn selected_item(&self) -> Option<&RootItem> {
         match self.selected_row()? {
-            VisibleRow::Root { node_index } => self.projects.get(node_index),
+            VisibleRow::Root { node_index } => {
+                self.projects.get(node_index).map(|entry| &entry.item)
+            },
             _ => None,
         }
     }
@@ -313,7 +315,7 @@ impl App {
                 member_index,
             } => {
                 let item = self.projects.get(node_index)?;
-                match item {
+                match &item.item {
                     RootItem::Rust(RustProject::Workspace(ws)) => {
                         let group = ws.groups().get(group_index)?;
                         let member = group.members().get(member_index)?;
@@ -334,7 +336,7 @@ impl App {
                 vendored_index,
             } => {
                 let item = self.projects.get(node_index)?;
-                match item {
+                match &item.item {
                     RootItem::Rust(RustProject::Workspace(ws)) => ws
                         .vendored()
                         .get(vendored_index)
@@ -372,7 +374,7 @@ impl App {
                 ..
             } => {
                 let item = self.projects.get(node_index)?;
-                Self::worktree_path_ref(item, worktree_index)
+                Self::worktree_path_ref(&item.item, worktree_index)
             },
             VisibleRow::WorktreeMember {
                 node_index,
@@ -381,7 +383,12 @@ impl App {
                 member_index,
             } => {
                 let item = self.projects.get(node_index)?;
-                Self::worktree_member_path_ref(item, worktree_index, group_index, member_index)
+                Self::worktree_member_path_ref(
+                    &item.item,
+                    worktree_index,
+                    group_index,
+                    member_index,
+                )
             },
             VisibleRow::WorktreeVendored {
                 node_index,
@@ -389,7 +396,7 @@ impl App {
                 vendored_index,
             } => {
                 let item = self.projects.get(node_index)?;
-                Self::worktree_vendored_path_ref(item, worktree_index, vendored_index)
+                Self::worktree_vendored_path_ref(&item.item, worktree_index, vendored_index)
             },
             VisibleRow::Submodule {
                 node_index,
@@ -424,7 +431,7 @@ impl App {
                 member_index,
             } => {
                 let item = self.projects.get(node_index)?;
-                match item {
+                match &item.item {
                     RootItem::Rust(RustProject::Workspace(ws)) => {
                         let group = ws.groups().get(group_index)?;
                         let member = group.members().get(member_index)?;
@@ -445,7 +452,7 @@ impl App {
                 vendored_index,
             } => {
                 let item = self.projects.get(node_index)?;
-                match item {
+                match &item.item {
                     RootItem::Rust(RustProject::Workspace(ws)) => ws
                         .vendored()
                         .get(vendored_index)
@@ -528,7 +535,7 @@ impl App {
                 member_index,
             } => {
                 let item = self.projects.get(node_index)?;
-                match item {
+                match &item.item {
                     RootItem::Rust(RustProject::Workspace(ws)) => {
                         let group = ws.groups().get(group_index)?;
                         let member = group.members().get(member_index)?;
@@ -549,7 +556,7 @@ impl App {
                 vendored_index,
             } => {
                 let item = self.projects.get(node_index)?;
-                match item {
+                match &item.item {
                     RootItem::Rust(RustProject::Workspace(ws)) => {
                         ws.vendored().get(vendored_index).map(|p| p.path().clone())
                     },
@@ -621,7 +628,7 @@ impl App {
         let Some(item) = self.projects.get(ni) else {
             return true;
         };
-        match item {
+        match &item.item {
             RootItem::Rust(RustProject::Workspace(ws)) => {
                 ws.groups().get(gi).is_some_and(|g| !g.is_named())
             },
@@ -634,7 +641,7 @@ impl App {
         let Some(item) = self.projects.get(ni) else {
             return true;
         };
-        match item {
+        match &item.item {
             RootItem::Worktrees(WorktreeGroup::Workspaces {
                 primary, linked, ..
             }) => {
@@ -894,7 +901,7 @@ impl App {
                 // In the new model, worktree entries don't expand themselves.
                 // But we keep the expand key for backward compat with workspace worktrees.
                 let item = self.projects.get(node_index)?;
-                match item {
+                match &item.item {
                     RootItem::Worktrees(WorktreeGroup::Workspaces {
                         primary, linked, ..
                     }) => {
@@ -1143,11 +1150,11 @@ impl App {
             .take()
             .or_else(|| self.selected_project_path().map(AbsolutePath::from));
         self.selection_paths.collapsed_anchor = None;
-        for (ni, item) in self.projects.iter().enumerate() {
-            if item.has_children() {
+        for (ni, entry) in self.projects.iter().enumerate() {
+            if entry.item.has_children() {
                 self.expanded.insert(ExpandKey::Node(ni));
             }
-            match item {
+            match &entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     for (gi, group) in ws.groups().iter().enumerate() {
                         if group.is_named() {
@@ -1198,8 +1205,8 @@ impl App {
     }
 
     pub(in super::super) fn expand_path_in_tree(&mut self, target_path: &Path) {
-        for (ni, item) in self.projects.iter().enumerate() {
-            match item {
+        for (ni, entry) in self.projects.iter().enumerate() {
+            match &entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     for (gi, group) in ws.groups().iter().enumerate() {
                         for member in group.members() {

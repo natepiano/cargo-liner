@@ -52,7 +52,7 @@ impl App {
                 node_index,
                 worktree_index,
                 ..
-            } => match self.projects.get(node_index)? {
+            } => match &self.projects.get(node_index)?.item {
                 crate::project::RootItem::Worktrees(
                     crate::project::WorktreeGroup::Workspaces {
                         primary, linked, ..
@@ -128,7 +128,7 @@ impl App {
         self.projects
             .iter()
             .enumerate()
-            .find_map(|(ni, item)| match item {
+            .find_map(|(ni, item)| match &item.item {
                 crate::project::RootItem::Worktrees(
                     crate::project::WorktreeGroup::Workspaces {
                         primary, linked, ..

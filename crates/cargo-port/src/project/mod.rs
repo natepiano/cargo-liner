@@ -6,6 +6,7 @@ mod member_group;
 mod non_rust;
 mod package;
 mod paths;
+mod project_entry;
 mod project_fields;
 mod root_item;
 mod rust_info;
@@ -57,6 +58,10 @@ pub(crate) use package::Package;
 pub(crate) use paths::AbsolutePath;
 pub(crate) use paths::DisplayPath;
 pub(crate) use paths::home_relative_path;
+#[expect(unused_imports, reason = "Stage 0 scaffolding; used in later stages")]
+pub(crate) use project_entry::GitRepo;
+pub(crate) use project_entry::ProjectEntry;
+pub(crate) use project_entry::entry_contains;
 pub(crate) use project_fields::ProjectFields;
 pub(crate) use root_item::RootItem;
 // ── Rust info ────────────────────────────────────────────────────────

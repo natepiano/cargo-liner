@@ -1324,11 +1324,12 @@ pub fn build_lints_data(app: &App) -> LintsData {
 /// projects, return the run count at the given path.
 fn lint_run_count_for(app: &App, abs_path: &Path, is_worktree_group: bool) -> Option<usize> {
     if is_worktree_group {
-        let Some(RootItem::Worktrees(g)) = app
-            .projects()
-            .iter()
-            .find(|item| item.path() == abs_path && matches!(item, RootItem::Worktrees(_)))
-        else {
+        let Some(entry) = app.projects().iter().find(|entry| {
+            entry.item.path() == abs_path && matches!(&entry.item, RootItem::Worktrees(_))
+        }) else {
+            return app.lint_at_path(abs_path).map(|lr| lr.runs().len());
+        };
+        let RootItem::Worktrees(g) = &entry.item else {
             return app.lint_at_path(abs_path).map(|lr| lr.runs().len());
         };
         let mut total = 0usize;

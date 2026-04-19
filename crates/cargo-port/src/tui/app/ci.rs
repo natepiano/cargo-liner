@@ -43,8 +43,8 @@ impl App {
     }
 
     pub(super) fn ci_owner_path_for_inner(&self, path: &Path) -> Option<AbsolutePath> {
-        for item in &self.projects {
-            match item {
+        for entry in &self.projects {
+            match &entry.item {
                 crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws))
                     if path.starts_with(ws.path()) =>
                 {

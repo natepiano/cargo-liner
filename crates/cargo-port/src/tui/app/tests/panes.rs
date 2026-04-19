@@ -238,7 +238,10 @@ fn initial_disk_roots_groups_nested_projects_under_one_root() {
     ]
     .to_vec();
 
-    assert_eq!(snapshots::initial_disk_roots(&projects).len(), 2);
+    assert_eq!(
+        snapshots::initial_disk_roots(&super::as_entries(projects)).len(),
+        2
+    );
 }
 
 #[test]

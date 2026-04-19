@@ -359,7 +359,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
         let total_str = format_bytes(
             app.projects()
                 .iter()
-                .filter_map(RootItem::disk_usage_bytes)
+                .filter_map(|entry| entry.item.disk_usage_bytes())
                 .sum(),
         );
         let header = super::columns::header_line(widths, " Projects");
@@ -1042,7 +1042,7 @@ fn render_wt_group_header<'a>(
     widths: &ResolvedWidths,
 ) -> ListItem<'a> {
     let item = &app.projects()[ni];
-    let (group_name, member_count) = match item {
+    let (group_name, member_count) = match &item.item {
         crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
             primary,
             linked,
@@ -1084,7 +1084,7 @@ fn render_wt_member<'a>(
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
-    let (member, member_name, is_named_group) = match item {
+    let (member, member_name, is_named_group) = match &item.item {
         crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
             primary,
             linked,
@@ -1112,7 +1112,7 @@ fn render_wt_member<'a>(
             ListItem::new(super::columns::row_to_line(&row, widths))
         },
         |m| {
-            let inherited_deleted = match item {
+            let inherited_deleted = match &item.item {
                 crate::project::RootItem::Worktrees(
                     crate::project::WorktreeGroup::Workspaces {
                         primary, linked, ..
@@ -1151,7 +1151,7 @@ fn render_member_item(
     let item = &app.projects()[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
-    let (member, member_name, is_named) = match item {
+    let (member, member_name, is_named) = match &item.item {
         crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
             let group = &ws.groups()[group_index];
             let m = &group.members()[member_index];
@@ -1202,7 +1202,7 @@ fn render_vendored_item(
     let item = &app.projects()[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
-    let (vendored, vendored_display_name) = match item {
+    let (vendored, vendored_display_name) = match &item.item {
         crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
             let v = &ws.vendored()[vendored_index];
             (Some(v), v.package_name().into_string())
@@ -1326,7 +1326,7 @@ fn render_wt_vendored_item(
     let item = &app.projects()[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
-    let vendored_pkg = match item {
+    let vendored_pkg = match &item.item {
         crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
             primary,
             linked,
@@ -1362,7 +1362,7 @@ fn render_wt_vendored_item(
             ListItem::new(super::columns::row_to_line(&row, widths))
         },
         |v| {
-            let inherited_deleted = match item {
+            let inherited_deleted = match &item.item {
                 crate::project::RootItem::Worktrees(
                     crate::project::WorktreeGroup::Workspaces {
                         primary, linked, ..
@@ -1438,7 +1438,7 @@ fn render_tree_item(
             group_index,
         } => {
             let item = &app.projects()[*node_index];
-            let (group_name, member_count) = match item {
+            let (group_name, member_count) = match &item.item {
                 crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
                     let group = &ws.groups()[*group_index];
                     (group.group_name().to_string(), group.members().len())

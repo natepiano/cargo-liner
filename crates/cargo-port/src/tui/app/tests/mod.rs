@@ -225,6 +225,20 @@ fn resolved_root_label(item: &RootItem) -> String {
     ProjectList::new(vec![item.clone()]).resolved_root_labels(true)[0].clone()
 }
 
+/// Wrap owned `RootItem`s as `ProjectEntry`s for test helpers that pass
+/// slices to snapshot/finder functions.
+pub(super) fn as_entries(items: Vec<RootItem>) -> Vec<crate::project::ProjectEntry> {
+    items
+        .into_iter()
+        .map(crate::project::ProjectEntry::new)
+        .collect()
+}
+
+/// Shorthand for callers that build a single-root test.
+pub(super) fn as_entry(item: RootItem) -> crate::project::ProjectEntry {
+    crate::project::ProjectEntry::new(item)
+}
+
 fn make_non_rust_project(name: Option<&str>, path: &str) -> RootItem {
     RootItem::NonRust(NonRustProject::new(test_path(path), name.map(String::from)))
 }
@@ -558,7 +572,7 @@ impl WorktreeProjectKind {
 
     fn assert_group_shape(self, app: &App, linked_len: usize, context: &str) {
         assert_eq!(app.projects.len(), 1, "{context}");
-        match (self, &app.projects[0]) {
+        match (self, &app.projects[0].item) {
             (Self::Package, RootItem::Worktrees(WorktreeGroup::Packages { linked, .. })) => {
                 assert_eq!(linked.len(), linked_len, "{context}");
             },
@@ -663,7 +677,7 @@ fn expect_synthetic_discovery_creates_group(kind: WorktreeProjectKind) {
 
             let RootItem::Worktrees(WorktreeGroup::Packages {
                 primary, linked, ..
-            }) = &app.projects[0]
+            }) = &app.projects[0].item
             else {
                 panic!("expected discovered worktree to create a package worktree group");
             };
@@ -695,7 +709,7 @@ fn expect_synthetic_discovery_creates_group(kind: WorktreeProjectKind) {
 
             let RootItem::Worktrees(WorktreeGroup::Workspaces {
                 primary, linked, ..
-            }) = &app.projects[0]
+            }) = &app.projects[0].item
             else {
                 panic!("expected discovered workspace worktree to create a worktree group");
             };
@@ -739,7 +753,7 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
 
             let RootItem::Worktrees(WorktreeGroup::Packages {
                 primary: _, linked, ..
-            }) = &app.projects[0]
+            }) = &app.projects[0].item
             else {
                 panic!("expected existing root to remain a package worktree group");
             };
@@ -788,7 +802,8 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
             assert!(app.handle_project_discovered(new_linked));
             assert_eq!(app.projects.len(), 1);
 
-            let RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) = &app.projects[0]
+            let RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) =
+                &app.projects[0].item
             else {
                 panic!("expected existing root to remain a workspace worktree group");
             };
@@ -855,7 +870,7 @@ fn expect_refresh_regroups_stale_top_level_discovery(kind: WorktreeProjectKind) 
         1,
         "refreshing the stale top-level row should regroup it under the primary worktree container",
     );
-    match (kind, &app.projects[0]) {
+    match (kind, &app.projects[0].item) {
         (
             WorktreeProjectKind::Package,
             RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }),
@@ -927,7 +942,7 @@ fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProj
         2,
         "refresh should fold the stale row into the existing worktree group",
     );
-    match (kind, &app.projects[0]) {
+    match (kind, &app.projects[0].item) {
         (
             WorktreeProjectKind::Package,
             RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }),

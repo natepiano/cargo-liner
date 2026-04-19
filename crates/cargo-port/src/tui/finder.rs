@@ -103,12 +103,12 @@ pub(super) const FINDER_HEADERS: [&str; FINDER_COLUMN_COUNT] =
 /// Returns `(items, col_widths)` where `col_widths` is the max display
 /// width of each column across the entire index.
 pub(super) fn build_finder_index(
-    list_items: &[RootItem],
+    entries: &[crate::project::ProjectEntry],
 ) -> (Vec<FinderItem>, [usize; FINDER_COLUMN_COUNT]) {
     let mut items = Vec::new();
 
-    for list_item in list_items {
-        match list_item {
+    for entry in entries {
+        match &entry.item {
             RootItem::Rust(RustProject::Workspace(ws)) => {
                 add_workspace_items(&mut items, ws);
             },
@@ -977,7 +977,9 @@ mod tests {
             },
             ..Workspace::default()
         };
-        let list_items = vec![RootItem::Rust(RustProject::Workspace(ws))];
+        let list_items = vec![crate::project::ProjectEntry::new(RootItem::Rust(
+            RustProject::Workspace(ws),
+        ))];
         let (items, _widths) = build_finder_index(&list_items);
         assert!(items.iter().any(|item| {
             item.project_path == test_path("~/rust/hana/crates/clay-layout")
@@ -1078,7 +1080,9 @@ mod tests {
             ..Package::default()
         };
 
-        let (items, _widths) = build_finder_index(&[RootItem::Rust(RustProject::Package(pkg))]);
+        let (items, _widths) = build_finder_index(&[crate::project::ProjectEntry::new(
+            RootItem::Rust(RustProject::Package(pkg)),
+        )]);
         assert!(items.iter().any(|item| {
             item.display_name == "build-easefunction-graphs"
                 && item.search_tokens.iter().any(|token| token == "tools")

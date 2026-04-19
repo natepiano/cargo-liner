@@ -89,6 +89,24 @@ pub(crate) struct GitInfo {
 }
 
 impl GitInfo {
+    #[cfg(test)]
+    #[expect(dead_code, reason = "Stage 0 scaffolding; used in later stage tests")]
+    pub(crate) fn for_tests() -> Self {
+        Self {
+            status:               GitStatus::Clean,
+            branch:               None,
+            first_commit:         None,
+            last_commit:          None,
+            last_fetched:         None,
+            default_branch:       None,
+            local_main_branch:    None,
+            ahead_behind_local:   None,
+            workflows:            WorkflowPresence::Missing,
+            remotes:              Vec::new(),
+            primary_remote_index: None,
+        }
+    }
+
     /// The remote matching the current branch's `@{upstream}`, if any.
     pub(crate) fn primary_remote(&self) -> Option<&RemoteInfo> {
         self.primary_remote_index.and_then(|i| self.remotes.get(i))

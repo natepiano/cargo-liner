@@ -66,7 +66,10 @@ impl App {
         if !self.lint_enabled() {
             return LINT_NO_LOG;
         }
-        let Some(RootItem::Worktrees(g)) = self.projects.get(node_index) else {
+        let Some(entry) = self.projects.get(node_index) else {
+            return LINT_NO_LOG;
+        };
+        let RootItem::Worktrees(g) = &entry.item else {
             return LINT_NO_LOG;
         };
         let status = g.lint_status_for_worktree(worktree_index);
@@ -96,7 +99,7 @@ impl App {
                     ..
                 },
             ) => {
-                let RootItem::Worktrees(g) = self.projects.get(node_index)? else {
+                let RootItem::Worktrees(g) = &self.projects.get(node_index)?.item else {
                     return None;
                 };
                 let status = g.lint_status_for_worktree(worktree_index);

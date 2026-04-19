@@ -14,6 +14,7 @@ use crate::project::GitOrigin;
 use crate::project::GitStatus;
 use crate::project::MemberGroup;
 use crate::project::Package;
+use crate::project::ProjectEntry;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
@@ -41,12 +42,13 @@ use crate::tui::render::PREFIX_WT_VENDORED;
 
 /// Build the flat list of visible rows from the project list and expansion state.
 pub(super) fn build_visible_rows(
-    items: &[RootItem],
+    entries: &[ProjectEntry],
     expanded: &HashSet<ExpandKey>,
     include_non_rust: bool,
 ) -> Vec<VisibleRow> {
     let mut rows = Vec::new();
-    for (ni, item) in items.iter().enumerate() {
+    for (ni, entry) in entries.iter().enumerate() {
+        let item = &entry.item;
         if matches!(item.visibility(), Visibility::Dismissed) {
             continue;
         }
@@ -302,15 +304,15 @@ pub(super) fn git_main_snapshot(git_info: Option<&GitInfo>) -> String {
 }
 
 pub(super) fn build_fit_widths_snapshot(
-    items: &[RootItem],
+    entries: &[ProjectEntry],
     root_labels: &[String],
     lint_enabled: bool,
     generation: u64,
 ) -> ResolvedWidths {
     let mut widths = ResolvedWidths::new(lint_enabled);
 
-    for (index, item) in items.iter().enumerate() {
-        observe_item_fit_widths(&mut widths, item, &root_labels[index]);
+    for (index, entry) in entries.iter().enumerate() {
+        observe_item_fit_widths(&mut widths, &entry.item, &root_labels[index]);
     }
 
     widths.generation = generation;
@@ -460,20 +462,20 @@ fn observe_package_worktree_group_fit_widths(widths: &mut ResolvedWidths, wtg: &
 }
 
 pub(super) fn build_disk_cache_snapshot(
-    items: &[RootItem],
+    entries: &[ProjectEntry],
 ) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
     let mut root_sorted = Vec::new();
-    for item in items {
-        if let Some(bytes) = item.disk_usage_bytes() {
+    for entry in entries {
+        if let Some(bytes) = entry.item.disk_usage_bytes() {
             root_sorted.push(bytes);
         }
     }
     root_sorted.sort_unstable();
 
     let mut child_sorted = HashMap::new();
-    for (ni, item) in items.iter().enumerate() {
+    for (ni, entry) in entries.iter().enumerate() {
         let mut values = Vec::new();
-        collect_child_disk_values(item, &mut values);
+        collect_child_disk_values(&entry.item, &mut values);
         if !values.is_empty() {
             values.sort_unstable();
             child_sorted.insert(ni, values);
@@ -549,8 +551,9 @@ fn collect_project_list_entry_disk(
     }
 }
 
-pub(super) fn initial_disk_roots(projects: &[RootItem]) -> HashSet<AbsolutePath> {
-    let mut abs_paths: Vec<&AbsolutePath> = projects.iter().map(RootItem::path).collect();
+pub(super) fn initial_disk_roots(projects: &[ProjectEntry]) -> HashSet<AbsolutePath> {
+    let mut abs_paths: Vec<&AbsolutePath> =
+        projects.iter().map(|entry| entry.item.path()).collect();
     abs_paths.sort_by(|left, right| {
         left.components()
             .count()

@@ -110,3 +110,9 @@ pub(crate) struct ProjectInfo {
     pub worktree_health:  WorktreeHealth,
     pub submodules:       Vec<Submodule>,
 }
+
+impl ProjectInfo {
+    #[cfg(test)]
+    #[expect(dead_code, reason = "Stage 0 scaffolding; used in later stage tests")]
+    pub(crate) fn for_tests() -> Self { Self::default() }
+}

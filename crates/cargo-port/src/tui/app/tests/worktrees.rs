@@ -172,7 +172,7 @@ fn handle_project_discovered_inserts_new_root_in_sorted_position() {
         "~/rust/cache-apt-pkgs-action",
     )));
 
-    let actual: Vec<_> = app.projects.iter().map(RootItem::path).collect();
+    let actual: Vec<_> = app.projects.iter().map(|entry| entry.item.path()).collect();
     assert_eq!(
         actual,
         vec![
@@ -232,7 +232,8 @@ fn discovered_workspace_worktree_with_members_expands_as_worktree_then_workspace
         BackgroundMsg::ProjectDiscovered { item: linked_item },
     );
 
-    let RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) = &app.projects[0] else {
+    let RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) = &app.projects[0].item
+    else {
         panic!("expected discovered workspace worktree to form a worktree group");
     };
     assert_eq!(linked.len(), 1);

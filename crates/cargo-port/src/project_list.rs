@@ -7,6 +7,7 @@ use crate::lint::LintRuns;
 use crate::project::AbsolutePath;
 use crate::project::MemberGroup;
 use crate::project::Package;
+use crate::project::ProjectEntry;
 use crate::project::ProjectFields;
 use crate::project::ProjectInfo;
 use crate::project::RootItem;
@@ -16,6 +17,7 @@ use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
+use crate::project::entry_contains;
 
 /// Owning wrapper around the project hierarchy.
 ///
@@ -24,29 +26,33 @@ use crate::project::WorktreeStatus;
 /// demand.
 #[derive(Clone, Default)]
 pub(crate) struct ProjectList {
-    root_items: Vec<RootItem>,
+    root_items: Vec<ProjectEntry>,
 }
 
 impl ProjectList {
-    pub(crate) const fn new(items: Vec<RootItem>) -> Self { Self { root_items: items } }
+    pub(crate) fn new(items: Vec<RootItem>) -> Self {
+        Self {
+            root_items: items.into_iter().map(ProjectEntry::new).collect(),
+        }
+    }
 
     pub(crate) fn resolved_root_labels(&self, include_non_rust: bool) -> Vec<String> {
         let mut labels: Vec<String> = self
             .root_items
             .iter()
-            .map(|item| item.root_directory_name().into_string())
+            .map(|entry| entry.item.root_directory_name().into_string())
             .collect();
         let mut collision_sets: HashMap<String, Vec<usize>> = HashMap::new();
 
-        for (index, item) in self.root_items.iter().enumerate() {
-            if matches!(item.visibility(), Visibility::Dismissed) {
+        for (index, entry) in self.root_items.iter().enumerate() {
+            if matches!(entry.item.visibility(), Visibility::Dismissed) {
                 continue;
             }
-            if !include_non_rust && !item.is_rust() {
+            if !include_non_rust && !entry.item.is_rust() {
                 continue;
             }
             collision_sets
-                .entry(item.root_directory_name().into_string())
+                .entry(entry.item.root_directory_name().into_string())
                 .or_default()
                 .push(index);
         }
@@ -58,7 +64,7 @@ impl ProjectList {
             let suffixes = shortest_unique_suffixes(
                 &indices
                     .iter()
-                    .map(|&index| self.root_items[index].display_path().into_string())
+                    .map(|&index| self.root_items[index].item.display_path().into_string())
                     .collect::<Vec<_>>(),
             );
             for (index, suffix) in indices.into_iter().zip(suffixes) {
@@ -66,8 +72,8 @@ impl ProjectList {
             }
         }
 
-        for (label, item) in labels.iter_mut().zip(&self.root_items) {
-            if let Some(suffix) = item.worktree_badge_suffix() {
+        for (label, entry) in labels.iter_mut().zip(&self.root_items) {
+            if let Some(suffix) = entry.item.worktree_badge_suffix() {
                 label.push_str(&suffix);
             }
         }
@@ -78,7 +84,7 @@ impl ProjectList {
     pub(crate) fn git_directories(&self) -> Vec<AbsolutePath> {
         self.root_items
             .iter()
-            .filter_map(RootItem::git_directory)
+            .filter_map(|entry| entry.item.git_directory())
             .collect()
     }
 
@@ -86,29 +92,43 @@ impl ProjectList {
 
     /// Iterate all leaf-level projects from the hierarchy.
     ///
-    /// For `Rust`, `NonRust`: yields the item directly.
-    /// For worktree groups: yields primary and each linked entry wrapped as
-    /// `Rust(Workspace(..))` or `Rust(Package(..))`.
-    pub(crate) fn for_each_leaf(&self, mut f: impl FnMut(&RootItem)) {
-        for item in &self.root_items {
-            match item {
+    /// For `Rust`, `NonRust`: yields the entry directly.
+    /// For worktree groups: yields primary and each linked leaf wrapped in
+    /// a synthesized `ProjectEntry` whose `item` is `Rust(Workspace(..))`
+    /// or `Rust(Package(..))`. The synthesized entries share the outer
+    /// `git_repo` via clone so each leaf sees the same repo-level data.
+    pub(crate) fn for_each_leaf(&self, mut f: impl FnMut(&ProjectEntry)) {
+        for entry in &self.root_items {
+            match &entry.item {
                 RootItem::Worktrees(WorktreeGroup::Workspaces {
                     primary, linked, ..
                 }) => {
-                    f(&RootItem::Rust(RustProject::Workspace(primary.clone())));
+                    let synth = |ws: &Workspace| {
+                        ProjectEntry::with_repo(
+                            RootItem::Rust(RustProject::Workspace(ws.clone())),
+                            entry.git_repo.clone(),
+                        )
+                    };
+                    f(&synth(primary));
                     for l in linked {
-                        f(&RootItem::Rust(RustProject::Workspace(l.clone())));
+                        f(&synth(l));
                     }
                 },
                 RootItem::Worktrees(WorktreeGroup::Packages {
                     primary, linked, ..
                 }) => {
-                    f(&RootItem::Rust(RustProject::Package(primary.clone())));
+                    let synth = |pkg: &Package| {
+                        ProjectEntry::with_repo(
+                            RootItem::Rust(RustProject::Package(pkg.clone())),
+                            entry.git_repo.clone(),
+                        )
+                    };
+                    f(&synth(primary));
                     for l in linked {
-                        f(&RootItem::Rust(RustProject::Package(l.clone())));
+                        f(&synth(l));
                     }
                 },
-                other => f(other),
+                _ => f(entry),
             }
         }
     }
@@ -116,8 +136,8 @@ impl ProjectList {
     /// Zero-allocation leaf path iteration. Yields `(path, is_rust)` for
     /// every leaf project without cloning any `RootItem`.
     pub(crate) fn for_each_leaf_path(&self, mut f: impl FnMut(&Path, bool)) {
-        for item in &self.root_items {
-            match item {
+        for entry in &self.root_items {
+            match &entry.item {
                 RootItem::Worktrees(WorktreeGroup::Workspaces {
                     primary, linked, ..
                 }) => {
@@ -138,61 +158,86 @@ impl ProjectList {
     }
 
     pub(crate) fn at_path(&self, target: &Path) -> Option<&ProjectInfo> {
-        self.root_items.iter().find_map(|item| item.at_path(target))
+        self.root_items
+            .iter()
+            .find_map(|entry| entry.item.at_path(target))
     }
 
     pub(crate) fn at_path_mut(&mut self, target: &Path) -> Option<&mut ProjectInfo> {
         self.root_items
             .iter_mut()
-            .find_map(|item| item.at_path_mut(target))
+            .find_map(|entry| entry.item.at_path_mut(target))
     }
 
-    /// Whether `target` is the path of a submodule under any root item.
+    /// Whether `target` is the path of a submodule under any root entry.
     /// CI fetches and GitHub repo metadata for submodules belong to the
     /// upstream repository and are suppressed at the parent project's
     /// level — see the `BackgroundMsg::GitInfo` handler.
     pub(crate) fn is_submodule_path(&self, target: &Path) -> bool {
-        self.root_items
-            .iter()
-            .any(|item| item.submodules().iter().any(|s| s.path.as_path() == target))
+        self.root_items.iter().any(|entry| {
+            entry
+                .item
+                .submodules()
+                .iter()
+                .any(|s| s.path.as_path() == target)
+        })
     }
 
     pub(crate) fn rust_info_at_path(&self, target: &Path) -> Option<&RustInfo> {
         self.root_items
             .iter()
-            .find_map(|item| item.rust_info_at_path(target))
+            .find_map(|entry| entry.item.rust_info_at_path(target))
     }
 
     pub(crate) fn rust_info_at_path_mut(&mut self, target: &Path) -> Option<&mut RustInfo> {
         self.root_items
             .iter_mut()
-            .find_map(|item| item.rust_info_at_path_mut(target))
+            .find_map(|entry| entry.item.rust_info_at_path_mut(target))
     }
 
     pub(crate) fn lint_at_path(&self, target: &Path) -> Option<&LintRuns> {
         self.root_items
             .iter()
-            .find_map(|item| item.lint_at_path(target))
+            .find_map(|entry| entry.item.lint_at_path(target))
     }
 
     pub(crate) fn lint_at_path_mut(&mut self, target: &Path) -> Option<&mut LintRuns> {
         self.root_items
             .iter_mut()
-            .find_map(|item| item.lint_at_path_mut(target))
+            .find_map(|entry| entry.item.lint_at_path_mut(target))
+    }
+
+    /// Top-level entry whose hierarchy contains `target`. One-shot
+    /// replacement for the per-field per-path lookups used elsewhere.
+    #[expect(dead_code, reason = "Stage 0 scaffolding; used in later stages")]
+    pub(crate) fn entry_containing(&self, target: &Path) -> Option<&ProjectEntry> {
+        self.root_items
+            .iter()
+            .find(|entry| entry_contains(entry, target))
+    }
+
+    #[expect(dead_code, reason = "Stage 0 scaffolding; used in later stages")]
+    pub(crate) fn entry_containing_mut(&mut self, target: &Path) -> Option<&mut ProjectEntry> {
+        self.root_items
+            .iter_mut()
+            .find(|entry| entry_contains(entry, target))
     }
 
     // -- Hierarchy mutations ----------------------------------------------
 
     /// Find a leaf item by absolute path and replace it, returning the old
-    /// item. Descends into worktree groups to find matching entries.
+    /// item. Descends into worktree groups to find matching leaves. The
+    /// outer `ProjectEntry.git_repo` is preserved; callers that want to
+    /// promote a leaf into a worktree group must use
+    /// `promote_to_worktree_group` instead, so the intent is explicit.
     pub(crate) fn replace_leaf_by_path(
         &mut self,
         path: &Path,
         mut replacement: RootItem,
     ) -> Option<RootItem> {
-        for item in &mut self.root_items {
-            match item {
-                RootItem::Rust(_) | RootItem::NonRust(_) => {
+        for entry in &mut self.root_items {
+            match &mut entry.item {
+                item @ (RootItem::Rust(_) | RootItem::NonRust(_)) => {
                     if item.path() == path {
                         std::mem::swap(item, &mut replacement);
                         return Some(replacement);
@@ -243,6 +288,23 @@ impl ProjectList {
         None
     }
 
+    /// Promote the top-level entry whose primary path matches `path` into a
+    /// worktree group. Preserves the entry's `git_repo` — a worktree
+    /// promotion never crosses repo boundaries, so the existing repo data
+    /// carries over unchanged.
+    ///
+    /// Returns `true` if an entry was found and promoted.
+    #[expect(dead_code, reason = "Stage 0 scaffolding; used in later stages")]
+    pub(crate) fn promote_to_worktree_group(&mut self, path: &Path, group: WorktreeGroup) -> bool {
+        for entry in &mut self.root_items {
+            if entry.item.path().as_path() == path {
+                entry.item = RootItem::Worktrees(group);
+                return true;
+            }
+        }
+        false
+    }
+
     /// Insert a discovered item into the hierarchy. If the item is a package
     /// whose path falls inside an existing workspace, it is added as an
     /// inline member of that workspace. Otherwise it is pushed as a
@@ -251,12 +313,12 @@ impl ProjectList {
     /// Returns `true` if the item was inserted into an existing workspace.
     pub(crate) fn insert_into_hierarchy(&mut self, item: RootItem) -> bool {
         let item_path = item.path().to_path_buf();
-        for existing in &mut self.root_items {
-            if try_attach_worktree(existing, &item) {
+        for entry in &mut self.root_items {
+            if try_attach_worktree(&mut entry.item, &item) {
                 return false;
             }
 
-            let inserted = match existing {
+            let inserted = match &mut entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     try_insert_member(ws, &item_path, &item)
                 },
@@ -277,9 +339,10 @@ impl ProjectList {
         // No parent workspace found — add as top-level peer.
         let insert_index = self
             .root_items
-            .binary_search_by(|existing| existing.path().cmp(item_path.as_path()))
+            .binary_search_by(|existing| existing.item.path().cmp(item_path.as_path()))
             .unwrap_or_else(|index| index);
-        self.root_items.insert(insert_index, item);
+        self.root_items
+            .insert(insert_index, ProjectEntry::new(item));
         false
     }
 
@@ -289,8 +352,8 @@ impl ProjectList {
     /// workspaces (including inside worktree groups) and re-sorts their
     /// members into `Named` / `Inline` groups.
     pub(crate) fn regroup_members(&mut self, inline_dirs: &[String]) {
-        for item in &mut self.root_items {
-            match item {
+        for entry in &mut self.root_items {
+            match &mut entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     regroup_workspace(ws, inline_dirs);
                 },
@@ -310,7 +373,8 @@ impl ProjectList {
     pub(crate) fn regroup_top_level_worktrees(&mut self) {
         let mut index = 0;
         while index < self.root_items.len() {
-            let Some(identity) = linked_worktree_identity(&self.root_items[index]).cloned() else {
+            let Some(identity) = linked_worktree_identity(&self.root_items[index].item).cloned()
+            else {
                 index += 1;
                 continue;
             };
@@ -321,11 +385,12 @@ impl ProjectList {
                 continue;
             };
 
-            let linked_item = self.root_items.remove(index);
+            let linked_entry = self.root_items.remove(index);
             if target_index > index {
                 target_index -= 1;
             }
-            let attached = try_attach_worktree(&mut self.root_items[target_index], &linked_item);
+            let attached =
+                try_attach_worktree(&mut self.root_items[target_index].item, &linked_entry.item);
             debug_assert!(
                 attached,
                 "linked worktree regroup should attach after container match"
@@ -341,7 +406,7 @@ impl ProjectList {
     pub(crate) fn clear(&mut self) { self.root_items.clear(); }
 
     #[cfg(test)]
-    pub(crate) fn push(&mut self, item: RootItem) { self.root_items.push(item); }
+    pub(crate) fn push(&mut self, item: RootItem) { self.root_items.push(ProjectEntry::new(item)); }
 }
 
 fn shortest_unique_suffixes(paths: &[String]) -> Vec<String> {
@@ -471,42 +536,42 @@ fn linked_worktree_identity(item: &RootItem) -> Option<&AbsolutePath> {
 }
 
 fn find_matching_worktree_container(
-    items: &[RootItem],
+    entries: &[ProjectEntry],
     linked_index: usize,
     identity: &AbsolutePath,
 ) -> Option<usize> {
-    items.iter().enumerate().find_map(|(index, item)| {
+    entries.iter().enumerate().find_map(|(index, entry)| {
         if index == linked_index {
             return None;
         }
-        (item_worktree_identity(item) == Some(identity)).then_some(index)
+        (item_worktree_identity(&entry.item) == Some(identity)).then_some(index)
     })
 }
 
 // -- Deref to slice for read access ---------------------------------------
 
 impl Deref for ProjectList {
-    type Target = [RootItem];
+    type Target = [ProjectEntry];
 
-    fn deref(&self) -> &[RootItem] { &self.root_items }
+    fn deref(&self) -> &[ProjectEntry] { &self.root_items }
 }
 
 impl DerefMut for ProjectList {
-    fn deref_mut(&mut self) -> &mut [RootItem] { &mut self.root_items }
+    fn deref_mut(&mut self) -> &mut [ProjectEntry] { &mut self.root_items }
 }
 
-// -- IntoIterator for `for item in &projects` / `for item in &mut projects`
+// -- IntoIterator for `for entry in &projects` / `for entry in &mut projects`
 
 impl<'a> IntoIterator for &'a ProjectList {
-    type IntoIter = std::slice::Iter<'a, RootItem>;
-    type Item = &'a RootItem;
+    type IntoIter = std::slice::Iter<'a, ProjectEntry>;
+    type Item = &'a ProjectEntry;
 
     fn into_iter(self) -> Self::IntoIter { self.root_items.iter() }
 }
 
 impl<'a> IntoIterator for &'a mut ProjectList {
-    type IntoIter = std::slice::IterMut<'a, RootItem>;
-    type Item = &'a mut RootItem;
+    type IntoIter = std::slice::IterMut<'a, ProjectEntry>;
+    type Item = &'a mut ProjectEntry;
 
     fn into_iter(self) -> Self::IntoIter { self.root_items.iter_mut() }
 }

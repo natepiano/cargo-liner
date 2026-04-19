@@ -459,8 +459,8 @@ impl App {
         let tx = self.bg_tx.clone();
         let client = self.http_client.clone();
         let mut members: Vec<(AbsolutePath, String)> = Vec::new();
-        for item in &self.projects {
-            let groups: Vec<&MemberGroup> = match item {
+        for entry in &self.projects {
+            let groups: Vec<&MemberGroup> = match &entry.item {
                 crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
                     ws.groups().iter().collect()
                 },
@@ -542,8 +542,8 @@ impl App {
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
 
-        for item in &self.projects {
-            let items: Vec<(&AbsolutePath, bool)> = match item {
+        for entry in &self.projects {
+            let items: Vec<(&AbsolutePath, bool)> = match &entry.item {
                 crate::project::RootItem::Worktrees(
                     crate::project::WorktreeGroup::Workspaces {
                         primary, linked, ..
@@ -560,7 +560,7 @@ impl App {
                     .chain(linked.iter())
                     .map(|p| (p.path(), true))
                     .collect(),
-                _ => vec![(item.path(), item.is_rust())],
+                _ => vec![(entry.item.path(), entry.item.is_rust())],
             };
             for (path, is_rust) in items {
                 let owned = path.clone();
@@ -600,8 +600,8 @@ impl App {
             return 0;
         };
         let mut count = 0;
-        for item in &self.projects {
-            match item {
+        for entry in &self.projects {
+            match &entry.item {
                 RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
                     runtime.register_project(crate::lint::RegisterProjectRequest {
                         project_label: ws.display_path().into_string(),
@@ -663,10 +663,10 @@ impl App {
         let mut is_member = false;
         self.projects.for_each_leaf(|existing| {
             if matches!(
-                existing,
+                &existing.item,
                 RootItem::Rust(crate::project::RustProject::Workspace(_))
-            ) && existing.path() != path
-                && path.starts_with(existing.path())
+            ) && existing.item.path() != path
+                && path.starts_with(existing.item.path())
             {
                 is_member = true;
             }
@@ -711,8 +711,8 @@ impl App {
         let git_seen = self
             .projects
             .iter()
-            .filter(|item| item.git_info().is_some())
-            .filter_map(RootItem::git_directory)
+            .filter(|entry| entry.item.git_info().is_some())
+            .filter_map(|entry| entry.item.git_directory())
             .collect::<HashSet<_>>();
         self.scan.startup_phases.disk_complete_at = None;
         self.scan.startup_phases.scan_complete_at = Some(Instant::now());
@@ -1128,8 +1128,8 @@ impl App {
     fn startup_git_directory_for_path(&self, path: &Path) -> Option<AbsolutePath> {
         self.projects
             .iter()
-            .find(|item| item.at_path(path).is_some())
-            .and_then(RootItem::git_directory)
+            .find(|entry| entry.item.at_path(path).is_some())
+            .and_then(|entry| entry.item.git_directory())
     }
 
     pub(in super::super) fn startup_lint_toast_body_for(
@@ -1260,12 +1260,12 @@ impl App {
         self.projects
             .iter()
             .enumerate()
-            .filter_map(|(ni, item)| {
+            .filter_map(|(ni, entry)| {
                 if !self.expanded.contains(&Node(ni)) {
                     return None;
                 }
 
-                match item {
+                match &entry.item {
                     RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
                         Some(LegacyRootExpansion {
                             root_path:      ws.path().clone(),
@@ -1301,16 +1301,16 @@ impl App {
 
     fn migrate_legacy_root_expansions(&mut self, legacy: &[LegacyRootExpansion]) {
         for legacy_root in legacy {
-            let Some((current_index, current_item)) = self
+            let Some((current_index, current_entry)) = self
                 .projects
                 .iter()
                 .enumerate()
-                .find(|(_, item)| item.path() == legacy_root.root_path.as_path())
+                .find(|(_, entry)| entry.item.path() == legacy_root.root_path.as_path())
             else {
                 continue;
             };
 
-            match current_item {
+            match &current_entry.item {
                 RootItem::Worktrees(
                     group @ crate::project::WorktreeGroup::Workspaces { primary, .. },
                 ) if group.renders_as_group() => {
@@ -1561,8 +1561,8 @@ impl App {
                     let already_zero = self
                         .projects
                         .iter()
-                        .find(|i| i.path() == abs_path.as_path())
-                        .and_then(RootItem::disk_usage_bytes)
+                        .find(|entry| entry.item.path() == abs_path.as_path())
+                        .and_then(|entry| entry.item.disk_usage_bytes())
                         .is_none_or(|bytes| bytes == 0);
                     if already_zero {
                         self.running_clean_paths.remove(abs_path.as_path());
