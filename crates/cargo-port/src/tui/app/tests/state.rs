@@ -388,11 +388,12 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(project_a.path().as_path()));
-    assert!(!app
-        .scan
-        .startup_phases
-        .lint_seen_terminal
-        .contains(project_a.path().as_path()));
+    assert!(
+        !app.scan
+            .startup_phases
+            .lint_seen_terminal
+            .contains(project_a.path().as_path())
+    );
     assert!(app.running_lint_paths.contains_key(project_a.path()));
     assert!(app.lint_toast.is_some());
 
@@ -515,11 +516,12 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
 
     app.handle_git_info(member_dir.as_path(), make_git_info(None));
 
-    assert!(app
-        .scan
-        .startup_phases
-        .git_seen
-        .contains(workspace_dir.join(".git").as_path()));
+    assert!(
+        app.scan
+            .startup_phases
+            .git_seen
+            .contains(workspace_dir.join(".git").as_path())
+    );
 }
 
 #[test]

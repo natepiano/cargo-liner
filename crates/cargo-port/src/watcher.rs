@@ -34,8 +34,8 @@ use super::http::HttpClient;
 use super::lint;
 use super::lint::RuntimeHandle;
 use super::project;
-use super::project::LocalGitInfo;
 use super::project::GitRepoPresence;
+use super::project::LocalGitInfo;
 #[cfg(test)]
 use super::project::ProjectFields;
 use super::scan;

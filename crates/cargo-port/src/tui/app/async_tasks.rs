@@ -25,9 +25,9 @@ use crate::lint;
 use crate::lint::LintStatus;
 use crate::lint::RegisterProjectRequest;
 use crate::project::AbsolutePath;
-use crate::project::LocalGitInfo;
 use crate::project::GitRepoPresence;
 use crate::project::LanguageStats;
+use crate::project::LocalGitInfo;
 use crate::project::LocalGitState;
 use crate::project::MemberGroup;
 use crate::project::ProjectFields;
@@ -1352,6 +1352,7 @@ impl App {
         self.clear_all_lint_state();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
         self.repo_fetch_cache = crate::scan::new_repo_cache();
+        self.repo_fetch_in_flight.clear();
         self.discovery_shimmers.clear();
         self.scan.phase = ScanPhase::Running;
         self.scan.started_at = Instant::now();
@@ -1606,10 +1607,17 @@ impl App {
         }
     }
 
-    fn spawn_repo_fetch_for_git_info(&self, path: &Path, repo_url: &str) {
+    fn spawn_repo_fetch_for_git_info(&mut self, path: &Path, repo_url: &str) {
         let Some(owner_repo) = crate::ci::parse_owner_repo(repo_url) else {
             return;
         };
+        // Dedup by `OwnerRepo`: a fetch for this repo is either already
+        // running or queued. The `RepoFetchComplete` background message
+        // removes the entry, so a later spawn after completion is not
+        // blocked.
+        if !self.repo_fetch_in_flight.insert(owner_repo.clone()) {
+            return;
+        }
 
         let tx = self.bg_tx.clone();
         let client = self.http_client.clone();
@@ -1643,9 +1651,6 @@ impl App {
                         github_total,
                     };
                     crate::scan::store_cached_repo_data(&repo_cache, &owner_repo, data.clone());
-                    let _ = tx.send(BackgroundMsg::RepoFetchComplete {
-                        repo: owner_repo.clone(),
-                    });
                     data
                 });
 
@@ -1661,6 +1666,10 @@ impl App {
                     description: meta.description,
                 });
             }
+            // Fire `RepoFetchComplete` from the always-runs tail so the
+            // dedup set clears on cache hits too. The startup toast
+            // handler is a no-op for repos that were never queued.
+            let _ = tx.send(BackgroundMsg::RepoFetchComplete { repo: owner_repo });
         });
     }
 
@@ -1701,7 +1710,7 @@ impl App {
                 git_repo.repo_info = Some(repo);
             }
         }
-        let primary_url = self.primary_url_for(path).map(String::from);
+        let fetch_url = self.fetch_url_for(path);
 
         if self.is_scan_complete() {
             let git_dir = self
@@ -1714,12 +1723,16 @@ impl App {
             self.maybe_log_startup_phase_completions();
         }
         if !self.projects.is_submodule_path(path) {
-            // A post-scan GitInfo update means a git fetch (or other ref change) was
-            // detected — treat it as a signal to refresh CI too, not just local git state.
-            // During scan the cache dedups fetches across worktrees of the same repo.
-            if let Some(url) = primary_url.as_deref() {
+            // A post-scan GitInfo update means a git fetch (or other ref
+            // change) was detected — treat it as a signal to refresh CI
+            // too. The fetch URL is now picked from the entry's repo
+            // info (any parseable remote) rather than the per-checkout
+            // upstream, so a worktree on a branch without an upstream
+            // still triggers the fetch.
+            if let Some(url) = fetch_url.as_deref() {
                 if self.is_scan_complete()
                     && let Some(owner_repo) = crate::ci::parse_owner_repo(url)
+                    && !self.repo_fetch_in_flight.contains(&owner_repo)
                 {
                     crate::scan::invalidate_cached_repo_data(&self.repo_fetch_cache, &owner_repo);
                 }
@@ -1788,6 +1801,7 @@ impl App {
     }
 
     pub(in super::super) fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
+        self.repo_fetch_in_flight.remove(&repo);
         if let Some(repo_toast) = self.scan.startup_phases.repo_toast {
             let label = repo.to_string();
             self.mark_tracked_item_completed(repo_toast, &label);

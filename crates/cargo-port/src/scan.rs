@@ -26,10 +26,10 @@ use super::http::ServiceSignal;
 use super::lint::LintStatus;
 use super::project::AbsolutePath;
 use super::project::CargoParseResult;
-use super::project::LocalGitInfo;
 use super::project::GitRepoPresence;
 use super::project::LangEntry;
 use super::project::LanguageStats;
+use super::project::LocalGitInfo;
 use super::project::MemberGroup;
 use super::project::Package;
 use super::project::ProjectFields;
@@ -62,7 +62,11 @@ pub(crate) enum BackgroundMsg {
     RepoFetchQueued {
         repo: OwnerRepo,
     },
-    /// A GitHub repo fetch completed (stars, description arrived).
+    /// A `spawn_repo_fetch_for_git_info` thread has finished. Sent
+    /// regardless of whether the spawn hit the network or returned a
+    /// cached result. Drives both the startup "GitHub repos" toast
+    /// progress (no-op on cache hit, since no `RepoFetchQueued` was
+    /// sent) and the `repo_fetch_in_flight` dedup set.
     RepoFetchComplete {
         repo: OwnerRepo,
     },

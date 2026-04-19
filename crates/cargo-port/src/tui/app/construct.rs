@@ -165,6 +165,7 @@ impl App {
             current_config: inputs.cfg,
             http_client: inputs.http_client,
             repo_fetch_cache: crate::scan::new_repo_cache(),
+            repo_fetch_in_flight: HashSet::new(),
             projects: init.projects,
             ci_fetch_tracker: CiFetchTracker::default(),
             ci_display_modes: HashMap::new(),

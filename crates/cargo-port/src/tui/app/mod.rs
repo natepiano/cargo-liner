@@ -76,6 +76,12 @@ pub(super) struct App {
     current_config:           CargoPortConfig,
     http_client:              HttpClient,
     repo_fetch_cache:         RepoCache,
+    /// Set of `OwnerRepo`s with an in-flight GitHub fetch. Lives above
+    /// `repo_fetch_cache` so the dedup survives the
+    /// "invalidate, then re-spawn" sequence in `handle_git_info` when
+    /// multiple `LocalGitInfo` updates arrive for the same repo
+    /// post-scan.
+    repo_fetch_in_flight:     HashSet<OwnerRepo>,
     projects:                 ProjectList,
     ci_fetch_tracker:         CiFetchTracker,
     ci_display_modes:         HashMap<AbsolutePath, types::CiRunDisplayMode>,

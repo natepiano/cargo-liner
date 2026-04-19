@@ -232,8 +232,8 @@ pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPan
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::sync::mpsc;
     use std::sync::OnceLock;
+    use std::sync::mpsc;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -245,10 +245,10 @@ mod tests {
     use crossterm::event::MouseButton;
     use crossterm::event::MouseEvent;
     use crossterm::event::MouseEventKind;
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
-    use ratatui::Terminal;
 
     use super::HoveredPaneRow;
     use super::UiHitbox;

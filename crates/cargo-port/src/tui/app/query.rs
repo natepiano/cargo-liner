@@ -331,6 +331,32 @@ impl App {
         checkout.primary_ahead_behind(repo)
     }
 
+    /// Pick a remote URL to drive the GitHub fetch for the entry
+    /// containing `path`. Independent of the current checkout's
+    /// upstream tracking: a worktree on a branch without an upstream
+    /// still belongs to the repo and should fetch repo-level metadata.
+    /// Preference order: `upstream`, then `origin`, then the first
+    /// remote with a parseable owner/repo URL.
+    pub(in super::super) fn fetch_url_for(&self, path: &Path) -> Option<String> {
+        let repo = self.repo_info_for(path)?;
+        let parseable = |name: &str| {
+            repo.remotes
+                .iter()
+                .find(|r| r.name == name)
+                .and_then(|r| r.url.as_deref())
+                .filter(|url| crate::ci::parse_owner_repo(url).is_some())
+        };
+        parseable("upstream")
+            .or_else(|| parseable("origin"))
+            .or_else(|| {
+                repo.remotes.iter().find_map(|r| {
+                    let url = r.url.as_deref()?;
+                    crate::ci::parse_owner_repo(url).map(|_| url)
+                })
+            })
+            .map(String::from)
+    }
+
     pub(in super::super) fn is_rust_at_path(&self, path: &Path) -> bool {
         self.projects.iter().any(|item| {
             if item
