@@ -1,4 +1,5 @@
 use super::git::LocalGitState;
+use super::git::WorktreeStatus;
 use super::submodule::Submodule;
 use crate::ci::CiRun;
 
@@ -108,5 +109,6 @@ pub(crate) struct ProjectInfo {
     pub language_stats:   Option<LanguageStats>,
     pub visibility:       Visibility,
     pub worktree_health:  WorktreeHealth,
+    pub worktree_status:  WorktreeStatus,
     pub submodules:       Vec<Submodule>,
 }

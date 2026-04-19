@@ -22,8 +22,11 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
             path: test_path("~/rust/bevy_window_manager_style_fix/crates/bevy_window_manager"),
             name: Some("bevy_window_manager".to_string()),
             rust: RustInfo {
-                worktree_status: WorktreeStatus::Linked {
-                    primary: test_path("~/rust/bevy_window_manager"),
+                info: ProjectInfo {
+                    worktree_status: WorktreeStatus::Linked {
+                        primary: test_path("~/rust/bevy_window_manager"),
+                    },
+                    ..ProjectInfo::default()
                 },
                 ..RustInfo::default()
             },

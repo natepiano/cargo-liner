@@ -40,6 +40,7 @@ use crate::project::Package;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::project::ProjectFields;
+use crate::project::ProjectInfo;
 use crate::project::RemoteInfo;
 use crate::project::RemoteKind;
 use crate::project::RootItem;
@@ -280,7 +281,10 @@ fn make_package_raw_with_primary(
         path: test_path(path),
         name: name.map(String::from),
         rust: RustInfo {
-            worktree_status: status_for(worktree_marker, primary_abs_path),
+            info: ProjectInfo {
+                worktree_status: status_for(worktree_marker, primary_abs_path),
+                ..ProjectInfo::default()
+            },
             ..RustInfo::default()
         },
     }
@@ -306,7 +310,10 @@ fn make_workspace_raw_with_primary(
         path: test_path(path),
         name: name.map(String::from),
         rust: RustInfo {
-            worktree_status: status_for(worktree_marker, primary_abs_path),
+            info: ProjectInfo {
+                worktree_status: status_for(worktree_marker, primary_abs_path),
+                ..ProjectInfo::default()
+            },
             ..RustInfo::default()
         },
         groups,

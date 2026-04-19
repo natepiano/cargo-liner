@@ -1700,6 +1700,15 @@ impl App {
             self.maybe_log_startup_phase_completions();
         }
         if !self.projects.is_submodule_path(path) {
+            // A post-scan GitInfo update means a git fetch (or other ref change) was
+            // detected — treat it as a signal to refresh CI too, not just local git state.
+            // During scan the cache dedups fetches across worktrees of the same repo.
+            if self.is_scan_complete()
+                && let Some(repo_url) = info.primary_url()
+                && let Some(owner_repo) = crate::ci::parse_owner_repo(repo_url)
+            {
+                crate::scan::invalidate_cached_repo_data(&self.repo_fetch_cache, &owner_repo);
+            }
             self.spawn_repo_fetch_for_git_info(path, &info);
         }
     }
@@ -1817,13 +1826,19 @@ impl App {
         let path = item.path().to_path_buf();
 
         // Replace the leaf in project_list_items, transferring runtime data
-        // from the old item to the incoming one.
+        // from the old item to the incoming one. Freshly-detected fields on
+        // the new item (worktree_status, worktree_health) must be preserved
+        // across the copy, since the old snapshot predates this refresh.
         let Some(old) = self.projects.replace_leaf_by_path(&path, item.clone()) else {
             return false;
         };
         for (project_path, info) in old.collect_project_info() {
             if let Some(project) = item.at_path_mut(&project_path) {
+                let fresh_worktree_status = project.worktree_status.clone();
+                let fresh_worktree_health = project.worktree_health;
                 *project = info;
+                project.worktree_status = fresh_worktree_status;
+                project.worktree_health = fresh_worktree_health;
             }
         }
         // Re-replace with the runtime-data-enriched version.

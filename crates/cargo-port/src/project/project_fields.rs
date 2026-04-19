@@ -1,4 +1,5 @@
 use super::git::GitInfo;
+use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
@@ -21,6 +22,11 @@ pub(crate) trait ProjectFields {
     fn info_mut(&mut self) -> &mut ProjectInfo;
     fn display_path(&self) -> DisplayPath;
     fn root_directory_name(&self) -> RootDirectoryName;
+
+    /// Git worktree status (not-git / primary / linked). Lives on
+    /// `ProjectInfo` so it is uniformly available to Rust and non-Rust
+    /// projects alike.
+    fn worktree_status(&self) -> &WorktreeStatus { &self.info().worktree_status }
 
     /// Crates.io package name to query, when the entry corresponds to a
     /// publishable crate. Default `None` — opt in by overriding.

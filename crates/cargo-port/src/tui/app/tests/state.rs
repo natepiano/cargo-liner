@@ -432,8 +432,11 @@ fn startup_git_expected_uses_top_level_git_directories() {
         path: AbsolutePath::from(primary_dir.clone()),
         name: Some("cargo-port".to_string()),
         rust: RustInfo {
-            worktree_status: WorktreeStatus::Primary {
-                root: AbsolutePath::from(primary_dir.clone()),
+            info: ProjectInfo {
+                worktree_status: WorktreeStatus::Primary {
+                    root: AbsolutePath::from(primary_dir.clone()),
+                },
+                ..ProjectInfo::default()
             },
             ..RustInfo::default()
         },
@@ -442,8 +445,11 @@ fn startup_git_expected_uses_top_level_git_directories() {
         path: AbsolutePath::from(linked_dir),
         name: Some("cargo-port_feat".to_string()),
         rust: RustInfo {
-            worktree_status: WorktreeStatus::Linked {
-                primary: AbsolutePath::from(primary_dir.clone()),
+            info: ProjectInfo {
+                worktree_status: WorktreeStatus::Linked {
+                    primary: AbsolutePath::from(primary_dir.clone()),
+                },
+                ..ProjectInfo::default()
             },
             ..RustInfo::default()
         },

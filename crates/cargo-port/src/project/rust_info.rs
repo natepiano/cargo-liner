@@ -3,7 +3,6 @@ use std::ops::DerefMut;
 
 use super::cargo::ExampleGroup;
 use super::cargo::ProjectType;
-use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::package::Package;
 use crate::lint::LintRuns;
@@ -15,7 +14,6 @@ pub(crate) struct RustInfo {
     pub(crate) info:             ProjectInfo,
     pub(crate) cargo:            Cargo,
     pub(crate) vendored:         Vec<Package>,
-    pub(crate) worktree_status:  WorktreeStatus,
     pub(crate) lint_runs:        LintRuns,
     pub(crate) crates_version:   Option<String>,
     pub(crate) crates_downloads: Option<u64>,
@@ -27,8 +25,6 @@ impl RustInfo {
     pub(crate) fn vendored(&self) -> &[Package] { &self.vendored }
 
     pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<Package> { &mut self.vendored }
-
-    pub(crate) const fn worktree_status(&self) -> &WorktreeStatus { &self.worktree_status }
 
     pub(crate) const fn info(&self) -> &ProjectInfo { &self.info }
 
