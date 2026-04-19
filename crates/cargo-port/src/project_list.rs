@@ -15,6 +15,7 @@ use crate::project::RustProject;
 use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
+use crate::project::WorktreeStatus;
 
 /// Owning wrapper around the project hierarchy.
 ///
@@ -396,11 +397,11 @@ fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
     let existing_identity = item_worktree_identity(existing).cloned();
 
     if let RootItem::Rust(RustProject::Workspace(linked)) = item
-        && linked.is_linked_worktree()
+        && linked.worktree_status().is_linked_worktree()
     {
         match existing {
             RootItem::Rust(RustProject::Workspace(primary))
-                if linked.worktree_primary_abs_path() == existing_identity.as_ref() =>
+                if linked.worktree_status().primary_root() == existing_identity.as_ref() =>
             {
                 let primary = primary.clone();
                 *existing = RootItem::Worktrees(WorktreeGroup::new_workspaces(
@@ -412,7 +413,7 @@ fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
             RootItem::Worktrees(WorktreeGroup::Workspaces {
                 linked: group_linked,
                 ..
-            }) if linked.worktree_primary_abs_path() == existing_identity.as_ref() => {
+            }) if linked.worktree_status().primary_root() == existing_identity.as_ref() => {
                 group_linked.push(linked.clone());
                 return true;
             },
@@ -421,11 +422,11 @@ fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
     }
 
     if let RootItem::Rust(RustProject::Package(linked)) = item
-        && linked.is_linked_worktree()
+        && linked.worktree_status().is_linked_worktree()
     {
         match existing {
             RootItem::Rust(RustProject::Package(primary))
-                if linked.worktree_primary_abs_path() == existing_identity.as_ref() =>
+                if linked.worktree_status().primary_root() == existing_identity.as_ref() =>
             {
                 let primary = primary.clone();
                 *existing =
@@ -435,7 +436,7 @@ fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
             RootItem::Worktrees(WorktreeGroup::Packages {
                 linked: group_linked,
                 ..
-            }) if linked.worktree_primary_abs_path() == existing_identity.as_ref() => {
+            }) if linked.worktree_status().primary_root() == existing_identity.as_ref() => {
                 group_linked.push(linked.clone());
                 return true;
             },
@@ -448,12 +449,12 @@ fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
 
 fn item_worktree_identity(item: &RootItem) -> Option<&AbsolutePath> {
     match item {
-        RootItem::Rust(p) => p.worktree_primary_abs_path(),
+        RootItem::Rust(p) => p.worktree_status().primary_root(),
         RootItem::Worktrees(WorktreeGroup::Workspaces { primary, .. }) => {
-            primary.worktree_primary_abs_path()
+            primary.worktree_status().primary_root()
         },
         RootItem::Worktrees(WorktreeGroup::Packages { primary, .. }) => {
-            primary.worktree_primary_abs_path()
+            primary.worktree_status().primary_root()
         },
         RootItem::NonRust(_) => None,
     }
@@ -461,7 +462,10 @@ fn item_worktree_identity(item: &RootItem) -> Option<&AbsolutePath> {
 
 fn linked_worktree_identity(item: &RootItem) -> Option<&AbsolutePath> {
     match item {
-        RootItem::Rust(p) if p.is_linked_worktree() => p.worktree_primary_abs_path(),
+        RootItem::Rust(p) => match p.worktree_status() {
+            WorktreeStatus::Linked { primary } => Some(primary),
+            _ => None,
+        },
         _ => None,
     }
 }

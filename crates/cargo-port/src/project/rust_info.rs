@@ -6,7 +6,6 @@ use super::cargo::ProjectType;
 use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::package::Package;
-use super::paths::AbsolutePath;
 use crate::lint::LintRuns;
 
 /// Rust-specific project data shared by both `Workspace` and `Package`.
@@ -30,14 +29,6 @@ impl RustInfo {
     pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<Package> { &mut self.vendored }
 
     pub(crate) const fn worktree_status(&self) -> &WorktreeStatus { &self.worktree_status }
-
-    pub(crate) const fn is_linked_worktree(&self) -> bool {
-        self.worktree_status.is_linked_worktree()
-    }
-
-    pub(crate) const fn worktree_primary_abs_path(&self) -> Option<&AbsolutePath> {
-        self.worktree_status.primary_root()
-    }
 
     pub(crate) const fn info(&self) -> &ProjectInfo { &self.info }
 

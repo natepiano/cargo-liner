@@ -652,14 +652,14 @@ fn workspace_pattern_matches_segment(pattern: &str, value: &str) -> bool {
 /// `NonRust` projects are not grouped into worktree variants.
 fn item_worktree_identity(item: &RootItem) -> Option<&AbsolutePath> {
     match item {
-        RootItem::Rust(p) => p.worktree_primary_abs_path(),
+        RootItem::Rust(p) => p.worktree_status().primary_root(),
         _ => None,
     }
 }
 
 fn item_is_linked(item: &RootItem) -> bool {
     match item {
-        RootItem::Rust(p) => p.is_linked_worktree(),
+        RootItem::Rust(p) => p.worktree_status().is_linked_worktree(),
         _ => false,
     }
 }
