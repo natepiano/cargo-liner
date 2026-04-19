@@ -423,6 +423,7 @@ pub enum DetailField {
     RepoDesc,
     Inception,
     LastCommit,
+    LastFetched,
     WorktreeError,
     CratesIo,
     Downloads,
@@ -444,6 +445,7 @@ impl DetailField {
             Self::RepoDesc => "About",
             Self::Inception => "Incept",
             Self::LastCommit => "Latest",
+            Self::LastFetched => "Fetched",
             Self::WorktreeError => "Error",
             Self::CratesIo => "crates.io",
             Self::Downloads => "Downloads",
@@ -510,7 +512,8 @@ impl DetailField {
             | Self::Stars
             | Self::RepoDesc
             | Self::Inception
-            | Self::LastCommit => String::new(),
+            | Self::LastCommit
+            | Self::LastFetched => String::new(),
         }
     }
 
@@ -539,6 +542,7 @@ impl DetailField {
             Self::RepoDesc => data.description.as_deref().unwrap_or("").to_string(),
             Self::Inception => data.inception.as_deref().unwrap_or("").to_string(),
             Self::LastCommit => data.last_commit.as_deref().unwrap_or("").to_string(),
+            Self::LastFetched => data.last_fetched.as_deref().unwrap_or("").to_string(),
             // Package fields — should not be called with git_value.
             Self::Path
             | Self::Disk
@@ -606,6 +610,9 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     if data.last_commit.is_some() {
         fields.push(DetailField::LastCommit);
     }
+    if data.last_fetched.is_some() {
+        fields.push(DetailField::LastFetched);
+    }
     if !data.worktrees.is_empty() {
         // Worktree count is appended by the render function, not as a field.
     }
@@ -642,6 +649,7 @@ pub struct GitData {
     pub description:       Option<String>,
     pub inception:         Option<String>,
     pub last_commit:       Option<String>,
+    pub last_fetched:      Option<String>,
     pub remotes:           Vec<RemoteRow>,
     pub worktrees:         Vec<WorktreeInfo>,
 }
@@ -821,6 +829,7 @@ struct GitDetailFields {
     description:       Option<String>,
     inception:         Option<String>,
     last_commit:       Option<String>,
+    last_fetched:      Option<String>,
     remotes:           Vec<RemoteRow>,
 }
 
@@ -847,6 +856,9 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let last_commit = git
         .and_then(|info| info.last_commit.as_deref())
         .map(format_timestamp);
+    let last_fetched = git
+        .and_then(|info| info.last_fetched.as_deref())
+        .map(format_timestamp);
     let default_host = app.current_config().tui.default_remote_host_url.clone();
     let remotes = git.map_or_else(Vec::new, |info| build_remote_rows(info, &default_host));
     GitDetailFields {
@@ -859,6 +871,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         description,
         inception,
         last_commit,
+        last_fetched,
         remotes,
     }
 }
@@ -1045,6 +1058,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             description:       git_detail.description,
             inception:         git_detail.inception,
             last_commit:       git_detail.last_commit,
+            last_fetched:      git_detail.last_fetched,
             remotes:           git_detail.remotes,
             worktrees:         Vec::new(),
         },
@@ -1225,6 +1239,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             description: git_detail.description,
             inception: git_detail.inception,
             last_commit: git_detail.last_commit,
+            last_fetched: git_detail.last_fetched,
             remotes: git_detail.remotes,
             worktrees,
         },

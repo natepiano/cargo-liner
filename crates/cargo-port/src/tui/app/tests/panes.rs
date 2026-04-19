@@ -86,6 +86,7 @@ fn tabbable_panes_follow_canonical_order() {
             branch:               None,
             first_commit:         None,
             last_commit:          None,
+            last_fetched:         None,
             default_branch:       None,
             local_main_branch:    None,
             ahead_behind_local:   None,

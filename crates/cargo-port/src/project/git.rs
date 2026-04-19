@@ -69,6 +69,9 @@ pub(crate) struct GitInfo {
     pub first_commit:         Option<String>,
     /// ISO 8601 date of the most recent commit.
     pub last_commit:          Option<String>,
+    /// ISO 8601 timestamp of the last `git fetch` against any remote,
+    /// derived from the mtime of `FETCH_HEAD` in the common git dir.
+    pub last_fetched:         Option<String>,
     /// The repo's default branch name resolved from `origin/HEAD`.
     pub default_branch:       Option<String>,
     /// The local branch name used for `M` comparisons.
@@ -171,6 +174,8 @@ impl GitInfo {
                     if s.is_empty() { None } else { Some(s) }
                 });
 
+        let last_fetched = detect_last_fetched(&repo_root);
+
         let git_status = detect_git_status_with_root(project_dir, &repo_root);
 
         Some(Self {
@@ -178,6 +183,7 @@ impl GitInfo {
             branch,
             first_commit: None,
             last_commit,
+            last_fetched,
             default_branch,
             local_main_branch,
             ahead_behind_local,
@@ -673,6 +679,48 @@ pub(crate) fn resolve_common_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
     let contents = std::fs::read_to_string(&commondir_path).ok()?;
     let target = contents.trim();
     Some(AbsolutePath::resolve(target, &git_dir))
+}
+
+/// Read `FETCH_HEAD` mtime from the common git dir and render it as UTC ISO
+/// 8601. `FETCH_HEAD` is rewritten on every `git fetch` regardless of whether
+/// refs changed, so its mtime is the most reliable "last fetched" signal.
+fn detect_last_fetched(repo_root: &Path) -> Option<String> {
+    let common_dir = resolve_common_git_dir(repo_root)?;
+    let fetch_head = common_dir.join("FETCH_HEAD");
+    let modified = std::fs::metadata(&fetch_head).ok()?.modified().ok()?;
+    system_time_to_iso8601_utc(modified)
+}
+
+fn system_time_to_iso8601_utc(t: std::time::SystemTime) -> Option<String> {
+    let secs = t
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    let days = secs.div_euclid(86_400);
+    let time_of_day = secs.rem_euclid(86_400);
+    let hour = time_of_day / 3_600;
+    let min = (time_of_day % 3_600) / 60;
+    let sec = time_of_day % 60;
+    let (year, month, day) = civil_from_days(days);
+    Some(format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z"
+    ))
+}
+
+/// Inverse of `days_from_civil`: days since Unix epoch → (year, month, day).
+/// Howard Hinnant's algorithm.
+const fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    (year, m as u32, d as u32)
 }
 
 fn relative_git_path(repo_root: &Path, project_dir: &Path) -> String {

@@ -48,6 +48,7 @@ fn git_data() -> GitData {
         description:       None,
         inception:         None,
         last_commit:       None,
+        last_fetched:      None,
         remotes:           Vec::new(),
         worktrees:         Vec::new(),
     }
