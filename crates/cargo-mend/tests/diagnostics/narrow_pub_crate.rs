@@ -366,3 +366,121 @@ impl InternalHelper {
     );
     assert_summary_matches_findings(&report);
 }
+
+#[test]
+fn integration_test_support_module_is_not_narrowed() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "narrow_tests_support_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(temp.path().join("src/lib.rs"), "").expect("write lib");
+    fs::create_dir_all(temp.path().join("tests")).expect("create tests");
+    fs::write(temp.path().join("tests/support.rs"), "pub fn helper() {}\n").expect("write support");
+    fs::write(
+        temp.path().join("tests/consumer.rs"),
+        "mod support;\n\n#[test]\nfn uses_support() { support::helper(); }\n",
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--all-targets")
+        .arg("--json")
+        .output()
+        .expect("run cargo-mend --all-targets --json");
+    assert!(
+        matches!(output.status.code(), Some(0..=2)),
+        "cargo-mend returned unexpected status {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = parse_mend_json_output(&output.stdout);
+
+    let narrow_on_support: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.code == DiagnosticCode::NarrowToPubCrate
+                && finding.path.ends_with("tests/support.rs")
+        })
+        .collect();
+    assert!(
+        narrow_on_support.is_empty(),
+        "narrow_to_pub_crate should not fire in tests/: {narrow_on_support:?}",
+    );
+
+    let forbidden_on_support: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.code == DiagnosticCode::ForbiddenPubCrate
+                && finding.path.ends_with("tests/support.rs")
+        })
+        .collect();
+    assert!(
+        forbidden_on_support.is_empty(),
+        "forbidden_pub_crate should not fire on pub items in tests/: {forbidden_on_support:?}",
+    );
+}
+
+#[test]
+fn integration_test_support_module_pub_crate_is_rejected() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "forbidden_tests_support_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(temp.path().join("src/lib.rs"), "").expect("write lib");
+    fs::create_dir_all(temp.path().join("tests")).expect("create tests");
+    fs::write(
+        temp.path().join("tests/support.rs"),
+        "pub(crate) fn helper() {}\n",
+    )
+    .expect("write support");
+    fs::write(
+        temp.path().join("tests/consumer.rs"),
+        "mod support;\n\n#[test]\nfn uses_support() { support::helper(); }\n",
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--all-targets")
+        .arg("--json")
+        .output()
+        .expect("run cargo-mend --all-targets --json");
+    assert!(
+        matches!(output.status.code(), Some(0..=2)),
+        "cargo-mend returned unexpected status {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = parse_mend_json_output(&output.stdout);
+
+    let has_forbidden = report.findings.iter().any(|finding| {
+        finding.code == DiagnosticCode::ForbiddenPubCrate
+            && finding.path.ends_with("tests/support.rs")
+    });
+    assert!(
+        has_forbidden,
+        "expected forbidden_pub_crate on pub(crate) in tests/support.rs: {:?}",
+        report.findings,
+    );
+}

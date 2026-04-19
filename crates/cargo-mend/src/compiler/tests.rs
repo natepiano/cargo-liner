@@ -76,6 +76,74 @@ fn allow_pub_crate_rejects_binary_nested_modules() {
 }
 
 #[test]
+fn allow_pub_crate_rejects_integration_test_items_in_any_location() {
+    for module_location in [
+        ModuleLocation::CrateRoot,
+        ModuleLocation::TopLevelPrivateModule,
+        ModuleLocation::NestedModule,
+    ] {
+        for parent_visibility in [ParentVisibility::Private, ParentVisibility::Public] {
+            assert!(
+                !visibility::allow_pub_crate_by_policy(
+                    CrateKind::IntegrationTest,
+                    module_location,
+                    parent_visibility,
+                ),
+                "pub(crate) should be forbidden in integration-test crates \
+                 regardless of module location or parent visibility \
+                 (location = {module_location:?}, parent = {parent_visibility:?})",
+            );
+        }
+    }
+}
+
+#[test]
+fn crate_kind_for_root_detects_library_from_lib_rs() {
+    let package_root = Path::new("/tmp/pkg");
+    assert_eq!(
+        visibility::crate_kind_for_root(&package_root.join("src/lib.rs"), package_root),
+        CrateKind::Library
+    );
+}
+
+#[test]
+fn crate_kind_for_root_detects_binary_from_main_rs() {
+    let package_root = Path::new("/tmp/pkg");
+    assert_eq!(
+        visibility::crate_kind_for_root(&package_root.join("src/main.rs"), package_root),
+        CrateKind::Binary
+    );
+}
+
+#[test]
+fn crate_kind_for_root_detects_integration_test_roots() {
+    let package_root = Path::new("/tmp/pkg");
+    for sub in ["tests", "examples", "benches"] {
+        let root = package_root.join(sub).join("support.rs");
+        assert_eq!(
+            visibility::crate_kind_for_root(&root, package_root),
+            CrateKind::IntegrationTest,
+            "{sub}/*.rs should classify as IntegrationTest",
+        );
+    }
+}
+
+#[test]
+fn crate_kind_for_root_treats_nested_example_root_as_binary() {
+    let package_root = Path::new("/tmp/pkg");
+    assert_eq!(
+        visibility::crate_kind_for_root(&package_root.join("examples/demo/main.rs"), package_root,),
+        CrateKind::Binary,
+        "a nested examples/<name>/main.rs root is unambiguous and behaves like a binary",
+    );
+    assert_eq!(
+        visibility::crate_kind_for_root(&package_root.join("tests/foo/main.rs"), package_root),
+        CrateKind::Binary,
+        "a nested tests/<name>/main.rs root is unambiguous and behaves like a binary",
+    );
+}
+
+#[test]
 fn forbidden_pub_crate_help_handles_crate_root_items() {
     assert_eq!(
         visibility::forbidden_pub_crate_help(ModuleLocation::CrateRoot),

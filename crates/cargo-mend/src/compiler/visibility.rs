@@ -41,6 +41,7 @@ use crate::fix_support::FixSupport;
 pub(super) enum CrateKind {
     Binary,
     Library,
+    IntegrationTest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -440,6 +441,11 @@ fn record_visibility_findings(
     if item.vis_text == "pub"
         && finding_context.parent_visibility == ParentVisibility::Private
         && is_top_level_module_file(ctx.src_root, ctx.root_module, item.file_path)
+        && allow_pub_crate_by_policy(
+            finding_context.crate_kind,
+            finding_context.module_location,
+            finding_context.parent_visibility,
+        )
     {
         maybe_record_narrow_to_pub_crate(ctx, item, sink)?;
     }
@@ -468,12 +474,7 @@ fn visibility_finding_context(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
 ) -> VisibilityFindingContext {
-    let crate_kind = if ctx.root_module.file_name().and_then(|name| name.to_str()) == Some("lib.rs")
-    {
-        CrateKind::Library
-    } else {
-        CrateKind::Binary
-    };
+    let crate_kind = crate_kind_for_root(ctx.root_module, &ctx.settings.package_root);
     let config_rel_path = settings::config_relative_path_for_settings(item.file_path, ctx.settings);
     let parent_module = ctx.tcx.parent_module_from_def_id(item.def_id);
     let parent_visibility = if ctx
@@ -909,10 +910,36 @@ pub(super) const fn allow_pub_crate_by_policy(
 ) -> bool {
     match (crate_kind, module_location) {
         (CrateKind::Library, ModuleLocation::CrateRoot) => true,
+        (CrateKind::IntegrationTest, _) => false,
         (_, ModuleLocation::TopLevelPrivateModule) => {
             matches!(parent_visibility, ParentVisibility::Private)
         },
         _ => false,
+    }
+}
+
+pub(super) fn crate_kind_for_root(root_module: &Path, package_root: &Path) -> CrateKind {
+    if root_module.file_name().and_then(|name| name.to_str()) == Some("lib.rs") {
+        return CrateKind::Library;
+    }
+    let canonical_root =
+        fs::canonicalize(root_module).unwrap_or_else(|_| root_module.to_path_buf());
+    let canonical_package =
+        fs::canonicalize(package_root).unwrap_or_else(|_| package_root.to_path_buf());
+    let Ok(relative) = canonical_root.strip_prefix(&canonical_package) else {
+        return CrateKind::Binary;
+    };
+    let components: Vec<_> = relative.components().collect();
+    match components.as_slice() {
+        [first, _]
+            if matches!(
+                first.as_os_str().to_str(),
+                Some("tests" | "examples" | "benches")
+            ) =>
+        {
+            CrateKind::IntegrationTest
+        },
+        _ => CrateKind::Binary,
     }
 }
 
@@ -932,7 +959,7 @@ pub(super) fn suspicious_pub_note(crate_kind: CrateKind, kind_label: &str) -> St
         CrateKind::Library => {
             format!("{kind_label} is not reachable from the crate's public API")
         },
-        CrateKind::Binary => {
+        CrateKind::Binary | CrateKind::IntegrationTest => {
             format!("{kind_label} is not used outside its parent module subtree")
         },
     }
