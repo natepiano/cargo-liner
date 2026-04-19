@@ -418,38 +418,36 @@ fn startup_git_expected_uses_top_level_git_directories() {
         AbsolutePath::from(non_rust_dir.clone()),
         Some(".claude".to_string()),
     ));
-    let workspace = RootItem::Rust(RustProject::Workspace(Workspace::new(
-        AbsolutePath::from(workspace_dir.clone()),
-        Some("bevy".to_string()),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-        vec![inline_group(vec![Package::new(
-            AbsolutePath::from(member_dir),
-            Some("core".to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-            Vec::new(),
-            None,
-            None,
-        )])],
-        Vec::new(),
-        None,
-        None,
-    )));
-    let primary = Package::new(
-        AbsolutePath::from(primary_dir.clone()),
-        Some("cargo-port".to_string()),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-        Vec::new(),
-        None,
-        None,
-    );
-    let linked = Package::new(
-        AbsolutePath::from(linked_dir),
-        Some("cargo-port_feat".to_string()),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-        Vec::new(),
-        Some("cargo-port_feat".to_string()),
-        Some(AbsolutePath::from(primary_dir.clone())),
-    );
+    let workspace = RootItem::Rust(RustProject::Workspace(Workspace {
+        path: AbsolutePath::from(workspace_dir.clone()),
+        name: Some("bevy".to_string()),
+        groups: vec![inline_group(vec![Package {
+            path: AbsolutePath::from(member_dir),
+            name: Some("core".to_string()),
+            ..Package::default()
+        }])],
+        ..Workspace::default()
+    }));
+    let primary = Package {
+        path: AbsolutePath::from(primary_dir.clone()),
+        name: Some("cargo-port".to_string()),
+        rust: RustInfo {
+            worktree_status: WorktreeStatus::Primary {
+                root: AbsolutePath::from(primary_dir.clone()),
+            },
+            ..RustInfo::default()
+        },
+    };
+    let linked = Package {
+        path: AbsolutePath::from(linked_dir),
+        name: Some("cargo-port_feat".to_string()),
+        rust: RustInfo {
+            worktree_status: WorktreeStatus::Linked {
+                primary: AbsolutePath::from(primary_dir.clone()),
+            },
+            ..RustInfo::default()
+        },
+    };
     let worktrees = RootItem::Worktrees(WorktreeGroup::new_packages(primary, vec![linked]));
 
     let mut app = make_app(&[]);
@@ -476,22 +474,16 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
     std::fs::create_dir_all(workspace_dir.join(".git")).unwrap_or_else(|_| std::process::abort());
     std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| std::process::abort());
 
-    let workspace = RootItem::Rust(RustProject::Workspace(Workspace::new(
-        AbsolutePath::from(workspace_dir.clone()),
-        Some("bevy".to_string()),
-        Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-        vec![inline_group(vec![Package::new(
-            AbsolutePath::from(member_dir.clone()),
-            Some("core".to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-            Vec::new(),
-            None,
-            None,
-        )])],
-        Vec::new(),
-        None,
-        None,
-    )));
+    let workspace = RootItem::Rust(RustProject::Workspace(Workspace {
+        path: AbsolutePath::from(workspace_dir.clone()),
+        name: Some("bevy".to_string()),
+        groups: vec![inline_group(vec![Package {
+            path: AbsolutePath::from(member_dir.clone()),
+            name: Some("core".to_string()),
+            ..Package::default()
+        }])],
+        ..Workspace::default()
+    }));
 
     let mut app = make_app(&[]);
     apply_items(&mut app, &[workspace]);
@@ -594,14 +586,14 @@ fn lint_runtime_snapshot_deduplicates_primary_worktree_path() {
 #[test]
 fn vendored_path_dependency_becomes_ci_owner() {
     let root_item = {
-        let pkg = Package::new(
-            test_path("~/app"),
-            Some("app".to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-            vec![make_member(Some("helper"), "~/app/vendor/helper")],
-            None,
-            None,
-        );
+        let pkg = Package {
+            path: test_path("~/app"),
+            name: Some("app".to_string()),
+            rust: RustInfo {
+                vendored: vec![make_member(Some("helper"), "~/app/vendor/helper")],
+                ..RustInfo::default()
+            },
+        };
         RootItem::Rust(RustProject::Package(pkg))
     };
     let vendored = make_project(Some("helper"), "~/app/vendor/helper");

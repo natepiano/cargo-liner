@@ -6,54 +6,28 @@ use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
 use super::member_group::MemberGroup;
-use super::package::Package;
 use super::paths;
 use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::PackageName;
 use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
-use super::rust_info::Cargo;
 use super::rust_info::RustInfo;
-use crate::lint::LintRuns;
 
 /// A Rust workspace project. Contains member groups in addition to the
 /// shared `RustInfo` data. Derefs to `RustInfo` for uniform access.
-#[derive(Clone)]
+///
+/// Construct via struct literal — all fields default to empty/none, so tests
+/// can use `..Default::default()`.
+#[derive(Clone, Default)]
 pub(crate) struct Workspace {
-    pub(super) path:   AbsolutePath,
-    pub(super) name:   Option<String>,
-    pub(super) rust:   RustInfo,
-    pub(super) groups: Vec<MemberGroup>,
+    pub(crate) path:   AbsolutePath,
+    pub(crate) name:   Option<String>,
+    pub(crate) rust:   RustInfo,
+    pub(crate) groups: Vec<MemberGroup>,
 }
 
 impl Workspace {
-    pub(crate) fn new(
-        path: AbsolutePath,
-        name: Option<String>,
-        cargo: Cargo,
-        groups: Vec<MemberGroup>,
-        vendored: Vec<Package>,
-        worktree_name: Option<String>,
-        worktree_primary_abs_path: Option<AbsolutePath>,
-    ) -> Self {
-        Self {
-            path,
-            name,
-            rust: RustInfo {
-                info: ProjectInfo::default(),
-                cargo,
-                vendored,
-                worktree_name,
-                worktree_primary_abs_path,
-                lint_runs: LintRuns::default(),
-                crates_version: None,
-                crates_downloads: None,
-            },
-            groups,
-        }
-    }
-
     pub(crate) fn groups(&self) -> &[MemberGroup] { &self.groups }
 
     pub(crate) const fn groups_mut(&mut self) -> &mut Vec<MemberGroup> { &mut self.groups }

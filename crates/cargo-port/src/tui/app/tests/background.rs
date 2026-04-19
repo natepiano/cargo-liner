@@ -7,28 +7,27 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
     let primary = make_workspace_raw_with_primary(
         Some("bevy_window_manager"),
         "~/rust/bevy_window_manager",
-        vec![inline_group(vec![Package::new(
-            test_path("~/rust/bevy_window_manager/crates/bevy_window_manager"),
-            Some("bevy_window_manager".to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-            Vec::new(),
-            None,
-            None,
-        )])],
+        vec![inline_group(vec![Package {
+            path: test_path("~/rust/bevy_window_manager/crates/bevy_window_manager"),
+            name: Some("bevy_window_manager".to_string()),
+            ..Package::default()
+        }])],
         None,
         None,
     );
     let linked = make_workspace_raw_with_primary(
         Some("bevy_window_manager_style_fix"),
         "~/rust/bevy_window_manager_style_fix",
-        vec![inline_group(vec![Package::new(
-            test_path("~/rust/bevy_window_manager_style_fix/crates/bevy_window_manager"),
-            Some("bevy_window_manager".to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-            Vec::new(),
-            None,
-            None,
-        )])],
+        vec![inline_group(vec![Package {
+            path: test_path("~/rust/bevy_window_manager_style_fix/crates/bevy_window_manager"),
+            name: Some("bevy_window_manager".to_string()),
+            rust: RustInfo {
+                worktree_status: WorktreeStatus::Linked {
+                    primary: test_path("~/rust/bevy_window_manager"),
+                },
+                ..RustInfo::default()
+            },
+        }])],
         Some("bevy_window_manager_style_fix"),
         Some("~/rust/bevy_window_manager"),
     );

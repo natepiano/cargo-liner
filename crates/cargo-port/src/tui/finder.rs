@@ -945,6 +945,7 @@ mod tests {
     use crate::project::Package;
     use crate::project::ProjectType;
     use crate::project::RootItem;
+    use crate::project::RustInfo;
     use crate::project::RustProject;
     use crate::project::Workspace;
 
@@ -963,22 +964,19 @@ mod tests {
 
     #[test]
     fn build_finder_index_includes_vendored_projects() {
-        let ws = Workspace::new(
-            test_path("~/rust/hana"),
-            Some("hana".to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-            Vec::new(),
-            vec![Package::new(
-                test_path("~/rust/hana/crates/clay-layout"),
-                Some("clay-layout".to_string()),
-                Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-                Vec::new(),
-                None,
-                None,
-            )],
-            None,
-            None,
-        );
+        let ws = Workspace {
+            path: test_path("~/rust/hana"),
+            name: Some("hana".to_string()),
+            rust: RustInfo {
+                vendored: vec![Package {
+                    path: test_path("~/rust/hana/crates/clay-layout"),
+                    name: Some("clay-layout".to_string()),
+                    ..Package::default()
+                }],
+                ..RustInfo::default()
+            },
+            ..Workspace::default()
+        };
         let list_items = vec![RootItem::Rust(RustProject::Workspace(ws))];
         let (items, _widths) = build_finder_index(&list_items);
         assert!(items.iter().any(|item| {
@@ -1063,25 +1061,21 @@ mod tests {
 
     #[test]
     fn build_finder_index_tokenizes_display_name_and_dir_segments() {
-        let pkg = Package::new(
-            test_path("~/rust/bevy/tools/build-easefunction-graphs"),
-            Some("build-easefunction-graphs".to_string()),
-            Cargo::new(
-                None,
-                None,
-                vec![ProjectType::Binary],
-                vec![ExampleGroup {
-                    category: String::new(),
-                    names:    vec!["raylib_renderer".to_string()],
-                }],
-                Vec::new(),
-                0,
-                false,
-            ),
-            Vec::new(),
-            None,
-            None,
-        );
+        let pkg = Package {
+            path: test_path("~/rust/bevy/tools/build-easefunction-graphs"),
+            name: Some("build-easefunction-graphs".to_string()),
+            rust: RustInfo {
+                cargo: Cargo {
+                    types: vec![ProjectType::Binary],
+                    examples: vec![ExampleGroup {
+                        category: String::new(),
+                        names:    vec!["raylib_renderer".to_string()],
+                    }],
+                    ..Cargo::default()
+                },
+                ..RustInfo::default()
+            },
+        };
 
         let (items, _widths) = build_finder_index(&[RootItem::Rust(RustProject::Package(pkg))]);
         assert!(items.iter().any(|item| {

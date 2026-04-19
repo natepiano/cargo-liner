@@ -11,43 +11,20 @@ use super::paths::DisplayPath;
 use super::paths::PackageName;
 use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
-use super::rust_info::Cargo;
 use super::rust_info::RustInfo;
-use crate::lint::LintRuns;
 
 /// A standalone Rust package project. Derefs to `RustInfo` for uniform access.
-#[derive(Clone)]
+///
+/// Construct via struct literal: `Package { path, name, rust: RustInfo { .. } }`.
+/// All fields default to empty/none, so tests can use `..Default::default()`.
+#[derive(Clone, Default)]
 pub(crate) struct Package {
-    pub(super) path: AbsolutePath,
-    pub(super) name: Option<String>,
-    pub(super) rust: RustInfo,
+    pub(crate) path: AbsolutePath,
+    pub(crate) name: Option<String>,
+    pub(crate) rust: RustInfo,
 }
 
 impl Package {
-    pub(crate) fn new(
-        path: AbsolutePath,
-        name: Option<String>,
-        cargo: Cargo,
-        vendored: Vec<Self>,
-        worktree_name: Option<String>,
-        worktree_primary_abs_path: Option<AbsolutePath>,
-    ) -> Self {
-        Self {
-            path,
-            name,
-            rust: RustInfo {
-                info: ProjectInfo::default(),
-                cargo,
-                vendored,
-                worktree_name,
-                worktree_primary_abs_path,
-                lint_runs: LintRuns::default(),
-                crates_version: None,
-                crates_downloads: None,
-            },
-        }
-    }
-
     /// Cargo package name when present, otherwise directory leaf.
     pub(crate) fn package_name(&self) -> PackageName {
         PackageName(self.name.as_deref().map_or_else(

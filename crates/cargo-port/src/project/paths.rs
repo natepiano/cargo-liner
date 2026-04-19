@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 /// An absolute filesystem path. Used as `HashMap` keys and for filesystem operations.
 /// Wraps `PathBuf`. Created from absolute paths only.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) struct AbsolutePath(PathBuf);
 
 impl AbsolutePath {

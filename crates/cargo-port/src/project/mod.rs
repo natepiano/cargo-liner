@@ -31,6 +31,7 @@ pub(crate) use git::RemoteInfo;
 pub(crate) use git::RemoteKind;
 #[cfg(test)]
 pub(crate) use git::WorkflowPresence;
+pub(crate) use git::WorktreeStatus;
 pub(crate) use git::detect_first_commit;
 pub(crate) use git::detect_worktree_branch;
 pub(crate) use git::git_repo_root;

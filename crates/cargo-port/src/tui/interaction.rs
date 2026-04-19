@@ -277,11 +277,13 @@ mod tests {
     use crate::project::RemoteInfo;
     use crate::project::RemoteKind;
     use crate::project::RootItem;
+    use crate::project::RustInfo;
     use crate::project::RustProject;
     use crate::project::Visibility;
     use crate::project::WorkflowPresence;
     use crate::project::Workspace;
     use crate::project::WorktreeGroup;
+    use crate::project::WorktreeStatus;
     use crate::project_list::ProjectList;
     use crate::tui::app::App;
     use crate::tui::app::DismissTarget;
@@ -304,63 +306,62 @@ mod tests {
     }
 
     fn make_package(name: &str, path: &Path) -> RootItem {
-        make_package_with_cargo(
-            name,
-            path,
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-        )
+        make_package_with_cargo(name, path, Cargo::default())
     }
 
     fn make_package_with_cargo(name: &str, path: &Path, cargo: Cargo) -> RootItem {
-        RootItem::Rust(RustProject::Package(Package::new(
-            AbsolutePath::from(path),
-            Some(name.to_string()),
-            cargo,
-            Vec::new(),
-            None,
-            None,
-        )))
+        RootItem::Rust(RustProject::Package(Package {
+            path: AbsolutePath::from(path),
+            name: Some(name.to_string()),
+            rust: RustInfo {
+                cargo,
+                ..RustInfo::default()
+            },
+        }))
     }
 
     fn make_package_worktree(
         name: &str,
         path: &Path,
-        worktree_name: Option<&str>,
+        is_linked_worktree: bool,
         primary_abs_path: Option<&Path>,
     ) -> Package {
-        Package::new(
-            AbsolutePath::from(path),
-            Some(name.to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-            Vec::new(),
-            worktree_name.map(str::to_string),
-            primary_abs_path.map(AbsolutePath::from),
-        )
+        let worktree_status = match (is_linked_worktree, primary_abs_path) {
+            (true, Some(p)) => WorktreeStatus::Linked {
+                primary: AbsolutePath::from(p),
+            },
+            (false, Some(p)) => WorktreeStatus::Primary {
+                root: AbsolutePath::from(p),
+            },
+            _ => WorktreeStatus::NotGit,
+        };
+        Package {
+            path: AbsolutePath::from(path),
+            name: Some(name.to_string()),
+            rust: RustInfo {
+                worktree_status,
+                ..RustInfo::default()
+            },
+        }
     }
 
     fn inline_group(members: Vec<Package>) -> MemberGroup { MemberGroup::Inline { members } }
 
     fn make_member(name: &str, path: &Path) -> Package {
-        Package::new(
-            AbsolutePath::from(path),
-            Some(name.to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-            Vec::new(),
-            None,
-            None,
-        )
+        Package {
+            path: AbsolutePath::from(path),
+            name: Some(name.to_string()),
+            ..Package::default()
+        }
     }
 
     fn make_workspace_with_members(name: &str, path: &Path, groups: Vec<MemberGroup>) -> RootItem {
-        RootItem::Rust(RustProject::Workspace(Workspace::new(
-            AbsolutePath::from(path),
-            Some(name.to_string()),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
+        RootItem::Rust(RustProject::Workspace(Workspace {
+            path: AbsolutePath::from(path),
+            name: Some(name.to_string()),
             groups,
-            Vec::new(),
-            None,
-            None,
-        )))
+            ..Workspace::default()
+        }))
     }
 
     fn make_git_info(url: Option<&str>) -> GitInfo {
@@ -954,18 +955,14 @@ mod tests {
         let mut app = make_app(&[make_package_with_cargo(
             "demo",
             &project_dir,
-            Cargo::new(
-                None,
-                None,
-                vec![ProjectType::Binary],
-                vec![ExampleGroup {
+            Cargo {
+                types: vec![ProjectType::Binary],
+                examples: vec![ExampleGroup {
                     category: String::new(),
                     names:    vec!["example".to_string()],
                 }],
-                Vec::new(),
-                0,
-                false,
-            ),
+                ..Cargo::default()
+            },
         )]);
         let runs = vec![
             make_ci_run(1, Conclusion::Success),
@@ -990,7 +987,7 @@ mod tests {
         let mut app = make_app(&[RootItem::Rust(RustProject::Package(make_package_worktree(
             "app",
             &primary,
-            None,
+            false,
             Some(primary.as_path()),
         )))]);
         app.expanded_mut().insert(ExpandKey::Node(0));
@@ -998,11 +995,11 @@ mod tests {
 
         app.set_projects(ProjectList::new(vec![RootItem::Worktrees(
             WorktreeGroup::new_packages(
-                make_package_worktree("app", &primary, None, Some(primary.as_path())),
+                make_package_worktree("app", &primary, false, Some(primary.as_path())),
                 vec![make_package_worktree(
                     "app",
                     &linked,
-                    Some("app_feat"),
+                    true,
                     Some(primary.as_path()),
                 )],
             ),
@@ -1176,18 +1173,14 @@ mod tests {
         let project_dir = tmp.path().join("demo");
         std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
 
-        let cargo = Cargo::new(
-            None,
-            None,
-            vec![ProjectType::Binary],
-            vec![ExampleGroup {
+        let cargo = Cargo {
+            types: vec![ProjectType::Binary],
+            examples: vec![ExampleGroup {
                 category: String::new(),
                 names:    vec!["example_a".to_string(), "example_b".to_string()],
             }],
-            Vec::new(),
-            0,
-            false,
-        );
+            ..Cargo::default()
+        };
         let mut app = make_app(&[make_package_with_cargo("demo", &project_dir, cargo)]);
         render_ui(&mut app);
 

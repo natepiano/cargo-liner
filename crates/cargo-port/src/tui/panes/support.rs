@@ -931,13 +931,7 @@ fn worktrees_from_item(item: &RootItem) -> Vec<WorktreeInfo> {
             let primary_path = primary.path().clone();
             let entries: Vec<(AbsolutePath, String)> = std::iter::once(primary)
                 .chain(linked.iter())
-                .map(|ws| {
-                    let name = ws
-                        .worktree_name()
-                        .unwrap_or_else(|| ws.path().to_str().unwrap_or(""))
-                        .to_string();
-                    (ws.path().clone(), name)
-                })
+                .map(|ws| (ws.path().clone(), ws.root_directory_name().into_string()))
                 .collect();
             (entries, primary_path)
         },
@@ -947,13 +941,7 @@ fn worktrees_from_item(item: &RootItem) -> Vec<WorktreeInfo> {
             let primary_path = primary.path().clone();
             let entries: Vec<(AbsolutePath, String)> = std::iter::once(primary)
                 .chain(linked.iter())
-                .map(|pkg| {
-                    let name = pkg
-                        .worktree_name()
-                        .unwrap_or_else(|| pkg.path().to_str().unwrap_or(""))
-                        .to_string();
-                    (pkg.path().clone(), name)
-                })
+                .map(|pkg| (pkg.path().clone(), pkg.root_directory_name().into_string()))
                 .collect();
             (entries, primary_path)
         },

@@ -409,9 +409,7 @@ fn observe_typed_vendored_fit_widths(
 
 fn observe_workspace_worktree_entry_fit_widths(widths: &mut ResolvedWidths, ws: &Workspace) {
     let dw = columns::display_width;
-    let wt_name = ws
-        .worktree_name()
-        .map_or_else(|| ws.root_directory_name().into_string(), String::from);
+    let wt_name = ws.root_directory_name().into_string();
     let prefix = if ws.has_members() {
         PREFIX_WT_COLLAPSED
     } else {
@@ -427,9 +425,7 @@ fn observe_workspace_worktree_entry_fit_widths(widths: &mut ResolvedWidths, ws: 
 
 fn observe_package_worktree_entry_fit_widths(widths: &mut ResolvedWidths, pkg: &Package) {
     let dw = columns::display_width;
-    let wt_name = pkg
-        .worktree_name()
-        .map_or_else(|| pkg.root_directory_name().into_string(), String::from);
+    let wt_name = pkg.root_directory_name().into_string();
     App::observe_name_width(widths, dw(PREFIX_WT_FLAT) + dw(&wt_name));
     widths.observe(COL_DISK, dw(&formatted_disk(pkg.disk_usage_bytes())));
     widths.observe(COL_SYNC, dw(&git_sync_snapshot(pkg.git_info())));

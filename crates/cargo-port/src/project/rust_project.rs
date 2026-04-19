@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use super::git::GitInfo;
+use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
@@ -38,17 +39,10 @@ impl RustProject {
         }
     }
 
-    pub(crate) fn worktree_name(&self) -> Option<&str> {
+    pub(crate) fn worktree_status(&self) -> &WorktreeStatus {
         match self {
-            Self::Workspace(ws) => ws.worktree_name(),
-            Self::Package(pkg) => pkg.worktree_name(),
-        }
-    }
-
-    pub(crate) fn worktree_primary_abs_path(&self) -> Option<&AbsolutePath> {
-        match self {
-            Self::Workspace(ws) => ws.worktree_primary_abs_path(),
-            Self::Package(pkg) => pkg.worktree_primary_abs_path(),
+            Self::Workspace(ws) => ws.worktree_status(),
+            Self::Package(pkg) => pkg.worktree_status(),
         }
     }
 

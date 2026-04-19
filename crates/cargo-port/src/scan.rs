@@ -25,7 +25,6 @@ use super::http::ServiceKind;
 use super::http::ServiceSignal;
 use super::lint::LintStatus;
 use super::project::AbsolutePath;
-use super::project::Cargo;
 use super::project::CargoParseResult;
 use super::project::GitInfo;
 use super::project::GitRepoPresence;
@@ -35,6 +34,7 @@ use super::project::MemberGroup;
 use super::project::Package;
 use super::project::ProjectFields;
 use super::project::RootItem;
+use super::project::RustInfo;
 use super::project::RustProject;
 use super::project::Submodule;
 use super::project::Workspace;
@@ -487,14 +487,15 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
                     Some(pkg.clone())
                 } else if let RootItem::Rust(RustProject::Workspace(nested_ws)) = candidate {
                     // Nested workspace treated as a package member
-                    Some(Package::new(
-                        nested_ws.path().clone(),
-                        nested_ws.name().map(str::to_string),
-                        nested_ws.cargo().clone(),
-                        Vec::new(),
-                        nested_ws.worktree_name().map(str::to_string),
-                        nested_ws.worktree_primary_abs_path().cloned(),
-                    ))
+                    Some(Package {
+                        path: nested_ws.path().clone(),
+                        name: nested_ws.name().map(str::to_string),
+                        rust: RustInfo {
+                            cargo: nested_ws.cargo().clone(),
+                            worktree_status: nested_ws.worktree_status().clone(),
+                            ..RustInfo::default()
+                        },
+                    })
                 } else {
                     None
                 }
@@ -652,14 +653,14 @@ fn workspace_pattern_matches_segment(pattern: &str, value: &str) -> bool {
 /// `NonRust` projects are not grouped into worktree variants.
 fn item_worktree_identity(item: &RootItem) -> Option<&AbsolutePath> {
     match item {
-        RootItem::Rust(p) => p.worktree_primary_abs_path(),
+        RootItem::Rust(p) => p.worktree_status().primary_root(),
         _ => None,
     }
 }
 
 fn item_is_linked(item: &RootItem) -> bool {
     match item {
-        RootItem::Rust(p) => p.worktree_name().is_some(),
+        RootItem::Rust(p) => p.worktree_status().is_linked_worktree(),
         _ => false,
     }
 }
@@ -816,22 +817,20 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
     for &(vi, ni) in &vendored_map {
         let pkg = match &items[vi] {
             RootItem::Rust(RustProject::Package(p)) => p.clone(),
-            RootItem::Rust(RustProject::Workspace(ws)) => Package::new(
-                ws.path().clone(),
-                ws.name().map(str::to_string),
-                ws.cargo().clone(),
-                Vec::new(),
-                ws.worktree_name().map(str::to_string),
-                ws.worktree_primary_abs_path().cloned(),
-            ),
-            RootItem::NonRust(nr) => Package::new(
-                nr.path().clone(),
-                nr.name().map(str::to_string),
-                Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-                Vec::new(),
-                None,
-                None,
-            ),
+            RootItem::Rust(RustProject::Workspace(ws)) => Package {
+                path: ws.path().clone(),
+                name: ws.name().map(str::to_string),
+                rust: RustInfo {
+                    cargo: ws.cargo().clone(),
+                    worktree_status: ws.worktree_status().clone(),
+                    ..RustInfo::default()
+                },
+            },
+            RootItem::NonRust(nr) => Package {
+                path: nr.path().clone(),
+                name: nr.name().map(str::to_string),
+                ..Package::default()
+            },
             _ => continue,
         };
         vendored_projects.push((ni, pkg));
@@ -1513,45 +1512,57 @@ pub(crate) fn disk_usage_batch_for_item(item: &RootItem) -> Vec<(AbsolutePath, u
 mod tests {
     use super::*;
     use crate::project::AbsolutePath;
-    use crate::project::Cargo;
+    use crate::project::WorktreeStatus;
+
+    fn status_for(is_linked_worktree: bool, primary_abs: Option<&str>) -> WorktreeStatus {
+        match (is_linked_worktree, primary_abs) {
+            (_, None) => WorktreeStatus::NotGit,
+            (true, Some(p)) => WorktreeStatus::Linked {
+                primary: AbsolutePath::from(p.to_string()),
+            },
+            (false, Some(p)) => WorktreeStatus::Primary {
+                root: AbsolutePath::from(p.to_string()),
+            },
+        }
+    }
 
     fn make_workspace(
         name: Option<&str>,
         abs_path: &str,
-        worktree_name: Option<&str>,
+        is_linked_worktree: bool,
         primary_abs: Option<&str>,
     ) -> RootItem {
-        RootItem::Rust(RustProject::Workspace(Workspace::new(
-            AbsolutePath::from(abs_path),
-            name.map(String::from),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-            Vec::new(),
-            Vec::new(),
-            worktree_name.map(String::from),
-            primary_abs.map(|s| AbsolutePath::from(s.to_string())),
-        )))
+        RootItem::Rust(RustProject::Workspace(Workspace {
+            path: AbsolutePath::from(abs_path),
+            name: name.map(String::from),
+            rust: RustInfo {
+                worktree_status: status_for(is_linked_worktree, primary_abs),
+                ..RustInfo::default()
+            },
+            ..Workspace::default()
+        }))
     }
 
     fn make_package(
         name: Option<&str>,
         abs_path: &str,
-        worktree_name: Option<&str>,
+        is_linked_worktree: bool,
         primary_abs: Option<&str>,
     ) -> RootItem {
-        RootItem::Rust(RustProject::Package(Package::new(
-            AbsolutePath::from(abs_path),
-            name.map(String::from),
-            Cargo::new(None, None, Vec::new(), Vec::new(), Vec::new(), 0, false),
-            Vec::new(),
-            worktree_name.map(String::from),
-            primary_abs.map(|s| AbsolutePath::from(s.to_string())),
-        )))
+        RootItem::Rust(RustProject::Package(Package {
+            path: AbsolutePath::from(abs_path),
+            name: name.map(String::from),
+            rust: RustInfo {
+                worktree_status: status_for(is_linked_worktree, primary_abs),
+                ..RustInfo::default()
+            },
+        }))
     }
 
     #[test]
     fn merge_virtual_workspace() {
-        let primary = make_workspace(None, "/home/ws", None, Some("/home/ws"));
-        let worktree = make_workspace(None, "/home/ws_feat", Some("ws_feat"), Some("/home/ws"));
+        let primary = make_workspace(None, "/home/ws", false, Some("/home/ws"));
+        let worktree = make_workspace(None, "/home/ws_feat", true, Some("/home/ws"));
         let mut items = vec![primary, worktree];
         merge_worktrees_new(&mut items);
 
@@ -1564,13 +1575,8 @@ mod tests {
 
     #[test]
     fn merge_named_workspace() {
-        let primary = make_workspace(Some("my-ws"), "/home/ws", None, Some("/home/ws"));
-        let worktree = make_workspace(
-            Some("my-ws"),
-            "/home/ws_feat",
-            Some("ws_feat"),
-            Some("/home/ws"),
-        );
+        let primary = make_workspace(Some("my-ws"), "/home/ws", false, Some("/home/ws"));
+        let worktree = make_workspace(Some("my-ws"), "/home/ws_feat", true, Some("/home/ws"));
         let mut items = vec![primary, worktree];
         merge_worktrees_new(&mut items);
 
@@ -1605,17 +1611,17 @@ mod tests {
         )
         .unwrap_or_else(|_| std::process::abort());
 
-        let workspace = make_workspace(Some("hana"), &workspace_dir.to_string_lossy(), None, None);
+        let workspace = make_workspace(Some("hana"), &workspace_dir.to_string_lossy(), false, None);
         let included = make_package(
             Some("hana-node-api"),
             &included_dir.to_string_lossy(),
-            None,
+            false,
             None,
         );
         let vendored = make_package(
             Some("clay-layout"),
             &vendored_dir.to_string_lossy(),
-            None,
+            false,
             None,
         );
 
@@ -1644,13 +1650,8 @@ mod tests {
 
     #[test]
     fn merge_standalone_project() {
-        let primary = make_package(Some("app"), "/home/app", None, Some("/home/app"));
-        let worktree = make_package(
-            Some("app"),
-            "/home/app_feat",
-            Some("app_feat"),
-            Some("/home/app"),
-        );
+        let primary = make_package(Some("app"), "/home/app", false, Some("/home/app"));
+        let worktree = make_package(Some("app"), "/home/app_feat", true, Some("/home/app"));
         let mut items = vec![primary, worktree];
         merge_worktrees_new(&mut items);
 
@@ -1663,8 +1664,8 @@ mod tests {
 
     #[test]
     fn no_merge_different_repos() {
-        let a = make_package(Some("a"), "/home/a", None, Some("/home/a"));
-        let b = make_package(Some("b"), "/home/b", Some("b"), Some("/home/b"));
+        let a = make_package(Some("a"), "/home/a", false, Some("/home/a"));
+        let b = make_package(Some("b"), "/home/b", true, Some("/home/b"));
         let mut items = vec![a, b];
         merge_worktrees_new(&mut items);
 
@@ -1673,8 +1674,8 @@ mod tests {
 
     #[test]
     fn no_merge_none_identity() {
-        let a = make_package(Some("x"), "/home/x", None, None);
-        let b = make_package(Some("x"), "/home/x2", Some("x2"), None);
+        let a = make_package(Some("x"), "/home/x", false, None);
+        let b = make_package(Some("x"), "/home/x2", true, None);
         let mut items = vec![a, b];
         merge_worktrees_new(&mut items);
 

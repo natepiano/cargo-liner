@@ -9,11 +9,13 @@ use toml::Table;
 use toml::Value;
 
 use super::git;
+use super::info::ProjectInfo;
 use super::non_rust::NonRustProject;
 use super::package::Package;
 use super::paths::AbsolutePath;
 use super::project_fields::ProjectFields;
 use super::rust_info::Cargo;
+use super::rust_info::RustInfo;
 use super::workspace::Workspace;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,9 +105,7 @@ pub(crate) fn from_cargo_toml(
         .and_then(|n| n.as_str())
         .map(|s| (*s).to_string());
 
-    let worktree_name = git::detect_worktree_name(project_dir);
-    let worktree_primary_abs_path =
-        git::detect_worktree_primary(project_dir).map(AbsolutePath::from);
+    let worktree_status = git::detect_worktree_status(project_dir);
     let worktree_health = git::detect_worktree_health(project_dir);
 
     let publishable = match table.get("package").and_then(|p| p.get("publish")) {
@@ -119,7 +119,7 @@ pub(crate) fn from_cargo_toml(
     let benches = collect_target_names(&table, project_dir, "bench", "benches");
     let test_count = count_targets(&table, project_dir, "test", "tests");
 
-    let cargo = Cargo::new(
+    let cargo = Cargo {
         version,
         description,
         types,
@@ -127,31 +127,31 @@ pub(crate) fn from_cargo_toml(
         benches,
         test_count,
         publishable,
-    );
+    };
+
+    let rust = RustInfo {
+        info: ProjectInfo {
+            worktree_health,
+            ..ProjectInfo::default()
+        },
+        cargo,
+        worktree_status,
+        ..RustInfo::default()
+    };
 
     if table.get("workspace").is_some() {
-        let mut project = Workspace::new(
-            abs_path,
+        Ok(CargoParseResult::Workspace(Workspace {
+            path: abs_path,
             name,
-            cargo,
-            Vec::new(),
-            Vec::new(),
-            worktree_name,
-            worktree_primary_abs_path,
-        );
-        project.rust.info.worktree_health = worktree_health;
-        Ok(CargoParseResult::Workspace(project))
+            rust,
+            ..Workspace::default()
+        }))
     } else {
-        let mut project = Package::new(
-            abs_path,
+        Ok(CargoParseResult::Package(Package {
+            path: abs_path,
             name,
-            cargo,
-            Vec::new(),
-            worktree_name,
-            worktree_primary_abs_path,
-        );
-        project.rust.info.worktree_health = worktree_health;
-        Ok(CargoParseResult::Package(project))
+            rust,
+        }))
     }
 }
 

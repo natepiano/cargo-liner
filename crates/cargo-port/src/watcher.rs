@@ -2908,11 +2908,13 @@ edition = "2024"
             panic!("expected package worktree item");
         };
         assert_eq!(pkg.path(), linked_dir.as_path());
-        assert_eq!(pkg.worktree_name(), Some("app_test"));
         let canonical = crate::project::AbsolutePath::from(
             primary_dir.canonicalize().expect("canonical primary"),
         );
-        assert_eq!(pkg.worktree_primary_abs_path(), Some(&canonical));
+        assert_eq!(
+            pkg.worktree_status(),
+            &crate::project::WorktreeStatus::Linked { primary: canonical }
+        );
     }
 
     #[test]
@@ -2949,11 +2951,13 @@ edition = "2024"
             panic!("expected workspace worktree item");
         };
         assert_eq!(ws.path(), linked_dir.as_path());
-        assert_eq!(ws.worktree_name(), Some("obsidian_knife_test"));
         let canonical = crate::project::AbsolutePath::from(
             primary_dir.canonicalize().expect("canonical primary"),
         );
-        assert_eq!(ws.worktree_primary_abs_path(), Some(&canonical));
+        assert_eq!(
+            ws.worktree_status(),
+            &crate::project::WorktreeStatus::Linked { primary: canonical }
+        );
     }
 
     #[test]

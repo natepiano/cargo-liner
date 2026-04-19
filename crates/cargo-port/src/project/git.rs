@@ -692,11 +692,12 @@ fn detect_last_fetched(repo_root: &Path) -> Option<String> {
 }
 
 fn system_time_to_iso8601_utc(t: std::time::SystemTime) -> Option<String> {
-    let secs = t
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .ok()?
-        .as_secs()
-        .cast_signed();
+    let secs = i64::try_from(
+        t.duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .ok()?
+            .as_secs(),
+    )
+    .ok()?;
     let days = secs.div_euclid(86_400);
     let time_of_day = secs.rem_euclid(86_400);
     let hour = time_of_day / 3_600;
@@ -710,22 +711,24 @@ fn system_time_to_iso8601_utc(t: std::time::SystemTime) -> Option<String> {
 
 /// Inverse of `days_from_civil`: days since Unix epoch → (year, month, day).
 /// Howard Hinnant's algorithm.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "Hinnant's algorithm bounces between signed/unsigned; month/day always 1..=12 / 1..=31"
+)]
+const fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097).cast_unsigned();
+    let doe = (z - era * 146_097) as u64;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe.cast_signed() + era * 400;
+    let y = yoe as i64 + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if m <= 2 { y + 1 } else { y };
-    (
-        year,
-        u32::try_from(m).unwrap_or(0),
-        u32::try_from(d).unwrap_or(0),
-    )
+    (year, m as u32, d as u32)
 }
 
 fn relative_git_path(repo_root: &Path, project_dir: &Path) -> String {
@@ -835,47 +838,85 @@ pub(crate) fn detect_worktree_health(project_dir: &Path) -> WorktreeHealth {
     }
 }
 
-pub(super) fn detect_worktree_name(project_dir: &Path) -> Option<String> {
-    let mut dir = project_dir;
-    loop {
-        let git_path = dir.join(".git");
-        if git_path.is_file() {
-            return dir.file_name().map(|n| n.to_string_lossy().to_string());
+/// The git worktree status of a project directory.
+///
+/// Captures the mutually exclusive ways a project can relate to git:
+/// not in a repo at all, inside a primary (unlinked) repo, or inside a
+/// linked worktree. `Primary.root` and `Linked.primary` are both the
+/// canonical path of the repo where `.git/` (a directory) lives —
+/// distinguishing the two ensures we always know whether this project
+/// sits on the main checkout or on a linked one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum WorktreeStatus {
+    #[default]
+    NotGit,
+    Primary {
+        root: AbsolutePath,
+    },
+    Linked {
+        primary: AbsolutePath,
+    },
+}
+
+impl WorktreeStatus {
+    pub(crate) const fn is_linked_worktree(&self) -> bool { matches!(self, Self::Linked { .. }) }
+
+    /// Canonical path of the primary repo root (where `.git/` is a
+    /// directory). For `NotGit` returns `None`; for both `Primary` and
+    /// `Linked` returns the primary repo's root.
+    pub(crate) const fn primary_root(&self) -> Option<&AbsolutePath> {
+        match self {
+            Self::NotGit => None,
+            Self::Primary { root } => Some(root),
+            Self::Linked { primary } => Some(primary),
         }
-        if git_path.is_dir() {
-            // Found a real .git directory — not a worktree
-            return None;
-        }
-        dir = dir.parent()?;
     }
 }
 
-/// Resolve the primary git repo root for a project directory.
-///
-/// For worktrees (`.git` is a file containing `gitdir: ...`), parse the gitdir
-/// path and strip the `.git/worktrees/<name>` suffix to find the primary root.
-/// For primary repos (`.git` is a directory), return the canonicalized directory.
-pub(super) fn detect_worktree_primary(project_dir: &Path) -> Option<String> {
+/// Detect the git worktree status for a project directory by walking up
+/// until a `.git` entry is found: file → `Linked`, directory → `Primary`,
+/// nothing found → `NotGit`.
+pub(super) fn detect_worktree_status(project_dir: &Path) -> WorktreeStatus {
     let mut dir = project_dir;
     loop {
         let git_path = dir.join(".git");
         if git_path.is_file() {
-            let contents = std::fs::read_to_string(&git_path).ok()?;
-            let gitdir_str = contents.strip_prefix("gitdir: ")?.trim();
-            let gitdir = AbsolutePath::resolve(gitdir_str, dir);
-            // gitdir is `<primary>/.git/worktrees/<name>` — go up 3 levels
-            let canonical = gitdir;
-            let primary_root = canonical.parent()?.parent()?.parent()?;
-            return Some(primary_root.to_string_lossy().to_string());
+            return linked_status_from_gitfile(&git_path, dir);
         }
         if git_path.is_dir() {
-            // This IS the primary — canonicalize for consistent comparison
             return dir
                 .canonicalize()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string());
+                .map_or(WorktreeStatus::NotGit, |canonical| {
+                    WorktreeStatus::Primary {
+                        root: AbsolutePath::from(canonical),
+                    }
+                });
         }
-        dir = dir.parent()?;
+        let Some(parent) = dir.parent() else {
+            return WorktreeStatus::NotGit;
+        };
+        dir = parent;
+    }
+}
+
+fn linked_status_from_gitfile(git_path: &Path, dir: &Path) -> WorktreeStatus {
+    let Ok(contents) = std::fs::read_to_string(git_path) else {
+        return WorktreeStatus::NotGit;
+    };
+    let Some(gitdir_str) = contents.strip_prefix("gitdir: ") else {
+        return WorktreeStatus::NotGit;
+    };
+    let gitdir = AbsolutePath::resolve(gitdir_str.trim(), dir);
+    // gitdir is `<primary>/.git/worktrees/<name>` — go up 3 levels
+    let Some(primary_root) = gitdir
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+    else {
+        return WorktreeStatus::NotGit;
+    };
+    WorktreeStatus::Linked {
+        primary: AbsolutePath::from(primary_root.to_path_buf()),
     }
 }
 

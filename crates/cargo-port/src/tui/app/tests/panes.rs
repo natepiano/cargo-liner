@@ -55,25 +55,20 @@ fn name_width_with_gutter_reserves_space_before_lint() {
 
 #[test]
 fn tabbable_panes_follow_canonical_order() {
-    let project = RootItem::Rust(RustProject::Package(Package::new(
-        test_path("~/demo"),
-        Some("demo".to_string()),
-        Cargo::new(
-            None,
-            None,
-            Vec::new(),
-            vec![ExampleGroup {
-                category: String::new(),
-                names:    vec!["example".to_string()],
-            }],
-            Vec::new(),
-            0,
-            false,
-        ),
-        Vec::new(),
-        None,
-        None,
-    )));
+    let project = RootItem::Rust(RustProject::Package(Package {
+        path: test_path("~/demo"),
+        name: Some("demo".to_string()),
+        rust: RustInfo {
+            cargo: Cargo {
+                examples: vec![ExampleGroup {
+                    category: String::new(),
+                    names:    vec!["example".to_string()],
+                }],
+                ..Cargo::default()
+            },
+            ..RustInfo::default()
+        },
+    }));
 
     let mut app = make_app(std::slice::from_ref(&project));
     app.toasts = ToastManager::default();
@@ -192,25 +187,20 @@ fn project_refresh_updates_selected_tree_project_targets() {
     assert_eq!(example_count, Some(0));
     assert!(!app.tabbable_panes().contains(&PaneId::Targets));
 
-    let refreshed = RootItem::Rust(RustProject::Package(Package::new(
-        test_path("~/demo"),
-        Some("demo".to_string()),
-        Cargo::new(
-            None,
-            None,
-            Vec::new(),
-            vec![ExampleGroup {
-                category: String::new(),
-                names:    vec!["tracked_row_paths".to_string()],
-            }],
-            Vec::new(),
-            0,
-            false,
-        ),
-        Vec::new(),
-        None,
-        None,
-    )));
+    let refreshed = RootItem::Rust(RustProject::Package(Package {
+        path: test_path("~/demo"),
+        name: Some("demo".to_string()),
+        rust: RustInfo {
+            cargo: Cargo {
+                examples: vec![ExampleGroup {
+                    category: String::new(),
+                    names:    vec!["tracked_row_paths".to_string()],
+                }],
+                ..Cargo::default()
+            },
+            ..RustInfo::default()
+        },
+    }));
 
     app.handle_project_refreshed(refreshed);
     app.sync_selected_project();
