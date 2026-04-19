@@ -2,6 +2,8 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::path::Path;
 
+use super::info::GitHubInfo;
+use super::info::ProjectCiData;
 use super::paths::AbsolutePath;
 use super::root_item::RootItem;
 
@@ -9,16 +11,12 @@ use super::root_item::RootItem;
 ///
 /// Stored on the containing `ProjectEntry`, not on each `ProjectInfo`, so
 /// the fields below cannot drift between sibling worktrees of the same
-/// repo. Stage 0 introduces the type; subsequent stages move
-/// `github_info`, `ci_data`, and detection fields off `ProjectInfo` into
-/// here.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct GitRepo {}
-
-impl GitRepo {
-    #[cfg(test)]
-    #[expect(dead_code, reason = "Stage 0 scaffolding; used in later stage tests")]
-    pub(crate) fn for_tests() -> Self { Self::default() }
+/// repo. Stage 1 moves `github_info` and `ci_data` here; later stages
+/// add repo detection fields.
+#[derive(Clone, Default)]
+pub(crate) struct GitRepo {
+    pub github_info: Option<GitHubInfo>,
+    pub ci_data:     ProjectCiData,
 }
 
 /// A top-level entry in the project list. Wraps a `RootItem` with the
@@ -49,11 +47,11 @@ impl ProjectEntry {
     }
 
     /// Absolute path to the primary checkout of the contained item.
-    #[expect(dead_code, reason = "Stage 0 scaffolding; used in later stages")]
+    #[expect(dead_code, reason = "Reserved for Stage 2 detection-write policy")]
     pub(crate) fn primary_path(&self) -> &AbsolutePath { self.item.path() }
 
     #[cfg(test)]
-    #[expect(dead_code, reason = "Stage 0 scaffolding; used in later stage tests")]
+    #[expect(dead_code, reason = "Reserved for later-stage test helpers")]
     pub(crate) fn for_tests(item: RootItem) -> Self { Self::new(item) }
 }
 

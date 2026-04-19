@@ -58,8 +58,6 @@ pub(crate) use package::Package;
 pub(crate) use paths::AbsolutePath;
 pub(crate) use paths::DisplayPath;
 pub(crate) use paths::home_relative_path;
-#[expect(unused_imports, reason = "Stage 0 scaffolding; used in later stages")]
-pub(crate) use project_entry::GitRepo;
 pub(crate) use project_entry::ProjectEntry;
 pub(crate) use project_entry::entry_contains;
 pub(crate) use project_fields::ProjectFields;

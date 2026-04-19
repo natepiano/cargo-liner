@@ -132,11 +132,12 @@ fn make_app_with_config(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
 }
 
 fn set_loaded_ci(app: &mut App, path: &Path, runs: Vec<CiRun>, exhausted: bool, github_total: u32) {
-    let project = app
+    let entry = app
         .projects
-        .at_path_mut(path)
+        .entry_containing_mut(path)
         .unwrap_or_else(|| std::process::abort());
-    project.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
+    let repo = entry.git_repo.get_or_insert_with(Default::default);
+    repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
         runs,
         github_total,
         exhausted,
@@ -146,7 +147,8 @@ fn set_loaded_ci(app: &mut App, path: &Path, runs: Vec<CiRun>, exhausted: bool, 
 fn loaded_ci<'a>(app: &'a App, path: &Path) -> &'a ProjectCiInfo {
     match &app
         .projects
-        .at_path(path)
+        .entry_containing(path)
+        .and_then(|entry| entry.git_repo.as_ref())
         .unwrap_or_else(|| std::process::abort())
         .ci_data
     {

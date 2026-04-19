@@ -244,8 +244,9 @@ impl App {
     }
 
     pub(in super::super) fn selected_ci_path(&self) -> Option<AbsolutePath> {
-        self.selected_project_path()
-            .and_then(|path| self.ci_owner_path_for(path))
+        let path = self.selected_project_path()?;
+        let entry = self.projects.entry_containing(path)?;
+        Some(entry.item.path().clone())
     }
 
     pub(in super::super) fn selected_ci_runs(&self) -> Vec<CiRun> {
@@ -273,10 +274,10 @@ impl App {
     }
 
     pub(in super::super) fn ci_data_for(&self, path: &Path) -> Option<&ProjectCiData> {
-        let owner_path = self.ci_owner_path_for(path)?;
         self.projects
-            .at_path(owner_path.as_path())
-            .map(|project| &project.ci_data)
+            .entry_containing(path)
+            .and_then(|entry| entry.git_repo.as_ref())
+            .map(|repo| &repo.ci_data)
     }
 
     pub(in super::super) fn ci_info_for(&self, path: &Path) -> Option<&ProjectCiInfo> {
@@ -284,8 +285,10 @@ impl App {
     }
 
     pub(in super::super) fn ci_is_fetching(&self, path: &Path) -> bool {
-        self.ci_owner_path_for(path)
-            .is_some_and(|owner_path| self.ci_fetch_tracker.is_fetching(owner_path.as_path()))
+        self.projects.entry_containing(path).is_some_and(|entry| {
+            self.ci_fetch_tracker
+                .is_fetching(entry.item.path().as_path())
+        })
     }
 
     pub(in super::super) fn ci_is_exhausted(&self, path: &Path) -> bool {
@@ -533,56 +536,6 @@ impl App {
         })
     }
 
-    /// Recompute the set of "CI owner" paths: project-tree leaves plus the
-    /// vendored deps beneath them. Used by CI fetch/prune and the CI
-    /// column in the list.
-    pub(in super::super) fn recompute_ci_owner_paths(&mut self) {
-        let mut owners: HashSet<AbsolutePath> = HashSet::new();
-        self.projects.for_each_leaf(|item| {
-            if !self.is_vendored_path(item.path()) {
-                owners.insert(item.path().clone());
-            }
-        });
-
-        // Include vendored deps whose parent is a CI owner.
-        for entry in &self.projects {
-            let vendored_paths: Vec<&AbsolutePath> = match &entry.item {
-                RootItem::Rust(RustProject::Workspace(ws)) => {
-                    ws.vendored().iter().map(Package::path).collect()
-                },
-                RootItem::Rust(RustProject::Package(pkg)) => {
-                    pkg.vendored().iter().map(Package::path).collect()
-                },
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => std::iter::once(primary)
-                    .chain(linked.iter())
-                    .flat_map(|ws| ws.vendored().iter().map(Package::path))
-                    .collect(),
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => std::iter::once(primary)
-                    .chain(linked.iter())
-                    .flat_map(|pkg| pkg.vendored().iter().map(Package::path))
-                    .collect(),
-                RootItem::NonRust(_) => Vec::new(),
-            };
-            if owners.contains(entry.item.path()) {
-                for vp in vendored_paths {
-                    owners.insert(vp.clone());
-                }
-            }
-        }
-
-        self.ci_owner_paths = owners;
-    }
-
-    /// Whether `path` is a project-tree leaf or a vendored dep under one —
-    /// the paths for which we maintain CI state.
-    pub(in super::super) fn is_ci_owner_path(&self, path: &Path) -> bool {
-        self.ci_owner_paths.contains(path)
-    }
-
     pub(in super::super) fn git_status_for(&self, path: &Path) -> Option<GitStatus> {
         self.git_info_for(path).map(|info| info.status)
     }
@@ -630,15 +583,6 @@ impl App {
             .retain(|path, _| all_paths.contains(path));
         self.ci_fetch_tracker
             .retain(|path| all_paths.contains(path));
-        for path in &all_paths {
-            if self.is_ci_owner_path(path) {
-                continue;
-            }
-            self.ci_fetch_tracker.complete(path.as_path());
-            if let Some(project) = self.projects.at_path_mut(path.as_path()) {
-                project.ci_data = ProjectCiData::Unfetched;
-            }
-        }
     }
 
     /// Formatted ahead/behind sync status for the project list columns.

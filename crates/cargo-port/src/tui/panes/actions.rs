@@ -288,36 +288,22 @@ pub fn handle_lints_key(app: &mut App, event: &KeyEvent) {
 
 /// Clear CI cache for a project and remove its runs from the app.
 fn clear_ci_cache(app: &mut App, abs: &Path) {
-    let owner_paths = app
-        .owner_repo_for_path(abs)
-        .map(|repo| {
-            let _ = std::fs::remove_dir_all(scan::ci_cache_dir_pub(repo.owner(), repo.repo()));
-            scan::clear_exhausted(repo.owner(), repo.repo());
-            if let Ok(mut cache) = app.repo_fetch_cache().lock() {
-                cache.remove(&repo);
-            }
-            app.owner_paths_for_repo(&repo)
-        })
-        .filter(|paths| !paths.is_empty())
-        .unwrap_or_else(|| vec![crate::project::AbsolutePath::from(abs)]);
-
-    let prev_totals: Vec<_> = owner_paths
-        .iter()
-        .map(|p| {
-            app.ci_data_for(p.as_path())
-                .map_or(0, ProjectCiData::github_total)
-        })
-        .collect();
-    for (owner_path, prev_total) in owner_paths.iter().zip(prev_totals) {
-        app.replace_ci_data_for_path(
-            owner_path.as_path(),
-            ProjectCiData::Loaded(ProjectCiInfo {
-                runs:         Vec::new(),
-                github_total: prev_total,
-                exhausted:    false,
-            }),
-        );
+    if let Some(repo) = app.owner_repo_for_path(abs) {
+        let _ = std::fs::remove_dir_all(scan::ci_cache_dir_pub(repo.owner(), repo.repo()));
+        scan::clear_exhausted(repo.owner(), repo.repo());
+        if let Ok(mut cache) = app.repo_fetch_cache().lock() {
+            cache.remove(&repo);
+        }
     }
+    let prev_total = app.ci_data_for(abs).map_or(0, ProjectCiData::github_total);
+    app.replace_ci_data_for_path(
+        abs,
+        ProjectCiData::Loaded(ProjectCiInfo {
+            runs:         Vec::new(),
+            github_total: prev_total,
+            exhausted:    false,
+        }),
+    );
     app.complete_ci_fetch_for(abs);
     app.pane_manager_mut().pane_mut(PaneId::CiRuns).home();
     app.increment_data_generation();

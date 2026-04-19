@@ -71,7 +71,6 @@ impl App {
             .or_else(|| self.selection_paths.last_selected.clone());
         let should_focus_project_list = false;
         self.projects = projects;
-        self.recompute_ci_owner_paths();
         self.prune_inactive_project_state();
         self.register_lint_for_root_items();
         self.refresh_lint_runs_from_disk();
@@ -1251,10 +1250,7 @@ impl App {
 
     /// Lightweight refresh of derived state after in-place hierarchy changes
     /// (discovery, refresh). Marks caches dirty without a full tree rebuild.
-    pub(in super::super) fn refresh_derived_state(&mut self) {
-        self.recompute_ci_owner_paths();
-        self.data_generation += 1;
-    }
+    pub(in super::super) fn refresh_derived_state(&mut self) { self.data_generation += 1; }
 
     fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
         self.projects
@@ -1355,7 +1351,6 @@ impl App {
         self.ci_display_modes.clear();
         self.clear_all_lint_state();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
-        self.ci_owner_paths.clear();
         self.repo_fetch_cache = crate::scan::new_repo_cache();
         self.discovery_shimmers.clear();
         self.scan.phase = ScanPhase::Running;
@@ -1689,6 +1684,15 @@ impl App {
         if let Some(project) = self.projects.at_path_mut(path) {
             project.local_git_state = LocalGitState::Detected(Box::new(info.clone()));
         }
+        // Detected git state implies the entry is in a git repo. Ensure the
+        // entry has a `git_repo` slot so per-repo writes (CI, GitHub meta)
+        // can land on it. Production scan probes the same predicate via
+        // `git_repo_root`; this upsert closes the gap when an entry was
+        // first wrapped before the probe (and for tests where paths don't
+        // exist on disk).
+        if let Some(entry) = self.projects.entry_containing_mut(path) {
+            entry.git_repo.get_or_insert_with(Default::default);
+        }
         if self.is_scan_complete() {
             let git_dir = self
                 .startup_git_directory_for_path(path)
@@ -1790,8 +1794,9 @@ impl App {
         stars: u64,
         description: Option<String>,
     ) {
-        if let Some(project) = self.projects.at_path_mut(path) {
-            project.github_info = Some(crate::project::GitHubInfo { stars, description });
+        if let Some(entry) = self.projects.entry_containing_mut(path) {
+            let repo = entry.git_repo.get_or_insert_with(Default::default);
+            repo.github_info = Some(crate::project::GitHubInfo { stars, description });
         }
     }
 
@@ -2074,7 +2079,6 @@ impl App {
             .map(AbsolutePath::from)
             .or_else(|| self.selection_paths.last_selected.clone());
         self.projects = ProjectList::new(projects);
-        self.recompute_ci_owner_paths();
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();
         self.scan.startup_phases.lint_startup_expected = Some(lint_registered);

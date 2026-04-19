@@ -80,7 +80,6 @@ pub(super) struct App {
     ci_fetch_tracker:         CiFetchTracker,
     ci_display_modes:         HashMap<AbsolutePath, types::CiRunDisplayMode>,
     lint_cache_usage:         CacheUsage,
-    ci_owner_paths:           HashSet<AbsolutePath>,
     discovery_shimmers:       HashMap<AbsolutePath, types::DiscoveryShimmer>,
     pending_git_first_commit: HashMap<AbsolutePath, String>,
     cpu_poller:               CpuPoller,
@@ -174,8 +173,12 @@ impl App {
         path: &Path,
         ci_data: ProjectCiData,
     ) {
-        if let Some(project) = self.projects.at_path_mut(path) {
-            project.ci_data = ci_data;
+        if let Some(repo) = self
+            .projects
+            .entry_containing_mut(path)
+            .and_then(|entry| entry.git_repo.as_mut())
+        {
+            repo.ci_data = ci_data;
         }
     }
 
@@ -370,14 +373,6 @@ impl App {
 
     pub(super) fn owner_repo_for_path(&self, path: &std::path::Path) -> Option<OwnerRepo> {
         self.owner_repo_for_path_inner(path)
-    }
-
-    pub(super) fn owner_paths_for_repo(&self, repo: &OwnerRepo) -> Vec<AbsolutePath> {
-        self.owner_paths_for_repo_inner(repo)
-    }
-
-    pub(super) fn ci_owner_path_for(&self, path: &std::path::Path) -> Option<AbsolutePath> {
-        self.ci_owner_path_for_inner(path)
     }
 
     pub(super) fn ci_display_mode_label_for(&self, path: &std::path::Path) -> &'static str {

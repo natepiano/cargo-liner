@@ -2,6 +2,11 @@ use super::git::LocalGitState;
 use super::submodule::Submodule;
 use crate::ci::CiRun;
 
+// Per-repo metadata (`github_info`, `ci_data`, ...) lives on
+// `ProjectEntry::git_repo`, not here. Submodules in particular get neither
+// — `is_submodule_path` suppresses fetches at the parent's level, so
+// per-submodule storage would be dead.
+
 /// Visibility state for projects and worktree groups.
 /// Progression: `Visible -> Deleted -> Dismissed`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -103,8 +108,6 @@ pub(crate) struct LanguageStats {
 pub(crate) struct ProjectInfo {
     pub disk_usage_bytes: Option<u64>,
     pub local_git_state:  LocalGitState,
-    pub github_info:      Option<GitHubInfo>,
-    pub ci_data:          ProjectCiData,
     pub language_stats:   Option<LanguageStats>,
     pub visibility:       Visibility,
     pub worktree_health:  WorktreeHealth,
@@ -113,6 +116,6 @@ pub(crate) struct ProjectInfo {
 
 impl ProjectInfo {
     #[cfg(test)]
-    #[expect(dead_code, reason = "Stage 0 scaffolding; used in later stage tests")]
+    #[expect(dead_code, reason = "Reserved for later-stage test helpers")]
     pub(crate) fn for_tests() -> Self { Self::default() }
 }

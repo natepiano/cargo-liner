@@ -47,9 +47,7 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
         Some(Conclusion::Success)
     );
     assert!(matches!(
-        app.projects
-            .at_path(test_path("~/ws").as_path())
-            .map(|project| &project.ci_data),
+        app.ci_data_for(test_path("~/ws").as_path()),
         Some(crate::project::ProjectCiData::Loaded(_))
     ));
     assert_eq!(
@@ -57,16 +55,15 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
         Some(Conclusion::Success)
     );
     assert!(app.ci_info_for(test_path("~/ws/core").as_path()).is_some());
+    // Member resolves to the same entry-level ci_data as the workspace root.
     assert!(matches!(
-        app.projects
-            .at_path(test_path("~/ws/core").as_path())
-            .map(|project| &project.ci_data),
-        Some(crate::project::ProjectCiData::Unfetched)
+        app.ci_data_for(test_path("~/ws/core").as_path()),
+        Some(crate::project::ProjectCiData::Loaded(_))
     ));
 }
 
 #[test]
-fn non_owner_member_ignores_stale_member_state_and_fetches_via_owner() {
+fn ci_fetch_on_member_targets_workspace_owner_path() {
     let workspace = make_workspace_project(Some("ws"), "~/ws");
     let member = make_project(Some("core"), "~/ws/core");
     let root = make_workspace_with_members(
@@ -81,20 +78,10 @@ fn non_owner_member_ignores_stale_member_state_and_fetches_via_owner() {
     app.ensure_visible_rows_cached();
     app.select_project_in_tree(member.path());
 
-    set_loaded_ci(
-        &mut app,
-        member.path(),
-        vec![make_ci_run(2, Conclusion::Failure)],
-        false,
-        0,
-    );
     app.handle_git_info(
         test_path("~/ws").as_path(),
         make_git_info(Some("https://github.com/natepiano/demo")),
     );
-
-    assert!(app.ci_info_for(member.path()).is_none());
-    assert_eq!(app.ci_for(member.path()), None);
 
     crate::tui::panes::handle_ci_runs_key(
         &mut app,
@@ -109,7 +96,45 @@ fn non_owner_member_ignores_stale_member_state_and_fetches_via_owner() {
 }
 
 #[test]
-fn ci_rollup_uses_only_root_and_immediate_worktrees() {
+fn linked_worktree_shares_github_metadata_with_primary_after_repo_meta_fetch() {
+    // Regression: previously `github_info` lived on each checkout's
+    // `ProjectInfo` independently. A linked worktree on a branch without
+    // an upstream never fired its own GitHub fetch, so the About field
+    // stayed empty even after the primary's fetch landed. Stage 1 moves
+    // `github_info` onto `GitRepo` (per ProjectEntry) so all checkouts of
+    // the same repo see the same description.
+    let primary_ws = make_workspace_raw(Some("ws"), "~/ws", vec![], None);
+    let linked_ws = make_workspace_raw(Some("ws_feat"), "~/ws_feat", vec![], Some("ws_feat"));
+    let root = make_workspace_worktrees_item(primary_ws, vec![linked_ws]);
+    let primary_path = test_path("~/ws");
+    let linked_path = test_path("~/ws_feat");
+
+    let mut app = make_app(&[make_workspace_project(Some("ws"), "~/ws")]);
+    apply_items(&mut app, &[root]);
+
+    app.handle_repo_meta(primary_path.as_path(), 42, Some("a great repo".to_string()));
+
+    let read_description = |p: &std::path::Path| {
+        app.projects()
+            .entry_containing(p)
+            .and_then(|entry| entry.git_repo.as_ref())
+            .and_then(|repo| repo.github_info.as_ref())
+            .and_then(|gh| gh.description.clone())
+    };
+
+    assert_eq!(
+        read_description(primary_path.as_path()),
+        Some("a great repo".to_string()),
+    );
+    assert_eq!(
+        read_description(linked_path.as_path()),
+        Some("a great repo".to_string()),
+        "linked worktree should see the primary's fetched description",
+    );
+}
+
+#[test]
+fn worktree_group_shares_ci_data_across_primary_and_linked() {
     let member = make_project(Some("core"), "~/ws/core");
 
     let primary_ws = make_workspace_raw(
@@ -141,22 +166,13 @@ fn ci_rollup_uses_only_root_and_immediate_worktrees() {
         false,
         0,
     );
-    set_loaded_ci(
-        &mut app,
-        feature_path.as_path(),
-        vec![make_ci_run(4, Conclusion::Failure)],
-        false,
-        0,
-    );
-    set_loaded_ci(
-        &mut app,
-        member.path(),
-        vec![make_ci_run(5, Conclusion::Success)],
-        false,
-        0,
-    );
 
-    assert_eq!(app.ci_for_item(&app.projects[0]), Some(Conclusion::Failure));
+    // Linked worktree resolves to the same per-repo ci_data slot.
+    assert!(matches!(
+        app.ci_data_for(feature_path.as_path()),
+        Some(crate::project::ProjectCiData::Loaded(_))
+    ));
+    // Member inside the workspace also shares the entry-level ci_data.
     assert!(app.ci_info_for(member.path()).is_some());
 }
 
@@ -599,7 +615,10 @@ fn vendored_path_dependency_becomes_ci_owner() {
     apply_items(&mut app, &[root_item]);
 
     assert!(app.is_vendored_path(vendored.path()));
-    assert!(app.is_ci_owner_path(vendored.path()));
+    assert!(
+        app.projects().entry_containing(vendored.path()).is_some(),
+        "vendored path should resolve to an owning ProjectEntry"
+    );
 }
 
 #[test]

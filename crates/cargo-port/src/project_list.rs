@@ -209,14 +209,12 @@ impl ProjectList {
 
     /// Top-level entry whose hierarchy contains `target`. One-shot
     /// replacement for the per-field per-path lookups used elsewhere.
-    #[expect(dead_code, reason = "Stage 0 scaffolding; used in later stages")]
     pub(crate) fn entry_containing(&self, target: &Path) -> Option<&ProjectEntry> {
         self.root_items
             .iter()
             .find(|entry| entry_contains(entry, target))
     }
 
-    #[expect(dead_code, reason = "Stage 0 scaffolding; used in later stages")]
     pub(crate) fn entry_containing_mut(&mut self, target: &Path) -> Option<&mut ProjectEntry> {
         self.root_items
             .iter_mut()

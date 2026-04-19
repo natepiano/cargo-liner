@@ -837,20 +837,17 @@ struct GitDetailFields {
 }
 
 fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
-    let owner_path = app
-        .ci_owner_path_for(abs_path)
-        .unwrap_or_else(|| AbsolutePath::from(abs_path));
-    let git = app.git_info_for(owner_path.as_path());
+    let entry = app.projects().entry_containing(abs_path);
+    let git = app.git_info_for(abs_path);
     let branch = git.and_then(|info| info.branch.clone());
     let vs_local = git
         .and_then(|info| info.ahead_behind_local)
         .map(format_ahead_behind);
     let local_main_branch = git.and_then(|info| info.local_main_branch.clone());
     let main_branch_label = app.current_config().tui.main_branch.clone();
-    let github = app
-        .projects()
-        .at_path(owner_path.as_path())
-        .and_then(|p| p.github_info.as_ref());
+    let github = entry
+        .and_then(|entry| entry.git_repo.as_ref())
+        .and_then(|repo| repo.github_info.as_ref());
     let stars = github.map(|g| g.stars);
     let description = github.and_then(|g| g.description.clone());
     let inception = git

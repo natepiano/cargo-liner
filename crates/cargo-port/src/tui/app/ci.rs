@@ -9,7 +9,6 @@ use crate::project::AbsolutePath;
 use crate::project::GitInfo;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
-use crate::project::ProjectFields;
 use crate::scan;
 use crate::scan::CiFetchResult;
 use crate::tui::panes::CiFetchKind;
@@ -17,95 +16,28 @@ use crate::tui::panes::PaneId;
 
 impl App {
     pub(super) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<ci::OwnerRepo> {
-        let owner_path = self.ci_owner_path_for_inner(path)?;
-        self.git_info_for(owner_path.as_path())
+        let entry = self.projects.entry_containing(path)?;
+        self.git_info_for(entry.item.path().as_path())
             .and_then(GitInfo::primary_url)
             .and_then(ci::parse_owner_repo)
     }
 
-    pub(super) fn owner_paths_for_repo_inner(&self, repo: &ci::OwnerRepo) -> Vec<AbsolutePath> {
-        let mut owner_paths = Vec::new();
-        self.projects.for_each_leaf_path(|path, _| {
-            if !self.is_ci_owner_path(path) {
-                return;
-            }
-            let Some(git) = self.git_info_for(path) else {
-                return;
-            };
-            let Some(url) = git.primary_url() else {
-                return;
-            };
-            if ci::parse_owner_repo(url).as_ref() == Some(repo) {
-                owner_paths.push(AbsolutePath::from(path));
-            }
-        });
-        owner_paths
-    }
-
-    pub(super) fn ci_owner_path_for_inner(&self, path: &Path) -> Option<AbsolutePath> {
-        for entry in &self.projects {
-            match &entry.item {
-                crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws))
-                    if path.starts_with(ws.path()) =>
-                {
-                    return Some(ws.path().clone());
-                },
-                crate::project::RootItem::Rust(crate::project::RustProject::Package(pkg))
-                    if path.starts_with(pkg.path()) =>
-                {
-                    return Some(pkg.path().clone());
-                },
-                crate::project::RootItem::NonRust(project) if project.path() == path => {
-                    return Some(project.path().clone());
-                },
-                crate::project::RootItem::Worktrees(
-                    crate::project::WorktreeGroup::Workspaces {
-                        primary, linked, ..
-                    },
-                ) => {
-                    for ws in std::iter::once(primary).chain(linked.iter()) {
-                        if path.starts_with(ws.path()) {
-                            return Some(ws.path().clone());
-                        }
-                    }
-                },
-                crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
-                    primary,
-                    linked,
-                    ..
-                }) => {
-                    for pkg in std::iter::once(primary).chain(linked.iter()) {
-                        if path.starts_with(pkg.path()) {
-                            return Some(pkg.path().clone());
-                        }
-                    }
-                },
-                _ => {},
-            }
-        }
-        None
-    }
-
-    /// Insert CI runs from the initial scan for a CI owner path.
+    /// Insert CI runs from the initial scan for the entry containing `path`.
     pub(super) fn insert_ci_runs(&mut self, path: &Path, runs: Vec<CiRun>, github_total: u32) {
-        if !self.is_ci_owner_path(path) {
-            if let Some(project) = self.projects.at_path_mut(path) {
-                project.ci_data = ProjectCiData::Unfetched;
-            }
-            self.ci_fetch_tracker.complete(path);
-            return;
-        }
         let exhausted = self
             .git_info_for(path)
             .and_then(GitInfo::primary_url)
             .and_then(ci::parse_owner_repo)
             .is_some_and(|owner_repo| scan::is_exhausted(owner_repo.owner(), owner_repo.repo()));
-        if let Some(project) = self.projects.at_path_mut(path) {
-            project.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
+        if let Some(entry) = self.projects.entry_containing_mut(path) {
+            let repo = entry.git_repo.get_or_insert_with(Default::default);
+            repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                 runs,
                 github_total,
                 exhausted,
             });
+        } else {
+            self.ci_fetch_tracker.complete(path);
         }
     }
 
@@ -118,13 +50,7 @@ impl App {
     ) {
         let abs = AbsolutePath::from(Path::new(path));
 
-        let owner_paths = self
-            .owner_repo_for_path_inner(&abs)
-            .map(|repo| self.owner_paths_for_repo_inner(&repo))
-            .filter(|paths| !paths.is_empty())
-            .unwrap_or_else(|| vec![abs.clone()]);
-
-        let prev_info = self.ci_info_for(owner_paths[0].as_path());
+        let prev_info = self.ci_info_for(abs.as_path());
         let prev_count = prev_info.map_or(0, |info| info.runs.len());
         let prev_exhausted = prev_info.is_some_and(|info| info.exhausted);
         let prev_github_total = prev_info.map_or(0, |info| info.github_total);
@@ -214,14 +140,13 @@ impl App {
             );
         }
         self.ci_fetch_tracker.complete(abs.as_path());
-        for owner_path in owner_paths {
-            if let Some(project) = self.projects.at_path_mut(owner_path.as_path()) {
-                project.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
-                    runs: merged.clone(),
-                    github_total,
-                    exhausted,
-                });
-            }
+        if let Some(entry) = self.projects.entry_containing_mut(abs.as_path()) {
+            let repo = entry.git_repo.get_or_insert_with(Default::default);
+            repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
+                runs: merged,
+                github_total,
+                exhausted,
+            });
         }
         self.data_generation += 1;
     }

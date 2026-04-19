@@ -804,11 +804,7 @@ fn render_child_item(
     } else {
         " "
     };
-    let ci = if app.is_ci_owner_path(path) {
-        app.ci_for(path)
-    } else {
-        None
-    };
+    let ci = app.ci_for(path);
     let hide_git_status = app.is_workspace_member_path(path);
     let origin_sync = if hide_git_status
         || matches!(
