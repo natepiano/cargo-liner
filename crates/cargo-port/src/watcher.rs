@@ -3,9 +3,9 @@
 //!
 //! A single `notify` subscription covers the entire scan root. Events are
 //! matched to projects by prefix, debounced, and result in both
-//! `BackgroundMsg::DiskUsage` and `BackgroundMsg::GitInfo` updates. New project directories are
-//! detected automatically; removed directories trigger a zero-byte update so the
-//! app can mark them as deleted.
+//! `BackgroundMsg::DiskUsage` and `BackgroundMsg::CheckoutInfo` / `BackgroundMsg::RepoInfo`
+//! updates. New project directories are detected automatically; removed directories trigger a
+//! zero-byte update so the app can mark them as deleted.
 //!
 //! On macOS (`FSEvents`) this is a small fixed set of kernel subscriptions
 //! regardless of tree size: one for the scan roots. Linux / Windows may want
@@ -34,10 +34,11 @@ use super::http::HttpClient;
 use super::lint;
 use super::lint::RuntimeHandle;
 use super::project;
+use super::project::CheckoutInfo;
 use super::project::GitRepoPresence;
-use super::project::LocalGitInfo;
 #[cfg(test)]
 use super::project::ProjectFields;
+use super::project::RepoInfo;
 use super::scan;
 use super::scan::BackgroundMsg;
 use crate::project::AbsolutePath;
@@ -497,16 +498,16 @@ fn handle_notify_event(
     let mut matched_fast_git = false;
     for entry in ctx.projects.values() {
         if is_fast_git_refresh_event(event_path, entry)
-            && let Some(repo_root) = &entry.repo_root
+            && let Some(refresh_key) = git_refresh_key(entry)
         {
             matched_fast_git = true;
             tracing::info!(
-                repo_root = %repo_root.display(),
+                refresh_key = %refresh_key.display(),
                 event_path = %event_path.display(),
                 "watcher_fast_git_event"
             );
-            emit_root_git_info_refresh(bg_tx, ctx.projects, repo_root);
-            enqueue_git_refresh(pending_git, repo_root.clone(), now, false, "fast_git");
+            emit_root_git_info_refresh(bg_tx, entry);
+            enqueue_git_refresh(pending_git, refresh_key, now, false, "fast_git");
         }
     }
     if matched_fast_git {
@@ -530,17 +531,17 @@ fn handle_notify_event(
             spawn_project_refresh(bg_tx.clone(), entry.abs_path.clone());
         }
         if is_internal_git_path(event_path, entry) {
-            if let Some(repo_root) = &entry.repo_root
+            if let Some(refresh_key) = git_refresh_key(entry)
                 && is_internal_git_refresh_event(event_path, entry)
             {
-                enqueue_git_refresh(pending_git, repo_root.clone(), now, false, "git_internal");
+                enqueue_git_refresh(pending_git, refresh_key, now, false, "git_internal");
             }
             return;
         }
         let is_target_event = event_path.starts_with(entry.abs_path.join("target"));
         schedule_disk_refresh(pending_disk, &entry.project_label, now);
-        if !is_target_event && let Some(repo_root) = &entry.repo_root {
-            enqueue_git_refresh(pending_git, repo_root.clone(), now, false, "project_event");
+        if !is_target_event && let Some(refresh_key) = git_refresh_key(entry) {
+            enqueue_git_refresh(pending_git, refresh_key, now, false, "project_event");
         }
         return;
     }
@@ -689,6 +690,19 @@ fn is_worktree_git_fallback_event(event_path: &Path, git_dir: &Path) -> bool {
     event_path == git_dir || event_path == logs_dir || event_path.starts_with(&logs_dir)
 }
 
+/// Key used to dedup git refreshes in `pending_git`. Prefers the
+/// shared `common_git_dir` so primary + linked worktrees of the same
+/// repo collapse into a single pending refresh; falls back to the
+/// per-entry `repo_root` when the common-git-dir lookup is missing
+/// (degenerate case — e.g. a worktree whose `.git` file points at a
+/// path we couldn't resolve).
+fn git_refresh_key(entry: &ProjectEntry) -> Option<AbsolutePath> {
+    entry
+        .common_git_dir
+        .clone()
+        .or_else(|| entry.repo_root.clone())
+}
+
 fn enqueue_git_refresh(
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
     repo_root: AbsolutePath,
@@ -808,32 +822,28 @@ fn spawn_project_refresh_after(
     });
 }
 
-fn emit_root_git_info_refresh(
-    bg_tx: &mpsc::Sender<BackgroundMsg>,
-    projects: &HashMap<AbsolutePath, ProjectEntry>,
-    repo_root: &Path,
-) {
+fn emit_root_git_info_refresh(bg_tx: &mpsc::Sender<BackgroundMsg>, entry: &ProjectEntry) {
     let started = Instant::now();
-    let Some(root_entry) = projects
-        .values()
-        .find(|entry| entry.abs_path.as_path() == repo_root)
-    else {
+    let Some(repo) = RepoInfo::get(entry.abs_path.as_path()) else {
         return;
     };
-    let Some(info) = LocalGitInfo::get(repo_root) else {
-        return;
-    };
+    let checkout = CheckoutInfo::get(entry.abs_path.as_path(), repo.local_main_branch.as_deref());
     tracing::info!(
         elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
-        repo_root = %repo_root.display(),
-        path = %root_entry.project_label,
-        git_status = %info.checkout.status.label(),
+        path = %entry.project_label,
+        git_status = checkout.as_ref().map(|c| c.status.label()).unwrap_or("unknown"),
         "watcher_root_git_info_refresh"
     );
-    let _ = bg_tx.send(BackgroundMsg::GitInfo {
-        path: root_entry.abs_path.clone(),
-        info,
+    let _ = bg_tx.send(BackgroundMsg::RepoInfo {
+        path: entry.abs_path.clone(),
+        info: repo,
     });
+    if let Some(checkout) = checkout {
+        let _ = bg_tx.send(BackgroundMsg::CheckoutInfo {
+            path: entry.abs_path.clone(),
+            info: checkout,
+        });
+    }
 }
 
 fn fire_git_updates(
@@ -848,25 +858,39 @@ fn fire_git_updates(
     let ready: Vec<AbsolutePath> = pending_git
         .iter()
         .filter(|(_, state)| is_ready_to_launch(state, now))
-        .map(|(repo_root, _)| repo_root.clone())
+        .map(|(refresh_key, _)| refresh_key.clone())
         .collect();
 
-    for repo_root in ready {
-        let affected: Vec<(String, String)> = projects
+    for refresh_key in ready {
+        // Affected = every entry whose refresh-key matches; for the
+        // common-git-dir case that's primary + all linked siblings of
+        // the same repo. Each entry needs its own `CheckoutInfo`
+        // probe because branch/HEAD/status differ per worktree.
+        let affected: Vec<AbsolutePath> = projects
             .values()
-            .filter(|entry| entry.repo_root.as_deref() == Some(repo_root.as_path()))
-            .map(|entry| {
-                let abs = entry.abs_path.to_string_lossy().to_string();
-                (abs.clone(), abs)
-            })
+            .filter(|entry| git_refresh_key(entry).as_ref() == Some(&refresh_key))
+            .map(|entry| entry.abs_path.clone())
             .collect();
         if affected.is_empty() {
-            if let Some(state) = pending_git.get_mut(&repo_root) {
+            if let Some(state) = pending_git.get_mut(&refresh_key) {
                 *state = WatchState::Idle;
             }
             continue;
         }
-        if let Some(state) = pending_git.get_mut(&repo_root) {
+        // Identify the primary checkout: the one whose own `.git` is
+        // the common git dir (i.e., its working tree is `<git_dir>/..`).
+        // Falls back to the first affected entry when no clear primary
+        // is visible (e.g., entry registered without `common_git_dir`).
+        let primary_path = projects
+            .values()
+            .find(|entry| {
+                entry.git_dir.as_deref() == Some(refresh_key.as_path())
+                    || entry.common_git_dir.as_deref() == Some(refresh_key.as_path())
+                        && entry.abs_path.as_path().join(".git").is_dir()
+            })
+            .map(|entry| entry.abs_path.clone())
+            .unwrap_or_else(|| affected[0].clone());
+        if let Some(state) = pending_git.get_mut(&refresh_key) {
             mark_running(state);
         }
         spawn_git_refresh(
@@ -874,7 +898,8 @@ fn fire_git_updates(
             git_limit,
             git_done_tx.clone(),
             bg_tx.clone(),
-            repo_root,
+            refresh_key,
+            primary_path,
             affected,
         );
     }
@@ -885,8 +910,9 @@ fn spawn_git_refresh(
     git_limit: &Arc<tokio::sync::Semaphore>,
     git_done_tx: mpsc::Sender<AbsolutePath>,
     bg_tx: mpsc::Sender<BackgroundMsg>,
-    repo_root: AbsolutePath,
-    affected: Vec<(String, String)>,
+    refresh_key: AbsolutePath,
+    primary_path: AbsolutePath,
+    affected: Vec<AbsolutePath>,
 ) {
     let handle = handle.clone();
     let git_limit = Arc::clone(git_limit);
@@ -897,34 +923,56 @@ fn spawn_git_refresh(
         };
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
-            repo_root = %repo_root.display(),
+            refresh_key = %refresh_key.display(),
             affected_rows = affected.len(),
             "watcher_git_queue_wait"
         );
 
+        // Probe the per-repo half once at the primary's path. Linked
+        // siblings reuse this RepoInfo via the entry's `git_repo` slot
+        // (the primary-only write policy in `handle_repo_info` keeps
+        // just this copy).
         let started = Instant::now();
-        let repo_root_for_detect = repo_root.clone();
-        let git_info =
-            tokio::task::spawn_blocking(move || LocalGitInfo::get(&repo_root_for_detect))
+        let primary_for_repo = primary_path.clone();
+        let repo_info =
+            tokio::task::spawn_blocking(move || RepoInfo::get(primary_for_repo.as_path()))
                 .await
                 .ok()
                 .flatten();
-        if let Some(info) = git_info {
-            for (path, _) in &affected {
-                let _ = bg_tx.send(BackgroundMsg::GitInfo {
-                    path: AbsolutePath::from(path.clone()),
-                    info: info.clone(),
+        let local_main_branch = repo_info.as_ref().and_then(|r| r.local_main_branch.clone());
+        if let Some(repo_info) = repo_info {
+            let _ = bg_tx.send(BackgroundMsg::RepoInfo {
+                path: primary_path.clone(),
+                info: repo_info,
+            });
+        }
+
+        // Probe the per-checkout half for each affected path. These are
+        // cheap (no per-remote loop); each yields the worktree's own
+        // branch/HEAD/status.
+        for checkout_path in affected {
+            let probe_path = checkout_path.clone();
+            let lmb = local_main_branch.clone();
+            let checkout = tokio::task::spawn_blocking(move || {
+                CheckoutInfo::get(probe_path.as_path(), lmb.as_deref())
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(checkout) = checkout {
+                let _ = bg_tx.send(BackgroundMsg::CheckoutInfo {
+                    path: checkout_path,
+                    info: checkout,
                 });
             }
         }
 
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
-            repo_root = %repo_root.display(),
-            affected_rows = affected.len(),
+            refresh_key = %refresh_key.display(),
             "watcher_git_refresh"
         );
-        let _ = git_done_tx.send(repo_root);
+        let _ = git_done_tx.send(refresh_key);
     });
 }
 
@@ -1583,19 +1631,23 @@ mod tests {
         );
         let messages = collect_messages_until(
             &bg_rx,
-            |msg| matches!(msg, BackgroundMsg::GitInfo { path, .. } if *path == *project_dir),
+            |msg| matches!(msg, BackgroundMsg::CheckoutInfo { path, .. } | BackgroundMsg::RepoInfo { path, .. } if *path == *project_dir),
         );
 
         let mut got_root_git_info = false;
         for msg in &messages {
-            if matches!(msg, BackgroundMsg::GitInfo { path, .. } if *path == *project_dir) {
+            if matches!(msg, BackgroundMsg::CheckoutInfo { path, .. } | BackgroundMsg::RepoInfo { path, .. } if *path == *project_dir)
+            {
                 got_root_git_info = true;
             }
         }
 
         assert!(got_root_git_info, "{context}");
         assert!(pending_disk.is_empty(), "{context}");
-        assert!(pending_git.contains_key(project_dir.as_path()), "{context}");
+        assert!(
+            pending_git.contains_key(project_dir.join(".git").as_path()),
+            "{context}"
+        );
         assert!(pending_new.is_empty(), "{context}");
     }
 
@@ -1723,11 +1775,12 @@ mod tests {
                 let past = Instant::now()
                     .checked_sub(Duration::from_secs(1))
                     .expect("1s subtraction should not underflow");
+                let project_git_dir = project_dir.join(".git");
                 let Some(WatchState::Pending {
                     debounce_deadline,
                     max_deadline,
                     ..
-                }) = pending_git.get_mut(project_dir.as_path())
+                }) = pending_git.get_mut(project_git_dir.as_path())
                 else {
                     panic!("expected pending git refresh for tracked file event");
                 };
@@ -1743,12 +1796,12 @@ mod tests {
                 );
                 let messages = collect_messages_until(
                     &bg_rx,
-                    |msg| matches!(msg, BackgroundMsg::GitInfo { path, .. } if *path == *project_dir),
+                    |msg| matches!(msg, BackgroundMsg::CheckoutInfo { path, .. } if *path == *project_dir),
                 );
                 let git_msg = messages
                     .into_iter()
                     .find_map(|msg| match msg {
-                        BackgroundMsg::GitInfo { path, info }
+                        BackgroundMsg::CheckoutInfo { path, info }
                             if path.as_path() == project_dir.as_path() =>
                         {
                             Some(info)
@@ -1756,7 +1809,7 @@ mod tests {
                         _ => None,
                     })
                     .expect("git info message for project");
-                assert_eq!(git_msg.checkout.status, expected);
+                assert_eq!(git_msg.status, expected);
                 let repo_root = git_done_rx
                     .recv_timeout(Duration::from_secs(1))
                     .expect("git refresh completion");
@@ -1955,7 +2008,7 @@ edition = "2024"
     #[test]
     fn worktree_index_event_enqueues_git_refresh() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (wt_root, wt_git_dir, projects, watch_roots, project_parents, discovered) =
+        let (_wt_root, wt_git_dir, projects, watch_roots, project_parents, discovered) =
             worktree_git_event_context(&tmp);
         std::fs::write(wt_git_dir.join("HEAD"), "ref: refs/heads/wt-branch\n").expect("write HEAD");
         std::fs::write(wt_git_dir.join("index"), "fake-index").expect("write index");
@@ -1981,8 +2034,12 @@ edition = "2024"
             &mut pending_new,
         );
 
+        // The worktree project's `common_git_dir` is the shared parent's
+        // `.git` (set up as `tmp/main_repo_git` in the fixture), so
+        // `pending_git` is keyed on that path, not on `wt_root`.
+        let common_git_dir = tmp.path().join("main_repo_git");
         assert!(
-            pending_git.contains_key(wt_root.as_path()),
+            pending_git.contains_key(common_git_dir.as_path()),
             "worktree index event should enqueue a git refresh for the worktree project"
         );
     }
@@ -1990,7 +2047,7 @@ edition = "2024"
     #[test]
     fn worktree_logs_head_event_enqueues_git_refresh() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (wt_root, wt_git_dir, projects, watch_roots, project_parents, discovered) =
+        let (_wt_root, wt_git_dir, projects, watch_roots, project_parents, discovered) =
             worktree_git_event_context(&tmp);
         let logs_head = wt_git_dir.join("logs").join("HEAD");
         std::fs::create_dir_all(logs_head.parent().expect("logs dir")).expect("create logs dir");
@@ -2015,8 +2072,12 @@ edition = "2024"
             &mut pending_new,
         );
 
+        // The worktree project's `common_git_dir` is the shared parent's
+        // `.git` (set up as `tmp/main_repo_git` in the fixture), so
+        // `pending_git` is keyed on that path, not on `wt_root`.
+        let common_git_dir = tmp.path().join("main_repo_git");
         assert!(
-            pending_git.contains_key(wt_root.as_path()),
+            pending_git.contains_key(common_git_dir.as_path()),
             "worktree logs/HEAD updates should enqueue a git refresh for the worktree project"
         );
     }
@@ -2061,7 +2122,7 @@ edition = "2024"
     #[test]
     fn worktree_common_branch_ref_event_enqueues_full_git_refresh() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (wt_root, _wt_git_dir, projects, watch_roots, project_parents, discovered) =
+        let (_wt_root, _wt_git_dir, projects, watch_roots, project_parents, discovered) =
             worktree_git_event_context(&tmp);
         let common_git_dir = tmp.path().join("main_repo_git");
         let branch_ref = common_git_dir.join("refs").join("heads").join("wt-branch");
@@ -2086,9 +2147,11 @@ edition = "2024"
             &mut pending_new,
         );
 
+        // The worktree project's `common_git_dir` is the shared parent's
+        // `.git`, so `pending_git` is keyed on that path, not on `wt_root`.
         assert!(
             matches!(
-                pending_git.get(wt_root.as_path()),
+                pending_git.get(common_git_dir.as_path()),
                 Some(WatchState::Pending { .. })
             ),
             "shared branch ref writes should enqueue a git refresh for linked worktrees"
@@ -2156,20 +2219,34 @@ edition = "2024"
             &mut pending_new,
         );
 
+        // Stage 4: pending_git is keyed on `common_git_dir` so primary
+        // + linked siblings collapse into a single pending refresh
+        // (the spawn then fans out to both via `affected`).
         assert!(
-            pending_git.contains_key(main_root.as_path()),
-            "main repo should be enqueued for git refresh"
+            pending_git.contains_key(common_git_dir.as_path()),
+            "shared common_git_dir should be enqueued for git refresh"
         );
-        assert!(
-            pending_git.contains_key(wt_root.as_path()),
-            "worktree should also be enqueued for git refresh"
+        assert_eq!(
+            pending_git.len(),
+            1,
+            "primary + linked sibling should dedup to one pending entry"
         );
+        // Verify both projects would be picked up by `fire_git_updates`'s
+        // affected filter for this key.
+        let affected_count = projects
+            .values()
+            .filter(|entry| git_refresh_key(entry).as_deref() == Some(common_git_dir.as_path()))
+            .count();
+        assert_eq!(affected_count, 2, "both projects affected by shared event");
+        // Touch wt_root to assert it's still part of the affected set
+        // even though it doesn't have its own pending_git key.
+        let _ = wt_root;
     }
 
     #[test]
     fn buffered_worktree_git_dir_event_replays_after_registration_complete() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (wt_root, wt_git_dir, projects, watch_roots, project_parents, discovered) =
+        let (_wt_root, wt_git_dir, projects, watch_roots, project_parents, discovered) =
             worktree_git_event_context(&tmp);
         let ctx = EventContext {
             watch_roots:     &watch_roots,
@@ -2198,8 +2275,12 @@ edition = "2024"
             &mut pending_new,
         );
 
+        // The worktree project's `common_git_dir` is the shared parent's
+        // `.git` (set up as `tmp/main_repo_git` in the fixture), so
+        // `pending_git` is keyed on that path, not on `wt_root`.
+        let common_git_dir = tmp.path().join("main_repo_git");
         assert!(
-            pending_git.contains_key(wt_root.as_path()),
+            pending_git.contains_key(common_git_dir.as_path()),
             "buffered worktree git-dir events should replay through the normal classifier"
         );
         assert!(pending_new.is_empty());
@@ -2208,7 +2289,7 @@ edition = "2024"
     #[test]
     fn buffered_worktree_common_git_event_replays_after_registration_complete() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (wt_root, _wt_git_dir, projects, watch_roots, project_parents, discovered) =
+        let (_wt_root, _wt_git_dir, projects, watch_roots, project_parents, discovered) =
             worktree_git_event_context(&tmp);
         let common_git_dir = tmp.path().join("main_repo_git");
         let branch_ref = common_git_dir.join("refs").join("heads").join("wt-branch");
@@ -2238,9 +2319,11 @@ edition = "2024"
             &mut pending_new,
         );
 
+        // The worktree project's `common_git_dir` is the shared parent's
+        // `.git`, so `pending_git` is keyed on that path, not on `wt_root`.
         assert!(
             matches!(
-                pending_git.get(wt_root.as_path()),
+                pending_git.get(common_git_dir.as_path()),
                 Some(WatchState::Pending { .. })
             ),
             "buffered common-git-dir events should still trigger a git refresh"
@@ -2794,7 +2877,9 @@ edition = "2024"
                 BackgroundMsg::DiskUsage { path, .. } if *path == *project_dir => {
                     got_disk = true;
                 },
-                BackgroundMsg::GitInfo { path, .. } if *path == *project_dir => {
+                BackgroundMsg::CheckoutInfo { path, .. } | BackgroundMsg::RepoInfo { path, .. }
+                    if *path == *project_dir =>
+                {
                     got_git = true;
                 },
                 _ => {},
@@ -2857,7 +2942,9 @@ edition = "2024"
                 BackgroundMsg::DiskUsage { path, .. } if *path == *project_dir => {
                     got_disk = true;
                 },
-                BackgroundMsg::GitInfo { .. } => got_git = true,
+                BackgroundMsg::CheckoutInfo { .. } | BackgroundMsg::RepoInfo { .. } => {
+                    got_git = true
+                },
                 _ => {},
             }
         }

@@ -580,12 +580,7 @@ pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name:
 
     thread::spawn(move || {
         let path: AbsolutePath = abs.clone();
-        if let Some(info) = crate::project::LocalGitInfo::get(&abs) {
-            let _ = tx.send(BackgroundMsg::GitInfo {
-                path: path.clone(),
-                info,
-            });
-        }
+        scan::emit_git_info(&tx, &abs);
 
         let bytes = scan::dir_size(&abs);
         let _ = tx.send(BackgroundMsg::DiskUsage {

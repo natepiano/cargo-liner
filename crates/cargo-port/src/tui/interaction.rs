@@ -270,7 +270,6 @@ mod tests {
     use crate::project::CheckoutInfo;
     use crate::project::ExampleGroup;
     use crate::project::GitStatus;
-    use crate::project::LocalGitInfo;
     use crate::project::MemberGroup;
     use crate::project::Package;
     use crate::project::ProjectType;
@@ -364,32 +363,31 @@ mod tests {
         }))
     }
 
-    fn make_git_info(url: Option<&str>) -> LocalGitInfo {
-        LocalGitInfo {
-            checkout: CheckoutInfo {
-                status:              GitStatus::Clean,
-                branch:              Some("main".to_string()),
-                last_commit:         Some("2024-01-02T00:00:00Z".to_string()),
-                ahead_behind_local:  Some((0, 0)),
-                primary_tracked_ref: Some("origin/main".to_string()),
-            },
-            repo:     RepoInfo {
-                remotes:           vec![RemoteInfo {
-                    name:         "origin".to_string(),
-                    url:          url.map(str::to_string),
-                    owner:        Some("natepiano".to_string()),
-                    repo:         Some("demo".to_string()),
-                    tracked_ref:  Some("origin/main".to_string()),
-                    ahead_behind: Some((0, 0)),
-                    kind:         RemoteKind::Clone,
-                }],
-                workflows:         WorkflowPresence::Present,
-                first_commit:      Some("2024-01-01T00:00:00Z".to_string()),
-                last_fetched:      None,
-                default_branch:    Some("main".to_string()),
-                local_main_branch: Some("main".to_string()),
-            },
-        }
+    fn make_git_info(url: Option<&str>) -> (CheckoutInfo, RepoInfo) {
+        let checkout = CheckoutInfo {
+            status:              GitStatus::Clean,
+            branch:              Some("main".to_string()),
+            last_commit:         Some("2024-01-02T00:00:00Z".to_string()),
+            ahead_behind_local:  Some((0, 0)),
+            primary_tracked_ref: Some("origin/main".to_string()),
+        };
+        let repo = RepoInfo {
+            remotes:           vec![RemoteInfo {
+                name:         "origin".to_string(),
+                url:          url.map(str::to_string),
+                owner:        Some("natepiano".to_string()),
+                repo:         Some("demo".to_string()),
+                tracked_ref:  Some("origin/main".to_string()),
+                ahead_behind: Some((0, 0)),
+                kind:         RemoteKind::Clone,
+            }],
+            workflows:         WorkflowPresence::Present,
+            first_commit:      Some("2024-01-01T00:00:00Z".to_string()),
+            last_fetched:      None,
+            default_branch:    Some("main".to_string()),
+            local_main_branch: Some("main".to_string()),
+        };
+        (checkout, repo)
     }
 
     fn make_ci_run(run_id: u64, conclusion: Conclusion) -> CiRun {
@@ -803,10 +801,9 @@ mod tests {
         app.expanded_mut().insert(ExpandKey::Node(0));
         app.ensure_visible_rows_cached();
         app.move_down();
-        app.handle_git_info(
-            &workspace,
-            make_git_info(Some("https://github.com/natepiano/demo")),
-        );
+        let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
+        app.handle_repo_info(&workspace, repo);
+        app.handle_checkout_info(&workspace, checkout);
 
         render_ui(&mut app);
 
@@ -1203,10 +1200,9 @@ mod tests {
         std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
 
         let mut app = make_app(&[make_package("demo", &project_dir)]);
-        app.handle_git_info(
-            &project_dir,
-            make_git_info(Some("https://github.com/natepiano/demo")),
-        );
+        let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
+        app.handle_repo_info(&project_dir, repo);
+        app.handle_checkout_info(&project_dir, checkout);
         render_ui(&mut app);
 
         let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Git), 1);

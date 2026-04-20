@@ -12,14 +12,13 @@
 //! cannot replicate per-entry without regressing performance.
 //!
 //! CI runs and GitHub repo metadata cascade off the central
-//! `BackgroundMsg::GitInfo` handler in `async_tasks.rs`. That handler
-//! consults `ProjectList::is_submodule_path` to suppress the cascade for
+//! `BackgroundMsg::CheckoutInfo` / `BackgroundMsg::RepoInfo` handler in `async_tasks.rs`. That
+//! handler consults `ProjectList::is_submodule_path` to suppress the cascade for
 //! submodule paths, since CI/metadata is shown on the parent project.
 
 use std::sync::mpsc::Sender;
 
 use crate::project::AbsolutePath;
-use crate::project::LocalGitInfo;
 use crate::project::ProjectFields;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -32,22 +31,12 @@ use crate::scan::FetchContext;
 pub(crate) fn enrich(entry: &dyn ProjectFields, tx: &Sender<BackgroundMsg>, ctx: &FetchContext) {
     let path: AbsolutePath = entry.path().clone();
 
-    emit_git(&path, tx);
+    scan::emit_git_info(tx, &path);
     emit_disk(&path, tx);
     spawn_language_scan(path.clone(), tx.clone());
     if let Some(name) = entry.crates_io_name() {
         emit_crates_io(name, &path, tx, ctx);
     }
-}
-
-fn emit_git(path: &AbsolutePath, tx: &Sender<BackgroundMsg>) {
-    let Some(info) = LocalGitInfo::get(path.as_path()) else {
-        return;
-    };
-    let _ = tx.send(BackgroundMsg::GitInfo {
-        path: path.clone(),
-        info,
-    });
 }
 
 fn emit_disk(path: &AbsolutePath, tx: &Sender<BackgroundMsg>) {

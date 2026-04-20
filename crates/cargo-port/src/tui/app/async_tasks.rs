@@ -25,12 +25,13 @@ use crate::lint;
 use crate::lint::LintStatus;
 use crate::lint::RegisterProjectRequest;
 use crate::project::AbsolutePath;
+use crate::project::CheckoutInfo;
 use crate::project::GitRepoPresence;
 use crate::project::LanguageStats;
-use crate::project::LocalGitInfo;
 use crate::project::LocalGitState;
 use crate::project::MemberGroup;
 use crate::project::ProjectFields;
+use crate::project::RepoInfo;
 use crate::project::RootItem;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Visible;
@@ -1443,7 +1444,9 @@ impl App {
             BackgroundMsg::DiskUsage { .. } | BackgroundMsg::DiskUsageBatch { .. } => {
                 stats.disk_usage_msgs += 1;
             },
-            BackgroundMsg::GitInfo { .. } | BackgroundMsg::GitFirstCommit { .. } => {
+            BackgroundMsg::CheckoutInfo { .. }
+            | BackgroundMsg::RepoInfo { .. }
+            | BackgroundMsg::GitFirstCommit { .. } => {
                 stats.git_info_msgs += 1;
             },
             BackgroundMsg::LintStatus { .. } | BackgroundMsg::LintStartupStatus { .. } => {
@@ -1673,44 +1676,28 @@ impl App {
         });
     }
 
-    pub(in super::super) fn handle_git_info(&mut self, path: &Path, info: LocalGitInfo) {
+    /// Handle a per-checkout git state update. Writes to the
+    /// `ProjectInfo.local_git_state` for `path`, runs startup tracking
+    /// hooks, and triggers a repo-level fetch if applicable. The repo
+    /// fetch trigger is here because either a `RepoInfo` or
+    /// `CheckoutInfo` arrival can signal "this repo's state changed";
+    /// the dedup set absorbs N attempts for the same `OwnerRepo`.
+    pub(in super::super) fn handle_checkout_info(&mut self, path: &Path, info: CheckoutInfo) {
         tracing::info!(
             path = %path.display(),
-            git_status = %info.checkout.status.label(),
-            "git_info_applied"
+            git_status = %info.status.label(),
+            "checkout_info_applied"
         );
-        let LocalGitInfo { checkout, mut repo } = info;
-
-        // Preserve a previously-fetched `first_commit` across re-detection.
-        // `LocalGitInfo::get` always returns `None` for it; the value is
-        // filled in either by a prior `handle_git_first_commit` write or
-        // via the `pending_git_first_commit` map below.
-        let preserved_first_commit = self
-            .repo_info_for(path)
-            .and_then(|existing| existing.first_commit.clone());
-        if repo.first_commit.is_none() {
-            repo.first_commit =
-                preserved_first_commit.or_else(|| self.pending_git_first_commit.remove(path));
-        }
 
         if let Some(project) = self.projects.at_path_mut(path) {
-            project.local_git_state = LocalGitState::Detected(Box::new(checkout));
+            project.local_git_state = LocalGitState::Detected(Box::new(info));
         }
-
-        // Repo-info write policy: only the primary checkout writes
-        // `RepoInfo`. Linked worktrees share the primary's
-        // `.git/config` by design; admitting last-writer-wins from any
-        // checkout would produce silent arbitration if they ever
-        // diverged. The entry's `git_repo` slot is upserted regardless,
-        // so per-repo CI / GitHub-meta writes can land on it.
+        // Detected git state implies the entry is in a git repo. Ensure
+        // the entry has a `git_repo` slot so per-repo writes (CI,
+        // GitHub meta, RepoInfo) can land on it.
         if let Some(entry) = self.projects.entry_containing_mut(path) {
-            let is_primary = entry.item.path().as_path() == path;
-            let git_repo = entry.git_repo.get_or_insert_with(Default::default);
-            if is_primary {
-                git_repo.repo_info = Some(repo);
-            }
+            entry.git_repo.get_or_insert_with(Default::default);
         }
-        let fetch_url = self.fetch_url_for(path);
 
         if self.is_scan_complete() {
             let git_dir = self
@@ -1722,23 +1709,60 @@ impl App {
             }
             self.maybe_log_startup_phase_completions();
         }
-        if !self.projects.is_submodule_path(path) {
-            // A post-scan GitInfo update means a git fetch (or other ref
-            // change) was detected — treat it as a signal to refresh CI
-            // too. The fetch URL is now picked from the entry's repo
-            // info (any parseable remote) rather than the per-checkout
-            // upstream, so a worktree on a branch without an upstream
-            // still triggers the fetch.
-            if let Some(url) = fetch_url.as_deref() {
-                if self.is_scan_complete()
-                    && let Some(owner_repo) = crate::ci::parse_owner_repo(url)
-                    && !self.repo_fetch_in_flight.contains(&owner_repo)
-                {
-                    crate::scan::invalidate_cached_repo_data(&self.repo_fetch_cache, &owner_repo);
-                }
-                self.spawn_repo_fetch_for_git_info(path, url);
-            }
+
+        self.maybe_trigger_repo_fetch(path);
+    }
+
+    /// Handle a per-repo git state update. Only the primary checkout
+    /// writes `RepoInfo` (linked worktrees share the primary's
+    /// `.git/config` by design; admitting last-writer-wins from any
+    /// checkout would produce silent arbitration if they ever
+    /// diverged). The `path` is the primary's path — the emitter is
+    /// responsible for that contract.
+    pub(in super::super) fn handle_repo_info(&mut self, path: &Path, mut info: RepoInfo) {
+        // Preserve a previously-fetched `first_commit` across refresh.
+        // `RepoInfo::get` always returns `None` for it; the value is
+        // filled in either by a prior `handle_git_first_commit` write
+        // or via the `pending_git_first_commit` map below.
+        let preserved_first_commit = self
+            .repo_info_for(path)
+            .and_then(|existing| existing.first_commit.clone());
+        if info.first_commit.is_none() {
+            info.first_commit =
+                preserved_first_commit.or_else(|| self.pending_git_first_commit.remove(path));
         }
+
+        if let Some(entry) = self.projects.entry_containing_mut(path) {
+            if entry.item.path().as_path() != path {
+                // Non-primary write — discard per the policy above.
+                return;
+            }
+            let git_repo = entry.git_repo.get_or_insert_with(Default::default);
+            git_repo.repo_info = Some(info);
+        }
+
+        self.maybe_trigger_repo_fetch(path);
+    }
+
+    /// Shared between `handle_repo_info` and `handle_checkout_info`:
+    /// kick a GitHub fetch for this path's repo if we have a parseable
+    /// remote URL and no fetch is already in flight for the repo.
+    /// Submodule paths are excluded — submodule CI/metadata is shown on
+    /// the parent project.
+    fn maybe_trigger_repo_fetch(&mut self, path: &Path) {
+        if self.projects.is_submodule_path(path) {
+            return;
+        }
+        let Some(url) = self.fetch_url_for(path) else {
+            return;
+        };
+        if self.is_scan_complete()
+            && let Some(owner_repo) = crate::ci::parse_owner_repo(&url)
+            && !self.repo_fetch_in_flight.contains(&owner_repo)
+        {
+            crate::scan::invalidate_cached_repo_data(&self.repo_fetch_cache, &owner_repo);
+        }
+        self.spawn_repo_fetch_for_git_info(path, &url);
     }
 
     pub(in super::super) fn handle_git_first_commit(
@@ -1749,9 +1773,9 @@ impl App {
         let first_commit = first_commit.map(String::from);
         // first_commit is per-repo, so it lands on the entry's
         // `RepoInfo`. If the entry's `repo_info` slot doesn't exist yet
-        // (`LocalGitInfo::get` hasn't completed), stash the value in
-        // `pending_git_first_commit` and `handle_git_info` will fold it
-        // in when repo info arrives.
+        // (`RepoInfo::get` hasn't completed), stash the value in
+        // `pending_git_first_commit` and `handle_repo_info` will fold
+        // it in when repo info arrives.
         let applied = self
             .projects
             .entry_containing_mut(path)
@@ -2149,8 +2173,11 @@ impl App {
                 self.handle_repo_fetch_queued(repo);
             },
             BackgroundMsg::RepoFetchComplete { repo } => self.handle_repo_fetch_complete(repo),
-            BackgroundMsg::GitInfo { path, info } => {
-                self.handle_git_info(path.as_path(), info);
+            BackgroundMsg::CheckoutInfo { path, info } => {
+                self.handle_checkout_info(path.as_path(), info);
+            },
+            BackgroundMsg::RepoInfo { path, info } => {
+                self.handle_repo_info(path.as_path(), info);
             },
             BackgroundMsg::GitFirstCommit { path, first_commit } => {
                 self.handle_git_first_commit(path.as_path(), first_commit.as_deref());

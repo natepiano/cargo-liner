@@ -75,17 +75,18 @@ fn tabbable_panes_follow_canonical_order() {
     app.toasts = ToastManager::default();
     app.pane_manager.pane_mut(PaneId::Toasts).set_len(0);
     app.scan.phase = ScanPhase::Complete;
-    app.handle_git_info(
+    apply_git_info(
+        &mut app,
         project.path(),
-        LocalGitInfo {
-            checkout: CheckoutInfo {
+        (
+            CheckoutInfo {
                 status:              GitStatus::Clean,
                 branch:              None,
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: None,
             },
-            repo:     RepoInfo {
+            RepoInfo {
                 remotes:           vec![RemoteInfo {
                     name:         "origin".to_string(),
                     url:          Some("https://github.com/acme/demo".to_string()),
@@ -101,7 +102,7 @@ fn tabbable_panes_follow_canonical_order() {
                 default_branch:    None,
                 local_main_branch: None,
             },
-        },
+        ),
     );
     app.ensure_detail_cached();
     set_loaded_ci(

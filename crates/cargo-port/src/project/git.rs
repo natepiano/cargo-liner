@@ -139,39 +139,24 @@ impl RepoInfo {
     }
 }
 
-/// Local git metadata for a project, split into per-checkout and
-/// per-repo halves: `checkout` lands on `ProjectInfo.local_git_state`,
-/// `repo` on `GitRepo::repo_info`. Bundled so the split lands
-/// atomically — there is no intermediate state where half the callers
-/// see the old shape. Contrast with `GitHubInfo`, which holds data
-/// sourced from the GitHub API rather than probed locally.
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct LocalGitInfo {
-    pub checkout: CheckoutInfo,
-    pub repo:     RepoInfo,
-}
-
-impl LocalGitInfo {
-    /// Retrieve git info for a project directory (excludes `first_commit`, which
-    /// is handled by `schedule_git_first_commit_refreshes` batched by repo root).
-    pub(crate) fn get(project_dir: &Path) -> Option<Self> {
-        let repo_root = git_repo_root(project_dir)?;
+impl RepoInfo {
+    /// Probe per-repo git metadata. Run once per repo (typically on the
+    /// primary checkout's path) and shared across every linked
+    /// worktree. Excludes `first_commit`, which is handled by
+    /// `schedule_git_first_commit_refreshes` batched by repo root.
+    pub(crate) fn get(probe_path: &Path) -> Option<Self> {
+        let repo_root = git_repo_root(probe_path)?;
         let cfg = config::active_config();
 
+        // Branch / upstream / default-branch context is probed here
+        // because `build_remote_info` uses it to resolve each remote's
+        // `tracked_ref` and compute `ahead_behind`. Stage 4 splits the
+        // probe so siblings reuse this work; the canonical source is
+        // the primary checkout's view.
         let branch = get_current_branch(&repo_root);
         let current_upstream = get_upstream_branch(&repo_root);
         let default_branch = get_default_branch(&repo_root);
         let local_main_branch = resolve_local_main_branch(&repo_root);
-        let ahead_behind_local = local_main_branch
-            .as_deref()
-            .filter(|branch_name| branch.as_deref() != Some(*branch_name))
-            .and_then(|branch_name| {
-                parse_ahead_behind(
-                    &repo_root,
-                    &format!("HEAD...{branch_name}"),
-                    "configured_local_main",
-                )
-            });
 
         let remote_names = list_remote_names(&repo_root);
         let has_upstream = remote_names.iter().any(|n| n == "upstream");
@@ -190,6 +175,37 @@ impl LocalGitInfo {
             })
             .collect();
 
+        Some(Self {
+            remotes,
+            workflows: get_workflow_presence(&repo_root),
+            first_commit: None,
+            last_fetched: get_last_fetched(&repo_root),
+            default_branch,
+            local_main_branch,
+        })
+    }
+}
+
+impl CheckoutInfo {
+    /// Probe per-checkout git metadata for `probe_path`. Cheap (no
+    /// per-remote loop). `local_main_branch` is supplied by the caller —
+    /// usually pulled from the entry's `RepoInfo.local_main_branch`,
+    /// which is identical across siblings so probing it once at the
+    /// `RepoInfo::get` call avoids redundant work.
+    pub(crate) fn get(probe_path: &Path, local_main_branch: Option<&str>) -> Option<Self> {
+        let repo_root = git_repo_root(probe_path)?;
+
+        let branch = get_current_branch(&repo_root);
+        let current_upstream = get_upstream_branch(&repo_root);
+        let ahead_behind_local = local_main_branch
+            .filter(|branch_name| branch.as_deref() != Some(*branch_name))
+            .and_then(|branch_name| {
+                parse_ahead_behind(
+                    &repo_root,
+                    &format!("HEAD...{branch_name}"),
+                    "configured_local_main",
+                )
+            });
         let last_commit =
             git_output_logged(&repo_root, "log_last_commit", ["log", "-1", "--format=%aI"])
                 .ok()
@@ -198,26 +214,12 @@ impl LocalGitInfo {
                     if s.is_empty() { None } else { Some(s) }
                 });
 
-        let last_fetched = get_last_fetched(&repo_root);
-
-        let git_status = get_git_status(project_dir, &repo_root);
-
         Some(Self {
-            checkout: CheckoutInfo {
-                status: git_status,
-                branch,
-                last_commit,
-                ahead_behind_local,
-                primary_tracked_ref: current_upstream,
-            },
-            repo:     RepoInfo {
-                remotes,
-                workflows: get_workflow_presence(&repo_root),
-                first_commit: None,
-                last_fetched,
-                default_branch,
-                local_main_branch,
-            },
+            status: get_git_status(probe_path, &repo_root),
+            branch,
+            last_commit,
+            ahead_behind_local,
+            primary_tracked_ref: current_upstream,
         })
     }
 }

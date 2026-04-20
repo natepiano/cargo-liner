@@ -34,7 +34,6 @@ use crate::project::Cargo;
 use crate::project::CheckoutInfo;
 use crate::project::ExampleGroup;
 use crate::project::GitStatus;
-use crate::project::LocalGitInfo;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
 use crate::project::Package;
@@ -509,32 +508,39 @@ fn make_ci_run(run_id: u64, conclusion: Conclusion) -> CiRun {
     }
 }
 
-fn make_git_info(url: Option<&str>) -> LocalGitInfo {
-    LocalGitInfo {
-        checkout: CheckoutInfo {
-            status:              GitStatus::Clean,
-            branch:              Some("main".to_string()),
-            last_commit:         None,
-            ahead_behind_local:  None,
-            primary_tracked_ref: Some("origin/main".to_string()),
-        },
-        repo:     RepoInfo {
-            remotes:           vec![RemoteInfo {
-                name:         "origin".to_string(),
-                url:          url.map(String::from),
-                owner:        Some("natepiano".to_string()),
-                repo:         None,
-                tracked_ref:  Some("origin/main".to_string()),
-                ahead_behind: None,
-                kind:         RemoteKind::Clone,
-            }],
-            workflows:         WorkflowPresence::Present,
-            first_commit:      None,
-            last_fetched:      None,
-            default_branch:    Some("main".to_string()),
-            local_main_branch: Some("main".to_string()),
-        },
-    }
+fn make_git_info(url: Option<&str>) -> (CheckoutInfo, RepoInfo) {
+    let checkout = CheckoutInfo {
+        status:              GitStatus::Clean,
+        branch:              Some("main".to_string()),
+        last_commit:         None,
+        ahead_behind_local:  None,
+        primary_tracked_ref: Some("origin/main".to_string()),
+    };
+    let repo = RepoInfo {
+        remotes:           vec![RemoteInfo {
+            name:         "origin".to_string(),
+            url:          url.map(String::from),
+            owner:        Some("natepiano".to_string()),
+            repo:         None,
+            tracked_ref:  Some("origin/main".to_string()),
+            ahead_behind: None,
+            kind:         RemoteKind::Clone,
+        }],
+        workflows:         WorkflowPresence::Present,
+        first_commit:      None,
+        last_fetched:      None,
+        default_branch:    Some("main".to_string()),
+        local_main_branch: Some("main".to_string()),
+    };
+    (checkout, repo)
+}
+
+/// Apply a `(CheckoutInfo, RepoInfo)` bundle to the app via the same
+/// path real BackgroundMsg dispatch would: RepoInfo first, then
+/// CheckoutInfo. Test helper that condenses the two-handler pattern.
+fn apply_git_info(app: &mut App, path: &Path, (checkout, repo): (CheckoutInfo, RepoInfo)) {
+    app.handle_repo_info(path, repo);
+    app.handle_checkout_info(path, checkout);
 }
 
 #[derive(Clone, Copy)]

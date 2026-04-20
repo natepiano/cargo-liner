@@ -26,13 +26,14 @@ use super::http::ServiceSignal;
 use super::lint::LintStatus;
 use super::project::AbsolutePath;
 use super::project::CargoParseResult;
+use super::project::CheckoutInfo;
 use super::project::GitRepoPresence;
 use super::project::LangEntry;
 use super::project::LanguageStats;
-use super::project::LocalGitInfo;
 use super::project::MemberGroup;
 use super::project::Package;
 use super::project::ProjectFields;
+use super::project::RepoInfo;
 use super::project::RootItem;
 use super::project::RustInfo;
 use super::project::RustProject;
@@ -70,14 +71,22 @@ pub(crate) enum BackgroundMsg {
     RepoFetchComplete {
         repo: OwnerRepo,
     },
-    /// Git metadata for a project (branch, origin, ahead/behind, path
-    /// state). Sent by `LocalGitInfo::get()` during startup and watcher
-    /// refreshes. Carries both the per-checkout `CheckoutInfo` and the
-    /// per-repo `RepoInfo`; the handler routes them to their respective
-    /// storage slots.
-    GitInfo {
+    /// Per-checkout git state for a project (branch, status, ahead/
+    /// behind, last_commit, primary_tracked_ref). Sent by
+    /// `CheckoutInfo::get` for every affected checkout — primary AND
+    /// each linked worktree on a refresh — since each working tree has
+    /// its own HEAD/index/branch.
+    CheckoutInfo {
         path: AbsolutePath,
-        info: LocalGitInfo,
+        info: CheckoutInfo,
+    },
+    /// Per-repo git state (remotes, workflows, default branch, last
+    /// fetched, etc.). Sent by `RepoInfo::get` once per repo refresh.
+    /// `path` is the primary checkout's path so `handle_repo_info` can
+    /// enforce the "only the primary writes RepoInfo" policy.
+    RepoInfo {
+        path: AbsolutePath,
+        info: RepoInfo,
     },
     /// First commit date detected for a project (deferred post-scan,
     /// batched by repo root to avoid redundant `git log` calls).
@@ -161,7 +170,8 @@ impl BackgroundMsg {
         match self {
             Self::DiskUsage { path, .. }
             | Self::CiRuns { path, .. }
-            | Self::GitInfo { path, .. }
+            | Self::CheckoutInfo { path, .. }
+            | Self::RepoInfo { path, .. }
             | Self::GitFirstCommit { path, .. }
             | Self::CratesIoVersion { path, .. }
             | Self::RepoMeta { path, .. }
@@ -208,6 +218,29 @@ pub(crate) fn emit_service_signal(tx: &mpsc::Sender<BackgroundMsg>, signal: Opti
 
 pub(crate) fn emit_service_recovered(tx: &mpsc::Sender<BackgroundMsg>, service: ServiceKind) {
     let _ = tx.send(BackgroundMsg::ServiceRecovered { service });
+}
+
+/// Probe per-repo + per-checkout git state for a single project and
+/// emit them as two background messages. Used by the initial scan and
+/// project-discovery enrichment paths, where each project is processed
+/// independently. The watcher's refresh path uses a smarter
+/// orchestration that probes `RepoInfo` once per repo and reuses it
+/// across sibling worktrees.
+pub(crate) fn emit_git_info(tx: &mpsc::Sender<BackgroundMsg>, path: &AbsolutePath) {
+    let Some(repo) = RepoInfo::get(path.as_path()) else {
+        return;
+    };
+    let checkout = CheckoutInfo::get(path.as_path(), repo.local_main_branch.as_deref());
+    let _ = tx.send(BackgroundMsg::RepoInfo {
+        path: path.clone(),
+        info: repo,
+    });
+    if let Some(checkout) = checkout {
+        let _ = tx.send(BackgroundMsg::CheckoutInfo {
+            path: path.clone(),
+            info: checkout,
+        });
+    }
 }
 
 /// What a CI fetch function returns. Forces callers to handle the
@@ -987,16 +1020,8 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     // Local git info — includes git status but skips first_commit,
     // which is handled separately by
     // `schedule_git_first_commit_refreshes` (batched by repo root).
-    let git_info = if repo_presence.is_in_repo() {
-        LocalGitInfo::get(abs_path)
-    } else {
-        None
-    };
-    if let Some(ref info) = git_info {
-        let _ = tx.send(BackgroundMsg::GitInfo {
-            path: abs.clone(),
-            info: info.clone(),
-        });
+    if repo_presence.is_in_repo() {
+        emit_git_info(tx, &abs);
     }
 
     // Crates.io version + downloads (network)
