@@ -121,10 +121,10 @@ impl App {
             .pane_mut(PaneId::CiRuns)
             .set_pos(merged.len());
         if let Some(repo) = self.owner_repo_for_path_inner(&abs) {
-            let meta = crate::scan::load_cached_repo_data(&self.repo_fetch_cache, &repo)
+            let meta = crate::scan::load_cached_repo_data(&self.github.fetch_cache, &repo)
                 .and_then(|cached| cached.meta);
             crate::scan::store_cached_repo_data(
-                &self.repo_fetch_cache,
+                &self.github.fetch_cache,
                 &repo,
                 crate::scan::CachedRepoData {
                     runs: merged.clone(),

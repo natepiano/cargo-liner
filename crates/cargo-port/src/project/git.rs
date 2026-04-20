@@ -505,16 +505,25 @@ pub(crate) fn get_first_commit(project_dir: &Path) -> Option<String> {
     })
 }
 
+/// Build a git subprocess rooted at `repo_root` with `--no-optional-locks`
+/// set. The flag prevents `git status` (and any other read-only command
+/// that touches the index stat cache) from rewriting `.git/index`,
+/// which the file watcher would otherwise observe as an external
+/// change and re-emit a refresh signal — a self-sustaining CPU and
+/// rate-limit loop.
+pub(super) fn git_command(repo_root: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("--no-optional-locks").current_dir(repo_root);
+    cmd
+}
+
 fn git_output_logged<const N: usize>(
     repo_root: &Path,
     op: &str,
     args: [&str; N],
 ) -> io::Result<std::process::Output> {
     let started = std::time::Instant::now();
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repo_root)
-        .output();
+    let output = git_command(repo_root).args(args).output();
     let status = output
         .as_ref()
         .ok()
@@ -594,9 +603,8 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
     let started = std::time::Instant::now();
     let relative_path = relative_git_path(repo_root, project_dir);
     if relative_path != "." {
-        let ignored = Command::new("git")
+        let ignored = git_command(repo_root)
             .args(["check-ignore", "-q", "--", &relative_path])
-            .current_dir(repo_root)
             .status()
             .ok()
             .is_some_and(|status| status.success());
@@ -612,7 +620,7 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
             return state;
         }
     }
-    let status_output = Command::new("git")
+    let status_output = git_command(repo_root)
         .args([
             "status",
             "--porcelain=v1",
@@ -621,7 +629,6 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
             "--",
             &relative_path,
         ])
-        .current_dir(repo_root)
         .output();
     let Ok(status_output) = status_output else {
         return GitStatus::Clean;

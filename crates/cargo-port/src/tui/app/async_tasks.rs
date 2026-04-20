@@ -10,6 +10,7 @@ use super::ExpandKey::Group;
 use super::ExpandKey::Node;
 use super::ExpandKey::Worktree;
 use super::ExpandKey::WorktreeGroup;
+use super::service_state::ServiceAvailability;
 use super::types::ConfigFileStamp;
 use super::types::PollBackgroundStats;
 use super::types::ScanPhase;
@@ -1352,8 +1353,8 @@ impl App {
         self.ci_display_modes.clear();
         self.clear_all_lint_state();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
-        self.repo_fetch_cache = crate::scan::new_repo_cache();
-        self.repo_fetch_in_flight.clear();
+        self.github.fetch_cache = crate::scan::new_repo_cache();
+        self.github.repo_fetch_in_flight.clear();
         self.discovery_shimmers.clear();
         self.scan.phase = ScanPhase::Running;
         self.scan.started_at = Instant::now();
@@ -1618,13 +1619,13 @@ impl App {
         // running or queued. The `RepoFetchComplete` background message
         // removes the entry, so a later spawn after completion is not
         // blocked.
-        if !self.repo_fetch_in_flight.insert(owner_repo.clone()) {
+        if !self.github.repo_fetch_in_flight.insert(owner_repo.clone()) {
             return;
         }
 
         let tx = self.bg_tx.clone();
         let client = self.http_client.clone();
-        let repo_cache = self.repo_fetch_cache.clone();
+        let repo_cache = self.github.fetch_cache.clone();
         let path: AbsolutePath = AbsolutePath::from(path);
         let repo_url = repo_url.to_string();
         let ci_run_count = self.ci_run_count();
@@ -1732,6 +1733,17 @@ impl App {
                 preserved_first_commit.or_else(|| self.pending_git_first_commit.remove(path));
         }
 
+        // Gate GitHub cache invalidation on `FETCH_HEAD` mtime actually
+        // advancing. Without this, every watcher tick / commit / branch
+        // switch would invalidate the cache and trigger a refetch,
+        // burning REST quota. ISO 8601 strings compare lexically in
+        // chronological order, so `!=` captures advance reliably.
+        let previous_last_fetched = self
+            .repo_info_for(path)
+            .and_then(|existing| existing.last_fetched.clone());
+        let fetch_head_advanced =
+            info.last_fetched.is_some() && info.last_fetched != previous_last_fetched;
+
         if let Some(entry) = self.projects.entry_containing_mut(path) {
             if entry.item.path().as_path() != path {
                 // Non-primary write — discard per the policy above.
@@ -1741,14 +1753,24 @@ impl App {
             git_repo.repo_info = Some(info);
         }
 
+        if fetch_head_advanced
+            && self.is_scan_complete()
+            && let Some(url) = self.fetch_url_for(path)
+            && let Some(owner_repo) = crate::ci::parse_owner_repo(&url)
+            && !self.github.repo_fetch_in_flight.contains(&owner_repo)
+        {
+            crate::scan::invalidate_cached_repo_data(&self.github.fetch_cache, &owner_repo);
+        }
+
         self.maybe_trigger_repo_fetch(path);
     }
 
     /// Shared between `handle_repo_info` and `handle_checkout_info`:
     /// kick a GitHub fetch for this path's repo if we have a parseable
-    /// remote URL and no fetch is already in flight for the repo.
-    /// Submodule paths are excluded — submodule CI/metadata is shown on
-    /// the parent project.
+    /// remote URL. The dedup set absorbs concurrent attempts for the
+    /// same `OwnerRepo`; cache invalidation is gated inside
+    /// `handle_repo_info` by `last_fetched` advance. Submodule paths are
+    /// excluded — submodule CI/metadata is shown on the parent project.
     fn maybe_trigger_repo_fetch(&mut self, path: &Path) {
         if self.projects.is_submodule_path(path) {
             return;
@@ -1756,12 +1778,6 @@ impl App {
         let Some(url) = self.fetch_url_for(path) else {
             return;
         };
-        if self.is_scan_complete()
-            && let Some(owner_repo) = crate::ci::parse_owner_repo(&url)
-            && !self.repo_fetch_in_flight.contains(&owner_repo)
-        {
-            crate::scan::invalidate_cached_repo_data(&self.repo_fetch_cache, &owner_repo);
-        }
         self.spawn_repo_fetch_for_git_info(path, &url);
     }
 
@@ -1825,7 +1841,7 @@ impl App {
     }
 
     pub(in super::super) fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
-        self.repo_fetch_in_flight.remove(&repo);
+        self.github.repo_fetch_in_flight.remove(&repo);
         if let Some(repo_toast) = self.scan.startup_phases.repo_toast {
             let label = repo.to_string();
             self.mark_tracked_item_completed(repo_toast, &label);
@@ -1906,14 +1922,20 @@ impl App {
     pub(in super::super) fn apply_service_signal(&mut self, signal: ServiceSignal) {
         match signal {
             ServiceSignal::Reachable(service) => {
-                self.unreachable_services.remove(&service);
+                self.availability_for(service).mark_reachable();
             },
             ServiceSignal::Unreachable(service) => {
-                self.unreachable_services.insert(service);
-                if self.service_retry_active.insert(service) {
+                if self.availability_for(service).mark_unreachable() {
                     self.spawn_service_retry(service);
                 }
             },
+        }
+    }
+
+    const fn availability_for(&mut self, service: ServiceKind) -> &mut ServiceAvailability {
+        match service {
+            ServiceKind::GitHub => &mut self.github.availability,
+            ServiceKind::CratesIo => &mut self.crates_io.availability,
         }
     }
 
@@ -1936,9 +1958,8 @@ impl App {
         });
     }
 
-    pub(in super::super) fn mark_service_recovered(&mut self, service: ServiceKind) {
-        self.unreachable_services.remove(&service);
-        self.service_retry_active.remove(&service);
+    pub(in super::super) const fn mark_service_recovered(&mut self, service: ServiceKind) {
+        self.availability_for(service).mark_recovered();
     }
 
     fn update_generations_for_msg(&mut self, msg: &BackgroundMsg) {

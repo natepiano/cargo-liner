@@ -9,6 +9,8 @@ use std::time::Instant;
 
 use super::App;
 use super::CiFetchTracker;
+use super::service_state::CratesIoState;
+use super::service_state::GitHubState;
 use super::types::ConfigFileStamp;
 use super::types::DirtyState;
 use super::types::FinderState;
@@ -164,8 +166,8 @@ impl App {
         Self {
             current_config: inputs.cfg,
             http_client: inputs.http_client,
-            repo_fetch_cache: crate::scan::new_repo_cache(),
-            repo_fetch_in_flight: HashSet::new(),
+            github: GitHubState::new(),
+            crates_io: CratesIoState::new(),
             projects: init.projects,
             ci_fetch_tracker: CiFetchTracker::default(),
             ci_display_modes: HashMap::new(),
@@ -205,8 +207,6 @@ impl App {
             ci_fetch_toast: None,
             watch_tx: init.watch_tx,
             lint_runtime: init.lint_runtime,
-            unreachable_services: HashSet::new(),
-            service_retry_active: HashSet::new(),
             #[cfg(test)]
             retry_spawn_mode: RetrySpawnMode::Enabled,
             selection_paths: SelectionPaths::new(),

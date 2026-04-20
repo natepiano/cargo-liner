@@ -6,6 +6,7 @@ mod focus;
 mod lint;
 mod navigation;
 mod query;
+mod service_state;
 mod snapshots;
 mod types;
 
@@ -20,6 +21,8 @@ use std::time::Instant;
 
 use ratatui::layout::Position;
 
+use self::service_state::CratesIoState;
+use self::service_state::GitHubState;
 use super::cpu::CpuPoller;
 use super::pane::PaneManager;
 use super::panes::LayoutCache;
@@ -29,7 +32,6 @@ use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
-use crate::http::ServiceKind;
 use crate::keymap::ResolvedKeymap;
 use crate::lint::CacheUsage;
 use crate::lint::LintRuns;
@@ -75,13 +77,8 @@ use super::toasts::ToastTaskId;
 pub(super) struct App {
     current_config:           CargoPortConfig,
     http_client:              HttpClient,
-    repo_fetch_cache:         RepoCache,
-    /// Set of `OwnerRepo`s with an in-flight GitHub fetch. Lives above
-    /// `repo_fetch_cache` so the dedup survives the
-    /// "invalidate, then re-spawn" sequence in `handle_git_info` when
-    /// multiple `LocalGitInfo` updates arrive for the same repo
-    /// post-scan.
-    repo_fetch_in_flight:     HashSet<OwnerRepo>,
+    github:                   GitHubState,
+    crates_io:                CratesIoState,
     projects:                 ProjectList,
     ci_fetch_tracker:         CiFetchTracker,
     ci_display_modes:         HashMap<AbsolutePath, types::CiRunDisplayMode>,
@@ -121,8 +118,6 @@ pub(super) struct App {
     ci_fetch_toast:           Option<ToastTaskId>,
     watch_tx:                 mpsc::Sender<WatcherMsg>,
     lint_runtime:             Option<RuntimeHandle>,
-    unreachable_services:     HashSet<ServiceKind>,
-    service_retry_active:     HashSet<ServiceKind>,
     selection_paths:          types::SelectionPaths,
     finder:                   types::FinderState,
     cached_visible_rows:      Vec<VisibleRow>,
@@ -168,7 +163,7 @@ impl App {
     #[cfg(test)]
     pub(super) const fn projects_mut(&mut self) -> &mut ProjectList { &mut self.projects }
 
-    pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { &self.repo_fetch_cache }
+    pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { &self.github.fetch_cache }
 
     pub(in super::super) fn complete_ci_fetch_for(&mut self, path: &Path) -> bool {
         self.ci_fetch_tracker.complete(path)

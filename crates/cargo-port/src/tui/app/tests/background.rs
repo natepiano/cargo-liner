@@ -213,26 +213,28 @@ fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
 fn service_reachability_tracks_background_messages() {
     let mut app = make_app(&[]);
 
-    assert!(app.unreachable_services.is_empty());
+    assert!(!app.github.availability.is_unreachable());
+    assert!(!app.crates_io.availability.is_unreachable());
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
         service: ServiceKind::GitHub,
     }));
-    assert!(app.unreachable_services.contains(&ServiceKind::GitHub));
+    assert!(app.github.availability.is_unreachable());
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
         service: ServiceKind::CratesIo,
     }));
-    assert!(app.unreachable_services.contains(&ServiceKind::CratesIo));
+    assert!(app.crates_io.availability.is_unreachable());
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceReachable {
         service: ServiceKind::GitHub,
     }));
-    assert!(!app.unreachable_services.contains(&ServiceKind::GitHub));
-    assert!(app.unreachable_services.contains(&ServiceKind::CratesIo));
+    assert!(!app.github.availability.is_unreachable());
+    assert!(app.crates_io.availability.is_unreachable());
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceReachable {
         service: ServiceKind::CratesIo,
     }));
-    assert!(app.unreachable_services.is_empty());
+    assert!(!app.github.availability.is_unreachable());
+    assert!(!app.crates_io.availability.is_unreachable());
 }

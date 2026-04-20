@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use super::git;
 use super::git::CheckoutInfo;
 use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
@@ -137,9 +138,8 @@ fn parse_key_value(line: &str) -> Option<(&str, &str)> {
 /// Returns a map of `relative_path` → short SHA.
 fn ls_tree_submodule_commits(project_root: &Path) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
-    let output = std::process::Command::new("git")
+    let output = git::git_command(project_root)
         .args(["ls-tree", "HEAD"])
-        .current_dir(project_root)
         .output();
     let Ok(output) = output else {
         return map;
