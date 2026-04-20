@@ -1958,6 +1958,23 @@ impl App {
         });
     }
 
+    /// One-shot: hit GitHub's `/rate_limit` endpoint so the shared
+    /// snapshot is populated before any real request. The endpoint is
+    /// quota-exempt, so this is safe to run even when GitHub is
+    /// refusing other calls. Logged via `rate_limit_prime_ok` /
+    /// `rate_limit_prime_failed`.
+    pub(in super::super) fn spawn_rate_limit_prime(&self) {
+        let client = self.http_client.clone();
+        thread::spawn(move || {
+            let (snapshot, _signal) = client.fetch_rate_limit();
+            if snapshot.is_some() {
+                tracing::info!("rate_limit_prime_ok");
+            } else {
+                tracing::info!("rate_limit_prime_failed");
+            }
+        });
+    }
+
     pub(in super::super) const fn mark_service_recovered(&mut self, service: ServiceKind) {
         self.availability_for(service).mark_recovered();
     }

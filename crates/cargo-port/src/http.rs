@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::process::Command;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -47,6 +49,120 @@ pub(crate) enum ServiceSignal {
 type GitHubJobsAndMeta = (HashMap<u64, Vec<GqlCheckRun>>, Option<RepoMetaInfo>);
 
 pub(crate) type HttpOutcome<T> = (Option<T>, Option<ServiceSignal>);
+
+// ── Rate-limit types & parsers ───────────────────────────────────────
+
+/// Which GitHub rate-limit bucket a response belongs to. The REST and
+/// GraphQL APIs share `api.github.com` but track their quotas
+/// independently, so detection and display must keep them separate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RateLimitBucket {
+    Core,
+    GraphQl,
+}
+
+/// Snapshot of a single rate-limit bucket. `reset_at` is a Unix epoch
+/// timestamp; `None` means the response did not include a reset header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RateLimitQuota {
+    pub limit:     u64,
+    pub used:      u64,
+    pub remaining: u64,
+    pub reset_at:  Option<u64>,
+}
+
+/// Live rate-limit state for both REST and GraphQL buckets. Either
+/// field is `None` until a real response or `/rate_limit` poll
+/// populates it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GitHubRateLimit {
+    pub core:    Option<RateLimitQuota>,
+    pub graphql: Option<RateLimitQuota>,
+}
+
+/// Read `X-RateLimit-*` headers off a GitHub response and identify which
+/// bucket the response counted against. Returns `None` if the bucket
+/// header is missing or names a resource we don't track (`search`,
+/// `integration_manifest`, etc.).
+pub(crate) fn parse_rate_limit_headers(
+    headers: &reqwest::header::HeaderMap,
+) -> Option<(RateLimitBucket, RateLimitQuota)> {
+    let resource = headers.get("x-ratelimit-resource")?.to_str().ok()?;
+    let bucket = match resource {
+        "core" => RateLimitBucket::Core,
+        "graphql" => RateLimitBucket::GraphQl,
+        _ => return None,
+    };
+    let parse = |name: &str| -> Option<u64> { headers.get(name)?.to_str().ok()?.parse().ok() };
+    let limit = parse("x-ratelimit-limit")?;
+    let used = parse("x-ratelimit-used")?;
+    let remaining = parse("x-ratelimit-remaining")?;
+    let reset_at = parse("x-ratelimit-reset");
+    Some((
+        bucket,
+        RateLimitQuota {
+            limit,
+            used,
+            remaining,
+            reset_at,
+        },
+    ))
+}
+
+/// Parse a `/rate_limit` JSON response. Missing buckets stay `None` so
+/// the caller can merge selectively.
+pub(crate) fn parse_rate_limit_snapshot(value: &serde_json::Value) -> GitHubRateLimit {
+    let resources = value.get("resources");
+    let bucket = |name: &str| -> Option<RateLimitQuota> {
+        let entry = resources?.get(name)?;
+        Some(RateLimitQuota {
+            limit:     entry.get("limit")?.as_u64()?,
+            used:      entry.get("used")?.as_u64()?,
+            remaining: entry.get("remaining")?.as_u64()?,
+            reset_at:  entry.get("reset").and_then(serde_json::Value::as_u64),
+        })
+    };
+    GitHubRateLimit {
+        core:    bucket("core"),
+        graphql: bucket("graphql"),
+    }
+}
+
+/// True for the two REST shapes GitHub uses for rate-limit refusals:
+/// `429 Too Many Requests`, or `403 Forbidden` with
+/// `X-RateLimit-Remaining: 0` (the secondary-rate-limit / abuse-detection
+/// shape). A bare 403 is auth-related and not rate-limit.
+pub(crate) fn github_is_rate_limited(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> bool {
+    if status.as_u16() == 429 {
+        return true;
+    }
+    if status.as_u16() == 403 {
+        return headers
+            .get("x-ratelimit-remaining")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|text| text.parse::<u64>().ok())
+            .is_some_and(|remaining| remaining == 0);
+    }
+    false
+}
+
+/// True when a GraphQL response body carries an `errors[].type` of
+/// `RATE_LIMITED`. GraphQL returns HTTP 200 on rate-limit, so
+/// status-based detection alone is not enough for that endpoint.
+pub(crate) fn graphql_body_is_rate_limited(body: &serde_json::Value) -> bool {
+    body.get("errors")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|errors| {
+            errors.iter().any(|err| {
+                err.get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|t| t == "RATE_LIMITED")
+            })
+        })
+}
 
 fn classify_network_error(service: ServiceKind, error: &reqwest::Error) -> Option<ServiceSignal> {
     if error.is_connect() || error.is_timeout() {
@@ -98,6 +214,7 @@ struct GqlCheckRunConnection {
 pub(crate) struct HttpClient {
     client:            reqwest::Client,
     github_token:      Option<String>,
+    rate_limit:        Arc<Mutex<GitHubRateLimit>>,
     pub(crate) handle: tokio::runtime::Handle,
 }
 
@@ -117,8 +234,35 @@ impl HttpClient {
         Some(Self {
             client,
             github_token,
+            rate_limit: Arc::new(Mutex::new(GitHubRateLimit::default())),
             handle,
         })
+    }
+
+    /// Snapshot the current live rate-limit state. Returned by value —
+    /// `GitHubRateLimit` is `Copy`.
+    #[cfg(test)]
+    pub(crate) fn rate_limit_snapshot(&self) -> GitHubRateLimit {
+        self.rate_limit
+            .lock()
+            .map(|state| *state)
+            .unwrap_or_default()
+    }
+
+    fn update_rate_limit_bucket(&self, bucket: RateLimitBucket, quota: RateLimitQuota) {
+        let Ok(mut state) = self.rate_limit.lock() else {
+            return;
+        };
+        match bucket {
+            RateLimitBucket::Core => state.core = Some(quota),
+            RateLimitBucket::GraphQl => state.graphql = Some(quota),
+        }
+    }
+
+    fn store_rate_limit_snapshot(&self, snapshot: GitHubRateLimit) {
+        if let Ok(mut state) = self.rate_limit.lock() {
+            *state = snapshot;
+        }
     }
 
     // ── Async internals ─────────────────────────────────────────────
@@ -139,6 +283,11 @@ impl HttpClient {
             Ok(response) => response,
             Err(error) => return (None, classify_network_error(ServiceKind::GitHub, &error)),
         };
+        if let Some((bucket, quota)) = parse_rate_limit_headers(response.headers()) {
+            self.update_rate_limit_bucket(bucket, quota);
+        }
+        let status = response.status();
+        let rate_limited = github_is_rate_limited(status, response.headers());
         let body = match response.bytes().await {
             Ok(body) => body,
             Err(error) => {
@@ -149,6 +298,9 @@ impl HttpClient {
                 );
             },
         };
+        if rate_limited {
+            return (None, Some(ServiceSignal::Unreachable(ServiceKind::GitHub)));
+        }
         (
             Some(body.to_vec()),
             Some(ServiceSignal::Reachable(ServiceKind::GitHub)),
@@ -172,6 +324,11 @@ impl HttpClient {
             Ok(response) => response,
             Err(error) => return (None, classify_network_error(ServiceKind::GitHub, &error)),
         };
+        if let Some((bucket, quota)) = parse_rate_limit_headers(response.headers()) {
+            self.update_rate_limit_bucket(bucket, quota);
+        }
+        let status = response.status();
+        let http_rate_limited = github_is_rate_limited(status, response.headers());
         let body = match response.bytes().await {
             Ok(body) => body,
             Err(error) => {
@@ -182,6 +339,17 @@ impl HttpClient {
                 );
             },
         };
+        if http_rate_limited {
+            return (None, Some(ServiceSignal::Unreachable(ServiceKind::GitHub)));
+        }
+        // GraphQL returns HTTP 200 on rate-limit, so status-code
+        // detection alone is insufficient — inspect the body's
+        // `errors[].type` for `RATE_LIMITED`.
+        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body)
+            && graphql_body_is_rate_limited(&json)
+        {
+            return (None, Some(ServiceSignal::Unreachable(ServiceKind::GitHub)));
+        }
         (
             Some(body.to_vec()),
             Some(ServiceSignal::Reachable(ServiceKind::GitHub)),
@@ -286,6 +454,46 @@ impl HttpClient {
         (Some((jobs, meta)), signal)
     }
 
+    /// Call GitHub's `/rate_limit` endpoint, which is itself exempt from
+    /// the quota and therefore safe to poll while we're rate-limited.
+    /// Updates the shared live snapshot on success.
+    pub(crate) async fn fetch_rate_limit_async(&self) -> HttpOutcome<GitHubRateLimit> {
+        let Some(token) = self.github_token.as_ref() else {
+            return (None, None);
+        };
+        let url = format!("{GITHUB_API_BASE}/rate_limit");
+        let response = match self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => return (None, classify_network_error(ServiceKind::GitHub, &error)),
+        };
+        let body = match response.bytes().await {
+            Ok(body) => body,
+            Err(error) => {
+                return (
+                    None,
+                    classify_network_error(ServiceKind::GitHub, &error)
+                        .or(Some(ServiceSignal::Reachable(ServiceKind::GitHub))),
+                );
+            },
+        };
+        let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) else {
+            return (None, Some(ServiceSignal::Reachable(ServiceKind::GitHub)));
+        };
+        let snapshot = parse_rate_limit_snapshot(&json);
+        self.store_rate_limit_snapshot(snapshot);
+        (
+            Some(snapshot),
+            Some(ServiceSignal::Reachable(ServiceKind::GitHub)),
+        )
+    }
+
     /// Lightweight service probe used only while recovering from a prior failure.
     pub(crate) async fn probe_service_async(&self, service: ServiceKind) -> bool {
         self.client
@@ -374,6 +582,11 @@ impl HttpClient {
         self.handle.block_on(self.probe_service_async(service))
     }
 
+    /// Fetch `/rate_limit` (sync wrapper).
+    pub(crate) fn fetch_rate_limit(&self) -> HttpOutcome<GitHubRateLimit> {
+        self.handle.block_on(self.fetch_rate_limit_async())
+    }
+
     /// Fetch crates.io info (sync wrapper).
     pub(crate) fn fetch_crates_io_info(&self, crate_name: &str) -> HttpOutcome<CratesIoInfo> {
         self.handle
@@ -389,19 +602,199 @@ fn build_client() -> Result<reqwest::Client, reqwest::Error> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use std::io::Read;
     use std::io::Write as _;
     use std::net::TcpListener;
     use std::thread;
 
+    use reqwest::StatusCode;
+    use reqwest::header::HeaderMap;
+    use reqwest::header::HeaderValue;
+    use serde_json::json;
+
     use super::*;
 
+    fn header_map(entries: &[(&str, &str)]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for (name, value) in entries {
+            let name: reqwest::header::HeaderName = (*name).parse().unwrap();
+            headers.insert(name, HeaderValue::from_str(value).unwrap());
+        }
+        headers
+    }
+
     #[test]
-    #[allow(
-        clippy::expect_used,
-        reason = "tests should panic on unexpected values"
-    )]
+    fn rate_limit_headers_core_bucket_parsed() {
+        let headers = header_map(&[
+            ("x-ratelimit-resource", "core"),
+            ("x-ratelimit-limit", "5000"),
+            ("x-ratelimit-used", "42"),
+            ("x-ratelimit-remaining", "4958"),
+            ("x-ratelimit-reset", "1717000000"),
+        ]);
+        let (bucket, quota) = parse_rate_limit_headers(&headers).unwrap();
+        assert_eq!(bucket, RateLimitBucket::Core);
+        assert_eq!(quota.limit, 5000);
+        assert_eq!(quota.used, 42);
+        assert_eq!(quota.remaining, 4958);
+        assert_eq!(quota.reset_at, Some(1_717_000_000));
+    }
+
+    #[test]
+    fn rate_limit_headers_graphql_bucket_parsed() {
+        let headers = header_map(&[
+            ("x-ratelimit-resource", "graphql"),
+            ("x-ratelimit-limit", "5000"),
+            ("x-ratelimit-used", "12"),
+            ("x-ratelimit-remaining", "4988"),
+            ("x-ratelimit-reset", "1717000000"),
+        ]);
+        let (bucket, _) = parse_rate_limit_headers(&headers).unwrap();
+        assert_eq!(bucket, RateLimitBucket::GraphQl);
+    }
+
+    #[test]
+    fn rate_limit_headers_missing_are_none() {
+        let headers = header_map(&[("x-ratelimit-resource", "core")]);
+        assert!(parse_rate_limit_headers(&headers).is_none());
+    }
+
+    #[test]
+    fn rate_limit_headers_unknown_bucket_is_none() {
+        let headers = header_map(&[
+            ("x-ratelimit-resource", "search"),
+            ("x-ratelimit-limit", "30"),
+            ("x-ratelimit-used", "0"),
+            ("x-ratelimit-remaining", "30"),
+        ]);
+        assert!(parse_rate_limit_headers(&headers).is_none());
+    }
+
+    #[test]
+    fn rate_limit_snapshot_parses_both_buckets() {
+        let body = json!({
+            "resources": {
+                "core":    { "limit": 5000, "used": 42,  "remaining": 4958, "reset": 1_717_000_000 },
+                "graphql": { "limit": 5000, "used": 12,  "remaining": 4988, "reset": 1_717_000_000 },
+            },
+        });
+        let snapshot = parse_rate_limit_snapshot(&body);
+        let core = snapshot.core.unwrap();
+        assert_eq!(core.limit, 5000);
+        assert_eq!(core.used, 42);
+        assert_eq!(core.remaining, 4958);
+        assert_eq!(core.reset_at, Some(1_717_000_000));
+        let gql = snapshot.graphql.unwrap();
+        assert_eq!(gql.limit, 5000);
+        assert_eq!(gql.remaining, 4988);
+    }
+
+    #[test]
+    fn rate_limit_snapshot_missing_bucket_is_none() {
+        let body = json!({
+            "resources": {
+                "core": { "limit": 5000, "used": 0, "remaining": 5000 },
+            },
+        });
+        let snapshot = parse_rate_limit_snapshot(&body);
+        assert!(snapshot.core.is_some());
+        assert!(snapshot.graphql.is_none());
+    }
+
+    #[test]
+    fn github_is_rate_limited_on_429() {
+        let headers = HeaderMap::new();
+        assert!(github_is_rate_limited(
+            StatusCode::TOO_MANY_REQUESTS,
+            &headers
+        ));
+    }
+
+    #[test]
+    fn github_is_rate_limited_on_403_with_zero_remaining() {
+        let headers = header_map(&[("x-ratelimit-remaining", "0")]);
+        assert!(github_is_rate_limited(StatusCode::FORBIDDEN, &headers));
+    }
+
+    #[test]
+    fn github_is_not_rate_limited_on_403_with_remaining() {
+        let headers = header_map(&[("x-ratelimit-remaining", "500")]);
+        assert!(!github_is_rate_limited(StatusCode::FORBIDDEN, &headers));
+    }
+
+    #[test]
+    fn github_is_not_rate_limited_on_200() {
+        let headers = header_map(&[("x-ratelimit-remaining", "0")]);
+        assert!(!github_is_rate_limited(StatusCode::OK, &headers));
+    }
+
+    #[test]
+    fn graphql_rate_limited_body_is_detected() {
+        let body = json!({ "errors": [{ "type": "RATE_LIMITED", "message": "x" }] });
+        assert!(graphql_body_is_rate_limited(&body));
+    }
+
+    #[test]
+    fn graphql_body_without_errors_is_not_rate_limited() {
+        let body = json!({ "data": { "repo": null } });
+        assert!(!graphql_body_is_rate_limited(&body));
+    }
+
+    #[test]
+    fn graphql_body_with_unrelated_errors_is_not_rate_limited() {
+        let body = json!({ "errors": [{ "type": "NOT_FOUND", "message": "x" }] });
+        assert!(!graphql_body_is_rate_limited(&body));
+    }
+
+    fn test_client(handle: &tokio::runtime::Handle) -> HttpClient {
+        HttpClient {
+            client:       build_client().expect("build http client"),
+            github_token: None,
+            rate_limit:   Arc::new(Mutex::new(GitHubRateLimit::default())),
+            handle:       handle.clone(),
+        }
+    }
+
+    #[test]
+    fn rate_limit_snapshot_reflects_bucket_updates() {
+        let runtime = tokio::runtime::Runtime::new().expect("create runtime");
+        let client = test_client(runtime.handle());
+
+        assert_eq!(client.rate_limit_snapshot(), GitHubRateLimit::default());
+
+        let core_quota = RateLimitQuota {
+            limit:     5000,
+            used:      42,
+            remaining: 4958,
+            reset_at:  Some(1_717_000_000),
+        };
+        client.update_rate_limit_bucket(RateLimitBucket::Core, core_quota);
+        let snapshot = client.rate_limit_snapshot();
+        assert_eq!(snapshot.core, Some(core_quota));
+        assert!(snapshot.graphql.is_none());
+
+        let gql_quota = RateLimitQuota {
+            limit:     5000,
+            used:      1,
+            remaining: 4999,
+            reset_at:  None,
+        };
+        client.update_rate_limit_bucket(RateLimitBucket::GraphQl, gql_quota);
+        let snapshot = client.rate_limit_snapshot();
+        assert_eq!(snapshot.core, Some(core_quota));
+        assert_eq!(snapshot.graphql, Some(gql_quota));
+    }
+
+    #[test]
     fn client_sends_app_user_agent_header() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("read listener address");

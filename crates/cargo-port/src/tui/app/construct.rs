@@ -252,5 +252,6 @@ impl App {
             self.finish_watcher_registration_batch();
         }
         self.refresh_lint_runs_from_disk();
+        self.spawn_rate_limit_prime();
     }
 }
