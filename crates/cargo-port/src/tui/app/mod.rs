@@ -31,6 +31,7 @@ use super::panes::PaneId;
 use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
+use crate::http::GitHubRateLimit;
 use crate::http::HttpClient;
 use crate::keymap::ResolvedKeymap;
 use crate::lint::CacheUsage;
@@ -164,6 +165,18 @@ impl App {
     pub(super) const fn projects_mut(&mut self) -> &mut ProjectList { &mut self.projects }
 
     pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { &self.github.fetch_cache }
+
+    /// True when the GitHub service is currently marked unreachable
+    /// (network failure or rate-limit). Delegates to the per-service
+    /// availability struct; used by the Git pane to apply the
+    /// "(github unreachable)" decoration on rate-limit rows.
+    pub(super) const fn is_github_unreachable(&self) -> bool {
+        self.github.availability.is_unreachable()
+    }
+
+    /// Snapshot of GitHub's REST + GraphQL rate-limit buckets. Rebuilt
+    /// from the shared `HttpClient` state every frame — not persisted.
+    pub(super) fn rate_limit(&self) -> GitHubRateLimit { self.http_client.rate_limit_snapshot() }
 
     pub(in super::super) fn complete_ci_fetch_for(&mut self, path: &Path) -> bool {
         self.ci_fetch_tracker.complete(path)

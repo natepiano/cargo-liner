@@ -338,6 +338,29 @@ struct RenderFlatArgs<'a> {
     label_width: usize,
 }
 
+/// Compute the displayed value string for a flat git-pane row,
+/// including row-specific decorations (local-only suffix on `Branch`,
+/// `(github unreachable)` suffix on rate-limit rows).
+fn build_field_value(data: &GitData, field: DetailField, is_rate_limit_row: bool) -> String {
+    if field == DetailField::Branch {
+        let raw = field.git_value(data);
+        return if data.is_local() && !raw.is_empty() {
+            format!("{raw} ({GIT_LOCAL} local)")
+        } else {
+            raw
+        };
+    }
+    let raw = field.git_value(data);
+    if is_rate_limit_row && data.github_unreachable {
+        return if raw.is_empty() {
+            "(github unreachable)".to_string()
+        } else {
+            format!("{raw} (github unreachable)")
+        };
+    }
+    raw
+}
+
 fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
     let RenderFlatArgs {
         data,
@@ -362,17 +385,11 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
             },
             _ => field.label(),
         };
-        let value = match *field {
-            DetailField::Branch => {
-                let raw = field.git_value(data);
-                if data.is_local() && !raw.is_empty() {
-                    format!("{raw} ({GIT_LOCAL} local)")
-                } else {
-                    raw
-                }
-            },
-            _ => field.git_value(data),
-        };
+        let is_rate_limit_row = matches!(
+            *field,
+            DetailField::RateLimitCore | DetailField::RateLimitGraphQl
+        );
+        let value = build_field_value(data, *field, is_rate_limit_row);
         let selection = pane.selection_state(i, focus);
         let base_value_style = if matches!(*field, DetailField::VsLocal) && value == IN_SYNC {
             Style::default().fg(SUCCESS_COLOR)
@@ -382,6 +399,8 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
             Style::default().fg(INACTIVE_BORDER_COLOR)
         } else if *field == DetailField::WorktreeError {
             Style::default().fg(Color::White).bg(ERROR_COLOR)
+        } else if is_rate_limit_row && data.github_unreachable {
+            Style::default().fg(ERROR_COLOR)
         } else {
             Style::default()
         };

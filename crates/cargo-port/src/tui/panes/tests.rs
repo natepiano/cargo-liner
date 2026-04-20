@@ -39,18 +39,21 @@ fn package_data(is_rust_project: bool) -> PackageData {
 
 fn git_data() -> GitData {
     GitData {
-        branch:            None,
-        status:            None,
-        vs_local:          None,
-        local_main_branch: None,
-        main_branch_label: "main".to_string(),
-        stars:             None,
-        description:       None,
-        inception:         None,
-        last_commit:       None,
-        last_fetched:      None,
-        remotes:           Vec::new(),
-        worktrees:         Vec::new(),
+        branch:             None,
+        status:             None,
+        vs_local:           None,
+        local_main_branch:  None,
+        main_branch_label:  "main".to_string(),
+        stars:              None,
+        description:        None,
+        inception:          None,
+        last_commit:        None,
+        last_fetched:       None,
+        rate_limit_core:    None,
+        rate_limit_graphql: None,
+        github_unreachable: false,
+        remotes:            Vec::new(),
+        worktrees:          Vec::new(),
     }
 }
 

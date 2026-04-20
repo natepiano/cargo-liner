@@ -241,7 +241,6 @@ impl HttpClient {
 
     /// Snapshot the current live rate-limit state. Returned by value —
     /// `GitHubRateLimit` is `Copy`.
-    #[cfg(test)]
     pub(crate) fn rate_limit_snapshot(&self) -> GitHubRateLimit {
         self.rate_limit
             .lock()

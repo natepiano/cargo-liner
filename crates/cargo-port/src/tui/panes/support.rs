@@ -13,6 +13,7 @@ use crate::constants::NO_LINT_RUNS_NOT_RUST;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
+use crate::http::RateLimitQuota;
 use crate::lint::LintRun;
 use crate::project;
 use crate::project::AbsolutePath;
@@ -424,6 +425,8 @@ pub enum DetailField {
     Inception,
     LastCommit,
     LastFetched,
+    RateLimitCore,
+    RateLimitGraphQl,
     WorktreeError,
     CratesIo,
     Downloads,
@@ -446,6 +449,8 @@ impl DetailField {
             Self::Inception => "Incept",
             Self::LastCommit => "Latest",
             Self::LastFetched => "Fetched",
+            Self::RateLimitCore => "Rate limit core",
+            Self::RateLimitGraphQl => "Rate limit GraphQL",
             Self::WorktreeError => "Error",
             Self::CratesIo => "crates.io",
             Self::Downloads => "Downloads",
@@ -513,7 +518,9 @@ impl DetailField {
             | Self::RepoDesc
             | Self::Inception
             | Self::LastCommit
-            | Self::LastFetched => String::new(),
+            | Self::LastFetched
+            | Self::RateLimitCore
+            | Self::RateLimitGraphQl => String::new(),
         }
     }
 
@@ -543,6 +550,8 @@ impl DetailField {
             Self::Inception => data.inception.as_deref().unwrap_or("").to_string(),
             Self::LastCommit => data.last_commit.as_deref().unwrap_or("").to_string(),
             Self::LastFetched => data.last_fetched.as_deref().unwrap_or("").to_string(),
+            Self::RateLimitCore => format_rate_limit_bucket(data.rate_limit_core),
+            Self::RateLimitGraphQl => format_rate_limit_bucket(data.rate_limit_graphql),
             // Package fields — should not be called with git_value.
             Self::Path
             | Self::Disk
@@ -555,6 +564,32 @@ impl DetailField {
             | Self::WorktreeError => String::new(),
         }
     }
+}
+
+/// Render a rate-limit bucket as `"remaining/limit resets HH:MM:SS"`.
+/// Returns the empty string when the bucket has not been observed yet;
+/// drops the `resets …` suffix when no reset timestamp is available.
+pub(super) fn format_rate_limit_bucket(quota: Option<RateLimitQuota>) -> String {
+    let Some(quota) = quota else {
+        return String::new();
+    };
+    let base = format!("{}/{}", quota.remaining, quota.limit);
+    let Some(reset_at) = quota.reset_at else {
+        return base;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let secs = reset_at.saturating_sub(now);
+    format!("{base} resets {}", format_countdown(secs))
+}
+
+/// Format a non-negative second count as `HH:MM:SS`.
+fn format_countdown(secs: u64) -> String {
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    let secs = secs % 60;
+    format!("{hours:02}:{mins:02}:{secs:02}")
 }
 
 /// All fields for the `Package` column.
@@ -613,6 +648,11 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     if data.last_fetched.is_some() {
         fields.push(DetailField::LastFetched);
     }
+    // Rate-limit rows are always shown so the section structure stays
+    // stable across fetch state; rendering handles the empty-quota
+    // case.
+    fields.push(DetailField::RateLimitCore);
+    fields.push(DetailField::RateLimitGraphQl);
     if !data.worktrees.is_empty() {
         // Worktree count is appended by the render function, not as a field.
     }
@@ -640,18 +680,21 @@ pub struct PackageData {
 /// Per-pane data for the Git detail panel.
 #[derive(Clone)]
 pub struct GitData {
-    pub branch:            Option<String>,
-    pub status:            Option<GitStatus>,
-    pub vs_local:          Option<String>,
-    pub local_main_branch: Option<String>,
-    pub main_branch_label: String,
-    pub stars:             Option<u64>,
-    pub description:       Option<String>,
-    pub inception:         Option<String>,
-    pub last_commit:       Option<String>,
-    pub last_fetched:      Option<String>,
-    pub remotes:           Vec<RemoteRow>,
-    pub worktrees:         Vec<WorktreeInfo>,
+    pub branch:             Option<String>,
+    pub status:             Option<GitStatus>,
+    pub vs_local:           Option<String>,
+    pub local_main_branch:  Option<String>,
+    pub main_branch_label:  String,
+    pub stars:              Option<u64>,
+    pub description:        Option<String>,
+    pub inception:          Option<String>,
+    pub last_commit:        Option<String>,
+    pub last_fetched:       Option<String>,
+    pub rate_limit_core:    Option<RateLimitQuota>,
+    pub rate_limit_graphql: Option<RateLimitQuota>,
+    pub github_unreachable: bool,
+    pub remotes:            Vec<RemoteRow>,
+    pub worktrees:          Vec<WorktreeInfo>,
 }
 
 impl GitData {
@@ -823,17 +866,20 @@ fn format_downloads(count: u64) -> String {
 }
 
 struct GitDetailFields {
-    branch:            Option<String>,
-    path:              Option<GitStatus>,
-    vs_local:          Option<String>,
-    local_main_branch: Option<String>,
-    main_branch_label: String,
-    stars:             Option<u64>,
-    description:       Option<String>,
-    inception:         Option<String>,
-    last_commit:       Option<String>,
-    last_fetched:      Option<String>,
-    remotes:           Vec<RemoteRow>,
+    branch:             Option<String>,
+    path:               Option<GitStatus>,
+    vs_local:           Option<String>,
+    local_main_branch:  Option<String>,
+    main_branch_label:  String,
+    stars:              Option<u64>,
+    description:        Option<String>,
+    inception:          Option<String>,
+    last_commit:        Option<String>,
+    last_fetched:       Option<String>,
+    rate_limit_core:    Option<RateLimitQuota>,
+    rate_limit_graphql: Option<RateLimitQuota>,
+    github_unreachable: bool,
+    remotes:            Vec<RemoteRow>,
 }
 
 fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
@@ -862,6 +908,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         .map(format_timestamp);
     let default_host = app.current_config().tui.default_remote_host_url.clone();
     let remotes = repo_info.map_or_else(Vec::new, |repo| build_remote_rows(repo, &default_host));
+    let rate_limit = app.rate_limit();
     GitDetailFields {
         branch,
         path: app.git_status_for(abs_path),
@@ -873,6 +920,9 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         inception,
         last_commit,
         last_fetched,
+        rate_limit_core: rate_limit.core,
+        rate_limit_graphql: rate_limit.graphql,
+        github_unreachable: app.is_github_unreachable(),
         remotes,
     }
 }
@@ -1038,18 +1088,21 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             has_package: false,
         },
         git:     GitData {
-            branch:            git_detail.branch,
-            status:            git_detail.path,
-            vs_local:          git_detail.vs_local,
-            local_main_branch: git_detail.local_main_branch,
-            main_branch_label: git_detail.main_branch_label,
-            stars:             git_detail.stars,
-            description:       git_detail.description,
-            inception:         git_detail.inception,
-            last_commit:       git_detail.last_commit,
-            last_fetched:      git_detail.last_fetched,
-            remotes:           git_detail.remotes,
-            worktrees:         Vec::new(),
+            branch:             git_detail.branch,
+            status:             git_detail.path,
+            vs_local:           git_detail.vs_local,
+            local_main_branch:  git_detail.local_main_branch,
+            main_branch_label:  git_detail.main_branch_label,
+            stars:              git_detail.stars,
+            description:        git_detail.description,
+            inception:          git_detail.inception,
+            last_commit:        git_detail.last_commit,
+            last_fetched:       git_detail.last_fetched,
+            rate_limit_core:    git_detail.rate_limit_core,
+            rate_limit_graphql: git_detail.rate_limit_graphql,
+            github_unreachable: git_detail.github_unreachable,
+            remotes:            git_detail.remotes,
+            worktrees:          Vec::new(),
         },
         targets: TargetsData {
             is_binary:   false,
@@ -1229,6 +1282,9 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             inception: git_detail.inception,
             last_commit: git_detail.last_commit,
             last_fetched: git_detail.last_fetched,
+            rate_limit_core: git_detail.rate_limit_core,
+            rate_limit_graphql: git_detail.rate_limit_graphql,
+            github_unreachable: git_detail.github_unreachable,
             remotes: git_detail.remotes,
             worktrees,
         },
@@ -1379,5 +1435,55 @@ fn build_ci_runs_label(app: &App, abs_path: &Path) -> String {
         format!("{local}")
     } else {
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn countdown_zero_is_all_zeros() {
+        assert_eq!(format_countdown(0), "00:00:00");
+    }
+
+    #[test]
+    fn countdown_formats_hours_minutes_seconds() {
+        assert_eq!(format_countdown(3_723), "01:02:03");
+    }
+
+    #[test]
+    fn countdown_handles_multi_hour_values() {
+        assert_eq!(format_countdown(45_296), "12:34:56");
+    }
+
+    #[test]
+    fn rate_limit_bucket_empty_without_quota() {
+        assert!(format_rate_limit_bucket(None).is_empty());
+    }
+
+    #[test]
+    fn rate_limit_bucket_without_reset_omits_countdown() {
+        let quota = RateLimitQuota {
+            limit:     5000,
+            used:      42,
+            remaining: 4958,
+            reset_at:  None,
+        };
+        assert_eq!(format_rate_limit_bucket(Some(quota)), "4958/5000");
+    }
+
+    #[test]
+    fn rate_limit_bucket_with_past_reset_renders_zero_countdown() {
+        let quota = RateLimitQuota {
+            limit:     5000,
+            used:      100,
+            remaining: 4900,
+            reset_at:  Some(0),
+        };
+        assert_eq!(
+            format_rate_limit_bucket(Some(quota)),
+            "4900/5000 resets 00:00:00"
+        );
     }
 }

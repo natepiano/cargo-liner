@@ -17,7 +17,6 @@ impl ServiceAvailability {
         }
     }
 
-    #[cfg(test)]
     pub(super) const fn is_unreachable(&self) -> bool { self.unreachable }
 
     pub(super) const fn mark_reachable(&mut self) { self.unreachable = false; }
