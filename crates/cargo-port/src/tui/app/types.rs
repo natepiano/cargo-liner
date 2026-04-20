@@ -82,7 +82,6 @@ pub(in super::super) struct StartupPhaseTracker {
     pub repo_seen:                HashSet<OwnerRepo>,
     pub repo_complete_at:         Option<Instant>,
     pub git_toast:                Option<ToastTaskId>,
-    pub repo_toast:               Option<ToastTaskId>,
     pub startup_toast:            Option<ToastTaskId>,
     pub lint_expected:            Option<HashSet<AbsolutePath>>,
     pub lint_seen_terminal:       HashSet<AbsolutePath>,

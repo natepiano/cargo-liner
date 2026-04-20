@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
+use std::time::Instant;
 
 use crate::ci::OwnerRepo;
 use crate::scan;
 use crate::scan::RepoCache;
+use crate::tui::toasts::ToastTaskId;
 
 /// Three-way availability for a single service. `Unreachable` means
 /// the network layer can't talk to the service at all; `RateLimited`
@@ -91,6 +94,14 @@ pub(super) struct GitHubState {
     pub(super) availability:         ServiceAvailability,
     pub(super) fetch_cache:          RepoCache,
     pub(super) repo_fetch_in_flight: HashSet<OwnerRepo>,
+    /// Live cache-missed repo fetches, keyed by `OwnerRepo` and
+    /// started-at. Drives the "Retrieving GitHub repo details" lint-
+    /// style toast. Populated on `RepoFetchQueued` (which only fires
+    /// on cache miss) and cleared on `RepoFetchComplete`. Cache-hit
+    /// fetches never appear here, so the toast doesn't flicker for
+    /// work that never touches the network.
+    pub(super) running_fetches:      HashMap<OwnerRepo, Instant>,
+    pub(super) running_fetch_toast:  Option<ToastTaskId>,
 }
 
 impl GitHubState {
@@ -99,6 +110,8 @@ impl GitHubState {
             availability:         ServiceAvailability::new(),
             fetch_cache:          scan::new_repo_cache(),
             repo_fetch_in_flight: HashSet::new(),
+            running_fetches:      HashMap::new(),
+            running_fetch_toast:  None,
         }
     }
 }

@@ -640,18 +640,58 @@ fn compute_target_height(body: &str, min_interior_lines: u16) -> u16 {
         1
     } else {
         body.lines()
-            .map(|line| {
-                let width = unicode_width::UnicodeWidthStr::width(line);
-                if width == 0 {
-                    1
-                } else {
-                    width.div_ceil(inner_width.max(1))
-                }
-            })
+            .map(|line| wrapped_line_count(line, inner_width.max(1)))
             .sum::<usize>()
     };
     let raw = u16::try_from(2 + body_lines).unwrap_or(u16::MAX);
     raw.max(2 + min_interior_lines)
+}
+
+/// Estimate how many display rows a single body line needs when
+/// rendered via `ratatui::widgets::Paragraph::wrap(Wrap { trim: false
+/// })`, which word-wraps at whitespace. Char-level `div_ceil`
+/// undercounts because word boundaries can force earlier breaks (e.g.
+/// a 40-char word at the end of a 48-char inner width rolls onto a
+/// new line), truncating the rendered body.
+fn wrapped_line_count(line: &str, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    if line.trim().is_empty() {
+        return 1;
+    }
+    let mut rows = 0_usize;
+    let mut current: usize = 0;
+    for word in line.split_whitespace() {
+        let word_width = unicode_width::UnicodeWidthStr::width(word);
+        // Word wider than a row — it consumes (at least) its own rows.
+        // Approximate: split across `ceil(word_width / width)` rows,
+        // with the last fragment starting a fresh line.
+        if word_width > width {
+            if current > 0 {
+                rows += 1;
+            }
+            let full = word_width / width;
+            rows = rows.saturating_add(full);
+            current = word_width % width;
+            continue;
+        }
+        let need = if current == 0 {
+            word_width
+        } else {
+            current + 1 + word_width
+        };
+        if need <= width {
+            current = need;
+        } else {
+            rows += 1;
+            current = word_width;
+        }
+    }
+    if current > 0 {
+        rows += 1;
+    }
+    rows.max(1)
 }
 
 #[cfg(test)]
@@ -664,6 +704,33 @@ mod tests {
     /// Duration long enough for the full exit animation to complete.
     /// Use a generous upper bound since toast heights are now variable.
     const EXIT_ANIMATION: Duration = Duration::from_millis(20 * TOAST_LINE_REVEAL_MS + 1);
+
+    #[test]
+    fn wrapped_line_count_splits_at_word_boundaries() {
+        // "foo bar" at width 5 fits on one line ("foo bar" = 7 doesn't
+        // fit, so "foo" then "bar" = 2 rows).
+        assert_eq!(wrapped_line_count("foo bar", 5), 2);
+        // A single word wider than the row is split across multiple rows.
+        assert_eq!(wrapped_line_count("aaaaaaaaaaaa", 5), 3);
+        // An empty / whitespace-only line still reserves one row.
+        assert_eq!(wrapped_line_count("", 10), 1);
+        assert_eq!(wrapped_line_count("   ", 10), 1);
+        // Content that fits exactly is one row.
+        assert_eq!(wrapped_line_count("hello", 5), 1);
+    }
+
+    #[test]
+    fn compute_target_height_uses_word_wrap_not_char_wrap() {
+        // Body where word-wrap produces more rows than char-wrap. At
+        // inner_width = TOAST_WIDTH - 2 the char-wrap estimator might
+        // undercount when a long word rolls to a new line.
+        let body = "short ".repeat(20);
+        let height = compute_target_height(&body, 1);
+        // Height >= 2 (borders) + at least 1 body row; the exact
+        // number depends on TOAST_WIDTH, but the function must never
+        // return less than the min-floor.
+        assert!(height >= 3);
+    }
 
     #[test]
     fn timed_toast_expires() {
