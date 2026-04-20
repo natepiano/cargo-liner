@@ -1925,8 +1925,16 @@ impl App {
                 self.availability_for(service).mark_reachable();
             },
             ServiceSignal::Unreachable(service) => {
-                if self.availability_for(service).mark_unreachable() {
+                let (spawn_retry, push_toast) = {
+                    let avail = self.availability_for(service);
+                    (avail.mark_unreachable(), avail.needs_toast())
+                };
+                if spawn_retry {
                     self.spawn_service_retry(service);
+                }
+                if push_toast {
+                    let toast_id = self.push_service_unreachable_toast(service);
+                    self.availability_for(service).set_toast(toast_id);
                 }
             },
         }
@@ -1937,6 +1945,16 @@ impl App {
             ServiceKind::GitHub => &mut self.github.availability,
             ServiceKind::CratesIo => &mut self.crates_io.availability,
         }
+    }
+
+    fn push_service_unreachable_toast(&mut self, service: ServiceKind) -> u64 {
+        let (title, body) = service_unreachable_message(service);
+        let id = self.toasts.push_persistent(title, body, Error, None, 1);
+        let toast_len = self.active_toasts().len();
+        self.pane_manager
+            .pane_mut(PaneId::Toasts)
+            .set_len(toast_len);
+        id
     }
 
     pub(in super::super) fn spawn_service_retry(&self, service: ServiceKind) {
@@ -1975,8 +1993,13 @@ impl App {
         });
     }
 
-    pub(in super::super) const fn mark_service_recovered(&mut self, service: ServiceKind) {
-        self.availability_for(service).mark_recovered();
+    pub(in super::super) fn mark_service_recovered(&mut self, service: ServiceKind) {
+        let Some(toast_id) = self.availability_for(service).mark_recovered() else {
+            return;
+        };
+        self.toasts.dismiss(toast_id);
+        let (title, body) = service_recovered_message(service);
+        self.show_timed_toast(title, body);
     }
 
     fn update_generations_for_msg(&mut self, msg: &BackgroundMsg) {
@@ -2341,5 +2364,25 @@ impl App {
                 name.as_ref(),
             );
         }
+    }
+}
+
+const fn service_unreachable_message(service: ServiceKind) -> (&'static str, &'static str) {
+    match service {
+        ServiceKind::GitHub => (
+            "GitHub unreachable",
+            "Rate limits and CI data are unavailable until GitHub recovers.",
+        ),
+        ServiceKind::CratesIo => (
+            "crates.io unreachable",
+            "Crate metadata is unavailable until crates.io recovers.",
+        ),
+    }
+}
+
+const fn service_recovered_message(service: ServiceKind) -> (&'static str, &'static str) {
+    match service {
+        ServiceKind::GitHub => ("GitHub available", "Back online."),
+        ServiceKind::CratesIo => ("crates.io available", "Back online."),
     }
 }
