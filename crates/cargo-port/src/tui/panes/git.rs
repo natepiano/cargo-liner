@@ -18,6 +18,7 @@ use super::package::RenderStyles;
 use crate::constants::GIT_LOCAL;
 use crate::constants::IN_SYNC;
 use crate::tui::app::App;
+use crate::tui::app::AvailabilityStatus;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::INACTIVE_BORDER_COLOR;
@@ -340,7 +341,8 @@ struct RenderFlatArgs<'a> {
 
 /// Compute the displayed value string for a flat git-pane row,
 /// including row-specific decorations (local-only suffix on `Branch`,
-/// `(github unreachable)` suffix on rate-limit rows).
+/// `(github unreachable)` / `(github rate-limited)` suffix on
+/// rate-limit rows).
 fn build_field_value(data: &GitData, field: DetailField, is_rate_limit_row: bool) -> String {
     if field == DetailField::Branch {
         let raw = field.git_value(data);
@@ -351,14 +353,22 @@ fn build_field_value(data: &GitData, field: DetailField, is_rate_limit_row: bool
         };
     }
     let raw = field.git_value(data);
-    if is_rate_limit_row && data.github_unreachable {
+    if is_rate_limit_row && let Some(suffix) = github_status_suffix(data.github_status) {
         return if raw.is_empty() {
-            "(github unreachable)".to_string()
+            format!("({suffix})")
         } else {
-            format!("{raw} (github unreachable)")
+            format!("{raw} ({suffix})")
         };
     }
     raw
+}
+
+const fn github_status_suffix(status: AvailabilityStatus) -> Option<&'static str> {
+    match status {
+        AvailabilityStatus::Reachable => None,
+        AvailabilityStatus::Unreachable => Some("github unreachable"),
+        AvailabilityStatus::RateLimited => Some("github rate-limited"),
+    }
 }
 
 fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
@@ -399,7 +409,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
             Style::default().fg(INACTIVE_BORDER_COLOR)
         } else if *field == DetailField::WorktreeError {
             Style::default().fg(Color::White).bg(ERROR_COLOR)
-        } else if is_rate_limit_row && data.github_unreachable {
+        } else if is_rate_limit_row && !data.github_status.is_available() {
             Style::default().fg(ERROR_COLOR)
         } else {
             Style::default()

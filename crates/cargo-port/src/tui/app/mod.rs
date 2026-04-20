@@ -58,6 +58,7 @@ use crate::watcher::WatcherMsg;
 mod tests;
 
 pub(super) use dismiss::DismissTarget;
+pub(super) use service_state::AvailabilityStatus;
 pub(super) use types::CiFetchTracker;
 pub(super) use types::ConfirmAction;
 pub(super) use types::DiscoveryRowKind;
@@ -166,12 +167,11 @@ impl App {
 
     pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { &self.github.fetch_cache }
 
-    /// True when the GitHub service is currently marked unreachable
-    /// (network failure or rate-limit). Delegates to the per-service
-    /// availability struct; used by the Git pane to apply the
-    /// "(github unreachable)" decoration on rate-limit rows.
-    pub(super) const fn is_github_unreachable(&self) -> bool {
-        self.github.availability.is_unreachable()
+    /// GitHub availability — `Reachable`, `Unreachable` (network
+    /// failure), or `RateLimited`. Used by the Git pane to color the
+    /// rate-limit rows and choose the right unavailability suffix.
+    pub(super) const fn github_status(&self) -> AvailabilityStatus {
+        self.github.availability.status()
     }
 
     /// Snapshot of GitHub's REST + GraphQL rate-limit buckets. Rebuilt

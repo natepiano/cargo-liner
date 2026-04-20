@@ -31,6 +31,7 @@ use crate::project::Submodule;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::tui::app::App;
+use crate::tui::app::AvailabilityStatus;
 
 /// Get the local UTC offset in seconds (e.g., -28800 for PST).
 fn local_utc_offset_secs() -> i64 {
@@ -568,12 +569,20 @@ impl DetailField {
 
 /// Render a rate-limit bucket as `"remaining/limit resets HH:MM:SS"`.
 /// Returns the empty string when the bucket has not been observed yet;
-/// drops the `resets …` suffix when no reset timestamp is available.
+/// drops the `resets …` suffix when no reset timestamp is available
+/// **or** when the bucket is fully unused (`used == 0`). GitHub
+/// re-bases the reset window on every `/rate_limit` poll for an
+/// unused bucket, so including the countdown for those rows makes
+/// the value oscillate between `HH:00:00` and `(HH-1):59:59` every
+/// second. Nothing has been consumed there — no countdown to show.
 pub(super) fn format_rate_limit_bucket(quota: Option<RateLimitQuota>) -> String {
     let Some(quota) = quota else {
         return String::new();
     };
     let base = format!("{}/{}", quota.remaining, quota.limit);
+    if quota.used == 0 {
+        return base;
+    }
     let Some(reset_at) = quota.reset_at else {
         return base;
     };
@@ -692,7 +701,7 @@ pub struct GitData {
     pub last_fetched:       Option<String>,
     pub rate_limit_core:    Option<RateLimitQuota>,
     pub rate_limit_graphql: Option<RateLimitQuota>,
-    pub github_unreachable: bool,
+    pub github_status:      AvailabilityStatus,
     pub remotes:            Vec<RemoteRow>,
     pub worktrees:          Vec<WorktreeInfo>,
 }
@@ -878,7 +887,7 @@ struct GitDetailFields {
     last_fetched:       Option<String>,
     rate_limit_core:    Option<RateLimitQuota>,
     rate_limit_graphql: Option<RateLimitQuota>,
-    github_unreachable: bool,
+    github_status:      AvailabilityStatus,
     remotes:            Vec<RemoteRow>,
 }
 
@@ -922,7 +931,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         last_fetched,
         rate_limit_core: rate_limit.core,
         rate_limit_graphql: rate_limit.graphql,
-        github_unreachable: app.is_github_unreachable(),
+        github_status: app.github_status(),
         remotes,
     }
 }
@@ -1100,7 +1109,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             last_fetched:       git_detail.last_fetched,
             rate_limit_core:    git_detail.rate_limit_core,
             rate_limit_graphql: git_detail.rate_limit_graphql,
-            github_unreachable: git_detail.github_unreachable,
+            github_status:      git_detail.github_status,
             remotes:            git_detail.remotes,
             worktrees:          Vec::new(),
         },
@@ -1284,7 +1293,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             last_fetched: git_detail.last_fetched,
             rate_limit_core: git_detail.rate_limit_core,
             rate_limit_graphql: git_detail.rate_limit_graphql,
-            github_unreachable: git_detail.github_unreachable,
+            github_status: git_detail.github_status,
             remotes: git_detail.remotes,
             worktrees,
         },
@@ -1471,6 +1480,17 @@ mod tests {
             reset_at:  None,
         };
         assert_eq!(format_rate_limit_bucket(Some(quota)), "4958/5000");
+    }
+
+    #[test]
+    fn rate_limit_bucket_fully_unused_omits_countdown() {
+        let quota = RateLimitQuota {
+            limit:     5000,
+            used:      0,
+            remaining: 5000,
+            reset_at:  Some(u64::MAX),
+        };
+        assert_eq!(format_rate_limit_bucket(Some(quota)), "5000/5000");
     }
 
     #[test]

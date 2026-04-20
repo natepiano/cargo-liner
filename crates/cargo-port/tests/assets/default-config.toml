@@ -150,3 +150,12 @@
 #
 # Default value: false
 #on_discovery = false
+
+[debug]
+# When true, all GitHub HTTP requests short-circuit to a synthetic
+# rate-limited response without hitting the network. Lets the
+# rate-limit toast, `/rate_limit` display, and recovery probe be
+# verified deterministically. Default false.
+#
+# Default value: false
+#force_github_rate_limit = false

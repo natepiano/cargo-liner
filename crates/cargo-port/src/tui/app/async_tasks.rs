@@ -264,6 +264,9 @@ impl App {
             return;
         }
 
+        let prev_force = self.current_config.debug.force_github_rate_limit;
+        let next_force = cfg.debug.force_github_rate_limit;
+
         let actions = config_reload::collect_reload_actions(
             &self.current_config,
             cfg,
@@ -276,6 +279,20 @@ impl App {
         self.current_config = cfg.clone();
         if !self.discovery_shimmer_enabled() {
             self.discovery_shimmers.clear();
+        }
+
+        if prev_force != next_force {
+            self.http_client.set_force_github_rate_limit(next_force);
+            // Synthesize a signal so the UI reflects the flag flip
+            // immediately instead of waiting for the next natural
+            // GitHub request — otherwise toggling the flag would look
+            // broken until the next refresh. The force flag simulates a
+            // rate-limit (not a network outage), so emit `RateLimited`.
+            if next_force {
+                self.apply_service_signal(ServiceSignal::RateLimited(ServiceKind::GitHub));
+            } else {
+                self.mark_service_recovered(ServiceKind::GitHub);
+            }
         }
         if actions.refresh_cpu.should_apply() {
             self.reset_cpu_placeholder();
@@ -1466,6 +1483,7 @@ impl App {
             | BackgroundMsg::ServiceReachable { .. }
             | BackgroundMsg::ServiceRecovered { .. }
             | BackgroundMsg::ServiceUnreachable { .. }
+            | BackgroundMsg::ServiceRateLimited { .. }
             | BackgroundMsg::LanguageStatsBatch { .. } => {},
         }
     }
@@ -1925,18 +1943,29 @@ impl App {
                 self.availability_for(service).mark_reachable();
             },
             ServiceSignal::Unreachable(service) => {
-                let (spawn_retry, push_toast) = {
-                    let avail = self.availability_for(service);
-                    (avail.mark_unreachable(), avail.needs_toast())
-                };
-                if spawn_retry {
-                    self.spawn_service_retry(service);
-                }
-                if push_toast {
-                    let toast_id = self.push_service_unreachable_toast(service);
-                    self.availability_for(service).set_toast(toast_id);
-                }
+                self.apply_unavailability(service, AvailabilityKind::Unreachable);
             },
+            ServiceSignal::RateLimited(service) => {
+                self.apply_unavailability(service, AvailabilityKind::RateLimited);
+            },
+        }
+    }
+
+    fn apply_unavailability(&mut self, service: ServiceKind, kind: AvailabilityKind) {
+        let (spawn_retry, push_toast) = {
+            let avail = self.availability_for(service);
+            let spawn_retry = match kind {
+                AvailabilityKind::Unreachable => avail.mark_unreachable(),
+                AvailabilityKind::RateLimited => avail.mark_rate_limited(),
+            };
+            (spawn_retry, avail.needs_toast())
+        };
+        if spawn_retry {
+            self.spawn_service_retry(service);
+        }
+        if push_toast {
+            let toast_id = self.push_service_unavailable_toast(service, kind);
+            self.availability_for(service).set_toast(toast_id);
         }
     }
 
@@ -1947,8 +1976,12 @@ impl App {
         }
     }
 
-    fn push_service_unreachable_toast(&mut self, service: ServiceKind) -> u64 {
-        let (title, body) = service_unreachable_message(service);
+    fn push_service_unavailable_toast(
+        &mut self,
+        service: ServiceKind,
+        kind: AvailabilityKind,
+    ) -> u64 {
+        let (title, body) = service_unavailable_message(service, kind);
         let id = self.toasts.push_persistent(title, body, Error, None, 1);
         let toast_len = self.active_toasts().len();
         self.pane_manager
@@ -2303,6 +2336,9 @@ impl App {
             BackgroundMsg::ServiceUnreachable { service } => {
                 self.apply_service_signal(ServiceSignal::Unreachable(service));
             },
+            BackgroundMsg::ServiceRateLimited { service } => {
+                self.apply_service_signal(ServiceSignal::RateLimited(service));
+            },
             BackgroundMsg::LanguageStatsBatch { entries } => {
                 self.handle_language_stats_batch(entries);
             },
@@ -2367,15 +2403,32 @@ impl App {
     }
 }
 
-const fn service_unreachable_message(service: ServiceKind) -> (&'static str, &'static str) {
-    match service {
-        ServiceKind::GitHub => (
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AvailabilityKind {
+    Unreachable,
+    RateLimited,
+}
+
+const fn service_unavailable_message(
+    service: ServiceKind,
+    kind: AvailabilityKind,
+) -> (&'static str, &'static str) {
+    match (service, kind) {
+        (ServiceKind::GitHub, AvailabilityKind::Unreachable) => (
             "GitHub unreachable",
             "Rate limits and CI data are unavailable until GitHub recovers.",
         ),
-        ServiceKind::CratesIo => (
+        (ServiceKind::GitHub, AvailabilityKind::RateLimited) => (
+            "GitHub rate-limited",
+            "CI data is paused until the rate-limit bucket refills.",
+        ),
+        (ServiceKind::CratesIo, AvailabilityKind::Unreachable) => (
             "crates.io unreachable",
             "Crate metadata is unavailable until crates.io recovers.",
+        ),
+        (ServiceKind::CratesIo, AvailabilityKind::RateLimited) => (
+            "crates.io rate-limited",
+            "Crate metadata is paused until the rate-limit bucket refills.",
         ),
     }
 }

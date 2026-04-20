@@ -538,6 +538,21 @@ pub(crate) struct CargoPortConfig {
     pub tui:   TuiConfig,
     #[config(nested)]
     pub lint:  LintConfig,
+    #[config(nested)]
+    pub debug: DebugConfig,
+}
+
+/// Developer / testing affordances. Intentionally narrow — anything here
+/// exists only to exercise code paths that are hard to reproduce
+/// organically (e.g. GitHub rate-limit behaviour).
+#[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
+pub(crate) struct DebugConfig {
+    /// When true, all GitHub HTTP requests short-circuit to a synthetic
+    /// rate-limited response without hitting the network. Lets the
+    /// rate-limit toast, `/rate_limit` display, and recovery probe be
+    /// verified deterministically. Default false.
+    #[config(default = false)]
+    pub force_github_rate_limit: bool,
 }
 
 /// CPU meter settings for the TUI host metrics pane.

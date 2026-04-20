@@ -10,6 +10,7 @@ use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::ci::FetchStatus::Fetched;
 use crate::project::GitStatus;
+use crate::tui::app::AvailabilityStatus;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::panes;
@@ -51,7 +52,7 @@ fn git_data() -> GitData {
         last_fetched:       None,
         rate_limit_core:    None,
         rate_limit_graphql: None,
-        github_unreachable: false,
+        github_status:      AvailabilityStatus::Reachable,
         remotes:            Vec::new(),
         worktrees:          Vec::new(),
     }

@@ -9,7 +9,12 @@ use std::fmt::Write;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use serde::Deserialize;
 
@@ -43,7 +48,16 @@ impl ServiceKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ServiceSignal {
     Reachable(ServiceKind),
+    /// The service is unreachable over the network (DNS failure,
+    /// connection refused, timeout, 5xx). Distinct from `RateLimited`
+    /// because the recovery path and user-facing message differ.
     Unreachable(ServiceKind),
+    /// The service is reachable but refusing our requests with a
+    /// rate-limit status (GitHub 429, 403 + `X-RateLimit-Remaining: 0`,
+    /// or GraphQL body `errors[].type == "RATE_LIMITED"`). The display
+    /// buckets can still refresh via the quota-exempt `/rate_limit`
+    /// endpoint.
+    RateLimited(ServiceKind),
 }
 
 type GitHubJobsAndMeta = (HashMap<u64, Vec<GqlCheckRun>>, Option<RepoMetaInfo>);
@@ -172,6 +186,17 @@ fn classify_network_error(service: ServiceKind, error: &reqwest::Error) -> Optio
     }
 }
 
+/// Lead time for the synthetic force-rate-limit countdown. `3599`
+/// rather than `3600` so the first displayed value is `00:59:59`
+/// instead of briefly flashing `01:00:00`.
+const SYNTHETIC_RATE_LIMIT_SECS: u64 = 3599;
+
+fn now_epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 // ── Serde types for API responses ────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -212,10 +237,20 @@ struct GqlCheckRunConnection {
 /// dispatch async work via `block_on`.
 #[derive(Clone)]
 pub(crate) struct HttpClient {
-    client:            reqwest::Client,
-    github_token:      Option<String>,
-    rate_limit:        Arc<Mutex<GitHubRateLimit>>,
-    pub(crate) handle: tokio::runtime::Handle,
+    client:                  reqwest::Client,
+    github_token:            Option<String>,
+    rate_limit:              Arc<Mutex<GitHubRateLimit>>,
+    /// When true, every GitHub REST + GraphQL call (and the recovery
+    /// probe) short-circuits to a synthetic rate-limited outcome so the
+    /// rate-limit UI and toast flow can be exercised deterministically.
+    /// `/rate_limit` itself stays real — the display must keep ticking.
+    force_github_rate_limit: Arc<AtomicBool>,
+    /// Epoch-seconds reset timestamp used to drive the synthetic
+    /// core-bucket countdown while `force_github_rate_limit` is on. `0`
+    /// means "not set". Rebased on every off→on transition so the
+    /// countdown starts at `00:59:59` and ticks down from there.
+    force_reset_at:          Arc<AtomicU64>,
+    pub(crate) handle:       tokio::runtime::Handle,
 }
 
 impl HttpClient {
@@ -235,17 +270,61 @@ impl HttpClient {
             client,
             github_token,
             rate_limit: Arc::new(Mutex::new(GitHubRateLimit::default())),
+            force_github_rate_limit: Arc::new(AtomicBool::new(false)),
+            force_reset_at: Arc::new(AtomicU64::new(0)),
             handle,
         })
     }
 
+    /// Toggle the synthetic GitHub rate-limit short-circuit at runtime.
+    /// Intended for the `[debug] force_github_rate_limit` config flag.
+    /// Turning the flag on rebases the synthetic countdown to
+    /// `now + SYNTHETIC_RATE_LIMIT_SECS` so the display starts at
+    /// `00:59:59` and counts down from there.
+    pub(crate) fn set_force_github_rate_limit(&self, on: bool) {
+        self.force_github_rate_limit.store(on, Ordering::Relaxed);
+        if on {
+            let reset_at = now_epoch_secs().saturating_add(SYNTHETIC_RATE_LIMIT_SECS);
+            self.force_reset_at.store(reset_at, Ordering::Relaxed);
+        } else {
+            self.force_reset_at.store(0, Ordering::Relaxed);
+        }
+    }
+
+    fn github_rate_limit_forced(&self) -> bool {
+        self.force_github_rate_limit.load(Ordering::Relaxed)
+    }
+
+    fn synthetic_core_quota(&self) -> RateLimitQuota {
+        let reset_at = self.force_reset_at.load(Ordering::Relaxed);
+        RateLimitQuota {
+            limit:     5000,
+            used:      5000,
+            remaining: 0,
+            reset_at:  if reset_at == 0 { None } else { Some(reset_at) },
+        }
+    }
+
     /// Snapshot the current live rate-limit state. Returned by value —
-    /// `GitHubRateLimit` is `Copy`.
+    /// `GitHubRateLimit` is `Copy`. While `force_github_rate_limit` is
+    /// on, the `core` bucket is overridden with a synthetic `0/5000`
+    /// reading whose reset timestamp is stable so the countdown ticks
+    /// down instead of oscillating. `graphql` stays real so the
+    /// live-refresh behaviour of the `/rate_limit` endpoint is still
+    /// visible during debug.
     pub(crate) fn rate_limit_snapshot(&self) -> GitHubRateLimit {
-        self.rate_limit
+        let real = self
+            .rate_limit
             .lock()
             .map(|state| *state)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if self.github_rate_limit_forced() {
+            return GitHubRateLimit {
+                core:    Some(self.synthetic_core_quota()),
+                graphql: real.graphql,
+            };
+        }
+        real
     }
 
     fn update_rate_limit_bucket(&self, bucket: RateLimitBucket, quota: RateLimitQuota) {
@@ -267,6 +346,9 @@ impl HttpClient {
     // ── Async internals ─────────────────────────────────────────────
 
     async fn github_get_async(&self, path: &str) -> HttpOutcome<Vec<u8>> {
+        if self.github_rate_limit_forced() {
+            return (None, Some(ServiceSignal::RateLimited(ServiceKind::GitHub)));
+        }
         let Some(token) = self.github_token.as_ref() else {
             return (None, None);
         };
@@ -298,7 +380,7 @@ impl HttpClient {
             },
         };
         if rate_limited {
-            return (None, Some(ServiceSignal::Unreachable(ServiceKind::GitHub)));
+            return (None, Some(ServiceSignal::RateLimited(ServiceKind::GitHub)));
         }
         (
             Some(body.to_vec()),
@@ -307,6 +389,9 @@ impl HttpClient {
     }
 
     async fn github_graphql_async(&self, query: &str) -> HttpOutcome<Vec<u8>> {
+        if self.github_rate_limit_forced() {
+            return (None, Some(ServiceSignal::RateLimited(ServiceKind::GitHub)));
+        }
         let Some(token) = self.github_token.as_ref() else {
             return (None, None);
         };
@@ -339,7 +424,7 @@ impl HttpClient {
             },
         };
         if http_rate_limited {
-            return (None, Some(ServiceSignal::Unreachable(ServiceKind::GitHub)));
+            return (None, Some(ServiceSignal::RateLimited(ServiceKind::GitHub)));
         }
         // GraphQL returns HTTP 200 on rate-limit, so status-code
         // detection alone is insufficient — inspect the body's
@@ -347,7 +432,7 @@ impl HttpClient {
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body)
             && graphql_body_is_rate_limited(&json)
         {
-            return (None, Some(ServiceSignal::Unreachable(ServiceKind::GitHub)));
+            return (None, Some(ServiceSignal::RateLimited(ServiceKind::GitHub)));
         }
         (
             Some(body.to_vec()),
@@ -493,14 +578,51 @@ impl HttpClient {
         )
     }
 
-    /// Lightweight service probe used only while recovering from a prior failure.
+    /// Recovery probe used while retrying after an `Unreachable` signal.
+    ///
+    /// For GitHub, a plain `HEAD https://api.github.com` is not enough —
+    /// it returns 200 even when fully rate-limited (no auth, no quota
+    /// debit). That made "recovery" fire within ~100ms of every
+    /// Unreachable signal, dismissing the toast only to have it
+    /// immediately re-created by the next 429. Use `/rate_limit` (which
+    /// is exempt from the quota) and treat the service as recovered
+    /// only when both core and graphql have at least 1 request
+    /// remaining. While the debug force flag is on, GitHub never
+    /// recovers — the probe always returns `false`.
     pub(crate) async fn probe_service_async(&self, service: ServiceKind) -> bool {
-        self.client
-            .head(service.probe_url())
-            .timeout(Duration::from_secs(SERVICE_RETRY_SECS))
-            .send()
-            .await
-            .is_ok()
+        match service {
+            ServiceKind::GitHub => self.probe_github_rate_limit_async().await,
+            ServiceKind::CratesIo => self
+                .client
+                .head(service.probe_url())
+                .timeout(Duration::from_secs(SERVICE_RETRY_SECS))
+                .send()
+                .await
+                .is_ok(),
+        }
+    }
+
+    async fn probe_github_rate_limit_async(&self) -> bool {
+        let (snapshot, _signal) = self.fetch_rate_limit_async().await;
+        if self.github_rate_limit_forced() {
+            // Forced mode: display keeps updating via /rate_limit above,
+            // but never report recovery — the error toast must persist
+            // for testing.
+            return false;
+        }
+        match snapshot {
+            Some(s) => {
+                s.core.is_some_and(|q| q.remaining > 0)
+                    && s.graphql.is_some_and(|q| q.remaining > 0)
+            },
+            None => self
+                .client
+                .head(ServiceKind::GitHub.probe_url())
+                .timeout(Duration::from_secs(SERVICE_RETRY_SECS))
+                .send()
+                .await
+                .is_ok(),
+        }
     }
 
     /// Fetch version and download count from the crates.io API (async).
@@ -756,11 +878,50 @@ mod tests {
 
     fn test_client(handle: &tokio::runtime::Handle) -> HttpClient {
         HttpClient {
-            client:       build_client().expect("build http client"),
-            github_token: None,
-            rate_limit:   Arc::new(Mutex::new(GitHubRateLimit::default())),
-            handle:       handle.clone(),
+            client:                  build_client().expect("build http client"),
+            github_token:            None,
+            rate_limit:              Arc::new(Mutex::new(GitHubRateLimit::default())),
+            force_github_rate_limit: Arc::new(AtomicBool::new(false)),
+            force_reset_at:          Arc::new(AtomicU64::new(0)),
+            handle:                  handle.clone(),
         }
+    }
+
+    #[test]
+    fn force_rate_limit_synthesizes_zero_core_with_future_reset() {
+        let runtime = tokio::runtime::Runtime::new().expect("create runtime");
+        let client = test_client(runtime.handle());
+        let real_graphql = RateLimitQuota {
+            limit:     5000,
+            used:      12,
+            remaining: 4988,
+            reset_at:  Some(1_800_000_000),
+        };
+        client.update_rate_limit_bucket(RateLimitBucket::GraphQl, real_graphql);
+
+        let before = now_epoch_secs();
+        client.set_force_github_rate_limit(true);
+        let after = now_epoch_secs();
+
+        let snapshot = client.rate_limit_snapshot();
+        let core = snapshot.core.expect("synthetic core bucket");
+        assert_eq!(core.limit, 5000);
+        assert_eq!(core.remaining, 0);
+        assert_eq!(core.used, 5000);
+        let reset_at = core.reset_at.expect("synthetic reset_at");
+        assert!(reset_at >= before + SYNTHETIC_RATE_LIMIT_SECS);
+        assert!(reset_at <= after + SYNTHETIC_RATE_LIMIT_SECS);
+
+        // `graphql` stays real so the live-refresh path is still
+        // observable during debug.
+        assert_eq!(snapshot.graphql, Some(real_graphql));
+
+        client.set_force_github_rate_limit(false);
+        let snapshot = client.rate_limit_snapshot();
+        // Real core was never populated, so clearing force leaves it
+        // at `None`.
+        assert!(snapshot.core.is_none());
+        assert_eq!(snapshot.graphql, Some(real_graphql));
     }
 
     #[test]

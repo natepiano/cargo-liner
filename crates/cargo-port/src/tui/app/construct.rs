@@ -252,6 +252,8 @@ impl App {
             self.finish_watcher_registration_batch();
         }
         self.refresh_lint_runs_from_disk();
+        self.http_client
+            .set_force_github_rate_limit(self.current_config.debug.force_github_rate_limit);
         self.spawn_rate_limit_prime();
     }
 }

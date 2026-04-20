@@ -44,10 +44,7 @@ use super::project::WorktreeGroup;
 /// Messages sent from background threads to the main event loop.
 pub(crate) enum BackgroundMsg {
     /// Disk usage (bytes) computed for a single project path.
-    DiskUsage {
-        path:  AbsolutePath,
-        bytes: u64,
-    },
+    DiskUsage { path: AbsolutePath, bytes: u64 },
     /// Batch of disk usage results for projects under a common root.
     DiskUsageBatch {
         root_path: AbsolutePath,
@@ -60,17 +57,13 @@ pub(crate) enum BackgroundMsg {
         github_total: u32,
     },
     /// A GitHub repo fetch has been queued (for startup tracking).
-    RepoFetchQueued {
-        repo: OwnerRepo,
-    },
+    RepoFetchQueued { repo: OwnerRepo },
     /// A `spawn_repo_fetch_for_git_info` thread has finished. Sent
     /// regardless of whether the spawn hit the network or returned a
     /// cached result. Drives both the startup "GitHub repos" toast
     /// progress (no-op on cache hit, since no `RepoFetchQueued` was
     /// sent) and the `repo_fetch_in_flight` dedup set.
-    RepoFetchComplete {
-        repo: OwnerRepo,
-    },
+    RepoFetchComplete { repo: OwnerRepo },
     /// Per-checkout git state for a project (branch, status, ahead/
     /// behind, `last_commit`, `primary_tracked_ref`). Sent by
     /// `CheckoutInfo::get` for every affected checkout — primary AND
@@ -84,10 +77,7 @@ pub(crate) enum BackgroundMsg {
     /// fetched, etc.). Sent by `RepoInfo::get` once per repo refresh.
     /// `path` is the primary checkout's path so `handle_repo_info` can
     /// enforce the "only the primary writes `RepoInfo`" policy.
-    RepoInfo {
-        path: AbsolutePath,
-        info: RepoInfo,
-    },
+    RepoInfo { path: AbsolutePath, info: RepoInfo },
     /// First commit date detected for a project (deferred post-scan,
     /// batched by repo root to avoid redundant `git log` calls).
     GitFirstCommit {
@@ -113,14 +103,10 @@ pub(crate) enum BackgroundMsg {
         disk_entries: Vec<(String, AbsolutePath)>,
     },
     /// A new project discovered by the watcher after the initial scan.
-    ProjectDiscovered {
-        item: RootItem,
-    },
+    ProjectDiscovered { item: RootItem },
     /// An existing project re-scanned by the watcher (e.g. after a
     /// Cargo.toml change adds/removes workspace members).
-    ProjectRefreshed {
-        item: RootItem,
-    },
+    ProjectRefreshed { item: RootItem },
     /// Git submodules detected for a project.
     Submodules {
         path:       AbsolutePath,
@@ -148,16 +134,15 @@ pub(crate) enum BackgroundMsg {
         bytes_reclaimed: u64,
     },
     /// An external service (GitHub, crates.io) is reachable.
-    ServiceReachable {
-        service: ServiceKind,
-    },
-    /// An external service recovered after being unreachable.
-    ServiceRecovered {
-        service: ServiceKind,
-    },
-    ServiceUnreachable {
-        service: ServiceKind,
-    },
+    ServiceReachable { service: ServiceKind },
+    /// An external service recovered after being unreachable or
+    /// rate-limited.
+    ServiceRecovered { service: ServiceKind },
+    /// Network failure reaching the service (DNS, connection, timeout,
+    /// 5xx).
+    ServiceUnreachable { service: ServiceKind },
+    /// Service is reachable but currently rate-limited.
+    ServiceRateLimited { service: ServiceKind },
     /// Language statistics (file counts + LOC by language) computed by tokei.
     LanguageStatsBatch {
         entries: Vec<(AbsolutePath, LanguageStats)>,
@@ -187,7 +172,8 @@ impl BackgroundMsg {
             | Self::LintCachePruned { .. }
             | Self::ServiceReachable { .. }
             | Self::ServiceRecovered { .. }
-            | Self::ServiceUnreachable { .. } => None,
+            | Self::ServiceUnreachable { .. }
+            | Self::ServiceRateLimited { .. } => None,
         }
     }
 }
@@ -196,10 +182,17 @@ const fn combine_service_signal(
     left: Option<ServiceSignal>,
     right: Option<ServiceSignal>,
 ) -> Option<ServiceSignal> {
+    // Priority: Unreachable > RateLimited > Reachable — any bad signal
+    // wins over a good one, and network failure trumps rate-limit when
+    // both show up in the same batch.
     match (left, right) {
         (Some(ServiceSignal::Unreachable(service)), _)
         | (_, Some(ServiceSignal::Unreachable(service))) => {
             Some(ServiceSignal::Unreachable(service))
+        },
+        (Some(ServiceSignal::RateLimited(service)), _)
+        | (_, Some(ServiceSignal::RateLimited(service))) => {
+            Some(ServiceSignal::RateLimited(service))
         },
         (Some(ServiceSignal::Reachable(service)), _)
         | (_, Some(ServiceSignal::Reachable(service))) => Some(ServiceSignal::Reachable(service)),
@@ -211,6 +204,7 @@ pub(crate) fn emit_service_signal(tx: &mpsc::Sender<BackgroundMsg>, signal: Opti
     let msg = match signal {
         Some(ServiceSignal::Reachable(service)) => BackgroundMsg::ServiceReachable { service },
         Some(ServiceSignal::Unreachable(service)) => BackgroundMsg::ServiceUnreachable { service },
+        Some(ServiceSignal::RateLimited(service)) => BackgroundMsg::ServiceRateLimited { service },
         None => return,
     };
     let _ = tx.send(msg);
