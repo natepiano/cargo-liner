@@ -4,6 +4,7 @@ use std::ops::DerefMut;
 use std::path::Path;
 
 use crate::lint::LintRuns;
+use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::MemberGroup;
 use crate::project::Package;
@@ -17,7 +18,6 @@ use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
-use crate::project::entry_contains;
 
 /// Owning wrapper around the project hierarchy.
 ///
@@ -212,13 +212,13 @@ impl ProjectList {
     pub(crate) fn entry_containing(&self, target: &Path) -> Option<&ProjectEntry> {
         self.root_items
             .iter()
-            .find(|entry| entry_contains(entry, target))
+            .find(|entry| project::entry_contains(entry, target))
     }
 
     pub(crate) fn entry_containing_mut(&mut self, target: &Path) -> Option<&mut ProjectEntry> {
         self.root_items
             .iter_mut()
-            .find(|entry| entry_contains(entry, target))
+            .find(|entry| project::entry_contains(entry, target))
     }
 
     // -- Hierarchy mutations ----------------------------------------------

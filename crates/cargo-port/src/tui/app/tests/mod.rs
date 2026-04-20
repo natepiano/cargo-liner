@@ -39,6 +39,7 @@ use crate::project::NonRustProject;
 use crate::project::Package;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
+use crate::project::ProjectEntry;
 use crate::project::ProjectFields;
 use crate::project::RemoteInfo;
 use crate::project::RemoteKind;
@@ -230,7 +231,7 @@ fn resolved_root_label(item: &RootItem) -> String {
 
 /// Wrap owned `RootItem`s as `ProjectEntry`s for test helpers that pass
 /// slices to snapshot/finder functions.
-pub(super) fn as_entries(items: Vec<RootItem>) -> Vec<crate::project::ProjectEntry> {
+pub(super) fn as_entries(items: Vec<RootItem>) -> Vec<ProjectEntry> {
     items
         .into_iter()
         .map(crate::project::ProjectEntry::new)
@@ -238,9 +239,7 @@ pub(super) fn as_entries(items: Vec<RootItem>) -> Vec<crate::project::ProjectEnt
 }
 
 /// Shorthand for callers that build a single-root test.
-pub(super) fn as_entry(item: RootItem) -> crate::project::ProjectEntry {
-    crate::project::ProjectEntry::new(item)
-}
+pub(super) fn as_entry(item: RootItem) -> ProjectEntry { crate::project::ProjectEntry::new(item) }
 
 fn make_non_rust_project(name: Option<&str>, path: &str) -> RootItem {
     RootItem::NonRust(NonRustProject::new(test_path(path), name.map(String::from)))
@@ -536,8 +535,8 @@ fn make_git_info(url: Option<&str>) -> (CheckoutInfo, RepoInfo) {
 }
 
 /// Apply a `(CheckoutInfo, RepoInfo)` bundle to the app via the same
-/// path real BackgroundMsg dispatch would: RepoInfo first, then
-/// CheckoutInfo. Test helper that condenses the two-handler pattern.
+/// path real `BackgroundMsg` dispatch would: `RepoInfo` first, then
+/// `CheckoutInfo`. Test helper that condenses the two-handler pattern.
 fn apply_git_info(app: &mut App, path: &Path, (checkout, repo): (CheckoutInfo, RepoInfo)) {
     app.handle_repo_info(path, repo);
     app.handle_checkout_info(path, checkout);

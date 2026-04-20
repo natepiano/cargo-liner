@@ -734,7 +734,7 @@ fn worktree_count_uses_visibility() {
 
     let items = vec![root];
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&super::as_entries(items.clone()), &expanded, true);
+    let rows = snapshots::build_visible_rows(&super::as_entries(items), &expanded, true);
     assert_eq!(rows.len(), 3, "root + 2 worktree entries");
 }
 
@@ -839,7 +839,7 @@ fn workspace_worktree_fit_widths_use_display_name_for_primary_entry() {
         )],
     );
     let root_label = resolved_root_label(&item);
-    let entries = vec![super::as_entry(item.clone())];
+    let entries = vec![super::as_entry(item)];
     let widths =
         snapshots::build_fit_widths_snapshot(&entries, std::slice::from_ref(&root_label), true, 0);
     let root_width = crate::tui::columns::display_width(crate::tui::render::PREFIX_ROOT_COLLAPSED)
@@ -872,7 +872,7 @@ fn package_worktree_fit_widths_use_display_name_for_primary_entry() {
         )],
     );
     let root_label = resolved_root_label(&item);
-    let entries = vec![super::as_entry(item.clone())];
+    let entries = vec![super::as_entry(item)];
     let widths =
         snapshots::build_fit_widths_snapshot(&entries, std::slice::from_ref(&root_label), true, 0);
     let root_width = crate::tui::columns::display_width(crate::tui::render::PREFIX_ROOT_COLLAPSED)

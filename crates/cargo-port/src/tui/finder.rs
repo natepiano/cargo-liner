@@ -35,6 +35,7 @@ use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::ExampleGroup;
 use crate::project::Package;
+use crate::project::ProjectEntry;
 use crate::project::ProjectFields;
 use crate::project::ProjectType;
 use crate::project::RootItem;
@@ -103,7 +104,7 @@ pub(super) const FINDER_HEADERS: [&str; FINDER_COLUMN_COUNT] =
 /// Returns `(items, col_widths)` where `col_widths` is the max display
 /// width of each column across the entire index.
 pub(super) fn build_finder_index(
-    entries: &[crate::project::ProjectEntry],
+    entries: &[ProjectEntry],
 ) -> (Vec<FinderItem>, [usize; FINDER_COLUMN_COUNT]) {
     let mut items = Vec::new();
 

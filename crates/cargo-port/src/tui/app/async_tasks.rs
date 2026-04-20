@@ -1251,7 +1251,7 @@ impl App {
 
     /// Lightweight refresh of derived state after in-place hierarchy changes
     /// (discovery, refresh). Marks caches dirty without a full tree rebuild.
-    pub(in super::super) fn refresh_derived_state(&mut self) { self.data_generation += 1; }
+    pub(in super::super) const fn refresh_derived_state(&mut self) { self.data_generation += 1; }
 
     fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
         self.projects

@@ -24,11 +24,12 @@ pub(crate) enum GitOrigin {
 }
 
 /// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub(crate) enum WorkflowPresence {
     /// At least one workflow YAML file exists.
     Present,
     /// No workflow files found (or no `.github/workflows/` directory).
+    #[default]
     Missing,
 }
 
@@ -120,10 +121,6 @@ pub(crate) struct RepoInfo {
     pub default_branch:    Option<String>,
     /// The local branch name used for `M` comparisons.
     pub local_main_branch: Option<String>,
-}
-
-impl Default for WorkflowPresence {
-    fn default() -> Self { Self::Missing }
 }
 
 impl RepoInfo {

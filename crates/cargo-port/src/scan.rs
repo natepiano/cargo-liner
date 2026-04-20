@@ -72,7 +72,7 @@ pub(crate) enum BackgroundMsg {
         repo: OwnerRepo,
     },
     /// Per-checkout git state for a project (branch, status, ahead/
-    /// behind, last_commit, primary_tracked_ref). Sent by
+    /// behind, `last_commit`, `primary_tracked_ref`). Sent by
     /// `CheckoutInfo::get` for every affected checkout — primary AND
     /// each linked worktree on a refresh — since each working tree has
     /// its own HEAD/index/branch.
@@ -83,7 +83,7 @@ pub(crate) enum BackgroundMsg {
     /// Per-repo git state (remotes, workflows, default branch, last
     /// fetched, etc.). Sent by `RepoInfo::get` once per repo refresh.
     /// `path` is the primary checkout's path so `handle_repo_info` can
-    /// enforce the "only the primary writes RepoInfo" policy.
+    /// enforce the "only the primary writes `RepoInfo`" policy.
     RepoInfo {
         path: AbsolutePath,
         info: RepoInfo,

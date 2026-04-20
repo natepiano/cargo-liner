@@ -1272,7 +1272,7 @@ pub fn build_ci_data(app: &App) -> CiData {
     } else if git_info.is_none() {
         CiEmptyState::NotGitRepo
     } else if has_ci_owner
-        && (repo_info.map_or(true, |r| r.origin_kind() == GitOrigin::Local) || !has_github_remote)
+        && (repo_info.is_none_or(|r| r.origin_kind() == GitOrigin::Local) || !has_github_remote)
     {
         CiEmptyState::RequiresGithubRemote
     } else if repo_info.is_some_and(|r| !r.workflows.is_present()) {

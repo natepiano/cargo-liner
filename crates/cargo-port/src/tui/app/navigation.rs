@@ -306,64 +306,21 @@ impl App {
     pub(in super::super) fn path_for_row(&self, row: VisibleRow) -> Option<&Path> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                let item = self.projects.get(node_index)?;
-                Some(item.path().as_path())
+                Some(self.projects.get(node_index)?.path().as_path())
             },
             VisibleRow::Member {
                 node_index,
                 group_index,
                 member_index,
-            } => {
-                let item = self.projects.get(node_index)?;
-                match &item.item {
-                    RootItem::Rust(RustProject::Workspace(ws)) => {
-                        let group = ws.groups().get(group_index)?;
-                        let member = group.members().get(member_index)?;
-                        Some(member.path().as_path())
-                    },
-                    RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. })
-                        if !wtg.renders_as_group() =>
-                    {
-                        let group = wtg.single_live_workspace()?.groups().get(group_index)?;
-                        let member = group.members().get(member_index)?;
-                        Some(member.path().as_path())
-                    },
-                    _ => None,
-                }
-            },
+            } => Self::member_path_ref(
+                &self.projects.get(node_index)?.item,
+                group_index,
+                member_index,
+            ),
             VisibleRow::Vendored {
                 node_index,
                 vendored_index,
-            } => {
-                let item = self.projects.get(node_index)?;
-                match &item.item {
-                    RootItem::Rust(RustProject::Workspace(ws)) => ws
-                        .vendored()
-                        .get(vendored_index)
-                        .map(|p| p.path().as_path()),
-                    RootItem::Rust(RustProject::Package(pkg)) => pkg
-                        .vendored()
-                        .get(vendored_index)
-                        .map(|p| p.path().as_path()),
-                    RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. })
-                        if !wtg.renders_as_group() =>
-                    {
-                        wtg.single_live_workspace()?
-                            .vendored()
-                            .get(vendored_index)
-                            .map(|p| p.path().as_path())
-                    },
-                    RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. })
-                        if !wtg.renders_as_group() =>
-                    {
-                        wtg.single_live_package()?
-                            .vendored()
-                            .get(vendored_index)
-                            .map(|p| p.path().as_path())
-                    },
-                    _ => None,
-                }
-            },
+            } => Self::vendored_path_ref(&self.projects.get(node_index)?.item, vendored_index),
             VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
@@ -372,41 +329,84 @@ impl App {
                 node_index,
                 worktree_index,
                 ..
-            } => {
-                let item = self.projects.get(node_index)?;
-                Self::worktree_path_ref(&item.item, worktree_index)
-            },
+            } => Self::worktree_path_ref(&self.projects.get(node_index)?.item, worktree_index),
             VisibleRow::WorktreeMember {
                 node_index,
                 worktree_index,
                 group_index,
                 member_index,
-            } => {
-                let item = self.projects.get(node_index)?;
-                Self::worktree_member_path_ref(
-                    &item.item,
-                    worktree_index,
-                    group_index,
-                    member_index,
-                )
-            },
+            } => Self::worktree_member_path_ref(
+                &self.projects.get(node_index)?.item,
+                worktree_index,
+                group_index,
+                member_index,
+            ),
             VisibleRow::WorktreeVendored {
                 node_index,
                 worktree_index,
                 vendored_index,
-            } => {
-                let item = self.projects.get(node_index)?;
-                Self::worktree_vendored_path_ref(&item.item, worktree_index, vendored_index)
-            },
+            } => Self::worktree_vendored_path_ref(
+                &self.projects.get(node_index)?.item,
+                worktree_index,
+                vendored_index,
+            ),
             VisibleRow::Submodule {
                 node_index,
                 submodule_index,
-            } => {
-                let item = self.projects.get(node_index)?;
-                item.submodules()
-                    .get(submodule_index)
-                    .map(|s| s.path.as_path())
+            } => self
+                .projects
+                .get(node_index)?
+                .submodules()
+                .get(submodule_index)
+                .map(|s| s.path.as_path()),
+        }
+    }
+
+    fn member_path_ref(item: &RootItem, group_index: usize, member_index: usize) -> Option<&Path> {
+        match item {
+            RootItem::Rust(RustProject::Workspace(ws)) => {
+                let group = ws.groups().get(group_index)?;
+                let member = group.members().get(member_index)?;
+                Some(member.path().as_path())
             },
+            RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. })
+                if !wtg.renders_as_group() =>
+            {
+                let group = wtg.single_live_workspace()?.groups().get(group_index)?;
+                let member = group.members().get(member_index)?;
+                Some(member.path().as_path())
+            },
+            _ => None,
+        }
+    }
+
+    fn vendored_path_ref(item: &RootItem, vendored_index: usize) -> Option<&Path> {
+        match item {
+            RootItem::Rust(RustProject::Workspace(ws)) => ws
+                .vendored()
+                .get(vendored_index)
+                .map(|p| p.path().as_path()),
+            RootItem::Rust(RustProject::Package(pkg)) => pkg
+                .vendored()
+                .get(vendored_index)
+                .map(|p| p.path().as_path()),
+            RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. })
+                if !wtg.renders_as_group() =>
+            {
+                wtg.single_live_workspace()?
+                    .vendored()
+                    .get(vendored_index)
+                    .map(|p| p.path().as_path())
+            },
+            RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. })
+                if !wtg.renders_as_group() =>
+            {
+                wtg.single_live_package()?
+                    .vendored()
+                    .get(vendored_index)
+                    .map(|p| p.path().as_path())
+            },
+            _ => None,
         }
     }
 

@@ -831,7 +831,7 @@ fn emit_root_git_info_refresh(bg_tx: &mpsc::Sender<BackgroundMsg>, entry: &Proje
     tracing::info!(
         elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
         path = %entry.project_label,
-        git_status = checkout.as_ref().map(|c| c.status.label()).unwrap_or("unknown"),
+        git_status = checkout.as_ref().map_or("unknown", |c| c.status.label()),
         "watcher_root_git_info_refresh"
     );
     let _ = bg_tx.send(BackgroundMsg::RepoInfo {
@@ -888,8 +888,7 @@ fn fire_git_updates(
                     || entry.common_git_dir.as_deref() == Some(refresh_key.as_path())
                         && entry.abs_path.as_path().join(".git").is_dir()
             })
-            .map(|entry| entry.abs_path.clone())
-            .unwrap_or_else(|| affected[0].clone());
+            .map_or_else(|| affected[0].clone(), |entry| entry.abs_path.clone());
         if let Some(state) = pending_git.get_mut(&refresh_key) {
             mark_running(state);
         }
@@ -2177,7 +2176,7 @@ edition = "2024"
             ProjectEntry {
                 project_label:  "~/main_repo".to_string(),
                 abs_path:       AbsolutePath::from(main_root.clone()),
-                repo_root:      Some(AbsolutePath::from(main_root.clone())),
+                repo_root:      Some(AbsolutePath::from(main_root)),
                 git_dir:        Some(AbsolutePath::from(common_git_dir.clone())),
                 common_git_dir: Some(AbsolutePath::from(common_git_dir.clone())),
             },
@@ -2187,7 +2186,7 @@ edition = "2024"
             ProjectEntry {
                 project_label:  "~/main_repo_style_fix".to_string(),
                 abs_path:       AbsolutePath::from(wt_root.clone()),
-                repo_root:      Some(AbsolutePath::from(wt_root.clone())),
+                repo_root:      Some(AbsolutePath::from(wt_root)),
                 git_dir:        Some(AbsolutePath::from(wt_git_dir)),
                 common_git_dir: Some(AbsolutePath::from(common_git_dir.clone())),
             },
@@ -2943,7 +2942,7 @@ edition = "2024"
                     got_disk = true;
                 },
                 BackgroundMsg::CheckoutInfo { .. } | BackgroundMsg::RepoInfo { .. } => {
-                    got_git = true
+                    got_git = true;
                 },
                 _ => {},
             }
