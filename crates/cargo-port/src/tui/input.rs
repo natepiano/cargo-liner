@@ -207,9 +207,10 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
     if key == KeyCode::Char('y') {
         match action {
             ConfirmAction::Clean(abs_path) => {
-                app.start_clean(&abs_path);
-                app.pending_cleans_mut()
-                    .push_back(PendingClean { abs_path });
+                if app.start_clean(&abs_path) {
+                    app.pending_cleans_mut()
+                        .push_back(PendingClean { abs_path });
+                }
             },
         }
     }

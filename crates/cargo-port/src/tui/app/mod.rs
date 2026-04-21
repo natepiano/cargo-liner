@@ -113,7 +113,7 @@ pub(super) struct App {
     example_output:           Vec<String>,
     example_tx:               mpsc::Sender<ExampleMsg>,
     example_rx:               mpsc::Receiver<ExampleMsg>,
-    running_clean_paths:      HashSet<AbsolutePath>,
+    running_clean_paths:      HashMap<AbsolutePath, Instant>,
     clean_toast:              Option<ToastTaskId>,
     running_lint_paths:       HashMap<AbsolutePath, Instant>,
     lint_toast:               Option<ToastTaskId>,

@@ -173,9 +173,20 @@ impl App {
             .set_len(toast_len);
     }
 
-    pub(in super::super) fn start_clean(&mut self, project_path: &AbsolutePath) {
-        self.running_clean_paths.insert(project_path.clone());
+    /// Begin a clean for `project_path`. Returns `true` if a cargo clean
+    /// should be spawned; `false` when the project is already clean
+    /// (no `target/` dir), in which case a timed "Already clean" toast
+    /// is shown and no spinner is started.
+    pub(in super::super) fn start_clean(&mut self, project_path: &AbsolutePath) -> bool {
+        if !project_path.as_path().join("target").exists() {
+            let name = crate::project::home_relative_path(project_path.as_path());
+            self.show_timed_toast("Already clean", name);
+            return false;
+        }
+        self.running_clean_paths
+            .insert(project_path.clone(), Instant::now());
         self.sync_running_clean_toast();
+        true
     }
 
     pub(in super::super) fn clean_spawn_failed(&mut self, project_path: &AbsolutePath) {

@@ -56,6 +56,7 @@ use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
 use crate::tui::toasts;
 use crate::tui::toasts::ToastStyle::Error;
+use crate::tui::toasts::ToastTaskId;
 use crate::tui::toasts::TrackedItem;
 use crate::watcher;
 use crate::watcher::WatchRequest;
@@ -1072,6 +1073,7 @@ impl App {
             .and_then(|entry| entry.item.git_directory())
     }
 
+    #[cfg(test)]
     pub(in super::super) fn startup_lint_toast_body_for(
         expected: &HashSet<AbsolutePath>,
         seen: &HashSet<AbsolutePath>,
@@ -1088,47 +1090,68 @@ impl App {
         toasts::format_toast_items(&refs, toasts::toast_body_width())
     }
 
-    pub(in super::super) fn running_lint_toast_body(&self) -> String {
-        let paths: HashSet<AbsolutePath> = self.running_lint_paths.keys().cloned().collect();
-        Self::startup_lint_toast_body_for(&paths, &HashSet::new())
+    pub(in super::super) fn sync_running_clean_toast(&mut self) {
+        let running = self.running_clean_paths.clone();
+        self.clean_toast = self.sync_tracked_path_toast(self.clean_toast, "cargo clean", &running);
     }
 
-    pub(in super::super) fn sync_running_clean_toast(&mut self) {
-        if self.running_clean_paths.is_empty() {
-            if let Some(task_id) = self.clean_toast.take() {
-                self.finish_task_toast(task_id);
+    /// Shared per-path task toast sync: grows as new paths start,
+    /// marks items completed (freezing elapsed + starting strikethrough)
+    /// as paths finish, and begins the toast-level linger countdown once
+    /// all paths are done. Used by both lint and clean flows.
+    fn sync_tracked_path_toast(
+        &mut self,
+        toast_slot: Option<ToastTaskId>,
+        title: &str,
+        running_paths: &HashMap<AbsolutePath, Instant>,
+    ) -> Option<ToastTaskId> {
+        if running_paths.is_empty() {
+            if let Some(task_id) = toast_slot {
+                let empty: HashSet<String> = HashSet::new();
+                self.toasts.complete_missing_items(task_id, &empty);
+                if !self.toasts.is_task_finished(task_id) {
+                    let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+                    self.toasts.finish_task(task_id, linger);
+                }
             }
-            return;
+            return toast_slot;
         }
 
-        let items: Vec<TrackedItem> = self
-            .running_clean_paths
+        let running_items: Vec<TrackedItem> = running_paths
             .iter()
-            .map(|p| TrackedItem {
+            .map(|(p, &started)| TrackedItem {
                 label:        project::home_relative_path(p.as_path()),
                 key:          p.clone().into(),
-                started_at:   None,
+                started_at:   Some(started),
                 completed_at: None,
             })
             .collect();
-        let body = self.running_clean_toast_body();
-        if let Some(task_id) = self.clean_toast {
-            self.set_task_tracked_items(task_id, &items);
-        } else {
-            let task_id = self.start_task_toast("cargo clean", body);
-            self.set_task_tracked_items(task_id, &items);
-            self.clean_toast = Some(task_id);
-        }
-    }
-
-    fn running_clean_toast_body(&self) -> String {
-        let items: Vec<String> = self
-            .running_clean_paths
+        let running_keys: HashSet<String> = running_items
             .iter()
-            .map(|p| project::home_relative_path(p.as_path()))
+            .map(|item| item.key.to_string())
             .collect();
-        let refs: Vec<&str> = items.iter().map(String::as_str).collect();
-        toasts::format_toast_items(&refs, toasts::toast_body_width())
+
+        if let Some(task_id) = toast_slot
+            && self.toasts.reactivate_task(task_id)
+        {
+            self.toasts.complete_missing_items(task_id, &running_keys);
+            let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+            self.toasts
+                .add_new_tracked_items(task_id, &running_items, linger);
+            for item in &running_items {
+                if let Some(started) = item.started_at {
+                    self.toasts
+                        .restart_tracked_item(task_id, &item.key, started);
+                }
+            }
+            Some(task_id)
+        } else {
+            let labels: Vec<&str> = running_items.iter().map(|i| i.label.as_str()).collect();
+            let body = toasts::format_toast_items(&labels, toasts::toast_body_width());
+            let task_id = self.start_task_toast(title, body);
+            self.set_task_tracked_items(task_id, &running_items);
+            Some(task_id)
+        }
     }
 
     /// Keep a single "Retrieving GitHub repo details" toast in sync
@@ -1187,61 +1210,8 @@ impl App {
     }
 
     pub(in super::super) fn sync_running_lint_toast(&mut self) {
-        if self.running_lint_paths.is_empty() {
-            if let Some(task_id) = self.lint_toast {
-                // Mark all remaining tracked items as completed (starts fade).
-                let empty: HashSet<String> = HashSet::new();
-                self.toasts.complete_missing_items(task_id, &empty);
-                // Start countdown only once (finish_task is idempotent check via finished_task
-                // flag).
-                if !self.toasts.is_task_finished(task_id) {
-                    let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
-                    self.toasts.finish_task(task_id, linger);
-                }
-            }
-            return;
-        }
-
-        let running_items: Vec<TrackedItem> = self
-            .running_lint_paths
-            .iter()
-            .map(|(p, &started)| TrackedItem {
-                label:        project::home_relative_path(p),
-                key:          p.clone().into(),
-                started_at:   Some(started),
-                completed_at: None,
-            })
-            .collect();
-        let running_keys: HashSet<String> = running_items
-            .iter()
-            .map(|item| item.key.to_string())
-            .collect();
-
-        if let Some(task_id) = self.lint_toast
-            && self.toasts.reactivate_task(task_id)
-        {
-            // Mark items no longer running as completed.
-            self.toasts.complete_missing_items(task_id, &running_keys);
-            // Add new items that aren't already tracked.
-            let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
-            self.toasts
-                .add_new_tracked_items(task_id, &running_items, linger);
-            // Restart items that were already tracked but re-triggered
-            // (e.g. file change while lingering) — resets the spinner
-            // and duration counter.
-            for item in &running_items {
-                if let Some(started) = item.started_at {
-                    self.toasts
-                        .restart_tracked_item(task_id, &item.key, started);
-                }
-            }
-        } else {
-            let items = running_items;
-            let body = self.running_lint_toast_body();
-            let task_id = self.start_task_toast("Lints", body);
-            self.set_task_tracked_items(task_id, &items);
-            self.lint_toast = Some(task_id);
-        }
+        let running = self.running_lint_paths.clone();
+        self.lint_toast = self.sync_tracked_path_toast(self.lint_toast, "Lints", &running);
     }
 
     /// Lightweight refresh of derived state after in-place hierarchy changes
@@ -1555,14 +1525,15 @@ impl App {
         while let Ok(msg) = self.clean_rx.try_recv() {
             match msg {
                 CleanMsg::Finished(abs_path) => {
-                    let already_zero = self
-                        .projects
-                        .iter()
-                        .find(|entry| entry.item.path() == abs_path.as_path())
-                        .and_then(|entry| entry.item.disk_usage_bytes())
-                        .is_none_or(|bytes| bytes == 0);
-                    if already_zero {
-                        self.running_clean_paths.remove(abs_path.as_path());
+                    // Normally `handle_disk_usage` removes the path
+                    // first (filesystem watcher sees target/ shrink).
+                    // This is the safety-net terminator if no disk
+                    // update arrives.
+                    if self
+                        .running_clean_paths
+                        .remove(abs_path.as_path())
+                        .is_some()
+                    {
                         self.sync_running_clean_toast();
                     }
                 },
@@ -1571,7 +1542,7 @@ impl App {
     }
 
     pub(in super::super) fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
-        if self.running_clean_paths.remove(path) {
+        if self.running_clean_paths.remove(path).is_some() {
             self.sync_running_clean_toast();
         }
         self.apply_disk_usage(path, bytes);
