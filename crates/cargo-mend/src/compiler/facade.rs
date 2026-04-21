@@ -614,7 +614,7 @@ pub(super) fn public_reexport_exists_outside_parent(
             let syn::Item::Use(item_use) = item else {
                 continue;
             };
-            let Some(_visibility) = parent_facade_visibility(&item_use.vis) else {
+            let Some(_) = parent_facade_visibility(&item_use.vis) else {
                 continue;
             };
             let mut paths = Vec::new();

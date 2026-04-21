@@ -32,7 +32,7 @@ impl AnalysisCallbacks {
 impl Callbacks for AnalysisCallbacks {
     fn after_analysis(
         &mut self,
-        _compiler: &rustc_interface::interface::Compiler,
+        _: &rustc_interface::interface::Compiler,
         tcx: TyCtxt<'_>,
     ) -> Compilation {
         match visibility::collect_and_store_findings(tcx, &self.settings) {

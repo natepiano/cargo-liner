@@ -82,6 +82,35 @@ struct InlineCallCandidate {
     full_span_end:   LineColumn,
 }
 
+struct ScanFileContext<'a> {
+    analysis_root: &'a Path,
+    path:          &'a Path,
+    text:          &'a str,
+    offsets:       &'a [usize],
+}
+
+impl ScanFileContext<'_> {
+    fn display_path(&self) -> String {
+        self.path
+            .strip_prefix(self.analysis_root)
+            .unwrap_or(self.path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    }
+}
+
+struct ImportFindingInputs<'a> {
+    module_to_functions: &'a BTreeMap<String, Vec<RawCandidate>>,
+    func_to_module:      &'a BTreeMap<&'a str, &'a str>,
+    references:          &'a [BareReference],
+}
+
+struct InlineCallFindingInputs<'a> {
+    candidates:            &'a [InlineCallCandidate],
+    will_import_modules:   &'a BTreeSet<Vec<String>>,
+    file_insertion_offset: usize,
+}
+
 fn scan_file(
     analysis_root: &Path,
     src_root: &Path,
@@ -94,6 +123,12 @@ fn scan_file(
     let current_module_path = module_paths::file_module_path(src_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let offsets = line_offsets(&text);
+    let file_context = ScanFileContext {
+        analysis_root,
+        path,
+        text: &text,
+        offsets: &offsets,
+    };
 
     let declared_modules = collect_declared_modules(&syntax);
 
@@ -153,13 +188,12 @@ fn scan_file(
     }
 
     let (mut findings, mut fixes) = build_findings_and_fixes(
-        analysis_root,
-        path,
-        &text,
-        &offsets,
-        &module_to_functions,
-        &func_to_module,
-        &collector.references,
+        &file_context,
+        &ImportFindingInputs {
+            module_to_functions: &module_to_functions,
+            func_to_module:      &func_to_module,
+            references:          &collector.references,
+        },
     );
 
     if !inline_detector.candidates.is_empty() {
@@ -169,15 +203,14 @@ fn scan_file(
             &current_module_path,
             &module_to_functions,
         );
-        let insertion_offset = file_level_insertion_offset(&syntax, &text, &offsets);
+        let file_insertion_offset = file_level_insertion_offset(&syntax, &text, &offsets);
         let (inline_findings, inline_fixes) = build_inline_call_findings_and_fixes(
-            analysis_root,
-            path,
-            &text,
-            &offsets,
-            &inline_detector.candidates,
-            &will_import_modules,
-            insertion_offset,
+            &file_context,
+            &InlineCallFindingInputs {
+                candidates: &inline_detector.candidates,
+                will_import_modules: &will_import_modules,
+                file_insertion_offset,
+            },
         );
         findings.extend(inline_findings);
         fixes.extend(inline_fixes);
@@ -248,37 +281,30 @@ fn file_level_insertion_offset(syntax: &syn::File, text: &str, offsets: &[usize]
 }
 
 fn build_inline_call_findings_and_fixes(
-    analysis_root: &Path,
-    path: &Path,
-    text: &str,
-    offsets: &[usize],
-    candidates: &[InlineCallCandidate],
-    will_import_modules: &BTreeSet<Vec<String>>,
-    insertion_offset: usize,
+    file_context: &ScanFileContext<'_>,
+    inline_inputs: &InlineCallFindingInputs<'_>,
 ) -> (Vec<Finding>, Vec<UseFix>) {
-    let display_path = path
-        .strip_prefix(analysis_root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/");
+    let display_path = file_context.display_path();
 
     let mut findings = Vec::new();
     let mut fixes = Vec::new();
     let mut inserted_modules: BTreeSet<Vec<String>> = BTreeSet::new();
 
-    for candidate in candidates {
-        let prefix_start_byte = offset(offsets, candidate.prefix_start);
-        let leaf_start_byte = offset(offsets, candidate.leaf_start);
-        let full_start_byte = offset(offsets, candidate.full_span_start);
-        let full_end_byte = offset(offsets, candidate.full_span_end);
+    for candidate in inline_inputs.candidates {
+        let prefix_start_byte = offset(file_context.offsets, candidate.prefix_start);
+        let leaf_start_byte = offset(file_context.offsets, candidate.leaf_start);
+        let full_start_byte = offset(file_context.offsets, candidate.full_span_start);
+        let full_end_byte = offset(file_context.offsets, candidate.full_span_end);
 
-        let source_line = text
+        let source_line = file_context
+            .text
             .lines()
             .nth(candidate.full_span_start.line.saturating_sub(1))
             .unwrap_or_default()
             .to_string();
 
-        let full_path_text = text
+        let full_path_text = file_context
+            .text
             .get(full_start_byte..full_end_byte)
             .unwrap_or_default()
             .to_string();
@@ -306,7 +332,7 @@ fn build_inline_call_findings_and_fixes(
 
         // Rewrite the call-site prefix: `crate::layout::` -> `layout::`
         fixes.push(UseFix {
-            path:        path.to_path_buf(),
+            path:        file_context.path.to_path_buf(),
             start:       prefix_start_byte,
             end:         leaf_start_byte,
             replacement: format!("{}::", candidate.module_name),
@@ -314,16 +340,19 @@ fn build_inline_call_findings_and_fixes(
 
         // Insert `use <module_path>;` once per target module, unless already
         // imported (or will be imported by pass 1's rewrites)
-        if will_import_modules.contains(&candidate.absolute_module) {
+        if inline_inputs
+            .will_import_modules
+            .contains(&candidate.absolute_module)
+        {
             continue;
         }
         if !inserted_modules.insert(candidate.absolute_module.clone()) {
             continue;
         }
         fixes.push(UseFix {
-            path:        path.to_path_buf(),
-            start:       insertion_offset,
-            end:         insertion_offset,
+            path:        file_context.path.to_path_buf(),
+            start:       inline_inputs.file_insertion_offset,
+            end:         inline_inputs.file_insertion_offset,
             replacement: format!("use {};\n", candidate.module_path),
         });
     }
@@ -332,35 +361,28 @@ fn build_inline_call_findings_and_fixes(
 }
 
 fn build_findings_and_fixes(
-    analysis_root: &Path,
-    path: &Path,
-    text: &str,
-    offsets: &[usize],
-    module_to_functions: &BTreeMap<String, Vec<RawCandidate>>,
-    func_to_module: &BTreeMap<&str, &str>,
-    references: &[BareReference],
+    file_context: &ScanFileContext<'_>,
+    import_inputs: &ImportFindingInputs<'_>,
 ) -> (Vec<Finding>, Vec<UseFix>) {
-    let display_path = path
-        .strip_prefix(analysis_root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/");
+    let display_path = file_context.display_path();
 
     let mut findings = Vec::new();
     let mut fixes = Vec::new();
 
     let mut rewritten_modules: BTreeSet<String> = BTreeSet::new();
-    for functions in module_to_functions.values() {
+    for functions in import_inputs.module_to_functions.values() {
         for func in functions {
-            let byte_start = offset(offsets, func.span_start);
-            let byte_end = offset(offsets, func.span_end);
-            let byte_end_with_newline = if text.as_bytes().get(byte_end) == Some(&b'\n') {
-                byte_end + 1
-            } else {
-                byte_end
-            };
+            let byte_start = offset(file_context.offsets, func.span_start);
+            let byte_end = offset(file_context.offsets, func.span_end);
+            let byte_end_with_newline =
+                if file_context.text.as_bytes().get(byte_end) == Some(&b'\n') {
+                    byte_end + 1
+                } else {
+                    byte_end
+                };
 
-            let source_line = text
+            let source_line = file_context
+                .text
                 .lines()
                 .nth(func.span_start.line.saturating_sub(1))
                 .unwrap_or_default()
@@ -386,14 +408,14 @@ fn build_findings_and_fixes(
 
             if rewritten_modules.insert(func.module_path.clone()) {
                 fixes.push(UseFix {
-                    path:        path.to_path_buf(),
+                    path:        file_context.path.to_path_buf(),
                     start:       byte_start,
                     end:         byte_end,
                     replacement: func.replacement_use.clone(),
                 });
             } else {
                 fixes.push(UseFix {
-                    path:        path.to_path_buf(),
+                    path:        file_context.path.to_path_buf(),
                     start:       byte_start,
                     end:         byte_end_with_newline,
                     replacement: String::new(),
@@ -402,10 +424,10 @@ fn build_findings_and_fixes(
         }
     }
 
-    for reference in references {
-        if let Some(&module_name) = func_to_module.get(reference.name.as_str()) {
+    for reference in import_inputs.references {
+        if let Some(&module_name) = import_inputs.func_to_module.get(reference.name.as_str()) {
             fixes.push(UseFix {
-                path:        path.to_path_buf(),
+                path:        file_context.path.to_path_buf(),
                 start:       reference.byte_start,
                 end:         reference.byte_end,
                 replacement: format!("{module_name}::{}", reference.name),

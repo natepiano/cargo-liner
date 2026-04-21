@@ -72,6 +72,22 @@ struct ScopeInfo {
     existing_imports: BTreeSet<String>,
 }
 
+#[derive(Clone, Copy)]
+struct ScopeSpan {
+    start: usize,
+    end:   usize,
+}
+
+impl ScopeSpan {
+    const fn new(start: usize, end: usize) -> Self { Self { start, end } }
+}
+
+struct ScopeCollectionContext<'a> {
+    text:    &'a str,
+    offsets: &'a [usize],
+    scopes:  &'a mut Vec<ScopeInfo>,
+}
+
 fn scan_file(
     analysis_root: &Path,
     src_root: &Path,
@@ -85,14 +101,16 @@ fn scan_file(
     let base_module_path = module_paths::file_module_path(src_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let mut scopes = Vec::new();
+    let mut scope_collection_context = ScopeCollectionContext {
+        text:    &text,
+        offsets: &offsets,
+        scopes:  &mut scopes,
+    };
     collect_scopes(
         &syntax.items,
-        &text,
-        &offsets,
-        0,
-        text.len(),
+        ScopeSpan::new(0, text.len()),
         &base_module_path,
-        &mut scopes,
+        &mut scope_collection_context,
     );
 
     // Visit the AST to find inline path-qualified types
@@ -191,12 +209,9 @@ fn scan_file(
 
 fn collect_scopes(
     items: &[Item],
-    text: &str,
-    offsets: &[usize],
-    span_start: usize,
-    span_end: usize,
+    span: ScopeSpan,
     module_path: &[String],
-    scopes: &mut Vec<ScopeInfo>,
+    scope_collection_context: &mut ScopeCollectionContext<'_>,
 ) {
     let mut existing_imports = BTreeSet::new();
     let mut last_use_start = None;
@@ -204,7 +219,7 @@ fn collect_scopes(
     let mut first_item_start = None;
 
     for item in items {
-        let item_start = offset(offsets, item.span().start());
+        let item_start = offset(scope_collection_context.offsets, item.span().start());
         first_item_start.get_or_insert(item_start);
 
         if let Item::Use(item_use) = item {
@@ -212,21 +227,23 @@ fn collect_scopes(
                 existing_imports.insert(import_path);
             }
             last_use_start = Some(item_start);
-            let item_end = offset(offsets, item_use.span().end());
-            last_use_end = Some(if text.as_bytes().get(item_end) == Some(&b'\n') {
-                item_end + 1
-            } else {
-                item_end
-            });
+            let item_end = offset(scope_collection_context.offsets, item_use.span().end());
+            last_use_end = Some(
+                if scope_collection_context.text.as_bytes().get(item_end) == Some(&b'\n') {
+                    item_end + 1
+                } else {
+                    item_end
+                },
+            );
         }
     }
 
-    let anchor_offset = last_use_start.or(first_item_start).unwrap_or(span_start);
-    let insertion_offset = last_use_end.or(first_item_start).unwrap_or(span_end);
-    let indent = indentation_at(text, anchor_offset);
-    scopes.push(ScopeInfo {
-        span_start,
-        span_end,
+    let anchor_offset = last_use_start.or(first_item_start).unwrap_or(span.start);
+    let insertion_offset = last_use_end.or(first_item_start).unwrap_or(span.end);
+    let indent = indentation_at(scope_collection_context.text, anchor_offset);
+    scope_collection_context.scopes.push(ScopeInfo {
+        span_start: span.start,
+        span_end: span.end,
         insertion_offset,
         indent,
         module_path: module_path.to_vec(),
@@ -241,12 +258,12 @@ fn collect_scopes(
             child_module_path.push(item_mod.ident.to_string());
             collect_scopes(
                 child_items,
-                text,
-                offsets,
-                offset(offsets, item_mod.span().start()),
-                offset(offsets, item_mod.span().end()),
+                ScopeSpan::new(
+                    offset(scope_collection_context.offsets, item_mod.span().start()),
+                    offset(scope_collection_context.offsets, item_mod.span().end()),
+                ),
                 &child_module_path,
-                scopes,
+                scope_collection_context,
             );
         }
     }

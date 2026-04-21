@@ -96,11 +96,14 @@ analysis after macro expansion. This is a permanently unstable feature — it is
 clippy and miri access the compiler, but it means the compiler's internal crates have no
 stability guarantee and `cargo-mend` is sensitive to the exact rustc version used to build it.
 
-Install the `rustc-dev` component, then install `cargo-mend` with `RUSTC_BOOTSTRAP=1`:
+Install the `rustc-dev` component, then install `cargo-mend` with the stable toolchain plus
+`RUSTC_BOOTSTRAP=1`. Nightly-built binaries can fail against stable projects with `E0514`
+because `cargo-mend` links against `rustc_driver`.
 
 ```bash
 rustup component add rustc-dev
-RUSTC_BOOTSTRAP=1 cargo install cargo-mend
+RUSTC_BOOTSTRAP=1 cargo +stable install --path .
+RUSTC_BOOTSTRAP=1 cargo +stable install cargo-mend --version <VERSION>
 ```
 
 ## Usage
@@ -297,30 +300,6 @@ That is sometimes exactly what you want. It is also easy to do by accident.
 
 This tool asks you to review that choice explicitly instead of letting it slip in unnoticed.
 
-<a id="narrow-to-pub-crate"></a>
-### Narrow `pub` to `pub(crate)`
-
-This warning flags `pub` items in top-level private modules that are not re-exported by the crate
-root (`lib.rs` or `main.rs`).
-
-In a top-level private module, `pub` and `pub(crate)` have the same effect — but `pub` misleadingly
-suggests the item is part of the public API. Using `pub(crate)` makes the intent explicit: the item
-is shared within the crate, not exported.
-
-Example:
-
-```rust
-// src/lib.rs
-mod helpers;       // private module — not `pub mod`
-pub use helpers::publicly_exported_fn;
-
-// src/helpers.rs
-pub fn publicly_exported_fn() {}  // re-exported → must stay `pub`
-pub fn internal_fn() {}           // NOT re-exported → should be `pub(crate)`
-```
-
-Run `cargo mend --fix` to auto-fix these items to `pub(crate)`.
-
 <a id="suspicious-pub"></a>
 ### Suspicious `pub`
 
@@ -430,59 +409,57 @@ pub use child::*;
 `cargo-mend` treats that as a separate problem. Use explicit re-exports instead so the parent
 facade states exactly which child items it is exporting.
 
-<a id="internal-parent-pub-use-facade"></a>
-### Internal parent `pub use` facade
+<a id="prefer-module-import"></a>
+### Prefer module import
 
-This warning is about a parent boundary module that is being used as an internal namespace facade
-inside its own subtree.
-
-In other words:
-
-- the parent `pub use` is not part of the outward boundary
-- but code inside the subtree is still referring to the parent path directly
-- that makes the parent boundary part of the implementation structure, not just the facade
+This warning detects direct function imports and suggests importing the parent module instead,
+then calling the function with module qualification.
 
 Example:
 
 ```rust
-// src/private_parent/mod.rs
-mod child;
-pub use child::Helper;
+// Before:
+use crate::error::report_to_mcp_error;
 
-// src/private_parent/sibling.rs
-fn use_helper() {
-    let _ = std::mem::size_of::<super::Helper>();
+fn example() {
+    let error = report_to_mcp_error(&err);
+}
+
+// After:
+use crate::error;
+
+fn example() {
+    let error = error::report_to_mcp_error(&err);
 }
 ```
 
-In this example, `super::Helper` is using the parent boundary itself as an internal facade.
+`cargo mend --fix` can rewrite these cases automatically. It rewrites the `use` statement and
+qualifies all bare references in the file.
 
-That can be intentional, but it is worth review because it usually means one of two things:
+<a id="inline-path-qualified-type"></a>
+### Inline path-qualified type
 
-- the parent boundary is acting as an internal namespace and should stay that way intentionally
-- or the subtree should import the child module directly instead of routing through the parent
+This warning detects types used with inline path qualification (like `crate::module::MyType`)
+and suggests adding a `use` import at the top of the file instead.
 
-`cargo-mend` does not auto-fix this case.
-
-<a id="wildcard-parent-pub-use"></a>
-### Wildcard parent `pub use`
-
-This warning is about parent facade modules that re-export everything from a child with `*`.
-
-That makes the boundary harder to read because the parent module no longer says what it is
-actually exporting.
-
-Prefer:
+Example:
 
 ```rust
-pub use child::{Helper, OtherHelper};
+// Before:
+fn example() -> crate::module::MyType {
+    crate::module::MyType::new()
+}
+
+// After:
+use crate::module::MyType;
+
+fn example() -> MyType {
+    MyType::new()
+}
 ```
 
-instead of:
-
-```rust
-pub use child::*;
-```
+`cargo mend --fix` can rewrite these cases automatically. It adds the `use` import and replaces
+all inline occurrences with the bare type name.
 
 <a id="shorten-local-crate-import"></a>
 ### Shorten local crate import
@@ -550,57 +527,83 @@ This applies at any depth: `super::super::super::` and beyond are all rewritten 
 
 `cargo mend --fix` can rewrite these cases automatically.
 
-<a id="prefer-module-import"></a>
-### Prefer module import
+<a id="wildcard-parent-pub-use"></a>
+### Wildcard parent `pub use`
 
-This warning detects direct function imports and suggests importing the parent module instead,
-then calling the function with module qualification.
+This warning is about parent facade modules that re-export everything from a child with `*`.
+
+That makes the boundary harder to read because the parent module no longer says what it is
+actually exporting.
+
+Prefer:
+
+```rust
+pub use child::{Helper, OtherHelper};
+```
+
+instead of:
+
+```rust
+pub use child::*;
+```
+
+<a id="internal-parent-pub-use-facade"></a>
+### Internal parent `pub use` facade
+
+This warning is about a parent boundary module that is being used as an internal namespace facade
+inside its own subtree.
+
+In other words:
+
+- the parent `pub use` is not part of the outward boundary
+- but code inside the subtree is still referring to the parent path directly
+- that makes the parent boundary part of the implementation structure, not just the facade
 
 Example:
 
 ```rust
-// Before:
-use crate::error::report_to_mcp_error;
+// src/private_parent/mod.rs
+mod child;
+pub use child::Helper;
 
-fn example() {
-    let error = report_to_mcp_error(&err);
-}
-
-// After:
-use crate::error;
-
-fn example() {
-    let error = error::report_to_mcp_error(&err);
+// src/private_parent/sibling.rs
+fn use_helper() {
+    let _ = std::mem::size_of::<super::Helper>();
 }
 ```
 
-`cargo mend --fix` can rewrite these cases automatically. It rewrites the `use` statement and
-qualifies all bare references in the file.
+In this example, `super::Helper` is using the parent boundary itself as an internal facade.
 
-<a id="inline-path-qualified-type"></a>
-### Inline path-qualified type
+That can be intentional, but it is worth review because it usually means one of two things:
 
-This warning detects types used with inline path qualification (like `crate::module::MyType`)
-and suggests adding a `use` import at the top of the file instead.
+- the parent boundary is acting as an internal namespace and should stay that way intentionally
+- or the subtree should import the child module directly instead of routing through the parent
+
+`cargo-mend` does not auto-fix this case.
+
+<a id="narrow-to-pub-crate"></a>
+### Narrow `pub` to `pub(crate)`
+
+This warning flags `pub` items in top-level private modules that are not re-exported by the crate
+root (`lib.rs` or `main.rs`).
+
+In a top-level private module, `pub` and `pub(crate)` have the same effect — but `pub` misleadingly
+suggests the item is part of the public API. Using `pub(crate)` makes the intent explicit: the item
+is shared within the crate, not exported.
 
 Example:
 
 ```rust
-// Before:
-fn example() -> crate::module::MyType {
-    crate::module::MyType::new()
-}
+// src/lib.rs
+mod helpers;       // private module — not `pub mod`
+pub use helpers::publicly_exported_fn;
 
-// After:
-use crate::module::MyType;
-
-fn example() -> MyType {
-    MyType::new()
-}
+// src/helpers.rs
+pub fn publicly_exported_fn() {}  // re-exported → must stay `pub`
+pub fn internal_fn() {}           // NOT re-exported → should be `pub(crate)`
 ```
 
-`cargo mend --fix` can rewrite these cases automatically. It adds the `use` import and replaces
-all inline occurrences with the bare type name.
+Run `cargo mend --fix` to auto-fix these items to `pub(crate)`.
 
 ## License
 
