@@ -255,8 +255,8 @@ mod tests {
     fn default_global_config_toml_parses_correctly() {
         let result: Result<GlobalConfigFile, _> = toml::from_str(DEFAULT_GLOBAL_CONFIG_TOML);
         assert!(result.is_ok(), "DEFAULT_GLOBAL_CONFIG_TOML should parse");
-        let cfg = result.unwrap();
-        for (code, enabled) in cfg.diagnostics.entries() {
+        let global_config_file = result.unwrap();
+        for (code, enabled) in global_config_file.diagnostics.entries() {
             assert!(
                 enabled,
                 "default config should have {} enabled",
@@ -267,16 +267,18 @@ mod tests {
 
     #[test]
     fn is_enabled_reflects_config_values() {
-        let mut cfg = DiagnosticsConfig::default();
-        assert!(cfg.is_enabled(DiagnosticCode::PreferModuleImport));
-        cfg.rules.insert(DiagnosticCode::PreferModuleImport, false);
-        assert!(!cfg.is_enabled(DiagnosticCode::PreferModuleImport));
+        let mut diagnostics_config = DiagnosticsConfig::default();
+        assert!(diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport));
+        diagnostics_config
+            .rules
+            .insert(DiagnosticCode::PreferModuleImport, false);
+        assert!(!diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport));
     }
 
     #[test]
     fn missing_code_defaults_to_enabled() {
-        let cfg = DiagnosticsConfig::default();
-        assert!(cfg.is_enabled(DiagnosticCode::ForbiddenPubCrate));
+        let diagnostics_config = DiagnosticsConfig::default();
+        assert!(diagnostics_config.is_enabled(DiagnosticCode::ForbiddenPubCrate));
     }
 
     #[test]
@@ -305,15 +307,21 @@ prefer_module_import = false
 ";
         let result: Result<GlobalConfigFile, _> = toml::from_str(toml_str);
         assert!(result.is_ok(), "partial toml should parse");
-        let cfg = result.unwrap();
+        let global_config_file = result.unwrap();
         assert!(
-            !cfg.diagnostics
+            !global_config_file
+                .diagnostics
                 .is_enabled(DiagnosticCode::PreferModuleImport)
         );
         assert!(
-            cfg.diagnostics
+            global_config_file
+                .diagnostics
                 .is_enabled(DiagnosticCode::ForbiddenPubCrate)
         );
-        assert!(cfg.diagnostics.is_enabled(DiagnosticCode::SuspiciousPub));
+        assert!(
+            global_config_file
+                .diagnostics
+                .is_enabled(DiagnosticCode::SuspiciousPub)
+        );
     }
 }

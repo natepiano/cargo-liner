@@ -613,7 +613,6 @@ fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
-    clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {

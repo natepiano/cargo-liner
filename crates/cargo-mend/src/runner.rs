@@ -308,13 +308,13 @@ impl<'a> MendRunner<'a> {
         if let Some(scan) = pub_use_scan {
             notices.push(NoticeKind::PubUseFixes(PubUseNotice::from_intent(
                 intent,
-                scan.applied_count,
-                scan.skipped_count,
+                scan.applied,
+                scan.skipped,
             )));
         }
 
         if matches!(intent, OperationIntent::Apply)
-            && pub_use_scan.is_some_and(|scan| scan.applied_count > 0)
+            && pub_use_scan.is_some_and(|scan| scan.applied > 0)
             && report
                 .is_some_and(|report| report.facts.compiler_warnings.saw_unused_import_warnings())
         {
@@ -323,8 +323,8 @@ impl<'a> MendRunner<'a> {
 
         match notices.len() {
             0 => None,
-            1 => notices.into_iter().next().map(ExecutionNotice::from_kind),
-            _ => Some(ExecutionNotice::from_kinds(notices)),
+            1 => notices.into_iter().next().map(ExecutionNotice::from),
+            _ => Some(ExecutionNotice::from(notices)),
         }
     }
 

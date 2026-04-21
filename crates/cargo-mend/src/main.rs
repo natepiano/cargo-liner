@@ -195,10 +195,6 @@ fn color_mode() -> render::ColorMode {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::used_underscore_binding,
-    reason = "RAII guards use _ prefix but are held for Drop"
-)]
 mod tests {
     use std::ffi::OsString;
 

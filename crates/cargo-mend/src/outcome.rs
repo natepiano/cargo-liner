@@ -140,11 +140,15 @@ impl From<Error> for MendFailure {
     fn from(value: Error) -> Self { Self::Unexpected(value) }
 }
 
+impl From<NoticeKind> for ExecutionNotice {
+    fn from(kind: NoticeKind) -> Self { Self { kinds: vec![kind] } }
+}
+
+impl From<Vec<NoticeKind>> for ExecutionNotice {
+    fn from(kinds: Vec<NoticeKind>) -> Self { Self { kinds } }
+}
+
 impl ExecutionNotice {
-    pub(crate) fn from_kind(kind: NoticeKind) -> Self { Self { kinds: vec![kind] } }
-
-    pub(crate) const fn from_kinds(kinds: Vec<NoticeKind>) -> Self { Self { kinds } }
-
     pub(crate) fn render(&self) -> String {
         let parts = self
             .kinds
@@ -328,7 +332,7 @@ mod tests {
 
     #[test]
     fn combined_notice_renders_all_parts() {
-        let notice = ExecutionNotice::from_kinds(vec![
+        let notice = ExecutionNotice::from(vec![
             NoticeKind::ImportFixes(FixNotice::Applied(2)),
             NoticeKind::PubUseFixes(PubUseNotice::Applied {
                 applied:             1,

@@ -15,7 +15,6 @@ use crate::constants::FINDINGS_SCHEMA_VERSION;
 use crate::diagnostics::CompilerWarningFacts;
 use crate::diagnostics::Finding;
 use crate::diagnostics::PubUseFixFact;
-use crate::diagnostics::PubUseFixFacts;
 use crate::diagnostics::Report;
 use crate::diagnostics::ReportFacts;
 use crate::diagnostics::ReportSummary;
@@ -161,7 +160,7 @@ pub(super) fn load_report(
         summary: ReportSummary::default(),
         findings,
         facts: ReportFacts {
-            pub_use:           PubUseFixFacts::from_vec(pub_use_fix_facts),
+            pub_use:           pub_use_fix_facts.into(),
             compiler_warnings: CompilerWarningFacts::None,
         },
     })

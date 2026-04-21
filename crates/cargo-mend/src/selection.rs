@@ -110,7 +110,8 @@ pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
     };
     let package_roots = selected_packages
         .iter()
-        .map(|package| package_root_from_metadata(package))
+        .copied()
+        .map(package_root_from_metadata)
         .collect::<Result<Vec<_>>>()?;
     let packages = selected_packages
         .into_iter()

@@ -176,7 +176,7 @@ fn scan_file(
             && inserted_use_paths.insert((scope_id, occ.full_path.clone()))
         {
             let use_path = canonicalize_inserted_use_path(scope, &occ.full_path);
-            let use_text = format!("{}use {};\n", scope.indent, use_path);
+            let use_text = format!("{}use {use_path};\n", scope.indent);
             fixes.push(UseFix {
                 path:        path.to_path_buf(),
                 start:       scope.insertion_offset,

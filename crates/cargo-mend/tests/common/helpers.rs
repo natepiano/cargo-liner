@@ -12,7 +12,7 @@ use super::types::ExpectedFinding;
 use super::types::Report;
 use super::types::Summary;
 
-pub fn clear_wrappers(command: &mut Command) -> &mut Command {
+fn clear_wrappers(command: &mut Command) -> &mut Command {
     command
         .env_remove("RUSTC")
         .env("RUSTC_WRAPPER", "")
@@ -32,14 +32,14 @@ pub fn mend_command() -> Command {
     command
 }
 
-pub fn mend_bin() -> PathBuf { PathBuf::from(env!("CARGO_BIN_EXE_cargo-mend")) }
+fn mend_bin() -> PathBuf { PathBuf::from(env!("CARGO_BIN_EXE_cargo-mend")) }
 
 pub(super) fn strip_ansi(input: &str) -> String {
     let ansi = Regex::new(r"\x1b\[[0-9;]*m").expect("compile ansi regex");
     ansi.replace_all(input, "").into_owned()
 }
 
-pub const fn severity_for_code(code: DiagnosticCode) -> &'static str {
+const fn severity_for_code(code: DiagnosticCode) -> &'static str {
     match code {
         DiagnosticCode::ForbiddenPubCrate
         | DiagnosticCode::ForbiddenPubInCrate
@@ -48,7 +48,7 @@ pub const fn severity_for_code(code: DiagnosticCode) -> &'static str {
     }
 }
 
-pub fn expected_summary(report: &Report) -> Summary {
+fn expected_summary(report: &Report) -> Summary {
     let mut summary = Summary {
         errors:                   0,
         warnings:                 0,

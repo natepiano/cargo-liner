@@ -186,9 +186,11 @@ pub(crate) struct PubUseFixFacts {
     facts: Vec<PubUseFixFact>,
 }
 
-impl PubUseFixFacts {
-    pub(crate) const fn from_vec(facts: Vec<PubUseFixFact>) -> Self { Self { facts } }
+impl From<Vec<PubUseFixFact>> for PubUseFixFacts {
+    fn from(facts: Vec<PubUseFixFact>) -> Self { Self { facts } }
+}
 
+impl PubUseFixFacts {
     pub(crate) fn iter(&self) -> impl Iterator<Item = &PubUseFixFact> { self.facts.iter() }
 }
 
