@@ -75,6 +75,7 @@ pub(super) use support::build_lints_data;
 pub(super) use support::build_pane_data;
 pub(super) use support::build_pane_data_for_member;
 pub(super) use support::build_pane_data_for_submodule;
+pub(super) use support::build_pane_data_for_vendored;
 pub(super) use support::build_pane_data_for_workspace_ref;
 pub(super) use support::build_target_list_from_data;
 pub(super) use support::format_date;

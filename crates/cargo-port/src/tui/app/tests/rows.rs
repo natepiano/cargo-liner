@@ -998,7 +998,7 @@ fn visible_rows_include_vendored_children() {
             "~/ws/member",
         )])],
         rust: RustInfo {
-            vendored: vec![make_member(Some("vendored"), "~/ws/vendor/helper")],
+            vendored: vec![super::make_vendored(Some("vendored"), "~/ws/vendor/helper")],
             ..RustInfo::default()
         },
         ..Workspace::default()

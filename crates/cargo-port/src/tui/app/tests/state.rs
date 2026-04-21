@@ -618,7 +618,7 @@ fn vendored_path_dependency_becomes_ci_owner() {
             path: test_path("~/app"),
             name: Some("app".to_string()),
             rust: RustInfo {
-                vendored: vec![make_member(Some("helper"), "~/app/vendor/helper")],
+                vendored: vec![super::make_vendored(Some("helper"), "~/app/vendor/helper")],
                 ..RustInfo::default()
             },
             ..Package::default()

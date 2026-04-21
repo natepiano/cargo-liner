@@ -47,6 +47,7 @@ use crate::project::RepoInfo;
 use crate::project::RootItem;
 use crate::project::RustInfo;
 use crate::project::RustProject;
+use crate::project::VendoredPackage;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Dismissed;
 use crate::project::WorkflowPresence;
@@ -336,7 +337,11 @@ fn named_group(name: &str, members: Vec<Package>) -> MemberGroup {
     }
 }
 
-fn make_package_with_vendored(name: Option<&str>, path: &str, vendored: Vec<Package>) -> Package {
+fn make_package_with_vendored(
+    name: Option<&str>,
+    path: &str,
+    vendored: Vec<VendoredPackage>,
+) -> Package {
     Package {
         path: test_path(path),
         name: name.map(String::from),
@@ -345,6 +350,14 @@ fn make_package_with_vendored(name: Option<&str>, path: &str, vendored: Vec<Pack
             ..RustInfo::default()
         },
         ..Package::default()
+    }
+}
+
+fn make_vendored(name: Option<&str>, path: &str) -> VendoredPackage {
+    VendoredPackage {
+        path: test_path(path),
+        name: name.map(String::from),
+        ..VendoredPackage::default()
     }
 }
 

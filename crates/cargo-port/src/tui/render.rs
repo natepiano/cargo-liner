@@ -784,10 +784,11 @@ fn render_root_item(
     ListItem::new(super::columns::row_to_line(&row, widths))
 }
 
-/// Build a `ListItem` for a child project (workspace member or worktree).
-fn render_child_item(
+/// Build a `ListItem` for a child project (workspace member, vendored crate,
+/// or worktree).
+fn render_child_item<P: project::ProjectFields>(
     app: &App,
-    project: &project::Package,
+    project: &P,
     name: &str,
     child_sorted: &[u64],
     prefix: &'static str,

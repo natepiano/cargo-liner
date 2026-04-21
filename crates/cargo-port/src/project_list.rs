@@ -14,6 +14,7 @@ use crate::project::ProjectInfo;
 use crate::project::RootItem;
 use crate::project::RustInfo;
 use crate::project::RustProject;
+use crate::project::VendoredPackage;
 use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
@@ -193,6 +194,29 @@ impl ProjectList {
         self.root_items
             .iter_mut()
             .find_map(|entry| entry.item.rust_info_at_path_mut(target))
+    }
+
+    pub(crate) fn vendored_at_path(&self, target: &Path) -> Option<&VendoredPackage> {
+        self.root_items
+            .iter()
+            .find_map(|entry| entry.item.vendored_at_path(target))
+    }
+
+    pub(crate) fn vendored_at_path_mut(&mut self, target: &Path) -> Option<&mut VendoredPackage> {
+        self.root_items
+            .iter_mut()
+            .find_map(|entry| entry.item.vendored_at_path_mut(target))
+    }
+
+    /// For a vendored crate path, return the owning root's `LintRuns`.
+    ///
+    /// Used by the detail pane/icon to show parent lints when a vendored row
+    /// is selected — the list-row icon stays blank because `lint_at_path`
+    /// does not fall back.
+    pub(crate) fn vendored_owner_lint(&self, target: &Path) -> Option<&LintRuns> {
+        self.root_items
+            .iter()
+            .find_map(|entry| entry.item.vendored_owner_lint(target))
     }
 
     pub(crate) fn lint_at_path(&self, target: &Path) -> Option<&LintRuns> {

@@ -11,6 +11,7 @@ use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
 use super::rust_info::RustInfo;
+use super::vendored_package::VendoredPackage;
 use super::workspace::Workspace;
 use crate::lint::LintRuns;
 
@@ -134,6 +135,20 @@ impl RustProject {
         }
     }
 
+    pub(crate) fn vendored_at_path(&self, path: &Path) -> Option<&VendoredPackage> {
+        match self {
+            Self::Workspace(ws) => vendored_in_workspace(ws, path),
+            Self::Package(pkg) => vendored_in_package(pkg, path),
+        }
+    }
+
+    pub(crate) fn vendored_at_path_mut(&mut self, path: &Path) -> Option<&mut VendoredPackage> {
+        match self {
+            Self::Workspace(ws) => vendored_in_workspace_mut(ws, path),
+            Self::Package(pkg) => vendored_in_package_mut(pkg, path),
+        }
+    }
+
     pub(crate) fn collect_project_info(&self, out: &mut Vec<(AbsolutePath, ProjectInfo)>) {
         match self {
             Self::Workspace(ws) => collect_project_info_from_workspace(ws, out),
@@ -157,7 +172,7 @@ pub(super) fn info_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'
     }
     for vendored in ws.vendored() {
         if vendored.path() == path {
-            return Some(vendored.rust.info());
+            return Some(&vendored.info);
         }
     }
     None
@@ -169,7 +184,7 @@ pub(super) fn info_in_package<'a>(pkg: &'a Package, path: &Path) -> Option<&'a P
     }
     for vendored in pkg.vendored() {
         if vendored.path() == path {
-            return Some(vendored.rust.info());
+            return Some(&vendored.info);
         }
     }
     None
@@ -205,7 +220,7 @@ pub(super) fn info_in_workspace_mut<'a>(
         .iter()
         .position(|vendored| vendored.path() == path);
     if let Some(vendored_index) = vendored_index {
-        return Some(ws.vendored_mut()[vendored_index].rust.info_mut());
+        return Some(&mut ws.vendored_mut()[vendored_index].info);
     }
     None
 }
@@ -219,7 +234,7 @@ pub(super) fn info_in_package_mut<'a>(
     }
     for vendored in pkg.vendored_mut() {
         if vendored.path() == path {
-            return Some(vendored.rust.info_mut());
+            return Some(&mut vendored.info);
         }
     }
     None
@@ -238,22 +253,12 @@ pub(super) fn rust_info_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Opti
             }
         }
     }
-    for vendored in ws.vendored() {
-        if vendored.path() == path {
-            return Some(&vendored.rust);
-        }
-    }
     None
 }
 
 pub(super) fn rust_info_in_package<'a>(pkg: &'a Package, path: &Path) -> Option<&'a RustInfo> {
     if pkg.path() == path {
         return Some(&pkg.rust);
-    }
-    for vendored in pkg.vendored() {
-        if vendored.path() == path {
-            return Some(&vendored.rust);
-        }
     }
     None
 }
@@ -279,13 +284,6 @@ pub(super) fn rust_info_in_workspace_mut<'a>(
     if let Some((group_index, member_index)) = member_index {
         return Some(&mut ws.groups_mut()[group_index].members_mut()[member_index].rust);
     }
-    let vendored_index = ws
-        .vendored()
-        .iter()
-        .position(|vendored| vendored.path() == path);
-    if let Some(vendored_index) = vendored_index {
-        return Some(&mut ws.vendored_mut()[vendored_index].rust);
-    }
     None
 }
 
@@ -296,37 +294,58 @@ pub(super) fn rust_info_in_package_mut<'a>(
     if pkg.path() == path {
         return Some(&mut pkg.rust);
     }
-    for vendored in pkg.vendored_mut() {
-        if vendored.path() == path {
-            return Some(&mut vendored.rust);
-        }
-    }
     None
+}
+
+// ── VendoredPackage traversal helpers ────────────────────────────────
+
+pub(super) fn vendored_in_workspace<'a>(
+    ws: &'a Workspace,
+    path: &Path,
+) -> Option<&'a VendoredPackage> {
+    ws.vendored().iter().find(|v| v.path() == path)
+}
+
+pub(super) fn vendored_in_package<'a>(
+    pkg: &'a Package,
+    path: &Path,
+) -> Option<&'a VendoredPackage> {
+    pkg.vendored().iter().find(|v| v.path() == path)
+}
+
+pub(super) fn vendored_in_workspace_mut<'a>(
+    ws: &'a mut Workspace,
+    path: &Path,
+) -> Option<&'a mut VendoredPackage> {
+    ws.vendored_mut().iter_mut().find(|v| v.path() == path)
+}
+
+pub(super) fn vendored_in_package_mut<'a>(
+    pkg: &'a mut Package,
+    path: &Path,
+) -> Option<&'a mut VendoredPackage> {
+    pkg.vendored_mut().iter_mut().find(|v| v.path() == path)
 }
 
 // ── Lint traversal helpers ───────────────────────────────────────────
 //
-// Lint runs at the workspace/package level. Members and vendored packages
-// resolve to the owning root's `LintRuns`.
+// Lint runs at the workspace/package level. Workspace members resolve to the
+// owning root's `LintRuns`. Vendored crates never resolve to lint — they are
+// not lint-owning nodes, and the type system guarantees they cannot be.
 
 pub(super) fn lint_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'a LintRuns> {
     if ws.path() == path {
         return Some(ws.lint_runs());
     }
-    let is_child = ws
+    let is_member = ws
         .groups()
         .iter()
-        .any(|g| g.members().iter().any(|m| m.path() == path))
-        || ws.vendored().iter().any(|v| v.path() == path);
-    is_child.then(|| ws.lint_runs())
+        .any(|g| g.members().iter().any(|m| m.path() == path));
+    is_member.then(|| ws.lint_runs())
 }
 
 pub(super) fn lint_in_package<'a>(pkg: &'a Package, path: &Path) -> Option<&'a LintRuns> {
-    if pkg.path() == path {
-        return Some(pkg.lint_runs());
-    }
-    let is_child = pkg.vendored().iter().any(|v| v.path() == path);
-    is_child.then(|| pkg.lint_runs())
+    (pkg.path() == path).then(|| pkg.lint_runs())
 }
 
 pub(super) fn lint_in_workspace_mut<'a>(
@@ -336,23 +355,18 @@ pub(super) fn lint_in_workspace_mut<'a>(
     if ws.path() == path {
         return Some(ws.lint_runs_mut());
     }
-    let is_child = ws
+    let is_member = ws
         .groups()
         .iter()
-        .any(|g| g.members().iter().any(|m| m.path() == path))
-        || ws.vendored().iter().any(|v| v.path() == path);
-    is_child.then(|| ws.lint_runs_mut())
+        .any(|g| g.members().iter().any(|m| m.path() == path));
+    is_member.then(|| ws.lint_runs_mut())
 }
 
 pub(super) fn lint_in_package_mut<'a>(
     pkg: &'a mut Package,
     path: &Path,
 ) -> Option<&'a mut LintRuns> {
-    if pkg.path() == path {
-        return Some(pkg.lint_runs_mut());
-    }
-    let is_child = pkg.vendored().iter().any(|v| v.path() == path);
-    is_child.then(|| pkg.lint_runs_mut())
+    (pkg.path() == path).then(|| pkg.lint_runs_mut())
 }
 
 fn collect_project_info_from_workspace(ws: &Workspace, out: &mut Vec<(AbsolutePath, ProjectInfo)>) {
@@ -363,13 +377,13 @@ fn collect_project_info_from_workspace(ws: &Workspace, out: &mut Vec<(AbsolutePa
         }
     }
     for vendored in ws.vendored() {
-        out.push((vendored.path().clone(), vendored.rust.info().clone()));
+        out.push((vendored.path().clone(), vendored.info.clone()));
     }
 }
 
 fn collect_project_info_from_package(pkg: &Package, out: &mut Vec<(AbsolutePath, ProjectInfo)>) {
     out.push((pkg.path().clone(), pkg.rust.info().clone()));
     for vendored in pkg.vendored() {
-        out.push((vendored.path().clone(), vendored.rust.info().clone()));
+        out.push((vendored.path().clone(), vendored.info.clone()));
     }
 }

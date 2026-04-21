@@ -115,6 +115,7 @@ impl App {
             | None => self
                 .projects
                 .lint_at_path(path)
+                .or_else(|| self.projects.vendored_owner_lint(path))
                 .map(|lr| lr.status().icon().frame_at(self.animation_elapsed())),
         }
     }

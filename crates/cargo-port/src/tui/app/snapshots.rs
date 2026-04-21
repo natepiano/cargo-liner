@@ -20,6 +20,7 @@ use crate::project::RepoInfo;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Submodule;
+use crate::project::VendoredPackage;
 use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
@@ -127,7 +128,7 @@ fn emit_groups(
     }
 }
 
-fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[Package]) {
+fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[VendoredPackage]) {
     for (vi, _) in vendored.iter().enumerate() {
         rows.push(VisibleRow::Vendored {
             node_index:     ni,
@@ -223,7 +224,7 @@ fn emit_worktree_children(
     ni: usize,
     wi: usize,
     groups: &[MemberGroup],
-    vendored: &[Package],
+    vendored: &[VendoredPackage],
     expanded: &HashSet<ExpandKey>,
 ) {
     for (gi, group) in groups.iter().enumerate() {
@@ -409,7 +410,7 @@ fn observe_new_member_group_fit_widths(
 
 fn observe_typed_vendored_fit_widths(
     widths: &mut ResolvedWidths,
-    vendored: &[Package],
+    vendored: &[VendoredPackage],
     prefix: &str,
 ) {
     let dw = columns::display_width;
@@ -559,7 +560,7 @@ fn collect_member_group_disk(groups: &[MemberGroup], values: &mut Vec<u64>) {
     }
 }
 
-fn collect_vendored_disk(vendored: &[Package], values: &mut Vec<u64>) {
+fn collect_vendored_disk(vendored: &[VendoredPackage], values: &mut Vec<u64>) {
     for project in vendored {
         if let Some(bytes) = project.disk_usage_bytes() {
             values.push(bytes);

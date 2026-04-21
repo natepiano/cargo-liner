@@ -4,7 +4,7 @@ use std::ops::DerefMut;
 use super::cargo::ExampleGroup;
 use super::cargo::ProjectType;
 use super::info::ProjectInfo;
-use super::package::Package;
+use super::vendored_package::VendoredPackage;
 use crate::lint::LintRuns;
 
 /// Rust-specific project data shared by both `Workspace` and `Package`.
@@ -13,7 +13,7 @@ use crate::lint::LintRuns;
 pub(crate) struct RustInfo {
     pub(crate) info:             ProjectInfo,
     pub(crate) cargo:            Cargo,
-    pub(crate) vendored:         Vec<Package>,
+    pub(crate) vendored:         Vec<VendoredPackage>,
     pub(crate) lint_runs:        LintRuns,
     pub(crate) crates_version:   Option<String>,
     pub(crate) crates_downloads: Option<u64>,
@@ -22,9 +22,9 @@ pub(crate) struct RustInfo {
 impl RustInfo {
     pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
 
-    pub(crate) fn vendored(&self) -> &[Package] { &self.vendored }
+    pub(crate) fn vendored(&self) -> &[VendoredPackage] { &self.vendored }
 
-    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<Package> { &mut self.vendored }
+    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<VendoredPackage> { &mut self.vendored }
 
     pub(crate) const fn info(&self) -> &ProjectInfo { &self.info }
 

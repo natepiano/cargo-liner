@@ -11,6 +11,7 @@ use crate::project::Package;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
+use crate::project::VendoredPackage;
 use crate::project::WorktreeGroup;
 use crate::tui;
 use crate::tui::columns::COL_NAME;
@@ -96,8 +97,8 @@ impl App {
                 vendored_index,
             } => {
                 let item = self.projects.get(node_index)?;
-                let pkg = Self::resolve_vendored(item, vendored_index)?;
-                Some(tui::panes::build_pane_data_for_member(self, pkg))
+                let vendored = Self::resolve_vendored(item, vendored_index)?;
+                Some(tui::panes::build_pane_data_for_vendored(self, vendored))
             },
             VisibleRow::GroupHeader { node_index, .. } => {
                 // Group headers show the parent project's detail
@@ -133,8 +134,8 @@ impl App {
                 vendored_index,
             } => {
                 let item = self.projects.get(node_index)?;
-                let pkg = Self::worktree_vendored_ref(item, worktree_index, vendored_index)?;
-                Some(tui::panes::build_pane_data_for_member(self, pkg))
+                let vendored = Self::worktree_vendored_ref(item, worktree_index, vendored_index)?;
+                Some(tui::panes::build_pane_data_for_vendored(self, vendored))
             },
             VisibleRow::Submodule {
                 node_index,
@@ -170,8 +171,8 @@ impl App {
         }
     }
 
-    /// Resolve a vendored `Package` from a `RootItem`.
-    fn resolve_vendored(item: &RootItem, vendored_index: usize) -> Option<&Package> {
+    /// Resolve a vendored package from a `RootItem`.
+    fn resolve_vendored(item: &RootItem, vendored_index: usize) -> Option<&VendoredPackage> {
         match item {
             RootItem::Rust(RustProject::Workspace(ws)) => ws.vendored().get(vendored_index),
             RootItem::Rust(RustProject::Package(pkg)) => pkg.vendored().get(vendored_index),
@@ -216,7 +217,7 @@ impl App {
         item: &RootItem,
         worktree_index: usize,
         vendored_index: usize,
-    ) -> Option<&Package> {
+    ) -> Option<&VendoredPackage> {
         match item {
             RootItem::Worktrees(WorktreeGroup::Workspaces {
                 primary, linked, ..

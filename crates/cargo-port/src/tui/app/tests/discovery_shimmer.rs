@@ -129,7 +129,7 @@ fn discovered_workspace_member_shimmers_parent_and_self_but_not_siblings() {
             make_package_with_vendored(
                 Some("crate_new"),
                 "~/rust/ws/crates/crate_new",
-                vec![make_member(
+                vec![super::make_vendored(
                     Some("helper_new"),
                     "~/rust/ws/crates/crate_new/vendor/helper_new",
                 )],
@@ -383,7 +383,7 @@ fn discovered_worktree_member_shimmers_parent_self_and_children_but_not_siblings
             make_package_with_vendored(
                 Some("crate_new"),
                 "~/rust/app_feat/crates/crate_new",
-                vec![make_member(
+                vec![super::make_vendored(
                     Some("helper_new"),
                     "~/rust/app_feat/crates/crate_new/vendor/helper_new",
                 )],

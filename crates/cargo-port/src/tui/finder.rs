@@ -40,6 +40,7 @@ use crate::project::ProjectFields;
 use crate::project::ProjectType;
 use crate::project::RootItem;
 use crate::project::RustProject;
+use crate::project::VendoredPackage;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 
@@ -262,7 +263,11 @@ fn add_package_items(items: &mut Vec<FinderItem>, pkg: &Package) {
     }
 }
 
-fn add_vendored_items_typed(items: &mut Vec<FinderItem>, project: &Package, parent_name: &str) {
+fn add_vendored_items_typed(
+    items: &mut Vec<FinderItem>,
+    project: &VendoredPackage,
+    parent_name: &str,
+) {
     let project_name = project.package_name().into_string();
     let dir = project.display_path().into_string();
     let project_path: AbsolutePath = project.path().clone();
@@ -969,10 +974,10 @@ mod tests {
             path: test_path("~/rust/hana"),
             name: Some("hana".to_string()),
             rust: RustInfo {
-                vendored: vec![Package {
+                vendored: vec![VendoredPackage {
                     path: test_path("~/rust/hana/crates/clay-layout"),
                     name: Some("clay-layout".to_string()),
-                    ..Package::default()
+                    ..VendoredPackage::default()
                 }],
                 ..RustInfo::default()
             },

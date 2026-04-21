@@ -38,6 +38,7 @@ use super::project::RootItem;
 use super::project::RustInfo;
 use super::project::RustProject;
 use super::project::Submodule;
+use super::project::VendoredPackage;
 use super::project::Workspace;
 use super::project::WorktreeGroup;
 
@@ -845,41 +846,47 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
     remove_indices.sort_unstable();
     remove_indices.dedup();
 
-    // Convert vendored items to `Package`
-    let mut vendored_projects: Vec<(usize, Package)> = Vec::new();
+    // Convert vendored items to `VendoredPackage`
+    let mut vendored_projects: Vec<(usize, VendoredPackage)> = Vec::new();
     for &(vi, ni) in &vendored_map {
-        let pkg = match &items[vi] {
-            RootItem::Rust(RustProject::Package(p)) => p.clone(),
-            RootItem::Rust(RustProject::Workspace(ws)) => Package {
-                path:            ws.path().clone(),
-                name:            ws.name().map(str::to_string),
-                worktree_status: ws.worktree_status().clone(),
-                rust:            RustInfo {
-                    cargo: ws.cargo().clone(),
-                    ..RustInfo::default()
-                },
+        let vendored = match &items[vi] {
+            RootItem::Rust(RustProject::Package(p)) => VendoredPackage {
+                path:             p.path.clone(),
+                name:             p.name.clone(),
+                worktree_status:  p.worktree_status.clone(),
+                info:             p.rust.info.clone(),
+                cargo:            p.rust.cargo.clone(),
+                crates_version:   p.rust.crates_version.clone(),
+                crates_downloads: p.rust.crates_downloads,
             },
-            RootItem::NonRust(nr) => Package {
+            RootItem::Rust(RustProject::Workspace(ws)) => VendoredPackage {
+                path: ws.path().clone(),
+                name: ws.name().map(String::from),
+                worktree_status: ws.worktree_status().clone(),
+                cargo: ws.cargo().clone(),
+                ..VendoredPackage::default()
+            },
+            RootItem::NonRust(nr) => VendoredPackage {
                 path: nr.path().clone(),
-                name: nr.name().map(str::to_string),
-                ..Package::default()
+                name: nr.name().map(String::from),
+                ..VendoredPackage::default()
             },
             _ => continue,
         };
-        vendored_projects.push((ni, pkg));
+        vendored_projects.push((ni, vendored));
     }
 
     for &idx in remove_indices.iter().rev() {
         items.remove(idx);
     }
 
-    for (ni, pkg) in vendored_projects {
+    for (ni, vendored) in vendored_projects {
         let adjusted_ni = remove_indices.iter().filter(|&&r| r < ni).count();
         let target_ni = ni - adjusted_ni;
         if let Some(item) = items.get_mut(target_ni) {
             match item {
-                RootItem::Rust(RustProject::Workspace(ws)) => ws.vendored_mut().push(pkg),
-                RootItem::Rust(RustProject::Package(p)) => p.vendored_mut().push(pkg),
+                RootItem::Rust(RustProject::Workspace(ws)) => ws.vendored_mut().push(vendored),
+                RootItem::Rust(RustProject::Package(p)) => p.vendored_mut().push(vendored),
                 _ => {},
             }
         }

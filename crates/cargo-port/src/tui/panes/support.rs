@@ -28,6 +28,7 @@ use crate::project::ProjectType;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Submodule;
+use crate::project::VendoredPackage;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::tui::app::App;
@@ -1053,10 +1054,35 @@ pub fn build_pane_data(app: &App, item: &RootItem) -> DetailPaneData {
     }
 }
 
-/// Build pane data for a `Project<Package>` (member or vendored row).
+/// Build pane data for a workspace member.
 pub fn build_pane_data_for_member(app: &App, pkg: &Package) -> DetailPaneData {
     let display_path = pkg.display_path().into_string();
     build_pane_data_for_package(app, pkg, &display_path, false, None)
+}
+
+/// Build pane data for a vendored crate row.
+pub fn build_pane_data_for_vendored(app: &App, vendored: &VendoredPackage) -> DetailPaneData {
+    let display_path = vendored.display_path().into_string();
+    let abs_path = vendored.path();
+    let cargo = vendored.cargo();
+
+    let mut counts = ProjectCounts::default();
+    counts.add_cargo(cargo);
+    let stats_rows = counts.to_rows();
+
+    build_pane_data_common(
+        app,
+        PaneDataSource {
+            abs_path,
+            display_path: &display_path,
+            title_name: vendored.package_name().into_string(),
+            has_cargo: true,
+            cargo: Some(cargo),
+            wt_item: None,
+            stats_rows,
+            package_title: "Vendored Crate".to_string(),
+        },
+    )
 }
 
 /// Build pane data for a linked `Project<Workspace>` worktree entry.
@@ -1236,8 +1262,13 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let wt_item = src.wt_item;
     let git_detail = build_git_detail_fields(app, abs_path);
     let rust_info = app.projects().rust_info_at_path(abs_path);
-    let crates_version = rust_info.and_then(|r| r.crates_version().map(str::to_string));
-    let crates_downloads = rust_info.and_then(crate::project::RustInfo::crates_downloads);
+    let vendored = app.projects().vendored_at_path(abs_path);
+    let crates_version = rust_info
+        .and_then(|r| r.crates_version().map(String::from))
+        .or_else(|| vendored.and_then(|v| v.crates_version().map(String::from)));
+    let crates_downloads = rust_info
+        .and_then(crate::project::RustInfo::crates_downloads)
+        .or_else(|| vendored.and_then(crate::project::VendoredPackage::crates_downloads));
 
     let (disk, ci) = wt_item.map_or_else(
         || {
@@ -1375,7 +1406,10 @@ pub fn build_ci_data(app: &App) -> CiData {
 pub fn build_lints_data(app: &App) -> LintsData {
     let selected_path = app.selected_project_path();
     let runs: Vec<LintRun> = selected_path
-        .and_then(|path| app.lint_at_path(path))
+        .and_then(|path| {
+            app.lint_at_path(path)
+                .or_else(|| app.projects().vendored_owner_lint(path))
+        })
         .map(|lr| lr.runs().to_vec())
         .unwrap_or_default();
     let sizes = selected_path.map_or_else(

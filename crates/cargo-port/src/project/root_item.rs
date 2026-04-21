@@ -11,6 +11,7 @@ use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
 use super::rust_project::RustProject;
 use super::submodule::Submodule;
+use super::vendored_package::VendoredPackage;
 use super::worktree_group::WorktreeGroup;
 use crate::lint::LintRuns;
 use crate::lint::LintStatus;
@@ -327,6 +328,60 @@ impl RootItem {
         }
     }
 
+    pub(crate) fn vendored_at_path(&self, path: &Path) -> Option<&VendoredPackage> {
+        match self {
+            Self::Rust(p) => p.vendored_at_path(path),
+            Self::NonRust(_) => None,
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                } => super::rust_project::vendored_in_workspace(primary, path).or_else(|| {
+                    linked
+                        .iter()
+                        .find_map(|l| super::rust_project::vendored_in_workspace(l, path))
+                }),
+                WorktreeGroup::Packages {
+                    primary, linked, ..
+                } => super::rust_project::vendored_in_package(primary, path).or_else(|| {
+                    linked
+                        .iter()
+                        .find_map(|l| super::rust_project::vendored_in_package(l, path))
+                }),
+            },
+        }
+    }
+
+    pub(crate) fn vendored_at_path_mut(&mut self, path: &Path) -> Option<&mut VendoredPackage> {
+        match self {
+            Self::Rust(p) => p.vendored_at_path_mut(path),
+            Self::NonRust(_) => None,
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                } => {
+                    if super::rust_project::vendored_in_workspace(primary, path).is_some() {
+                        return super::rust_project::vendored_in_workspace_mut(primary, path);
+                    }
+                    let idx = linked.iter().position(|l| {
+                        super::rust_project::vendored_in_workspace(l, path).is_some()
+                    })?;
+                    super::rust_project::vendored_in_workspace_mut(&mut linked[idx], path)
+                },
+                WorktreeGroup::Packages {
+                    primary, linked, ..
+                } => {
+                    if super::rust_project::vendored_in_package(primary, path).is_some() {
+                        return super::rust_project::vendored_in_package_mut(primary, path);
+                    }
+                    let idx = linked.iter().position(|l| {
+                        super::rust_project::vendored_in_package(l, path).is_some()
+                    })?;
+                    super::rust_project::vendored_in_package_mut(&mut linked[idx], path)
+                },
+            },
+        }
+    }
+
     pub(crate) fn lint_at_path_mut(&mut self, path: &Path) -> Option<&mut LintRuns> {
         match self {
             Self::Rust(p) => p.lint_at_path_mut(path),
@@ -354,6 +409,42 @@ impl RootItem {
                         .position(|l| super::rust_project::lint_in_package(l, path).is_some())?;
                     super::rust_project::lint_in_package_mut(&mut linked[idx], path)
                 },
+            },
+        }
+    }
+
+    /// Lint runs owned by the parent of a vendored crate at `path`.
+    ///
+    /// Vendored crates do not own lint state (see `VendoredPackage`), but the
+    /// detail pane surfaces the owning root's runs when a vendored row is
+    /// selected — mirroring how workspace members inherit their workspace's
+    /// lint history.
+    pub(crate) fn vendored_owner_lint(&self, path: &Path) -> Option<&LintRuns> {
+        match self {
+            Self::Rust(RustProject::Workspace(ws)) => ws
+                .vendored()
+                .iter()
+                .any(|v| v.path() == path)
+                .then(|| ws.lint_runs()),
+            Self::Rust(RustProject::Package(pkg)) => pkg
+                .vendored()
+                .iter()
+                .any(|v| v.path() == path)
+                .then(|| pkg.lint_runs()),
+            Self::NonRust(_) => None,
+            Self::Worktrees(g) => match g {
+                WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                } => std::iter::once(primary)
+                    .chain(linked.iter())
+                    .find(|ws| ws.vendored().iter().any(|v| v.path() == path))
+                    .map(|ws| ws.lint_runs()),
+                WorktreeGroup::Packages {
+                    primary, linked, ..
+                } => std::iter::once(primary)
+                    .chain(linked.iter())
+                    .find(|pkg| pkg.vendored().iter().any(|v| v.path() == path))
+                    .map(|pkg| pkg.lint_runs()),
             },
         }
     }

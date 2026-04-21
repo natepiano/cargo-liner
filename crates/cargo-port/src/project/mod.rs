@@ -12,6 +12,7 @@ mod root_item;
 mod rust_info;
 mod rust_project;
 mod submodule;
+mod vendored_package;
 mod workspace;
 mod worktree_group;
 
@@ -70,5 +71,6 @@ pub(crate) use rust_project::RustProject;
 // ── Submodule types ─────────────────────────────────────────────────
 pub(crate) use submodule::Submodule;
 pub(crate) use submodule::get_submodules;
+pub(crate) use vendored_package::VendoredPackage;
 pub(crate) use workspace::Workspace;
 pub(crate) use worktree_group::WorktreeGroup;

@@ -30,7 +30,6 @@ use crate::project::CheckoutInfo;
 use crate::project::GitRepoPresence;
 use crate::project::LanguageStats;
 use crate::project::LocalGitState;
-use crate::project::MemberGroup;
 use crate::project::ProjectFields;
 use crate::project::RepoInfo;
 use crate::project::RootItem;
@@ -467,47 +466,25 @@ impl App {
         self.schedule_member_crates_io_fetches();
     }
 
-    /// Fire crates.io fetches for publishable workspace members.
+    /// Fire crates.io fetches for publishable workspace members and vendored
+    /// crates.
     ///
     /// `schedule_startup_project_details` only iterates leaf-level projects
-    /// (workspace roots), not individual workspace members. This method
-    /// supplements it by iterating all members and fetching crates.io data
-    /// for each publishable one.
+    /// (workspace roots), not individual workspace members or vendored
+    /// crates. This method supplements it by iterating both and fetching
+    /// crates.io data for each publishable one.
     fn schedule_member_crates_io_fetches(&self) {
         let tx = self.bg_tx.clone();
         let client = self.http_client.clone();
-        let mut members: Vec<(AbsolutePath, String)> = Vec::new();
+        let mut targets: Vec<(AbsolutePath, String)> = Vec::new();
         for entry in &self.projects {
-            let groups: Vec<&MemberGroup> = match &entry.item {
-                crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
-                    ws.groups().iter().collect()
-                },
-                crate::project::RootItem::Worktrees(
-                    crate::project::WorktreeGroup::Workspaces {
-                        primary, linked, ..
-                    },
-                ) => std::iter::once(primary)
-                    .chain(linked.iter())
-                    .flat_map(|ws| ws.groups().iter())
-                    .collect(),
-                _ => continue,
-            };
-            for group in groups {
-                for member in group.members() {
-                    if !member.cargo().publishable() {
-                        continue;
-                    }
-                    if let Some(name) = member.name() {
-                        members.push((member.path().clone(), name.to_string()));
-                    }
-                }
-            }
+            collect_publishable_children(&entry.item, &mut targets);
         }
-        if members.is_empty() {
+        if targets.is_empty() {
             return;
         }
         rayon::spawn(move || {
-            for (path, name) in members {
+            for (path, name) in targets {
                 let (info, signal) = client.fetch_crates_io_info(&name);
                 crate::scan::emit_service_signal(&tx, signal);
                 if let Some(info) = info {
@@ -2063,6 +2040,8 @@ impl App {
     fn handle_crates_io_version_msg(&mut self, path: &Path, version: String, downloads: u64) {
         if let Some(rust_info) = self.projects.rust_info_at_path_mut(path) {
             rust_info.set_crates_io(version, downloads);
+        } else if let Some(vendored) = self.projects.vendored_at_path_mut(path) {
+            vendored.set_crates_io(version, downloads);
         }
     }
 
@@ -2430,5 +2409,58 @@ const fn service_recovered_message(service: ServiceKind) -> (&'static str, &'sta
     match service {
         ServiceKind::GitHub => ("GitHub available", "Back online."),
         ServiceKind::CratesIo => ("crates.io available", "Back online."),
+    }
+}
+
+/// Collect publishable workspace members and vendored crates into a flat
+/// `(path, crates.io name)` list for crates.io scheduling.
+fn collect_publishable_children(item: &RootItem, out: &mut Vec<(AbsolutePath, String)>) {
+    use crate::project::Package;
+    use crate::project::RustProject;
+    use crate::project::Workspace;
+    use crate::project::WorktreeGroup;
+
+    fn push_workspace(ws: &Workspace, out: &mut Vec<(AbsolutePath, String)>) {
+        for group in ws.groups() {
+            for member in group.members() {
+                if let Some(name) = member.crates_io_name() {
+                    out.push((member.path().clone(), name.to_string()));
+                }
+            }
+        }
+        for vendored in ws.vendored() {
+            if let Some(name) = vendored.crates_io_name() {
+                out.push((vendored.path().clone(), name.to_string()));
+            }
+        }
+    }
+    fn push_package_vendored(pkg: &Package, out: &mut Vec<(AbsolutePath, String)>) {
+        for vendored in pkg.vendored() {
+            if let Some(name) = vendored.crates_io_name() {
+                out.push((vendored.path().clone(), name.to_string()));
+            }
+        }
+    }
+
+    match item {
+        RootItem::Rust(RustProject::Workspace(ws)) => push_workspace(ws, out),
+        RootItem::Rust(RustProject::Package(pkg)) => push_package_vendored(pkg, out),
+        RootItem::Worktrees(WorktreeGroup::Workspaces {
+            primary, linked, ..
+        }) => {
+            push_workspace(primary, out);
+            for ws in linked {
+                push_workspace(ws, out);
+            }
+        },
+        RootItem::Worktrees(WorktreeGroup::Packages {
+            primary, linked, ..
+        }) => {
+            push_package_vendored(primary, out);
+            for pkg in linked {
+                push_package_vendored(pkg, out);
+            }
+        },
+        RootItem::NonRust(_) => {},
     }
 }
