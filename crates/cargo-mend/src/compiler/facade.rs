@@ -11,6 +11,7 @@ use super::source_cache::ExtractedPaths;
 use super::source_cache::PathOrigin;
 use super::source_cache::SourceCache;
 use super::source_cache::UseRename;
+use crate::module_paths;
 
 #[derive(Debug, Clone)]
 pub(super) struct ParentBoundary {
@@ -68,7 +69,7 @@ pub(super) fn root_module_exports_item(
     item_name: &str,
 ) -> bool {
     let Some(child_module_name) =
-        crate::module_paths::module_name_for_child_boundary_file(child_file)
+        module_paths::module_name_for_child_boundary_file(child_file)
     else {
         return false;
     };
@@ -97,7 +98,7 @@ pub(super) fn parent_facade_export_status(
 
     let exported_names = loop {
         let Some(child_module_name) =
-            crate::module_paths::module_name_for_child_boundary_file(&current_child)
+            module_paths::module_name_for_child_boundary_file(&current_child)
         else {
             return Ok(None);
         };

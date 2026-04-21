@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `prefer_module_import` now flags inline fully-qualified function calls (e.g. `crate::layout::set_root_grow_height(tree)`) with no matching `use`. `--fix` inserts `use crate::layout;` and rewrites the call site to `layout::set_root_grow_height(tree)`, deduplicating against existing module imports and function imports that pass 1 will rewrite
+
 ## [0.7.0] - 2026-04-16
 
 ### Added

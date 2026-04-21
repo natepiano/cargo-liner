@@ -1136,3 +1136,193 @@ fn example() -> bool {
         "function import should be removed, got:\n{consumer}"
     );
 }
+
+#[test]
+fn inline_call_inserts_use_and_qualifies() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_call_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod layout;\nmod consumer;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/layout.rs"),
+        "pub fn set_root_grow_height(_tree: &mut i32) {}\n",
+    )
+    .expect("write layout");
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        r#"fn example() {
+    let mut tree = 0;
+    crate::parent::layout::set_root_grow_height(&mut tree);
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
+    assert!(
+        consumer.contains("use crate::parent::layout;") || consumer.contains("use super::layout;"),
+        "expected module import to be inserted, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("layout::set_root_grow_height(&mut tree)"),
+        "expected qualified call, got:\n{consumer}"
+    );
+    assert!(
+        !consumer.contains("crate::parent::layout::set_root_grow_height")
+            && !consumer.contains("super::layout::set_root_grow_height"),
+        "fully-qualified call should be rewritten, got:\n{consumer}"
+    );
+
+    // Idempotency: a second run should report no inline-call findings
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
+        "fix should be idempotent — second run should have no prefer_module_import findings"
+    );
+}
+
+#[test]
+fn inline_call_reuses_existing_module_use() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_reuse_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod layout;\nmod consumer;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/layout.rs"),
+        "pub fn set_root_grow_height(_tree: &mut i32) {}\n",
+    )
+    .expect("write layout");
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        r#"use super::layout;
+
+fn example() {
+    let mut tree = 0;
+    crate::parent::layout::set_root_grow_height(&mut tree);
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
+    assert!(
+        consumer.contains("layout::set_root_grow_height(&mut tree)"),
+        "expected qualified call, got:\n{consumer}"
+    );
+    // The pre-existing `use super::layout;` should be the only module import;
+    // no duplicate insertion
+    let use_count = consumer.matches("use super::layout;").count()
+        + consumer.matches("use crate::parent::layout;").count();
+    assert_eq!(
+        use_count, 1,
+        "should not duplicate module import, got:\n{consumer}"
+    );
+}
+
+#[test]
+fn inline_call_skipped_when_mod_declared_same_file() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_mod_conflict_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod layout;
+
+fn main() {
+    let mut tree = 0;
+    crate::layout::set_root_grow_height(&mut tree);
+}
+"#,
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/layout.rs"),
+        "pub fn set_root_grow_height(_tree: &mut i32) {}\n",
+    )
+    .expect("write layout");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
+        "inline call should not be flagged when `mod` declaration exists in same file"
+    );
+}

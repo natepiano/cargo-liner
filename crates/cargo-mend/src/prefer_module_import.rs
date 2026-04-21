@@ -7,6 +7,8 @@ use anyhow::Context;
 use anyhow::Result;
 use proc_macro2::LineColumn;
 use syn::Expr;
+use syn::ExprPath;
+use syn::Item;
 use syn::ItemUse;
 use syn::UseTree;
 use syn::spanned::Spanned;
@@ -60,9 +62,24 @@ struct RawCandidate {
     function_name:   String,
     module_name:     String,
     module_path:     String,
+    absolute_module: Vec<String>,
     replacement_use: String,
     span_start:      LineColumn,
     span_end:        LineColumn,
+}
+
+struct InlineCallCandidate {
+    function_name:   String,
+    module_name:     String,
+    module_path:     String,
+    absolute_module: Vec<String>,
+    // byte range covering just the `crate::...::` (or `super::...::`) prefix up
+    // to the start of the leaf ident
+    prefix_start:    LineColumn,
+    leaf_start:      LineColumn,
+    // full path span for the finding highlight
+    full_span_start: LineColumn,
+    full_span_end:   LineColumn,
 }
 
 fn scan_file(
@@ -102,7 +119,16 @@ fn scan_file(
     };
     detector.visit_file(&syntax);
 
-    if detector.candidates.is_empty() {
+    // Pass 3: detect inline fully-qualified function calls (no matching `use`)
+    let mut inline_detector = InlineCallDetector {
+        src_root,
+        current_module_path: &current_module_path,
+        declared_modules: &declared_modules,
+        candidates: Vec::new(),
+    };
+    inline_detector.visit_file(&syntax);
+
+    if detector.candidates.is_empty() && inline_detector.candidates.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
 
@@ -138,7 +164,7 @@ fn scan_file(
         }
     }
 
-    let (findings, fixes) = build_findings_and_fixes(
+    let (mut findings, mut fixes) = build_findings_and_fixes(
         analysis_root,
         path,
         &text,
@@ -148,7 +174,144 @@ fn scan_file(
         &collector.references,
     );
 
+    if !inline_detector.candidates.is_empty() {
+        let mut will_import_modules: BTreeSet<Vec<String>> = BTreeSet::new();
+        for item in &syntax.items {
+            if let Item::Use(item_use) = item
+                && let Some(flat) = flatten_use_tree(&item_use.tree)
+                && flat.rename.is_none()
+                && let Some(abs) = resolve_to_absolute(&flat.segments, &current_module_path)
+                && !abs.is_empty()
+                && leaf_is_module(src_root, &abs)
+            {
+                will_import_modules.insert(abs);
+            }
+        }
+        for functions in module_to_functions.values() {
+            for candidate in functions {
+                will_import_modules.insert(candidate.absolute_module.clone());
+            }
+        }
+
+        let insertion_offset = file_level_insertion_offset(&syntax, &text, &offsets);
+
+        let (inline_findings, inline_fixes) = build_inline_call_findings_and_fixes(
+            analysis_root,
+            path,
+            &text,
+            &offsets,
+            &inline_detector.candidates,
+            &will_import_modules,
+            insertion_offset,
+        );
+        findings.extend(inline_findings);
+        fixes.extend(inline_fixes);
+    }
+
     Ok((findings, fixes))
+}
+
+fn file_level_insertion_offset(syntax: &syn::File, text: &str, offsets: &[usize]) -> usize {
+    let mut last_use_end: Option<usize> = None;
+    let mut first_item_start: Option<usize> = None;
+    for item in &syntax.items {
+        let item_start = offset(offsets, item.span().start());
+        first_item_start.get_or_insert(item_start);
+        if let Item::Use(item_use) = item {
+            let end = offset(offsets, item_use.span().end());
+            let end = if text.as_bytes().get(end) == Some(&b'\n') {
+                end + 1
+            } else {
+                end
+            };
+            last_use_end = Some(end);
+        }
+    }
+    last_use_end.or(first_item_start).unwrap_or(0)
+}
+
+fn build_inline_call_findings_and_fixes(
+    analysis_root: &Path,
+    path: &Path,
+    text: &str,
+    offsets: &[usize],
+    candidates: &[InlineCallCandidate],
+    will_import_modules: &BTreeSet<Vec<String>>,
+    insertion_offset: usize,
+) -> (Vec<Finding>, Vec<UseFix>) {
+    let display_path = path
+        .strip_prefix(analysis_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    let mut findings = Vec::new();
+    let mut fixes = Vec::new();
+    let mut inserted_modules: BTreeSet<Vec<String>> = BTreeSet::new();
+
+    for candidate in candidates {
+        let prefix_start_byte = offset(offsets, candidate.prefix_start);
+        let leaf_start_byte = offset(offsets, candidate.leaf_start);
+        let full_start_byte = offset(offsets, candidate.full_span_start);
+        let full_end_byte = offset(offsets, candidate.full_span_end);
+
+        let source_line = text
+            .lines()
+            .nth(candidate.full_span_start.line.saturating_sub(1))
+            .unwrap_or_default()
+            .to_string();
+
+        let full_path_text = text
+            .get(full_start_byte..full_end_byte)
+            .unwrap_or_default()
+            .to_string();
+
+        findings.push(Finding {
+            severity: Severity::Warning,
+            code: DiagnosticCode::PreferModuleImport,
+            path: display_path.clone(),
+            line: candidate.full_span_start.line,
+            column: candidate.full_span_start.column + 1,
+            highlight_len: full_path_text.len().max(1),
+            source_line,
+            item: None,
+            message: format!(
+                "import the module `{}` instead of using the fully-qualified path for `{}`",
+                candidate.module_name, candidate.function_name
+            ),
+            suggestion: Some(format!(
+                "add `use {};` and call `{}::{}`",
+                candidate.module_path, candidate.module_name, candidate.function_name
+            )),
+            fixability: FixSupport::PreferModuleImport,
+            related: None,
+        });
+
+        // Rewrite the call-site prefix: `crate::layout::` -> `layout::`
+        fixes.push(UseFix {
+            path:        path.to_path_buf(),
+            start:       prefix_start_byte,
+            end:         leaf_start_byte,
+            replacement: format!("{}::", candidate.module_name),
+        });
+
+        // Insert `use <module_path>;` once per target module, unless already
+        // imported (or will be imported by pass 1's rewrites)
+        if will_import_modules.contains(&candidate.absolute_module) {
+            continue;
+        }
+        if !inserted_modules.insert(candidate.absolute_module.clone()) {
+            continue;
+        }
+        fixes.push(UseFix {
+            path:        path.to_path_buf(),
+            start:       insertion_offset,
+            end:         insertion_offset,
+            replacement: format!("use {};\n", candidate.module_path),
+        });
+    }
+
+    (findings, fixes)
 }
 
 fn build_findings_and_fixes(
@@ -258,6 +421,99 @@ impl Visit<'_> for ImportDetector<'_> {
     }
 }
 
+struct InlineCallDetector<'a> {
+    src_root:            &'a Path,
+    current_module_path: &'a [String],
+    declared_modules:    &'a BTreeSet<String>,
+    candidates:          Vec<InlineCallCandidate>,
+}
+
+impl Visit<'_> for InlineCallDetector<'_> {
+    // Paths inside `use` statements are not inline calls
+    fn visit_item_use(&mut self, _: &ItemUse) {}
+
+    fn visit_expr_path(&mut self, node: &ExprPath) {
+        if node.qself.is_some() {
+            return;
+        }
+        if let Some(candidate) = analyze_inline_call(
+            self.src_root,
+            self.current_module_path,
+            self.declared_modules,
+            node,
+        ) {
+            self.candidates.push(candidate);
+        }
+    }
+}
+
+fn analyze_inline_call(
+    src_root: &Path,
+    current_module_path: &[String],
+    declared_modules: &BTreeSet<String>,
+    node: &ExprPath,
+) -> Option<InlineCallCandidate> {
+    let path = &node.path;
+    let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    if segments.len() < 3 {
+        return None;
+    }
+
+    let first = segments.first()?;
+    if first != "crate" && first != "super" {
+        return None;
+    }
+
+    let leaf = segments.last()?;
+    if !is_snake_case_function_name(leaf) {
+        return None;
+    }
+
+    let absolute_segments = resolve_to_absolute(&segments, current_module_path)?;
+    if absolute_segments.is_empty() {
+        return None;
+    }
+    // Leaf must not itself be a module on disk
+    if leaf_is_module(src_root, &absolute_segments) {
+        return None;
+    }
+    // The parent segments must resolve to an actual module file
+    let absolute_module = absolute_segments[..absolute_segments.len() - 1].to_vec();
+    if absolute_module.is_empty() || !leaf_is_module(src_root, &absolute_module) {
+        return None;
+    }
+
+    let module_name = segments[segments.len() - 2].clone();
+    if module_name == "super" || module_name == "crate" {
+        return None;
+    }
+    if declared_modules.contains(&module_name) {
+        return None;
+    }
+
+    let module_segments = &segments[..segments.len() - 1];
+    let shortened = shorten_module_path(current_module_path, module_segments);
+    let module_path = shortened.join("::");
+
+    let first_seg = path.segments.first()?;
+    let leaf_seg = path.segments.last()?;
+    let prefix_start = first_seg.ident.span().start();
+    let leaf_start = leaf_seg.ident.span().start();
+    let full_span_start = path.span().start();
+    let full_span_end = path.span().end();
+
+    Some(InlineCallCandidate {
+        function_name: leaf.clone(),
+        module_name,
+        module_path,
+        absolute_module,
+        prefix_start,
+        leaf_start,
+        full_span_start,
+        full_span_end,
+    })
+}
+
 fn analyze_function_import(
     src_root: &Path,
     current_module_path: &[String],
@@ -323,10 +579,13 @@ fn analyze_function_import(
 
     let span = node.span();
 
+    let absolute_module = absolute_segments[..absolute_segments.len() - 1].to_vec();
+
     Some(RawCandidate {
         function_name: leaf.clone(),
         module_name,
         module_path,
+        absolute_module,
         replacement_use,
         span_start: span.start(),
         span_end: span.end(),
